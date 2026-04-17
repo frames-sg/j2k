@@ -41,3 +41,30 @@ Apache-2.0. See `LICENSE-APACHE`.
 ## MSRV
 
 Rust 1.94. Bumps are minor-version events.
+
+## Quick-start (M1a: header inspection only)
+
+```rust
+use slidecodec_jpeg::Decoder;
+
+let bytes = std::fs::read("tile.jpg")?;
+let info = Decoder::inspect(&bytes)?;
+println!("{}×{} {:?}", info.dimensions.0, info.dimensions.1, info.sof_kind);
+```
+
+```sh
+$ slidecodec inspect tile.jpg
+1024×1024 Baseline8 YCbCr bit=8 samp=[(2, 2), (1, 1), (1, 1)] rst=Some(4) scans=1
+```
+
+## Status progression
+
+- [x] M0 — Scaffolding, CI, licenses
+- [x] M1a — Error taxonomy, header parser, `Decoder::inspect`
+- [ ] M1b — Bit reader, Huffman, IDCT, color convert, `Decoder::decode_into`
+- [ ] M1.5 — Perf gate: prototype IDCT + Huffman benches
+- [ ] M2 — WSI-specific APIs (partial decode, downscale, segments, table cache, stitch)
+- [ ] M3 — Extended SOF support (SOF1/SOF2/SOF3)
+- [ ] M4 — SIMD paths (NEON / AVX2 / SSE4.1 / simd128)
+- [ ] M5 — Hardening (parity corpus, fuzz, miri)
+- [ ] M6 — Release (0.1.0 to crates.io, SlideViewer integration)
