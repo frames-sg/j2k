@@ -8,3 +8,4 @@ pub(crate) mod markers;
 pub(crate) mod sof;
 pub(crate) mod tables;
 pub(crate) mod adobe_app14;
+pub(crate) mod header;
