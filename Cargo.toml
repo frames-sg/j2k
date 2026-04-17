@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/slidecodec-jpeg",
+    "crates/slidecodec-cli",
+]
+
+[workspace.package]
+version      = "0.0.0"
+edition      = "2021"
+rust-version = "1.83"
+license      = "Apache-2.0"
+repository   = "https://github.com/YOUR_USER/slidecodec"
+homepage     = "https://github.com/YOUR_USER/slidecodec"
+keywords     = ["jpeg", "decoder", "wsi", "whole-slide-image", "pathology"]
+categories   = ["multimedia::images", "no-std"]
+
+[workspace.dependencies]
+thiserror = { version = "1", default-features = false }
+proptest  = { version = "1" }
+criterion = { version = "0.5", default-features = false }
+
+[profile.release]
+lto           = "fat"
+codegen-units = 1
+strip         = "symbols"
+opt-level     = 3
+
+[profile.release-bench]
+inherits  = "release"
+debug     = true
+strip     = "none"
