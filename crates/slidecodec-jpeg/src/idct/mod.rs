@@ -6,5 +6,4 @@
 
 pub(crate) mod scalar;
 
-#[allow(unused_imports)]
 pub(crate) use scalar::idct_islow;
