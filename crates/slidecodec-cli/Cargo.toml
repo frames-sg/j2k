@@ -1,0 +1,19 @@
+[package]
+name        = "slidecodec-cli"
+description = "Command-line tool for slidecodec: inspect, decode, benchmark"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "slidecodec"
+path = "src/main.rs"
+
+[dependencies]
+slidecodec-jpeg = { path = "../slidecodec-jpeg", version = "0.0.0" }
+
+# NOTE: `[profile.*]` blocks in package-level manifests are silently ignored
+# inside a workspace (see https://doc.rust-lang.org/cargo/reference/profiles.html#overrides).
+# Any codegen tweaks for the CLI must go in the root workspace `Cargo.toml`.

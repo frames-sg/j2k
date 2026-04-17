@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! JPEG decoder optimized for whole-slide images.
+//!
+//! See the top-level README for project positioning. The primary entry point
+//! is [`Decoder`] — start with [`Decoder::inspect`] for header-only parsing.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+#![warn(unreachable_pub)]
+// `missing_docs` is scheduled to turn on before 0.1.0; see Cargo.toml for rationale.
+
+extern crate alloc;
+
+// Modules are wired in as they are implemented by later tasks.

@@ -1,0 +1,40 @@
+[package]
+name        = "slidecodec-jpeg"
+description = "JPEG decoder optimized for whole-slide images (WSI)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme                 = "README.md"
+
+[lib]
+name = "slidecodec_jpeg"
+path = "src/lib.rs"
+
+[features]
+default      = ["std"]
+std          = []
+scalar-only  = []   # disables SIMD dispatch; used by fuzz and by the miri job
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints.rust]
+unsafe_code     = "forbid"
+unreachable_pub = "warn"
+# `missing_docs` is deliberately *not* enabled pre-0.1 — the crate is still
+# growing its public surface and CI uses `-D warnings`, which would turn every
+# undocumented variant into a blocker. A dedicated documentation pass before
+# 0.1.0 promotes this to `warn` (tracked in docs/architecture.md).
+
+[lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate      = "allow"
