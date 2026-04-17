@@ -71,6 +71,41 @@ impl<'a> Decoder<'a> {
         let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
             marker: MarkerKind::Sos,
         })?;
+        // Baseline/Extended-8 sequential scans must cover every SOF component
+        // (T.81 §B.2.3: Ns = Nf). Reject non-interleaved single-scan layouts —
+        // they are a progressive-style pattern that M1b doesn't decode.
+        if scan.components.len() != header.sampling.components.len() {
+            return Err(JpegError::NotImplemented {
+                sof: info.sof_kind,
+            });
+        }
+        // M1b requires the first component (Y for 3-component, single for
+        // grayscale) to be the maximally-sampled component. Non-luma-leading
+        // layouts are pathological; real baselines always satisfy this.
+        if let Some(&(h, v)) = header.sampling.components.first() {
+            if h != header.sampling.max_h || v != header.sampling.max_v {
+                return Err(JpegError::NotImplemented {
+                    sof: info.sof_kind,
+                });
+            }
+        }
+        // Every component must declare H,V in 1..=4 per T.81 §B.2.2, and max_h
+        // must actually divide every component's H (same for V). Malformed
+        // streams can set H=0 (div-by-zero in upsample ratio), non-divisors
+        // (arbitrary ratios M2 handles), or ratios that don't produce planes
+        // that cover the image width.
+        for &(h, v) in &header.sampling.components {
+            if h == 0 || v == 0 || h > 4 || v > 4 {
+                return Err(JpegError::NotImplemented {
+                    sof: info.sof_kind,
+                });
+            }
+            if header.sampling.max_h % h != 0 || header.sampling.max_v % v != 0 {
+                return Err(JpegError::NotImplemented {
+                    sof: info.sof_kind,
+                });
+            }
+        }
         for comp in &scan.components {
             let di = comp.dc_table as usize;
             let ai = comp.ac_table as usize;
@@ -167,14 +202,25 @@ impl<'a> Decoder<'a> {
         })?;
         let mut components = Vec::with_capacity(scan.components.len());
         for (i, scan_comp) in scan.components.iter().enumerate() {
-            let (h, v) = header.sampling.components[i];
-            let quant_id = header.quant_table_ids[i] as usize;
-            let quant = header.quant_tables.entries[quant_id].as_ref().ok_or(
-                JpegError::MissingQuantTable {
-                    component: scan_comp.id,
-                    table_id: quant_id as u8,
+            let (h, v) = *header.sampling.components.get(i).ok_or(
+                JpegError::MissingMarker {
+                    marker: MarkerKind::Sof,
                 },
             )?;
+            let quant_id = *header.quant_table_ids.get(i).ok_or(
+                JpegError::MissingMarker {
+                    marker: MarkerKind::Sof,
+                },
+            )? as usize;
+            let quant = header
+                .quant_tables
+                .entries
+                .get(quant_id)
+                .and_then(|q| q.as_ref())
+                .ok_or(JpegError::MissingQuantTable {
+                    component: scan_comp.id,
+                    table_id: quant_id as u8,
+                })?;
             let dc_table = self.dc_tables[scan_comp.dc_table as usize].as_ref().ok_or(
                 JpegError::MissingHuffmanTable {
                     component: scan_comp.id,
