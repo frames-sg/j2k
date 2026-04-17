@@ -10,16 +10,12 @@ pub(crate) mod gray8;
 pub(crate) mod rgb8;
 pub(crate) mod rgba8;
 
-#[allow(unused_imports)]
 pub(crate) use gray8::Gray8Writer;
-#[allow(unused_imports)]
 pub(crate) use rgb8::Rgb8Writer;
-#[allow(unused_imports)]
 pub(crate) use rgba8::Rgba8Writer;
 
 /// A destination for decoded pixel rows. Each writer carries a mutable slice
 /// of the caller's output buffer and the stride in bytes between rows.
-#[allow(dead_code)]
 pub(crate) trait OutputWriter {
     /// Write one full-width row of YCbCr data at output row `y`.
     fn write_ycbcr_row(&mut self, y: u32, y_row: &[u8], cb_row: &[u8], cr_row: &[u8]);
