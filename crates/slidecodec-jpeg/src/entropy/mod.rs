@@ -2,12 +2,12 @@
 
 //! Entropy decoding — Huffman tables and the per-MCU block decoder.
 
+pub(crate) mod block;
 pub(crate) mod huffman;
 
 /// T.81 §A.3.6 zigzag order: the 8×8 coefficient scan order from DC to
 /// highest-frequency AC. Coefficient `k` in the stream lands at linear
 /// position `ZIGZAG[k]` in the 8×8 block (row-major).
-#[allow(dead_code)] // consumed by decode_block in Task 7.
 #[rustfmt::skip]
 pub(crate) const ZIGZAG: [u8; 64] = [
      0,  1,  8, 16,  9,  2,  3, 10,
