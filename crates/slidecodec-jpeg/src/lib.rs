@@ -26,4 +26,4 @@ pub use error::{
 pub(crate) mod parse;
 
 pub mod decoder;
-pub use decoder::Decoder;
+pub use decoder::{DecodeOutcome, Decoder};

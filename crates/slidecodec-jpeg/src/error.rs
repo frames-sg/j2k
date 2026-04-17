@@ -156,6 +156,15 @@ pub enum JpegError {
 
     #[error("builder input configuration conflict: {reason:?}")]
     BuilderConflict { reason: BuilderConflictReason },
+
+    /// Transient pre-1.0 gap: the SOF is parseable and will eventually be
+    /// supported by the decoder, but the current release does not implement
+    /// it yet. M3 removes this variant by implementing Extended12, Progressive,
+    /// and Lossless. Distinct from `UnsupportedSof` because callers routing
+    /// to a fallback decoder on `is_unsupported()` should NOT reroute streams
+    /// that a newer version of slidecodec will decode natively.
+    #[error("decode not yet implemented for {sof:?} — see CHANGELOG for milestone")]
+    NotImplemented { sof: SofKind },
 }
 
 impl JpegError {
@@ -187,6 +196,14 @@ impl JpegError {
                 | Self::ScanFragmentsOverlap { .. }
                 | Self::BuilderConflict { .. }
         )
+    }
+
+    /// True if the error is a transient "not yet implemented" gap — the stream
+    /// is valid and will decode on a future slidecodec release, so callers
+    /// should *not* reroute to a different decoder permanently. See
+    /// [`Self::is_unsupported`] for errors that are permanent routing decisions.
+    pub fn is_not_implemented(&self) -> bool {
+        matches!(self, Self::NotImplemented { .. })
     }
 
     /// Byte offset where the error was detected in the input stream, if any.
@@ -287,5 +304,27 @@ mod tests {
             Some(42),
         );
         assert_eq!(JpegError::UnsupportedBitDepth { depth: 16 }.offset(), None,);
+    }
+
+    #[test]
+    fn not_implemented_predicate_distinguishes_from_unsupported() {
+        let not_impl = JpegError::NotImplemented {
+            sof: SofKind::Progressive8,
+        };
+        assert!(not_impl.is_not_implemented());
+        assert!(
+            !not_impl.is_unsupported(),
+            "NotImplemented is a transient M1b/M2 gap — callers routing on is_unsupported() must NOT \
+             reroute these streams, because M3 adds real support"
+        );
+        assert!(!not_impl.is_truncated());
+        assert!(!not_impl.is_api_misuse());
+
+        let unsupported = JpegError::UnsupportedSof {
+            marker: 0xC9,
+            reason: UnsupportedReason::ArithmeticCoding,
+        };
+        assert!(!unsupported.is_not_implemented());
+        assert!(unsupported.is_unsupported());
     }
 }
