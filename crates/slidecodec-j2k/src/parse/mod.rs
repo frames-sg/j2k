@@ -21,11 +21,12 @@ pub(crate) fn parse_info(input: &[u8]) -> Result<Info, J2kError> {
     }))
 }
 
-fn infer_colorspace(components: u8, has_mct: bool) -> Colorspace {
-    match (components, has_mct) {
-        (1, _) => Colorspace::SGray,
-        (3, false) => Colorspace::Rgb,
-        (3, true) => Colorspace::Ict,
+fn infer_colorspace(components: u8, has_mct: bool, reversible: bool) -> Colorspace {
+    match (components, has_mct, reversible) {
+        (1, _, _) => Colorspace::SGray,
+        (3, false, _) => Colorspace::Rgb,
+        (3, true, false) => Colorspace::Ict,
+        (3, true, true) => Colorspace::Rct,
         _ => Colorspace::IccTagged,
     }
 }
@@ -42,6 +43,7 @@ struct ParsedSiz {
 struct ParsedCod {
     resolution_levels: u8,
     has_mct: bool,
+    reversible: bool,
 }
 
 impl CodestreamInfo {
@@ -50,7 +52,9 @@ impl CodestreamInfo {
             dimensions: self.siz.dimensions,
             components: self.siz.components,
             colorspace: colorspace
-                .unwrap_or_else(|| infer_colorspace(self.siz.components, self.cod.has_mct)),
+                .unwrap_or_else(|| {
+                    infer_colorspace(self.siz.components, self.cod.has_mct, self.cod.reversible)
+                }),
             bit_depth: self.siz.bit_depth,
             tile_layout: Some(self.siz.tile_layout),
             resolution_levels: self.cod.resolution_levels,

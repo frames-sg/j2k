@@ -121,7 +121,7 @@ fn inspect_raw_codestream_reports_core_info() {
     assert_eq!(info.dimensions, (128, 64));
     assert_eq!(info.components, 3);
     assert_eq!(info.bit_depth, 8);
-    assert_eq!(info.colorspace, Colorspace::Ict);
+    assert_eq!(info.colorspace, Colorspace::Rct);
     assert_eq!(info.resolution_levels, 6);
     let tiles = info.tile_layout.expect("tile layout");
     assert_eq!(tiles.tile_width, 64);
