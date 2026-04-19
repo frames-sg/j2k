@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use dicom_toolkit_jpeg2000::{encode_htj2k, EncodeOptions};
 use slidecodec_core::Colorspace;
 use slidecodec_j2k::{J2kDecoder, J2kError, J2kView};
 
@@ -80,6 +81,30 @@ fn minimal_jp2() -> Vec<u8> {
     bytes.extend_from_slice(&[
         0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r', 0, 0, 0, 64, 0,
         0, 0, 128, 0, 3, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0, 16,
+    ]);
+    let len = (8 + codestream.len()) as u32;
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(b"jp2c");
+    bytes.extend_from_slice(&codestream);
+    bytes
+}
+
+fn ht_codestream() -> Vec<u8> {
+    let pixels = [10_u8, 20, 30, 40];
+    encode_htj2k(&pixels, 2, 2, 1, 8, false, &EncodeOptions::default()).expect("encode ht")
+}
+
+fn ht_jp2() -> Vec<u8> {
+    let codestream = ht_codestream();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r', 0, 0, 0, 2, 0,
+        0, 0, 2, 0, 1, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0, 17,
     ]);
     let len = (8 + codestream.len()) as u32;
     bytes.extend_from_slice(&len.to_be_bytes());
@@ -185,4 +210,21 @@ fn codestream_truncated_after_main_header_is_rejected() {
 fn jp2_with_codestream_before_header_is_rejected() {
     let err = J2kDecoder::inspect(&jp2_with_jp2c_before_jp2h()).unwrap_err();
     assert!(matches!(err, J2kError::InvalidBox { .. }));
+}
+
+#[test]
+fn inspect_ht_codestream_reports_core_info() {
+    let info = J2kDecoder::inspect(&ht_codestream()).expect("ht inspect");
+    assert_eq!(info.dimensions, (2, 2));
+    assert_eq!(info.components, 1);
+    assert_eq!(info.bit_depth, 8);
+    assert_eq!(info.colorspace, Colorspace::SGray);
+}
+
+#[test]
+fn inspect_ht_jp2_reports_core_info() {
+    let info = J2kDecoder::inspect(&ht_jp2()).expect("ht jp2 inspect");
+    assert_eq!(info.dimensions, (2, 2));
+    assert_eq!(info.components, 1);
+    assert_eq!(info.colorspace, Colorspace::SGray);
 }

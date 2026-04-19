@@ -24,7 +24,11 @@ pub struct J2kView<'a> {
 
 impl<'a> J2kView<'a> {
     pub fn parse(input: &'a [u8]) -> Result<Self, J2kError> {
-        let info = parse_info(input).or_else(|_| inspect_info_via_backend(input))?;
+        let info = match parse_info(input) {
+            Ok(info) => info,
+            Err(error) if should_retry_with_backend(&error) => inspect_info_via_backend(input)?,
+            Err(error) => return Err(error),
+        };
         Ok(Self { bytes: input, info })
     }
 
@@ -48,7 +52,11 @@ pub struct J2kCodec;
 
 impl<'a> J2kDecoder<'a> {
     pub fn inspect(input: &'a [u8]) -> Result<Info, J2kError> {
-        parse_info(input)
+        match parse_info(input) {
+            Ok(info) => Ok(info),
+            Err(error) if should_retry_with_backend(&error) => inspect_info_via_backend(input),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn new(input: &'a [u8]) -> Result<Self, J2kError> {
@@ -102,13 +110,13 @@ impl<'a> J2kDecoder<'a> {
 
     pub fn decode_scaled_into(
         &mut self,
-        _pool: &mut J2kScratchPool,
+        pool: &mut J2kScratchPool,
         out: &mut [u8],
         stride: usize,
         fmt: PixelFormat,
         scale: Downscale,
     ) -> Result<J2kDecodeOutcome, J2kError> {
-        decode_scaled(self.bytes, out, stride, fmt, scale)
+        decode_scaled(self.bytes, pool, out, stride, fmt, scale)
     }
 }
 
@@ -182,8 +190,8 @@ impl<'a> ImageDecodeRows<'a, u8> for J2kDecoder<'a> {
     ) -> Result<slidecodec_core::DecodeOutcome<Self::Warning>, DecodeRowsError<Self::Error, R::Error>>
     {
         let fmt = row_format_u8(self.info()).map_err(DecodeRowsError::Decode)?;
-        let row_bytes = self.info.dimensions.0 as usize * fmt.bytes_per_pixel();
-        let total_len = row_bytes * self.info.dimensions.1 as usize;
+        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let total_len = total_output_bytes(self.info(), row_bytes).map_err(DecodeRowsError::Decode)?;
         let mut pool = J2kScratchPool::new();
         let packed = pool.packed_bytes(total_len);
         self.decode_into(packed, row_bytes, fmt)
@@ -205,9 +213,9 @@ impl<'a> ImageDecodeRows<'a, u16> for J2kDecoder<'a> {
     ) -> Result<slidecodec_core::DecodeOutcome<Self::Warning>, DecodeRowsError<Self::Error, R::Error>>
     {
         let fmt = row_format_u16(self.info()).map_err(DecodeRowsError::Decode)?;
-        let row_bytes = self.info.dimensions.0 as usize * fmt.bytes_per_pixel();
-        let samples_per_row = self.info.dimensions.0 as usize * fmt.channels();
-        let total_len = row_bytes * self.info.dimensions.1 as usize;
+        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let samples_per_row = row_samples_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let total_len = total_output_bytes(self.info(), row_bytes).map_err(DecodeRowsError::Decode)?;
         let mut pool = J2kScratchPool::new();
         let (packed, row) = pool.packed_bytes_and_row_u16(total_len, samples_per_row);
         self.decode_into(packed, row_bytes, fmt)
@@ -298,4 +306,57 @@ fn row_format_u16(info: &Info) -> Result<PixelFormat, J2kError> {
         }
         .into()),
     }
+}
+
+fn row_bytes_for(info: &Info, fmt: PixelFormat) -> Result<usize, J2kError> {
+    (info.dimensions.0 as usize)
+        .checked_mul(fmt.bytes_per_pixel())
+        .ok_or(J2kError::DimensionOverflow {
+            width: info.dimensions.0,
+            height: info.dimensions.1,
+        })
+}
+
+fn row_samples_for(info: &Info, fmt: PixelFormat) -> Result<usize, J2kError> {
+    (info.dimensions.0 as usize)
+        .checked_mul(fmt.channels())
+        .ok_or(J2kError::DimensionOverflow {
+            width: info.dimensions.0,
+            height: info.dimensions.1,
+        })
+}
+
+fn total_output_bytes(info: &Info, row_bytes: usize) -> Result<usize, J2kError> {
+    row_bytes
+        .checked_mul(info.dimensions.1 as usize)
+        .ok_or(J2kError::DimensionOverflow {
+            width: info.dimensions.0,
+            height: info.dimensions.1,
+        })
+}
+
+fn should_retry_with_backend(error: &J2kError) -> bool {
+    matches!(
+        error,
+        J2kError::InvalidMarker {
+            marker:
+                0x50
+                | 0x53
+                | 0x55
+                | 0x57
+                | 0x58
+                | 0x59
+                | 0x5C
+                | 0x5D
+                | 0x5E
+                | 0x5F
+                | 0x60
+                | 0x61
+                | 0x63
+                | 0x64
+                | 0x91
+                | 0x92,
+            ..
+        }
+    )
 }

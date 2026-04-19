@@ -21,6 +21,7 @@ pub(crate) fn decode_full_frame(
 
 pub(crate) fn decode_scaled(
     bytes: &[u8],
+    pool: &mut J2kScratchPool,
     out: &mut [u8],
     stride: usize,
     fmt: PixelFormat,
@@ -32,7 +33,13 @@ pub(crate) fn decode_scaled(
         target_resolution: Some(target_dims),
         ..DecodeSettings::default()
     };
-    decode_with_settings(bytes, settings, out, stride, fmt)
+    match decode_with_settings(bytes, settings, out, stride, fmt) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) if scale != Downscale::None && is_htj2k_scaled_decode_gap(&error) => {
+            decode_scaled_fallback(bytes, pool, out, stride, fmt, scale)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn decode_region(
@@ -146,6 +153,10 @@ fn map_backend_colorspace(color_space: &ColorSpace) -> Colorspace {
     }
 }
 
+fn is_htj2k_scaled_decode_gap(error: &J2kError) -> bool {
+    matches!(error, J2kError::Backend(message) if message.contains("OpenJPH HTJ2K decode"))
+}
+
 fn validate_supported_format(fmt: PixelFormat) -> Result<(), J2kError> {
     if matches!(fmt, PixelFormat::Rgba16) {
         return Err(Unsupported {
@@ -203,6 +214,31 @@ fn scaled_dimensions(bytes: &[u8], scale: Downscale) -> Result<(u32, u32), J2kEr
     Ok((image.width().div_ceil(denom), image.height().div_ceil(denom)))
 }
 
+fn decode_scaled_fallback(
+    bytes: &[u8],
+    pool: &mut J2kScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    scale: Downscale,
+) -> Result<J2kDecodeOutcome, J2kError> {
+    let full_dims = scaled_dimensions(bytes, Downscale::None)?;
+    let scaled_dims = (
+        full_dims.0.div_ceil(scale.denominator()),
+        full_dims.1.div_ceil(scale.denominator()),
+    );
+    validate_buffer(scaled_dims, out.len(), stride, fmt)?;
+    let full_stride = full_dims.0 as usize * fmt.bytes_per_pixel();
+    let full_len = output_len(full_dims, full_stride, fmt)?;
+    let scratch = pool.packed_bytes(full_len);
+    decode_full_frame(bytes, scratch, full_stride, fmt)?;
+    decimate_bytes(scratch, full_dims, out, stride, fmt, scale.denominator());
+    Ok(DecodeOutcome {
+        decoded: Rect::full(scaled_dims),
+        warnings: Vec::new(),
+    })
+}
+
 fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kError> {
     if roi.is_within(dims) {
         return Ok(());
@@ -232,6 +268,33 @@ fn copy_region_bytes(
         let dst_row_start = row_idx * dst_stride;
         dst[dst_row_start..dst_row_start + row_bytes]
             .copy_from_slice(&src[src_row_start..src_row_start + row_bytes]);
+    }
+}
+
+fn decimate_bytes(
+    src: &[u8],
+    src_dims: (u32, u32),
+    dst: &mut [u8],
+    dst_stride: usize,
+    fmt: PixelFormat,
+    denominator: u32,
+) {
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+    let src_stride = src_dims.0 as usize * bytes_per_pixel;
+    let dst_width = src_dims.0.div_ceil(denominator) as usize;
+    let dst_height = src_dims.1.div_ceil(denominator) as usize;
+    let dst_row_bytes = dst_width * bytes_per_pixel;
+
+    for dst_y in 0..dst_height {
+        let src_y = dst_y * denominator as usize;
+        let dst_row = &mut dst[dst_y * dst_stride..dst_y * dst_stride + dst_row_bytes];
+        for dst_x in 0..dst_width {
+            let src_x = dst_x * denominator as usize;
+            let src_offset = src_y * src_stride + src_x * bytes_per_pixel;
+            let dst_offset = dst_x * bytes_per_pixel;
+            dst_row[dst_offset..dst_offset + bytes_per_pixel]
+                .copy_from_slice(&src[src_offset..src_offset + bytes_per_pixel]);
+        }
     }
 }
 

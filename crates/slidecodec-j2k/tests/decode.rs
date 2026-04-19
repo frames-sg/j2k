@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use dicom_toolkit_jpeg2000::{encode, DecodeSettings, EncodeOptions, Image};
+use dicom_toolkit_jpeg2000::{encode, encode_htj2k, DecodeSettings, EncodeOptions, Image};
 use slidecodec_core::{
     BufferError, DecoderContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
     TileBatchDecode,
@@ -21,6 +21,21 @@ fn encode_codestream(
         ..EncodeOptions::default()
     };
     encode(pixels, width, height, components, bit_depth, false, &options).expect("encode")
+}
+
+fn encode_ht_codestream(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    components: u8,
+    bit_depth: u8,
+) -> Vec<u8> {
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    encode_htj2k(pixels, width, height, components, bit_depth, false, &options).expect("encode ht")
 }
 
 fn wrap_codestream_jp2(
@@ -96,6 +111,21 @@ fn crop_u8(full: &[u8], full_width: usize, channels: usize, roi: Rect) -> Vec<u8
     for y in roi.y as usize..(roi.y + roi.h) as usize {
         let start = y * row_bytes + roi.x as usize * channels;
         out.extend_from_slice(&full[start..start + roi_row_bytes]);
+    }
+    out
+}
+
+fn decimate_u8(full: &[u8], full_width: usize, full_height: usize, channels: usize, denom: usize) -> Vec<u8> {
+    let out_width = full_width.div_ceil(denom);
+    let out_height = full_height.div_ceil(denom);
+    let mut out = Vec::with_capacity(out_width * out_height * channels);
+    let row_bytes = full_width * channels;
+    for y in (0..full_height).step_by(denom) {
+        let row = &full[y * row_bytes..(y + 1) * row_bytes];
+        for x in (0..full_width).step_by(denom) {
+            let start = x * channels;
+            out.extend_from_slice(&row[start..start + channels]);
+        }
     }
     out
 }
@@ -397,5 +427,76 @@ fn tile_batch_scaled_decode_matches_decoder_scaled_decode() {
         Downscale::Half,
     )
     .expect("tile scaled");
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn decode_htj2k_gray8_roundtrips_reversible_pixels() {
+    let pixels = [3_u8, 9, 27, 81];
+    let codestream = encode_ht_codestream(&pixels, 2, 2, 1, 8);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut out = [0_u8; 4];
+    decoder
+        .decode_into(&mut out, 2, PixelFormat::Gray8)
+        .expect("ht decode");
+    assert_eq!(out, pixels);
+}
+
+#[test]
+fn decode_htj2k_scaled_into_matches_full_decode_decimation() {
+    let pixels: Vec<u8> = (0_u8..16).collect();
+    let codestream = encode_ht_codestream(&pixels, 4, 4, 1, 8);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut full = [0_u8; 16];
+    decoder
+        .decode_into(&mut full, 4, PixelFormat::Gray8)
+        .expect("full decode");
+    let expected = decimate_u8(&full, 4, 4, 1, 2);
+    let mut pool = slidecodec_j2k::J2kScratchPool::new();
+    let mut out = [0_u8; 4];
+    decoder
+        .decode_scaled_into(&mut pool, &mut out, 2, PixelFormat::Gray8, Downscale::Half)
+        .expect("scaled decode");
+    assert_eq!(out, expected.as_slice());
+}
+
+#[test]
+fn decode_rows_u8_matches_full_gray8_decode_for_htj2k() {
+    let pixels = [2_u8, 4, 6, 8];
+    let codestream = encode_ht_codestream(&pixels, 2, 2, 1, 8);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut full = [0_u8; 4];
+    decoder
+        .decode_into(&mut full, 2, PixelFormat::Gray8)
+        .expect("full decode");
+
+    let mut sink = CollectRowsU8::default();
+    <J2kDecoder<'_> as ImageDecodeRows<'_, u8>>::decode_rows(&mut decoder, &mut sink)
+        .expect("row decode");
+    assert_eq!(sink.rows, full);
+}
+
+#[test]
+fn tile_batch_decode_matches_borrowed_decoder_for_htj2k() {
+    let pixels = [7_u8, 11, 13, 17];
+    let codestream = encode_ht_codestream(&pixels, 2, 2, 1, 8);
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut expected = [0_u8; 4];
+    decoder
+        .decode_into(&mut expected, 2, PixelFormat::Gray8)
+        .expect("decoder decode");
+
+    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut pool = slidecodec_j2k::J2kScratchPool::new();
+    let mut out = [0_u8; 4];
+    <J2kCodec as TileBatchDecode>::decode_tile(
+        &mut ctx,
+        &mut pool,
+        &codestream,
+        &mut out,
+        2,
+        PixelFormat::Gray8,
+    )
+    .expect("tile decode");
     assert_eq!(out, expected);
 }
