@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::J2kError;
+use crate::{J2kError, J2kScratchPool};
 use alloc::{string::ToString, vec::Vec};
+use core::convert::Infallible;
 use dicom_toolkit_jpeg2000::{ColorSpace, DecodeSettings, Image, RawBitmap};
 use slidecodec_core::{
-    BufferError, Colorspace, DecodeOutcome, Info, NotImplemented, PixelFormat, Rect, Unsupported,
+    BufferError, Colorspace, DecodeOutcome, Downscale, Info, PixelFormat, Rect, Unsupported,
 };
-use core::convert::Infallible;
 
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
 
@@ -16,41 +16,54 @@ pub(crate) fn decode_full_frame(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<J2kDecodeOutcome, J2kError> {
+    decode_with_settings(bytes, DecodeSettings::default(), out, stride, fmt)
+}
+
+pub(crate) fn decode_scaled(
+    bytes: &[u8],
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    scale: Downscale,
+) -> Result<J2kDecodeOutcome, J2kError> {
+    validate_supported_format(fmt)?;
+    let target_dims = scaled_dimensions(bytes, scale)?;
+    let settings = DecodeSettings {
+        target_resolution: Some(target_dims),
+        ..DecodeSettings::default()
+    };
+    decode_with_settings(bytes, settings, out, stride, fmt)
+}
+
+pub(crate) fn decode_region(
+    bytes: &[u8],
+    pool: &mut J2kScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+) -> Result<J2kDecodeOutcome, J2kError> {
     validate_supported_format(fmt)?;
     let image = backend_image(bytes, DecodeSettings::default())?;
     let dims = (image.width(), image.height());
-    validate_buffer(dims, out.len(), stride, fmt)?;
+    validate_region(roi, dims)?;
+    validate_buffer((roi.w, roi.h), out.len(), stride, fmt)?;
 
-    match fmt {
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
-            let decoded = image.decode().map_err(|err| J2kError::Backend(err.to_string()))?;
-            write_u8_output(
-                image.color_space(),
-                image.has_alpha(),
-                dims,
-                &decoded,
-                out,
-                stride,
-                fmt,
-            )?;
-        }
-        PixelFormat::Rgb16 | PixelFormat::Gray16 => {
-            let raw = image
-                .decode_native()
-                .map_err(|err| J2kError::Backend(err.to_string()))?;
-            write_u16_output(image.color_space(), image.has_alpha(), &raw, out, stride, fmt)?;
-        }
-        PixelFormat::Rgba16 => unreachable!("validated above"),
-        _ => {
-            return Err(Unsupported {
-                what: "pixel format is not yet supported by slidecodec-j2k",
-            }
-            .into());
-        }
-    }
+    let full_stride = dims.0 as usize * fmt.bytes_per_pixel();
+    let full_len = output_len(dims, full_stride, fmt)?;
+    let scratch = pool.packed_bytes(full_len);
+    decode_image_into(&image, scratch, full_stride, fmt)?;
+    copy_region_bytes(
+        scratch,
+        full_stride,
+        out,
+        stride,
+        roi,
+        fmt.bytes_per_pixel(),
+    );
 
     Ok(DecodeOutcome {
-        decoded: Rect::full(dims),
+        decoded: roi,
         warnings: Vec::new(),
     })
 }
@@ -68,22 +81,60 @@ pub(crate) fn inspect_info_via_backend(bytes: &[u8]) -> Result<Info, J2kError> {
     })
 }
 
-pub(crate) fn decode_region_not_implemented() -> Result<J2kDecodeOutcome, J2kError> {
-    Err(NotImplemented {
-        what: "JPEG 2000 region decode lands in J2K-M2",
-    }
-    .into())
-}
-
-pub(crate) fn decode_scaled_not_implemented() -> Result<J2kDecodeOutcome, J2kError> {
-    Err(NotImplemented {
-        what: "JPEG 2000 scaled decode lands in J2K-M2",
-    }
-    .into())
-}
-
 fn backend_image(bytes: &[u8], settings: DecodeSettings) -> Result<Image<'_>, J2kError> {
     Image::new(bytes, &settings).map_err(|err| J2kError::Backend(err.to_string()))
+}
+
+fn decode_with_settings(
+    bytes: &[u8],
+    settings: DecodeSettings,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<J2kDecodeOutcome, J2kError> {
+    validate_supported_format(fmt)?;
+    let image = backend_image(bytes, settings)?;
+    let dims = (image.width(), image.height());
+    validate_buffer(dims, out.len(), stride, fmt)?;
+    decode_image_into(&image, out, stride, fmt)?;
+    Ok(DecodeOutcome {
+        decoded: Rect::full(dims),
+        warnings: Vec::new(),
+    })
+}
+
+fn decode_image_into(
+    image: &Image<'_>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
+    let dims = (image.width(), image.height());
+    match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
+            let decoded = image.decode().map_err(|err| J2kError::Backend(err.to_string()))?;
+            write_u8_output(
+                image.color_space(),
+                image.has_alpha(),
+                dims,
+                &decoded,
+                out,
+                stride,
+                fmt,
+            )
+        }
+        PixelFormat::Rgb16 | PixelFormat::Gray16 => {
+            let raw = image
+                .decode_native()
+                .map_err(|err| J2kError::Backend(err.to_string()))?;
+            write_u16_output(image.color_space(), image.has_alpha(), &raw, out, stride, fmt)
+        }
+        PixelFormat::Rgba16 => unreachable!("validated above"),
+        _ => Err(Unsupported {
+            what: "pixel format is not yet supported by slidecodec-j2k",
+        }
+        .into()),
+    }
 }
 
 fn map_backend_colorspace(color_space: &ColorSpace) -> Colorspace {
@@ -119,15 +170,7 @@ fn validate_buffer(
     if stride < row_bytes {
         return Err(BufferError::StrideTooSmall { row_bytes, stride }.into());
     }
-    let height = dims.1 as usize;
-    let required = if height == 0 {
-        0
-    } else {
-        stride
-            .checked_mul(height - 1)
-            .and_then(|prefix| prefix.checked_add(row_bytes))
-            .ok_or(J2kError::Backend("output size overflow".to_string()))?
-    };
+    let required = output_len(dims, stride, fmt)?;
     if out_len < required {
         return Err(BufferError::OutputTooSmall {
             required,
@@ -136,6 +179,60 @@ fn validate_buffer(
         .into());
     }
     Ok(())
+}
+
+fn output_len(dims: (u32, u32), stride: usize, fmt: PixelFormat) -> Result<usize, J2kError> {
+    let row_bytes = dims
+        .0
+        .checked_mul(fmt.bytes_per_pixel() as u32)
+        .ok_or(J2kError::Backend("row byte count overflow".to_string()))?
+        as usize;
+    let height = dims.1 as usize;
+    if height == 0 {
+        return Ok(0);
+    }
+    stride
+        .checked_mul(height - 1)
+        .and_then(|prefix| prefix.checked_add(row_bytes))
+        .ok_or(J2kError::Backend("output size overflow".to_string()))
+}
+
+fn scaled_dimensions(bytes: &[u8], scale: Downscale) -> Result<(u32, u32), J2kError> {
+    let image = backend_image(bytes, DecodeSettings::default())?;
+    let denom = scale.denominator();
+    Ok((image.width().div_ceil(denom), image.height().div_ceil(denom)))
+}
+
+fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kError> {
+    if roi.is_within(dims) {
+        return Ok(());
+    }
+    Err(J2kError::InvalidRegion {
+        x: roi.x,
+        y: roi.y,
+        w: roi.w,
+        h: roi.h,
+        image_w: dims.0,
+        image_h: dims.1,
+    })
+}
+
+fn copy_region_bytes(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    roi: Rect,
+    bytes_per_pixel: usize,
+) {
+    let src_offset = roi.x as usize * bytes_per_pixel;
+    let row_bytes = roi.w as usize * bytes_per_pixel;
+    for row_idx in 0..roi.h as usize {
+        let src_row_start = (roi.y as usize + row_idx) * src_stride + src_offset;
+        let dst_row_start = row_idx * dst_stride;
+        dst[dst_row_start..dst_row_start + row_bytes]
+            .copy_from_slice(&src[src_row_start..src_row_start + row_bytes]);
+    }
 }
 
 fn write_u8_output(

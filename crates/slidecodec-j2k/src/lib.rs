@@ -6,6 +6,9 @@ extern crate alloc;
 
 mod decode;
 
+pub mod context;
+pub use context::J2kContext;
+
 pub mod error;
 pub use error::J2kError;
 
@@ -13,10 +16,11 @@ pub mod scratch;
 pub use scratch::J2kScratchPool;
 
 pub mod view;
-pub use view::{J2kDecoder, J2kView};
+pub use view::{J2kCodec, J2kDecoder, J2kView};
 
 pub use slidecodec_core::{
-    BufferError, CodecError, DecodeOutcome, Downscale, ImageCodec, ImageDecode, PixelFormat, Rect,
+    BufferError, CodecError, DecodeOutcome, DecodeRowsError, DecoderContext, Downscale,
+    ImageCodec, ImageDecode, ImageDecodeRows, PixelFormat, Rect, RowSink, TileBatchDecode,
 };
 
 pub(crate) mod parse;
