@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use slidecodec_core::{CodecError, InputError, Unsupported};
+use slidecodec_core::{BufferError, CodecError, InputError, NotImplemented, Unsupported};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum J2kError {
     #[error(transparent)]
+    Buffer(#[from] BufferError),
+
+    #[error(transparent)]
     Input(#[from] InputError),
 
     #[error(transparent)]
+    NotImplemented(#[from] NotImplemented),
+
+    #[error(transparent)]
     Unsupported(#[from] Unsupported),
+
+    #[error("backend decode failed: {0}")]
+    Backend(String),
 
     #[error("invalid JP2 box at offset {offset}: {what}")]
     InvalidBox { offset: usize, what: &'static str },
@@ -42,7 +51,7 @@ impl CodecError for J2kError {
     }
 
     fn is_not_implemented(&self) -> bool {
-        false
+        matches!(self, Self::NotImplemented(_))
     }
 
     fn is_unsupported(&self) -> bool {
@@ -50,6 +59,6 @@ impl CodecError for J2kError {
     }
 
     fn is_buffer_error(&self) -> bool {
-        false
+        matches!(self, Self::Buffer(_))
     }
 }

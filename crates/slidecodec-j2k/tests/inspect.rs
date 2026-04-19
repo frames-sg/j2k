@@ -40,6 +40,35 @@ fn codestream_without_siz() -> Vec<u8> {
     bytes
 }
 
+fn codestream_without_cod() -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0x4F];
+    let mut siz = Vec::new();
+    push_u16(&mut siz, 0);
+    push_u32(&mut siz, 128);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 0);
+    push_u16(&mut siz, 3);
+    for _ in 0..3 {
+        siz.extend_from_slice(&[0x07, 0x01, 0x01]);
+    }
+    bytes.extend_from_slice(&[0xFF, 0x51]);
+    push_u16(&mut bytes, (siz.len() + 2) as u16);
+    bytes.extend_from_slice(&siz);
+    bytes.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    bytes
+}
+
+fn codestream_truncated_after_main_header() -> Vec<u8> {
+    let mut bytes = minimal_codestream();
+    bytes.truncate(bytes.len() - 10);
+    bytes
+}
+
 fn minimal_jp2() -> Vec<u8> {
     let codestream = minimal_codestream();
     let mut bytes = Vec::new();
@@ -56,6 +85,25 @@ fn minimal_jp2() -> Vec<u8> {
     bytes.extend_from_slice(&len.to_be_bytes());
     bytes.extend_from_slice(b"jp2c");
     bytes.extend_from_slice(&codestream);
+    bytes
+}
+
+fn jp2_with_jp2c_before_jp2h() -> Vec<u8> {
+    let codestream = minimal_codestream();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+    let len = (8 + codestream.len()) as u32;
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(b"jp2c");
+    bytes.extend_from_slice(&codestream);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r', 0, 0, 0, 64, 0,
+        0, 0, 128, 0, 3, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0, 16,
+    ]);
     bytes
 }
 
@@ -112,5 +160,29 @@ fn bad_jp2_signature_is_rejected() {
     let mut bad = minimal_jp2();
     bad[11] = 0x00;
     let err = J2kDecoder::inspect(&bad).unwrap_err();
+    assert!(matches!(err, J2kError::InvalidBox { .. }));
+}
+
+#[test]
+fn codestream_without_cod_is_rejected() {
+    let err = J2kDecoder::inspect(&codestream_without_cod()).unwrap_err();
+    assert!(matches!(
+        err,
+        J2kError::MissingRequiredMarker { marker: "COD" }
+    ));
+}
+
+#[test]
+fn codestream_truncated_after_main_header_is_rejected() {
+    let err = J2kDecoder::inspect(&codestream_truncated_after_main_header()).unwrap_err();
+    assert!(matches!(
+        err,
+        J2kError::Input(slidecodec_core::InputError::TruncatedAt { .. })
+    ));
+}
+
+#[test]
+fn jp2_with_codestream_before_header_is_rejected() {
+    let err = J2kDecoder::inspect(&jp2_with_jp2c_before_jp2h()).unwrap_err();
     assert!(matches!(err, J2kError::InvalidBox { .. }));
 }

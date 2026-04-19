@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+
+[[package]]
 name = "cc"
 version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -25,6 +31,25 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "dicom-toolkit-jpeg2000"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f51888e27b226aeb853c5d1a839504c5f9afa995fad3c5ac9d55f15b19a972d"
+dependencies = [
+ "fearless_simd",
+ "openjph-core",
+]
+
+[[package]]
+name = "fearless_simd"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fb2907d1f08b2b316b9223ced5b0e89d87028ba8deae9764741dba8ff7f3903"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -71,6 +96,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openjph-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8b96ed12b3d41623a771af4af8131abf353bc822b7a567c6ef3b35ab967a36d"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -111,6 +145,7 @@ dependencies = [
 name = "slidecodec-j2k"
 version = "0.0.0"
 dependencies = [
+ "dicom-toolkit-jpeg2000",
  "slidecodec-core",
  "thiserror",
 ]
