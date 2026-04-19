@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 slidecodec-core = { path = "../slidecodec-core", version = "0.0.0" }
+dicom-toolkit-jpeg2000 = { version = "0.5.0", default-features = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

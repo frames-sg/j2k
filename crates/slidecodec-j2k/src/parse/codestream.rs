@@ -38,22 +38,23 @@ pub(crate) fn parse_codestream(input: &[u8]) -> Result<CodestreamInfo, J2kError>
 
     let mut offset = 2usize;
     let mut siz = None;
-    let mut cod = ParsedCod {
-        resolution_levels: 1,
-        has_mct: false,
-    };
+    let mut cod = None;
+    let mut terminated = false;
 
     while offset < input.len() {
         let marker = read_marker(input, &mut offset)?;
         match marker {
-            MARKER_SOT | MARKER_SOD | MARKER_EOC => break,
+            MARKER_SOT | MARKER_SOD | MARKER_EOC => {
+                terminated = true;
+                break;
+            }
             MARKER_SIZ => {
                 let payload = read_segment_payload(input, &mut offset, "SIZ")?;
                 siz = Some(parse_siz(payload)?);
             }
             MARKER_COD => {
                 let payload = read_segment_payload(input, &mut offset, "COD")?;
-                cod = parse_cod(payload)?;
+                cod = Some(parse_cod(payload)?);
             }
             _ => {
                 let _ = read_segment_payload(input, &mut offset, "segment")?;
@@ -61,9 +62,17 @@ pub(crate) fn parse_codestream(input: &[u8]) -> Result<CodestreamInfo, J2kError>
         }
     }
 
+    if !terminated {
+        return Err(InputError::TruncatedAt {
+            offset,
+            segment: "main header terminator",
+        }
+        .into());
+    }
+
     Ok(CodestreamInfo {
         siz: siz.ok_or(J2kError::MissingRequiredMarker { marker: "SIZ" })?,
-        cod,
+        cod: cod.ok_or(J2kError::MissingRequiredMarker { marker: "COD" })?,
     })
 }
 

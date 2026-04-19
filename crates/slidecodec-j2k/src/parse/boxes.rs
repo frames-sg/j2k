@@ -40,6 +40,12 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<slidecodec_core::Info, J2kError>
         let payload = &input[header.payload_start..header.end];
         match &header.box_type {
             b"jP  " => {
+                if saw_signature || offset != 0 {
+                    return Err(J2kError::InvalidBox {
+                        offset,
+                        what: "signature box must appear exactly once at the start of the file",
+                    });
+                }
                 if payload != &JP2_SIGNATURE[8..] {
                     return Err(J2kError::InvalidBox {
                         offset,
@@ -49,6 +55,12 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<slidecodec_core::Info, J2kError>
                 saw_signature = true;
             }
             b"ftyp" => {
+                if !saw_signature || saw_ftyp || saw_jp2h || codestream.is_some() {
+                    return Err(J2kError::InvalidBox {
+                        offset,
+                        what: "file type box must appear exactly once before jp2h and jp2c",
+                    });
+                }
                 if payload.len() < 8 {
                     return Err(J2kError::InvalidBox {
                         offset,
@@ -58,12 +70,26 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<slidecodec_core::Info, J2kError>
                 saw_ftyp = true;
             }
             b"jp2h" => {
+                if !saw_ftyp || saw_jp2h || codestream.is_some() {
+                    return Err(J2kError::InvalidBox {
+                        offset,
+                        what: "jp2h must appear exactly once after ftyp and before jp2c",
+                    });
+                }
                 let (ihdr, colr) = parse_jp2h(payload, header.payload_start)?;
                 saw_jp2h = true;
                 saw_ihdr = ihdr;
                 colorspace = colr.or(colorspace);
             }
-            b"jp2c" => codestream = Some(payload),
+            b"jp2c" => {
+                if !saw_jp2h || codestream.is_some() {
+                    return Err(J2kError::InvalidBox {
+                        offset,
+                        what: "jp2c must appear exactly once after jp2h",
+                    });
+                }
+                codestream = Some(payload);
+            }
             _ => {}
         }
         offset = header.end;
