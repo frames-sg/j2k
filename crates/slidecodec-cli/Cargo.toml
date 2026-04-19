@@ -12,6 +12,7 @@ name = "slidecodec"
 path = "src/main.rs"
 
 [dependencies]
+slidecodec-j2k  = { path = "../slidecodec-j2k", version = "0.0.0" }
 slidecodec-jpeg = { path = "../slidecodec-jpeg", version = "0.0.0" }
 
 # NOTE: `[profile.*]` blocks in package-level manifests are silently ignored

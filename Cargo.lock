@@ -592,6 +592,7 @@ dependencies = [
 name = "slidecodec-cli"
 version = "0.0.0"
 dependencies = [
+ "slidecodec-j2k",
  "slidecodec-jpeg",
 ]
 
@@ -599,6 +600,15 @@ dependencies = [
 name = "slidecodec-core"
 version = "0.0.0"
 dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "slidecodec-j2k"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "slidecodec-core",
  "thiserror",
 ]
 
