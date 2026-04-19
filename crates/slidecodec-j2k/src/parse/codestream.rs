@@ -208,6 +208,7 @@ fn parse_cod(payload: &[u8]) -> Result<ParsedCod, J2kError> {
     Ok(ParsedCod {
         resolution_levels: payload[5].saturating_add(1),
         has_mct: payload[4] != 0,
+        reversible: payload[9] == 1,
     })
 }
 
