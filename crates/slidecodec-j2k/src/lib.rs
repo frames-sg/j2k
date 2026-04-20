@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod backend;
 mod decode;
 
 pub mod context;

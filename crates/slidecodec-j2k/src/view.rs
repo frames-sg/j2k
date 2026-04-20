@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
+    backend::inspect_info,
     context::J2kContext,
-    decode::{
-        decode_full_frame, decode_region, decode_scaled, inspect_info_via_backend, J2kDecodeOutcome,
-    },
+    decode::{decode_full_frame, decode_region, decode_scaled, J2kDecodeOutcome},
     parse::parse_info,
     scratch::J2kScratchPool,
     J2kError,
@@ -26,7 +25,7 @@ impl<'a> J2kView<'a> {
     pub fn parse(input: &'a [u8]) -> Result<Self, J2kError> {
         let info = match parse_info(input) {
             Ok(info) => info,
-            Err(error) if should_retry_with_backend(&error) => inspect_info_via_backend(input)?,
+            Err(error) if should_retry_with_backend(&error) => inspect_info(input)?,
             Err(error) => return Err(error),
         };
         Ok(Self { bytes: input, info })
@@ -54,7 +53,7 @@ impl<'a> J2kDecoder<'a> {
     pub fn inspect(input: &'a [u8]) -> Result<Info, J2kError> {
         match parse_info(input) {
             Ok(info) => Ok(info),
-            Err(error) if should_retry_with_backend(&error) => inspect_info_via_backend(input),
+            Err(error) if should_retry_with_backend(&error) => inspect_info(input),
             Err(error) => Err(error),
         }
     }

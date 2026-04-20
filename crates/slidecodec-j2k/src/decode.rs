@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{J2kError, J2kScratchPool};
+use crate::backend::{ColorSpace, DecodeSettings, Image, RawBitmap};
+use crate::{backend, J2kError, J2kScratchPool};
 use alloc::{string::ToString, vec::Vec};
 use core::convert::Infallible;
-use dicom_toolkit_jpeg2000::{ColorSpace, DecodeSettings, Image, RawBitmap};
-use slidecodec_core::{
-    BufferError, Colorspace, DecodeOutcome, Downscale, Info, PixelFormat, Rect, Unsupported,
-};
+use slidecodec_core::{BufferError, DecodeOutcome, Downscale, PixelFormat, Rect, Unsupported};
 
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
 
@@ -51,7 +49,7 @@ pub(crate) fn decode_region(
     roi: Rect,
 ) -> Result<J2kDecodeOutcome, J2kError> {
     validate_supported_format(fmt)?;
-    let image = backend_image(bytes, DecodeSettings::default())?;
+    let image = backend::image(bytes, DecodeSettings::default())?;
     let dims = (image.width(), image.height());
     validate_region(roi, dims)?;
     validate_buffer((roi.w, roi.h), out.len(), stride, fmt)?;
@@ -75,23 +73,6 @@ pub(crate) fn decode_region(
     })
 }
 
-pub(crate) fn inspect_info_via_backend(bytes: &[u8]) -> Result<Info, J2kError> {
-    let image = backend_image(bytes, DecodeSettings::default())?;
-    let components = image.color_space().num_channels() + u8::from(image.has_alpha());
-    Ok(Info {
-        dimensions: (image.width(), image.height()),
-        components,
-        colorspace: map_backend_colorspace(image.color_space()),
-        bit_depth: image.original_bit_depth(),
-        tile_layout: None,
-        resolution_levels: 1,
-    })
-}
-
-fn backend_image(bytes: &[u8], settings: DecodeSettings) -> Result<Image<'_>, J2kError> {
-    Image::new(bytes, &settings).map_err(|err| J2kError::Backend(err.to_string()))
-}
-
 fn decode_with_settings(
     bytes: &[u8],
     settings: DecodeSettings,
@@ -100,7 +81,7 @@ fn decode_with_settings(
     fmt: PixelFormat,
 ) -> Result<J2kDecodeOutcome, J2kError> {
     validate_supported_format(fmt)?;
-    let image = backend_image(bytes, settings)?;
+    let image = backend::image(bytes, settings)?;
     let dims = (image.width(), image.height());
     validate_buffer(dims, out.len(), stride, fmt)?;
     decode_image_into(&image, out, stride, fmt)?;
@@ -153,17 +134,8 @@ fn decode_image_into(
     }
 }
 
-fn map_backend_colorspace(color_space: &ColorSpace) -> Colorspace {
-    match color_space {
-        ColorSpace::Gray => Colorspace::SGray,
-        ColorSpace::RGB => Colorspace::Rgb,
-        ColorSpace::CMYK => Colorspace::Cmyk,
-        ColorSpace::Unknown { .. } | ColorSpace::Icc { .. } => Colorspace::IccTagged,
-    }
-}
-
 fn is_htj2k_scaled_decode_gap(error: &J2kError) -> bool {
-    matches!(error, J2kError::Backend(message) if message.contains("OpenJPH HTJ2K decode"))
+    matches!(error, J2kError::Backend(message) if message.contains("HTJ2K decode"))
 }
 
 fn validate_supported_format(fmt: PixelFormat) -> Result<(), J2kError> {
@@ -216,7 +188,7 @@ fn output_len(dims: (u32, u32), stride: usize, fmt: PixelFormat) -> Result<usize
 }
 
 fn scaled_dimensions(bytes: &[u8], scale: Downscale) -> Result<(u32, u32), J2kError> {
-    let image = backend_image(bytes, DecodeSettings::default())?;
+    let image = backend::image(bytes, DecodeSettings::default())?;
     let denom = scale.denominator();
     Ok((
         image.width().div_ceil(denom),

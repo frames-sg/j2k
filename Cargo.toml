@@ -7,6 +7,8 @@ members = [
     "crates/slidecodec-jpeg",
     "crates/slidecodec-tilecodec",
     "crates/slidecodec-cli",
+    "crates/dicom-toolkit-jpeg2000",
+    "crates/openjph-core",
 ]
 
 [workspace.package]
