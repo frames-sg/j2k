@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** make reversible 5-3 / RCT support an explicit, tested milestone on top of the committed J2K-M1 decode path.
+**Goal:** make reversible 5-3 / RCT support an explicit, tested milestone on top of the committed J2K-M1 in-tree decode path.
 
-**Architecture:** keep the existing backend decode adapter; add the missing reversible-transform parser state and assert the lossless behavior with focused inspect/decode tests.
+**Architecture:** keep the existing scalar decode path; add the missing reversible-transform parser state and assert the lossless behavior with focused inspect/decode tests.
 
-**Tech Stack:** Rust, `slidecodec-core`, `slidecodec-j2k`, `dicom-toolkit-jpeg2000`
+**Tech Stack:** Rust, `slidecodec-core`, `slidecodec-j2k`
 
 ---
 

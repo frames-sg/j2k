@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** add a working full-frame JPEG 2000 decode surface to `slidecodec-j2k` using the committed inspect parser plus a pure-Rust backend decoder, with `ImageDecode<'a>` support for the M1 pixel formats.
+**Goal:** add a working full-frame JPEG 2000 decode surface to `slidecodec-j2k` using the committed inspect parser plus the in-tree scalar decoder path, with `ImageDecode<'a>` support for the M1 pixel formats.
 
-**Architecture:** keep `slidecodec-j2k`'s lightweight inspect parser and borrowed `J2kView<'a>` / `J2kDecoder<'a>` shape, but delegate actual Part 1 decode to `dicom-toolkit-jpeg2000`. `slidecodec-j2k` owns the public API, buffer validation, error mapping, and output-format adaptation.
+**Architecture:** keep `slidecodec-j2k`'s lightweight inspect parser and borrowed `J2kView<'a>` / `J2kDecoder<'a>` shape, but implement Part 1 decode in-tree. `slidecodec-j2k` owns the public API, buffer validation, error mapping, and output-format adaptation.
 
-**Tech Stack:** Rust, `slidecodec-core`, `thiserror`, `dicom-toolkit-jpeg2000`
+**Tech Stack:** Rust, `slidecodec-core`, `thiserror`
 
 ---
 
@@ -43,7 +43,7 @@ Run: `cargo test -p slidecodec-j2k --test inspect`
 
 Commit message: `fix: harden j2k inspect validation`
 
-### Task 2: Add decode dependency and the public J2K decode surface
+### Task 2: Add the public J2K decode surface
 
 **Files:**
 - Modify: `crates/slidecodec-j2k/Cargo.toml`
@@ -67,12 +67,10 @@ Add tests covering:
 
 Run: `cargo test -p slidecodec-j2k --test decode`
 
-- [ ] **Step 3: Add backend dependency and decode module**
-
-Add `dicom-toolkit-jpeg2000` to `Cargo.toml`.
+- [ ] **Step 3: Add the scalar decode module**
 
 Create `src/decode.rs` with:
-- backend settings builder
+- scalar decode entry points
 - pixel-format validation helpers
 - output mapping helpers for 8-bit and native-depth paths
 - buffer validation that maps to `slidecodec_core::BufferError`
@@ -81,7 +79,7 @@ Create `src/decode.rs` with:
 
 Add:
 - `Buffer(BufferError)`
-- `Backend(String)`
+- `Unsupported(Unsupported)`
 
 and update `CodecError` classification.
 
@@ -108,7 +106,7 @@ Commit message: `feat: add j2k scalar baseline decode api`
 
 - [ ] **Step 1: Generate synthetic J2K/JP2 test inputs inside tests**
 
-Use the backend encoder to create:
+Use committed fixtures or small inline-generated codestreams for:
 - 8-bit RGB irreversible sample
 - 8-bit grayscale irreversible sample
 - 16-bit grayscale reversible sample

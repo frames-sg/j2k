@@ -4,7 +4,7 @@ Status: approved implementation spec derived from the umbrella design.
 
 ## Goal
 
-Add full-frame JPEG 2000 decode to `slidecodec-j2k` behind the
+Add full-frame JPEG 2000 decode to `slidecodec-j2k` on top of the committed
 `slidecodec-core` API surface:
 
 - `ImageDecode<'a>` for `J2kDecoder<'a>`
@@ -12,25 +12,16 @@ Add full-frame JPEG 2000 decode to `slidecodec-j2k` behind the
 - JP2 and raw J2K input support
 - irreversible 9-7 + ICT support
 
-M1 is correctness-first. ROI, tile-batch, row-streaming, and scaled decode land
-in later milestones.
+M1 is correctness-first. ROI, row streaming, tile-batch reuse, scaled decode,
+and HT support land in later milestones.
 
 ## Implementation Substrate
 
-M1 uses the pure-Rust `dicom-toolkit-jpeg2000` crate as the execution engine.
-This is an implementation choice, not a public API commitment.
-
-Why this is the right M1 choice:
-
-- it is pure Rust (`MIT OR Apache-2.0`)
-- it already supports Part 1 decode with native bit-depth output
-- it can later support HTJ2K through the pure-Rust `openjph-core` crate
-- it gives `slidecodec-j2k` a working decode surface now, so later milestones
-  can focus on WSI-native APIs and performance rather than basic correctness
-
+M1 uses the in-tree scalar J2K decoder path, not an external backend wrapper.
 `slidecodec-j2k` keeps its own inspect parser and `J2kView<'a>` shape. Decode is
-performed by constructing the backend image from the original bytes and mapping
-its output into `slidecodec-core` types.
+performed from the parsed codestream state that the crate already owns, and M1
+owns the public API, buffer validation, error mapping, and output-format
+adaptation.
 
 ## Scope
 
@@ -50,8 +41,9 @@ Out of scope:
 - tile-batch reuse
 - decode-time resolution reduction
 - HTJ2K public decode support
-- performance claims against OpenJPEG
-- any custom in-tree MQ/EBCOT/DWT implementation
+- any benchmark comparator acceptance gate
+- any external decode backend dependency
+- any custom in-tree MQ/EBCOT/DWT SIMD work
 
 ## Public API
 
@@ -65,9 +57,9 @@ Out of scope:
 - `impl<'a> ImageDecode<'a> for J2kDecoder<'a>`
 
 M1 does not implement `ImageDecodeRows` or `TileBatchDecode`.
-`ImageDecode<'a>::decode_region_into` and `decode_scaled_into` are implemented
-as explicit `NotImplemented` stubs so the core trait remains satisfied without
-claiming M2 functionality early.
+`ImageDecode<'a>::decode_region_into` and `decode_scaled_into` remain explicit
+`NotImplemented` stubs so the core trait stays satisfied without pretending M2
+functionality exists early.
 
 ## Decoder Model
 
@@ -82,8 +74,8 @@ claiming M2 functionality early.
 - `bytes: &'a [u8]`
 - `info: slidecodec_core::Info`
 
-No long-lived backend decoder state is stored in M1. Decode calls construct a
-backend image from `self.bytes` each time.
+No long-lived backend decoder state is stored in M1. The decoder works from the
+borrowed codestream bytes and parser state already present in the crate.
 
 ## Output Behavior
 
@@ -103,26 +95,26 @@ backend image from `self.bytes` each time.
 
 ### Color handling
 
-The backend decode result is treated as authoritative for component transforms
-and JP2 colorspace application.
+The scalar decode path is authoritative for component transforms and JP2
+colorspace application.
 
 Mapping rules:
 
-- backend grayscale -> `Gray8` / `Gray16` direct
-- backend RGB -> `Rgb8` / `Rgb16` direct
-- backend RGB + alpha -> `Rgba8` direct
-- backend RGB without alpha + requested `Rgba8` -> append opaque alpha `255`
-- any other backend colorspace requested as `Gray*` or `Rgb*` without a clear
-  mapping -> `J2kError::Unsupported`
+- grayscale codestreams -> `Gray8` / `Gray16`
+- RGB codestreams -> `Rgb8` / `Rgb16`
+- RGB codestreams with alpha -> `Rgba8`
+- RGB codestreams without alpha + requested `Rgba8` -> append opaque alpha
+  `255`
+- any unsupported component/colorspace combination -> `J2kError::Unsupported`
 
 ### 16-bit output
 
-`Rgb16` and `Gray16` are built from the backend native decode path:
+`Rgb16` and `Gray16` are built from the native sample values:
 
 - if source precision `<= 8`, scale to the full 16-bit range
   (`sample * 65535 / ((1 << bit_depth) - 1)`, which is `sample * 257` for
   8-bit input)
-- if source precision `> 8`, preserve the backend sample value and write it as
+- if source precision `> 8`, preserve the sample value and write it as
   little-endian `u16`
 
 ## Buffer Validation
@@ -141,15 +133,14 @@ These errors must surface as `J2kError::Buffer(BufferError::...)`.
 Extend `J2kError` with:
 
 - `Buffer(BufferError)`
-- `Backend(String)` for backend decode failures that do not map cleanly to an
-  existing structured J2K error
+- `Unsupported(Unsupported)`
 
-Existing `Input`, `Unsupported`, and parser-specific variants remain.
+Existing `Input` and parser-specific variants remain.
 
 `CodecError` classification:
 
 - truncated parser failures -> `is_truncated() == true`
-- unsupported pixel formats / unsupported backend color mappings ->
+- unsupported pixel formats / unsupported colorspace mappings ->
   `is_unsupported() == true`
 - buffer validation failures -> `is_buffer_error() == true`
 
@@ -174,8 +165,8 @@ Required tests:
   - missing `COD`
   - EOF after main header
   - out-of-order required JP2 boxes
-- full-frame decode integration tests using synthetic codestreams/containers
-  generated from the backend encoder:
+- full-frame decode integration tests using committed or inline-generated
+  codestreams/containers:
   - 8-bit RGB irreversible sample -> `Rgb8`
   - 8-bit RGB irreversible sample -> `Rgba8`
   - 8-bit grayscale irreversible sample -> `Gray8`
@@ -189,8 +180,8 @@ Required tests:
   - `J2kDecoder::parse/from_view/info`
   - `ImageDecode<'a>::inspect/parse/from_view/decode_into`
 
-Fixtures may be generated inline in tests using the backend encoder. M1 does not
-require committed binary J2K fixtures yet.
+Fixtures may be generated inline in tests when practical. M1 does not require
+native decode-time ROI or scaled fixtures yet.
 
 ## Fuzz
 
@@ -202,7 +193,7 @@ Extend the `slidecodec-j2k` fuzz crate with `decode_fuzz` that:
 
 Milestone completion still inherits the umbrella hardening gate: once the decode
 surface is in place, the crate must be able to survive the longer fuzz/proptest
-signoff runs recorded for J2K in the umbrella plan.
+validation runs recorded for J2K in the umbrella plan.
 
 ## Verification
 

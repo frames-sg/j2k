@@ -10,7 +10,7 @@ Make lossless JPEG 2000 an explicit, tested part of `slidecodec-j2k`:
 - reversible component transform (RCT) handling
 - exact native-depth output for grayscale and RGB lossless codestreams
 
-M1b builds directly on the committed J2K-M1 decode adapter.
+M1b builds directly on the committed J2K-M1 in-tree decode path.
 
 ## Scope
 
@@ -31,8 +31,8 @@ Out of scope:
 
 ## Implementation
 
-The backend decode path remains the same as M1. M1b does not add a new engine.
-It makes the reversible path explicit and guarded.
+The decode path remains the same as M1. M1b does not add a new engine. It makes
+the reversible path explicit and guarded.
 
 Parser changes:
 
@@ -53,8 +53,8 @@ Required tests:
 - exact reversible grayscale native-depth decode test
 - exact reversible RGB native-depth decode test
 
-Existing M1 decode tests already cover exact reversible output for grayscale and
-RGB native-depth paths; M1b adds the missing inspect-level assertion.
+Existing M1 decode tests already cover exact reversible output for grayscale
+and RGB native-depth paths; M1b adds the missing inspect-level assertion.
 
 ## Verification
 

@@ -394,8 +394,8 @@ Each milestone gets its own spec (`docs/superpowers/specs/YYYY-MM-DD-<topic>-des
 | **J2K-M1b** | Lossless (5-3 reversible, RCT) | Adds 5-3 DWT + RCT paths. Conformance + parity. | J2K-M1 |
 | **J2K-M2** | WSI APIs + acceptance contract | `decode_region_into`, `decode_scaled_into` via DWT resolution descent (not post-decimation), `decode_tile` with `DecoderContext<J2kContext>`, `ImageDecodeRows<'a, u8>` + `<'a, u16>`. **J2K primary-surface acceptance contract (§7) met.** | J2K-M1b |
 | **J2K-M3** | HT (Part 15) | HT FAST block coder, marker-detected per codestream. ISO HT test vectors + OpenHTJ2K parity + WSI HT corpus. `decode_fuzz` 1M clean on HT inputs. **HT acceptance contract met.** | J2K-M2 |
-| **J2K-M4** | SIMD | NEON + AVX2 for DWT (9-7 + 5-3), T1 (EBCOT + HT), color. Updated bench pass vs acceptance contract on both archs. | J2K-M3 |
-| **J2K-M5** | Hardening | Differential fuzzing vs OpenJPEG; memory-budget stress; cross-platform CI. | J2K-M4 |
+| **J2K-M4** | SIMD implementation | NEON + AVX2 for DWT (9-7 + 5-3), T1 (EBCOT + HT), color. Updated bench smoke passes on both archs; scalar parity preserved. | J2K-M3 |
+| **J2K-M5** | Hardening | In-process differential checks vs OpenJPEG and Grok; memory-budget stress; cross-platform CI. | J2K-M4 |
 | **M8** (parallel) | `slidecodec-tilecodec` | LZW, Deflate, Zstd, Uncompressed. `TileDecompress` impls. System-library parity. Tile-codec acceptance contract met. | M0 |
 | **M9** | 1.0 release gate | Workspace `1.0.0`. JPEG and J2K milestones complete and sign-off'd on pinned hardware. `slidecodec-tilecodec` may ship in 1.0 if ready, otherwise 1.x. README rewrite. `docs/bench.md` final. | J2K-M5 + (M8 optional) |
 

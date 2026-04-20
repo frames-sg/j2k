@@ -1,49 +1,50 @@
-# J2K-M4 — SIMD / Benchmark Signoff
+# J2K-M4 — SIMD
 
 Status: approved implementation spec derived from the umbrella design.
 
 ## Goal
 
-Make the J2K milestone measurable on real hardware by adding a dedicated compare
-bench for `slidecodec-j2k`, including an OpenJPEG reference path.
+Implement the SIMD J2K hot path in `slidecodec-j2k`:
+
+- NEON and AVX2 acceleration for the DWT paths
+- SIMD-friendly Tier-1 and color-transform kernels
+- parity-preserving behavior against the scalar decoder
 
 ## Scope
 
 In scope:
 
-- Criterion compare bench for inspect, full decode, region decode, scaled decode,
-  and repeated tile-batch decode
-- synthetic always-available J2K and HTJ2K bench inputs generated at runtime
-- OpenJPEG comparator integration through the local `opj_decompress` CLI
-- manual signoff documentation for both `aarch64` and `x86_64`
+- SIMD implementations for the hot decode kernels
+- architecture dispatch for `aarch64` and `x86_64`
+- scalar fallback coverage for unsupported CPUs
+- bench updates that verify the SIMD path, without treating a comparator run as
+  the milestone exit criterion
 
 Out of scope:
 
-- replacing the backend dependency's SIMD implementation
-- in-process OpenJPEG FFI bindings
+- benchmark validation
+- in-process comparator ownership, which belongs to M5 hardening
 
 ## Architecture
 
-`slidecodec-j2k` already depends on a backend that enables SIMD by default.
-M4 therefore focuses on benchmarking and signoff rather than decoder rewrites.
+`slidecodec-j2k` already has the scalar decoder path. M4 layers SIMD kernels on
+top of the existing hot loop structure:
 
-The compare bench:
+- dispatch chooses the best available implementation at decoder construction
+- DWT, Tier-1, and color transforms each get architecture-specific kernels
+- scalar code remains the reference behavior for tests and unsupported CPUs
 
-- generates deterministic grayscale/RGB J2K and HTJ2K codestreams
-- benchmarks `slidecodec-j2k` directly through its public API
-- benchmarks OpenJPEG by invoking `opj_decompress` with matching full/region/
-  reduce-factor settings
-
-This is an end-to-end tool comparison, not an in-process library microbenchmark,
-and is documented as such in `docs/bench.md`.
+The milestone uses Criterion as a regression and sanity check, not as a release
+gate. The bench confirms that the SIMD path executes and stays parity-preserving
+against the scalar path.
 
 ## Verification
 
 M4 is complete when:
 
-- `cargo bench -p slidecodec-j2k --bench compare --no-run`
+- `cargo test -p slidecodec-j2k`
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo bench -p slidecodec-j2k --bench compare --no-run`
 
-all pass, and the compare bench can be executed locally when OpenJPEG is
-installed.
+all pass, and the bench exercises the SIMD kernels on the supported hosts.

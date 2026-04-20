@@ -2,40 +2,59 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** add a J2K compare bench that exercises the slidecodec public API and an OpenJPEG reference path on deterministic J2K/HTJ2K inputs.
+**Goal:** add SIMD acceleration to the J2K hot path and verify it against the scalar decoder on deterministic inputs.
 
-**Architecture:** runtime-generated bench codestreams, Criterion groups for the primary decode surfaces, and an env/default-path OpenJPEG CLI harness.
+**Architecture:** keep the scalar decoder as the reference behavior, add NEON and AVX2 kernels for the hot loops, and use Criterion only as a regression and sanity check.
 
-**Tech Stack:** Rust, Criterion, `slidecodec-j2k`, `dicom-toolkit-jpeg2000`, local OpenJPEG CLI
+**Tech Stack:** Rust, Criterion, `slidecodec-j2k`
 
 ---
 
-### Task 1: Add J2K bench scaffolding
+### Task 1: Add SIMD kernel scaffolding
 
 **Files:**
-- Modify: `crates/slidecodec-j2k/Cargo.toml`
-- Create: `crates/slidecodec-j2k/benches/common/mod.rs`
-- Create: `crates/slidecodec-j2k/benches/compare.rs`
+- Modify: `crates/slidecodec-j2k/src/backend/mod.rs`
+- Modify: `crates/slidecodec-j2k/src/lib.rs`
+- Modify: `crates/slidecodec-j2k/tests/decode.rs`
 
-- [ ] **Step 1: Add the bench target and shared helpers**
-- [ ] **Step 2: Generate deterministic J2K/HTJ2K inputs at runtime**
-- [ ] **Step 3: Add an OpenJPEG CLI harness**
-- [ ] **Step 4: Run bench compilation**
+- [ ] **Step 1: Add failing tests that exercise the SIMD dispatch points**
+- [ ] **Step 2: Run the tests to verify the SIMD paths are missing**
+Run: `cargo test -p slidecodec-j2k`
+- [ ] **Step 3: Add dispatch scaffolding for scalar, NEON, and AVX2 kernels**
+- [ ] **Step 4: Re-run the targeted tests**
+Run: `cargo test -p slidecodec-j2k`
+- [ ] **Step 5: Commit**
+Commit message: `feat: add j2k simd dispatch scaffolding`
+
+### Task 2: Implement the hot SIMD kernels
+
+**Files:**
+- Modify: `crates/slidecodec-j2k/src/backend/scalar.rs`
+- Modify: `crates/slidecodec-j2k/src/backend/x86.rs`
+- Modify: `crates/slidecodec-j2k/src/backend/neon.rs`
+- Modify: `crates/slidecodec-j2k/tests/decode.rs`
+
+- [ ] **Step 1: Add parity tests for SIMD vs scalar decode outputs**
+- [ ] **Step 2: Run them to verify they fail on the missing kernels**
+Run: `cargo test -p slidecodec-j2k`
+- [ ] **Step 3: Implement the SIMD DWT, Tier-1, and color kernels**
+- [ ] **Step 4: Re-run the parity tests**
+Run: `cargo test -p slidecodec-j2k`
+- [ ] **Step 5: Commit**
+Commit message: `feat: add j2k simd kernels`
+
+### Task 3: Confirm bench coverage as a regression check
+
+**Files:**
+- Modify: `crates/slidecodec-j2k/benches/common/mod.rs`
+- Modify: `crates/slidecodec-j2k/benches/compare.rs`
+
+- [ ] **Step 1: Keep the compare bench focused on exercising the SIMD path**
+- [ ] **Step 2: Run bench compilation**
 Run: `cargo bench -p slidecodec-j2k --bench compare --no-run`
-
-### Task 2: Document the signoff path
-
-**Files:**
-- Modify: `docs/bench.md`
-
-- [ ] **Step 1: Add a J2K benchmark section**
-- [ ] **Step 2: Document OpenJPEG comparator expectations and local binary discovery**
-- [ ] **Step 3: Re-run workspace verification**
+- [ ] **Step 3: Run workspace verification**
 Run:
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-
-### Task 3: Commit
-
-- [ ] **Step 1: Commit**
-Commit message: `bench: add j2k compare harness`
+- [ ] **Step 4: Commit**
+Commit message: `bench: verify j2k simd path`

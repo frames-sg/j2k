@@ -2,23 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** close the J2K work with external parity checks, stress regressions, and CI hooks.
+**Goal:** close the J2K work with in-process parity checks, stress regressions, and CI hooks.
 
-**Architecture:** OpenJPEG CLI differential tests for classic J2K, focused edge-case regressions for the public API, and CI updates that keep the J2K bench/fuzz/build surfaces compiling.
+**Architecture:** in-process OpenJPEG and Grok differential tests for classic J2K, focused edge-case regressions for the public API, and CI updates that keep the J2K bench/fuzz/build surfaces compiling.
 
-**Tech Stack:** Rust, GitHub Actions, local OpenJPEG CLI
+**Tech Stack:** Rust, Criterion, GitHub Actions, OpenJPEG library, Grok library
 
 ---
 
-### Task 1: Add OpenJPEG differential tests
+### Task 1: Add in-process differential tests
 
 **Files:**
-- Create: `crates/slidecodec-j2k/tests/openjpeg_parity.rs`
+- Create: `crates/slidecodec-j2k/tests/in_process_parity.rs`
+- Create: `crates/slidecodec-j2k/tests/common/in_process.rs`
 
 - [ ] **Step 1: Add parity tests for full/region/scaled classic J2K decode**
-- [ ] **Step 2: Skip cleanly when OpenJPEG binaries are unavailable**
+- [ ] **Step 2: Skip cleanly when the OpenJPEG or Grok libraries are unavailable**
 - [ ] **Step 3: Run targeted parity tests**
-Run: `cargo test -p slidecodec-j2k --test openjpeg_parity`
+Run: `cargo test -p slidecodec-j2k --test in_process_parity`
 
 ### Task 2: Add stress regressions
 

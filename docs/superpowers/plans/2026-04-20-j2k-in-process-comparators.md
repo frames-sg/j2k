@@ -1,8 +1,8 @@
-# J2K In-Process Comparator Upgrade Implementation Plan
+# J2K In-Process Comparator Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the current CLI-based J2K benchmark baselines with in-process OpenJPEG and Grok library comparators, then run them on real SVS JP2K tile corpora with parity and codestream-parameter reporting.
+**Goal:** add in-process OpenJPEG and Grok comparators for J2K differential testing and benchmark support, then run them on real SVS JP2K tile corpora with parity and codestream-parameter reporting.
 
 **Architecture:** Keep production `slidecodec-j2k` decode code unchanged. Add dev-only benchmark/test support under `crates/slidecodec-j2k/` for two external-library wrappers: one around `libopenjp2`, one around Grok. Both wrappers must decode from memory buffers, force identical interleaved `Rgb8`/`Gray8` output, pin single-threaded execution, and expose the same full-frame / region / q4-scale / tile-batch operations that the existing `slidecodec` bench uses.
 
@@ -210,7 +210,7 @@ git add crates/slidecodec-j2k/build.rs crates/slidecodec-j2k/src/bench_support/m
 git commit -m "bench: add in-process grok j2k comparator"
 ```
 
-### Task 4: Replace CLI comparators in the Criterion harness
+### Task 4: Replace the old CLI comparators in the Criterion harness
 
 **Files:**
 - Modify: `crates/slidecodec-j2k/benches/common/mod.rs`
@@ -339,7 +339,7 @@ Expected: PASS
 
 Run: `SLIDECODEC_GROK_ROOT=/tmp/grok-slidecodec/build/bin cargo bench -p slidecodec-j2k --bench compare -- --quick`
 
-Expected: in-process OpenJPEG and Grok rows for real SVS tile inputs with distributions, not single-shot CLI timings.
+Expected: in-process OpenJPEG and Grok rows for real SVS tile inputs with distributions, not single-shot external-tool timings.
 
 - [ ] **Step 4: Update docs with measurement context**
 

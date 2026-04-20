@@ -17,31 +17,34 @@ Add the WSI-facing API surface to `slidecodec-j2k`:
 
 In scope:
 
-- decode-time resolution reduction through backend target-resolution support
-- functional region decode by cropping decoded output into the requested ROI
+- native decode-time resolution reduction through codestream resolution descent
+- native region decode that constrains the decode window instead of cropping a
+  full-frame output buffer after the fact
 - row streaming over decoded 8-bit and 16-bit output
 - tile-batch convenience entry points through `TileBatchDecode`
 
 Out of scope:
 
-- codestream-native ROI skipping
+- benchmark comparator acceptance gate
 - tile/header cache reuse inside `J2kContext`
-- performance claims against OpenJPEG
+- any decode-then-crop or decode-then-decimate acceptance path for native ROI
+  or scaled decode
 
 ## Architecture
 
-M2 still builds on the committed J2K-M1 backend adapter.
+M2 builds on the committed J2K-M1 in-tree decoder path.
 
 ### Scale
 
-`decode_scaled_into` uses backend `DecodeSettings::target_resolution` to request
-a lower-resolution decode directly from the JPEG 2000 engine.
+`decode_scaled_into` uses codestream resolution descent so the decoder produces
+the requested lower-resolution output directly.
 
 ### Region
 
-`decode_region_into` decodes the full requested resolution, then crops the
-requested ROI into the caller buffer. This is functionally correct and keeps the
-public API stable; codestream-native ROI skipping remains a later optimization.
+`decode_region_into` constrains the codestream traversal to the requested ROI
+and writes only the requested pixels into the caller buffer. The milestone does
+not accept a full-frame decode followed by an in-memory crop as the native ROI
+implementation.
 
 ### Row decode
 
@@ -54,8 +57,7 @@ Row decode uses `J2kScratchPool`-owned reusable buffers:
 ### Tile-batch
 
 `J2kCodec` implements `TileBatchDecode` and forwards to the borrowed decoder.
-`J2kContext` exists now as the per-worker hook point even though M2 does not yet
-cache tile state.
+`J2kContext` exists as the per-worker hook point for tile-state reuse.
 
 ## Public Types
 
@@ -65,7 +67,7 @@ Add:
 - `pub struct J2kContext`
 - `pub struct J2kCodec`
 
-`J2kScratchPool` now tracks reusable internal buffers and reports their total
+`J2kScratchPool` tracks reusable internal buffers and reports their total
 reserved bytes through `ScratchPool::bytes_allocated()`.
 
 `J2kContext` implements `CodecContext` with empty cache stats in M2.
@@ -74,8 +76,10 @@ reserved bytes through `ScratchPool::bytes_allocated()`.
 
 Required tests:
 
-- scaled decode matches backend target-resolution decode
-- region decode matches cropping the corresponding full decode
+- scaled decode returns the same pixels as a reference codestream decoded at
+  the lower resolution directly
+- region decode matches the requested ROI from the same source without
+  accepting a crop-after-decode implementation as the contract
 - `ImageDecodeRows<'a, u8>` matches `decode_into(..., Rgb8/Gray8)`
 - `ImageDecodeRows<'a, u16>` matches `decode_into(..., Rgb16/Gray16)`
 - `TileBatchDecode::decode_tile` matches borrowed decoder decode

@@ -13,29 +13,23 @@ codestreams and JP2 containers.
 In scope:
 
 - `inspect()` support for HT codestreams and JP2 files
-- decode coverage for HTJ2K via the existing backend dependency
+- decode coverage for HTJ2K in the in-tree decoder path
 - dedicated regression tests using `encode_htj2k`
 - M2 API parity on HT inputs
-- graceful scaled-decode fallback when backend HT `target_resolution` is unavailable
 
 Out of scope:
 
-- native in-tree HT block decoder
+- any backend-fallback HT decode path
 - HT-specific context caching
 - OpenHTJ2K parity fixtures outside locally generated roundtrip cases
 
 ## Architecture
 
-`dicom-toolkit-jpeg2000` already enables `openjph-htj2k` by default and
-auto-detects HT block coding at parse time. `slidecodec-j2k` therefore needs
-only a thin correctness layer:
+`slidecodec-j2k` extends the in-tree decoder so HT codestream markers and block
+structures are handled directly:
 
-- `J2kDecoder::inspect` must mirror `J2kView::parse` and fall back to backend
-  inspection when the local scalar parser rejects HT markers such as `CAP`.
-- All decode surfaces continue to route through the existing backend adapter.
-- `decode_scaled_into` keeps the public API available on HT inputs by falling
-  back to full decode + power-of-two decimation when the backend rejects
-  scaled HT decode through OpenJPH.
+- `J2kDecoder::inspect` must mirror `J2kView::parse` for HT marker detection.
+- All decode surfaces continue to route through the crate's own decoder path.
 - HT correctness is locked by dedicated tests over raw codestream and JP2-wrapped
   inputs, across 8-bit and native-depth paths.
 
@@ -46,8 +40,8 @@ Required tests:
 - HT codestream `inspect()` returns sane core `Info`
 - HT JP2 `inspect()` returns sane core `Info`
 - HT `decode_into` roundtrips grayscale and RGB samples
-- HT `decode_scaled_into` matches backend target-resolution decode
-- HT `decode_region_into` matches cropping the full decode
+- HT `decode_scaled_into` returns the expected lower-resolution HT output
+- HT `decode_region_into` matches the requested ROI directly
 - HT `ImageDecodeRows<'a, u8>` matches full decode
 - HT `TileBatchDecode` matches borrowed decoder output
 
