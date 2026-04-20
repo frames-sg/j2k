@@ -3,9 +3,9 @@
 mod common;
 
 use common::{
-    bench_inputs, centered_roi, openjpeg_available, openjpeg_decode, slidecodec_decode,
-    slidecodec_decode_region, slidecodec_decode_scaled, slidecodec_decode_tile_batch,
-    slidecodec_inspect, DecodeMode,
+    bench_inputs, centered_roi, grok_available, grok_decode, openjpeg_available, openjpeg_decode,
+    slidecodec_decode, slidecodec_decode_region, slidecodec_decode_scaled,
+    slidecodec_decode_tile_batch, slidecodec_inspect, DecodeMode,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
 use slidecodec_j2k::Downscale;
@@ -34,6 +34,11 @@ fn bench_compare(c: &mut Criterion) {
                 b.iter(|| openjpeg_decode(input, None, None, 1));
             });
         }
+        if grok_available() {
+            decode_gray.bench_function(format!("grok/{}", input.name), |b| {
+                b.iter(|| grok_decode(input, None, None, 1));
+            });
+        }
     }
     decode_gray.finish();
 
@@ -45,6 +50,11 @@ fn bench_compare(c: &mut Criterion) {
         if openjpeg_available() && !input.is_ht {
             decode_rgb.bench_function(format!("openjpeg/{}", input.name), |b| {
                 b.iter(|| openjpeg_decode(input, None, None, 1));
+            });
+        }
+        if grok_available() {
+            decode_rgb.bench_function(format!("grok/{}", input.name), |b| {
+                b.iter(|| grok_decode(input, None, None, 1));
             });
         }
     }
@@ -64,6 +74,11 @@ fn bench_compare(c: &mut Criterion) {
                 b.iter(|| openjpeg_decode(input, None, Some(roi), 1));
             });
         }
+        if grok_available() {
+            wsi_region.bench_function(format!("grok/{}", input.name), |b| {
+                b.iter(|| grok_decode(input, None, Some(roi), 1));
+            });
+        }
     }
     wsi_region.finish();
 
@@ -80,6 +95,11 @@ fn bench_compare(c: &mut Criterion) {
                 b.iter(|| openjpeg_decode(input, Some(2), None, 1));
             });
         }
+        if grok_available() {
+            wsi_scaled.bench_function(format!("grok/{}", input.name), |b| {
+                b.iter(|| grok_decode(input, Some(2), None, 1));
+            });
+        }
     }
     wsi_scaled.finish();
 
@@ -94,6 +114,11 @@ fn bench_compare(c: &mut Criterion) {
         if openjpeg_available() && !input.is_ht {
             wsi_tile_batch.bench_function(format!("openjpeg/{}", input.name), |b| {
                 b.iter(|| openjpeg_decode(input, None, None, 16));
+            });
+        }
+        if grok_available() {
+            wsi_tile_batch.bench_function(format!("grok/{}", input.name), |b| {
+                b.iter(|| grok_decode(input, None, None, 16));
             });
         }
     }
