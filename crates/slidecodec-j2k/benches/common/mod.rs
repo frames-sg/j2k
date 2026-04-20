@@ -134,6 +134,10 @@ pub(crate) fn openjpeg_available() -> bool {
     openjpeg_bin().is_some() && openjpeg_compress_bin().is_some()
 }
 
+pub(crate) fn grok_available() -> bool {
+    grok_bin().is_some()
+}
+
 pub(crate) fn openjpeg_decode(
     input: &BenchInput,
     reduce: Option<u32>,
@@ -141,6 +145,18 @@ pub(crate) fn openjpeg_decode(
     batch: usize,
 ) {
     let harness = OpenJpegHarness::for_input(input);
+    for _ in 0..batch {
+        harness.run(reduce, region);
+    }
+}
+
+pub(crate) fn grok_decode(
+    input: &BenchInput,
+    reduce: Option<u32>,
+    region: Option<Rect>,
+    batch: usize,
+) {
+    let harness = GrokHarness::for_input(input);
     for _ in 0..batch {
         harness.run(reduce, region);
     }
@@ -299,6 +315,27 @@ fn openjpeg_compress_bin() -> Option<PathBuf> {
         .clone()
 }
 
+fn grok_bin() -> Option<PathBuf> {
+    static GROK: OnceLock<Option<PathBuf>> = OnceLock::new();
+    GROK.get_or_init(discover_grok_bin).clone()
+}
+
+fn discover_grok_bin() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SLIDECODEC_GROK_BIN") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    [
+        "/opt/homebrew/bin/grk_decompress",
+        "/usr/local/bin/grk_decompress",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.exists())
+}
+
 fn openjpeg_encode_jp2(
     name: &str,
     pixels: &[u8],
@@ -356,7 +393,6 @@ impl OpenJpegHarness {
         let mut command = Command::new(&self.bin);
         command.arg("-i").arg(&self.input_path);
         command.arg("-o").arg(&self.output_path);
-        command.arg("-quiet");
         if let Some(reduce) = reduce {
             command.arg("-r").arg(reduce.to_string());
         }
@@ -377,6 +413,60 @@ impl OpenJpegHarness {
         black_box(
             fs::metadata(&self.output_path)
                 .expect("openjpeg output metadata")
+                .len(),
+        );
+    }
+}
+
+struct GrokHarness {
+    bin: PathBuf,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    mode: DecodeMode,
+}
+
+impl GrokHarness {
+    fn for_input(input: &BenchInput) -> Self {
+        let bin = grok_bin().expect("Grok binary");
+        let dir = openjpeg_temp_dir();
+        let input_path = dir.join(format!("{}.jp2", input.name));
+        let output_path = dir.join(match input.mode {
+            DecodeMode::Gray8 => format!("{}.grok.pgm", input.name),
+            DecodeMode::Rgb8 => format!("{}.grok.ppm", input.name),
+        });
+        fs::write(&input_path, &input.bytes).expect("write benchmark input");
+        Self {
+            bin,
+            input_path,
+            output_path,
+            mode: input.mode,
+        }
+    }
+
+    fn run(&self, reduce: Option<u32>, region: Option<Rect>) {
+        let mut command = Command::new(&self.bin);
+        command.arg("-i").arg(&self.input_path);
+        command.arg("-o").arg(&self.output_path);
+        if let Some(reduce) = reduce {
+            command.arg("-r").arg(reduce.to_string());
+        }
+        if let Some(region) = region {
+            command.arg("-d").arg(format!(
+                "{},{},{},{}",
+                region.x,
+                region.y,
+                region.x + region.w,
+                region.y + region.h
+            ));
+        }
+        if matches!(self.mode, DecodeMode::Rgb8) {
+            command.arg("--force-rgb");
+        }
+        let status = command.status().expect("run grok");
+        assert!(status.success(), "Grok decode failed");
+        black_box(
+            fs::metadata(&self.output_path)
+                .expect("grok output metadata")
                 .len(),
         );
     }
