@@ -459,6 +459,6 @@ Created in J2K-M0 (next spec after M0):
 - `cargo deny check` — clean.
 - `cargo fuzz run parse_fuzz -- -runs=1000000` and `cargo fuzz run decode_fuzz -- -runs=1000000` — no new panics.
 - `cargo bench -p slidecodec-jpeg --bench compare -- --quick` on both pinned hosts — acceptance contract (§7, JPEG primary surface) green: tile-batch/region/scaled wins hold; full-frame is within Criterion tie band of pre-refactor baseline.
-- Manual audit of `slidecodec-jpeg` public API diff: every removed/renamed symbol is intentional, documented in CHANGELOG Unreleased section.
+- Manual audit of `slidecodec-jpeg` public API diff: every removed/renamed symbol is intentional and documented in the changelog entry for the release-gate work.
 
 **Next step after this umbrella is approved:** write the M0 spec (core extraction + jpeg refactor), then the J2K-M0 spec (J2K skeleton + inspect) via a fresh brainstorm.
