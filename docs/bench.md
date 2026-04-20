@@ -168,6 +168,61 @@ SLIDECODEC_BENCH_INPUTS=/Users/user/Bench/SlideViewer/downloads/openslide-testda
   cargo bench -p slidecodec-jpeg --bench compare
 ```
 
+## `slidecodec-j2k`
+
+`slidecodec-j2k` carries a dedicated Criterion comparator bench at
+`crates/slidecodec-j2k/benches/compare.rs`.
+
+It uses deterministic runtime-generated codestreams so the bench is always
+available without a checked-in J2K corpus:
+
+- classic grayscale J2K
+- classic RGB J2K
+- HTJ2K grayscale
+
+Bench groups:
+
+- `inspect`
+- `decode_gray`
+- `decode_rgb`
+- `wsi_region_gray`
+- `wsi_scaled_gray_q4`
+- `wsi_tile_batch_gray`
+
+Comparator policy:
+
+- `slidecodec-j2k` is benchmarked through its public API
+- OpenJPEG is benchmarked through the local `opj_decompress` binary
+- classic J2K bench inputs are generated through the local `opj_compress`
+  binary when available, so the OpenJPEG comparator always consumes its own
+  valid JP2 output
+- the binaries are discovered from `SLIDECODEC_OPENJPEG_BIN` and
+  `SLIDECODEC_OPENJPEG_COMPRESS_BIN`, otherwise
+  `/opt/homebrew/bin/opj_decompress` and `/opt/homebrew/bin/opj_compress`
+  are used when present
+- the OpenJPEG path is an end-to-end tool comparison, not an in-process FFI
+  microbenchmark
+
+Region and scale mapping:
+
+- region decode uses `opj_decompress -d x0,y0,x1,y1`
+- scaled decode uses `opj_decompress -r <reduce factor>`
+- tile-batch decode is modeled as repeated decode invocations on the same tile
+
+Compile the J2K compare bench:
+
+```sh
+cargo bench -p slidecodec-j2k --bench compare --no-run
+```
+
+Run it locally against OpenJPEG:
+
+```sh
+SLIDECODEC_OPENJPEG_BIN=/opt/homebrew/bin/opj_decompress \
+SLIDECODEC_OPENJPEG_COMPRESS_BIN=/opt/homebrew/bin/opj_compress \
+  cargo bench -p slidecodec-j2k --bench compare
+```
+
 ## Recorded baselines
 
 All numbers on `aarch64-apple-darwin`, Criterion `--quick`, committed
