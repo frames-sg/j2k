@@ -69,7 +69,7 @@ Run:
 - Modify: `Cargo.toml`
 - Modify: `crates/slidecodec-cli/src/main.rs`
 
-- [ ] **Step 1: Bump workspace package version to `1.0.0`**
+- [ ] **Step 1: If the JPEG + native J2K release gate is actually complete, bump workspace package version to `1.0.0`**
 - [ ] **Step 2: Update CLI banner/help to match the 1.0 workspace state**
 - [ ] **Step 3: Commit**
 Commit message: `feat: add slidecodec tile decompression crate`

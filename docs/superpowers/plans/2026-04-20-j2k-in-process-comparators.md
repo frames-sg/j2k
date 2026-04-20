@@ -1,5 +1,7 @@
 # J2K In-Process Comparator Implementation Plan
 
+**Status:** implemented. This plan is retained as historical execution detail for the in-process OpenJPEG/Grok comparator cutover and the real-tile benchmark follow-on work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** add in-process OpenJPEG and Grok comparators for J2K differential testing and benchmark support, then run them on real SVS JP2K tile corpora with parity and codestream-parameter reporting.
@@ -210,7 +212,7 @@ git add crates/slidecodec-j2k/build.rs crates/slidecodec-j2k/src/bench_support/m
 git commit -m "bench: add in-process grok j2k comparator"
 ```
 
-### Task 4: Replace the old CLI comparators in the Criterion harness
+### Task 4: Replace the old process-based comparators in the Criterion harness
 
 **Files:**
 - Modify: `crates/slidecodec-j2k/benches/common/mod.rs`
@@ -223,11 +225,11 @@ git commit -m "bench: add in-process grok j2k comparator"
 // Replace openjpeg_decode()/grok_decode() process wrappers with in-process wrapper calls.
 ```
 
-- [ ] **Step 2: Run the bench compile to verify current shape still depends on CLI wrappers**
+- [ ] **Step 2: Run the bench compile to verify the pre-refactor shape still depends on external process wrappers**
 
 Run: `cargo bench -p slidecodec-j2k --bench compare --no-run`
 
-Expected: still compiles against CLI wrappers before refactor.
+Expected: still compiles against the pre-refactor process-wrapper path before the in-process cutover.
 
 - [ ] **Step 3: Switch benchmark operations to in-process wrappers**
 

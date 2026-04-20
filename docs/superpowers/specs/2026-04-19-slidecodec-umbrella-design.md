@@ -13,7 +13,7 @@
 
 ## 1. Context
 
-The `slidecodec` workspace currently contains one production crate: `slidecodec-jpeg`, a pure-Rust JPEG decoder on branch `perf/beat-both-wsi`. Current status (grounded in the tree, not aspirational):
+At the time this umbrella was written, `slidecodec-jpeg` was the only production-grade crate in the workspace, on branch `perf/beat-both-wsi`. Current status at that point (grounded in the tree, not aspirational):
 
 - **Borrowed decoder architecture is live.** `JpegView<'a>` at `crates/slidecodec-jpeg/src/decoder.rs:49` and `Decoder<'a>` at `crates/slidecodec-jpeg/src/decoder.rs:82`. `Decoder::new(input: &'a [u8])` at `decoder.rs:112`, `Decoder::from_view`/`from_view_in_context` at `decoder.rs:118/124`.
 - **WSI API surface is implemented.** `decode_rows` at `decoder.rs:340`, `decode_region_into` at `decoder.rs:369`, `decode_tile_into` at `decoder.rs:504`, plus `decode_into_with_scratch` and context-reuse variants. `DownscaleFactor` variants exist on `OutputFormat` (`info.rs:123,126`).
