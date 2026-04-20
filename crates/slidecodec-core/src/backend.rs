@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("slidecodec-core only supports x86_64 and aarch64 targets");
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CpuFeatures {
     pub avx2: bool,
@@ -25,11 +28,6 @@ impl CpuFeatures {
                 sse41: false,
                 neon: true,
             }
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            Self::default()
         }
     }
 }
