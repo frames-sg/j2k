@@ -727,7 +727,7 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "slidecodec-cli"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "slidecodec-j2k",
  "slidecodec-jpeg",
@@ -735,14 +735,14 @@ dependencies = [
 
 [[package]]
 name = "slidecodec-core"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "slidecodec-j2k"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "criterion",
  "dicom-toolkit-jpeg2000",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "slidecodec-j2k-compare"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "cc",
  "openjpeg-sys",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "slidecodec-jpeg"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "criterion",
  "jpeg-decoder",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "slidecodec-tilecodec"
-version = "1.0.0"
+version = "0.0.0"
 dependencies = [
  "criterion",
  "flate2",

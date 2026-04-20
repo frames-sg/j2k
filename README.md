@@ -7,10 +7,11 @@ Pathology codec stack for whole-slide imaging workloads.
 `slidecodec` is a native-first codec workspace for pathology and WSI software.
 The core stack in this repository is:
 
-- `slidecodec-jpeg` — WSI-optimized JPEG decode
-- `slidecodec-j2k` — JPEG 2000 / HTJ2K inspect and decode
-- `slidecodec-tilecodec` — Deflate, Zstd, LZW, and Uncompressed tile
-  decompression
+- `slidecodec-jpeg` — native JPEG decode for WSI tiles
+- `slidecodec-j2k` — native JPEG 2000 / HTJ2K inspect and decode, still under
+  rewrite and not release-complete
+- `slidecodec-tilecodec` — tile decompression primitives for Deflate, Zstd,
+  LZW, and Uncompressed payloads
 - `slidecodec-core` — shared traits, pixel/sample types, scratch/context
   contracts
 - `slidecodec-cli` — CLI inspection entry point
@@ -37,7 +38,7 @@ runtime.
 
 ### `slidecodec-jpeg`
 
-- Baseline and extended/lossless JPEG support already present in the crate
+- Baseline JPEG support already present in the crate
 - ROI, scaled decode, row streaming, and tile-batch decode APIs
 - WSI-focused benchmarking against `jpeg-decoder`, `zune-jpeg`, and direct
   `libjpeg-turbo` decode paths
@@ -46,6 +47,7 @@ runtime.
 
 - JP2 / raw codestream inspect
 - full-frame, region, scaled, row-streaming, and tile-batch decode
+- Native rewrite in progress for JPEG 2000 / HTJ2K decode paths
 - HTJ2K handling through the current backend path
 - OpenJPEG-oriented parity and benchmark coverage
 
@@ -56,7 +58,7 @@ runtime.
 - `LzwCodec`
 - `UncompressedCodec`
 
-All expose the shared `TileDecompress` trait from `slidecodec-core`.
+These codecs expose the shared `TileDecompress` trait from `slidecodec-core`.
 
 ## Quick start
 
