@@ -12,6 +12,8 @@ use crate::internal::bit_reader::BitReader;
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::Cell;
+use core::ptr;
 
 // `crate::backend::scalar` is intentionally private. Reuse the production
 // source file here so bench/test helpers call the real scalar row-pair kernel
@@ -19,6 +21,82 @@ use alloc::vec::Vec;
 #[allow(dead_code)]
 #[path = "backend/scalar.rs"]
 mod bench_scalar_backend;
+
+#[doc(hidden)]
+#[derive(Default, Debug, Clone)]
+pub struct Bench420DispatchStats {
+    scalar_chunks: usize,
+    neon_tail_chunks: usize,
+}
+
+impl Bench420DispatchStats {
+    pub fn scalar_chunks(&self) -> usize {
+        self.scalar_chunks
+    }
+
+    pub fn neon_tail_chunks(&self) -> usize {
+        self.neon_tail_chunks
+    }
+
+    pub(crate) fn record_scalar_chunk(&mut self) {
+        self.scalar_chunks += 1;
+    }
+
+    pub(crate) fn record_neon_tail_chunk(&mut self) {
+        self.neon_tail_chunks += 1;
+    }
+}
+
+thread_local! {
+    static BENCH_420_DISPATCH_STATS: Cell<*mut Bench420DispatchStats> = const {
+        Cell::new(ptr::null_mut())
+    };
+}
+
+struct Bench420DispatchStatsGuard {
+    prev: *mut Bench420DispatchStats,
+}
+
+impl Drop for Bench420DispatchStatsGuard {
+    fn drop(&mut self) {
+        BENCH_420_DISPATCH_STATS.with(|slot| {
+            slot.set(self.prev);
+        });
+    }
+}
+
+pub(crate) fn record_420_dispatch_scalar_chunk() {
+    BENCH_420_DISPATCH_STATS.with(|slot| {
+        let stats = slot.get();
+        if !stats.is_null() {
+            unsafe {
+                (*stats).record_scalar_chunk();
+            }
+        }
+    });
+}
+
+pub(crate) fn record_420_dispatch_neon_tail_chunk() {
+    BENCH_420_DISPATCH_STATS.with(|slot| {
+        let stats = slot.get();
+        if !stats.is_null() {
+            unsafe {
+                (*stats).record_neon_tail_chunk();
+            }
+        }
+    });
+}
+
+fn with_420_dispatch_stats<R>(stats: &mut Bench420DispatchStats, f: impl FnOnce() -> R) -> R {
+    BENCH_420_DISPATCH_STATS.with(|slot| {
+        let guard = Bench420DispatchStatsGuard {
+            prev: slot.replace(stats as *mut Bench420DispatchStats),
+        };
+        let out = f();
+        drop(guard);
+        out
+    })
+}
 
 #[doc(hidden)]
 pub struct BenchHuffmanState {
@@ -185,6 +263,30 @@ pub fn bench_rgb_row_pair_from_420(
     Backend::detect().fill_rgb_row_pair_from_420(
         y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
     );
+}
+
+/// Run the RGB 4:2:0 row-pair backend with dispatch stats.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn bench_rgb_row_pair_from_420_with_stats(
+    y_top: &[u8],
+    y_bottom: Option<&[u8]>,
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    next_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    next_cr: &[u8],
+    dst_top: &mut [u8],
+    dst_bottom: Option<&mut [u8]>,
+    stats: &mut Bench420DispatchStats,
+) {
+    with_420_dispatch_stats(stats, || {
+        bench_rgb_row_pair_from_420(
+            y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
+            dst_bottom,
+        )
+    });
 }
 
 /// Run the scalar RGB 4:2:0 row-pair reference on caller-provided inputs.
