@@ -8,6 +8,7 @@ use core::arch::aarch64::{
 };
 
 use super::scalar;
+use crate::color::ycbcr::ycbcr_to_rgb;
 
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(dst.len(), gray_row.len() * 3);
@@ -206,28 +207,92 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
             continue;
         }
 
-        let mut cb_top = [0u8; UPSAMPLED_LANES];
-        let mut cb_bot = [0u8; UPSAMPLED_LANES];
-        let mut cr_top = [0u8; UPSAMPLED_LANES];
-        let mut cr_bot = [0u8; UPSAMPLED_LANES];
+        if sample == 0 {
+            unsafe {
+                fill_rgb_row_pair_from_420_edge_neon_dual(
+                    y_top,
+                    y_bottom,
+                    prev_cb,
+                    curr_cb,
+                    next_cb,
+                    prev_cr,
+                    curr_cr,
+                    next_cr,
+                    chunk_width,
+                    width,
+                    dst_top,
+                    dst_bottom,
+                );
+            }
+        } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
+            crate::bench_support::record_420_dispatch_neon_tail_chunk();
+            unsafe {
+                fill_rgb_row_pair_from_420_tail_neon_dual(
+                    y_top,
+                    y_bottom,
+                    prev_cb,
+                    curr_cb,
+                    next_cb,
+                    prev_cr,
+                    curr_cr,
+                    next_cr,
+                    sample,
+                    x,
+                    chunk_width,
+                    width,
+                    dst_top,
+                    dst_bottom,
+                );
+            }
+        } else {
+            crate::bench_support::record_420_dispatch_scalar_chunk();
+            let mut cb_top = [0u8; UPSAMPLED_LANES];
+            let mut cb_bot = [0u8; UPSAMPLED_LANES];
+            let mut cr_top = [0u8; UPSAMPLED_LANES];
+            let mut cr_bot = [0u8; UPSAMPLED_LANES];
 
-        unsafe {
-            fill_upsampled_420_chunk(prev_cb, curr_cb, sample, width, &mut cb_top[..chunk_width]);
-            fill_upsampled_420_chunk(next_cb, curr_cb, sample, width, &mut cb_bot[..chunk_width]);
-            fill_upsampled_420_chunk(prev_cr, curr_cr, sample, width, &mut cr_top[..chunk_width]);
-            fill_upsampled_420_chunk(next_cr, curr_cr, sample, width, &mut cr_bot[..chunk_width]);
-            fill_rgb_row_from_ycbcr_neon(
-                &y_top[x..x + chunk_width],
-                &cb_top[..chunk_width],
-                &cr_top[..chunk_width],
-                &mut dst_top[x * 3..(x + chunk_width) * 3],
-            );
-            fill_rgb_row_from_ycbcr_neon(
-                &y_bottom[x..x + chunk_width],
-                &cb_bot[..chunk_width],
-                &cr_bot[..chunk_width],
-                &mut dst_bottom[x * 3..(x + chunk_width) * 3],
-            );
+            unsafe {
+                fill_upsampled_420_chunk(
+                    prev_cb,
+                    curr_cb,
+                    sample,
+                    width,
+                    &mut cb_top[..chunk_width],
+                );
+                fill_upsampled_420_chunk(
+                    next_cb,
+                    curr_cb,
+                    sample,
+                    width,
+                    &mut cb_bot[..chunk_width],
+                );
+                fill_upsampled_420_chunk(
+                    prev_cr,
+                    curr_cr,
+                    sample,
+                    width,
+                    &mut cr_top[..chunk_width],
+                );
+                fill_upsampled_420_chunk(
+                    next_cr,
+                    curr_cr,
+                    sample,
+                    width,
+                    &mut cr_bot[..chunk_width],
+                );
+                fill_rgb_row_from_ycbcr_neon(
+                    &y_top[x..x + chunk_width],
+                    &cb_top[..chunk_width],
+                    &cr_top[..chunk_width],
+                    &mut dst_top[x * 3..(x + chunk_width) * 3],
+                );
+                fill_rgb_row_from_ycbcr_neon(
+                    &y_bottom[x..x + chunk_width],
+                    &cb_bot[..chunk_width],
+                    &cr_bot[..chunk_width],
+                    &mut dst_bottom[x * 3..(x + chunk_width) * 3],
+                );
+            }
         }
 
         sample += chunk_samples;
@@ -272,21 +337,342 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
             continue;
         }
 
-        let mut cb_top = [0u8; UPSAMPLED_LANES];
-        let mut cr_top = [0u8; UPSAMPLED_LANES];
-        unsafe {
-            fill_upsampled_420_chunk(prev_cb, curr_cb, sample, width, &mut cb_top[..chunk_width]);
-            fill_upsampled_420_chunk(prev_cr, curr_cr, sample, width, &mut cr_top[..chunk_width]);
-            fill_rgb_row_from_ycbcr_neon(
-                &y_top[x..x + chunk_width],
-                &cb_top[..chunk_width],
-                &cr_top[..chunk_width],
-                &mut dst_top[x * 3..(x + chunk_width) * 3],
-            );
+        if sample == 0 {
+            unsafe {
+                fill_rgb_row_pair_from_420_edge_neon_top_only(
+                    y_top,
+                    prev_cb,
+                    curr_cb,
+                    prev_cr,
+                    curr_cr,
+                    chunk_width,
+                    width,
+                    dst_top,
+                );
+            }
+        } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
+            crate::bench_support::record_420_dispatch_neon_tail_chunk();
+            unsafe {
+                fill_rgb_row_pair_from_420_tail_neon_top_only(
+                    y_top,
+                    prev_cb,
+                    curr_cb,
+                    prev_cr,
+                    curr_cr,
+                    sample,
+                    x,
+                    chunk_width,
+                    width,
+                    dst_top,
+                );
+            }
+        } else {
+            crate::bench_support::record_420_dispatch_scalar_chunk();
+            let mut cb_top = [0u8; UPSAMPLED_LANES];
+            let mut cr_top = [0u8; UPSAMPLED_LANES];
+            unsafe {
+                fill_upsampled_420_chunk(
+                    prev_cb,
+                    curr_cb,
+                    sample,
+                    width,
+                    &mut cb_top[..chunk_width],
+                );
+                fill_upsampled_420_chunk(
+                    prev_cr,
+                    curr_cr,
+                    sample,
+                    width,
+                    &mut cr_top[..chunk_width],
+                );
+                fill_rgb_row_from_ycbcr_neon(
+                    &y_top[x..x + chunk_width],
+                    &cb_top[..chunk_width],
+                    &cr_top[..chunk_width],
+                    &mut dst_top[x * 3..(x + chunk_width) * 3],
+                );
+            }
         }
 
         sample += chunk_samples;
     }
+}
+
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
+    y_top: &[u8],
+    y_bottom: &[u8],
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    next_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    next_cr: &[u8],
+    chunk_width: usize,
+    _width: usize,
+    dst_top: &mut [u8],
+    dst_bottom: &mut [u8],
+) {
+    let y_top_tail = load_tail_window(y_top, 0, chunk_width);
+    let y_bottom_tail = load_tail_window(y_bottom, 0, chunk_width);
+    let prev_cb_head = load_head_window(prev_cb, TAIL_WINDOW);
+    let curr_cb_head = load_head_window(curr_cb, TAIL_WINDOW);
+    let next_cb_head = load_head_window(next_cb, TAIL_WINDOW);
+    let prev_cr_head = load_head_window(prev_cr, TAIL_WINDOW);
+    let curr_cr_head = load_head_window(curr_cr, TAIL_WINDOW);
+    let next_cr_head = load_head_window(next_cr, TAIL_WINDOW);
+
+    let (cb_top, cb_bottom) =
+        unsafe { upsampled_420_chunk16_pair_u16(&prev_cb_head, &curr_cb_head, &next_cb_head, 1) };
+    let (cr_top, cr_bottom) =
+        unsafe { upsampled_420_chunk16_pair_u16(&prev_cr_head, &curr_cr_head, &next_cr_head, 1) };
+
+    let y_top_lo = unsafe { load_eight(&y_top_tail, 0) };
+    let y_top_hi = unsafe { load_eight(&y_top_tail, LANES) };
+    let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
+    let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
+
+    let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
+    let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+    unsafe {
+        fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
+        fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
+        fill_chunk_from_vectors_u16(
+            y_bottom_lo,
+            cb_bottom.0,
+            cr_bottom.0,
+            &mut rgb_bottom[..LANES * 3],
+        );
+        fill_chunk_from_vectors_u16(
+            y_bottom_hi,
+            cb_bottom.1,
+            cr_bottom.1,
+            &mut rgb_bottom[LANES * 3..],
+        );
+    }
+
+    let top_cb = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
+    let top_cr = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
+    let bottom_cb = ((u32::from(next_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
+    let bottom_cr = ((u32::from(next_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
+    let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[0], top_cb as u8, top_cr as u8);
+    let (r_bottom, g_bottom, b_bottom) =
+        ycbcr_to_rgb(y_bottom[0], bottom_cb as u8, bottom_cr as u8);
+    rgb_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
+    rgb_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+
+    dst_top[..chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
+    dst_bottom[..chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+}
+
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
+    y_top: &[u8],
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    chunk_width: usize,
+    _width: usize,
+    dst_top: &mut [u8],
+) {
+    let y_top_tail = load_tail_window(y_top, 0, chunk_width);
+    let prev_cb_head = load_head_window(prev_cb, TAIL_WINDOW);
+    let curr_cb_head = load_head_window(curr_cb, TAIL_WINDOW);
+    let prev_cr_head = load_head_window(prev_cr, TAIL_WINDOW);
+    let curr_cr_head = load_head_window(curr_cr, TAIL_WINDOW);
+
+    let cb = unsafe { upsampled_420_chunk16_u16(&prev_cb_head, &curr_cb_head, 1) };
+    let cr = unsafe { upsampled_420_chunk16_u16(&prev_cr_head, &curr_cr_head, 1) };
+    let y_lo = unsafe { load_eight(&y_top_tail, 0) };
+    let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
+
+    let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+    unsafe {
+        fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
+        fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
+    }
+
+    let cb0 = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
+    let cr0 = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
+    let (r, g, b) = ycbcr_to_rgb(y_top[0], cb0 as u8, cr0 as u8);
+    rgb[..3].copy_from_slice(&[r, g, b]);
+
+    dst_top[..chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+}
+
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
+    y_top: &[u8],
+    y_bottom: &[u8],
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    next_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    next_cr: &[u8],
+    sample_offset: usize,
+    x: usize,
+    chunk_width: usize,
+    width: usize,
+    dst_top: &mut [u8],
+    dst_bottom: &mut [u8],
+) {
+    let y_top_tail = load_tail_window(y_top, x, chunk_width);
+    let y_bottom_tail = load_tail_window(y_bottom, x, chunk_width);
+    let prev_cb_tail = load_tail_window(prev_cb, sample_offset - 1, TAIL_WINDOW);
+    let curr_cb_tail = load_tail_window(curr_cb, sample_offset - 1, TAIL_WINDOW);
+    let next_cb_tail = load_tail_window(next_cb, sample_offset - 1, TAIL_WINDOW);
+    let prev_cr_tail = load_tail_window(prev_cr, sample_offset - 1, TAIL_WINDOW);
+    let curr_cr_tail = load_tail_window(curr_cr, sample_offset - 1, TAIL_WINDOW);
+    let next_cr_tail = load_tail_window(next_cr, sample_offset - 1, TAIL_WINDOW);
+
+    let (cb_top, cb_bottom) =
+        unsafe { upsampled_420_chunk16_pair_u16(&prev_cb_tail, &curr_cb_tail, &next_cb_tail, 1) };
+    let (cr_top, cr_bottom) =
+        unsafe { upsampled_420_chunk16_pair_u16(&prev_cr_tail, &curr_cr_tail, &next_cr_tail, 1) };
+
+    let y_top_lo = unsafe { load_eight(&y_top_tail, 0) };
+    let y_top_hi = unsafe { load_eight(&y_top_tail, LANES) };
+    let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
+    let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
+
+    let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
+    let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+    unsafe {
+        fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
+        fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
+        fill_chunk_from_vectors_u16(
+            y_bottom_lo,
+            cb_bottom.0,
+            cr_bottom.0,
+            &mut rgb_bottom[..LANES * 3],
+        );
+        fill_chunk_from_vectors_u16(
+            y_bottom_hi,
+            cb_bottom.1,
+            cr_bottom.1,
+            &mut rgb_bottom[LANES * 3..],
+        );
+    }
+
+    if width % 2 == 0 {
+        let last = width - 1;
+        let sample = curr_cb.len() - 1;
+        let top_cb = ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+        let top_cr = ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+        let bottom_cb =
+            ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+        let bottom_cr =
+            ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+        let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
+        let (r_bottom, g_bottom, b_bottom) =
+            ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
+        rgb_top[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r_top, g_top, b_top]);
+        rgb_bottom[(chunk_width - 1) * 3..chunk_width * 3]
+            .copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+    }
+
+    dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
+    dst_bottom[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+}
+
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
+    y_top: &[u8],
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    sample_offset: usize,
+    x: usize,
+    chunk_width: usize,
+    width: usize,
+    dst_top: &mut [u8],
+) {
+    let y_top_tail = load_tail_window(y_top, x, chunk_width);
+    let prev_cb_tail = load_tail_window(prev_cb, sample_offset - 1, TAIL_WINDOW);
+    let curr_cb_tail = load_tail_window(curr_cb, sample_offset - 1, TAIL_WINDOW);
+    let prev_cr_tail = load_tail_window(prev_cr, sample_offset - 1, TAIL_WINDOW);
+    let curr_cr_tail = load_tail_window(curr_cr, sample_offset - 1, TAIL_WINDOW);
+
+    let cb = unsafe { upsampled_420_chunk16_u16(&prev_cb_tail, &curr_cb_tail, 1) };
+    let cr = unsafe { upsampled_420_chunk16_u16(&prev_cr_tail, &curr_cr_tail, 1) };
+    let y_lo = unsafe { load_eight(&y_top_tail, 0) };
+    let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
+
+    let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+    unsafe {
+        fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
+        fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
+    }
+
+    if width % 2 == 0 {
+        let last = width - 1;
+        let sample = curr_cb.len() - 1;
+        let cb_last = ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+        let cr_last = ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+        let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
+        rgb[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r, g, b]);
+    }
+
+    dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+}
+
+const TAIL_WINDOW: usize = LANES + 2;
+
+fn load_tail_window(src: &[u8], start: usize, len: usize) -> [u8; UPSAMPLED_LANES] {
+    debug_assert!(start < src.len());
+    debug_assert!(len > 0);
+    debug_assert!(len <= UPSAMPLED_LANES);
+    let mut out = [0u8; UPSAMPLED_LANES];
+    let available = src.len() - start;
+    let copy_len = available.min(len);
+    out[..copy_len].copy_from_slice(&src[start..start + copy_len]);
+    if copy_len < len {
+        let pad = out[copy_len - 1];
+        for value in &mut out[copy_len..len] {
+            *value = pad;
+        }
+    }
+    if len < UPSAMPLED_LANES {
+        let pad = out[len - 1];
+        for value in &mut out[len..UPSAMPLED_LANES] {
+            *value = pad;
+        }
+    }
+    out
+}
+
+fn load_head_window(src: &[u8], len: usize) -> [u8; UPSAMPLED_LANES] {
+    debug_assert!(!src.is_empty());
+    debug_assert!(len > 0);
+    debug_assert!(len <= UPSAMPLED_LANES);
+    let mut out = [0u8; UPSAMPLED_LANES];
+    let copy_len = src.len().min(len);
+    out[0] = src[0];
+    out[1..=copy_len].copy_from_slice(&src[..copy_len]);
+    if copy_len < len {
+        let pad = out[copy_len];
+        for value in &mut out[copy_len + 1..=len] {
+            *value = pad;
+        }
+    }
+    if len + 1 < UPSAMPLED_LANES {
+        let pad = out[len];
+        for value in &mut out[len + 1..UPSAMPLED_LANES] {
+            *value = pad;
+        }
+    }
+    out
+}
+
+fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: usize) -> bool {
+    out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width
 }
 
 #[target_feature(enable = "neon")]
