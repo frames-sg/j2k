@@ -2,6 +2,7 @@
 
 //! Hidden helpers used by Criterion benches.
 
+use crate::backend::Backend;
 use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
 use crate::entropy::huffman::HuffmanTable;
@@ -11,6 +12,13 @@ use crate::internal::bit_reader::BitReader;
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use alloc::vec;
 use alloc::vec::Vec;
+
+// `crate::backend::scalar` is intentionally private. Reuse the production
+// source file here so bench/test helpers call the real scalar row-pair kernel
+// without carrying a second handwritten copy of the algorithm.
+#[allow(dead_code)]
+#[path = "backend/scalar.rs"]
+mod bench_scalar_backend;
 
 #[doc(hidden)]
 pub struct BenchHuffmanState {
@@ -83,6 +91,120 @@ pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
 #[doc(hidden)]
 pub fn bench_idct_avx2_block(input: &[i16; 64], output: &mut [u8; 64]) {
     unsafe { crate::idct::avx2::idct_islow(input, output) };
+}
+
+/// Pre-allocated scratch for the 4:2:0 RGB row-pair microbench. Stores two
+/// luma rows, three chroma rows per plane, and two packed RGB output rows.
+#[doc(hidden)]
+pub struct BenchRgb420RowPairScratch {
+    y_top: Vec<u8>,
+    y_bottom: Vec<u8>,
+    prev_cb: Vec<u8>,
+    curr_cb: Vec<u8>,
+    next_cb: Vec<u8>,
+    prev_cr: Vec<u8>,
+    curr_cr: Vec<u8>,
+    next_cr: Vec<u8>,
+    top: Vec<u8>,
+    bottom: Vec<u8>,
+}
+
+impl BenchRgb420RowPairScratch {
+    /// Create the scratch with a deterministic odd-width-friendly pattern.
+    #[must_use]
+    pub fn new(width: usize) -> Self {
+        let chroma_width = width.div_ceil(2);
+        let seed = |len: usize, offset: usize, scale: usize| -> Vec<u8> {
+            (0..len)
+                .map(|i| ((i.wrapping_mul(scale).wrapping_add(offset)) & 0xFF) as u8)
+                .collect()
+        };
+        Self {
+            y_top: seed(width, 5, 37),
+            y_bottom: seed(width, 211, 19),
+            prev_cb: seed(chroma_width, 9, 13),
+            curr_cb: seed(chroma_width, 41, 17),
+            next_cb: seed(chroma_width, 73, 23),
+            prev_cr: seed(chroma_width, 17, 29),
+            curr_cr: seed(chroma_width, 53, 31),
+            next_cr: seed(chroma_width, 89, 37),
+            top: vec![0u8; width * 3],
+            bottom: vec![0u8; width * 3],
+        }
+    }
+
+    /// Run one iteration through the detected CPU backend.
+    pub fn run(&mut self) {
+        bench_rgb_row_pair_from_420(
+            &self.y_top,
+            Some(&self.y_bottom),
+            &self.prev_cb,
+            &self.curr_cb,
+            &self.next_cb,
+            &self.prev_cr,
+            &self.curr_cr,
+            &self.next_cr,
+            &mut self.top,
+            Some(&mut self.bottom),
+        );
+    }
+
+    /// Run one iteration through the scalar reference path.
+    pub fn run_reference(&mut self) {
+        bench_rgb_row_pair_from_420_reference(
+            &self.y_top,
+            Some(&self.y_bottom),
+            &self.prev_cb,
+            &self.curr_cb,
+            &self.next_cb,
+            &self.prev_cr,
+            &self.curr_cr,
+            &self.next_cr,
+            &mut self.top,
+            Some(&mut self.bottom),
+        );
+    }
+}
+
+/// Run the platform's normal RGB 4:2:0 row-pair backend on caller-provided
+/// inputs. On aarch64 this routes through the detected NEON path.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn bench_rgb_row_pair_from_420(
+    y_top: &[u8],
+    y_bottom: Option<&[u8]>,
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    next_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    next_cr: &[u8],
+    dst_top: &mut [u8],
+    dst_bottom: Option<&mut [u8]>,
+) {
+    Backend::detect().fill_rgb_row_pair_from_420(
+        y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
+    );
+}
+
+/// Run the scalar RGB 4:2:0 row-pair reference on caller-provided inputs.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn bench_rgb_row_pair_from_420_reference(
+    y_top: &[u8],
+    y_bottom: Option<&[u8]>,
+    prev_cb: &[u8],
+    curr_cb: &[u8],
+    next_cb: &[u8],
+    prev_cr: &[u8],
+    curr_cr: &[u8],
+    next_cr: &[u8],
+    dst_top: &mut [u8],
+    dst_bottom: Option<&mut [u8]>,
+) {
+    bench_scalar_backend::fill_rgb_row_pair_from_420(
+        y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
+    );
 }
 
 /// Pre-allocated scratch for the 4:2:0 fancy-upsample microbench. Stores
