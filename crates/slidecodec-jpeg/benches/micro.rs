@@ -2,7 +2,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use slidecodec_jpeg::bench_support::{
-    bench_idct_reference_block, BenchColorRowScratch, BenchHuffmanState, BenchUpsampleH2V2Scratch,
+    bench_idct_reference_block, BenchColorRowScratch, BenchHuffmanState, BenchRgb420RowPairScratch,
+    BenchUpsampleH2V2Scratch,
 };
 use slidecodec_jpeg::Decoder;
 
@@ -88,6 +89,16 @@ fn bench_micro(c: &mut Criterion) {
         b.iter(|| {
             upsample.run();
             std::hint::black_box(&upsample);
+        });
+    });
+
+    // Odd-width 4:2:0 row-pair work item that forces the narrow chroma tail
+    // handling exercised by the NEON hot-path parity test.
+    let mut row_pair = BenchRgb420RowPairScratch::new(255);
+    c.bench_function("micro/rgb_420_row_pair_255", |b| {
+        b.iter(|| {
+            row_pair.run();
+            std::hint::black_box(&row_pair);
         });
     });
 
