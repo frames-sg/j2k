@@ -3,11 +3,15 @@
 #![allow(dead_code)]
 
 use criterion::black_box;
+use slidecodec_core::{BackendRequest, ImageDecodeDevice, TileBatchDecodeDevice};
 use slidecodec_j2k::{
     DecoderContext, Downscale, J2kCodec, J2kContext, J2kDecoder, J2kScratchPool, PixelFormat, Rect,
     TileBatchDecode,
 };
 use slidecodec_j2k_compare::{grok as grok_compare, openjpeg as openjpeg_compare};
+use slidecodec_j2k_metal::{
+    Codec as MetalJ2kCodec, J2kDecoder as MetalJ2kDecoder, J2kScratchPool as MetalJ2kScratchPool,
+};
 use slidecodec_j2k_native::{encode, encode_htj2k, EncodeOptions};
 use std::{
     fs,
@@ -61,18 +65,38 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
         },
     ];
 
-    match try_encode_ht(&gradient_u8(512, 512, 1), 512, 512, 1, 8) {
-        Ok(codestream) => inputs.push(BenchInput {
-            name: "htj2k_gray_512",
-            bytes: wrap_codestream_jp2(&codestream, 512, 512, 1, 8, 17),
-            dimensions: (512, 512),
-            mode: DecodeMode::Gray8,
-            is_ht: true,
-        }),
-        Err(error) => eprintln!("skipping htj2k_gray_512 bench input: {error}"),
+    match ht_bench_input() {
+        Ok(input) => inputs.push(input),
+        Err(error) => eprintln!("skipping HTJ2K bench input: {error}"),
     }
 
     inputs
+}
+
+fn ht_bench_input() -> Result<BenchInput, String> {
+    let candidates = [
+        ("htj2k_gray_512", 512_u32, 512_u32),
+        ("htj2k_gray_8", 8_u32, 8_u32),
+    ];
+
+    let mut last_error = None;
+    for (name, width, height) in candidates {
+        let pixels = gradient_u8(width, height, 1);
+        match try_encode_ht(&pixels, width, height, 1, 8) {
+            Ok(codestream) => {
+                return Ok(BenchInput {
+                    name,
+                    bytes: wrap_codestream_jp2(&codestream, width, height, 1, 8, 17),
+                    dimensions: (width, height),
+                    mode: DecodeMode::Gray8,
+                    is_ht: true,
+                })
+            }
+            Err(error) => last_error = Some(format!("{name}: {error}")),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "no HTJ2K benchmark candidate succeeded".to_string()))
 }
 
 pub(crate) fn slidecodec_inspect(bytes: &[u8]) {
@@ -128,6 +152,52 @@ pub(crate) fn slidecodec_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count
             .expect("tile decode");
     }
     black_box(out);
+}
+
+pub(crate) fn metal_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub(crate) fn slidecodec_metal_decode(bytes: &[u8], mode: DecodeMode) {
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    let surface = decoder
+        .decode_to_device(mode_format(mode), BackendRequest::Metal)
+        .expect("slidecodec metal decode");
+    black_box(surface);
+}
+
+pub(crate) fn slidecodec_metal_decode_region(bytes: &[u8], mode: DecodeMode, edge: u32) {
+    let cpu_decoder = J2kDecoder::new(bytes).expect("slidecodec decoder");
+    let roi = centered_roi(cpu_decoder.info().dimensions, edge);
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    let surface = decoder
+        .decode_region_to_device(mode_format(mode), roi, BackendRequest::Metal)
+        .expect("slidecodec metal region decode");
+    black_box(surface);
+}
+
+pub(crate) fn slidecodec_metal_decode_scaled(bytes: &[u8], mode: DecodeMode, scale: Downscale) {
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    let surface = decoder
+        .decode_scaled_to_device(mode_format(mode), scale, BackendRequest::Metal)
+        .expect("slidecodec metal scaled decode");
+    black_box(surface);
+}
+
+pub(crate) fn slidecodec_metal_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
+    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut pool = MetalJ2kScratchPool::new();
+    for _ in 0..count {
+        let surface = MetalJ2kCodec::decode_tile_to_device(
+            &mut ctx,
+            &mut pool,
+            bytes,
+            mode_format(mode),
+            BackendRequest::Metal,
+        )
+        .expect("slidecodec metal tile decode");
+        black_box(surface);
+    }
 }
 
 pub(crate) fn openjpeg_available() -> bool {
