@@ -3,6 +3,7 @@
 use crate::error::{JpegError, MarkerKind};
 use crate::info::{ColorSpace, SamplingFactors, SofKind};
 use crate::parse::header::parse_header;
+use crate::parse::scan::ScanComponent;
 use crate::parse::tables::RawHuffmanTable;
 use alloc::vec::Vec;
 
@@ -101,14 +102,8 @@ pub fn build_metal_fast420_packet(
         .scan
         .as_ref()
         .ok_or(MetalFast420PacketError::MissingScan)?;
-    if header.component_ids.as_slice() != [1, 2, 3] || scan.components.len() != 3 {
-        return Err(MetalFast420PacketError::UnsupportedComponentOrder);
-    }
-    for (expected_id, component) in [1u8, 2, 3].into_iter().zip(scan.components.iter()) {
-        if component.id != expected_id {
-            return Err(MetalFast420PacketError::UnsupportedComponentOrder);
-        }
-    }
+    let [y_component, cb_component, cr_component] =
+        ordered_scan_triplet(&header.component_ids, &scan.components)?;
 
     let y_quant = quant_for_component(&header.quant_table_ids, &header.quant_tables.entries, 0)?;
     let cb_quant = quant_for_component(&header.quant_table_ids, &header.quant_tables.entries, 1)?;
@@ -116,32 +111,32 @@ pub fn build_metal_fast420_packet(
     let y_dc_table = huffman_table(
         &header.huffman_tables.dc,
         TableKind::Dc,
-        scan.components[0].dc_table,
+        y_component.dc_table,
     )?;
     let y_ac_table = huffman_table(
         &header.huffman_tables.ac,
         TableKind::Ac,
-        scan.components[0].ac_table,
+        y_component.ac_table,
     )?;
     let cb_dc_table = huffman_table(
         &header.huffman_tables.dc,
         TableKind::Dc,
-        scan.components[1].dc_table,
+        cb_component.dc_table,
     )?;
     let cb_ac_table = huffman_table(
         &header.huffman_tables.ac,
         TableKind::Ac,
-        scan.components[1].ac_table,
+        cb_component.ac_table,
     )?;
     let cr_dc_table = huffman_table(
         &header.huffman_tables.dc,
         TableKind::Dc,
-        scan.components[2].dc_table,
+        cr_component.dc_table,
     )?;
     let cr_ac_table = huffman_table(
         &header.huffman_tables.ac,
         TableKind::Ac,
-        scan.components[2].ac_table,
+        cr_component.ac_table,
     )?;
 
     let entropy_offset = header
@@ -185,6 +180,32 @@ fn quant_for_component(
         .get(component_idx)
         .ok_or(MetalFast420PacketError::UnsupportedComponentOrder)?;
     tables[slot as usize].ok_or(MetalFast420PacketError::MissingQuantTable { slot })
+}
+
+fn ordered_scan_triplet(
+    component_ids: &[u8],
+    scan_components: &[ScanComponent],
+) -> Result<[ScanComponent; 3], MetalFast420PacketError> {
+    if component_ids.len() != 3 || scan_components.len() != 3 {
+        return Err(MetalFast420PacketError::UnsupportedComponentOrder);
+    }
+
+    let mut ordered = [None; 3];
+    for (index, &component_id) in component_ids.iter().enumerate() {
+        let Some(component) = scan_components
+            .iter()
+            .copied()
+            .find(|component| component.id == component_id)
+        else {
+            return Err(MetalFast420PacketError::UnsupportedComponentOrder);
+        };
+        ordered[index] = Some(component);
+    }
+
+    match ordered {
+        [Some(first), Some(second), Some(third)] => Ok([first, second, third]),
+        _ => Err(MetalFast420PacketError::UnsupportedComponentOrder),
+    }
 }
 
 fn huffman_table(

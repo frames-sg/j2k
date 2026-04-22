@@ -66,6 +66,41 @@ struct JpegFast420Params {
     out_stride: u32,
     alpha: u32,
     out_format: u32,
+    origin_x: u32,
+    origin_y: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegFast420ScaledParams {
+    scaled_width: u32,
+    scaled_height: u32,
+    chroma_width: u32,
+    chroma_height: u32,
+    mcus_per_row: u32,
+    mcu_rows: u32,
+    entropy_len: u32,
+    scale_shift: u32,
+    origin_x: u32,
+    origin_y: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegFast420WindowedPackParams {
+    src_width: u32,
+    src_height: u32,
+    chroma_width: u32,
+    chroma_height: u32,
+    src_x: u32,
+    src_y: u32,
+    width: u32,
+    height: u32,
+    out_stride: u32,
+    alpha: u32,
+    out_format: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -112,7 +147,11 @@ struct MetalRuntime {
     queue: CommandQueue,
     pack_pipeline: ComputePipelineState,
     pack_420_pipeline: ComputePipelineState,
+    pack_420_windowed_pipeline: ComputePipelineState,
     fast420_decode_pipeline: ComputePipelineState,
+    fast420_region_decode_pipeline: ComputePipelineState,
+    fast420_scaled_decode_pipeline: ComputePipelineState,
+    fast420_scaled_region_decode_pipeline: ComputePipelineState,
 }
 
 #[cfg(target_os = "macos")]
@@ -127,16 +166,35 @@ impl MetalRuntime {
         let pack_420_function = library.get_function("jpeg_pack_420", None)?;
         let pack_420_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_420_function)?;
+        let pack_420_windowed_function = library.get_function("jpeg_pack_420_windowed", None)?;
+        let pack_420_windowed_pipeline =
+            device.new_compute_pipeline_state_with_function(&pack_420_windowed_function)?;
         let fast420_decode_function = library.get_function("jpeg_decode_fast420", None)?;
         let fast420_decode_pipeline =
             device.new_compute_pipeline_state_with_function(&fast420_decode_function)?;
+        let fast420_region_decode_function =
+            library.get_function("jpeg_decode_fast420_region", None)?;
+        let fast420_region_decode_pipeline =
+            device.new_compute_pipeline_state_with_function(&fast420_region_decode_function)?;
+        let fast420_scaled_decode_function =
+            library.get_function("jpeg_decode_fast420_scaled", None)?;
+        let fast420_scaled_decode_pipeline =
+            device.new_compute_pipeline_state_with_function(&fast420_scaled_decode_function)?;
+        let fast420_scaled_region_decode_function =
+            library.get_function("jpeg_decode_fast420_scaled_region", None)?;
+        let fast420_scaled_region_decode_pipeline = device
+            .new_compute_pipeline_state_with_function(&fast420_scaled_region_decode_function)?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
             queue,
             pack_pipeline,
             pack_420_pipeline,
+            pack_420_windowed_pipeline,
             fast420_decode_pipeline,
+            fast420_region_decode_pipeline,
+            fast420_scaled_decode_pipeline,
+            fast420_scaled_region_decode_pipeline,
         })
     }
 }
@@ -566,7 +624,143 @@ fn fast420_params(
         out_stride: u32::try_from(out_stride).expect("JPEG Metal output stride fits in u32"),
         alpha: u32::from(u8::MAX),
         out_format,
+        origin_x: 0,
+        origin_y: 0,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn full_mcu_window_420(dims: (u32, u32), roi: slidecodec_jpeg::Rect) -> slidecodec_jpeg::Rect {
+    let x0 = (roi.x / 16) * 16;
+    let y0 = (roi.y / 16) * 16;
+    let x1 = (roi.x + roi.w).div_ceil(16) * 16;
+    let y1 = (roi.y + roi.h).div_ceil(16) * 16;
+    slidecodec_jpeg::Rect {
+        x: x0,
+        y: y0,
+        w: x1.min(dims.0).saturating_sub(x0),
+        h: y1.min(dims.1).saturating_sub(y0),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_region_params(
+    packet: &JpegMetalFast420PacketV1,
+    fmt: PixelFormat,
+    source_window: slidecodec_jpeg::Rect,
+) -> Result<JpegFast420Params, Error> {
+    let out_format = pixel_format_to_out_format(fmt).ok_or_else(|| Error::MetalKernel {
+        message: format!("unsupported JPEG Metal fast420 pixel format {fmt:?}"),
+    })?;
+    let out_stride = source_window.w as usize * fmt.bytes_per_pixel();
+    Ok(JpegFast420Params {
+        width: source_window.w,
+        height: source_window.h,
+        chroma_width: source_window.w.div_ceil(2),
+        chroma_height: source_window.h.div_ceil(2),
+        mcus_per_row: packet.mcus_per_row,
+        mcu_rows: packet.mcu_rows,
+        entropy_len: u32::try_from(packet.entropy_bytes.len())
+            .expect("JPEG Metal entropy payload fits in u32"),
+        out_stride: u32::try_from(out_stride).expect("JPEG Metal output stride fits in u32"),
+        alpha: u32::from(u8::MAX),
+        out_format,
+        origin_x: source_window.x,
+        origin_y: source_window.y,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_scaled_params(
+    packet: &JpegMetalFast420PacketV1,
+    scale: slidecodec_core::Downscale,
+) -> Option<JpegFast420ScaledParams> {
+    let scale_shift = match scale {
+        slidecodec_core::Downscale::Half => 1,
+        slidecodec_core::Downscale::Quarter => 2,
+        slidecodec_core::Downscale::Eighth => 3,
+        _ => return None,
+    };
+    let denom = 1u32 << scale_shift;
+    let scaled_width = packet.dimensions.0.div_ceil(denom);
+    let scaled_height = packet.dimensions.1.div_ceil(denom);
+    Some(JpegFast420ScaledParams {
+        scaled_width,
+        scaled_height,
+        chroma_width: scaled_width.div_ceil(2),
+        chroma_height: scaled_height.div_ceil(2),
+        mcus_per_row: packet.mcus_per_row,
+        mcu_rows: packet.mcu_rows,
+        entropy_len: u32::try_from(packet.entropy_bytes.len())
+            .expect("JPEG Metal entropy payload fits in u32"),
+        scale_shift,
+        origin_x: 0,
+        origin_y: 0,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn full_mcu_scaled_window_420(
+    scaled_dims: (u32, u32),
+    roi: slidecodec_jpeg::Rect,
+    scale_shift: u32,
+) -> slidecodec_jpeg::Rect {
+    let mcu_size = 16u32 >> scale_shift;
+    let x0 = (roi.x / mcu_size) * mcu_size;
+    let y0 = (roi.y / mcu_size) * mcu_size;
+    let x1 = (roi.x + roi.w).div_ceil(mcu_size) * mcu_size;
+    let y1 = (roi.y + roi.h).div_ceil(mcu_size) * mcu_size;
+    slidecodec_jpeg::Rect {
+        x: x0,
+        y: y0,
+        w: x1.min(scaled_dims.0).saturating_sub(x0),
+        h: y1.min(scaled_dims.1).saturating_sub(y0),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_scaled_region_params(
+    packet: &JpegMetalFast420PacketV1,
+    scale: slidecodec_core::Downscale,
+    source_window: slidecodec_jpeg::Rect,
+) -> Option<JpegFast420ScaledParams> {
+    let full = fast420_scaled_params(packet, scale)?;
+    Some(JpegFast420ScaledParams {
+        scaled_width: source_window.w,
+        scaled_height: source_window.h,
+        chroma_width: source_window.w.div_ceil(2),
+        chroma_height: source_window.h.div_ceil(2),
+        origin_x: source_window.x,
+        origin_y: source_window.y,
+        ..full
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_windowed_pack_params_for_dims(
+    dims: (u32, u32),
+    fmt: PixelFormat,
+    roi: slidecodec_jpeg::Rect,
+) -> JpegFast420WindowedPackParams {
+    let out_format = pixel_format_to_out_format(fmt)
+        .ok_or_else(|| Error::MetalKernel {
+            message: format!("unsupported JPEG Metal fast420 pixel format {fmt:?}"),
+        })
+        .expect("validated JPEG Metal fast420 pixel format");
+    let out_stride = roi.w as usize * fmt.bytes_per_pixel();
+    JpegFast420WindowedPackParams {
+        src_width: dims.0,
+        src_height: dims.1,
+        chroma_width: dims.0.div_ceil(2),
+        chroma_height: dims.1.div_ceil(2),
+        src_x: roi.x,
+        src_y: roi.y,
+        width: roi.w,
+        height: roi.h,
+        out_stride: u32::try_from(out_stride).expect("JPEG Metal output stride fits in u32"),
+        alpha: u32::from(u8::MAX),
+        out_format,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -750,6 +944,544 @@ fn try_decode_fast420_to_surface(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_fast420_region_to_surface(
+    runtime: &MetalRuntime,
+    decoder: &CpuDecoder<'_>,
+    packet: Option<&JpegMetalFast420PacketV1>,
+    fmt: PixelFormat,
+    roi: slidecodec_jpeg::Rect,
+) -> Result<Option<Surface>, Error> {
+    let Some(packet) = packet else {
+        return Ok(None);
+    };
+    let Some(_) = pixel_format_to_out_format(fmt) else {
+        return Ok(None);
+    };
+
+    let source_window = full_mcu_window_420(packet.dimensions, roi);
+    let decode_params = fast420_region_params(packet, fmt, source_window)?;
+    let local_roi = slidecodec_jpeg::Rect {
+        x: roi.x - source_window.x,
+        y: roi.y - source_window.y,
+        w: roi.w,
+        h: roi.h,
+    };
+    let pack_params =
+        fast420_windowed_pack_params_for_dims((source_window.w, source_window.h), fmt, local_roi);
+    let y_len = source_window.w as usize * source_window.h as usize;
+    let chroma_len = source_window.w.div_ceil(2) as usize * source_window.h.div_ceil(2) as usize;
+    let y_plane = runtime
+        .device
+        .new_buffer(y_len as u64, MTLResourceOptions::StorageModeShared);
+    let chroma_buffers = [
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+    ];
+    let status = JpegDecodeStatus::default();
+    let status_buffer = runtime.device.new_buffer_with_data(
+        (&raw const status).cast(),
+        size_of::<JpegDecodeStatus>() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let entropy_buffer = runtime.device.new_buffer_with_data(
+        packet.entropy_bytes.as_ptr().cast(),
+        packet.entropy_bytes.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let dc_tables = [
+        MetalHuffmanTableHost::from(&packet.y_dc_table),
+        MetalHuffmanTableHost::from(&packet.cb_dc_table),
+        MetalHuffmanTableHost::from(&packet.cr_dc_table),
+    ];
+    let ac_tables = [
+        MetalHuffmanTableHost::from(&packet.y_ac_table),
+        MetalHuffmanTableHost::from(&packet.cb_ac_table),
+        MetalHuffmanTableHost::from(&packet.cr_ac_table),
+    ];
+
+    let out_buffer = runtime.device.new_buffer(
+        (pack_params.out_stride as usize * roi.h as usize) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder.set_compute_pipeline_state(&runtime.fast420_region_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffer), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&chroma_buffers[0]), 0);
+    decoder_encoder.set_buffer(3, Some(&chroma_buffers[1]), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420Params>() as u64,
+        (&raw const decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        packet.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        packet.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        packet.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&status_buffer), 0);
+    decoder_encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    decoder_encoder.end_encoding();
+
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(&runtime.pack_420_windowed_pipeline);
+    pack_encoder.set_buffer(0, Some(&y_plane), 0);
+    pack_encoder.set_buffer(1, Some(&chroma_buffers[0]), 0);
+    pack_encoder.set_buffer(2, Some(&chroma_buffers[1]), 0);
+    pack_encoder.set_buffer(3, Some(&out_buffer), 0);
+    pack_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420WindowedPackParams>() as u64,
+        (&raw const pack_params).cast(),
+    );
+    dispatch_2d_pipeline(
+        pack_encoder,
+        &runtime.pack_420_windowed_pipeline,
+        (roi.w, roi.h),
+    );
+    pack_encoder.end_encoding();
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let status = unsafe { *status_buffer.contents().cast::<JpegDecodeStatus>() };
+    if status.code != FAST420_STATUS_OK {
+        return Err(decode_error_from_cpu(decoder, fmt, status));
+    }
+
+    Ok(Some(Surface::from_metal_buffer(
+        out_buffer,
+        (roi.w, roi.h),
+        fmt,
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_scaled_to_surface(
+    runtime: &MetalRuntime,
+    decoder: &CpuDecoder<'_>,
+    packet: Option<&JpegMetalFast420PacketV1>,
+    fmt: PixelFormat,
+    scale: slidecodec_core::Downscale,
+) -> Result<Option<Surface>, Error> {
+    let Some(packet) = packet else {
+        return Ok(None);
+    };
+    let Some(_out_format) = pixel_format_to_out_format(fmt) else {
+        return Ok(None);
+    };
+    let Some(params) = fast420_scaled_params(packet, scale) else {
+        return Ok(None);
+    };
+
+    let y_len = params.scaled_width as usize * params.scaled_height as usize;
+    let chroma_len = params.chroma_width as usize * params.chroma_height as usize;
+    let y_plane = runtime
+        .device
+        .new_buffer(y_len as u64, MTLResourceOptions::StorageModeShared);
+    let chroma_buffers = [
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+    ];
+    let status = JpegDecodeStatus::default();
+    let status_buffer = runtime.device.new_buffer_with_data(
+        (&raw const status).cast(),
+        size_of::<JpegDecodeStatus>() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let entropy_buffer = runtime.device.new_buffer_with_data(
+        packet.entropy_bytes.as_ptr().cast(),
+        packet.entropy_bytes.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let dc_tables = [
+        MetalHuffmanTableHost::from(&packet.y_dc_table),
+        MetalHuffmanTableHost::from(&packet.cb_dc_table),
+        MetalHuffmanTableHost::from(&packet.cr_dc_table),
+    ];
+    let ac_tables = [
+        MetalHuffmanTableHost::from(&packet.y_ac_table),
+        MetalHuffmanTableHost::from(&packet.cb_ac_table),
+        MetalHuffmanTableHost::from(&packet.cr_ac_table),
+    ];
+
+    let out_buffer = (fmt != PixelFormat::Gray8).then(|| {
+        runtime.device.new_buffer(
+            (params.scaled_width as usize * fmt.bytes_per_pixel() * params.scaled_height as usize)
+                as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    });
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder.set_compute_pipeline_state(&runtime.fast420_scaled_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffer), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&chroma_buffers[0]), 0);
+    decoder_encoder.set_buffer(3, Some(&chroma_buffers[1]), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420ScaledParams>() as u64,
+        (&raw const params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        packet.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        packet.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        packet.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&status_buffer), 0);
+    decoder_encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    decoder_encoder.end_encoding();
+
+    if let Some(out_buffer) = out_buffer.as_ref() {
+        let pack_params = JpegFast420Params {
+            width: params.scaled_width,
+            height: params.scaled_height,
+            chroma_width: params.chroma_width,
+            chroma_height: params.chroma_height,
+            mcus_per_row: params.mcus_per_row,
+            mcu_rows: params.mcu_rows,
+            entropy_len: params.entropy_len,
+            out_stride: u32::try_from(params.scaled_width as usize * fmt.bytes_per_pixel())
+                .expect("JPEG Metal output stride fits in u32"),
+            alpha: u32::from(u8::MAX),
+            out_format: pixel_format_to_out_format(fmt).expect("validated output format"),
+            origin_x: 0,
+            origin_y: 0,
+        };
+        let pack_encoder = command_buffer.new_compute_command_encoder();
+        pack_encoder.set_compute_pipeline_state(&runtime.pack_420_pipeline);
+        pack_encoder.set_buffer(0, Some(&y_plane), 0);
+        pack_encoder.set_buffer(1, Some(&chroma_buffers[0]), 0);
+        pack_encoder.set_buffer(2, Some(&chroma_buffers[1]), 0);
+        pack_encoder.set_buffer(3, Some(out_buffer), 0);
+        pack_encoder.set_bytes(
+            4,
+            size_of::<JpegFast420Params>() as u64,
+            (&raw const pack_params).cast(),
+        );
+        dispatch_2d_pipeline(
+            pack_encoder,
+            &runtime.pack_420_pipeline,
+            (params.scaled_width, params.scaled_height),
+        );
+        pack_encoder.end_encoding();
+    }
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let status = unsafe { *status_buffer.contents().cast::<JpegDecodeStatus>() };
+    if status.code != FAST420_STATUS_OK {
+        return Err(decode_error_from_cpu(decoder, fmt, status));
+    }
+
+    Ok(Some(match out_buffer {
+        Some(out_buffer) => {
+            Surface::from_metal_buffer(out_buffer, (params.scaled_width, params.scaled_height), fmt)
+        }
+        None => {
+            Surface::from_metal_buffer(y_plane, (params.scaled_width, params.scaled_height), fmt)
+        }
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_scaled_region_to_surface(
+    runtime: &MetalRuntime,
+    decoder: &CpuDecoder<'_>,
+    packet: Option<&JpegMetalFast420PacketV1>,
+    fmt: PixelFormat,
+    scaled_roi: slidecodec_jpeg::Rect,
+    scale: slidecodec_core::Downscale,
+) -> Result<Option<Surface>, Error> {
+    let Some(packet) = packet else {
+        return Ok(None);
+    };
+    let Some(_) = pixel_format_to_out_format(fmt) else {
+        return Ok(None);
+    };
+    let Some(full_params) = fast420_scaled_params(packet, scale) else {
+        return Ok(None);
+    };
+    let source_window = full_mcu_scaled_window_420(
+        (full_params.scaled_width, full_params.scaled_height),
+        scaled_roi,
+        full_params.scale_shift,
+    );
+    let Some(decode_params) = fast420_scaled_region_params(packet, scale, source_window) else {
+        return Ok(None);
+    };
+    let local_roi = slidecodec_jpeg::Rect {
+        x: scaled_roi.x - source_window.x,
+        y: scaled_roi.y - source_window.y,
+        w: scaled_roi.w,
+        h: scaled_roi.h,
+    };
+    let pack_params =
+        fast420_windowed_pack_params_for_dims((source_window.w, source_window.h), fmt, local_roi);
+    let y_len = source_window.w as usize * source_window.h as usize;
+    let chroma_len = source_window.w.div_ceil(2) as usize * source_window.h.div_ceil(2) as usize;
+    let y_plane = runtime
+        .device
+        .new_buffer(y_len as u64, MTLResourceOptions::StorageModeShared);
+    let chroma_buffers = [
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+    ];
+    let status = JpegDecodeStatus::default();
+    let status_buffer = runtime.device.new_buffer_with_data(
+        (&raw const status).cast(),
+        size_of::<JpegDecodeStatus>() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let entropy_buffer = runtime.device.new_buffer_with_data(
+        packet.entropy_bytes.as_ptr().cast(),
+        packet.entropy_bytes.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let dc_tables = [
+        MetalHuffmanTableHost::from(&packet.y_dc_table),
+        MetalHuffmanTableHost::from(&packet.cb_dc_table),
+        MetalHuffmanTableHost::from(&packet.cr_dc_table),
+    ];
+    let ac_tables = [
+        MetalHuffmanTableHost::from(&packet.y_ac_table),
+        MetalHuffmanTableHost::from(&packet.cb_ac_table),
+        MetalHuffmanTableHost::from(&packet.cr_ac_table),
+    ];
+
+    let out_buffer = runtime.device.new_buffer(
+        (pack_params.out_stride as usize * scaled_roi.h as usize) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder.set_compute_pipeline_state(&runtime.fast420_scaled_region_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffer), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&chroma_buffers[0]), 0);
+    decoder_encoder.set_buffer(3, Some(&chroma_buffers[1]), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420ScaledParams>() as u64,
+        (&raw const decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        packet.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        packet.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        packet.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&status_buffer), 0);
+    decoder_encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    decoder_encoder.end_encoding();
+
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(&runtime.pack_420_windowed_pipeline);
+    pack_encoder.set_buffer(0, Some(&y_plane), 0);
+    pack_encoder.set_buffer(1, Some(&chroma_buffers[0]), 0);
+    pack_encoder.set_buffer(2, Some(&chroma_buffers[1]), 0);
+    pack_encoder.set_buffer(3, Some(&out_buffer), 0);
+    pack_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420WindowedPackParams>() as u64,
+        (&raw const pack_params).cast(),
+    );
+    dispatch_2d_pipeline(
+        pack_encoder,
+        &runtime.pack_420_windowed_pipeline,
+        (scaled_roi.w, scaled_roi.h),
+    );
+    pack_encoder.end_encoding();
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let status = unsafe { *status_buffer.contents().cast::<JpegDecodeStatus>() };
+    if status.code != FAST420_STATUS_OK {
+        return Err(decode_error_from_cpu(decoder, fmt, status));
+    }
+
+    Ok(Some(Surface::from_metal_buffer(
+        out_buffer,
+        (scaled_roi.w, scaled_roi.h),
+        fmt,
+    )))
+}
+
+#[cfg(target_os = "macos")]
 fn scaled_rect_covering(rect: Rect, scale: slidecodec_core::Downscale) -> Rect {
     let denom = scale.denominator();
     let x_end = rect.x + rect.w;
@@ -794,8 +1526,14 @@ pub(crate) fn decode_region_to_surface(
     pool: &mut slidecodec_jpeg::ScratchPool,
     fmt: PixelFormat,
     roi: slidecodec_jpeg::Rect,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        if let Some(surface) =
+            try_decode_fast420_region_to_surface(runtime, decoder, fast420_packet, fmt, roi)?
+        {
+            return Ok(surface);
+        }
         let dims = (roi.w, roi.h);
         let mut stage = PlaneStage::new(&runtime.device, decoder.info().color_space, dims)?;
         decoder.decode_region_component_rows_with_scratch(
@@ -814,8 +1552,14 @@ pub(crate) fn decode_scaled_to_surface(
     pool: &mut slidecodec_jpeg::ScratchPool,
     fmt: PixelFormat,
     scale: slidecodec_core::Downscale,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        if let Some(surface) =
+            try_decode_fast420_scaled_to_surface(runtime, decoder, fast420_packet, fmt, scale)?
+        {
+            return Ok(surface);
+        }
         let full = decoder.info().dimensions;
         let roi = slidecodec_jpeg::Rect {
             x: 0,
@@ -849,8 +1593,33 @@ pub(crate) fn decode_region_scaled_to_surface(
     fmt: PixelFormat,
     roi: slidecodec_jpeg::Rect,
     scale: slidecodec_core::Downscale,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        let scaled_roi = scaled_rect_covering(
+            Rect {
+                x: roi.x,
+                y: roi.y,
+                w: roi.w,
+                h: roi.h,
+            },
+            scale,
+        );
+        if let Some(surface) = try_decode_fast420_scaled_region_to_surface(
+            runtime,
+            decoder,
+            fast420_packet,
+            fmt,
+            slidecodec_jpeg::Rect {
+                x: scaled_roi.x,
+                y: scaled_roi.y,
+                w: scaled_roi.w,
+                h: scaled_roi.h,
+            },
+            scale,
+        )? {
+            return Ok(surface);
+        }
         let scaled = scaled_rect_covering(
             Rect {
                 x: roi.x,
@@ -910,4 +1679,111 @@ pub(crate) fn compose_rgb_viewport_from_regions(
         }
         stage.finish_with_runtime(runtime, PixelFormat::Rgb8)
     })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    const BASELINE_420: &[u8] =
+        include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+
+    #[test]
+    fn fast420_packet_scaled_decode_matches_cpu_scaled_bytes() {
+        let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
+        let packet =
+            slidecodec_jpeg::__private::build_metal_fast420_packet(BASELINE_420).expect("packet");
+        let (expected, _) = decoder
+            .decode_scaled(PixelFormat::Rgb8, slidecodec_core::Downscale::Quarter)
+            .expect("cpu scaled");
+
+        let surface = with_runtime(|runtime| {
+            let surface = try_decode_fast420_scaled_to_surface(
+                runtime,
+                &decoder,
+                Some(&packet),
+                PixelFormat::Rgb8,
+                slidecodec_core::Downscale::Quarter,
+            )?
+            .expect("fast420 scaled surface");
+            Ok::<_, Error>(surface)
+        })
+        .expect("metal scaled");
+
+        assert_eq!(surface.as_bytes(), expected.as_slice());
+    }
+
+    #[test]
+    fn fast420_packet_region_decode_matches_cpu_region_bytes() {
+        let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
+        let packet =
+            slidecodec_jpeg::__private::build_metal_fast420_packet(BASELINE_420).expect("packet");
+        let roi = slidecodec_jpeg::Rect {
+            x: 3,
+            y: 2,
+            w: 9,
+            h: 10,
+        };
+        let (expected, _) = decoder
+            .decode_region(PixelFormat::Rgb8, roi)
+            .expect("cpu region");
+
+        let surface = with_runtime(|runtime| {
+            let surface = try_decode_fast420_region_to_surface(
+                runtime,
+                &decoder,
+                Some(&packet),
+                PixelFormat::Rgb8,
+                roi,
+            )?
+            .expect("fast420 region surface");
+            Ok::<_, Error>(surface)
+        })
+        .expect("metal region");
+
+        assert_eq!(surface.dimensions, (roi.w, roi.h));
+        assert_eq!(surface.fmt, PixelFormat::Rgb8);
+        assert_eq!(surface.as_bytes(), expected.as_slice());
+    }
+
+    #[test]
+    fn fast420_packet_region_scaled_decode_matches_cpu_region_scaled_bytes() {
+        let decoder = CpuDecoder::new(BASELINE_420).expect("decoder");
+        let packet =
+            slidecodec_jpeg::__private::build_metal_fast420_packet(BASELINE_420).expect("packet");
+        let roi = slidecodec_jpeg::Rect {
+            x: 3,
+            y: 2,
+            w: 9,
+            h: 10,
+        };
+        let scale = slidecodec_core::Downscale::Quarter;
+        let (expected, _) = decoder
+            .decode_region_scaled(PixelFormat::Rgb8, roi, scale)
+            .expect("cpu region scaled");
+        let scaled_roi = slidecodec_jpeg::Rect {
+            x: roi.x / 4,
+            y: roi.y / 4,
+            w: (roi.x + roi.w).div_ceil(4) - (roi.x / 4),
+            h: (roi.y + roi.h).div_ceil(4) - (roi.y / 4),
+        };
+
+        let surface = with_runtime(|runtime| {
+            let surface = try_decode_fast420_scaled_region_to_surface(
+                runtime,
+                &decoder,
+                Some(&packet),
+                PixelFormat::Rgb8,
+                scaled_roi,
+                scale,
+            )?
+            .expect("fast420 scaled region surface");
+            Ok::<_, Error>(surface)
+        })
+        .expect("metal region scaled");
+
+        assert_eq!(surface.dimensions, (scaled_roi.w, scaled_roi.h));
+        assert_eq!(surface.fmt, PixelFormat::Rgb8);
+        assert_eq!(surface.as_bytes(), expected.as_slice());
+    }
 }
