@@ -9,7 +9,9 @@ use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
 use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SubBandType};
-use super::codestream::{ComponentInfo, Header, ProgressionOrder, QuantizationStyle};
+use super::codestream::{
+    ComponentInfo, Header, ProgressionOrder, QuantizationStyle, WaveletTransform,
+};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
 use super::progression::{
@@ -28,8 +30,11 @@ use crate::math::SimdBuffer;
 use crate::reader::BitReader;
 use crate::{
     decode_j2k_code_block_scalar, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
-    HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
-    J2kCodeBlockStyle, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType,
+    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob,
+    J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob,
+    J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
 };
 use core::ops::{DerefMut, Range};
 
@@ -102,6 +107,392 @@ pub(crate) fn decode<'a>(
     }
 
     Ok(())
+}
+
+pub(crate) fn build_direct_grayscale_plan<'a>(
+    data: &'a [u8],
+    header: &Header<'a>,
+    ctx: &mut DecoderContext<'a>,
+) -> Result<J2kDirectGrayscalePlan> {
+    let mut reader = BitReader::new(data);
+    let tiles = tile::parse(&mut reader, header)?;
+
+    if tiles.len() != 1 {
+        bail!(DecodingError::UnsupportedFeature(
+            "direct grayscale plan only supports single-tile codestreams"
+        ));
+    }
+
+    let tile = &tiles[0];
+    if tile.component_infos.len() != 1 {
+        bail!(DecodingError::UnsupportedFeature(
+            "direct grayscale plan only supports single-component codestreams"
+        ));
+    }
+    if header.skipped_resolution_levels != 0 {
+        bail!(DecodingError::UnsupportedFeature(
+            "direct grayscale plan only supports full-resolution decode"
+        ));
+    }
+
+    ctx.tile_decode_context.channel_data.clear();
+    ctx.tile_decode_context.output_region = None;
+    ctx.storage.reset();
+
+    build::build(tile, &mut ctx.storage)?;
+
+    let iter_input = IteratorInput::new(tile);
+    let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
+        match tile.progression_order {
+            ProgressionOrder::LayerResolutionComponentPosition => {
+                Box::new(layer_resolution_component_position_progression(iter_input))
+            }
+            ProgressionOrder::ResolutionLayerComponentPosition => {
+                Box::new(resolution_layer_component_position_progression(iter_input))
+            }
+            ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
+                resolution_position_component_layer_progression(iter_input)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+            ProgressionOrder::PositionComponentResolutionLayer => Box::new(
+                position_component_resolution_layer_progression(iter_input)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+            ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
+                component_position_resolution_layer_progression(iter_input)
+                    .ok_or(DecodingError::InvalidProgressionIterator)?,
+            ),
+        };
+    segment::parse(tile, progression_iterator, header, &mut ctx.storage)?;
+
+    build_grayscale_plan_from_storage(tile, header, &ctx.storage)
+}
+
+fn build_grayscale_plan_from_storage(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    storage: &DecompositionStorage<'_>,
+) -> Result<J2kDirectGrayscalePlan> {
+    let component_info = &tile.component_infos[0];
+    if component_info.size_info.horizontal_resolution != 1
+        || component_info.size_info.vertical_resolution != 1
+    {
+        bail!(DecodingError::UnsupportedFeature(
+            "direct grayscale plan only supports unit-sampled grayscale"
+        ));
+    }
+
+    let tile_decompositions = &storage.tile_decompositions[0];
+    let mut steps = Vec::new();
+    let mut next_band_id: J2kDirectBandId = 0;
+    let mut sub_band_ids = vec![None; storage.sub_bands.len()];
+
+    for resolution in 0..component_info.num_resolution_levels() - header.skipped_resolution_levels {
+        let sub_band_iter = tile_decompositions.sub_band_iter(resolution, &storage.decompositions);
+        for sub_band_idx in sub_band_iter {
+            if let Some(step) = build_grayscale_sub_band_step(
+                &storage.sub_bands[sub_band_idx],
+                next_band_id,
+                resolution,
+                component_info,
+                storage,
+                header,
+            )? {
+                sub_band_ids[sub_band_idx] = Some(next_band_id);
+                next_band_id = next_band_id
+                    .checked_add(1)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                steps.push(step);
+            }
+        }
+    }
+
+    let mut current_ll_rect = storage.sub_bands[tile_decompositions.first_ll_sub_band].rect;
+    let mut current_ll_band_id = sub_band_ids[tile_decompositions.first_ll_sub_band]
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
+    for decomposition in decompositions {
+        let hl = &storage.sub_bands[decomposition.sub_bands[0]];
+        let lh = &storage.sub_bands[decomposition.sub_bands[1]];
+        let hh = &storage.sub_bands[decomposition.sub_bands[2]];
+        let output_band_id = next_band_id;
+        next_band_id = next_band_id
+            .checked_add(1)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        steps.push(J2kDirectGrayscaleStep::Idwt(J2kDirectIdwtStep {
+            output_band_id,
+            rect: external_rect(decomposition.rect),
+            transform: external_transform(component_info.wavelet_transform()),
+            ll_band_id: current_ll_band_id,
+            ll: external_rect(current_ll_rect),
+            hl_band_id: sub_band_ids[decomposition.sub_bands[0]]
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            hl: external_rect(hl.rect),
+            lh_band_id: sub_band_ids[decomposition.sub_bands[1]]
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            lh: external_rect(lh.rect),
+            hh_band_id: sub_band_ids[decomposition.sub_bands[2]]
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            hh: external_rect(hh.rect),
+        }));
+        current_ll_rect = decomposition.rect;
+        current_ll_band_id = output_band_id;
+    }
+
+    let component_tile = ComponentTile::new(tile, component_info);
+    let resolution_tile = ResolutionTile::new(
+        component_tile,
+        component_info.num_resolution_levels() - 1 - header.skipped_resolution_levels,
+    );
+    let image_x_offset = header.size_data.image_area_x_offset;
+    let image_y_offset = header.size_data.image_area_y_offset;
+    let source_x = image_x_offset.saturating_sub(current_ll_rect.x0);
+    let source_y = image_y_offset.saturating_sub(current_ll_rect.y0);
+    let copy_width = resolution_tile
+        .rect
+        .width()
+        .min(current_ll_rect.width().saturating_sub(source_x));
+    let copy_height = resolution_tile
+        .rect
+        .height()
+        .min(current_ll_rect.height().saturating_sub(source_y));
+    let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
+    let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
+    steps.push(J2kDirectGrayscaleStep::Store(J2kDirectStoreStep {
+        input_band_id: current_ll_band_id,
+        input_rect: external_rect(current_ll_rect),
+        source_x,
+        source_y,
+        copy_width,
+        copy_height,
+        output_width: header.size_data.image_width(),
+        output_height: header.size_data.image_height(),
+        output_x,
+        output_y,
+        addend: (1_u32 << (component_info.size_info.precision - 1)) as f32,
+    }));
+
+    Ok(J2kDirectGrayscalePlan {
+        dimensions: (
+            header.size_data.image_width(),
+            header.size_data.image_height(),
+        ),
+        bit_depth: component_info.size_info.precision,
+        steps,
+    })
+}
+
+fn build_grayscale_sub_band_step(
+    sub_band: &SubBand,
+    band_id: J2kDirectBandId,
+    resolution: u8,
+    component_info: &ComponentInfo,
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+) -> Result<Option<J2kDirectGrayscaleStep>> {
+    let dequantization_step = {
+        if component_info.quantization_info.quantization_style == QuantizationStyle::NoQuantization
+        {
+            1.0
+        } else {
+            let (exponent, mantissa) =
+                component_info.exponent_mantissa(sub_band.sub_band_type, resolution)?;
+
+            let r_b = {
+                let log_gain = match sub_band.sub_band_type {
+                    SubBandType::LowLow => 0,
+                    SubBandType::LowHigh => 1,
+                    SubBandType::HighLow => 1,
+                    SubBandType::HighHigh => 2,
+                };
+
+                component_info.size_info.precision as u16 + log_gain
+            };
+
+            crate::math::pow2i(r_b as i32 - exponent as i32) * (1.0 + (mantissa as f32) / 2048.0)
+        }
+    };
+
+    let num_bitplanes = {
+        let (exponent, _) = component_info.exponent_mantissa(sub_band.sub_band_type, resolution)?;
+        let num_bitplanes = (component_info.quantization_info.guard_bits as u16)
+            .checked_add(exponent)
+            .and_then(|x| x.checked_sub(1))
+            .ok_or(DecodingError::InvalidBitplaneCount)?;
+
+        if num_bitplanes > MAX_BITPLANE_COUNT as u16 {
+            bail!(DecodingError::TooManyBitplanes);
+        }
+
+        num_bitplanes as u8
+    };
+
+    if component_info
+        .coding_style
+        .parameters
+        .code_block_style
+        .uses_high_throughput_block_coding()
+    {
+        let stripe_causal = component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .vertically_causal_context;
+        let mut jobs = Vec::new();
+        for precinct in sub_band
+            .precincts
+            .clone()
+            .map(|idx| &storage.precincts[idx])
+        {
+            for code_block in precinct
+                .code_blocks
+                .clone()
+                .map(|idx| &storage.code_blocks[idx])
+            {
+                let actual_bitplanes = if header.strict {
+                    num_bitplanes
+                        .checked_sub(code_block.missing_bit_planes)
+                        .ok_or(DecodingError::InvalidBitplaneCount)?
+                } else {
+                    num_bitplanes.saturating_sub(code_block.missing_bit_planes)
+                };
+                let max_coding_passes = if actual_bitplanes == 0 {
+                    0
+                } else {
+                    1 + 3 * (actual_bitplanes - 1)
+                };
+                if code_block.number_of_coding_passes > max_coding_passes && header.strict {
+                    bail!(DecodingError::TooManyCodingPasses);
+                }
+                if code_block.number_of_coding_passes == 0 || actual_bitplanes == 0 {
+                    continue;
+                }
+
+                let combined = ht_block_decode::collect_code_block_data(code_block, storage)?;
+                jobs.push(HtOwnedCodeBlockBatchJob {
+                    output_x: code_block.rect.x0 - sub_band.rect.x0,
+                    output_y: code_block.rect.y0 - sub_band.rect.y0,
+                    data: combined.data,
+                    cleanup_length: combined.cleanup_length,
+                    refinement_length: combined.refinement_length,
+                    width: code_block.rect.width(),
+                    height: code_block.rect.height(),
+                    output_stride: sub_band.rect.width() as usize,
+                    missing_bit_planes: code_block.missing_bit_planes,
+                    number_of_coding_passes: code_block.number_of_coding_passes,
+                    num_bitplanes,
+                    stripe_causal,
+                    strict: header.strict,
+                    dequantization_step,
+                });
+            }
+        }
+
+        return Ok(Some(J2kDirectGrayscaleStep::HtSubBand(
+            HtOwnedSubBandPlan {
+                band_id,
+                rect: external_rect(sub_band.rect),
+                width: sub_band.rect.width(),
+                height: sub_band.rect.height(),
+                jobs,
+            },
+        )));
+    }
+
+    let classic_job_sub_band_type = match sub_band.sub_band_type {
+        SubBandType::LowLow => J2kSubBandType::LowLow,
+        SubBandType::HighLow => J2kSubBandType::HighLow,
+        SubBandType::LowHigh => J2kSubBandType::LowHigh,
+        SubBandType::HighHigh => J2kSubBandType::HighHigh,
+    };
+    let classic_job_style = J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .selective_arithmetic_coding_bypass,
+        reset_context_probabilities: component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .reset_context_probabilities,
+        termination_on_each_pass: component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .termination_on_each_pass,
+        vertically_causal_context: component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .vertically_causal_context,
+        segmentation_symbols: component_info
+            .coding_style
+            .parameters
+            .code_block_style
+            .segmentation_symbols,
+    };
+
+    let mut jobs = Vec::new();
+    for precinct in sub_band
+        .precincts
+        .clone()
+        .map(|idx| &storage.precincts[idx])
+    {
+        for code_block in precinct
+            .code_blocks
+            .clone()
+            .map(|idx| &storage.code_blocks[idx])
+        {
+            let (combined_data, segments) = collect_classic_code_block_data(
+                code_block,
+                &component_info.coding_style.parameters.code_block_style,
+                storage,
+            )?;
+            jobs.push(J2kOwnedCodeBlockBatchJob {
+                output_x: code_block.rect.x0 - sub_band.rect.x0,
+                output_y: code_block.rect.y0 - sub_band.rect.y0,
+                data: combined_data,
+                segments,
+                width: code_block.rect.width(),
+                height: code_block.rect.height(),
+                output_stride: sub_band.rect.width() as usize,
+                missing_bit_planes: code_block.missing_bit_planes,
+                number_of_coding_passes: code_block.number_of_coding_passes,
+                total_bitplanes: num_bitplanes,
+                sub_band_type: classic_job_sub_band_type,
+                style: classic_job_style,
+                strict: header.strict,
+                dequantization_step,
+            });
+        }
+    }
+
+    Ok(Some(J2kDirectGrayscaleStep::ClassicSubBand(
+        J2kOwnedSubBandPlan {
+            band_id,
+            rect: external_rect(sub_band.rect),
+            width: sub_band.rect.width(),
+            height: sub_band.rect.height(),
+            jobs,
+        },
+    )))
+}
+
+fn external_rect(rect: super::rect::IntRect) -> J2kRect {
+    J2kRect {
+        x0: rect.x0,
+        y0: rect.y0,
+        x1: rect.x1,
+        y1: rect.y1,
+    }
+}
+
+fn external_transform(transform: WaveletTransform) -> J2kWaveletTransform {
+    match transform {
+        WaveletTransform::Reversible53 => J2kWaveletTransform::Reversible53,
+        WaveletTransform::Irreversible97 => J2kWaveletTransform::Irreversible97,
+    }
 }
 
 fn collect_classic_code_block_data(

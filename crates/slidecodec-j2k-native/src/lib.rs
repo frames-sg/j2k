@@ -91,10 +91,17 @@ use crate::jp2::{DecodedImage, ImageBoxes};
 pub mod error;
 #[macro_use]
 pub(crate) mod log;
+mod direct_plan;
 pub(crate) mod math;
 pub(crate) mod writer;
 
 use crate::math::{dispatch, f32x8, Level, Simd, SIMD_WIDTH};
+#[doc(hidden)]
+pub use direct_plan::{
+    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
+    J2kOwnedSubBandPlan,
+};
 pub use error::{
     ColorError, DecodeError, DecodingError, FormatError, MarkerError, Result, TileError,
     ValidationError,
@@ -886,6 +893,21 @@ impl<'a> Image<'a> {
             has_alpha: self.has_alpha,
             planes,
         })
+    }
+
+    /// Build a hidden grayscale direct device plan without materializing host component planes.
+    #[doc(hidden)]
+    pub fn build_direct_grayscale_plan_with_context(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<J2kDirectGrayscalePlan> {
+        if !matches!(self.color_space, ColorSpace::Gray) || self.has_alpha {
+            bail!(DecodingError::UnsupportedFeature(
+                "direct grayscale plan only supports grayscale images without alpha"
+            ));
+        }
+
+        j2c::build_direct_grayscale_plan(self.codestream, &self.header, decoder_context)
     }
 
     /// Decode borrowed component planes while delegating HTJ2K code-block decode.
@@ -1946,6 +1968,26 @@ mod tests {
         encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode multi-block classic")
     }
 
+    fn fixture_gray() -> Vec<u8> {
+        let pixels: Vec<u8> = (0..16).collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        };
+        encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
+    }
+
+    fn fixture_ht_gray() -> Vec<u8> {
+        let pixels: Vec<u8> = (0..16).collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        };
+        encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode ht gray8")
+    }
+
     #[test]
     fn region_decode_reuses_region_sized_component_storage() {
         let bytes = fixture();
@@ -1980,6 +2022,54 @@ mod tests {
             .channel_data
             .iter()
             .all(|component| component.container.truncated().len() == 2));
+    }
+
+    #[test]
+    fn grayscale_direct_plan_is_built_without_materializing_channel_data() {
+        let bytes = fixture_gray();
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+
+        let plan = image
+            .build_direct_grayscale_plan_with_context(&mut context)
+            .expect("build direct plan");
+
+        assert_eq!(plan.dimensions, (4, 4));
+        assert_eq!(plan.bit_depth, 8);
+        assert!(
+            !plan.steps.is_empty(),
+            "direct plan must contain executable steps"
+        );
+        assert!(
+            plan.steps.iter().any(|step| matches!(
+                step,
+                J2kDirectGrayscaleStep::ClassicSubBand(plan) if !plan.jobs.is_empty()
+            )),
+            "classic J2K direct plan must contain at least one non-empty classic sub-band job"
+        );
+        assert!(
+            context.tile_decode_context.channel_data.is_empty(),
+            "building a direct plan must not materialize host component planes"
+        );
+    }
+
+    #[test]
+    fn htj2k_grayscale_direct_plan_contains_ht_sub_band_steps() {
+        let bytes = fixture_ht_gray();
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+
+        let plan = image
+            .build_direct_grayscale_plan_with_context(&mut context)
+            .expect("build direct plan");
+
+        assert!(
+            plan.steps.iter().any(|step| matches!(
+                step,
+                J2kDirectGrayscaleStep::HtSubBand(plan) if !plan.jobs.is_empty()
+            )),
+            "HTJ2K direct plan must contain at least one non-empty HT sub-band decode step"
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@
 mod classic;
 #[cfg(target_os = "macos")]
 mod compute;
+#[cfg(target_os = "macos")]
+mod direct;
 mod ht;
 mod idwt;
 mod mct;
@@ -199,17 +201,27 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn decode_to_surface_via_cpu_upload(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {
+    fn decode_direct_to_surface(&mut self, fmt: PixelFormat) -> Result<Option<Surface>, Error> {
+        self.ensure_native_image()?;
+        let (Some(image), native_context) = (self.native_image.as_ref(), &mut self.native_context)
+        else {
+            return Err(Error::Decode(J2kError::Backend(
+                "native image cache missing".to_string(),
+            )));
+        };
+        direct::try_decode_image_to_surface(image, native_context, fmt)
+    }
+
+    fn decode_to_cpu_surface(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {
         let dims = self.inner.info().dimensions;
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
         self.inner
             .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
-        upload_surface(out, dims, fmt, BackendRequest::Metal)
+        upload_surface(out, dims, fmt, BackendRequest::Cpu)
     }
 
-    #[cfg(target_os = "macos")]
-    fn decode_region_to_surface_via_cpu_upload(
+    fn decode_region_to_cpu_surface(
         &mut self,
         fmt: PixelFormat,
         plan: DeviceDecodePlan,
@@ -219,11 +231,10 @@ impl<'a> J2kDecoder<'a> {
         let mut out = vec![0u8; stride * dims.1 as usize];
         self.inner
             .decode_region_into(&mut self.pool, &mut out, stride, fmt, plan.source_rect())?;
-        upload_surface(out, dims, fmt, BackendRequest::Metal)
+        upload_surface(out, dims, fmt, BackendRequest::Cpu)
     }
 
-    #[cfg(target_os = "macos")]
-    fn decode_scaled_to_surface_via_cpu_upload(
+    fn decode_scaled_to_cpu_surface(
         &mut self,
         fmt: PixelFormat,
         scale: Downscale,
@@ -234,7 +245,14 @@ impl<'a> J2kDecoder<'a> {
         let mut out = vec![0u8; stride * dims.1 as usize];
         self.inner
             .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
-        upload_surface(out, dims, fmt, BackendRequest::Metal)
+        upload_surface(out, dims, fmt, BackendRequest::Cpu)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unsupported_metal_direct(message: impl Into<String>) -> Error {
+        Error::MetalKernel {
+            message: message.into(),
+        }
     }
 
     fn decode_to_surface_impl(
@@ -247,42 +265,33 @@ impl<'a> J2kDecoder<'a> {
             return Err(Error::MetalUnavailable);
         }
         match backend {
-            BackendRequest::Cpu => {
-                let dims = self.inner.info().dimensions;
-                let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                let mut out = vec![0u8; stride * dims.1 as usize];
-                self.inner
-                    .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
-                upload_surface(out, dims, fmt, backend)
-            }
-            BackendRequest::Auto | BackendRequest::Metal => {
+            BackendRequest::Cpu => self.decode_to_cpu_surface(fmt),
+            BackendRequest::Auto => {
                 #[cfg(target_os = "macos")]
                 {
-                    match metal_surface_strategy() {
-                        MetalSurfaceStrategy::CpuUpload => {
-                            self.decode_to_surface_via_cpu_upload(fmt)
-                        }
-                        MetalSurfaceStrategy::DirectKernel => {
-                            self.ensure_native_image()?;
-                            let (Some(image), native_context) =
-                                (self.native_image.as_ref(), &mut self.native_context)
-                            else {
-                                return Err(Error::Decode(J2kError::Backend(
-                                    "native image cache missing".to_string(),
-                                )));
-                            };
-                            compute::decode_image_to_surface(image, native_context, fmt)
-                        }
+                    if let Some(surface) = self.decode_direct_to_surface(fmt)? {
+                        Ok(surface)
+                    } else {
+                        self.decode_to_cpu_surface(fmt)
                     }
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let dims = self.inner.info().dimensions;
-                    let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * dims.1 as usize];
-                    self.inner
-                        .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
-                    upload_surface(out, dims, fmt, BackendRequest::Cpu)
+                    self.decode_to_cpu_surface(fmt)
+                }
+            }
+            BackendRequest::Metal => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.decode_direct_to_surface(fmt)?.ok_or_else(|| {
+                        Self::unsupported_metal_direct(format!(
+                            "explicit J2K MetalDirect currently supports full grayscale Gray8/Gray16 only; fmt={fmt:?}"
+                        ))
+                    })
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err(Error::MetalUnavailable)
                 }
             }
             BackendRequest::Cuda => Err(Error::UnsupportedBackend { request: backend }),
@@ -304,59 +313,20 @@ impl<'a> J2kDecoder<'a> {
             return Err(Error::MetalUnavailable);
         }
         match backend {
-            BackendRequest::Cpu => {
-                let dims = plan.output_dims();
-                let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                let mut out = vec![0u8; stride * dims.1 as usize];
-                self.inner.decode_region_into(
-                    &mut self.pool,
-                    &mut out,
-                    stride,
-                    fmt,
-                    plan.source_rect(),
-                )?;
-                upload_surface(out, dims, fmt, backend)
-            }
-            BackendRequest::Auto | BackendRequest::Metal => {
+            BackendRequest::Cpu => self.decode_region_to_cpu_surface(fmt, plan),
+            BackendRequest::Auto => {
                 #[cfg(target_os = "macos")]
                 {
-                    match metal_surface_strategy() {
-                        MetalSurfaceStrategy::CpuUpload => {
-                            self.decode_region_to_surface_via_cpu_upload(fmt, plan)
-                        }
-                        MetalSurfaceStrategy::DirectKernel => {
-                            self.ensure_native_image()?;
-                            let (Some(image), native_context) =
-                                (self.native_image.as_ref(), &mut self.native_context)
-                            else {
-                                return Err(Error::Decode(J2kError::Backend(
-                                    "native image cache missing".to_string(),
-                                )));
-                            };
-                            compute::decode_image_region_to_surface(
-                                image,
-                                native_context,
-                                fmt,
-                                plan.source_rect(),
-                            )
-                        }
-                    }
+                    self.decode_region_to_cpu_surface(fmt, plan)
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let dims = plan.output_dims();
-                    let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * dims.1 as usize];
-                    self.inner.decode_region_into(
-                        &mut self.pool,
-                        &mut out,
-                        stride,
-                        fmt,
-                        plan.source_rect(),
-                    )?;
-                    upload_surface(out, dims, fmt, BackendRequest::Cpu)
+                    self.decode_region_to_cpu_surface(fmt, plan)
                 }
             }
+            BackendRequest::Metal => Err(Self::unsupported_metal_direct(
+                "explicit J2K MetalDirect region decode is not implemented in the first grayscale-only cut",
+            )),
             BackendRequest::Cuda => Err(Error::UnsupportedBackend { request: backend }),
         }
     }
@@ -376,39 +346,20 @@ impl<'a> J2kDecoder<'a> {
             return Err(Error::MetalUnavailable);
         }
         match backend {
-            BackendRequest::Cpu => {
-                let dims = plan.output_dims();
-                let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                let mut out = vec![0u8; stride * dims.1 as usize];
-                self.inner
-                    .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
-                upload_surface(out, dims, fmt, backend)
-            }
-            BackendRequest::Auto | BackendRequest::Metal => {
+            BackendRequest::Cpu => self.decode_scaled_to_cpu_surface(fmt, scale, plan),
+            BackendRequest::Auto => {
                 #[cfg(target_os = "macos")]
                 {
-                    match metal_surface_strategy() {
-                        MetalSurfaceStrategy::CpuUpload => {
-                            self.decode_scaled_to_surface_via_cpu_upload(fmt, scale, plan)
-                        }
-                        MetalSurfaceStrategy::DirectKernel => compute::decode_scaled_to_surface(
-                            self.inner.bytes(),
-                            self.inner.info().dimensions,
-                            fmt,
-                            scale,
-                        ),
-                    }
+                    self.decode_scaled_to_cpu_surface(fmt, scale, plan)
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let dims = plan.output_dims();
-                    let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * dims.1 as usize];
-                    self.inner
-                        .decode_scaled_into(&mut self.pool, &mut out, stride, fmt, scale)?;
-                    upload_surface(out, dims, fmt, BackendRequest::Cpu)
+                    self.decode_scaled_to_cpu_surface(fmt, scale, plan)
                 }
             }
+            BackendRequest::Metal => Err(Self::unsupported_metal_direct(
+                "explicit J2K MetalDirect scaled decode is not implemented in the first grayscale-only cut",
+            )),
             BackendRequest::Cuda => Err(Error::UnsupportedBackend { request: backend }),
         }
     }
@@ -797,45 +748,3 @@ fn copy_into_output(
 }
 
 pub use slidecodec_j2k::{J2kContext, J2kScratchPool};
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MetalSurfaceStrategy {
-    CpuUpload,
-    DirectKernel,
-}
-
-#[cfg(target_os = "macos")]
-fn metal_surface_strategy() -> MetalSurfaceStrategy {
-    metal_surface_strategy_from_env(std::env::var_os("SLIDECODEC_J2K_METAL_FORCE_KERNEL").is_some())
-}
-
-#[cfg(target_os = "macos")]
-const fn metal_surface_strategy_from_env(force_kernel: bool) -> MetalSurfaceStrategy {
-    if force_kernel {
-        MetalSurfaceStrategy::DirectKernel
-    } else {
-        MetalSurfaceStrategy::CpuUpload
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::{metal_surface_strategy_from_env, MetalSurfaceStrategy};
-
-    #[test]
-    fn default_surface_strategy_prefers_cpu_upload() {
-        assert_eq!(
-            metal_surface_strategy_from_env(false),
-            MetalSurfaceStrategy::CpuUpload
-        );
-    }
-
-    #[test]
-    fn force_kernel_env_switches_to_direct_kernel() {
-        assert_eq!(
-            metal_surface_strategy_from_env(true),
-            MetalSurfaceStrategy::DirectKernel
-        );
-    }
-}

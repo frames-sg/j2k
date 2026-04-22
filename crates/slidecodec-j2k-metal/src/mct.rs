@@ -8,6 +8,7 @@ use slidecodec_j2k_native::{
     decode_ht_code_block_scalar, HtCodeBlockDecodeJob, HtCodeBlockDecoder, J2kInverseMctJob, Result,
 };
 
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct MetalMctDecoder {
     kernel_dispatches: usize,
@@ -15,6 +16,7 @@ pub(crate) struct MetalMctDecoder {
     captured_planes: Vec<Buffer>,
 }
 
+#[allow(dead_code)]
 impl MetalMctDecoder {
     #[cfg(test)]
     pub(crate) fn kernel_dispatches(&self) -> usize {
@@ -50,6 +52,7 @@ impl HtCodeBlockDecoder for MetalMctDecoder {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn supports_metal_inverse_mct(job: &J2kInverseMctJob<'_>) -> bool {
     let len = job.plane0.len();
     len > 0 && job.plane1.len() == len && job.plane2.len() == len

@@ -169,6 +169,13 @@ pub(crate) fn slidecodec_metal_decode(bytes: &[u8], mode: DecodeMode) {
     black_box(surface);
 }
 
+pub(crate) fn slidecodec_metal_supports_decode(bytes: &[u8], mode: DecodeMode) -> bool {
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    decoder
+        .decode_to_device(mode_format(mode), BackendRequest::Metal)
+        .is_ok()
+}
+
 pub(crate) fn slidecodec_metal_decode_region(bytes: &[u8], mode: DecodeMode, edge: u32) {
     let cpu_decoder = J2kDecoder::new(bytes).expect("slidecodec decoder");
     let roi = centered_roi(cpu_decoder.info().dimensions, edge);
@@ -179,12 +186,32 @@ pub(crate) fn slidecodec_metal_decode_region(bytes: &[u8], mode: DecodeMode, edg
     black_box(surface);
 }
 
+pub(crate) fn slidecodec_metal_supports_region(bytes: &[u8], mode: DecodeMode, edge: u32) -> bool {
+    let cpu_decoder = J2kDecoder::new(bytes).expect("slidecodec decoder");
+    let roi = centered_roi(cpu_decoder.info().dimensions, edge);
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    decoder
+        .decode_region_to_device(mode_format(mode), roi, BackendRequest::Metal)
+        .is_ok()
+}
+
 pub(crate) fn slidecodec_metal_decode_scaled(bytes: &[u8], mode: DecodeMode, scale: Downscale) {
     let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
     let surface = decoder
         .decode_scaled_to_device(mode_format(mode), scale, BackendRequest::Metal)
         .expect("slidecodec metal scaled decode");
     black_box(surface);
+}
+
+pub(crate) fn slidecodec_metal_supports_scaled(
+    bytes: &[u8],
+    mode: DecodeMode,
+    scale: Downscale,
+) -> bool {
+    let mut decoder = MetalJ2kDecoder::new(bytes).expect("slidecodec metal decoder");
+    decoder
+        .decode_scaled_to_device(mode_format(mode), scale, BackendRequest::Metal)
+        .is_ok()
 }
 
 pub(crate) fn slidecodec_metal_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
@@ -201,6 +228,19 @@ pub(crate) fn slidecodec_metal_decode_tile_batch(bytes: &[u8], mode: DecodeMode,
         .expect("slidecodec metal tile decode");
         black_box(surface);
     }
+}
+
+pub(crate) fn slidecodec_metal_supports_tile_batch(bytes: &[u8], mode: DecodeMode) -> bool {
+    let mut ctx = DecoderContext::<J2kContext>::new();
+    let mut pool = MetalJ2kScratchPool::new();
+    MetalJ2kCodec::decode_tile_to_device(
+        &mut ctx,
+        &mut pool,
+        bytes,
+        mode_format(mode),
+        BackendRequest::Metal,
+    )
+    .is_ok()
 }
 
 pub(crate) fn openjpeg_available() -> bool {
