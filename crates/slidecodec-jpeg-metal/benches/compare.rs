@@ -11,7 +11,7 @@ use slidecodec_jpeg::{
 use slidecodec_jpeg_metal::viewport::{
     compose_viewport_cpu, compose_viewport_cpu_to_surface, compose_viewport_hybrid,
     decode_viewport_region_cpu, decode_viewport_region_cpu_to_surface,
-    decode_viewport_region_hybrid, suggest_viewport_workload,
+    decode_viewport_region_hybrid, decode_viewport_to_surface, suggest_viewport_workload,
 };
 use slidecodec_jpeg_metal::{Codec, Decoder, MetalSession, ScratchPool};
 use std::fs;
@@ -354,6 +354,16 @@ fn hybrid_viewport_composite_device(bytes: &[u8], dimensions: (u32, u32)) {
     std::hint::black_box(surface);
 }
 
+fn scheduled_viewport_surface(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut CpuScratchPool,
+    workload: &slidecodec_jpeg_metal::viewport::ViewportWorkload,
+    backend: BackendRequest,
+) {
+    let surface = decode_viewport_to_surface(decoder, pool, workload, backend).expect("viewport");
+    std::hint::black_box(surface);
+}
+
 fn bench_compare(c: &mut Criterion) {
     let inputs = load_bench_inputs();
 
@@ -624,6 +634,43 @@ fn bench_compare(c: &mut Criterion) {
         );
     }
     viewer_contiguous_region_scaled_rgb_device.finish();
+
+    let mut viewer_best_region_scaled_rgb_device =
+        c.benchmark_group("viewer_best_region_scaled_rgb_device");
+    for input in inputs.iter().filter(|input| {
+        input.mode == DecodeMode::Rgb
+            && input.input_class == CorpusInputClass::BoundedFullFrame
+            && suggest_viewport_workload(input.dimensions).is_some()
+    }) {
+        let workload = suggest_viewport_workload(input.dimensions).expect("viewport workload");
+        viewer_best_region_scaled_rgb_device.bench_function(
+            format!("{}/cpu_only", input.name),
+            |b| {
+                let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                b.iter(|| {
+                    scheduled_viewport_surface(&decoder, &mut pool, &workload, BackendRequest::Cpu);
+                });
+            },
+        );
+        let workload = suggest_viewport_workload(input.dimensions).expect("viewport workload");
+        viewer_best_region_scaled_rgb_device.bench_function(
+            format!("{}/adaptive", input.name),
+            |b| {
+                let decoder = CpuDecoder::new(&input.bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                b.iter(|| {
+                    scheduled_viewport_surface(
+                        &decoder,
+                        &mut pool,
+                        &workload,
+                        BackendRequest::Auto,
+                    );
+                });
+            },
+        );
+    }
+    viewer_best_region_scaled_rgb_device.finish();
 }
 
 criterion_group!(benches, bench_compare);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use slidecodec_core::{Downscale, PixelFormat, Rect};
+use slidecodec_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use slidecodec_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
 use crate::{Error, Surface};
@@ -8,6 +8,7 @@ use crate::{Error, Surface};
 const VIEWPORT_TILE_EDGE: u32 = 96;
 const VIEWPORT_TILE_COLS: u32 = 6;
 const VIEWPORT_TILE_ROWS: u32 = 2;
+const AUTO_HYBRID_MIN_SOURCE_PIXELS: u64 = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewportTile {
@@ -20,6 +21,14 @@ pub struct ViewportWorkload {
     pub scale: Downscale,
     pub viewport_dims: (u32, u32),
     pub tiles: Vec<ViewportTile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportSurfaceStrategy {
+    CpuComposite,
+    CpuContiguous,
+    HybridComposite,
+    HybridContiguous,
 }
 
 pub fn viewport_source_bounds(workload: &ViewportWorkload) -> Rect {
@@ -39,6 +48,124 @@ pub fn viewport_source_bounds(workload: &ViewportWorkload) -> Rect {
         y: min_y,
         w: max_x.saturating_sub(min_x),
         h: max_y.saturating_sub(min_y),
+    }
+}
+
+pub fn is_contiguous_viewport_workload(workload: &ViewportWorkload) -> bool {
+    if workload.tiles.is_empty() {
+        return false;
+    }
+
+    let source = viewport_source_bounds(workload);
+    let scaled_source = scaled_rect_covering(source, workload.scale);
+    if (scaled_source.w, scaled_source.h) != workload.viewport_dims {
+        return false;
+    }
+
+    let viewport_area = u64::from(workload.viewport_dims.0) * u64::from(workload.viewport_dims.1);
+    let mut area_sum = 0u64;
+
+    for tile in &workload.tiles {
+        let scaled_tile = scaled_rect_covering(tile.source_roi, workload.scale);
+        let expected = Rect {
+            x: scaled_tile.x.saturating_sub(scaled_source.x),
+            y: scaled_tile.y.saturating_sub(scaled_source.y),
+            w: scaled_tile.w,
+            h: scaled_tile.h,
+        };
+        if tile.dest != expected {
+            return false;
+        }
+        if tile.dest.x.saturating_add(tile.dest.w) > workload.viewport_dims.0
+            || tile.dest.y.saturating_add(tile.dest.h) > workload.viewport_dims.1
+        {
+            return false;
+        }
+
+        area_sum = area_sum.saturating_add(u64::from(tile.dest.w) * u64::from(tile.dest.h));
+    }
+
+    for (idx, tile) in workload.tiles.iter().enumerate() {
+        let tile_right = tile.dest.x.saturating_add(tile.dest.w);
+        let tile_bottom = tile.dest.y.saturating_add(tile.dest.h);
+        for other in &workload.tiles[idx + 1..] {
+            let other_right = other.dest.x.saturating_add(other.dest.w);
+            let other_bottom = other.dest.y.saturating_add(other.dest.h);
+            let separated = tile_right <= other.dest.x
+                || other_right <= tile.dest.x
+                || tile_bottom <= other.dest.y
+                || other_bottom <= tile.dest.y;
+            if !separated {
+                return false;
+            }
+        }
+    }
+
+    area_sum == viewport_area
+}
+
+pub fn choose_viewport_surface_strategy(
+    workload: &ViewportWorkload,
+    backend: BackendRequest,
+) -> Result<ViewportSurfaceStrategy, Error> {
+    let contiguous = is_contiguous_viewport_workload(workload);
+    match backend {
+        BackendRequest::Cpu => Ok(if contiguous {
+            ViewportSurfaceStrategy::CpuContiguous
+        } else {
+            ViewportSurfaceStrategy::CpuComposite
+        }),
+        BackendRequest::Auto | BackendRequest::Metal => {
+            #[cfg(target_os = "macos")]
+            {
+                Ok(if contiguous {
+                    ViewportSurfaceStrategy::HybridContiguous
+                } else {
+                    ViewportSurfaceStrategy::HybridComposite
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if matches!(backend, BackendRequest::Metal) {
+                    Err(Error::MetalUnavailable)
+                } else if contiguous {
+                    Ok(ViewportSurfaceStrategy::CpuContiguous)
+                } else {
+                    Ok(ViewportSurfaceStrategy::CpuComposite)
+                }
+            }
+        }
+        BackendRequest::Cuda => Err(Error::UnsupportedBackend { request: backend }),
+    }
+}
+
+fn choose_viewport_surface_strategy_for_decoder(
+    decoder: &CpuDecoder<'_>,
+    workload: &ViewportWorkload,
+    backend: BackendRequest,
+) -> Result<ViewportSurfaceStrategy, Error> {
+    if !matches!(backend, BackendRequest::Auto) {
+        return choose_viewport_surface_strategy(workload, backend);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let contiguous = is_contiguous_viewport_workload(workload);
+        let source = viewport_source_bounds(workload);
+        let source_pixels = u64::from(source.w) * u64::from(source.h);
+        let prefers_hybrid = decoder.info().restart_interval.is_some()
+            || source_pixels >= AUTO_HYBRID_MIN_SOURCE_PIXELS;
+        Ok(match (contiguous, prefers_hybrid) {
+            (true, true) => ViewportSurfaceStrategy::HybridContiguous,
+            (true, false) => ViewportSurfaceStrategy::CpuContiguous,
+            (false, true) => ViewportSurfaceStrategy::HybridComposite,
+            (false, false) => ViewportSurfaceStrategy::CpuComposite,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        choose_viewport_surface_strategy(workload, backend)
     }
 }
 
@@ -168,6 +295,36 @@ pub fn decode_viewport_region_cpu(
         workload.scale,
     )?;
     Ok(viewport)
+}
+
+pub fn decode_viewport_to_surface(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    backend: BackendRequest,
+) -> Result<Surface, Error> {
+    match choose_viewport_surface_strategy_for_decoder(decoder, workload, backend)? {
+        ViewportSurfaceStrategy::CpuComposite => compose_viewport_cpu_to_surface(
+            decoder,
+            pool,
+            workload.scale,
+            workload.viewport_dims,
+            &workload.tiles,
+        ),
+        ViewportSurfaceStrategy::CpuContiguous => {
+            decode_viewport_region_cpu_to_surface(decoder, pool, workload)
+        }
+        ViewportSurfaceStrategy::HybridComposite => compose_viewport_hybrid(
+            decoder,
+            pool,
+            workload.scale,
+            workload.viewport_dims,
+            &workload.tiles,
+        ),
+        ViewportSurfaceStrategy::HybridContiguous => {
+            decode_viewport_region_hybrid(decoder, pool, workload)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
