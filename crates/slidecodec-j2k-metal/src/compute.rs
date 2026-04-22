@@ -237,6 +237,8 @@ const J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
 const J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS: u32 = 1 << 3;
 #[cfg(target_os = "macos")]
 const J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS: u32 = 1 << 4;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_MAX_COEFF_COUNT: usize = (64 + 2) * (64 + 2);
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -420,6 +422,7 @@ struct MetalRuntime {
     queue: CommandQueue,
     pack_u8: ComputePipelineState,
     pack_u16: ComputePipelineState,
+    classic_cleanup_plain_batched: ComputePipelineState,
     classic_cleanup_batched: ComputePipelineState,
     idwt_interleave: ComputePipelineState,
     idwt_reversible53_horizontal: ComputePipelineState,
@@ -445,6 +448,8 @@ impl MetalRuntime {
         let library = device.new_library_with_source(SHADER_SOURCE, &options)?;
         let pack_u8_fn = library.get_function("j2k_pack_u8", None)?;
         let pack_u16_fn = library.get_function("j2k_pack_u16", None)?;
+        let classic_cleanup_plain_batched_fn =
+            library.get_function("j2k_decode_classic_cleanup_plain_batched", None)?;
         let classic_cleanup_batched_fn =
             library.get_function("j2k_decode_classic_cleanup_batched", None)?;
         let idwt_interleave_fn = library.get_function("j2k_idwt_interleave", None)?;
@@ -460,6 +465,8 @@ impl MetalRuntime {
         let ht_cleanup_batched_fn = library.get_function("j2k_decode_ht_cleanup_batched", None)?;
         let pack_u8 = device.new_compute_pipeline_state_with_function(&pack_u8_fn)?;
         let pack_u16 = device.new_compute_pipeline_state_with_function(&pack_u16_fn)?;
+        let classic_cleanup_plain_batched =
+            device.new_compute_pipeline_state_with_function(&classic_cleanup_plain_batched_fn)?;
         let classic_cleanup_batched =
             device.new_compute_pipeline_state_with_function(&classic_cleanup_batched_fn)?;
         let idwt_interleave =
@@ -484,6 +491,7 @@ impl MetalRuntime {
             queue,
             pack_u8,
             pack_u16,
+            classic_cleanup_plain_batched,
             classic_cleanup_batched,
             idwt_interleave,
             idwt_reversible53_horizontal,
@@ -972,7 +980,7 @@ fn copy_plane_samples(buffer: &Buffer, samples: &[f32], image_width: usize, roi:
 #[cfg(target_os = "macos")]
 fn alloc_f32_buffer(device: &Device, len: usize) -> Buffer {
     let bytes = len.max(1).saturating_mul(size_of::<f32>());
-    device.new_buffer(bytes as u64, MTLResourceOptions::StorageModeShared)
+    device.new_buffer(bytes as u64, MTLResourceOptions::StorageModePrivate)
 }
 
 #[cfg(target_os = "macos")]
@@ -1233,6 +1241,18 @@ fn borrow_slice_buffer<T>(device: &Device, data: &[T]) -> Buffer {
             None,
         )
     }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_coefficients_scratch_buffer(device: &Device, job_count: usize) -> Result<Buffer, Error> {
+    let bytes = job_count
+        .max(1)
+        .checked_mul(J2K_CLASSIC_MAX_COEFF_COUNT)
+        .and_then(|count| count.checked_mul(size_of::<u32>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K coefficient scratch size overflow".to_string(),
+        })?;
+    Ok(device.new_buffer(bytes as u64, MTLResourceOptions::StorageModePrivate))
 }
 
 #[cfg(target_os = "macos")]
@@ -2028,6 +2048,20 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_command_buffer(
 }
 
 #[cfg(target_os = "macos")]
+fn classic_batch_uses_plain_fast_path(
+    jobs: &[J2kClassicCleanupBatchJob],
+    segments: &[J2kClassicSegment],
+) -> bool {
+    jobs.iter().all(|job| {
+        job.style_flags == 0
+            && segments[job.segment_offset as usize
+                ..job.segment_offset as usize + job.segment_count as usize]
+                .iter()
+                .all(|segment| segment.use_arithmetic != 0)
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn dispatch_classic_cleanup_batched(
     runtime: &MetalRuntime,
     coded_data: &[u8],
@@ -2038,6 +2072,12 @@ fn dispatch_classic_cleanup_batched(
     let input = borrow_slice_buffer(&runtime.device, coded_data);
     let jobs_buffer = borrow_slice_buffer(&runtime.device, jobs);
     let segments_buffer = borrow_slice_buffer(&runtime.device, segments);
+    let coefficients_scratch = classic_coefficients_scratch_buffer(&runtime.device, jobs.len())?;
+    let pipeline = if classic_batch_uses_plain_fast_path(jobs, segments) {
+        &runtime.classic_cleanup_plain_batched
+    } else {
+        &runtime.classic_cleanup_batched
+    };
     let status_buffer = runtime.device.new_buffer(
         (jobs.len().max(1) * size_of::<J2kClassicStatus>()) as u64,
         MTLResourceOptions::StorageModeShared,
@@ -2045,14 +2085,14 @@ fn dispatch_classic_cleanup_batched(
 
     let command_buffer = runtime.queue.new_command_buffer();
     let encoder = command_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&runtime.classic_cleanup_batched);
+    encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(&input), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(&jobs_buffer), 0);
     encoder.set_buffer(3, Some(&segments_buffer), 0);
     encoder.set_buffer(4, Some(&status_buffer), 0);
-    let width = runtime
-        .classic_cleanup_batched
+    encoder.set_buffer(5, Some(&coefficients_scratch), 0);
+    let width = pipeline
         .thread_execution_width()
         .max(1)
         .min(jobs.len() as u64);
@@ -2090,29 +2130,37 @@ fn dispatch_classic_cleanup_batched(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn dispatch_classic_cleanup_batched_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     coded_data: &Buffer,
     jobs: &Buffer,
     job_count: usize,
+    use_plain_fast_path: bool,
     segments: &Buffer,
     decoded: &Buffer,
+    coefficients_scratch: &Buffer,
 ) -> DirectStatusCheck {
+    let pipeline = if use_plain_fast_path {
+        &runtime.classic_cleanup_plain_batched
+    } else {
+        &runtime.classic_cleanup_batched
+    };
     let status_buffer = runtime.device.new_buffer(
         (job_count.max(1) * size_of::<J2kClassicStatus>()) as u64,
         MTLResourceOptions::StorageModeShared,
     );
 
     let encoder = command_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&runtime.classic_cleanup_batched);
+    encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(coded_data), 0);
     encoder.set_buffer(1, Some(decoded), 0);
     encoder.set_buffer(2, Some(jobs), 0);
     encoder.set_buffer(3, Some(segments), 0);
     encoder.set_buffer(4, Some(&status_buffer), 0);
-    let width = runtime
-        .classic_cleanup_batched
+    encoder.set_buffer(5, Some(coefficients_scratch), 0);
+    let width = pipeline
         .thread_execution_width()
         .max(1)
         .min(job_count as u64);
@@ -2294,14 +2342,18 @@ fn encode_classic_sub_band_to_buffer_in_command_buffer(
     let coded_buffer = borrow_slice_buffer(&runtime.device, &coded_data);
     let jobs_buffer = borrow_slice_buffer(&runtime.device, &jobs);
     let segments_buffer = borrow_slice_buffer(&runtime.device, &segments);
+    let coefficients_scratch = classic_coefficients_scratch_buffer(&runtime.device, jobs.len())?;
+    let use_plain_fast_path = classic_batch_uses_plain_fast_path(&jobs, &segments);
     let status_check = dispatch_classic_cleanup_batched_in_command_buffer(
         runtime,
         command_buffer,
         &coded_buffer,
         &jobs_buffer,
         jobs.len(),
+        use_plain_fast_path,
         &segments_buffer,
         output,
+        &coefficients_scratch,
     );
     Ok((
         vec![
@@ -2309,7 +2361,12 @@ fn encode_classic_sub_band_to_buffer_in_command_buffer(
             DirectHostRetention::ClassicJobs(jobs),
             DirectHostRetention::ClassicSegments(segments),
         ],
-        vec![coded_buffer, jobs_buffer, segments_buffer],
+        vec![
+            coded_buffer,
+            jobs_buffer,
+            segments_buffer,
+            coefficients_scratch,
+        ],
         status_check,
     ))
 }
