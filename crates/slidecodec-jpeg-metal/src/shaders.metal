@@ -21,6 +21,35 @@ struct JpegFast420Params {
     uint out_stride;
     uint alpha;
     uint out_format;
+    uint origin_x;
+    uint origin_y;
+};
+
+struct JpegFast420ScaledParams {
+    uint scaled_width;
+    uint scaled_height;
+    uint chroma_width;
+    uint chroma_height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint entropy_len;
+    uint scale_shift;
+    uint origin_x;
+    uint origin_y;
+};
+
+struct JpegFast420WindowedPackParams {
+    uint src_width;
+    uint src_height;
+    uint chroma_width;
+    uint chroma_height;
+    uint src_x;
+    uint src_y;
+    uint width;
+    uint height;
+    uint out_stride;
+    uint alpha;
+    uint out_format;
 };
 
 struct JpegDecodeStatus {
@@ -79,16 +108,24 @@ constant int PASS1_BITS = 2;
 
 constant int FIX_0_298631336 = 2446;
 constant int FIX_0_390180644 = 3196;
+constant int FIX_0_509795579 = 4176;
 constant int FIX_0_541196100 = 4433;
+constant int FIX_0_601344887 = 4926;
+constant int FIX_0_720959822 = 5906;
 constant int FIX_0_765366865 = 6270;
+constant int FIX_0_850430095 = 6967;
 constant int FIX_0_899976223 = 7373;
+constant int FIX_1_061594337 = 8697;
 constant int FIX_1_175875602 = 9633;
+constant int FIX_1_272758580 = 10426;
 constant int FIX_1_501321110 = 12299;
 constant int FIX_1_847759065 = 15137;
 constant int FIX_1_961570560 = 16069;
 constant int FIX_2_053119869 = 16819;
+constant int FIX_2_172734803 = 17799;
 constant int FIX_2_562915447 = 20995;
 constant int FIX_3_072711026 = 25172;
+constant int FIX_3_624509785 = 29692;
 
 inline uchar clamp_u8(int value) {
     return uchar(clamp(value, 0, 255));
@@ -334,6 +371,81 @@ inline bool decode_block(
         k += 1;
     }
     return true;
+}
+
+inline bool decode_block_skip(
+    thread BitReader &br,
+    device const uchar *bytes,
+    uint len,
+    thread const PreparedHuffman &dc_table,
+    thread const PreparedHuffman &ac_table,
+    thread int &prev_dc,
+    device JpegDecodeStatus *status
+) {
+    uchar ssss = 0;
+    if (!decode_symbol(br, bytes, len, dc_table, status, ssss)) {
+        return false;
+    }
+    if (ssss > 15) {
+        status->code = FAST420_STATUS_HUFFMAN;
+        status->position = br.pos;
+        return false;
+    }
+
+    int diff = 0;
+    if (!receive_extend(br, bytes, len, ssss, status, diff)) {
+        return false;
+    }
+    prev_dc += diff;
+
+    uint k = 1;
+    while (k < 64) {
+        uchar symbol = 0;
+        if (!decode_symbol(br, bytes, len, ac_table, status, symbol)) {
+            return false;
+        }
+        const uint run = uint(symbol >> 4);
+        ssss = symbol & 0x0F;
+        if (ssss == 0) {
+            if (run == 15) {
+                k += 16;
+                continue;
+            }
+            break;
+        }
+
+        k += run;
+        if (k >= 64) {
+            status->code = FAST420_STATUS_HUFFMAN;
+            status->position = br.pos;
+            return false;
+        }
+
+        int value = 0;
+        if (!receive_extend(br, bytes, len, ssss, status, value)) {
+            return false;
+        }
+        (void)value;
+        k += 1;
+    }
+    return true;
+}
+
+inline bool block_intersects_rect(
+    uint block_x,
+    uint block_y,
+    uint block_width,
+    uint block_height,
+    uint rect_x,
+    uint rect_y,
+    uint rect_width,
+    uint rect_height
+) {
+    const uint block_x1 = block_x + block_width;
+    const uint block_y1 = block_y + block_height;
+    const uint rect_x1 = rect_x + rect_width;
+    const uint rect_y1 = rect_y + rect_height;
+    return block_x < rect_x1 && rect_x < block_x1 && block_y < rect_y1 && rect_y < block_y1;
 }
 
 inline int descale(int value, int shift) {
@@ -604,6 +716,379 @@ inline void deposit_block(
     }
 }
 
+inline void idct_4x4_column(
+    thread const short input[64],
+    thread int work[32],
+    uint col
+) {
+    const int p0 = int(input[col]);
+    const int p1 = int(input[col + 8]);
+    const int p2 = int(input[col + 16]);
+    const int p3 = int(input[col + 24]);
+    const int p5 = int(input[col + 40]);
+    const int p6 = int(input[col + 48]);
+    const int p7 = int(input[col + 56]);
+
+    const int tmp10 = p0 << (CONST_BITS + 2);
+    const int tmp0 = p6 * -FIX_0_601344887
+        + p2 * FIX_2_562915447;
+    const int tmp2 = p7 * FIX_0_509795579
+        + p5 * -FIX_2_172734803
+        + p3 * FIX_0_720959822
+        + p1 * FIX_1_061594337;
+
+    const int shift = CONST_BITS - PASS1_BITS + 1;
+    work[col] = descale(tmp10 + tmp0 + tmp2, shift);
+    work[8 + col] = descale(tmp10 - tmp0 + tmp2, shift);
+    work[16 + col] = descale(tmp10 - tmp0 - tmp2, shift);
+    work[24 + col] = descale(tmp10 + tmp0 - tmp2, shift);
+}
+
+inline void idct_4x4_row(
+    thread const int work[32],
+    thread uchar output[16],
+    uint row
+) {
+    const uint base = row * 8;
+    const int p0 = work[base];
+    const int p1 = work[base + 1];
+    const int p2 = work[base + 2];
+    const int p3 = work[base + 3];
+    const int p5 = work[base + 5];
+    const int p6 = work[base + 6];
+    const int p7 = work[base + 7];
+
+    const int tmp10 = p0 << (CONST_BITS + 2);
+    const int tmp0 = p6 * -FIX_0_601344887
+        + p2 * FIX_2_562915447;
+    const int tmp2 = p7 * FIX_0_509795579
+        + p5 * -FIX_2_172734803
+        + p3 * FIX_0_720959822
+        + p1 * FIX_1_061594337;
+
+    const int shift = CONST_BITS + PASS1_BITS + 5;
+    const uint out = row * 4;
+    output[out] = descale_and_clamp(tmp10 + tmp0 + tmp2, shift);
+    output[out + 1] = descale_and_clamp(tmp10 - tmp0 + tmp2, shift);
+    output[out + 2] = descale_and_clamp(tmp10 - tmp0 - tmp2, shift);
+    output[out + 3] = descale_and_clamp(tmp10 + tmp0 - tmp2, shift);
+}
+
+inline void idct_islow_4x4(
+    thread const short input[64],
+    thread uchar output[16]
+) {
+    thread int work[32];
+    for (uint col = 0; col < 8; ++col) {
+        if (col == 4) {
+            continue;
+        }
+        idct_4x4_column(input, work, col);
+    }
+    for (uint row = 0; row < 4; ++row) {
+        idct_4x4_row(work, output, row);
+    }
+}
+
+inline void idct_2x2_column(
+    thread const short input[64],
+    thread int work[16],
+    uint col
+) {
+    const int p0 = int(input[col]);
+    const int p1 = int(input[col + 8]);
+    const int p3 = int(input[col + 24]);
+    const int p5 = int(input[col + 40]);
+    const int p7 = int(input[col + 56]);
+
+    if (p1 == 0 && p3 == 0 && p5 == 0 && p7 == 0) {
+        const int dc = p0 << PASS1_BITS;
+        work[col] = dc;
+        work[8 + col] = dc;
+        return;
+    }
+
+    const int tmp10 = p0 << (CONST_BITS + 2);
+    const int tmp0 = p7 * -FIX_0_720959822
+        + p5 * FIX_0_850430095
+        + p3 * -FIX_1_272758580
+        + p1 * FIX_3_624509785;
+
+    const int shift = CONST_BITS - PASS1_BITS + 2;
+    work[col] = descale(tmp10 + tmp0, shift);
+    work[8 + col] = descale(tmp10 - tmp0, shift);
+}
+
+inline void idct_2x2_row(
+    thread const int work[16],
+    thread uchar output[4],
+    uint row
+) {
+    const uint base = row * 8;
+    const int p0 = work[base];
+    const int p1 = work[base + 1];
+    const int p3 = work[base + 3];
+    const int p5 = work[base + 5];
+    const int p7 = work[base + 7];
+
+    if (p1 == 0 && p3 == 0 && p5 == 0 && p7 == 0) {
+        const uchar dc = descale_and_clamp(p0, PASS1_BITS + 3);
+        const uint out = row * 2;
+        output[out] = dc;
+        output[out + 1] = dc;
+        return;
+    }
+
+    const int tmp10 = p0 << (CONST_BITS + 2);
+    const int tmp0 = p7 * -FIX_0_720959822
+        + p5 * FIX_0_850430095
+        + p3 * -FIX_1_272758580
+        + p1 * FIX_3_624509785;
+
+    const int shift = CONST_BITS + PASS1_BITS + 5;
+    const uint out = row * 2;
+    output[out] = descale_and_clamp(tmp10 + tmp0, shift);
+    output[out + 1] = descale_and_clamp(tmp10 - tmp0, shift);
+}
+
+inline void idct_islow_2x2(
+    thread const short input[64],
+    thread uchar output[4]
+) {
+    thread int work[16];
+    for (uint col = 0; col < 8; ++col) {
+        if (col == 2 || col == 4 || col == 6) {
+            continue;
+        }
+        idct_2x2_column(input, work, col);
+    }
+    for (uint row = 0; row < 2; ++row) {
+        idct_2x2_row(work, output, row);
+    }
+}
+
+inline uchar idct_islow_1x1(thread const short input[64]) {
+    return descale_and_clamp(int(input[0]), 3);
+}
+
+inline void deposit_block_region(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint origin_x,
+    uint origin_y,
+    uint block_x,
+    uint block_y,
+    thread const uchar pixels[64]
+) {
+    const int dst_x = int(block_x) - int(origin_x);
+    const int dst_y = int(block_y) - int(origin_y);
+    for (uint row = 0; row < 8; ++row) {
+        const int out_y = dst_y + int(row);
+        if (out_y < 0 || out_y >= int(height)) {
+            continue;
+        }
+        for (uint col = 0; col < 8; ++col) {
+            const int out_x = dst_x + int(col);
+            if (out_x < 0 || out_x >= int(width)) {
+                continue;
+            }
+            plane[uint(out_y) * stride + uint(out_x)] = pixels[row * 8u + col];
+        }
+    }
+}
+
+inline void deposit_block_4x4(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint x,
+    uint y,
+    thread const uchar block[16]
+) {
+    if (x >= width || y >= height) {
+        return;
+    }
+    const uint copy_width = min(4u, width - x);
+    const uint copy_height = min(4u, height - y);
+    for (uint by = 0; by < copy_height; ++by) {
+        const uint dst = (y + by) * stride + x;
+        for (uint bx = 0; bx < copy_width; ++bx) {
+            plane[dst + bx] = block[by * 4 + bx];
+        }
+    }
+}
+
+inline void deposit_block_4x4_region(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint origin_x,
+    uint origin_y,
+    uint block_x,
+    uint block_y,
+    thread const uchar pixels[16]
+) {
+    const int dst_x = int(block_x) - int(origin_x);
+    const int dst_y = int(block_y) - int(origin_y);
+    for (uint row = 0; row < 4; ++row) {
+        const int out_y = dst_y + int(row);
+        if (out_y < 0 || out_y >= int(height)) {
+            continue;
+        }
+        for (uint col = 0; col < 4; ++col) {
+            const int out_x = dst_x + int(col);
+            if (out_x < 0 || out_x >= int(width)) {
+                continue;
+            }
+            plane[uint(out_y) * stride + uint(out_x)] = pixels[row * 4u + col];
+        }
+    }
+}
+
+inline void deposit_block_2x2(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint x,
+    uint y,
+    thread const uchar block[4]
+) {
+    if (x >= width || y >= height) {
+        return;
+    }
+    const uint copy_width = min(2u, width - x);
+    const uint copy_height = min(2u, height - y);
+    for (uint by = 0; by < copy_height; ++by) {
+        const uint dst = (y + by) * stride + x;
+        for (uint bx = 0; bx < copy_width; ++bx) {
+            plane[dst + bx] = block[by * 2 + bx];
+        }
+    }
+}
+
+inline void deposit_block_2x2_region(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint origin_x,
+    uint origin_y,
+    uint block_x,
+    uint block_y,
+    thread const uchar pixels[4]
+) {
+    const int dst_x = int(block_x) - int(origin_x);
+    const int dst_y = int(block_y) - int(origin_y);
+    for (uint row = 0; row < 2; ++row) {
+        const int out_y = dst_y + int(row);
+        if (out_y < 0 || out_y >= int(height)) {
+            continue;
+        }
+        for (uint col = 0; col < 2; ++col) {
+            const int out_x = dst_x + int(col);
+            if (out_x < 0 || out_x >= int(width)) {
+                continue;
+            }
+            plane[uint(out_y) * stride + uint(out_x)] = pixels[row * 2u + col];
+        }
+    }
+}
+
+inline void deposit_scaled_block(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint x,
+    uint y,
+    uint scale_shift,
+    thread const short coeffs[64],
+    bool dc_only
+) {
+    if (scale_shift == 1u) {
+        thread uchar pixels4[16];
+        if (dc_only) {
+            const uchar pixel = idct_islow_1x1(coeffs);
+            for (uint i = 0; i < 16; ++i) {
+                pixels4[i] = pixel;
+            }
+        } else {
+            idct_islow_4x4(coeffs, pixels4);
+        }
+        deposit_block_4x4(plane, stride, width, height, x, y, pixels4);
+        return;
+    }
+
+    if (scale_shift == 2u) {
+        thread uchar pixels2[4];
+        if (dc_only) {
+            const uchar pixel = idct_islow_1x1(coeffs);
+            for (uint i = 0; i < 4; ++i) {
+                pixels2[i] = pixel;
+            }
+        } else {
+            idct_islow_2x2(coeffs, pixels2);
+        }
+        deposit_block_2x2(plane, stride, width, height, x, y, pixels2);
+        return;
+    }
+
+    const uchar pixel = idct_islow_1x1(coeffs);
+    if (x < width && y < height) {
+        plane[y * stride + x] = pixel;
+    }
+}
+
+inline void deposit_scaled_block_region(
+    device uchar *plane,
+    uint stride,
+    uint width,
+    uint height,
+    uint origin_x,
+    uint origin_y,
+    uint x,
+    uint y,
+    uint scale_shift,
+    thread const short coeffs[64],
+    bool dc_only
+) {
+    if (scale_shift == 1u) {
+        thread uchar pixels4[16];
+        if (dc_only) {
+            const uchar pixel = idct_islow_1x1(coeffs);
+            for (uint i = 0; i < 16; ++i) {
+                pixels4[i] = pixel;
+            }
+        } else {
+            idct_islow_4x4(coeffs, pixels4);
+        }
+        deposit_block_4x4_region(plane, stride, width, height, origin_x, origin_y, x, y, pixels4);
+    } else if (scale_shift == 2u) {
+        thread uchar pixels2[4];
+        if (dc_only) {
+            const uchar pixel = idct_islow_1x1(coeffs);
+            for (uint i = 0; i < 4; ++i) {
+                pixels2[i] = pixel;
+            }
+        } else {
+            idct_islow_2x2(coeffs, pixels2);
+        }
+        deposit_block_2x2_region(plane, stride, width, height, origin_x, origin_y, x, y, pixels2);
+    } else {
+        const int out_x = int(x) - int(origin_x);
+        const int out_y = int(y) - int(origin_y);
+        if (out_x >= 0 && out_x < int(width) && out_y >= 0 && out_y < int(height)) {
+            const uchar pixel = idct_islow_1x1(coeffs);
+            plane[uint(out_y) * stride + uint(out_x)] = pixel;
+        }
+    }
+}
+
 inline uchar h2v2_sample(
     device const uchar *near_row,
     device const uchar *curr_row,
@@ -809,6 +1294,690 @@ kernel void jpeg_decode_fast420(
     }
 }
 
+kernel void jpeg_decode_fast420_region(
+    device const uchar *entropy [[buffer(0)]],
+    device uchar *y_plane [[buffer(1)]],
+    device uchar *cb_plane [[buffer(2)]],
+    device uchar *cr_plane [[buffer(3)]],
+    constant JpegFast420Params &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant MetalHuffmanTable &y_dc_table [[buffer(8)]],
+    constant MetalHuffmanTable &y_ac_table [[buffer(9)]],
+    constant MetalHuffmanTable &cb_dc_table [[buffer(10)]],
+    constant MetalHuffmanTable &cb_ac_table [[buffer(11)]],
+    constant MetalHuffmanTable &cr_dc_table [[buffer(12)]],
+    constant MetalHuffmanTable &cr_ac_table [[buffer(13)]],
+    device JpegDecodeStatus *status [[buffer(14)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0) {
+        return;
+    }
+
+    status->code = FAST420_STATUS_OK;
+    status->detail = 0;
+    status->position = 0;
+    status->reserved = 0;
+
+    thread PreparedHuffman y_dc;
+    thread PreparedHuffman y_ac;
+    thread PreparedHuffman cb_dc;
+    thread PreparedHuffman cb_ac;
+    thread PreparedHuffman cr_dc;
+    thread PreparedHuffman cr_ac;
+    prepare_huffman(y_dc_table, y_dc);
+    prepare_huffman(y_ac_table, y_ac);
+    prepare_huffman(cb_dc_table, cb_dc);
+    prepare_huffman(cb_ac_table, cb_ac);
+    prepare_huffman(cr_dc_table, cr_dc);
+    prepare_huffman(cr_ac_table, cr_ac);
+
+    thread BitReader br;
+    br.pos = 0;
+    br.acc = 0;
+    br.bits = 0;
+
+    thread short coeffs[64];
+    thread uchar pixels[64];
+
+    int y_prev_dc = 0;
+    int cb_prev_dc = 0;
+    int cr_prev_dc = 0;
+
+    const uint chroma_origin_x = params.origin_x / 2u;
+    const uint chroma_origin_y = params.origin_y / 2u;
+
+    for (uint my = 0; my < params.mcu_rows; ++my) {
+        for (uint mx = 0; mx < params.mcus_per_row; ++mx) {
+            const uint y_x = mx * 16u;
+            const uint y_y = my * 16u;
+            const uint c_x = mx * 8u;
+            const uint c_y = my * 8u;
+            const bool mcu_intersects = block_intersects_rect(
+                y_x,
+                y_y,
+                16u,
+                16u,
+                params.origin_x,
+                params.origin_y,
+                params.width,
+                params.height
+            );
+            bool dc_only = false;
+
+            if (mcu_intersects) {
+                const bool y0_intersects = block_intersects_rect(
+                    y_x,
+                    y_y,
+                    8u,
+                    8u,
+                    params.origin_x,
+                    params.origin_y,
+                    params.width,
+                    params.height
+                );
+                if (y0_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    if (dc_only) {
+                        idct_islow_dc_only(coeffs[0], pixels);
+                    } else {
+                        idct_islow(coeffs, pixels);
+                    }
+                    deposit_block_region(
+                        y_plane,
+                        params.width,
+                        params.width,
+                        params.height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x,
+                        y_y,
+                        pixels
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y1_intersects = block_intersects_rect(
+                    y_x + 8u,
+                    y_y,
+                    8u,
+                    8u,
+                    params.origin_x,
+                    params.origin_y,
+                    params.width,
+                    params.height
+                );
+                if (y1_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    if (dc_only) {
+                        idct_islow_dc_only(coeffs[0], pixels);
+                    } else {
+                        idct_islow(coeffs, pixels);
+                    }
+                    deposit_block_region(
+                        y_plane,
+                        params.width,
+                        params.width,
+                        params.height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x + 8u,
+                        y_y,
+                        pixels
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y2_intersects = block_intersects_rect(
+                    y_x,
+                    y_y + 8u,
+                    8u,
+                    8u,
+                    params.origin_x,
+                    params.origin_y,
+                    params.width,
+                    params.height
+                );
+                if (y2_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    if (dc_only) {
+                        idct_islow_dc_only(coeffs[0], pixels);
+                    } else {
+                        idct_islow(coeffs, pixels);
+                    }
+                    deposit_block_region(
+                        y_plane,
+                        params.width,
+                        params.width,
+                        params.height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x,
+                        y_y + 8u,
+                        pixels
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y3_intersects = block_intersects_rect(
+                    y_x + 8u,
+                    y_y + 8u,
+                    8u,
+                    8u,
+                    params.origin_x,
+                    params.origin_y,
+                    params.width,
+                    params.height
+                );
+                if (y3_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    if (dc_only) {
+                        idct_islow_dc_only(coeffs[0], pixels);
+                    } else {
+                        idct_islow(coeffs, pixels);
+                    }
+                    deposit_block_region(
+                        y_plane,
+                        params.width,
+                        params.width,
+                        params.height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x + 8u,
+                        y_y + 8u,
+                        pixels
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                if (!decode_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, status, coeffs, dc_only)) {
+                    return;
+                }
+                if (dc_only) {
+                    idct_islow_dc_only(coeffs[0], pixels);
+                } else {
+                    idct_islow(coeffs, pixels);
+                }
+                deposit_block_region(
+                    cb_plane,
+                    params.chroma_width,
+                    params.chroma_width,
+                    params.chroma_height,
+                    chroma_origin_x,
+                    chroma_origin_y,
+                    c_x,
+                    c_y,
+                    pixels
+                );
+
+                if (!decode_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, status, coeffs, dc_only)) {
+                    return;
+                }
+                if (dc_only) {
+                    idct_islow_dc_only(coeffs[0], pixels);
+                } else {
+                    idct_islow(coeffs, pixels);
+                }
+                deposit_block_region(
+                    cr_plane,
+                    params.chroma_width,
+                    params.chroma_width,
+                    params.chroma_height,
+                    chroma_origin_x,
+                    chroma_origin_y,
+                    c_x,
+                    c_y,
+                    pixels
+                );
+            } else {
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_prev_dc, status)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+kernel void jpeg_decode_fast420_scaled(
+    device const uchar *entropy [[buffer(0)]],
+    device uchar *y_plane [[buffer(1)]],
+    device uchar *cb_plane [[buffer(2)]],
+    device uchar *cr_plane [[buffer(3)]],
+    constant JpegFast420ScaledParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant MetalHuffmanTable &y_dc_table [[buffer(8)]],
+    constant MetalHuffmanTable &y_ac_table [[buffer(9)]],
+    constant MetalHuffmanTable &cb_dc_table [[buffer(10)]],
+    constant MetalHuffmanTable &cb_ac_table [[buffer(11)]],
+    constant MetalHuffmanTable &cr_dc_table [[buffer(12)]],
+    constant MetalHuffmanTable &cr_ac_table [[buffer(13)]],
+    device JpegDecodeStatus *status [[buffer(14)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0) {
+        return;
+    }
+
+    status->code = FAST420_STATUS_OK;
+    status->detail = 0;
+    status->position = 0;
+    status->reserved = 0;
+
+    thread PreparedHuffman y_dc;
+    thread PreparedHuffman y_ac;
+    thread PreparedHuffman cb_dc;
+    thread PreparedHuffman cb_ac;
+    thread PreparedHuffman cr_dc;
+    thread PreparedHuffman cr_ac;
+    prepare_huffman(y_dc_table, y_dc);
+    prepare_huffman(y_ac_table, y_ac);
+    prepare_huffman(cb_dc_table, cb_dc);
+    prepare_huffman(cb_ac_table, cb_ac);
+    prepare_huffman(cr_dc_table, cr_dc);
+    prepare_huffman(cr_ac_table, cr_ac);
+
+    thread BitReader br;
+    br.pos = 0;
+    br.acc = 0;
+    br.bits = 0;
+
+    thread short coeffs[64];
+
+    int y_prev_dc = 0;
+    int cb_prev_dc = 0;
+    int cr_prev_dc = 0;
+    const uint y_block_size = 8u >> params.scale_shift;
+    const uint c_block_size = 8u >> params.scale_shift;
+    const uint y_mcu_size = 16u >> params.scale_shift;
+
+    for (uint my = 0; my < params.mcu_rows; ++my) {
+        for (uint mx = 0; mx < params.mcus_per_row; ++mx) {
+            const uint y_x = mx * y_mcu_size;
+            const uint y_y = my * y_mcu_size;
+            const uint c_x = mx * c_block_size;
+            const uint c_y = my * c_block_size;
+            bool dc_only = false;
+
+            if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                y_plane,
+                params.scaled_width,
+                params.scaled_width,
+                params.scaled_height,
+                y_x,
+                y_y,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+
+            if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                y_plane,
+                params.scaled_width,
+                params.scaled_width,
+                params.scaled_height,
+                y_x + y_block_size,
+                y_y,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+
+            if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                y_plane,
+                params.scaled_width,
+                params.scaled_width,
+                params.scaled_height,
+                y_x,
+                y_y + y_block_size,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+
+            if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                y_plane,
+                params.scaled_width,
+                params.scaled_width,
+                params.scaled_height,
+                y_x + y_block_size,
+                y_y + y_block_size,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+
+            if (!decode_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                cb_plane,
+                params.chroma_width,
+                params.chroma_width,
+                params.chroma_height,
+                c_x,
+                c_y,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+
+            if (!decode_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, status, coeffs, dc_only)) {
+                return;
+            }
+            deposit_scaled_block(
+                cr_plane,
+                params.chroma_width,
+                params.chroma_width,
+                params.chroma_height,
+                c_x,
+                c_y,
+                params.scale_shift,
+                coeffs,
+                dc_only
+            );
+        }
+    }
+}
+
+kernel void jpeg_decode_fast420_scaled_region(
+    device const uchar *entropy [[buffer(0)]],
+    device uchar *y_plane [[buffer(1)]],
+    device uchar *cb_plane [[buffer(2)]],
+    device uchar *cr_plane [[buffer(3)]],
+    constant JpegFast420ScaledParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant MetalHuffmanTable &y_dc_table [[buffer(8)]],
+    constant MetalHuffmanTable &y_ac_table [[buffer(9)]],
+    constant MetalHuffmanTable &cb_dc_table [[buffer(10)]],
+    constant MetalHuffmanTable &cb_ac_table [[buffer(11)]],
+    constant MetalHuffmanTable &cr_dc_table [[buffer(12)]],
+    constant MetalHuffmanTable &cr_ac_table [[buffer(13)]],
+    device JpegDecodeStatus *status [[buffer(14)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0) {
+        return;
+    }
+
+    status->code = FAST420_STATUS_OK;
+    status->detail = 0;
+    status->position = 0;
+    status->reserved = 0;
+
+    thread PreparedHuffman y_dc;
+    thread PreparedHuffman y_ac;
+    thread PreparedHuffman cb_dc;
+    thread PreparedHuffman cb_ac;
+    thread PreparedHuffman cr_dc;
+    thread PreparedHuffman cr_ac;
+    prepare_huffman(y_dc_table, y_dc);
+    prepare_huffman(y_ac_table, y_ac);
+    prepare_huffman(cb_dc_table, cb_dc);
+    prepare_huffman(cb_ac_table, cb_ac);
+    prepare_huffman(cr_dc_table, cr_dc);
+    prepare_huffman(cr_ac_table, cr_ac);
+
+    thread BitReader br;
+    br.pos = 0;
+    br.acc = 0;
+    br.bits = 0;
+
+    thread short coeffs[64];
+
+    int y_prev_dc = 0;
+    int cb_prev_dc = 0;
+    int cr_prev_dc = 0;
+    const uint y_block_size = 8u >> params.scale_shift;
+    const uint c_block_size = 8u >> params.scale_shift;
+    const uint y_mcu_size = 16u >> params.scale_shift;
+    const uint chroma_origin_x = params.origin_x / 2u;
+    const uint chroma_origin_y = params.origin_y / 2u;
+
+    for (uint my = 0; my < params.mcu_rows; ++my) {
+        for (uint mx = 0; mx < params.mcus_per_row; ++mx) {
+            const uint y_x = mx * y_mcu_size;
+            const uint y_y = my * y_mcu_size;
+            const uint c_x = mx * c_block_size;
+            const uint c_y = my * c_block_size;
+            const bool mcu_intersects = block_intersects_rect(
+                y_x,
+                y_y,
+                y_mcu_size,
+                y_mcu_size,
+                params.origin_x,
+                params.origin_y,
+                params.scaled_width,
+                params.scaled_height
+            );
+            bool dc_only = false;
+
+            if (mcu_intersects) {
+                const bool y0_intersects = block_intersects_rect(
+                    y_x,
+                    y_y,
+                    y_block_size,
+                    y_block_size,
+                    params.origin_x,
+                    params.origin_y,
+                    params.scaled_width,
+                    params.scaled_height
+                );
+                if (y0_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    deposit_scaled_block_region(
+                        y_plane,
+                        params.scaled_width,
+                        params.scaled_width,
+                        params.scaled_height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x,
+                        y_y,
+                        params.scale_shift,
+                        coeffs,
+                        dc_only
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y1_intersects = block_intersects_rect(
+                    y_x + y_block_size,
+                    y_y,
+                    y_block_size,
+                    y_block_size,
+                    params.origin_x,
+                    params.origin_y,
+                    params.scaled_width,
+                    params.scaled_height
+                );
+                if (y1_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    deposit_scaled_block_region(
+                        y_plane,
+                        params.scaled_width,
+                        params.scaled_width,
+                        params.scaled_height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x + y_block_size,
+                        y_y,
+                        params.scale_shift,
+                        coeffs,
+                        dc_only
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y2_intersects = block_intersects_rect(
+                    y_x,
+                    y_y + y_block_size,
+                    y_block_size,
+                    y_block_size,
+                    params.origin_x,
+                    params.origin_y,
+                    params.scaled_width,
+                    params.scaled_height
+                );
+                if (y2_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    deposit_scaled_block_region(
+                        y_plane,
+                        params.scaled_width,
+                        params.scaled_width,
+                        params.scaled_height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x,
+                        y_y + y_block_size,
+                        params.scale_shift,
+                        coeffs,
+                        dc_only
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                const bool y3_intersects = block_intersects_rect(
+                    y_x + y_block_size,
+                    y_y + y_block_size,
+                    y_block_size,
+                    y_block_size,
+                    params.origin_x,
+                    params.origin_y,
+                    params.scaled_width,
+                    params.scaled_height
+                );
+                if (y3_intersects) {
+                    if (!decode_block(br, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, status, coeffs, dc_only)) {
+                        return;
+                    }
+                    deposit_scaled_block_region(
+                        y_plane,
+                        params.scaled_width,
+                        params.scaled_width,
+                        params.scaled_height,
+                        params.origin_x,
+                        params.origin_y,
+                        y_x + y_block_size,
+                        y_y + y_block_size,
+                        params.scale_shift,
+                        coeffs,
+                        dc_only
+                    );
+                } else if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+
+                if (!decode_block(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, status, coeffs, dc_only)) {
+                    return;
+                }
+                deposit_scaled_block_region(
+                    cb_plane,
+                    params.chroma_width,
+                    params.chroma_width,
+                    params.chroma_height,
+                    chroma_origin_x,
+                    chroma_origin_y,
+                    c_x,
+                    c_y,
+                    params.scale_shift,
+                    coeffs,
+                    dc_only
+                );
+
+                if (!decode_block(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, status, coeffs, dc_only)) {
+                    return;
+                }
+                deposit_scaled_block_region(
+                    cr_plane,
+                    params.chroma_width,
+                    params.chroma_width,
+                    params.chroma_height,
+                    chroma_origin_x,
+                    chroma_origin_y,
+                    c_x,
+                    c_y,
+                    params.scale_shift,
+                    coeffs,
+                    dc_only
+                );
+            } else {
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, y_dc, y_ac, y_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, cb_dc, cb_ac, cb_prev_dc, status)) {
+                    return;
+                }
+                if (!decode_block_skip(br, entropy, params.entropy_len, cr_dc, cr_ac, cr_prev_dc, status)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 kernel void jpeg_pack_420(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -838,6 +2007,54 @@ kernel void jpeg_pack_420(
 
     const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, gid.x);
     const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, gid.x);
+    const int y = int(y_plane[y_idx]);
+    const int cb_centered = int(cb) - 128;
+    const int cr_centered = int(cr) - 128;
+
+    uint out_idx = gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
+    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
+    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
+    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    if (params.out_format == OUT_RGBA) {
+        out[out_idx + 3] = uchar(params.alpha);
+    }
+}
+
+kernel void jpeg_pack_420_windowed(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    device uchar *out [[buffer(3)]],
+    constant JpegFast420WindowedPackParams &params [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint src_x = gid.x + params.src_x;
+    const uint src_y = gid.y + params.src_y;
+    if (src_x >= params.src_width || src_y >= params.src_height) {
+        return;
+    }
+
+    const uint y_idx = src_y * params.src_width + src_x;
+    if (params.out_format == OUT_GRAY) {
+        out[gid.y * params.out_stride + gid.x] = y_plane[y_idx];
+        return;
+    }
+
+    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
+    const uint near_y = (src_y & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
+    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
+
+    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
+    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
     const int y = int(y_plane[y_idx]);
     const int cb_centered = int(cb) - 128;
     const int cr_centered = int(cr) - 128;

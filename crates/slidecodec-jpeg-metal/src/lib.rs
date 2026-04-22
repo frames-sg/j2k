@@ -666,7 +666,13 @@ fn decode_surface_from_decoder(
             BackendRequest::Auto | BackendRequest::Metal => {
                 #[cfg(target_os = "macos")]
                 {
-                    compute::decode_region_to_surface(decoder, pool, fmt, to_jpeg_rect(roi))
+                    compute::decode_region_to_surface(
+                        decoder,
+                        pool,
+                        fmt,
+                        to_jpeg_rect(roi),
+                        fast420_packet,
+                    )
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -696,7 +702,7 @@ fn decode_surface_from_decoder(
             BackendRequest::Auto | BackendRequest::Metal => {
                 #[cfg(target_os = "macos")]
                 {
-                    compute::decode_scaled_to_surface(decoder, pool, fmt, scale)
+                    compute::decode_scaled_to_surface(decoder, pool, fmt, scale, fast420_packet)
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
