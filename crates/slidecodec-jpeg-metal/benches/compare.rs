@@ -443,6 +443,115 @@ fn bench_compare(c: &mut Criterion) {
         );
     }
     viewer_region_scaled_composite_rgb_device.finish();
+
+    let mut viewer_region_scaled_composite_rgb_warm =
+        c.benchmark_group("viewer_region_scaled_composite_rgb_warm");
+    for input in inputs.iter().filter(|input| {
+        input.mode == DecodeMode::Rgb
+            && input.input_class == CorpusInputClass::BoundedFullFrame
+            && suggest_viewport_workload(input.dimensions).is_some()
+    }) {
+        let workload = suggest_viewport_workload(input.dimensions).expect("warm workload");
+        let cpu_bytes = input.bytes.clone();
+        viewer_region_scaled_composite_rgb_warm.bench_function(
+            format!("{}/cpu", input.name),
+            move |b| {
+                let decoder = CpuDecoder::new(&cpu_bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                b.iter(|| {
+                    let out = compose_viewport_cpu(
+                        &decoder,
+                        &mut pool,
+                        PixelFormat::Rgb8,
+                        workload.scale,
+                        workload.viewport_dims,
+                        &workload.tiles,
+                    )
+                    .expect("cpu warm viewport");
+                    std::hint::black_box(out);
+                });
+            },
+        );
+
+        let workload = suggest_viewport_workload(input.dimensions).expect("warm workload");
+        let hybrid_bytes = input.bytes.clone();
+        viewer_region_scaled_composite_rgb_warm.bench_function(
+            format!("{}/hybrid", input.name),
+            move |b| {
+                let decoder = CpuDecoder::new(&hybrid_bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                let stride =
+                    workload.viewport_dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+                let mut out = vec![0u8; stride * workload.viewport_dims.1 as usize];
+                b.iter(|| {
+                    let surface = compose_viewport_hybrid(
+                        &decoder,
+                        &mut pool,
+                        workload.scale,
+                        workload.viewport_dims,
+                        &workload.tiles,
+                    )
+                    .expect("hybrid warm viewport");
+                    surface
+                        .download_into(&mut out, stride)
+                        .expect("hybrid warm download");
+                    std::hint::black_box(&out);
+                });
+            },
+        );
+    }
+    viewer_region_scaled_composite_rgb_warm.finish();
+
+    let mut viewer_region_scaled_composite_rgb_device_warm =
+        c.benchmark_group("viewer_region_scaled_composite_rgb_device_warm");
+    for input in inputs.iter().filter(|input| {
+        input.mode == DecodeMode::Rgb
+            && input.input_class == CorpusInputClass::BoundedFullFrame
+            && suggest_viewport_workload(input.dimensions).is_some()
+    }) {
+        let workload = suggest_viewport_workload(input.dimensions).expect("warm workload");
+        let cpu_bytes = input.bytes.clone();
+        viewer_region_scaled_composite_rgb_device_warm.bench_function(
+            format!("{}/cpu", input.name),
+            move |b| {
+                let decoder = CpuDecoder::new(&cpu_bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                b.iter(|| {
+                    let surface = compose_viewport_cpu_to_surface(
+                        &decoder,
+                        &mut pool,
+                        workload.scale,
+                        workload.viewport_dims,
+                        &workload.tiles,
+                    )
+                    .expect("cpu warm viewport surface");
+                    std::hint::black_box(surface);
+                });
+            },
+        );
+
+        let workload = suggest_viewport_workload(input.dimensions).expect("warm workload");
+        let hybrid_bytes = input.bytes.clone();
+        viewer_region_scaled_composite_rgb_device_warm.bench_function(
+            format!("{}/hybrid", input.name),
+            move |b| {
+                let decoder = CpuDecoder::new(&hybrid_bytes).expect("cpu decoder");
+                let mut pool = CpuScratchPool::new();
+                b.iter(|| {
+                    let surface = compose_viewport_hybrid(
+                        &decoder,
+                        &mut pool,
+                        workload.scale,
+                        workload.viewport_dims,
+                        &workload.tiles,
+                    )
+                    .expect("hybrid warm viewport surface");
+                    std::hint::black_box(surface);
+                });
+            },
+        );
+    }
+    viewer_region_scaled_composite_rgb_device_warm.finish();
 }
 
 criterion_group!(benches, bench_compare);
