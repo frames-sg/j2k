@@ -76,6 +76,9 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
 fn ht_bench_input() -> Result<BenchInput, String> {
     let candidates = [
         ("htj2k_gray_512", 512_u32, 512_u32),
+        ("htj2k_gray_256", 256_u32, 256_u32),
+        ("htj2k_gray_128", 128_u32, 128_u32),
+        ("htj2k_gray_64", 64_u32, 64_u32),
         ("htj2k_gray_8", 8_u32, 8_u32),
     ];
 

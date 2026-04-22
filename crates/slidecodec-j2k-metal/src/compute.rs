@@ -407,7 +407,9 @@ struct MetalRuntime {
     pack_u8: ComputePipelineState,
     pack_u16: ComputePipelineState,
     classic_cleanup_batched: ComputePipelineState,
-    idwt_reversible53_single_decomposition: ComputePipelineState,
+    idwt_interleave: ComputePipelineState,
+    idwt_reversible53_horizontal: ComputePipelineState,
+    idwt_reversible53_vertical: ComputePipelineState,
     idwt_irreversible97_single_decomposition: ComputePipelineState,
     inverse_mct: ComputePipelineState,
     store_component: ComputePipelineState,
@@ -430,8 +432,11 @@ impl MetalRuntime {
         let pack_u16_fn = library.get_function("j2k_pack_u16", None)?;
         let classic_cleanup_batched_fn =
             library.get_function("j2k_decode_classic_cleanup_batched", None)?;
-        let idwt_reversible53_single_decomposition_fn =
-            library.get_function("j2k_idwt_reversible53_single_decomposition", None)?;
+        let idwt_interleave_fn = library.get_function("j2k_idwt_interleave", None)?;
+        let idwt_reversible53_horizontal_fn =
+            library.get_function("j2k_idwt_reversible53_horizontal_pass", None)?;
+        let idwt_reversible53_vertical_fn =
+            library.get_function("j2k_idwt_reversible53_vertical_pass", None)?;
         let idwt_irreversible97_single_decomposition_fn =
             library.get_function("j2k_idwt_irreversible97_single_decomposition", None)?;
         let inverse_mct_fn = library.get_function("j2k_inverse_mct", None)?;
@@ -442,8 +447,12 @@ impl MetalRuntime {
         let pack_u16 = device.new_compute_pipeline_state_with_function(&pack_u16_fn)?;
         let classic_cleanup_batched =
             device.new_compute_pipeline_state_with_function(&classic_cleanup_batched_fn)?;
-        let idwt_reversible53_single_decomposition = device
-            .new_compute_pipeline_state_with_function(&idwt_reversible53_single_decomposition_fn)?;
+        let idwt_interleave =
+            device.new_compute_pipeline_state_with_function(&idwt_interleave_fn)?;
+        let idwt_reversible53_horizontal =
+            device.new_compute_pipeline_state_with_function(&idwt_reversible53_horizontal_fn)?;
+        let idwt_reversible53_vertical =
+            device.new_compute_pipeline_state_with_function(&idwt_reversible53_vertical_fn)?;
         let idwt_irreversible97_single_decomposition = device
             .new_compute_pipeline_state_with_function(
                 &idwt_irreversible97_single_decomposition_fn,
@@ -461,7 +470,9 @@ impl MetalRuntime {
             pack_u8,
             pack_u16,
             classic_cleanup_batched,
-            idwt_reversible53_single_decomposition,
+            idwt_interleave,
+            idwt_reversible53_horizontal,
+            idwt_reversible53_vertical,
             idwt_irreversible97_single_decomposition,
             inverse_mct,
             store_component,
@@ -793,18 +804,32 @@ fn decode_mct_status_error(status: J2kMctStatus) -> Error {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn new_f32_buffer(device: &Device, data: &[f32]) -> Buffer {
-    if data.is_empty() {
+fn wrap_f32_output_buffer(device: &Device, output: &mut [f32]) -> Buffer {
+    if output.is_empty() {
         device.new_buffer(
             size_of::<f32>() as u64,
             MTLResourceOptions::StorageModeShared,
         )
     } else {
-        device.new_buffer_with_data(
+        device.new_buffer_with_bytes_no_copy(
+            output.as_mut_ptr().cast(),
+            size_of_val(output) as u64,
+            MTLResourceOptions::StorageModeShared,
+            None,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn borrow_slice_buffer<T>(device: &Device, data: &[T]) -> Buffer {
+    if data.is_empty() {
+        device.new_buffer(1, MTLResourceOptions::StorageModeShared)
+    } else {
+        device.new_buffer_with_bytes_no_copy(
             data.as_ptr().cast(),
             size_of_val(data) as u64,
             MTLResourceOptions::StorageModeShared,
+            None,
         )
     }
 }
@@ -844,9 +869,9 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
             addend1,
             addend2,
         };
-        let plane0_buffer = new_f32_buffer(&runtime.device, plane0);
-        let plane1_buffer = new_f32_buffer(&runtime.device, plane1);
-        let plane2_buffer = new_f32_buffer(&runtime.device, plane2);
+        let plane0_buffer = borrow_slice_buffer(&runtime.device, plane0);
+        let plane1_buffer = borrow_slice_buffer(&runtime.device, plane1);
+        let plane2_buffer = borrow_slice_buffer(&runtime.device, plane2);
         let status = J2kMctStatus::default();
         let status_buffer = runtime.device.new_buffer_with_data(
             (&raw const status).cast(),
@@ -926,7 +951,7 @@ pub(crate) fn decode_store_component_and_capture(
     } = job;
     with_runtime(|runtime| {
         if copy_width == 0 || copy_height == 0 {
-            return Ok(new_f32_buffer(&runtime.device, output));
+            return Ok(wrap_f32_output_buffer(&runtime.device, output));
         }
 
         let required_input_height =
@@ -979,8 +1004,8 @@ pub(crate) fn decode_store_component_and_capture(
             output_y,
             addend,
         };
-        let input_buffer = new_f32_buffer(&runtime.device, input);
-        let output_buffer = new_f32_buffer(&runtime.device, output);
+        let input_buffer = borrow_slice_buffer(&runtime.device, input);
+        let output_buffer = wrap_f32_output_buffer(&runtime.device, output);
         let command_buffer = runtime.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&runtime.store_component);
@@ -1012,11 +1037,6 @@ pub(crate) fn decode_store_component_and_capture(
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
-
-        let output_host = unsafe {
-            core::slice::from_raw_parts(output_buffer.contents().cast::<f32>(), output.len())
-        };
-        output.copy_from_slice(output_host);
         Ok(output_buffer)
     })
 }
@@ -1049,24 +1069,16 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             hh_height: job.hh.rect.height(),
         };
 
-        let ll = new_f32_buffer(&runtime.device, job.ll.coefficients);
-        let hl = new_f32_buffer(&runtime.device, job.hl.coefficients);
-        let lh = new_f32_buffer(&runtime.device, job.lh.coefficients);
-        let hh = new_f32_buffer(&runtime.device, job.hh.coefficients);
-        let decoded = runtime.device.new_buffer(
-            (required_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let status = J2kIdwtStatus::default();
-        let status_buffer = runtime.device.new_buffer_with_data(
-            (&raw const status).cast(),
-            size_of::<J2kIdwtStatus>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let ll = borrow_slice_buffer(&runtime.device, job.ll.coefficients);
+        let hl = borrow_slice_buffer(&runtime.device, job.hl.coefficients);
+        let lh = borrow_slice_buffer(&runtime.device, job.lh.coefficients);
+        let hh = borrow_slice_buffer(&runtime.device, job.hh.coefficients);
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
 
         let command_buffer = runtime.queue.new_command_buffer();
+
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_single_decomposition);
+        encoder.set_compute_pipeline_state(&runtime.idwt_interleave);
         encoder.set_buffer(0, Some(&ll), 0);
         encoder.set_buffer(1, Some(&hl), 0);
         encoder.set_buffer(2, Some(&lh), 0);
@@ -1077,15 +1089,73 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             size_of::<J2kIdwtSingleDecompositionParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.set_buffer(6, Some(&status_buffer), 0);
+        let interleave_width = runtime.idwt_interleave.thread_execution_width().max(1);
+        let interleave_height = (runtime
+            .idwt_interleave
+            .max_total_threads_per_threadgroup()
+            .max(interleave_width)
+            / interleave_width)
+            .max(1);
         encoder.dispatch_threads(
             MTLSize {
-                width: 1,
+                width: u64::from(params.width),
+                height: u64::from(params.height),
+                depth: 1,
+            },
+            MTLSize {
+                width: interleave_width,
+                height: interleave_height,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal);
+        encoder.set_buffer(0, Some(&decoded), 0);
+        encoder.set_bytes(
+            1,
+            size_of::<J2kIdwtSingleDecompositionParams>() as u64,
+            (&raw const params).cast(),
+        );
+        let horizontal_width = runtime
+            .idwt_reversible53_horizontal
+            .thread_execution_width()
+            .max(1);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: u64::from(params.height),
                 height: 1,
                 depth: 1,
             },
             MTLSize {
-                width: 1,
+                width: horizontal_width,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical);
+        encoder.set_buffer(0, Some(&decoded), 0);
+        encoder.set_bytes(
+            1,
+            size_of::<J2kIdwtSingleDecompositionParams>() as u64,
+            (&raw const params).cast(),
+        );
+        let vertical_width = runtime
+            .idwt_reversible53_vertical
+            .thread_execution_width()
+            .max(1);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: u64::from(params.width),
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: vertical_width,
                 height: 1,
                 depth: 1,
             },
@@ -1093,15 +1163,6 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
-
-        let status = unsafe { status_buffer.contents().cast::<J2kIdwtStatus>().read() };
-        if status.code != J2K_IDWT_STATUS_OK {
-            return Err(decode_idwt_status_error(status));
-        }
-
-        let decoded_host =
-            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
-        output[..required_len].copy_from_slice(decoded_host);
         Ok(())
     })
 }
@@ -1134,17 +1195,12 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
             hh_height: job.hh.rect.height(),
         };
 
-        let ll = new_f32_buffer(&runtime.device, job.ll.coefficients);
-        let hl = new_f32_buffer(&runtime.device, job.hl.coefficients);
-        let lh = new_f32_buffer(&runtime.device, job.lh.coefficients);
-        let hh = new_f32_buffer(&runtime.device, job.hh.coefficients);
-        let decoded = runtime.device.new_buffer(
-            (required_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let status = J2kIdwtStatus::default();
-        let status_buffer = runtime.device.new_buffer_with_data(
-            (&raw const status).cast(),
+        let ll = borrow_slice_buffer(&runtime.device, job.ll.coefficients);
+        let hl = borrow_slice_buffer(&runtime.device, job.hl.coefficients);
+        let lh = borrow_slice_buffer(&runtime.device, job.lh.coefficients);
+        let hh = borrow_slice_buffer(&runtime.device, job.hh.coefficients);
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
+        let status_buffer = runtime.device.new_buffer(
             size_of::<J2kIdwtStatus>() as u64,
             MTLResourceOptions::StorageModeShared,
         );
@@ -1183,10 +1239,6 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
         if status.code != J2K_IDWT_STATUS_OK {
             return Err(decode_idwt_status_error(status));
         }
-
-        let decoded_host =
-            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
-        output[..required_len].copy_from_slice(decoded_host);
         Ok(())
     })
 }
@@ -1199,38 +1251,11 @@ fn dispatch_classic_cleanup_batched(
     segments: &[J2kClassicSegment],
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = if coded_data.is_empty() {
-        runtime
-            .device
-            .new_buffer(1, MTLResourceOptions::StorageModeShared)
-    } else {
-        runtime.device.new_buffer_with_data(
-            coded_data.as_ptr().cast(),
-            coded_data.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        )
-    };
-    let jobs_buffer = runtime.device.new_buffer_with_data(
-        jobs.as_ptr().cast(),
-        size_of_val(jobs) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let segments_buffer = if segments.is_empty() {
-        runtime.device.new_buffer(
-            size_of::<J2kClassicSegment>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        )
-    } else {
-        runtime.device.new_buffer_with_data(
-            segments.as_ptr().cast(),
-            size_of_val(segments) as u64,
-            MTLResourceOptions::StorageModeShared,
-        )
-    };
-    let statuses = vec![J2kClassicStatus::default(); jobs.len()];
-    let status_buffer = runtime.device.new_buffer_with_data(
-        statuses.as_ptr().cast(),
-        size_of_val(statuses.as_slice()) as u64,
+    let input = borrow_slice_buffer(&runtime.device, coded_data);
+    let jobs_buffer = borrow_slice_buffer(&runtime.device, jobs);
+    let segments_buffer = borrow_slice_buffer(&runtime.device, segments);
+    let status_buffer = runtime.device.new_buffer(
+        (jobs.len().max(1) * size_of::<J2kClassicStatus>()) as u64,
         MTLResourceOptions::StorageModeShared,
     );
 
@@ -1242,6 +1267,11 @@ fn dispatch_classic_cleanup_batched(
     encoder.set_buffer(2, Some(&jobs_buffer), 0);
     encoder.set_buffer(3, Some(&segments_buffer), 0);
     encoder.set_buffer(4, Some(&status_buffer), 0);
+    let width = runtime
+        .classic_cleanup_batched
+        .thread_execution_width()
+        .max(1)
+        .min(jobs.len() as u64);
     encoder.dispatch_threads(
         MTLSize {
             width: jobs.len() as u64,
@@ -1249,7 +1279,7 @@ fn dispatch_classic_cleanup_batched(
             depth: 1,
         },
         MTLSize {
-            width: 1,
+            width,
             height: 1,
             depth: 1,
         },
@@ -1308,14 +1338,8 @@ fn dispatch_ht_cleanup(
     params: J2kHtCleanupParams,
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = runtime.device.new_buffer_with_data(
-        coded_data.as_ptr().cast(),
-        coded_data.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let status = J2kHtStatus::default();
-    let status_buffer = runtime.device.new_buffer_with_data(
-        (&raw const status).cast(),
+    let input = borrow_slice_buffer(&runtime.device, coded_data);
+    let status_buffer = runtime.device.new_buffer(
         size_of::<J2kHtStatus>() as u64,
         MTLResourceOptions::StorageModeShared,
     );
@@ -1366,20 +1390,10 @@ fn dispatch_ht_cleanup_batched(
     jobs: &[J2kHtCleanupBatchJob],
     decoded: &Buffer,
 ) -> Result<(), Error> {
-    let input = runtime.device.new_buffer_with_data(
-        coded_data.as_ptr().cast(),
-        coded_data.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let jobs_buffer = runtime.device.new_buffer_with_data(
-        jobs.as_ptr().cast(),
-        size_of_val(jobs) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    let statuses = vec![J2kHtStatus::default(); jobs.len()];
-    let status_buffer = runtime.device.new_buffer_with_data(
-        statuses.as_ptr().cast(),
-        size_of_val(statuses.as_slice()) as u64,
+    let input = borrow_slice_buffer(&runtime.device, coded_data);
+    let jobs_buffer = borrow_slice_buffer(&runtime.device, jobs);
+    let status_buffer = runtime.device.new_buffer(
+        (jobs.len().max(1) * size_of::<J2kHtStatus>()) as u64,
         MTLResourceOptions::StorageModeShared,
     );
 
@@ -1394,6 +1408,11 @@ fn dispatch_ht_cleanup_batched(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
+    let width = runtime
+        .ht_cleanup_batched
+        .thread_execution_width()
+        .max(1)
+        .min(jobs.len() as u64);
     encoder.dispatch_threads(
         MTLSize {
             width: jobs.len() as u64,
@@ -1401,7 +1420,7 @@ fn dispatch_ht_cleanup_batched(
             depth: 1,
         },
         MTLSize {
-            width: 1,
+            width,
             height: 1,
             depth: 1,
         },
@@ -1441,10 +1460,7 @@ pub(crate) fn decode_classic_cleanup_code_block(
     }
 
     with_runtime(|runtime| {
-        let decoded = runtime.device.new_buffer(
-            (required_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
         let batch_job = J2kClassicCleanupBatchJob {
             coded_offset: 0,
             coded_len: u32::try_from(job.data.len()).map_err(|_| Error::MetalKernel {
@@ -1485,9 +1501,6 @@ pub(crate) fn decode_classic_cleanup_code_block(
             })
             .collect();
         dispatch_classic_cleanup_batched(runtime, job.data, &[batch_job], &segments, &decoded)?;
-        let decoded =
-            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
-        output[..required_len].copy_from_slice(decoded);
         Ok(())
     })
 }
@@ -1512,14 +1525,7 @@ pub(crate) fn decode_classic_cleanup_sub_band(
     }
 
     with_runtime(|runtime| {
-        let decoded = runtime.device.new_buffer(
-            (required_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let decoded_host = unsafe {
-            core::slice::from_raw_parts_mut(decoded.contents().cast::<f32>(), required_len)
-        };
-        decoded_host[..required_len].copy_from_slice(&output[..required_len]);
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
 
         let mut jobs = Vec::with_capacity(job.jobs.len());
         let mut coded_data = Vec::new();
@@ -1605,9 +1611,6 @@ pub(crate) fn decode_classic_cleanup_sub_band(
         }
 
         dispatch_classic_cleanup_batched(runtime, &coded_data, &jobs, &segments, &decoded)?;
-        let decoded_host =
-            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
-        output[..required_len].copy_from_slice(decoded_host);
         Ok(())
     })
 }
@@ -1628,12 +1631,6 @@ pub(crate) fn decode_ht_cleanup_code_block(
         return Ok(());
     }
 
-    let tight_len = (job.width as usize)
-        .checked_mul(job.height as usize)
-        .ok_or_else(|| Error::MetalKernel {
-            message: "HTJ2K Metal tight output size overflow".to_string(),
-        })?;
-
     with_runtime(|runtime| {
         let params = J2kHtCleanupParams {
             width: job.width,
@@ -1646,26 +1643,15 @@ pub(crate) fn decode_ht_cleanup_code_block(
             missing_msbs: u32::from(job.missing_bit_planes),
             num_bitplanes: u32::from(job.num_bitplanes),
             number_of_coding_passes: u32::from(job.number_of_coding_passes),
-            output_stride: job.width,
+            output_stride: u32::try_from(job.output_stride).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal output stride exceeds u32".to_string(),
+            })?,
             output_offset: 0,
             dequantization_step: job.dequantization_step,
             stripe_causal: u32::from(job.stripe_causal),
         };
-        let decoded = runtime.device.new_buffer(
-            (tight_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
         dispatch_ht_cleanup(runtime, job.data, params, &decoded)?;
-
-        let decoded =
-            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), tight_len) };
-        let row_width = job.width as usize;
-        for row in 0..job.height as usize {
-            let src_start = row * row_width;
-            let dst_start = row * job.output_stride;
-            output[dst_start..dst_start + row_width]
-                .copy_from_slice(&decoded[src_start..src_start + row_width]);
-        }
 
         Ok(())
     })
@@ -1692,14 +1678,7 @@ pub(crate) fn decode_ht_cleanup_sub_band(
     }
 
     with_runtime(|runtime| {
-        let decoded = runtime.device.new_buffer(
-            (required_len * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let decoded_host = unsafe {
-            core::slice::from_raw_parts_mut(decoded.contents().cast::<f32>(), required_len)
-        };
-        decoded_host[..required_len].copy_from_slice(&output[..required_len]);
+        let decoded = wrap_f32_output_buffer(&runtime.device, output);
 
         let mut jobs = Vec::with_capacity(job.jobs.len());
         let mut coded_data = Vec::new();
@@ -1756,7 +1735,6 @@ pub(crate) fn decode_ht_cleanup_sub_band(
         }
 
         dispatch_ht_cleanup_batched(runtime, &coded_data, &jobs, &decoded)?;
-        output[..required_len].copy_from_slice(decoded_host);
         Ok(())
     })
 }
