@@ -8,92 +8,16 @@ use metal::{
     Buffer, CommandQueue, CompileOptions, ComputePipelineState, Device, MTLResourceOptions, MTLSize,
 };
 use slidecodec_core::{PixelFormat, Rect};
-use slidecodec_jpeg::{ColorSpace as JpegColorSpace, ComponentRowWriter, Decoder as CpuDecoder};
+use slidecodec_jpeg::{
+    ColorSpace as JpegColorSpace, ComponentRowWriter, Decoder as CpuDecoder,
+    __private::{JpegMetalFast420PacketV1, MetalHuffmanTable as PacketHuffmanTable},
+};
 
 use crate::viewport::ViewportTile;
 use crate::{Error, Surface};
 
 #[cfg(target_os = "macos")]
-const SHADER_SOURCE: &str = r"
-#include <metal_stdlib>
-using namespace metal;
-
-struct JpegPackParams {
-    uint width;
-    uint height;
-    uint out_stride;
-    uint alpha;
-    uint mode;
-    uint out_format;
-};
-
-constant uint MODE_GRAY = 0;
-constant uint MODE_YCBCR = 1;
-constant uint MODE_RGB = 2;
-
-constant uint OUT_GRAY = 0;
-constant uint OUT_RGB = 1;
-constant uint OUT_RGBA = 2;
-
-inline uchar clamp_u8(int value) {
-    return uchar(clamp(value, 0, 255));
-}
-
-kernel void jpeg_pack(
-    device const uchar *plane0 [[buffer(0)]],
-    device const uchar *plane1 [[buffer(1)]],
-    device const uchar *plane2 [[buffer(2)]],
-    device uchar *out [[buffer(3)]],
-    constant JpegPackParams &params [[buffer(4)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    if (gid.x >= params.width || gid.y >= params.height) {
-        return;
-    }
-
-    const uint idx = gid.y * params.width + gid.x;
-    uint out_idx = gid.y * params.out_stride;
-
-    if (params.out_format == OUT_GRAY) {
-        out_idx += gid.x;
-        if (params.mode == MODE_GRAY || params.mode == MODE_YCBCR) {
-            out[out_idx] = plane0[idx];
-            return;
-        }
-
-        const uint r = plane0[idx];
-        const uint g = plane1[idx];
-        const uint b = plane2[idx];
-        out[out_idx] = uchar((77u * r + 150u * g + 29u * b + 128u) >> 8);
-        return;
-    }
-
-    out_idx += gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
-
-    if (params.mode == MODE_GRAY) {
-        const uchar gray = plane0[idx];
-        out[out_idx] = gray;
-        out[out_idx + 1] = gray;
-        out[out_idx + 2] = gray;
-    } else if (params.mode == MODE_RGB) {
-        out[out_idx] = plane0[idx];
-        out[out_idx + 1] = plane1[idx];
-        out[out_idx + 2] = plane2[idx];
-    } else {
-        const int y = int(plane0[idx]);
-        const int cb = int(plane1[idx]) - 128;
-        const int cr = int(plane2[idx]) - 128;
-        out[out_idx] = clamp_u8(y + ((91881 * cr + (1 << 15)) >> 16));
-        out[out_idx + 1] = clamp_u8(y - ((22554 * cb + 46802 * cr + (1 << 15)) >> 16));
-        out[out_idx + 2] = clamp_u8(y + ((116130 * cb + (1 << 15)) >> 16));
-    }
-
-    if (params.out_format == OUT_RGBA) {
-        out[out_idx + 3] = uchar(params.alpha);
-    }
-}
-
-";
+const SHADER_SOURCE: &str = include_str!("shaders.metal");
 
 #[cfg(target_os = "macos")]
 const MODE_GRAY: u32 = 0;
@@ -110,6 +34,13 @@ const OUT_RGB: u32 = 1;
 const OUT_RGBA: u32 = 2;
 
 #[cfg(target_os = "macos")]
+const FAST420_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const FAST420_STATUS_TRUNCATED: u32 = 1;
+#[cfg(target_os = "macos")]
+const FAST420_STATUS_HUFFMAN: u32 = 2;
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct JpegPackParams {
@@ -119,6 +50,54 @@ struct JpegPackParams {
     alpha: u32,
     mode: u32,
     out_format: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegFast420Params {
+    width: u32,
+    height: u32,
+    chroma_width: u32,
+    chroma_height: u32,
+    mcus_per_row: u32,
+    mcu_rows: u32,
+    entropy_len: u32,
+    out_stride: u32,
+    alpha: u32,
+    out_format: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetalHuffmanTableHost {
+    bits: [u8; 16],
+    values_len: u16,
+    reserved: u16,
+    values: [u8; 256],
+}
+
+#[cfg(target_os = "macos")]
+impl From<&PacketHuffmanTable> for MetalHuffmanTableHost {
+    fn from(value: &PacketHuffmanTable) -> Self {
+        Self {
+            bits: value.bits,
+            values_len: value.values_len,
+            reserved: 0,
+            values: value.values,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct JpegDecodeStatus {
+    code: u32,
+    detail: u32,
+    position: u32,
+    reserved: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -132,6 +111,8 @@ struct MetalRuntime {
     device: Device,
     queue: CommandQueue,
     pack_pipeline: ComputePipelineState,
+    pack_420_pipeline: ComputePipelineState,
+    fast420_decode_pipeline: ComputePipelineState,
 }
 
 #[cfg(target_os = "macos")]
@@ -143,11 +124,19 @@ impl MetalRuntime {
         let library = device.new_library_with_source(SHADER_SOURCE, &options)?;
         let pack_function = library.get_function("jpeg_pack", None)?;
         let pack_pipeline = device.new_compute_pipeline_state_with_function(&pack_function)?;
+        let pack_420_function = library.get_function("jpeg_pack_420", None)?;
+        let pack_420_pipeline =
+            device.new_compute_pipeline_state_with_function(&pack_420_function)?;
+        let fast420_decode_function = library.get_function("jpeg_decode_fast420", None)?;
+        let fast420_decode_pipeline =
+            device.new_compute_pipeline_state_with_function(&fast420_decode_function)?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
             queue,
             pack_pipeline,
+            pack_420_pipeline,
+            fast420_decode_pipeline,
         })
     }
 }
@@ -290,25 +279,7 @@ impl PlaneStage {
             size_of::<JpegPackParams>() as u64,
             (&raw const params).cast(),
         );
-
-        let width = runtime.pack_pipeline.thread_execution_width().max(1);
-        let max_threads = runtime
-            .pack_pipeline
-            .max_total_threads_per_threadgroup()
-            .max(width);
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(self.dims.0),
-                height: u64::from(self.dims.1),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
-        );
+        dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -542,6 +513,243 @@ impl ComponentRowWriter for ViewportPlaneWriter<'_> {
 }
 
 #[cfg(target_os = "macos")]
+fn dispatch_2d_pipeline(
+    encoder: &metal::ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    dims: (u32, u32),
+) {
+    let width = pipeline.thread_execution_width().max(1);
+    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    let height = (max_threads / width).max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(dims.0),
+            height: u64::from(dims.1),
+            depth: 1,
+        },
+        MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn pixel_format_to_out_format(fmt: PixelFormat) -> Option<u32> {
+    match fmt {
+        PixelFormat::Gray8 => Some(OUT_GRAY),
+        PixelFormat::Rgb8 => Some(OUT_RGB),
+        PixelFormat::Rgba8 => Some(OUT_RGBA),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_params(
+    packet: &JpegMetalFast420PacketV1,
+    fmt: PixelFormat,
+) -> Result<JpegFast420Params, Error> {
+    let out_format = pixel_format_to_out_format(fmt).ok_or_else(|| Error::MetalKernel {
+        message: format!("unsupported JPEG Metal fast420 pixel format {fmt:?}"),
+    })?;
+    let out_stride = packet.dimensions.0 as usize * fmt.bytes_per_pixel();
+    Ok(JpegFast420Params {
+        width: packet.dimensions.0,
+        height: packet.dimensions.1,
+        chroma_width: packet.dimensions.0.div_ceil(2),
+        chroma_height: packet.dimensions.1.div_ceil(2),
+        mcus_per_row: packet.mcus_per_row,
+        mcu_rows: packet.mcu_rows,
+        entropy_len: u32::try_from(packet.entropy_bytes.len())
+            .expect("JPEG Metal entropy payload fits in u32"),
+        out_stride: u32::try_from(out_stride).expect("JPEG Metal output stride fits in u32"),
+        alpha: u32::from(u8::MAX),
+        out_format,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_error_from_cpu(
+    decoder: &CpuDecoder<'_>,
+    fmt: PixelFormat,
+    status: JpegDecodeStatus,
+) -> Error {
+    if let Err(err) = decoder.decode(fmt) {
+        Error::Decode(err)
+    } else {
+        let reason = match status.code {
+            FAST420_STATUS_TRUNCATED => "truncated entropy stream",
+            FAST420_STATUS_HUFFMAN => "invalid Huffman stream",
+            _ => "unexpected Metal fast420 failure",
+        };
+        Error::MetalKernel {
+            message: format!("{reason} at entropy byte {}", status.position),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_to_surface(
+    runtime: &MetalRuntime,
+    decoder: &CpuDecoder<'_>,
+    packet: Option<&JpegMetalFast420PacketV1>,
+    fmt: PixelFormat,
+) -> Result<Option<Surface>, Error> {
+    let Some(packet) = packet else {
+        return Ok(None);
+    };
+    let Some(_out_format) = pixel_format_to_out_format(fmt) else {
+        return Ok(None);
+    };
+
+    let params = fast420_params(packet, fmt)?;
+    let y_len = params.width as usize * params.height as usize;
+    let chroma_len = params.chroma_width as usize * params.chroma_height as usize;
+    let y_plane = runtime
+        .device
+        .new_buffer(y_len as u64, MTLResourceOptions::StorageModeShared);
+    let chroma_buffers = [
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+        runtime
+            .device
+            .new_buffer(chroma_len as u64, MTLResourceOptions::StorageModeShared),
+    ];
+    let status = JpegDecodeStatus::default();
+    let status_buffer = runtime.device.new_buffer_with_data(
+        (&raw const status).cast(),
+        size_of::<JpegDecodeStatus>() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let entropy_buffer = runtime.device.new_buffer_with_data(
+        packet.entropy_bytes.as_ptr().cast(),
+        packet.entropy_bytes.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let dc_tables = [
+        MetalHuffmanTableHost::from(&packet.y_dc_table),
+        MetalHuffmanTableHost::from(&packet.cb_dc_table),
+        MetalHuffmanTableHost::from(&packet.cr_dc_table),
+    ];
+    let ac_tables = [
+        MetalHuffmanTableHost::from(&packet.y_ac_table),
+        MetalHuffmanTableHost::from(&packet.cb_ac_table),
+        MetalHuffmanTableHost::from(&packet.cr_ac_table),
+    ];
+
+    let out_buffer = (fmt != PixelFormat::Gray8).then(|| {
+        runtime.device.new_buffer(
+            (params.out_stride as usize * params.height as usize) as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    });
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder.set_compute_pipeline_state(&runtime.fast420_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffer), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&chroma_buffers[0]), 0);
+    decoder_encoder.set_buffer(3, Some(&chroma_buffers[1]), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFast420Params>() as u64,
+        (&raw const params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        packet.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        packet.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        packet.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<MetalHuffmanTableHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&status_buffer), 0);
+    decoder_encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    decoder_encoder.end_encoding();
+
+    if let Some(out_buffer) = out_buffer.as_ref() {
+        let pack_encoder = command_buffer.new_compute_command_encoder();
+        pack_encoder.set_compute_pipeline_state(&runtime.pack_420_pipeline);
+        pack_encoder.set_buffer(0, Some(&y_plane), 0);
+        pack_encoder.set_buffer(1, Some(&chroma_buffers[0]), 0);
+        pack_encoder.set_buffer(2, Some(&chroma_buffers[1]), 0);
+        pack_encoder.set_buffer(3, Some(out_buffer), 0);
+        pack_encoder.set_bytes(
+            4,
+            size_of::<JpegFast420Params>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(pack_encoder, &runtime.pack_420_pipeline, packet.dimensions);
+        pack_encoder.end_encoding();
+    }
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let status = unsafe { *status_buffer.contents().cast::<JpegDecodeStatus>() };
+    if status.code != FAST420_STATUS_OK {
+        return Err(decode_error_from_cpu(decoder, fmt, status));
+    }
+
+    Ok(Some(match out_buffer {
+        Some(out_buffer) => Surface::from_metal_buffer(out_buffer, packet.dimensions, fmt),
+        None => Surface::from_metal_buffer(y_plane, packet.dimensions, fmt),
+    }))
+}
+
+#[cfg(target_os = "macos")]
 fn scaled_rect_covering(rect: Rect, scale: slidecodec_core::Downscale) -> Rect {
     let denom = scale.denominator();
     let x_end = rect.x + rect.w;
@@ -563,8 +771,13 @@ pub(crate) fn decode_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut slidecodec_jpeg::ScratchPool,
     fmt: PixelFormat,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        if let Some(surface) = try_decode_fast420_to_surface(runtime, decoder, fast420_packet, fmt)?
+        {
+            return Ok(surface);
+        }
         let mut stage = PlaneStage::new(
             &runtime.device,
             decoder.info().color_space,

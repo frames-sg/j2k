@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use slidecodec_core::{Downscale, PixelFormat, Rect};
+use slidecodec_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use slidecodec_jpeg::{Decoder, ScratchPool};
 use slidecodec_jpeg_metal::viewport::{
-    compose_viewport_cpu, compose_viewport_hybrid, decode_viewport_region_cpu,
-    decode_viewport_region_hybrid, suggest_viewport_workload, viewport_source_bounds, ViewportTile,
+    choose_viewport_surface_strategy, compose_viewport_cpu, compose_viewport_hybrid,
+    decode_viewport_region_cpu, decode_viewport_region_hybrid, decode_viewport_to_surface,
+    is_contiguous_viewport_workload, suggest_viewport_workload, viewport_source_bounds,
+    ViewportSurfaceStrategy, ViewportTile,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
@@ -130,6 +132,7 @@ fn suggested_viewport_workload_is_fixed_for_macro_like_input() {
             },
         })
     );
+    assert!(is_contiguous_viewport_workload(&workload));
 }
 
 #[test]
@@ -204,6 +207,65 @@ fn cpu_contiguous_viewport_region_matches_direct_decode() {
         .expect("direct decode");
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn gapped_tiles_are_not_contiguous() {
+    let workload = slidecodec_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+
+    assert!(!is_contiguous_viewport_workload(&workload));
+    assert_eq!(
+        choose_viewport_surface_strategy(&workload, BackendRequest::Cpu).expect("cpu strategy"),
+        ViewportSurfaceStrategy::CpuComposite
+    );
+}
+
+#[test]
+fn cpu_auto_strategy_prefers_contiguous_when_available() {
+    let workload = slidecodec_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: quadrant_tiles().to_vec(),
+    };
+
+    assert!(is_contiguous_viewport_workload(&workload));
+    assert_eq!(
+        choose_viewport_surface_strategy(&workload, BackendRequest::Cpu).expect("cpu strategy"),
+        ViewportSurfaceStrategy::CpuContiguous
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -290,4 +352,29 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
         .expect("hybrid viewport region");
 
     assert_eq!(actual.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_viewport_surface_path_prefers_cpu_for_small_contiguous_workloads() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut direct_pool = ScratchPool::new();
+    let mut auto_pool = ScratchPool::new();
+    let workload = slidecodec_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: quadrant_tiles().to_vec(),
+    };
+
+    let expected = slidecodec_jpeg_metal::viewport::decode_viewport_region_cpu_to_surface(
+        &decoder,
+        &mut direct_pool,
+        &workload,
+    )
+    .expect("cpu viewport surface");
+    let actual =
+        decode_viewport_to_surface(&decoder, &mut auto_pool, &workload, BackendRequest::Auto)
+            .expect("auto viewport surface");
+
+    assert_eq!(actual.as_bytes(), expected.as_bytes());
 }

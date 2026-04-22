@@ -20,6 +20,10 @@ use slidecodec_jpeg::{
     ColorSpace as JpegColorSpace, DecodeOutcome as JpegDecodeOutcome, Decoder as CpuDecoder,
     DecoderContext as CpuDecoderContext, JpegError, JpegView, Rect as JpegRect,
     ScratchPool as CpuScratchPool, Warning as CpuWarning,
+    __private::{
+        build_metal_fast420_packet, build_metal_fast420_packet_for_decoder, decoder_bytes,
+        JpegMetalFast420PacketV1,
+    },
 };
 
 #[cfg(target_os = "macos")]
@@ -151,20 +155,28 @@ impl core::fmt::Debug for MetalSession {
 pub struct Decoder<'a> {
     inner: CpuDecoder<'a>,
     source: Arc<[u8]>,
+    fast420_packet: Option<JpegMetalFast420PacketV1>,
 }
 
 impl<'a> Decoder<'a> {
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
+        let inner = CpuDecoder::new(input)?;
         Ok(Self {
-            inner: CpuDecoder::new(input)?,
+            fast420_packet: build_metal_fast420_packet(input).ok(),
+            inner,
             source: Arc::<[u8]>::from(input),
         })
     }
 
     pub fn from_view(view: JpegView<'a>) -> Result<Self, Error> {
         let inner = CpuDecoder::from_view(view)?;
-        let source = Arc::<[u8]>::from(slidecodec_jpeg::__private::decoder_bytes(&inner));
-        Ok(Self { inner, source })
+        let source = Arc::<[u8]>::from(decoder_bytes(&inner));
+        let fast420_packet = build_metal_fast420_packet_for_decoder(&inner).ok();
+        Ok(Self {
+            inner,
+            source,
+            fast420_packet,
+        })
     }
 
     pub fn inner(&self) -> &CpuDecoder<'a> {
@@ -320,6 +332,11 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
         fmt: PixelFormat,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            self.fast420_packet.clone()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -330,6 +347,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
                 fmt,
                 backend,
                 batch::BatchOp::Full,
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -344,6 +362,11 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
         roi: Rect,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            self.fast420_packet.clone()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -354,6 +377,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
                 fmt,
                 backend,
                 batch::BatchOp::Region(roi),
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -368,6 +392,11 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            self.fast420_packet.clone()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -378,6 +407,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
                 fmt,
                 backend,
                 batch::BatchOp::Scaled(scale),
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -401,6 +431,11 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            build_metal_fast420_packet(input).ok()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -411,6 +446,7 @@ impl TileBatchDecodeSubmit for Codec {
                 fmt,
                 backend,
                 batch::BatchOp::Full,
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -428,6 +464,11 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            build_metal_fast420_packet(input).ok()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -438,6 +479,7 @@ impl TileBatchDecodeSubmit for Codec {
                 fmt,
                 backend,
                 batch::BatchOp::Region(roi),
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -455,6 +497,11 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
+        let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+            build_metal_fast420_packet(input).ok()
+        } else {
+            None
+        };
         let slot = session
             .shared
             .0
@@ -465,6 +512,7 @@ impl TileBatchDecodeSubmit for Codec {
                 fmt,
                 backend,
                 batch::BatchOp::Scaled(scale),
+                fast420_packet,
             ));
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
@@ -544,10 +592,23 @@ pub(crate) fn decode_surface_from_bytes(
     fmt: PixelFormat,
     backend: BackendRequest,
     op: batch::BatchOp,
+    fast420_packet: Option<JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     let decoder = CpuDecoder::new(input)?;
     let mut pool = CpuScratchPool::new();
-    decode_surface_from_decoder(&decoder, &mut pool, fmt, backend, op)
+    let fast420_packet = if matches!(backend, BackendRequest::Auto | BackendRequest::Metal) {
+        fast420_packet.or_else(|| build_metal_fast420_packet_for_decoder(&decoder).ok())
+    } else {
+        None
+    };
+    decode_surface_from_decoder(
+        &decoder,
+        &mut pool,
+        fmt,
+        backend,
+        op,
+        fast420_packet.as_ref(),
+    )
 }
 
 fn decode_surface_from_decoder(
@@ -556,6 +617,7 @@ fn decode_surface_from_decoder(
     fmt: PixelFormat,
     backend: BackendRequest,
     op: batch::BatchOp,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
 ) -> Result<Surface, Error> {
     #[cfg(not(target_os = "macos"))]
     if matches!(backend, BackendRequest::Metal) {
@@ -574,7 +636,7 @@ fn decode_surface_from_decoder(
             BackendRequest::Auto | BackendRequest::Metal => {
                 #[cfg(target_os = "macos")]
                 {
-                    compute::decode_to_surface(decoder, pool, fmt)
+                    compute::decode_to_surface(decoder, pool, fmt, fast420_packet)
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
