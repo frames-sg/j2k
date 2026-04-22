@@ -3,8 +3,13 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
 
+mod classic;
 #[cfg(target_os = "macos")]
 mod compute;
+mod ht;
+mod idwt;
+mod mct;
+mod store;
 
 use core::convert::Infallible;
 
@@ -16,6 +21,7 @@ use slidecodec_core::{
 use slidecodec_j2k::{
     J2kContext as CpuJ2kContext, J2kDecoder as CpuDecoder, J2kError,
     J2kScratchPool as CpuJ2kScratchPool, J2kView,
+    __private::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
 };
 #[cfg(target_os = "macos")]
 use slidecodec_j2k_native::{
@@ -243,30 +249,27 @@ impl<'a> J2kDecoder<'a> {
         roi: Rect,
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
-        let dims = self.inner.info().dimensions;
-        if !roi.is_within(dims) {
-            return Err(J2kError::InvalidRegion {
-                x: roi.x,
-                y: roi.y,
-                w: roi.w,
-                h: roi.h,
-                image_w: dims.0,
-                image_h: dims.1,
-            }
-            .into());
-        }
+        let plan = DeviceDecodePlan::for_image(
+            self.inner.info().dimensions,
+            DeviceDecodeRequest::Region { roi },
+        )?;
         #[cfg(not(target_os = "macos"))]
         if matches!(backend, BackendRequest::Metal) {
             return Err(Error::MetalUnavailable);
         }
         match backend {
             BackendRequest::Cpu => {
-                let region_dims = (roi.w, roi.h);
-                let stride = region_dims.0 as usize * fmt.bytes_per_pixel();
-                let mut out = vec![0u8; stride * region_dims.1 as usize];
-                self.inner
-                    .decode_region_into(&mut self.pool, &mut out, stride, fmt, roi)?;
-                upload_surface(out, region_dims, fmt, backend)
+                let dims = plan.output_dims();
+                let stride = dims.0 as usize * fmt.bytes_per_pixel();
+                let mut out = vec![0u8; stride * dims.1 as usize];
+                self.inner.decode_region_into(
+                    &mut self.pool,
+                    &mut out,
+                    stride,
+                    fmt,
+                    plan.source_rect(),
+                )?;
+                upload_surface(out, dims, fmt, backend)
             }
             BackendRequest::Auto | BackendRequest::Metal => {
                 #[cfg(target_os = "macos")]
@@ -279,16 +282,26 @@ impl<'a> J2kDecoder<'a> {
                             "native image cache missing".to_string(),
                         )));
                     };
-                    compute::decode_region_to_surface(image, native_context, fmt, roi)
+                    compute::decode_image_region_to_surface(
+                        image,
+                        native_context,
+                        fmt,
+                        plan.source_rect(),
+                    )
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let region_dims = (roi.w, roi.h);
-                    let stride = region_dims.0 as usize * fmt.bytes_per_pixel();
-                    let mut out = vec![0u8; stride * region_dims.1 as usize];
-                    self.inner
-                        .decode_region_into(&mut self.pool, &mut out, stride, fmt, roi)?;
-                    upload_surface(out, region_dims, fmt, BackendRequest::Cpu)
+                    let dims = plan.output_dims();
+                    let stride = dims.0 as usize * fmt.bytes_per_pixel();
+                    let mut out = vec![0u8; stride * dims.1 as usize];
+                    self.inner.decode_region_into(
+                        &mut self.pool,
+                        &mut out,
+                        stride,
+                        fmt,
+                        plan.source_rect(),
+                    )?;
+                    upload_surface(out, dims, fmt, BackendRequest::Cpu)
                 }
             }
             BackendRequest::Cuda => Err(Error::UnsupportedBackend { request: backend }),
@@ -301,13 +314,17 @@ impl<'a> J2kDecoder<'a> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
+        let plan = DeviceDecodePlan::for_image(
+            self.inner.info().dimensions,
+            DeviceDecodeRequest::Scaled { scale },
+        )?;
         #[cfg(not(target_os = "macos"))]
         if matches!(backend, BackendRequest::Metal) {
             return Err(Error::MetalUnavailable);
         }
         match backend {
             BackendRequest::Cpu => {
-                let dims = scaled_dims(self.inner.info().dimensions, scale);
+                let dims = plan.output_dims();
                 let stride = dims.0 as usize * fmt.bytes_per_pixel();
                 let mut out = vec![0u8; stride * dims.1 as usize];
                 self.inner
@@ -317,32 +334,16 @@ impl<'a> J2kDecoder<'a> {
             BackendRequest::Auto | BackendRequest::Metal => {
                 #[cfg(target_os = "macos")]
                 {
-                    match compute::decode_scaled_to_surface(
+                    compute::decode_scaled_to_surface(
                         self.inner.bytes(),
                         self.inner.info().dimensions,
                         fmt,
                         scale,
-                    ) {
-                        Ok(surface) => Ok(surface),
-                        Err(error) if scale != Downscale::None && is_htj2k_scaled_gap(&error) => {
-                            let dims = scaled_dims(self.inner.info().dimensions, scale);
-                            let stride = dims.0 as usize * fmt.bytes_per_pixel();
-                            let mut out = vec![0u8; stride * dims.1 as usize];
-                            self.inner.decode_scaled_into(
-                                &mut self.pool,
-                                &mut out,
-                                stride,
-                                fmt,
-                                scale,
-                            )?;
-                            upload_surface(out, dims, fmt, BackendRequest::Metal)
-                        }
-                        Err(error) => Err(error),
-                    }
+                    )
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let dims = scaled_dims(self.inner.info().dimensions, scale);
+                    let dims = plan.output_dims();
                     let stride = dims.0 as usize * fmt.bytes_per_pixel();
                     let mut out = vec![0u8; stride * dims.1 as usize];
                     self.inner
@@ -651,17 +652,6 @@ impl TileBatchDecodeDevice for Codec {
         )?
         .wait()
     }
-}
-
-fn scaled_dims(full: (u32, u32), scale: Downscale) -> (u32, u32) {
-    (
-        full.0.div_ceil(scale.denominator()),
-        full.1.div_ceil(scale.denominator()),
-    )
-}
-
-fn is_htj2k_scaled_gap(error: &Error) -> bool {
-    matches!(error, Error::Decode(J2kError::Backend(message)) if message.contains("HTJ2K decode"))
 }
 
 fn upload_surface(
