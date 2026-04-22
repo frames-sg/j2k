@@ -114,6 +114,23 @@ fn hidden_device_plan_restart_checkpoints_capture_resume_state() {
 }
 
 #[test]
+fn hidden_device_plan_treats_dri_zero_as_non_restart_fast_path() {
+    let bytes = insert_restart_interval(BASELINE_420.to_vec(), 0);
+    let decoder = Decoder::new(&bytes).expect("decoder");
+    let plan = slidecodec_jpeg::__private::build_device_plan(&decoder, 2).expect("device plan");
+
+    assert_eq!(plan.restart_interval, None);
+    assert!(plan.matches_fast_420);
+    assert_eq!(
+        plan.checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.expected_rst)
+            .collect::<Vec<_>>(),
+        vec![0; plan.checkpoints.len()]
+    );
+}
+
+#[test]
 fn hidden_device_plan_handles_restart_after_partial_entropy_byte() {
     let bytes = grayscale_restart_jpeg();
     let decoder = Decoder::new(&bytes).expect("restart-coded decoder");
@@ -289,5 +306,17 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
     ]);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
     bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
+    bytes
+}
+
+fn insert_restart_interval(mut bytes: Vec<u8>, interval: u16) -> Vec<u8> {
+    let sos = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xda])
+        .expect("SOS marker");
+    bytes.splice(
+        sos..sos,
+        [0xff, 0xdd, 0x00, 0x04, (interval >> 8) as u8, interval as u8],
+    );
     bytes
 }
