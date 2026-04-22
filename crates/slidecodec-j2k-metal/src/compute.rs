@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(target_os = "macos")]
-use std::{cell::RefCell, mem::size_of};
+use std::{
+    cell::RefCell,
+    mem::{size_of, size_of_val},
+};
 
 #[cfg(target_os = "macos")]
 use metal::{
@@ -9,15 +12,86 @@ use metal::{
 };
 use slidecodec_core::{PixelFormat, Rect};
 use slidecodec_j2k_native::{
-    ColorSpace as NativeColorSpace, DecodeSettings as NativeDecodeSettings,
-    DecodedComponents as NativeDecodedComponents, DecoderContext as NativeDecoderContext,
-    Image as NativeImage,
+    ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1, ColorSpace as NativeColorSpace,
+    DecodeSettings as NativeDecodeSettings, DecodedComponents as NativeDecodedComponents,
+    DecoderContext as NativeDecoderContext, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
+    HtSubBandDecodeJob, Image as NativeImage, J2kCodeBlockDecodeJob, J2kInverseMctJob,
+    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kWaveletTransform,
 };
 
-use crate::{Error, Surface};
+use crate::{
+    classic::MetalClassicBlockDecoder, ht::MetalHtBlockDecoder, idwt::MetalIdwtDecoder,
+    mct::MetalMctDecoder, store::MetalStoreDecoder, Error, Surface,
+};
+
+#[derive(Default)]
+struct MetalCodeBlockDecoder {
+    classic: MetalClassicBlockDecoder,
+    ht: MetalHtBlockDecoder,
+    idwt: MetalIdwtDecoder,
+    mct: MetalMctDecoder,
+    store: MetalStoreDecoder,
+}
+
+impl HtCodeBlockDecoder for MetalCodeBlockDecoder {
+    fn decode_j2k_sub_band(
+        &mut self,
+        job: J2kSubBandDecodeJob<'_>,
+        output: &mut [f32],
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.classic.decode_j2k_sub_band(job, output)
+    }
+
+    fn decode_j2k_code_block(
+        &mut self,
+        job: slidecodec_j2k_native::J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.classic.decode_j2k_code_block(job, output)
+    }
+
+    fn decode_sub_band(
+        &mut self,
+        job: HtSubBandDecodeJob<'_>,
+        output: &mut [f32],
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.ht.decode_sub_band(job, output)
+    }
+
+    fn decode_code_block(
+        &mut self,
+        job: HtCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+    ) -> slidecodec_j2k_native::Result<()> {
+        self.ht.decode_code_block(job, output)
+    }
+
+    fn decode_single_decomposition_idwt(
+        &mut self,
+        job: J2kSingleDecompositionIdwtJob<'_>,
+        output: &mut [f32],
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.idwt.decode_single_decomposition_idwt(job, output)
+    }
+
+    fn decode_inverse_mct(
+        &mut self,
+        job: J2kInverseMctJob<'_>,
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.mct.decode_inverse_mct(job)
+    }
+
+    fn decode_store_component(
+        &mut self,
+        job: J2kStoreComponentJob<'_>,
+    ) -> slidecodec_j2k_native::Result<bool> {
+        self.store.decode_store_component(job)
+    }
+}
 
 #[cfg(target_os = "macos")]
-const SHADER_SOURCE: &str = r"
+const SHADER_SOURCE: &str = concat!(
+    r#"
 #include <metal_stdlib>
 using namespace metal;
 
@@ -109,7 +183,18 @@ kernel void j2k_pack_u16(
     out[out_idx + 1] = pack_to_u16(plane1[idx], params.bit_depths[1]);
     out[out_idx + 2] = pack_to_u16(plane2[idx], params.bit_depths[2]);
 }
-";
+"#,
+    "\n",
+    include_str!("classic.metal"),
+    "\n",
+    include_str!("idwt.metal"),
+    "\n",
+    include_str!("mct.metal"),
+    "\n",
+    include_str!("store.metal"),
+    "\n",
+    include_str!("ht_cleanup.metal"),
+);
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -125,6 +210,192 @@ struct J2kPackParams {
 }
 
 #[cfg(target_os = "macos")]
+const J2K_CLASSIC_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STATUS_FAIL: u32 = 1;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STATUS_UNSUPPORTED: u32 = 2;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES: u32 = 1 << 0;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS: u32 = 1 << 1;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS: u32 = 1 << 3;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS: u32 = 1 << 4;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kClassicCleanupBatchJob {
+    coded_offset: u32,
+    coded_len: u32,
+    segment_offset: u32,
+    segment_count: u32,
+    width: u32,
+    height: u32,
+    output_stride: u32,
+    output_offset: u32,
+    missing_msbs: u32,
+    total_bitplanes: u32,
+    number_of_coding_passes: u32,
+    sub_band_type: u32,
+    style_flags: u32,
+    strict: u32,
+    dequantization_step: f32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kClassicSegment {
+    data_offset: u32,
+    data_length: u32,
+    start_coding_pass: u32,
+    end_coding_pass: u32,
+    use_arithmetic: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kClassicStatus {
+    code: u32,
+    detail: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
+const J2K_IDWT_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const J2K_IDWT_STATUS_FAIL: u32 = 1;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kIdwtSingleDecompositionParams {
+    x0: u32,
+    y0: u32,
+    width: u32,
+    height: u32,
+    ll_width: u32,
+    ll_height: u32,
+    hl_width: u32,
+    hl_height: u32,
+    lh_width: u32,
+    lh_height: u32,
+    hh_width: u32,
+    hh_height: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kIdwtStatus {
+    code: u32,
+    detail: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
+const J2K_MCT_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const J2K_MCT_STATUS_FAIL: u32 = 1;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kInverseMctParams {
+    len: u32,
+    transform: u32,
+    addend0: f32,
+    addend1: f32,
+    addend2: f32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kMctStatus {
+    code: u32,
+    detail: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kStoreParams {
+    input_width: u32,
+    source_x: u32,
+    source_y: u32,
+    copy_width: u32,
+    copy_height: u32,
+    output_width: u32,
+    output_x: u32,
+    output_y: u32,
+    addend: f32,
+}
+
+const J2K_HT_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const J2K_HT_STATUS_FAIL: u32 = 1;
+#[cfg(target_os = "macos")]
+const J2K_HT_STATUS_UNSUPPORTED: u32 = 2;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtCleanupParams {
+    width: u32,
+    height: u32,
+    coded_len: u32,
+    cleanup_length: u32,
+    refinement_length: u32,
+    missing_msbs: u32,
+    num_bitplanes: u32,
+    number_of_coding_passes: u32,
+    output_stride: u32,
+    output_offset: u32,
+    dequantization_step: f32,
+    stripe_causal: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kHtCleanupBatchJob {
+    coded_offset: u32,
+    width: u32,
+    height: u32,
+    coded_len: u32,
+    cleanup_length: u32,
+    refinement_length: u32,
+    missing_msbs: u32,
+    num_bitplanes: u32,
+    number_of_coding_passes: u32,
+    output_stride: u32,
+    output_offset: u32,
+    dequantization_step: f32,
+    stripe_causal: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kHtStatus {
+    code: u32,
+    detail: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
 thread_local! {
     static METAL_RUNTIME: RefCell<Option<Result<MetalRuntime, String>>> = const { RefCell::new(None) };
 }
@@ -135,6 +406,17 @@ struct MetalRuntime {
     queue: CommandQueue,
     pack_u8: ComputePipelineState,
     pack_u16: ComputePipelineState,
+    classic_cleanup_batched: ComputePipelineState,
+    idwt_reversible53_single_decomposition: ComputePipelineState,
+    idwt_irreversible97_single_decomposition: ComputePipelineState,
+    inverse_mct: ComputePipelineState,
+    store_component: ComputePipelineState,
+    ht_cleanup: ComputePipelineState,
+    ht_cleanup_batched: ComputePipelineState,
+    ht_vlc_table0: Buffer,
+    ht_vlc_table1: Buffer,
+    ht_uvlc_table0: Buffer,
+    ht_uvlc_table1: Buffer,
 }
 
 #[cfg(target_os = "macos")]
@@ -146,14 +428,65 @@ impl MetalRuntime {
         let library = device.new_library_with_source(SHADER_SOURCE, &options)?;
         let pack_u8_fn = library.get_function("j2k_pack_u8", None)?;
         let pack_u16_fn = library.get_function("j2k_pack_u16", None)?;
+        let classic_cleanup_batched_fn =
+            library.get_function("j2k_decode_classic_cleanup_batched", None)?;
+        let idwt_reversible53_single_decomposition_fn =
+            library.get_function("j2k_idwt_reversible53_single_decomposition", None)?;
+        let idwt_irreversible97_single_decomposition_fn =
+            library.get_function("j2k_idwt_irreversible97_single_decomposition", None)?;
+        let inverse_mct_fn = library.get_function("j2k_inverse_mct", None)?;
+        let store_component_fn = library.get_function("j2k_store_component", None)?;
+        let ht_cleanup_fn = library.get_function("j2k_decode_ht_cleanup", None)?;
+        let ht_cleanup_batched_fn = library.get_function("j2k_decode_ht_cleanup_batched", None)?;
         let pack_u8 = device.new_compute_pipeline_state_with_function(&pack_u8_fn)?;
         let pack_u16 = device.new_compute_pipeline_state_with_function(&pack_u16_fn)?;
+        let classic_cleanup_batched =
+            device.new_compute_pipeline_state_with_function(&classic_cleanup_batched_fn)?;
+        let idwt_reversible53_single_decomposition = device
+            .new_compute_pipeline_state_with_function(&idwt_reversible53_single_decomposition_fn)?;
+        let idwt_irreversible97_single_decomposition = device
+            .new_compute_pipeline_state_with_function(
+                &idwt_irreversible97_single_decomposition_fn,
+            )?;
+        let inverse_mct = device.new_compute_pipeline_state_with_function(&inverse_mct_fn)?;
+        let store_component =
+            device.new_compute_pipeline_state_with_function(&store_component_fn)?;
+        let ht_cleanup = device.new_compute_pipeline_state_with_function(&ht_cleanup_fn)?;
+        let ht_cleanup_batched =
+            device.new_compute_pipeline_state_with_function(&ht_cleanup_batched_fn)?;
         let queue = device.new_command_queue();
         Ok(Self {
-            device,
+            device: device.clone(),
             queue,
             pack_u8,
             pack_u16,
+            classic_cleanup_batched,
+            idwt_reversible53_single_decomposition,
+            idwt_irreversible97_single_decomposition,
+            inverse_mct,
+            store_component,
+            ht_cleanup,
+            ht_cleanup_batched,
+            ht_vlc_table0: device.new_buffer_with_data(
+                ht_vlc_table0().as_ptr().cast(),
+                size_of_val(ht_vlc_table0()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ),
+            ht_vlc_table1: device.new_buffer_with_data(
+                ht_vlc_table1().as_ptr().cast(),
+                size_of_val(ht_vlc_table1()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ),
+            ht_uvlc_table0: device.new_buffer_with_data(
+                ht_uvlc_table0().as_ptr().cast(),
+                size_of_val(ht_uvlc_table0()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ),
+            ht_uvlc_table1: device.new_buffer_with_data(
+                ht_uvlc_table1().as_ptr().cast(),
+                size_of_val(ht_uvlc_table1()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ),
         })
     }
 }
@@ -161,10 +494,11 @@ impl MetalRuntime {
 #[cfg(target_os = "macos")]
 fn with_runtime<R>(f: impl FnOnce(&MetalRuntime) -> Result<R, Error>) -> Result<R, Error> {
     METAL_RUNTIME.with(|runtime| {
-        let mut runtime = runtime.borrow_mut();
-        if runtime.is_none() {
-            *runtime = Some(MetalRuntime::new());
+        let needs_init = runtime.borrow().is_none();
+        if needs_init {
+            *runtime.borrow_mut() = Some(MetalRuntime::new());
         }
+        let runtime = runtime.borrow();
         match runtime.as_ref().expect("runtime initialized") {
             Ok(runtime) => f(runtime),
             Err(message) => Err(Error::MetalKernel {
@@ -221,6 +555,44 @@ impl PlaneStage {
 
         Ok(Self {
             dims,
+            plane_count,
+            color_space: decoded.color_space().clone(),
+            has_alpha: decoded.has_alpha(),
+            bit_depths,
+            planes,
+        })
+    }
+
+    fn from_captured_planes(
+        decoded: &NativeDecodedComponents<'_>,
+        captured_planes: Vec<Buffer>,
+    ) -> Option<Self> {
+        let plane_count = decoded.planes().len();
+        let supported_shape = matches!(
+            (decoded.color_space(), decoded.has_alpha(), plane_count),
+            (NativeColorSpace::Gray, false, 1) | (NativeColorSpace::RGB, false, 3)
+        );
+        if !supported_shape {
+            return None;
+        }
+        if captured_planes.len() != plane_count || plane_count == 0 || plane_count > 4 {
+            return None;
+        }
+
+        let mut bit_depths = [0u32; 4];
+        let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
+        for (index, (plane, buffer)) in decoded
+            .planes()
+            .iter()
+            .zip(captured_planes.into_iter())
+            .enumerate()
+        {
+            bit_depths[index] = u32::from(plane.bit_depth());
+            planes[index] = Some(buffer);
+        }
+
+        Some(Self {
+            dims: decoded.dimensions(),
             plane_count,
             color_space: decoded.color_space().clone(),
             has_alpha: decoded.has_alpha(),
@@ -349,11 +721,1053 @@ fn output_shape_for<'a>(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn required_classic_output_len(job: J2kCodeBlockDecodeJob<'_>) -> Result<usize, Error> {
+    if job.height == 0 {
+        return Ok(0);
+    }
+
+    job.output_stride
+        .checked_mul(job.height as usize - 1)
+        .and_then(|prefix| prefix.checked_add(job.width as usize))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K Metal output size overflow".to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn classic_style_flags(style: slidecodec_j2k_native::J2kCodeBlockStyle) -> u32 {
+    let mut flags = 0u32;
+    if style.reset_context_probabilities {
+        flags |= J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES;
+    }
+    if style.termination_on_each_pass {
+        flags |= J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS;
+    }
+    if style.vertically_causal_context {
+        flags |= J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT;
+    }
+    if style.segmentation_symbols {
+        flags |= J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS;
+    }
+    if style.selective_arithmetic_coding_bypass {
+        flags |= J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS;
+    }
+    flags
+}
+
+#[cfg(target_os = "macos")]
+fn decode_classic_status_error(status: J2kClassicStatus) -> Error {
+    let kind = match status.code {
+        J2K_CLASSIC_STATUS_FAIL => "decode failure",
+        J2K_CLASSIC_STATUS_UNSUPPORTED => "unsupported classic kernel input",
+        _ => "unexpected classic kernel status",
+    };
+    Error::MetalKernel {
+        message: format!("classic J2K Metal kernel {kind} (detail={})", status.detail),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decode_idwt_status_error(status: J2kIdwtStatus) -> Error {
+    let kind = match status.code {
+        J2K_IDWT_STATUS_FAIL => "decode failure",
+        _ => "unexpected IDWT kernel status",
+    };
+    Error::MetalKernel {
+        message: format!("J2K Metal IDWT kernel {kind} (detail={})", status.detail),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decode_mct_status_error(status: J2kMctStatus) -> Error {
+    let kind = match status.code {
+        J2K_MCT_STATUS_FAIL => "decode failure",
+        _ => "unexpected inverse MCT kernel status",
+    };
+    Error::MetalKernel {
+        message: format!(
+            "J2K Metal inverse MCT kernel {kind} (detail={})",
+            status.detail
+        ),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn new_f32_buffer(device: &Device, data: &[f32]) -> Buffer {
+    if data.is_empty() {
+        device.new_buffer(
+            size_of::<f32>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    } else {
+        device.new_buffer_with_data(
+            data.as_ptr().cast(),
+            size_of_val(data) as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer>, Error> {
+    let J2kInverseMctJob {
+        transform,
+        plane0,
+        plane1,
+        plane2,
+        addend0,
+        addend1,
+        addend2,
+    } = job;
+    with_runtime(|runtime| {
+        let len = plane0.len();
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        if plane1.len() != len || plane2.len() != len {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal inverse MCT plane lengths must match".to_string(),
+            });
+        }
+
+        let transform = match transform {
+            J2kWaveletTransform::Reversible53 => 0,
+            J2kWaveletTransform::Irreversible97 => 1,
+        };
+        let params = J2kInverseMctParams {
+            len: u32::try_from(len).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal inverse MCT plane length exceeds u32".to_string(),
+            })?,
+            transform,
+            addend0,
+            addend1,
+            addend2,
+        };
+        let plane0_buffer = new_f32_buffer(&runtime.device, plane0);
+        let plane1_buffer = new_f32_buffer(&runtime.device, plane1);
+        let plane2_buffer = new_f32_buffer(&runtime.device, plane2);
+        let status = J2kMctStatus::default();
+        let status_buffer = runtime.device.new_buffer_with_data(
+            (&raw const status).cast(),
+            size_of::<J2kMctStatus>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.inverse_mct);
+        encoder.set_buffer(0, Some(&plane0_buffer), 0);
+        encoder.set_buffer(1, Some(&plane1_buffer), 0);
+        encoder.set_buffer(2, Some(&plane2_buffer), 0);
+        encoder.set_bytes(
+            3,
+            size_of::<J2kInverseMctParams>() as u64,
+            (&raw const params).cast(),
+        );
+        encoder.set_buffer(4, Some(&status_buffer), 0);
+        let width = runtime.inverse_mct.thread_execution_width().max(1);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: len as u64,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
+        if status.code != J2K_MCT_STATUS_OK {
+            return Err(decode_mct_status_error(status));
+        }
+
+        let plane0_host =
+            unsafe { core::slice::from_raw_parts(plane0_buffer.contents().cast::<f32>(), len) };
+        let plane1_host =
+            unsafe { core::slice::from_raw_parts(plane1_buffer.contents().cast::<f32>(), len) };
+        let plane2_host =
+            unsafe { core::slice::from_raw_parts(plane2_buffer.contents().cast::<f32>(), len) };
+        for (dst, sample) in plane0.iter_mut().zip(plane0_host.iter().copied()) {
+            *dst = sample - addend0;
+        }
+        for (dst, sample) in plane1.iter_mut().zip(plane1_host.iter().copied()) {
+            *dst = sample - addend1;
+        }
+        for (dst, sample) in plane2.iter_mut().zip(plane2_host.iter().copied()) {
+            *dst = sample - addend2;
+        }
+        Ok(vec![plane0_buffer, plane1_buffer, plane2_buffer])
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_store_component_and_capture(
+    job: J2kStoreComponentJob<'_>,
+) -> Result<Buffer, Error> {
+    let J2kStoreComponentJob {
+        input,
+        input_width,
+        source_x,
+        source_y,
+        copy_width,
+        copy_height,
+        output,
+        output_width,
+        output_x,
+        output_y,
+        addend,
+    } = job;
+    with_runtime(|runtime| {
+        if copy_width == 0 || copy_height == 0 {
+            return Ok(new_f32_buffer(&runtime.device, output));
+        }
+
+        let required_input_height =
+            source_y
+                .checked_add(copy_height)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal store source height overflow".to_string(),
+                })?;
+        let required_output_height =
+            output_y
+                .checked_add(copy_height)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal store destination height overflow".to_string(),
+                })?;
+        if source_x
+            .checked_add(copy_width)
+            .is_none_or(|end| end > input_width)
+            || output_x
+                .checked_add(copy_width)
+                .is_none_or(|end| end > output_width)
+        {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal store copy rectangle exceeds row bounds".to_string(),
+            });
+        }
+        if input.len()
+            < input_width as usize
+                * usize::try_from(required_input_height).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal store source height exceeds usize".to_string(),
+                })?
+            || output.len()
+                < output_width as usize
+                    * usize::try_from(required_output_height).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal store destination height exceeds usize".to_string(),
+                    })?
+        {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal store buffers are smaller than required".to_string(),
+            });
+        }
+
+        let params = J2kStoreParams {
+            input_width,
+            source_x,
+            source_y,
+            copy_width,
+            copy_height,
+            output_width,
+            output_x,
+            output_y,
+            addend,
+        };
+        let input_buffer = new_f32_buffer(&runtime.device, input);
+        let output_buffer = new_f32_buffer(&runtime.device, output);
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.store_component);
+        encoder.set_buffer(0, Some(&input_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            2,
+            size_of::<J2kStoreParams>() as u64,
+            (&raw const params).cast(),
+        );
+        let width = runtime.store_component.thread_execution_width().max(1);
+        let max_threads = runtime
+            .store_component
+            .max_total_threads_per_threadgroup()
+            .max(width);
+        let height = (max_threads / width).max(1);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: u64::from(copy_width),
+                height: u64::from(copy_height),
+                depth: 1,
+            },
+            MTLSize {
+                width,
+                height,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_host = unsafe {
+            core::slice::from_raw_parts(output_buffer.contents().cast::<f32>(), output.len())
+        };
+        output.copy_from_slice(output_host);
+        Ok(output_buffer)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_reversible53_single_decomposition_idwt(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    with_runtime(|runtime| {
+        let required_len = job.rect.width() as usize * job.rect.height() as usize;
+        if output.len() < required_len {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal IDWT output slice is too small".to_string(),
+            });
+        }
+
+        let params = J2kIdwtSingleDecompositionParams {
+            x0: job.rect.x0,
+            y0: job.rect.y0,
+            width: job.rect.width(),
+            height: job.rect.height(),
+            ll_width: job.ll.rect.width(),
+            ll_height: job.ll.rect.height(),
+            hl_width: job.hl.rect.width(),
+            hl_height: job.hl.rect.height(),
+            lh_width: job.lh.rect.width(),
+            lh_height: job.lh.rect.height(),
+            hh_width: job.hh.rect.width(),
+            hh_height: job.hh.rect.height(),
+        };
+
+        let ll = new_f32_buffer(&runtime.device, job.ll.coefficients);
+        let hl = new_f32_buffer(&runtime.device, job.hl.coefficients);
+        let lh = new_f32_buffer(&runtime.device, job.lh.coefficients);
+        let hh = new_f32_buffer(&runtime.device, job.hh.coefficients);
+        let decoded = runtime.device.new_buffer(
+            (required_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let status = J2kIdwtStatus::default();
+        let status_buffer = runtime.device.new_buffer_with_data(
+            (&raw const status).cast(),
+            size_of::<J2kIdwtStatus>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_single_decomposition);
+        encoder.set_buffer(0, Some(&ll), 0);
+        encoder.set_buffer(1, Some(&hl), 0);
+        encoder.set_buffer(2, Some(&lh), 0);
+        encoder.set_buffer(3, Some(&hh), 0);
+        encoder.set_buffer(4, Some(&decoded), 0);
+        encoder.set_bytes(
+            5,
+            size_of::<J2kIdwtSingleDecompositionParams>() as u64,
+            (&raw const params).cast(),
+        );
+        encoder.set_buffer(6, Some(&status_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = unsafe { status_buffer.contents().cast::<J2kIdwtStatus>().read() };
+        if status.code != J2K_IDWT_STATUS_OK {
+            return Err(decode_idwt_status_error(status));
+        }
+
+        let decoded_host =
+            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
+        output[..required_len].copy_from_slice(decoded_host);
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_irreversible97_single_decomposition_idwt(
+    job: J2kSingleDecompositionIdwtJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    with_runtime(|runtime| {
+        let required_len = job.rect.width() as usize * job.rect.height() as usize;
+        if output.len() < required_len {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal IDWT output slice is too small".to_string(),
+            });
+        }
+
+        let params = J2kIdwtSingleDecompositionParams {
+            x0: job.rect.x0,
+            y0: job.rect.y0,
+            width: job.rect.width(),
+            height: job.rect.height(),
+            ll_width: job.ll.rect.width(),
+            ll_height: job.ll.rect.height(),
+            hl_width: job.hl.rect.width(),
+            hl_height: job.hl.rect.height(),
+            lh_width: job.lh.rect.width(),
+            lh_height: job.lh.rect.height(),
+            hh_width: job.hh.rect.width(),
+            hh_height: job.hh.rect.height(),
+        };
+
+        let ll = new_f32_buffer(&runtime.device, job.ll.coefficients);
+        let hl = new_f32_buffer(&runtime.device, job.hl.coefficients);
+        let lh = new_f32_buffer(&runtime.device, job.lh.coefficients);
+        let hh = new_f32_buffer(&runtime.device, job.hh.coefficients);
+        let decoded = runtime.device.new_buffer(
+            (required_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let status = J2kIdwtStatus::default();
+        let status_buffer = runtime.device.new_buffer_with_data(
+            (&raw const status).cast(),
+            size_of::<J2kIdwtStatus>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.idwt_irreversible97_single_decomposition);
+        encoder.set_buffer(0, Some(&ll), 0);
+        encoder.set_buffer(1, Some(&hl), 0);
+        encoder.set_buffer(2, Some(&lh), 0);
+        encoder.set_buffer(3, Some(&hh), 0);
+        encoder.set_buffer(4, Some(&decoded), 0);
+        encoder.set_bytes(
+            5,
+            size_of::<J2kIdwtSingleDecompositionParams>() as u64,
+            (&raw const params).cast(),
+        );
+        encoder.set_buffer(6, Some(&status_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = unsafe { status_buffer.contents().cast::<J2kIdwtStatus>().read() };
+        if status.code != J2K_IDWT_STATUS_OK {
+            return Err(decode_idwt_status_error(status));
+        }
+
+        let decoded_host =
+            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
+        output[..required_len].copy_from_slice(decoded_host);
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_cleanup_batched(
+    runtime: &MetalRuntime,
+    coded_data: &[u8],
+    jobs: &[J2kClassicCleanupBatchJob],
+    segments: &[J2kClassicSegment],
+    decoded: &Buffer,
+) -> Result<(), Error> {
+    let input = if coded_data.is_empty() {
+        runtime
+            .device
+            .new_buffer(1, MTLResourceOptions::StorageModeShared)
+    } else {
+        runtime.device.new_buffer_with_data(
+            coded_data.as_ptr().cast(),
+            coded_data.len() as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    };
+    let jobs_buffer = runtime.device.new_buffer_with_data(
+        jobs.as_ptr().cast(),
+        size_of_val(jobs) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let segments_buffer = if segments.is_empty() {
+        runtime.device.new_buffer(
+            size_of::<J2kClassicSegment>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    } else {
+        runtime.device.new_buffer_with_data(
+            segments.as_ptr().cast(),
+            size_of_val(segments) as u64,
+            MTLResourceOptions::StorageModeShared,
+        )
+    };
+    let statuses = vec![J2kClassicStatus::default(); jobs.len()];
+    let status_buffer = runtime.device.new_buffer_with_data(
+        statuses.as_ptr().cast(),
+        size_of_val(statuses.as_slice()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.set_compute_pipeline_state(&runtime.classic_cleanup_batched);
+    encoder.set_buffer(0, Some(&input), 0);
+    encoder.set_buffer(1, Some(decoded), 0);
+    encoder.set_buffer(2, Some(&jobs_buffer), 0);
+    encoder.set_buffer(3, Some(&segments_buffer), 0);
+    encoder.set_buffer(4, Some(&status_buffer), 0);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: jobs.len() as u64,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let statuses = unsafe {
+        core::slice::from_raw_parts(
+            status_buffer.contents().cast::<J2kClassicStatus>(),
+            jobs.len(),
+        )
+    };
+    if let Some(status) = statuses
+        .iter()
+        .copied()
+        .find(|status| status.code != J2K_CLASSIC_STATUS_OK)
+    {
+        return Err(decode_classic_status_error(status));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn required_ht_output_len(job: HtCodeBlockDecodeJob<'_>) -> Result<usize, Error> {
+    if job.height == 0 {
+        return Ok(0);
+    }
+
+    job.output_stride
+        .checked_mul(job.height as usize - 1)
+        .and_then(|prefix| prefix.checked_add(job.width as usize))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal output size overflow".to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_ht_status_error(status: J2kHtStatus) -> Error {
+    let kind = match status.code {
+        J2K_HT_STATUS_FAIL => "decode failure",
+        J2K_HT_STATUS_UNSUPPORTED => "unsupported HT kernel input",
+        _ => "unexpected HT kernel status",
+    };
+    Error::MetalKernel {
+        message: format!("HTJ2K Metal kernel {kind} (detail={})", status.detail),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_ht_cleanup(
+    runtime: &MetalRuntime,
+    coded_data: &[u8],
+    params: J2kHtCleanupParams,
+    decoded: &Buffer,
+) -> Result<(), Error> {
+    let input = runtime.device.new_buffer_with_data(
+        coded_data.as_ptr().cast(),
+        coded_data.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let status = J2kHtStatus::default();
+    let status_buffer = runtime.device.new_buffer_with_data(
+        (&raw const status).cast(),
+        size_of::<J2kHtStatus>() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.set_compute_pipeline_state(&runtime.ht_cleanup);
+    encoder.set_buffer(0, Some(&input), 0);
+    encoder.set_buffer(1, Some(decoded), 0);
+    encoder.set_bytes(
+        2,
+        size_of::<J2kHtCleanupParams>() as u64,
+        (&raw const params).cast(),
+    );
+    encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
+    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(7, Some(&status_buffer), 0);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let status = unsafe { status_buffer.contents().cast::<J2kHtStatus>().read() };
+    if status.code != J2K_HT_STATUS_OK {
+        return Err(decode_ht_status_error(status));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_ht_cleanup_batched(
+    runtime: &MetalRuntime,
+    coded_data: &[u8],
+    jobs: &[J2kHtCleanupBatchJob],
+    decoded: &Buffer,
+) -> Result<(), Error> {
+    let input = runtime.device.new_buffer_with_data(
+        coded_data.as_ptr().cast(),
+        coded_data.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let jobs_buffer = runtime.device.new_buffer_with_data(
+        jobs.as_ptr().cast(),
+        size_of_val(jobs) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let statuses = vec![J2kHtStatus::default(); jobs.len()];
+    let status_buffer = runtime.device.new_buffer_with_data(
+        statuses.as_ptr().cast(),
+        size_of_val(statuses.as_slice()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.set_compute_pipeline_state(&runtime.ht_cleanup_batched);
+    encoder.set_buffer(0, Some(&input), 0);
+    encoder.set_buffer(1, Some(decoded), 0);
+    encoder.set_buffer(2, Some(&jobs_buffer), 0);
+    encoder.set_buffer(3, Some(&runtime.ht_vlc_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.ht_vlc_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
+    encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
+    encoder.set_buffer(7, Some(&status_buffer), 0);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: jobs.len() as u64,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    let statuses = unsafe {
+        core::slice::from_raw_parts(status_buffer.contents().cast::<J2kHtStatus>(), jobs.len())
+    };
+    if let Some(status) = statuses
+        .iter()
+        .copied()
+        .find(|status| status.code != J2K_HT_STATUS_OK)
+    {
+        return Err(decode_ht_status_error(status));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_classic_cleanup_code_block(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    let required_len = required_classic_output_len(job)?;
+    if output.len() < required_len {
+        return Err(Error::MetalKernel {
+            message: "classic J2K Metal output slice is too small".to_string(),
+        });
+    }
+
+    if job.width == 0 || job.height == 0 {
+        return Ok(());
+    }
+
+    with_runtime(|runtime| {
+        let decoded = runtime.device.new_buffer(
+            (required_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let batch_job = J2kClassicCleanupBatchJob {
+            coded_offset: 0,
+            coded_len: u32::try_from(job.data.len()).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal coded payload exceeds u32".to_string(),
+            })?,
+            segment_offset: 0,
+            segment_count: u32::try_from(job.segments.len()).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal segment count exceeds u32".to_string(),
+            })?,
+            width: job.width,
+            height: job.height,
+            output_stride: u32::try_from(job.output_stride).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal output stride exceeds u32".to_string(),
+            })?,
+            output_offset: 0,
+            missing_msbs: u32::from(job.missing_bit_planes),
+            total_bitplanes: u32::from(job.total_bitplanes),
+            number_of_coding_passes: u32::from(job.number_of_coding_passes),
+            sub_band_type: match job.sub_band_type {
+                slidecodec_j2k_native::J2kSubBandType::LowLow => 0,
+                slidecodec_j2k_native::J2kSubBandType::HighLow => 1,
+                slidecodec_j2k_native::J2kSubBandType::LowHigh => 2,
+                slidecodec_j2k_native::J2kSubBandType::HighHigh => 3,
+            },
+            style_flags: classic_style_flags(job.style),
+            strict: u32::from(job.strict),
+            dequantization_step: job.dequantization_step,
+        };
+        let segments: Vec<_> = job
+            .segments
+            .iter()
+            .map(|segment| J2kClassicSegment {
+                data_offset: segment.data_offset,
+                data_length: segment.data_length,
+                start_coding_pass: u32::from(segment.start_coding_pass),
+                end_coding_pass: u32::from(segment.end_coding_pass),
+                use_arithmetic: u32::from(segment.use_arithmetic),
+            })
+            .collect();
+        dispatch_classic_cleanup_batched(runtime, job.data, &[batch_job], &segments, &decoded)?;
+        let decoded =
+            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
+        output[..required_len].copy_from_slice(decoded);
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_classic_cleanup_sub_band(
+    job: J2kSubBandDecodeJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    let required_len = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K Metal sub-band size overflow".to_string(),
+        })?;
+    if output.len() < required_len {
+        return Err(Error::MetalKernel {
+            message: "classic J2K Metal sub-band output slice is too small".to_string(),
+        });
+    }
+    if job.jobs.is_empty() {
+        return Ok(());
+    }
+
+    with_runtime(|runtime| {
+        let decoded = runtime.device.new_buffer(
+            (required_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let decoded_host = unsafe {
+            core::slice::from_raw_parts_mut(decoded.contents().cast::<f32>(), required_len)
+        };
+        decoded_host[..required_len].copy_from_slice(&output[..required_len]);
+
+        let mut jobs = Vec::with_capacity(job.jobs.len());
+        let mut coded_data = Vec::new();
+        let mut segments = Vec::new();
+
+        for block in job.jobs {
+            let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal batched coded payload exceeds u32".to_string(),
+            })?;
+            coded_data.extend_from_slice(block.code_block.data);
+            let segment_offset = u32::try_from(segments.len()).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal segment table exceeds u32".to_string(),
+            })?;
+            let end_x = block
+                .output_x
+                .checked_add(block.code_block.width)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal batched block width overflow".to_string(),
+                })?;
+            let end_y = block
+                .output_y
+                .checked_add(block.code_block.height)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal batched block height overflow".to_string(),
+                })?;
+            if end_x > job.width || end_y > job.height {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal batched block lies outside sub-band bounds"
+                        .to_string(),
+                });
+            }
+            for segment in block.code_block.segments {
+                let data_offset =
+                    coded_offset
+                        .checked_add(segment.data_offset)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "classic J2K Metal segment offset overflow".to_string(),
+                        })?;
+                segments.push(J2kClassicSegment {
+                    data_offset,
+                    data_length: segment.data_length,
+                    start_coding_pass: u32::from(segment.start_coding_pass),
+                    end_coding_pass: u32::from(segment.end_coding_pass),
+                    use_arithmetic: u32::from(segment.use_arithmetic),
+                });
+            }
+            jobs.push(J2kClassicCleanupBatchJob {
+                coded_offset,
+                coded_len: u32::try_from(block.code_block.data.len()).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal coded payload exceeds u32".to_string(),
+                    }
+                })?,
+                segment_offset,
+                segment_count: u32::try_from(block.code_block.segments.len()).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal segment count exceeds u32".to_string(),
+                    }
+                })?,
+                width: block.code_block.width,
+                height: block.code_block.height,
+                output_stride: job.width,
+                output_offset: block
+                    .output_y
+                    .checked_mul(job.width)
+                    .and_then(|row| row.checked_add(block.output_x))
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "classic J2K Metal output offset overflow".to_string(),
+                    })?,
+                missing_msbs: u32::from(block.code_block.missing_bit_planes),
+                total_bitplanes: u32::from(block.code_block.total_bitplanes),
+                number_of_coding_passes: u32::from(block.code_block.number_of_coding_passes),
+                sub_band_type: match block.code_block.sub_band_type {
+                    slidecodec_j2k_native::J2kSubBandType::LowLow => 0,
+                    slidecodec_j2k_native::J2kSubBandType::HighLow => 1,
+                    slidecodec_j2k_native::J2kSubBandType::LowHigh => 2,
+                    slidecodec_j2k_native::J2kSubBandType::HighHigh => 3,
+                },
+                style_flags: classic_style_flags(block.code_block.style),
+                strict: u32::from(block.code_block.strict),
+                dequantization_step: block.code_block.dequantization_step,
+            });
+        }
+
+        dispatch_classic_cleanup_batched(runtime, &coded_data, &jobs, &segments, &decoded)?;
+        let decoded_host =
+            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), required_len) };
+        output[..required_len].copy_from_slice(decoded_host);
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_ht_cleanup_code_block(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    let required_len = required_ht_output_len(job)?;
+    if output.len() < required_len {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal output slice is too small".to_string(),
+        });
+    }
+
+    if job.width == 0 || job.height == 0 {
+        return Ok(());
+    }
+
+    let tight_len = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal tight output size overflow".to_string(),
+        })?;
+
+    with_runtime(|runtime| {
+        let params = J2kHtCleanupParams {
+            width: job.width,
+            height: job.height,
+            coded_len: u32::try_from(job.data.len()).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal coded payload exceeds u32".to_string(),
+            })?,
+            cleanup_length: job.cleanup_length,
+            refinement_length: job.refinement_length,
+            missing_msbs: u32::from(job.missing_bit_planes),
+            num_bitplanes: u32::from(job.num_bitplanes),
+            number_of_coding_passes: u32::from(job.number_of_coding_passes),
+            output_stride: job.width,
+            output_offset: 0,
+            dequantization_step: job.dequantization_step,
+            stripe_causal: u32::from(job.stripe_causal),
+        };
+        let decoded = runtime.device.new_buffer(
+            (tight_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        dispatch_ht_cleanup(runtime, job.data, params, &decoded)?;
+
+        let decoded =
+            unsafe { core::slice::from_raw_parts(decoded.contents().cast::<f32>(), tight_len) };
+        let row_width = job.width as usize;
+        for row in 0..job.height as usize {
+            let src_start = row * row_width;
+            let dst_start = row * job.output_stride;
+            output[dst_start..dst_start + row_width]
+                .copy_from_slice(&decoded[src_start..src_start + row_width]);
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_ht_cleanup_sub_band(
+    job: HtSubBandDecodeJob<'_>,
+    output: &mut [f32],
+) -> Result<(), Error> {
+    let required_len = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal sub-band size overflow".to_string(),
+        })?;
+    if output.len() < required_len {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal sub-band output slice is too small".to_string(),
+        });
+    }
+
+    if job.jobs.is_empty() {
+        return Ok(());
+    }
+
+    with_runtime(|runtime| {
+        let decoded = runtime.device.new_buffer(
+            (required_len * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let decoded_host = unsafe {
+            core::slice::from_raw_parts_mut(decoded.contents().cast::<f32>(), required_len)
+        };
+        decoded_host[..required_len].copy_from_slice(&output[..required_len]);
+
+        let mut jobs = Vec::with_capacity(job.jobs.len());
+        let mut coded_data = Vec::new();
+
+        for block in job.jobs {
+            let coded_offset = u32::try_from(coded_data.len()).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal batched coded payload exceeds u32".to_string(),
+            })?;
+            coded_data.extend_from_slice(block.code_block.data);
+
+            jobs.push(J2kHtCleanupBatchJob {
+                coded_offset,
+                width: block.code_block.width,
+                height: block.code_block.height,
+                coded_len: u32::try_from(block.code_block.data.len()).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal coded payload exceeds u32".to_string(),
+                    }
+                })?,
+                cleanup_length: block.code_block.cleanup_length,
+                refinement_length: block.code_block.refinement_length,
+                missing_msbs: u32::from(block.code_block.missing_bit_planes),
+                num_bitplanes: u32::from(block.code_block.num_bitplanes),
+                number_of_coding_passes: u32::from(block.code_block.number_of_coding_passes),
+                output_stride: job.width,
+                output_offset: block
+                    .output_y
+                    .checked_mul(job.width)
+                    .and_then(|row| row.checked_add(block.output_x))
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal output offset overflow".to_string(),
+                    })?,
+                dequantization_step: block.code_block.dequantization_step,
+                stripe_causal: u32::from(block.code_block.stripe_causal),
+            });
+
+            let end_x = block
+                .output_x
+                .checked_add(block.code_block.width)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batched block width overflow".to_string(),
+                })?;
+            let end_y = block
+                .output_y
+                .checked_add(block.code_block.height)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batched block height overflow".to_string(),
+                })?;
+            if end_x > job.width || end_y > job.height {
+                return Err(Error::MetalKernel {
+                    message: "HTJ2K Metal batched block lies outside sub-band bounds".to_string(),
+                });
+            }
+        }
+
+        dispatch_ht_cleanup_batched(runtime, &coded_data, &jobs, &decoded)?;
+        output[..required_len].copy_from_slice(decoded_host);
+        Ok(())
+    })
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{output_shape_for, MetalRuntime};
+    use super::{decode_scaled_to_surface, output_shape_for, MetalRuntime};
     use slidecodec_core::PixelFormat;
-    use slidecodec_j2k_native::ColorSpace as NativeColorSpace;
+    use slidecodec_j2k_native::{
+        encode_htj2k, ColorSpace as NativeColorSpace, DecodeSettings, EncodeOptions, Image,
+    };
 
     #[test]
     fn rgb16_with_alpha_is_rejected() {
@@ -367,6 +1781,36 @@ mod tests {
         );
         assert!(result.is_err(), "RGBA input must not silently map to Rgb16");
     }
+
+    #[test]
+    fn scaled_htj2k_decode_runs_through_metal_compute_path() {
+        let pixels: Vec<u8> = (0..16).collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode ht gray8");
+
+        let image = Image::new(
+            &bytes,
+            &DecodeSettings {
+                target_resolution: Some((2, 2)),
+                ..DecodeSettings::default()
+            },
+        )
+        .expect("image");
+        let host = image.decode().expect("host scaled decode");
+
+        let surface = decode_scaled_to_surface(
+            &bytes,
+            (4, 4),
+            PixelFormat::Gray8,
+            slidecodec_core::Downscale::Half,
+        )
+        .expect("metal scaled decode");
+        assert_eq!(surface.as_bytes(), host.as_slice());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -376,28 +1820,69 @@ pub(crate) fn decode_image_to_surface<'a>(
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        let mut code_block_decoder = MetalCodeBlockDecoder::default();
         let decoded = image
-            .decode_components_with_context(context)
+            .decode_components_with_ht_decoder(context, &mut code_block_decoder)
             .map_err(|error| Error::Decode(slidecodec_j2k::J2kError::Backend(error.to_string())))?;
-        let stage = PlaneStage::from_planes(&runtime.device, &decoded, None)?;
+        let stage = select_plane_stage(runtime, image, &decoded, &mut code_block_decoder)?;
         stage.finish_with_runtime(runtime, fmt)
     })
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn decode_region_to_surface<'a>(
+pub(crate) fn decode_image_region_to_surface<'a>(
     image: &NativeImage<'a>,
     context: &mut NativeDecoderContext<'a>,
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
     with_runtime(|runtime| {
+        let mut code_block_decoder = MetalCodeBlockDecoder::default();
         let decoded = image
-            .decode_components_with_context(context)
+            .decode_region_components_with_ht_decoder(
+                context,
+                (roi.x, roi.y, roi.w, roi.h),
+                &mut code_block_decoder,
+            )
             .map_err(|error| Error::Decode(slidecodec_j2k::J2kError::Backend(error.to_string())))?;
-        let stage = PlaneStage::from_planes(&runtime.device, &decoded, Some(roi))?;
+        let stage = select_plane_stage(runtime, image, &decoded, &mut code_block_decoder)?;
         stage.finish_with_runtime(runtime, fmt)
     })
+}
+
+#[cfg(target_os = "macos")]
+fn select_plane_stage(
+    runtime: &MetalRuntime,
+    image: &NativeImage<'_>,
+    decoded: &NativeDecodedComponents<'_>,
+    code_block_decoder: &mut MetalCodeBlockDecoder,
+) -> Result<PlaneStage, Error> {
+    if image.supports_direct_device_plane_reuse() {
+        if matches!(decoded.color_space(), NativeColorSpace::RGB)
+            && !decoded.has_alpha()
+            && decoded.planes().len() == 3
+        {
+            if let Some(stage) = PlaneStage::from_captured_planes(
+                decoded,
+                code_block_decoder.mct.take_captured_planes(),
+            ) {
+                return Ok(stage);
+            }
+        }
+        if matches!(decoded.color_space(), NativeColorSpace::Gray)
+            && !decoded.has_alpha()
+            && decoded.planes().len() == 1
+        {
+            if let Some(stage) = PlaneStage::from_captured_planes(
+                decoded,
+                code_block_decoder.store.take_captured_planes(),
+            ) {
+                return Ok(stage);
+            }
+        }
+    }
+
+    PlaneStage::from_planes(&runtime.device, decoded, None)
 }
 
 #[cfg(target_os = "macos")]

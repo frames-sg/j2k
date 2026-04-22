@@ -29,6 +29,16 @@ fn fixture_gray12() -> Vec<u8> {
     encode(&pixels, 2, 2, 1, 12, false, &options).expect("encode gray12")
 }
 
+fn fixture_gray8_irreversible() -> Vec<u8> {
+    let pixels: Vec<u8> = (0..16).collect();
+    let options = EncodeOptions {
+        reversible: false,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode gray8 irreversible")
+}
+
 fn fixture_rgb12() -> Vec<u8> {
     let mut pixels = Vec::with_capacity(12);
     for sample in [0u16, 1023, 2047, 3071, 4095, 17] {
@@ -67,6 +77,42 @@ fn full_decode_to_metal_matches_host_decode() {
         .expect("device decode");
     assert_eq!(surface.backend_kind(), BackendKind::Metal);
     assert_eq!(surface.dimensions(), (2, 2));
+    assert_eq!(surface.as_bytes(), host.as_slice());
+}
+
+#[test]
+fn full_htj2k_decode_to_metal_matches_host_decode() {
+    let bytes = fixture_ht_gray8();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut host = [0u8; 16];
+    host_decoder
+        .decode_into(&mut host, 4, PixelFormat::Gray8)
+        .expect("host decode");
+
+    let surface = decoder
+        .decode_to_device(PixelFormat::Gray8, BackendRequest::Metal)
+        .expect("device decode");
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.dimensions(), (4, 4));
+    assert_eq!(surface.as_bytes(), host.as_slice());
+}
+
+#[test]
+fn full_irreversible_j2k_decode_to_metal_matches_host_decode() {
+    let bytes = fixture_gray8_irreversible();
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut host = [0u8; 16];
+    host_decoder
+        .decode_into(&mut host, 4, PixelFormat::Gray8)
+        .expect("host decode");
+
+    let surface = decoder
+        .decode_to_device(PixelFormat::Gray8, BackendRequest::Metal)
+        .expect("device decode");
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.dimensions(), (4, 4));
     assert_eq!(surface.as_bytes(), host.as_slice());
 }
 
@@ -196,7 +242,7 @@ fn invalid_region_reports_error_instead_of_panicking() {
 }
 
 #[test]
-fn metal_scaled_htj2k_matches_host_fallback_decode() {
+fn metal_scaled_htj2k_matches_host_decode() {
     let bytes = fixture_ht_gray8();
     let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
     let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
