@@ -11,19 +11,28 @@ use metal::{
     Buffer, CommandQueue, CompileOptions, ComputePipelineState, Device, MTLResourceOptions, MTLSize,
 };
 use slidecodec_core::{PixelFormat, Rect};
+#[cfg(test)]
+use slidecodec_j2k_native::HtCodeBlockDecoder;
 use slidecodec_j2k_native::{
     ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1, ColorSpace as NativeColorSpace,
-    DecodeSettings as NativeDecodeSettings, DecodedComponents as NativeDecodedComponents,
-    DecoderContext as NativeDecoderContext, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
-    HtSubBandDecodeJob, Image as NativeImage, J2kCodeBlockDecodeJob, J2kInverseMctJob,
-    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kWaveletTransform,
+    DecodedComponents as NativeDecodedComponents, HtCodeBlockDecodeJob, HtSubBandDecodeJob,
+    J2kCodeBlockDecodeJob, J2kInverseMctJob, J2kSingleDecompositionIdwtJob, J2kStoreComponentJob,
+    J2kSubBandDecodeJob, J2kWaveletTransform,
+};
+#[cfg(test)]
+use slidecodec_j2k_native::{
+    DecodeSettings as NativeDecodeSettings, DecoderContext as NativeDecoderContext,
+    Image as NativeImage,
 };
 
+#[cfg(test)]
 use crate::{
     classic::MetalClassicBlockDecoder, ht::MetalHtBlockDecoder, idwt::MetalIdwtDecoder,
-    mct::MetalMctDecoder, store::MetalStoreDecoder, Error, Surface,
+    mct::MetalMctDecoder, store::MetalStoreDecoder,
 };
+use crate::{Error, Surface};
 
+#[cfg(test)]
 #[derive(Default)]
 struct MetalCodeBlockDecoder {
     classic: MetalClassicBlockDecoder,
@@ -33,6 +42,7 @@ struct MetalCodeBlockDecoder {
     store: MetalStoreDecoder,
 }
 
+#[cfg(test)]
 impl HtCodeBlockDecoder for MetalCodeBlockDecoder {
     fn decode_j2k_sub_band(
         &mut self,
@@ -302,13 +312,16 @@ struct J2kIdwtStatus {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 const J2K_MCT_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 const J2K_MCT_STATUS_FAIL: u32 = 1;
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct J2kInverseMctParams {
     len: u32,
     transform: u32,
@@ -320,6 +333,7 @@ struct J2kInverseMctParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+#[allow(dead_code)]
 struct J2kMctStatus {
     code: u32,
     detail: u32,
@@ -411,6 +425,7 @@ struct MetalRuntime {
     idwt_reversible53_horizontal: ComputePipelineState,
     idwt_reversible53_vertical: ComputePipelineState,
     idwt_irreversible97_single_decomposition: ComputePipelineState,
+    #[allow(dead_code)]
     inverse_mct: ComputePipelineState,
     store_component: ComputePipelineState,
     ht_cleanup: ComputePipelineState,
@@ -531,6 +546,7 @@ struct PlaneStage {
 
 #[cfg(target_os = "macos")]
 impl PlaneStage {
+    #[allow(dead_code)]
     fn from_planes(
         device: &Device,
         decoded: &NativeDecodedComponents<'_>,
@@ -574,6 +590,7 @@ impl PlaneStage {
         })
     }
 
+    #[allow(dead_code)]
     fn from_captured_planes(
         decoded: &NativeDecodedComponents<'_>,
         captured_planes: Vec<Buffer>,
@@ -694,6 +711,29 @@ impl PlaneStage {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn pack_gray_plane_to_surface(
+    plane: Buffer,
+    dims: (u32, u32),
+    bit_depth: u8,
+    fmt: PixelFormat,
+) -> Result<Surface, Error> {
+    with_runtime(|runtime| {
+        let mut bit_depths = [0u32; 4];
+        bit_depths[0] = u32::from(bit_depth);
+        PlaneStage {
+            dims,
+            plane_count: 1,
+            color_space: NativeColorSpace::Gray,
+            has_alpha: false,
+            bit_depths,
+            planes: [Some(plane), None, None, None],
+        }
+        .finish_with_runtime(runtime, fmt)
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn copy_plane_samples(buffer: &Buffer, samples: &[f32], image_width: usize, roi: Rect) {
     let row_width = roi.w as usize;
     let dst = unsafe {
@@ -791,6 +831,7 @@ fn decode_idwt_status_error(status: J2kIdwtStatus) -> Error {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn decode_mct_status_error(status: J2kMctStatus) -> Error {
     let kind = match status.code {
         J2K_MCT_STATUS_FAIL => "decode failure",
@@ -835,6 +876,7 @@ fn borrow_slice_buffer<T>(device: &Device, data: &[T]) -> Buffer {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer>, Error> {
     let J2kInverseMctJob {
         transform,
@@ -1792,6 +1834,7 @@ mod tests {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 pub(crate) fn decode_image_to_surface<'a>(
     image: &NativeImage<'a>,
     context: &mut NativeDecoderContext<'a>,
@@ -1808,6 +1851,8 @@ pub(crate) fn decode_image_to_surface<'a>(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn decode_image_region_to_surface<'a>(
     image: &NativeImage<'a>,
     context: &mut NativeDecoderContext<'a>,
@@ -1829,6 +1874,7 @@ pub(crate) fn decode_image_region_to_surface<'a>(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 fn select_plane_stage(
     runtime: &MetalRuntime,
     image: &NativeImage<'_>,
@@ -1864,6 +1910,7 @@ fn select_plane_stage(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 pub(crate) fn decode_scaled_to_surface(
     bytes: &[u8],
     dims: (u32, u32),

@@ -9,6 +9,7 @@ use slidecodec_j2k_native::{
     Result,
 };
 
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct MetalStoreDecoder {
     kernel_dispatches: usize,
@@ -16,6 +17,7 @@ pub(crate) struct MetalStoreDecoder {
     captured_planes: Vec<Buffer>,
 }
 
+#[allow(dead_code)]
 impl MetalStoreDecoder {
     #[cfg(test)]
     pub(crate) fn kernel_dispatches(&self) -> usize {
@@ -57,6 +59,7 @@ impl HtCodeBlockDecoder for MetalStoreDecoder {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn supports_metal_store(job: &J2kStoreComponentJob<'_>) -> bool {
     job.copy_width > 0
         && job.copy_height > 0

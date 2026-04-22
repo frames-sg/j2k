@@ -7,6 +7,7 @@ use slidecodec_j2k_native::{
     HtSubBandDecodeJob, Result,
 };
 
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct MetalHtBlockDecoder {
     blocks_decoded: usize,
@@ -15,6 +16,7 @@ pub(crate) struct MetalHtBlockDecoder {
     batched_kernel_dispatches: usize,
 }
 
+#[allow(dead_code)]
 impl MetalHtBlockDecoder {
     #[cfg(test)]
     pub(crate) fn blocks_decoded(&self) -> usize {
@@ -74,6 +76,7 @@ impl HtCodeBlockDecoder for MetalHtBlockDecoder {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn supports_metal_ht_kernel(job: &HtCodeBlockDecodeJob<'_>) -> bool {
     if job.width == 0 || job.height == 0 {
         return false;

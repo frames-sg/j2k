@@ -7,11 +7,13 @@ use slidecodec_j2k_native::{
     J2kSingleDecompositionIdwtJob, J2kWaveletTransform, Result,
 };
 
+#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct MetalIdwtDecoder {
     kernel_dispatches: usize,
 }
 
+#[allow(dead_code)]
 impl MetalIdwtDecoder {
     #[cfg(test)]
     pub(crate) fn kernel_dispatches(&self) -> usize {
@@ -53,6 +55,7 @@ impl HtCodeBlockDecoder for MetalIdwtDecoder {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn supports_metal_idwt(job: &J2kSingleDecompositionIdwtJob<'_>) -> bool {
     if !matches!(
         job.transform,
