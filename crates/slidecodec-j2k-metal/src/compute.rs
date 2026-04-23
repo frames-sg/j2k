@@ -470,6 +470,22 @@ struct J2kRepeatedGrayStoreParams {
     batch_count: u32,
 }
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kGrayStoreParams {
+    input_width: u32,
+    source_x: u32,
+    source_y: u32,
+    copy_width: u32,
+    copy_height: u32,
+    output_width: u32,
+    output_x: u32,
+    output_y: u32,
+    addend: f32,
+    bit_depth: u32,
+}
+
 const J2K_HT_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]
 const J2K_HT_STATUS_FAIL: u32 = 1;
@@ -571,6 +587,8 @@ struct MetalRuntime {
     store_component_repeated: ComputePipelineState,
     store_component_repeated_gray_u8: ComputePipelineState,
     store_component_repeated_gray_u16: ComputePipelineState,
+    store_component_gray_u8: ComputePipelineState,
+    store_component_gray_u16: ComputePipelineState,
     ht_cleanup: ComputePipelineState,
     ht_cleanup_batched: ComputePipelineState,
     ht_cleanup_repeated_batched: ComputePipelineState,
@@ -627,6 +645,10 @@ impl MetalRuntime {
             library.get_function("j2k_store_component_repeated_gray_u8", None)?;
         let store_component_repeated_gray_u16_fn =
             library.get_function("j2k_store_component_repeated_gray_u16", None)?;
+        let store_component_gray_u8_fn =
+            library.get_function("j2k_store_component_gray_u8", None)?;
+        let store_component_gray_u16_fn =
+            library.get_function("j2k_store_component_gray_u16", None)?;
         let ht_cleanup_fn = library.get_function("j2k_decode_ht_cleanup", None)?;
         let ht_cleanup_batched_fn = library.get_function("j2k_decode_ht_cleanup_batched", None)?;
         let ht_cleanup_repeated_batched_fn =
@@ -676,6 +698,10 @@ impl MetalRuntime {
             .new_compute_pipeline_state_with_function(&store_component_repeated_gray_u8_fn)?;
         let store_component_repeated_gray_u16 = device
             .new_compute_pipeline_state_with_function(&store_component_repeated_gray_u16_fn)?;
+        let store_component_gray_u8 =
+            device.new_compute_pipeline_state_with_function(&store_component_gray_u8_fn)?;
+        let store_component_gray_u16 =
+            device.new_compute_pipeline_state_with_function(&store_component_gray_u16_fn)?;
         let ht_cleanup = device.new_compute_pipeline_state_with_function(&ht_cleanup_fn)?;
         let ht_cleanup_batched =
             device.new_compute_pipeline_state_with_function(&ht_cleanup_batched_fn)?;
@@ -707,6 +733,8 @@ impl MetalRuntime {
             store_component_repeated,
             store_component_repeated_gray_u8,
             store_component_repeated_gray_u16,
+            store_component_gray_u8,
+            store_component_gray_u16,
             ht_cleanup,
             ht_cleanup_batched,
             ht_cleanup_repeated_batched,
@@ -814,9 +842,12 @@ struct PreparedClassicSubBand {
     band_id: J2kDirectBandId,
     width: u32,
     height: u32,
-    coded_data: Vec<u8>,
+    _coded_data: Vec<u8>,
+    coded_buffer: Buffer,
     jobs: Vec<J2kClassicCleanupBatchJob>,
+    jobs_buffer: Buffer,
     segments: Vec<J2kClassicSegment>,
+    segments_buffer: Buffer,
 }
 
 #[cfg(target_os = "macos")]
@@ -825,8 +856,10 @@ struct PreparedHtSubBand {
     band_id: J2kDirectBandId,
     width: u32,
     height: u32,
-    coded_data: Vec<u8>,
+    _coded_data: Vec<u8>,
+    coded_buffer: Buffer,
     jobs: Vec<J2kHtCleanupBatchJob>,
+    jobs_buffer: Buffer,
 }
 
 #[cfg(target_os = "macos")]
@@ -1092,13 +1125,21 @@ fn prepare_classic_sub_band(
         });
     }
 
-    Ok(PreparedClassicSubBand {
-        band_id: job.band_id,
-        width: job.width,
-        height: job.height,
-        coded_data,
-        jobs,
-        segments,
+    with_runtime(|runtime| {
+        let coded_buffer = borrow_slice_buffer(&runtime.device, &coded_data);
+        let jobs_buffer = borrow_slice_buffer(&runtime.device, &jobs);
+        let segments_buffer = borrow_slice_buffer(&runtime.device, &segments);
+        Ok(PreparedClassicSubBand {
+            band_id: job.band_id,
+            width: job.width,
+            height: job.height,
+            _coded_data: coded_data,
+            coded_buffer,
+            jobs,
+            jobs_buffer,
+            segments,
+            segments_buffer,
+        })
     })
 }
 
@@ -1138,12 +1179,18 @@ fn prepare_ht_sub_band(
         });
     }
 
-    Ok(PreparedHtSubBand {
-        band_id: job.band_id,
-        width: job.width,
-        height: job.height,
-        coded_data,
-        jobs,
+    with_runtime(|runtime| {
+        let coded_buffer = borrow_slice_buffer(&runtime.device, &coded_data);
+        let jobs_buffer = borrow_slice_buffer(&runtime.device, &jobs);
+        Ok(PreparedHtSubBand {
+            band_id: job.band_id,
+            width: job.width,
+            height: job.height,
+            _coded_data: coded_data,
+            coded_buffer,
+            jobs,
+            jobs_buffer,
+        })
     })
 }
 
@@ -1289,39 +1336,61 @@ fn encode_direct_grayscale_plan_in_command_buffer(
             }
             J2kDirectGrayscaleStep::Store(store) => {
                 let input = lookup_direct_band(&bands, store.input_band_id, store.input_rect)?;
-                let output = take_f32_scratch_buffer(
-                    runtime,
-                    store.output_width as usize * store.output_height as usize,
-                );
-                let params = J2kStoreParams {
-                    input_width: store.input_rect.width(),
-                    source_x: store.source_x,
-                    source_y: store.source_y,
-                    copy_width: store.copy_width,
-                    copy_height: store.copy_height,
-                    output_width: store.output_width,
-                    output_x: store.output_x,
-                    output_y: store.output_y,
-                    addend: store.addend,
-                };
-                dispatch_store_component_buffer_in_command_buffer(
-                    runtime,
-                    command_buffer,
-                    &input,
-                    &output.buffer,
-                    params,
-                );
-                retained_buffers.push(output.buffer.clone());
-
-                final_surface = Some(encode_gray_plane_to_surface_in_command_buffer(
-                    runtime,
-                    command_buffer,
-                    &output.buffer,
-                    plan.dimensions,
-                    plan.bit_depth,
-                    fmt,
-                )?);
-                scratch_buffers.push(output);
+                if matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
+                    final_surface = Some(encode_gray_store_to_surface_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &input,
+                        0,
+                        J2kGrayStoreParams {
+                            input_width: store.input_rect.width(),
+                            source_x: store.source_x,
+                            source_y: store.source_y,
+                            copy_width: store.copy_width,
+                            copy_height: store.copy_height,
+                            output_width: store.output_width,
+                            output_x: store.output_x,
+                            output_y: store.output_y,
+                            addend: store.addend,
+                            bit_depth: u32::from(plan.bit_depth),
+                        },
+                        plan.dimensions,
+                        fmt,
+                    )?);
+                } else {
+                    let output = take_f32_scratch_buffer(
+                        runtime,
+                        store.output_width as usize * store.output_height as usize,
+                    );
+                    let params = J2kStoreParams {
+                        input_width: store.input_rect.width(),
+                        source_x: store.source_x,
+                        source_y: store.source_y,
+                        copy_width: store.copy_width,
+                        copy_height: store.copy_height,
+                        output_width: store.output_width,
+                        output_x: store.output_x,
+                        output_y: store.output_y,
+                        addend: store.addend,
+                    };
+                    dispatch_store_component_buffer_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &input,
+                        &output.buffer,
+                        params,
+                    );
+                    retained_buffers.push(output.buffer.clone());
+                    final_surface = Some(encode_gray_plane_to_surface_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &output.buffer,
+                        plan.dimensions,
+                        plan.bit_depth,
+                        fmt,
+                    )?);
+                    scratch_buffers.push(output);
+                }
             }
         }
     }
@@ -1367,6 +1436,177 @@ pub(crate) fn execute_direct_grayscale_plan(
 }
 
 #[cfg(target_os = "macos")]
+fn encode_prepared_direct_grayscale_plan_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    plan: &PreparedDirectGrayscalePlan,
+    fmt: PixelFormat,
+    retained_buffers: &mut Vec<Buffer>,
+    status_checks: &mut Vec<DirectStatusCheck>,
+    scratch_buffers: &mut Vec<DirectScratchBuffer>,
+) -> Result<Surface, Error> {
+    let mut bands: Vec<(J2kDirectBandId, Buffer)> = Vec::new();
+    let mut final_surface = None;
+
+    for step in &plan.steps {
+        match step {
+            PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => {
+                let output = take_f32_scratch_buffer(
+                    runtime,
+                    sub_band.width as usize * sub_band.height as usize,
+                );
+                let (buffers, status_check) =
+                    encode_prepared_classic_sub_band_to_buffer_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        sub_band,
+                        &output.buffer,
+                        scratch_buffers,
+                    )?;
+                retained_buffers.extend(buffers);
+                status_checks.push(status_check);
+                bands.push((sub_band.band_id, output.buffer.clone()));
+                scratch_buffers.push(output);
+            }
+            PreparedDirectGrayscaleStep::HtSubBand(sub_band) => {
+                let output = take_f32_scratch_buffer(
+                    runtime,
+                    sub_band.width as usize * sub_band.height as usize,
+                );
+                let (buffers, status_check) =
+                    encode_prepared_ht_sub_band_to_buffer_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        sub_band,
+                        &output.buffer,
+                    );
+                retained_buffers.extend(buffers);
+                status_checks.push(status_check);
+                bands.push((sub_band.band_id, output.buffer.clone()));
+                scratch_buffers.push(output);
+            }
+            PreparedDirectGrayscaleStep::Idwt(idwt) => {
+                let ll = lookup_direct_band(&bands, idwt.ll_band_id, idwt.ll)?;
+                let hl = lookup_direct_band(&bands, idwt.hl_band_id, idwt.hl)?;
+                let lh = lookup_direct_band(&bands, idwt.lh_band_id, idwt.lh)?;
+                let hh = lookup_direct_band(&bands, idwt.hh_band_id, idwt.hh)?;
+                let params = J2kIdwtSingleDecompositionParams {
+                    x0: idwt.rect.x0,
+                    y0: idwt.rect.y0,
+                    width: idwt.rect.width(),
+                    height: idwt.rect.height(),
+                    ll_width: idwt.ll.width(),
+                    ll_height: idwt.ll.height(),
+                    hl_width: idwt.hl.width(),
+                    hl_height: idwt.hl.height(),
+                    lh_width: idwt.lh.width(),
+                    lh_height: idwt.lh.height(),
+                    hh_width: idwt.hh.width(),
+                    hh_height: idwt.hh.height(),
+                };
+                let output = take_f32_scratch_buffer(
+                    runtime,
+                    idwt.rect.width() as usize * idwt.rect.height() as usize,
+                );
+                match idwt.transform {
+                    J2kWaveletTransform::Reversible53 => {
+                        dispatch_reversible53_single_decomposition_buffers_in_command_buffer(
+                            runtime,
+                            command_buffer,
+                            &ll,
+                            &hl,
+                            &lh,
+                            &hh,
+                            params,
+                            &output.buffer,
+                        );
+                    }
+                    J2kWaveletTransform::Irreversible97 => {
+                        let status_check =
+                            dispatch_irreversible97_single_decomposition_buffers_in_command_buffer(
+                                runtime,
+                                command_buffer,
+                                &ll,
+                                &hl,
+                                &lh,
+                                &hh,
+                                params,
+                                &output.buffer,
+                            );
+                        status_checks.push(status_check);
+                    }
+                }
+                bands.push((idwt.output_band_id, output.buffer.clone()));
+                scratch_buffers.push(output);
+            }
+            PreparedDirectGrayscaleStep::Store(store) => {
+                let input = lookup_direct_band(&bands, store.input_band_id, store.input_rect)?;
+                if matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
+                    final_surface = Some(encode_gray_store_to_surface_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &input,
+                        0,
+                        J2kGrayStoreParams {
+                            input_width: store.input_rect.width(),
+                            source_x: store.source_x,
+                            source_y: store.source_y,
+                            copy_width: store.copy_width,
+                            copy_height: store.copy_height,
+                            output_width: store.output_width,
+                            output_x: store.output_x,
+                            output_y: store.output_y,
+                            addend: store.addend,
+                            bit_depth: u32::from(plan.bit_depth),
+                        },
+                        plan.dimensions,
+                        fmt,
+                    )?);
+                } else {
+                    let output = take_f32_scratch_buffer(
+                        runtime,
+                        store.output_width as usize * store.output_height as usize,
+                    );
+                    let params = J2kStoreParams {
+                        input_width: store.input_rect.width(),
+                        source_x: store.source_x,
+                        source_y: store.source_y,
+                        copy_width: store.copy_width,
+                        copy_height: store.copy_height,
+                        output_width: store.output_width,
+                        output_x: store.output_x,
+                        output_y: store.output_y,
+                        addend: store.addend,
+                    };
+                    dispatch_store_component_buffer_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &input,
+                        &output.buffer,
+                        params,
+                    );
+                    retained_buffers.push(output.buffer.clone());
+                    final_surface = Some(encode_gray_plane_to_surface_in_command_buffer(
+                        runtime,
+                        command_buffer,
+                        &output.buffer,
+                        plan.dimensions,
+                        plan.bit_depth,
+                        fmt,
+                    )?);
+                    scratch_buffers.push(output);
+                }
+            }
+        }
+    }
+
+    final_surface.ok_or_else(|| Error::MetalKernel {
+        message: "J2K MetalDirect prepared grayscale plan did not produce a final stored plane"
+            .to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
     plan: &PreparedDirectGrayscalePlan,
     fmt: PixelFormat,
@@ -1398,6 +1638,36 @@ pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
         drop(retained_host_data);
         recycle_scratch_buffers(runtime, scratch_buffers);
         Ok(surfaces)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn execute_prepared_direct_grayscale_plan(
+    plan: &PreparedDirectGrayscalePlan,
+    fmt: PixelFormat,
+) -> Result<Surface, Error> {
+    with_runtime(|runtime| {
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut retained_buffers = Vec::new();
+        let mut status_checks = Vec::new();
+        let mut scratch_buffers = Vec::new();
+        let surface = encode_prepared_direct_grayscale_plan_in_command_buffer(
+            runtime,
+            command_buffer,
+            plan,
+            fmt,
+            &mut retained_buffers,
+            &mut status_checks,
+            &mut scratch_buffers,
+        )?;
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+        for status_check in status_checks {
+            validate_direct_status(status_check)?;
+        }
+        drop(retained_buffers);
+        recycle_scratch_buffers(runtime, scratch_buffers);
+        Ok(surface)
     })
 }
 
@@ -2619,6 +2889,60 @@ fn encode_repeated_gray_store_to_surfaces_in_command_buffer(
         ));
     }
     Ok(surfaces)
+}
+
+#[cfg(target_os = "macos")]
+fn encode_gray_store_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    input: &Buffer,
+    input_offset_bytes: usize,
+    params: J2kGrayStoreParams,
+    dims: (u32, u32),
+    fmt: PixelFormat,
+) -> Result<Surface, Error> {
+    let pitch_bytes = dims.0 as usize * fmt.bytes_per_pixel();
+    let out_buffer = runtime.device.new_buffer(
+        (pitch_bytes * dims.1 as usize) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let pipeline = match fmt {
+        PixelFormat::Gray8 => &runtime.store_component_gray_u8,
+        PixelFormat::Gray16 => &runtime.store_component_gray_u16,
+        _ => {
+            return Err(Error::MetalKernel {
+                message: format!("J2K Metal grayscale fused store does not support {fmt:?}"),
+            })
+        }
+    };
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.set_compute_pipeline_state(pipeline);
+    encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
+    encoder.set_buffer(1, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        2,
+        size_of::<J2kGrayStoreParams>() as u64,
+        (&raw const params).cast(),
+    );
+    let width = pipeline.thread_execution_width().max(1);
+    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    let height = (max_threads / width).max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(params.copy_width),
+            height: u64::from(params.copy_height),
+            depth: 1,
+        },
+        MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+
+    Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
 }
 
 #[cfg(target_os = "macos")]
@@ -3908,9 +4232,9 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: "classic J2K MetalDirect repeated job count overflow".to_string(),
         })?;
-    let coded_buffer = borrow_slice_buffer(&runtime.device, &job.coded_data);
-    let jobs_buffer = borrow_slice_buffer(&runtime.device, &job.jobs);
-    let segments_buffer = borrow_slice_buffer(&runtime.device, &job.segments);
+    let coded_buffer = job.coded_buffer.clone();
+    let jobs_buffer = job.jobs_buffer.clone();
+    let segments_buffer = job.segments_buffer.clone();
     let use_plain_dev_path =
         count <= 16 && classic_batch_is_plain_arithmetic(&job.jobs, &job.segments);
     let use_plain_fast_path = classic_batch_uses_plain_fast_path(&job.jobs, &job.segments)
@@ -3971,6 +4295,55 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
     }
     let retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
     Ok((Vec::new(), retained_buffers, status_check))
+}
+
+#[cfg(target_os = "macos")]
+fn encode_prepared_classic_sub_band_to_buffer_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    job: &PreparedClassicSubBand,
+    output: &Buffer,
+    scratch_buffers: &mut Vec<DirectScratchBuffer>,
+) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
+    if job.jobs.is_empty() {
+        let empty = runtime
+            .device
+            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        return Ok((
+            vec![empty.clone()],
+            DirectStatusCheck::Classic {
+                buffer: empty,
+                len: 0,
+            },
+        ));
+    }
+
+    let coded_buffer = job.coded_buffer.clone();
+    let jobs_buffer = job.jobs_buffer.clone();
+    let segments_buffer = job.segments_buffer.clone();
+    let use_plain_fast_path = classic_batch_uses_plain_fast_path(&job.jobs, &job.segments)
+        && runtime
+            .classic_cleanup_plain_batched
+            .max_total_threads_per_threadgroup()
+            >= 32;
+    let coefficients_scratch = take_classic_coefficients_scratch_buffer(runtime, job.jobs.len())?;
+    let (status_check, states_scratch) = dispatch_classic_cleanup_batched_in_command_buffer(
+        runtime,
+        command_buffer,
+        &coded_buffer,
+        &jobs_buffer,
+        job.jobs.len(),
+        use_plain_fast_path,
+        &segments_buffer,
+        output,
+        &coefficients_scratch.buffer,
+    );
+    let mut retained_buffers = vec![coded_buffer, jobs_buffer, segments_buffer];
+    scratch_buffers.push(coefficients_scratch);
+    if let Some(states_scratch) = states_scratch {
+        retained_buffers.push(states_scratch);
+    }
+    Ok((retained_buffers, status_check))
 }
 
 #[cfg(target_os = "macos")]
@@ -4135,8 +4508,8 @@ fn encode_repeated_ht_sub_band_to_buffer_in_command_buffer(
         .ok_or_else(|| Error::MetalKernel {
             message: "HTJ2K MetalDirect repeated job count overflow".to_string(),
         })?;
-    let coded_buffer = borrow_slice_buffer(&runtime.device, &job.coded_data);
-    let jobs_buffer = borrow_slice_buffer(&runtime.device, &job.jobs);
+    let coded_buffer = job.coded_buffer.clone();
+    let jobs_buffer = job.jobs_buffer.clone();
     let status_check = dispatch_ht_cleanup_repeated_batched_in_command_buffer(
         runtime,
         command_buffer,
@@ -4148,6 +4521,39 @@ fn encode_repeated_ht_sub_band_to_buffer_in_command_buffer(
         output,
     );
     Ok((Vec::new(), vec![coded_buffer, jobs_buffer], status_check))
+}
+
+#[cfg(target_os = "macos")]
+fn encode_prepared_ht_sub_band_to_buffer_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    job: &PreparedHtSubBand,
+    output: &Buffer,
+) -> (Vec<Buffer>, DirectStatusCheck) {
+    if job.jobs.is_empty() {
+        let empty = runtime
+            .device
+            .new_buffer(1, MTLResourceOptions::StorageModeShared);
+        return (
+            vec![empty.clone()],
+            DirectStatusCheck::Ht {
+                buffer: empty,
+                len: 0,
+            },
+        );
+    }
+
+    let coded_buffer = job.coded_buffer.clone();
+    let jobs_buffer = job.jobs_buffer.clone();
+    let status_check = dispatch_ht_cleanup_batched_in_command_buffer(
+        runtime,
+        command_buffer,
+        &coded_buffer,
+        &jobs_buffer,
+        job.jobs.len(),
+        output,
+    );
+    (vec![coded_buffer, jobs_buffer], status_check)
 }
 
 #[cfg(target_os = "macos")]

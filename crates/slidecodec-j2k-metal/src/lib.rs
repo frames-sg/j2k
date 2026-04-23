@@ -259,13 +259,13 @@ impl<'a> J2kDecoder<'a> {
     #[cfg(target_os = "macos")]
     fn decode_direct_to_surface(&mut self, fmt: PixelFormat) -> Result<Option<Surface>, Error> {
         let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
-        if self.native_direct_gray_plan.is_none() {
+        if self.native_prepared_direct_gray_plan.is_none() {
             if let Some((plan, prepared)) = cached_global_direct_gray_plan(cache_key) {
                 self.native_direct_gray_plan = Some(plan);
                 self.native_prepared_direct_gray_plan = Some(prepared);
             }
         }
-        if self.native_direct_gray_plan.is_none() {
+        if self.native_prepared_direct_gray_plan.is_none() {
             self.ensure_native_image()?;
             let (Some(image), native_context) =
                 (self.native_image.as_ref(), &mut self.native_context)
@@ -292,12 +292,12 @@ impl<'a> J2kDecoder<'a> {
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
 
-        let Some(plan) = self.native_direct_gray_plan.as_ref() else {
+        let Some(plan) = self.native_prepared_direct_gray_plan.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(crate::compute::execute_direct_grayscale_plan(
-            plan, fmt,
-        )?))
+        Ok(Some(
+            crate::compute::execute_prepared_direct_grayscale_plan(plan, fmt)?,
+        ))
     }
 
     #[cfg(target_os = "macos")]
