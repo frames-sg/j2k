@@ -306,12 +306,6 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn should_auto_use_direct_for_full(plan: &J2kDirectGrayscalePlan, fmt: PixelFormat) -> bool {
-        let _ = (plan, fmt);
-        false
-    }
-
-    #[cfg(target_os = "macos")]
     fn should_auto_use_direct_for_repeated(
         plan: &J2kDirectGrayscalePlan,
         fmt: PixelFormat,
@@ -325,7 +319,7 @@ impl<'a> J2kDecoder<'a> {
         if Self::direct_plan_has_ht(plan) {
             max_dim >= 1024 && count >= 16
         } else {
-            max_dim >= 1024 && count >= 64
+            false
         }
     }
 
@@ -368,6 +362,13 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Vec<Surface>, Error> {
         if count == 0 {
             return Ok(Vec::new());
+        }
+        if !matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
+            return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
+        }
+        let dims = self.inner.info().dimensions;
+        if dims.0.max(dims.1) < 1024 || count < 16 {
+            return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
         }
         self.ensure_native_image()?;
         if self.native_direct_gray_plan.is_none() {
@@ -450,32 +451,6 @@ impl<'a> J2kDecoder<'a> {
             BackendRequest::Auto => {
                 #[cfg(target_os = "macos")]
                 {
-                    if self.native_direct_gray_plan.is_none() {
-                        self.ensure_native_image()?;
-                        let (Some(image), native_context) =
-                            (self.native_image.as_ref(), &mut self.native_context)
-                        else {
-                            return Err(Error::Decode(J2kError::Backend(
-                                "native image cache missing".to_string(),
-                            )));
-                        };
-                        match image.build_direct_grayscale_plan_with_context(native_context) {
-                            Ok(plan) => self.native_direct_gray_plan = Some(plan),
-                            Err(error)
-                                if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
-                            }
-                            Err(error) => {
-                                return Err(Error::Decode(J2kError::Backend(format!(
-                                    "failed to build J2K MetalDirect grayscale plan: {error}"
-                                ))));
-                            }
-                        }
-                    }
-                    if let Some(plan) = self.native_direct_gray_plan.as_ref() {
-                        if Self::should_auto_use_direct_for_full(plan, fmt) {
-                            return crate::compute::execute_direct_grayscale_plan(plan, fmt);
-                        }
-                    }
                     self.decode_to_cpu_surface(fmt)
                 }
                 #[cfg(not(target_os = "macos"))]
