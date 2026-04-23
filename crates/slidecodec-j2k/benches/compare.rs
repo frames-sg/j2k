@@ -4,8 +4,8 @@ mod common;
 
 use common::{
     bench_inputs, centered_roi, grok_available, grok_decode, metal_available, openjpeg_available,
-    openjpeg_decode, slidecodec_auto_decode, slidecodec_auto_decode_region,
-    slidecodec_auto_decode_scaled, slidecodec_auto_decode_tile_batch, slidecodec_decode,
+    openjpeg_decode, slidecodec_adaptive_decode, slidecodec_adaptive_decode_region,
+    slidecodec_adaptive_decode_scaled, slidecodec_adaptive_decode_tile_batch, slidecodec_decode,
     slidecodec_decode_region, slidecodec_decode_scaled, slidecodec_decode_tile_batch,
     slidecodec_inspect, slidecodec_metal_decode, slidecodec_metal_decode_region,
     slidecodec_metal_decode_scaled, slidecodec_metal_decode_tile_batch,
@@ -34,8 +34,8 @@ fn bench_compare(c: &mut Criterion) {
         decode_gray.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode(&input.bytes, input.mode));
         });
-        decode_gray.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode(&input.bytes, input.mode));
+        decode_gray.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| slidecodec_adaptive_decode(&input.bytes, input.mode));
         });
         if metal_available() && slidecodec_metal_supports_decode(&input.bytes, input.mode) {
             decode_gray.bench_function(format!("slidecodec-metal/{}", input.name), |b| {
@@ -87,8 +87,8 @@ fn bench_compare(c: &mut Criterion) {
         wsi_region.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode_region(&input.bytes, input.mode, 256));
         });
-        wsi_region.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode_region(&input.bytes, input.mode, 256));
+        wsi_region.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| slidecodec_adaptive_decode_region(&input.bytes, input.mode, 256));
         });
         if metal_available() && slidecodec_metal_supports_region(&input.bytes, input.mode, 256) {
             wsi_region.bench_function(format!("slidecodec-metal/{}", input.name), |b| {
@@ -116,8 +116,10 @@ fn bench_compare(c: &mut Criterion) {
         wsi_scaled.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode_scaled(&input.bytes, input.mode, Downscale::Quarter));
         });
-        wsi_scaled.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode_scaled(&input.bytes, input.mode, Downscale::Quarter));
+        wsi_scaled.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| {
+                slidecodec_adaptive_decode_scaled(&input.bytes, input.mode, Downscale::Quarter);
+            });
         });
         if metal_available()
             && slidecodec_metal_supports_scaled(&input.bytes, input.mode, Downscale::Quarter)
@@ -149,8 +151,8 @@ fn bench_compare(c: &mut Criterion) {
         wsi_tile_batch.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode_tile_batch(&input.bytes, input.mode, 16));
         });
-        wsi_tile_batch.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode_tile_batch(&input.bytes, input.mode, 16));
+        wsi_tile_batch.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| slidecodec_adaptive_decode_tile_batch(input, 16));
         });
         if metal_available() && slidecodec_metal_supports_tile_batch(&input.bytes, input.mode) {
             wsi_tile_batch.bench_function(format!("slidecodec-metal/{}", input.name), |b| {
@@ -178,8 +180,8 @@ fn bench_compare(c: &mut Criterion) {
         wsi_tile_batch_32.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode_tile_batch(&input.bytes, input.mode, 32));
         });
-        wsi_tile_batch_32.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode_tile_batch(&input.bytes, input.mode, 32));
+        wsi_tile_batch_32.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| slidecodec_adaptive_decode_tile_batch(input, 32));
         });
         if metal_available() && slidecodec_metal_supports_tile_batch(&input.bytes, input.mode) {
             wsi_tile_batch_32.bench_function(format!("slidecodec-metal/{}", input.name), |b| {
@@ -207,8 +209,8 @@ fn bench_compare(c: &mut Criterion) {
         wsi_tile_batch_64.bench_function(format!("slidecodec/{}", input.name), |b| {
             b.iter(|| slidecodec_decode_tile_batch(&input.bytes, input.mode, 64));
         });
-        wsi_tile_batch_64.bench_function(format!("slidecodec-auto/{}", input.name), |b| {
-            b.iter(|| slidecodec_auto_decode_tile_batch(&input.bytes, input.mode, 64));
+        wsi_tile_batch_64.bench_function(format!("slidecodec-adaptive/{}", input.name), |b| {
+            b.iter(|| slidecodec_adaptive_decode_tile_batch(input, 64));
         });
         if metal_available() && slidecodec_metal_supports_tile_batch(&input.bytes, input.mode) {
             wsi_tile_batch_64.bench_function(format!("slidecodec-metal/{}", input.name), |b| {
