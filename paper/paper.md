@@ -1,5 +1,5 @@
 ---
-title: 'slidecodec: A Rust JPEG decoder and memory-safe HTJ2K codec stack for whole-slide imaging with optional Apple Metal GPU acceleration'
+title: 'slidecodec: WSI-shaped JPEG and JPEG 2000 codecs for digital pathology'
 tags:
   - Rust
   - whole-slide imaging
@@ -8,141 +8,131 @@ tags:
   - JPEG 2000
   - HTJ2K
   - GPU
-  - Apple Metal
+  - codec
 authors:
-  - name: <AUTHOR NAME>
-    orcid: 0000-0000-0000-0000
+  - name: Greg Furletti
     affiliation: 1
 affiliations:
-  - name: <AFFILIATION>
+  - name: Independent researcher
     index: 1
-date: 24 April 2026
+date: 27 April 2026
 bibliography: paper.bib
 ---
 
 # Summary
 
-`slidecodec` is a Rust codec workspace for whole-slide imaging (WSI)
-in digital pathology. It provides a baseline JPEG decoder and a JPEG
-2000 / HTJ2K encoder-decoder together with tile decompression primitives
-(Deflate, Zstd, LZW, uncompressed), exposed through API surfaces shaped
-for WSI access patterns: pixel-exact region-of-interest (ROI) decode,
-decode-time downscale, tile-batch streaming, row streaming, and
-caller-owned scratch and decoder contexts. Optional device-output
-adapters expose decoded surfaces to downstream GPU pipelines: the Apple
-Metal adapter implements inverse discrete wavelet transform (IDWT),
-HTJ2K cleanup, multi-component transform (MCT), color conversion, and
-output store as Metal compute kernels, while CUDA-facing crates currently
-provide fallback-only API compatibility and explicit unavailable
-semantics. The `slidecodec-j2k-native` codec is implemented under
-`#![forbid(unsafe_code)]`, providing a fully memory-safe HTJ2K codec
-suitable for ingesting untrusted slide bytes in clinical and research
-contexts. The JPEG decoder uses tightly scoped `unsafe` only in
-architecture-specific SIMD backends. `slidecodec` is the codec
-foundation of `wsi-rs`
-[@wsirs], an OpenSlide-compatible [@goode2013openslide] pure-Rust
-whole-slide reader covering Aperio, Ventana, Trestle, and DICOM WSI
-[@dicomwsi] containers.
+`slidecodec` is a Rust codec workspace for whole-slide imaging (WSI), the
+high-resolution microscopy format used in digital pathology. WSI applications
+rarely decode one image once. Viewers, quality-control tools, and analysis
+pipelines repeatedly decode many small tiles, regions, or reduced-resolution
+views while users pan, zoom, and inspect tissue. `slidecodec` provides codec
+primitives shaped for those workloads: JPEG inspection and decode, JPEG 2000 /
+HTJ2K inspection and decode, restart-marker and coded-unit metadata, region of
+interest (ROI) decode, decode-time downscale, row streaming, tile-batch decode,
+caller-owned scratch buffers, and optional Apple Metal device-output adapters.
+
+The workspace separates codec work from slide-container work. `slidecodec`
+does not parse SVS, NDPI, DICOM, Mirax, Zeiss, or other WSI containers; that
+responsibility belongs to readers such as `wsi-rs` [@wsirs]. Instead,
+`slidecodec` turns compressed tile bytes into CPU pixels or device-resident
+surfaces and returns enough metadata for a reader to make correct tile and ROI
+decisions.
 
 # Statement of need
 
-Whole-slide imaging viewers, segmentation pipelines, and analysis
-frameworks decode JPEG and JPEG 2000 / HTJ2K [@iso15444_15; @taubman2019fbcot]
-tiles continuously: a typical viewport pan decodes 64+ tiles at the
-current pyramid level, often as ROI extracts at decode-time downscale,
-and renders within an interactive latency budget. No existing
-open-source codec covers this workload completely.
+Digital pathology software depends on low-latency decoding of tiled JPEG,
+JPEG 2000, and HTJ2K images [@iso15444_15; @taubman2019fbcot]. OpenSlide
+[@goode2013openslide] established a widely used
+vendor-neutral WSI reader, but its public interface is reader-oriented rather
+than codec-oriented. Researchers building new Rust WSI readers, viewers, or
+analysis pipelines still need reusable codec components that expose the
+operations common in slide navigation: inspect without decode, decode only a
+requested rectangle, downscale during decode, reuse scratch space across a
+tile stream, and surface restart-marker or MCU geometry for formats such as
+Hamamatsu NDPI.
 
-The HTJ2K codec landscape in particular has a structural gap. Grok
-[@grok] is licensed under AGPL, restricting commercial pathology
-integration. Kakadu [@kakadu] is proprietary and license-encumbered.
-OpenJPEG [@openjpeg] is C with a documented history of memory-safety
-CVEs and incomplete HTJ2K coverage. OpenHTJ2K [@openhtj2k] is
-research-grade C++ without WSI-shaped APIs. There is no permissively
-licensed, memory-safe HTJ2K encoder or decoder in the open-source
-ecosystem prior to this work.
+General-purpose JPEG decoders such as libjpeg-turbo [@libjpegturbo],
+`zune-jpeg` [@zunejpeg], and `jpeg-decoder` [@jpegdecoder] are mature and
+valuable, but they do not provide a Rust API designed around WSI tile
+scheduling and slide-reader ownership of caches, scratch buffers, and
+coordinate systems. JPEG 2000 and HTJ2K add a different constraint: OpenJPEG
+[@openjpeg], Grok [@grok], OpenHTJ2K [@openhtj2k], and Kakadu [@kakadu] cover
+important parts of the ecosystem, but their licensing, language/runtime
+assumptions, or API shapes are not always suitable for a permissively licensed
+Rust WSI stack. `slidecodec` fills this gap by providing WSI-oriented codec
+APIs with Apache-2.0 licensing and Rust-native integration.
 
-The JPEG side has high-quality decoders — libjpeg-turbo
-[@libjpegturbo], `zune-jpeg` [@zunejpeg], and `jpeg-decoder`
-[@jpegdecoder] — but none expose the API primitives WSI workloads
-require: pixel-exact ROI decode (rather than MCU-aligned crop),
-decode-time downscale composed with ROI, tile-batch submission with
-shared scratch, row-streaming output for stripes and large tiles,
-caller-owned decoder contexts free of global state, and borrowed
-parse and decode surfaces. WSI viewers must currently choose between
-a fast general-purpose decoder and a WSI-shaped wrapper that pays the
-cost of full-image decode followed by host-side cropping.
+# State of the field
 
-`slidecodec` fills both gaps with a shared API surface across both
-codec families. JPEG encoding is intentionally out of scope; downstream
-callers can pair `slidecodec-jpeg` with existing Rust encoders when they
-need JPEG write support. Optional Apple Metal device-output adapters extend the
-same primitives with hybrid CPU-entropy / GPU-IDWT-and-color-convert
-pipelines, exploiting Apple Silicon's unified memory model to keep
-per-tile coefficient handoff at zero-copy cost — a design point not
-practical on discrete GPUs that pay PCIe submission overhead per tile.
+`slidecodec` is not a replacement for OpenSlide; it is a lower-level codec
+component that a reader can use to compete with or validate against OpenSlide.
+It is also not intended to replace libjpeg-turbo for general JPEG decoding,
+or Kakadu, Grok, OpenJPEG, and OpenHTJ2K for every JPEG 2000 deployment.
+Those projects remain important comparators and, in some settings, better
+choices.
 
-# Implementation
+The reason to build `slidecodec` rather than only contribute wrappers around
+existing libraries is the combination of requirements: WSI-shaped ROI and
+downscale APIs, restart-marker inspection, caller-owned state, Rust ownership
+semantics, optional device-output adapters, and a small integration surface
+for readers that already manage container parsing, cache policy, and viewport
+prefetch. These choices let a Rust reader hand compressed tile bytes to the
+codec without adopting a monolithic slide runtime or copying pixels through
+intermediate image abstractions that are not needed by the caller.
 
-The workspace contains: `slidecodec-core` (shared traits, pixel and
-sample types, scratch and context contracts); `slidecodec-jpeg` (Rust
-JPEG decoder with NEON, x86, and scalar backends);
-`slidecodec-j2k` and the internal `slidecodec-j2k-native` engine
-(pure Rust JPEG 2000 / HTJ2K encoder and decoder under
-`forbid(unsafe_code)`, using `fearless_simd` for portable SIMD);
-`slidecodec-jpeg-metal` and `slidecodec-j2k-metal` (Apple Metal
-device-output adapters with dedicated compute kernels);
-`slidecodec-jpeg-cuda` and `slidecodec-j2k-cuda` (CUDA-facing crates
-with fallback-only compatibility semantics in this release);
-`slidecodec-tilecodec` (Deflate, Zstd, LZW, uncompressed tile
-decompression); and `slidecodec-cli` (inspection entry point). A
-session-level adaptive router selects CPU or GPU per request based on
-image size, batch size, and ROI shape, with shared input interning
-(`Arc<[u8]>`) and queued tile-batch submission.
+# Software design
 
-The SIMD strategy differs between the codec families for historical and
-technical reasons. The JPEG decoder's hand-written NEON and x86
-intrinsics predate the JPEG 2000 engine integration and remain the
-fastest validated path for its fused entropy, IDCT, upsample, and color
-conversion loops. The JPEG 2000 / HTJ2K engine uses `fearless_simd` to
-keep the codec crate under `forbid(unsafe_code)` while retaining portable
-SIMD acceleration. Migrating the JPEG SIMD layer to a shared portable
-abstraction is a post-stabilization maintenance goal, contingent on
-matching the current architecture-specific performance.
+The workspace is layered around `slidecodec-core`, which defines shared pixel
+formats, backend requests, rectangles, row sinks, scratch/context contracts,
+and decode traits. Codec crates implement those traits for JPEG, JPEG 2000 /
+HTJ2K, and tile-compression primitives. Adapter crates add platform-specific
+device surfaces without forcing GPU dependencies into the CPU codecs.
 
-A reproducible benchmark harness in `docs/bench.md` compares
-`slidecodec` against libjpeg-turbo (system-linked via `pkg-config`),
-`zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok across full-image,
-ROI, scaled, and tile-batch workloads. Performance gains are
-workload-shaped: pixel-exact ROI and tile-batch decode on 4:2:0 JPEGs
-achieve substantial speedup over libjpeg-turbo with native
-MCU-aligned cropping on Apple Silicon, while full-image decode is
-competitive but not faster. JPEG 2000 / HTJ2K Metal tile-batch decode
-on distinct inputs achieves multi-fold speedup over pure-CPU decode
-at 1024-class tile sizes. Single-tile decode below routing thresholds
-is correctly directed to CPU.
+This design makes two trade-offs explicit. First, the codec does not own
+threading, slide pyramids, or caches. That keeps the API usable by WSI readers
+with different I/O models, but it requires callers to be explicit about
+scratch reuse and batch submission. Second, GPU support is additive rather
+than mandatory. CPU decode is always available; Metal adapters are used only
+for request shapes where device output is useful, while CUDA-facing crates
+currently expose compatibility and fallback behavior rather than a runtime
+CUDA implementation.
 
-# Limitations and roadmap
+Correctness and maintainability are handled through parser-level inspection,
+reference-comparator tests, fixture manifests, fuzz targets, and benchmark
+groups documented in `docs/bench.md` and `docs/parity.md`. The JPEG 2000
+native engine is kept under `#![forbid(unsafe_code)]`; the JPEG crate confines
+its `unsafe` code to architecture-specific SIMD backends.
 
-The CUDA crates are not runtime CUDA implementations in this release.
-They keep the device-output API shape compilable for downstream callers,
-exercise CPU fallback surfaces, and return explicit unavailable errors
-for `BackendRequest::Cuda`. Full CUDA decode kernels and NVIDIA runtime
-benchmarks are future work.
+# Research impact statement
 
-The JPEG crate is decode-only. JPEG encoding is outside the present
-scope, while JPEG 2000 / HTJ2K encode and decode are included through
-`slidecodec-j2k-native`. Additional roadmap items include AVX2 direct
-emission for JPEG ROI paths, x86_64 GPU benchmark coverage, continued
-tuning of adaptive CPU/GPU routing thresholds, and a maintainability
-split of the large fused JPEG sequential entropy path once the current
-performance-sensitive loop structure has stable regression coverage.
+`slidecodec` is already integrated as the production codec layer for `wsi-rs`,
+a Rust WSI reader used by SlideViewer. That integration exercises the API on
+real slide workloads: SVS, NDPI, DICOM WSI [@dicomwsi], Zeiss, Mirax,
+Hamamatsu VMS, and Philips TIFF readers resolve compressed tile bytes and pass
+decode work to `slidecodec`. The companion SlideViewer parity harness compares
+reader output against compatibility oracles, including OpenSlide, while the
+`slidecodec` benchmark harness compares codec tasks against libjpeg-turbo,
+`zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok.
+
+The near-term research use is reproducible WSI systems benchmarking:
+measuring tile latency, ROI decode, reduced-resolution decode, and
+device-output behavior separately from container parsing and viewer policy.
+This separation is important for digital pathology methods papers, where the
+codec contribution must be distinguishable from caching, I/O, and rendering
+choices.
+
+# AI usage disclosure
+
+Generative AI assistance was used to draft and revise this paper text and to
+check it against the JOSS paper-structure requirements. The software design,
+implementation, tests, and benchmark claims are based on the repository
+contents, local verification commands, and human review. The author is
+responsible for final technical accuracy before submission.
 
 # Acknowledgments
 
-The authors thank the maintainers of OpenJPEG, Grok, libjpeg-turbo,
-`zune-jpeg`, and `jpeg-decoder` whose comparator implementations
-shaped the benchmark harness, and the OpenSlide and DICOM WG-26
-communities whose interoperability standards motivate this work.
+The author thanks the maintainers of OpenSlide, libjpeg-turbo, `zune-jpeg`,
+`jpeg-decoder`, OpenJPEG, Grok, OpenHTJ2K, and Kakadu for the software and
+documentation that make codec interoperability and benchmarking possible.
 
 # References
