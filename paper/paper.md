@@ -1,5 +1,5 @@
 ---
-title: 'slidecodec: WSI-shaped JPEG and JPEG 2000 codecs for digital pathology'
+title: 'ashlar: WSI-shaped JPEG and JPEG 2000 codecs for digital pathology'
 tags:
   - Rust
   - whole-slide imaging
@@ -15,26 +15,30 @@ authors:
 affiliations:
   - name: Independent researcher
     index: 1
-date: 27 April 2026
+date: 29 April 2026
 bibliography: paper.bib
 ---
 
 # Summary
 
-`slidecodec` is a Rust codec workspace for whole-slide imaging (WSI), the
+`ashlar` is a Rust codec workspace for whole-slide imaging (WSI), the
 high-resolution microscopy format used in digital pathology. WSI applications
 rarely decode one image once. Viewers, quality-control tools, and analysis
 pipelines repeatedly decode many small tiles, regions, or reduced-resolution
-views while users pan, zoom, and inspect tissue. `slidecodec` provides codec
+views while users pan, zoom, and inspect tissue. `ashlar` provides codec
 primitives shaped for those workloads: JPEG inspection and decode, JPEG 2000 /
 HTJ2K inspection and decode, restart-marker and coded-unit metadata, region of
 interest (ROI) decode, decode-time downscale, row streaming, tile-batch decode,
-caller-owned scratch buffers, and optional Apple Metal device-output adapters.
+caller-owned scratch buffers, tile-decompression codecs, and optional device
+surface adapters. The current workspace includes CPU-first JPEG and JPEG 2000
+crates, Apple Metal adapters validated on Apple Silicon, fallback-only CUDA API
+adapters, Deflate/Zstd/LZW/Uncompressed tile decompression, a shared core crate,
+and a CLI inspection entry point.
 
-The workspace separates codec work from slide-container work. `slidecodec`
+The workspace separates codec work from slide-container work. `ashlar`
 does not parse SVS, NDPI, DICOM, Mirax, Zeiss, or other WSI containers; that
-responsibility belongs to readers such as `wsi-rs` [@wsirs]. Instead,
-`slidecodec` turns compressed tile bytes into CPU pixels or device-resident
+responsibility belongs to readers such as `ziggurat` [@wsirs]. Instead,
+`ashlar` turns compressed tile bytes into CPU pixels or device-resident
 surfaces and returns enough metadata for a reader to make correct tile and ROI
 decisions.
 
@@ -59,19 +63,19 @@ coordinate systems. JPEG 2000 and HTJ2K add a different constraint: OpenJPEG
 [@openjpeg], Grok [@grok], OpenHTJ2K [@openhtj2k], and Kakadu [@kakadu] cover
 important parts of the ecosystem, but their licensing, language/runtime
 assumptions, or API shapes are not always suitable for a permissively licensed
-Rust WSI stack. `slidecodec` fills this gap by providing WSI-oriented codec
+Rust WSI stack. `ashlar` fills this gap by providing WSI-oriented codec
 APIs with Apache-2.0 licensing and Rust-native integration.
 
 # State of the field
 
-`slidecodec` is not a replacement for OpenSlide; it is a lower-level codec
+`ashlar` is not a replacement for OpenSlide; it is a lower-level codec
 component that a reader can use to compete with or validate against OpenSlide.
 It is also not intended to replace libjpeg-turbo for general JPEG decoding,
 or Kakadu, Grok, OpenJPEG, and OpenHTJ2K for every JPEG 2000 deployment.
 Those projects remain important comparators and, in some settings, better
 choices.
 
-The reason to build `slidecodec` rather than only contribute wrappers around
+The reason to build `ashlar` rather than only contribute wrappers around
 existing libraries is the combination of requirements: WSI-shaped ROI and
 downscale APIs, restart-marker inspection, caller-owned state, Rust ownership
 semantics, optional device-output adapters, and a small integration surface
@@ -82,11 +86,14 @@ intermediate image abstractions that are not needed by the caller.
 
 # Software design
 
-The workspace is layered around `slidecodec-core`, which defines shared pixel
+The workspace is layered around `ashlar-core`, which defines shared pixel
 formats, backend requests, rectangles, row sinks, scratch/context contracts,
 and decode traits. Codec crates implement those traits for JPEG, JPEG 2000 /
 HTJ2K, and tile-compression primitives. Adapter crates add platform-specific
-device surfaces without forcing GPU dependencies into the CPU codecs.
+device surfaces without forcing GPU dependencies into the CPU codecs. This
+keeps reader integrations stable: `ziggurat` can submit compressed tile bytes and
+choose CPU, automatic, or device-oriented output preferences without depending
+on vendor-container details inside the codec crates.
 
 This design makes two trade-offs explicit. First, the codec does not own
 threading, slide pyramids, or caches. That keeps the API usable by WSI readers
@@ -99,21 +106,41 @@ CUDA implementation.
 
 Correctness and maintainability are handled through parser-level inspection,
 reference-comparator tests, fixture manifests, fuzz targets, and benchmark
-groups documented in `docs/bench.md` and `docs/parity.md`. The JPEG 2000
-native engine is kept under `#![forbid(unsafe_code)]`; unavoidable `unsafe`
-in the public workspace is isolated to CPU feature detection and audited
-JPEG hot paths such as SIMD and low-level entropy-buffer handling.
+groups documented in `docs/bench.md` and `docs/parity.md`. As of 29 April
+2026, `cargo test --workspace --all-targets` passes across the CLI, core,
+JPEG, JPEG Metal, JPEG CUDA, JPEG 2000, JPEG 2000 Metal, JPEG 2000 CUDA, and
+tilecodec crates, including benchmark smoke targets. The same run includes
+165 `ashlar-jpeg` unit tests, 36 JPEG Metal tests, 75 native JPEG 2000 /
+HTJ2K tests, 43 JPEG 2000 Metal tests, 10 tilecodec decompression tests, and
+focused parity/regression tests against libjpeg-turbo, OpenJPEG, and Grok
+where those comparator paths are available. The JPEG corpus report over the
+committed conformance fixtures completed 11 rows with zero failures; those
+fixtures are correctness smoke tests, not the basis for WSI-scale performance
+claims.
+
+The JPEG 2000 native engine is kept under `#![forbid(unsafe_code)]`;
+unavoidable `unsafe` in the public workspace is isolated to CPU feature
+detection and audited JPEG hot paths such as SIMD and low-level entropy-buffer
+handling.
 
 # Research impact statement
 
-`slidecodec` is already integrated as the production codec layer for `wsi-rs`,
+`ashlar` is already integrated as the production codec layer for `ziggurat`,
 a Rust WSI reader used by SlideViewer. That integration exercises the API on
 real slide workloads: SVS, NDPI, DICOM WSI [@dicomwsi], Zeiss, Mirax,
-Hamamatsu VMS, and Philips TIFF readers resolve compressed tile bytes and pass
-decode work to `slidecodec`. The companion SlideViewer parity harness compares
-reader output against compatibility oracles, including OpenSlide, while the
-`slidecodec` benchmark harness compares codec tasks against libjpeg-turbo,
-`zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok.
+Hamamatsu VMS, Leica, Ventana, and Philips TIFF readers resolve compressed
+tile bytes and pass decode work to `ashlar`. The companion SlideViewer
+parity harness compares reader output against compatibility oracles, including
+OpenSlide, while the `ashlar` benchmark harness compares codec tasks
+against libjpeg-turbo, `zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok.
+
+The current integration release gate passes on eight real local slides: two
+NDPI slides, four JPEG-compressed SVS slides, and two JPEG 2000 SVS slides
+from 94 MB to 2.5 GB. Representative ashlar-backed reader medians include
+NDPI B4 2k-region extraction at 45.8 ms versus 53.1 ms for OpenSlide and a
+2.5 GB metastatic melanoma SVS 2k-region extraction at 20.3 ms versus 56.7 ms.
+These are whole-reader measurements, so they are reported as integration
+evidence rather than isolated codec microbenchmarks.
 
 The near-term research use is reproducible WSI systems benchmarking:
 measuring tile latency, ROI decode, reduced-resolution decode, and

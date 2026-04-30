@@ -25,9 +25,9 @@ This latest slice focused on reducing single-request MetalDirect fixed cost with
 
 Main files touched:
 
-- [compute.rs](/Users/user/.config/superpowers/worktrees/slidecodec/adaptive-codec-runtime/crates/slidecodec-j2k-metal/src/compute.rs)
-- [lib.rs](/Users/user/.config/superpowers/worktrees/slidecodec/adaptive-codec-runtime/crates/slidecodec-j2k-metal/src/lib.rs)
-- [store.metal](/Users/user/.config/superpowers/worktrees/slidecodec/adaptive-codec-runtime/crates/slidecodec-j2k-metal/src/store.metal)
+- [compute.rs](/Users/user/.config/superpowers/worktrees/ashlar/adaptive-codec-runtime/crates/ashlar-j2k-metal/src/compute.rs)
+- [lib.rs](/Users/user/.config/superpowers/worktrees/ashlar/adaptive-codec-runtime/crates/ashlar-j2k-metal/src/lib.rs)
+- [store.metal](/Users/user/.config/superpowers/worktrees/ashlar/adaptive-codec-runtime/crates/ashlar-j2k-metal/src/store.metal)
 
 Key changes:
 
@@ -44,10 +44,10 @@ Key changes:
 ## Verified Commands
 
 - `cargo fmt --all`
-- `cargo test -p slidecodec-j2k-metal --lib --tests`
-- `cargo clippy -p slidecodec-j2k-metal -p slidecodec-j2k --all-targets -- -D warnings`
-- `cargo bench -p slidecodec-j2k --bench compare -- 'decode_gray/(slidecodec|slidecodec-metal|slidecodec-adaptive)/(htj2k_gray_1024|j2k_gray_1024)' --quick --noplot`
-- `cargo bench -p slidecodec-j2k --bench compare -- 'wsi_tile_batch_gray/(slidecodec|slidecodec-metal|slidecodec-adaptive)/(j2k_gray_1024|htj2k_gray_1024)' --quick --noplot`
+- `cargo test -p ashlar-j2k-metal --lib --tests`
+- `cargo clippy -p ashlar-j2k-metal -p ashlar-j2k --all-targets -- -D warnings`
+- `cargo bench -p ashlar-j2k --bench compare -- 'decode_gray/(ashlar|ashlar-metal|ashlar-adaptive)/(htj2k_gray_1024|j2k_gray_1024)' --quick --noplot`
+- `cargo bench -p ashlar-j2k --bench compare -- 'wsi_tile_batch_gray/(ashlar|ashlar-metal|ashlar-adaptive)/(j2k_gray_1024|htj2k_gray_1024)' --quick --noplot`
 
 ## Latest Measured Frontier
 
