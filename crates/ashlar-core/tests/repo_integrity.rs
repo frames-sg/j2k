@@ -161,6 +161,69 @@ fn gpu_validation_workflow_is_self_hosted_and_explicit() {
     }
 }
 
+#[test]
+fn cuda_gpu_validation_job_stays_cuda_focused() {
+    let root = repo_root();
+    let workflow_path = root.join(".github/workflows/gpu-validation.yml");
+    let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
+    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+
+    for required in [
+        "runs-on: [self-hosted, Linux, X64, cuda]",
+        "uname -a",
+        "rustc -Vv",
+        "cargo -V",
+        "nvidia-smi",
+        "CUDA adapter tests do not require runtime CUDA",
+        "cargo test -p ashlar-jpeg-cuda --all-targets --features cuda-runtime",
+        "cargo test -p ashlar-j2k-cuda --all-targets --features cuda-runtime",
+        "cargo bench -p ashlar-jpeg --no-run",
+    ] {
+        assert!(
+            cuda_job.contains(required),
+            "{} CUDA job must contain `{required}`",
+            workflow_path
+                .strip_prefix(root)
+                .unwrap_or(&workflow_path)
+                .display()
+        );
+    }
+
+    for forbidden in [
+        "cargo bench -p ashlar-j2k-metal --bench compare --no-run",
+        "cargo test -p ashlar-jpeg-metal",
+        "cargo test -p ashlar-j2k-metal",
+    ] {
+        assert!(
+            !cuda_job.contains(forbidden),
+            "{} CUDA job must not contain Metal validation command `{forbidden}`",
+            workflow_path
+                .strip_prefix(root)
+                .unwrap_or(&workflow_path)
+                .display()
+        );
+    }
+}
+
+fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
+    let marker = format!("  {job_name}:");
+    let start = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing workflow job {job_name}"));
+    let rest = &workflow[start..];
+    let mut search_start = marker.len();
+    let mut end = rest.len();
+    while let Some(relative) = rest[search_start..].find("\n  ") {
+        let candidate = search_start + relative + 1;
+        if !rest[candidate..].starts_with("    ") {
+            end = candidate;
+            break;
+        }
+        search_start = candidate + 1;
+    }
+    &rest[..end]
+}
+
 fn rust_sources(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     collect_rust_sources(dir, &mut out);
