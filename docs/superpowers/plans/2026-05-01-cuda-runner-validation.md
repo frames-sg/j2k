@@ -80,10 +80,16 @@ fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
         .find(&marker)
         .unwrap_or_else(|| panic!("missing workflow job {job_name}"));
     let rest = &workflow[start..];
-    let after_marker = marker.len();
-    let end = rest[after_marker..]
-        .find("\n  ")
-        .map_or(rest.len(), |idx| after_marker + idx);
+    let mut search_start = marker.len();
+    let mut end = rest.len();
+    while let Some(relative) = rest[search_start..].find("\n  ") {
+        let candidate = search_start + relative + 1;
+        if !rest[candidate..].starts_with("    ") {
+            end = candidate;
+            break;
+        }
+        search_start = candidate + 1;
+    }
     &rest[..end]
 }
 ```
@@ -175,7 +181,7 @@ Expected: PASS. The tests should still prove `Auto`/`Cpu` host surfaces and expl
 Run:
 
 ```sh
-cargo test -p ashlar-core gpu_validation_workflow_is_self_hosted_and_explicit cuda_gpu_validation_job_stays_cuda_focused
+cargo test -p ashlar-core gpu_validation
 ```
 
 Expected: PASS for both workflow integrity tests.
@@ -230,7 +236,7 @@ Expected: PASS.
 Run:
 
 ```sh
-cargo test -p ashlar-core gpu_validation_workflow_is_self_hosted_and_explicit cuda_gpu_validation_job_stays_cuda_focused
+cargo test -p ashlar-core gpu_validation
 cargo test -p ashlar-jpeg-cuda --all-targets --features cuda-runtime
 cargo test -p ashlar-j2k-cuda --all-targets --features cuda-runtime
 ```

@@ -38,7 +38,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Show CUDA runner diagnostics
+        run: |
+          uname -a
+          rustc -Vv
+          cargo -V
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia-smi
+          else
+            echo "nvidia-smi not found; CUDA adapter tests do not require runtime CUDA"
+          fi
       - run: cargo test -p ashlar-jpeg-cuda --all-targets --features cuda-runtime
       - run: cargo test -p ashlar-j2k-cuda --all-targets --features cuda-runtime
       - run: cargo bench -p ashlar-jpeg --no-run
-      - run: cargo bench -p ashlar-j2k-metal --bench compare --no-run
