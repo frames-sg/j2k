@@ -28,8 +28,9 @@ design notes that an agent can reach without leaving the repo.
 
 The workspace is a single Cargo workspace defined in [`Cargo.toml`](../Cargo.toml).
 All crates live under `crates/` and share `edition = 2021` and
-`rust-version = 1.94`. CPU-first 1.0 crates use the workspace package version;
-implementation and adapter crates stay on explicit pre-1.0 versions.
+`rust-version = 1.94`. Stable facade and codec crates use 1.x versions;
+implementation and adapter crates stay on explicit pre-1.0 versions where their
+backend APIs are still hardening.
 
 | Crate | Layer | Role |
 |-------|-------|------|
@@ -234,7 +235,7 @@ scaled, and combined ROI+scaled device surfaces; explicit Metal requests return
 Metal-backed surfaces on macOS, while unsupported host or platform shapes fail
 through the adapter error path.
 
-Metal adapter routing is explicit after the CPU-first 1.0 line.
+Metal adapter routing is explicit after the facade release.
 `BackendRequest::Cpu` returns host-backed CPU surfaces. `BackendRequest::Auto`
 may select Metal only for validated adapter-supported shapes; otherwise it
 falls back to a host-backed CPU surface. `BackendRequest::Metal` is strict: it
@@ -332,10 +333,11 @@ provisional and check the most recent commits before relying on it.
 
 ## Stability posture
 
-CPU-first 1.0 covers `signinum-core`, `signinum-jpeg`, `signinum-j2k`,
-`signinum-tilecodec`, and `signinum-cli`. `signinum-j2k-native` is published as an
-implementation dependency, not as the primary stable API. The Metal adapter
-APIs remain on the post-1.0 hardening track. The CUDA adapter APIs now expose
-runtime CUDA device-memory output and nvJPEG JPEG decode, but remain pre-1.0
-while broader CUDA decode and performance work harden. Breaking changes to any of these surfaces should be
-reflected here and in [`CHANGELOG.md`](../CHANGELOG.md).
+The facade release covers `signinum`, `signinum-core`, `signinum-jpeg`,
+`signinum-j2k`, `signinum-tilecodec`, and `signinum-cli`. `signinum-j2k-native`
+is published as an implementation dependency, not as the primary stable API.
+Runtime backend selection defaults to `Auto`; supported compiled device paths
+may run before falling back to CPU. The Metal and CUDA adapter APIs remain on
+the hardening track while broader device decode, encode, and performance work
+matures. Breaking changes to any of these surfaces should be reflected here and
+in [`CHANGELOG.md`](../CHANGELOG.md).

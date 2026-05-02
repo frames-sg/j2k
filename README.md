@@ -5,10 +5,13 @@ Pathology codec stack for whole-slide imaging workloads.
 ## Status
 
 `signinum` is a native-first codec workspace for pathology and WSI software.
-The current public-source release target is CPU-first 1.0: `signinum-core`,
-`signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec`, and `signinum-cli` are the
-stable user-facing crates. GPU adapter crates remain pre-1.0 while their
-runtime support and routing policies continue to harden.
+The current public-source release target is the `signinum` facade release:
+`signinum-core`, `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec`,
+`signinum-cli`, and the `signinum` facade are the stable user-facing crates.
+Runtime backend selection defaults to `Auto`; compiled device adapters are used
+for supported workloads when available, with CPU as the fallback. GPU adapter
+crates remain pre-1.0 while their runtime support and routing policies continue
+to harden.
 The core stack in this repository is:
 
 - `signinum-jpeg` — native JPEG decode for WSI tiles
@@ -62,9 +65,9 @@ CUDA requests can decode with nvJPEG when the library is installed; other CUDA
 adapter shapes still use CPU decode plus CUDA upload. Benchmark results are
 hardware-specific and must be collected on self-hosted GPU runners.
 
-## Post-1.0 roadmap
+## Roadmap
 
-After CPU-first 1.0, the project is focused on:
+After the facade release, the project is focused on:
 
 - hardening Metal adapter APIs and backend routing policies
 - validating and recording Metal runtime benchmark baselines
@@ -192,8 +195,9 @@ caching, prefetch, and viewport policy. The Metal adapters only batch codec
 requests and return decoded surfaces in submission order. If a caller already
 stores compressed tile payloads in `Arc<[u8]>`, the `push_shared_*` methods can
 queue them without another tile-byte copy. Use explicit `BackendRequest::Metal`
-when a batched caller wants Metal execution; `BackendRequest::Auto` remains
-conservative for small or host-returned decodes.
+when a batched caller must require Metal execution; `BackendRequest::Auto` can
+use validated device paths for supported workloads and otherwise returns CPU
+fallback output.
 
 Tile decompression:
 

@@ -415,6 +415,45 @@ impl CudaContext {
         })
     }
 
+    pub fn decode_jpeg_rgb8_batch_with_nvjpeg(
+        &self,
+        inputs: &[(&[u8], (u32, u32))],
+    ) -> Result<Vec<CudaKernelOutput>, CudaError> {
+        self.inner.set_current()?;
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut buffers = Vec::with_capacity(inputs.len());
+        let mut pointers = Vec::with_capacity(inputs.len());
+        let mut pitches = Vec::with_capacity(inputs.len());
+        for (_, dimensions) in inputs {
+            let (pitch_bytes, byte_len) = rgb8_layout(*dimensions)?;
+            let buffer = self.allocate(byte_len)?;
+            pointers.push(buffer.device_ptr());
+            pitches.push(pitch_bytes);
+            buffers.push(buffer);
+        }
+
+        let mut state = nvjpeg::NvjpegState::new_batched()?;
+        state.decode_rgb8_batch(inputs, &pointers, &pitches)?;
+
+        self.inner.driver.check("cuCtxSynchronize", unsafe {
+            (self.inner.driver.cu_ctx_synchronize)()
+        })?;
+
+        let execution = CudaExecutionStats {
+            kernel_dispatches: 1,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 1,
+            hardware_decode: true,
+        };
+        Ok(buffers
+            .into_iter()
+            .map(|buffer| CudaKernelOutput { buffer, execution })
+            .collect())
+    }
+
     pub fn j2k_forward_rct(
         &self,
         plane0: &mut [f32],
