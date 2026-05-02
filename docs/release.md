@@ -8,7 +8,7 @@ are `signinum-core`, `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec`, and
 dependency so `signinum-j2k` can be installed from crates.io.
 
 Metal and CUDA adapter crates are published as pre-1.0 `0.2.x` artifacts so the
-renamed crate family has direct replacements for the old `ashlar-*` adapters.
+renamed crate family has direct replacements for the previous adapter crates.
 CUDA explicit requests can produce CUDA device-memory surfaces when built with
 `cuda-runtime` on a host with a CUDA driver, but decode is still CPU-produced
 and uploaded. CUDA device memory is validated separately from kernel work.
