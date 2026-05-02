@@ -581,12 +581,11 @@ fn blit_into_viewport(
 mod tests {
     use super::*;
 
-    const BASELINE_420: &[u8] =
-        include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+    const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
     #[cfg(target_os = "macos")]
-    const BASELINE_422: &[u8] = include_bytes!("../../../corpus/conformance/baseline_422_16x8.jpg");
+    const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
     const BASELINE_420_RESTART: &[u8] =
-        include_bytes!("../../../corpus/conformance/baseline_420_restart_32x16.jpg");
+        include_bytes!("../fixtures/jpeg/baseline_420_restart_32x16.jpg");
 
     fn sparse_workload_from(workload: &ViewportWorkload) -> ViewportWorkload {
         ViewportWorkload {

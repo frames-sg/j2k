@@ -5,8 +5,8 @@
 
 use signinum_jpeg::{Decoder, Downscale, PixelFormat, Rect, ScratchPool};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const GRAYSCALE_8X8: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+const GRAYSCALE_8X8: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
 
 #[test]
 fn rgb8_decode_is_byte_stable_across_pool_reuse() {

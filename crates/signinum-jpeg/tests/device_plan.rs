@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 use signinum_jpeg::{ColorSpace, Decoder, Warning};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const BASELINE_422: &[u8] = include_bytes!("../../../corpus/conformance/baseline_422_16x8.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+const BASELINE_422: &[u8] = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
 
 #[test]
 fn adapter_device_plan_exposes_scan_metadata() {

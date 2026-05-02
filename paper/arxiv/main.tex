@@ -70,7 +70,7 @@ or hand decoded output directly to a GPU pipeline.
 
 \signinum{} is a Rust workspace that implements codec primitives for those WSI
 access patterns. It is not a slide reader and does not parse SVS, NDPI, DICOM
-WSI, Mirax, Zeiss, Leica, Ventana, Philips TIFF, or other vendor containers.
+WSI, Mirax, Leica, Ventana, Philips TIFF, or other vendor containers.
 Instead, a reader resolves compressed tile bytes and passes those bytes to
 \signinum{} for inspection, CPU decode, tile decompression, or backend-tagged
 surface production. This boundary is intentional: WSI readers differ in their
@@ -325,11 +325,11 @@ hot paths such as SIMD and low-level entropy-buffer handling.
 
 \signinum{} is integrated as the production codec layer for \crate{statumen}, a
 Rust WSI reader used by SlideViewer \citep{wsirs}. That integration exercises
-the API on real slide workloads: SVS, NDPI, DICOM WSI, Zeiss, Mirax,
-Hamamatsu VMS, Leica, Ventana, and Philips TIFF readers resolve compressed
-tile bytes and pass decode work to \signinum{}. The companion parity harness
-compares reader output against compatibility oracles including OpenSlide,
-while the \signinum{} benchmark harness compares codec tasks against
+the API on real slide workloads: SVS, NDPI, DICOM WSI, Mirax, Hamamatsu VMS,
+Leica, Ventana, and Philips TIFF readers resolve compressed tile bytes and
+pass decode work to \signinum{}. The companion parity harness compares reader
+output against compatibility oracles including OpenSlide, while the \signinum{}
+benchmark harness compares codec tasks against
 libjpeg-turbo, \crate{zune-jpeg}, \crate{jpeg-decoder}, OpenJPEG, and Grok.
 
 The current integration release gate passes on eight real local slides: two

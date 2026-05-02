@@ -33,14 +33,14 @@ pub(crate) fn load_bench_inputs() -> Vec<BenchInput> {
     let mut inputs = vec![
         BenchInput {
             name: "repo/baseline_420_16x16".to_string(),
-            bytes: include_bytes!("../../../../corpus/conformance/baseline_420_16x16.jpg").to_vec(),
+            bytes: include_bytes!("../../fixtures/conformance/baseline_420_16x16.jpg").to_vec(),
             dimensions: (16, 16),
             mode: DecodeMode::Rgb,
             input_class: CorpusInputClass::BoundedFullFrame,
         },
         BenchInput {
             name: "repo/grayscale_8x8".to_string(),
-            bytes: include_bytes!("../../../../corpus/conformance/grayscale_8x8.jpg").to_vec(),
+            bytes: include_bytes!("../../fixtures/conformance/grayscale_8x8.jpg").to_vec(),
             dimensions: (8, 8),
             mode: DecodeMode::Gray,
             input_class: CorpusInputClass::BoundedFullFrame,

@@ -1517,13 +1517,12 @@ mod tests {
     use super::*;
     use signinum_jpeg::adapter::{build_metal_fast420_packet, build_metal_fast444_packet};
 
-    const BASELINE_420: &[u8] =
-        include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+    const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
     const BASELINE_420_RESTART: &[u8] =
-        include_bytes!("../../../corpus/conformance/baseline_420_restart_32x16.jpg");
-    const BASELINE_444: &[u8] = include_bytes!("../../../corpus/conformance/baseline_444_8x8.jpg");
+        include_bytes!("../fixtures/jpeg/baseline_420_restart_32x16.jpg");
+    const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
     #[cfg(not(target_os = "macos"))]
-    const GRAYSCALE: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
+    const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
     #[test]
     fn auto_route_prefers_cpu_host_for_nonrestart_packets() {

@@ -36,7 +36,7 @@ adapters, Deflate/Zstd/LZW/Uncompressed tile decompression, a shared core crate,
 and a CLI inspection entry point.
 
 The workspace separates codec work from slide-container work. `signinum`
-does not parse SVS, NDPI, DICOM, Mirax, Zeiss, or other WSI containers; that
+does not parse SVS, NDPI, DICOM, Mirax, or other WSI containers; that
 responsibility belongs to readers such as `statumen` [@wsirs]. Instead,
 `signinum` turns compressed tile bytes into CPU pixels or device-resident
 surfaces and returns enough metadata for a reader to make correct tile and ROI
@@ -127,12 +127,12 @@ handling.
 
 `signinum` is already integrated as the production codec layer for `statumen`,
 a Rust WSI reader used by SlideViewer. That integration exercises the API on
-real slide workloads: SVS, NDPI, DICOM WSI [@dicomwsi], Zeiss, Mirax,
-Hamamatsu VMS, Leica, Ventana, and Philips TIFF readers resolve compressed
-tile bytes and pass decode work to `signinum`. The companion SlideViewer
-parity harness compares reader output against compatibility oracles, including
-OpenSlide, while the `signinum` benchmark harness compares codec tasks
-against libjpeg-turbo, `zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok.
+real slide workloads: SVS, NDPI, DICOM WSI [@dicomwsi], Mirax, Hamamatsu VMS,
+Leica, Ventana, and Philips TIFF readers resolve compressed tile bytes and
+pass decode work to `signinum`. The companion SlideViewer parity harness
+compares reader output against compatibility oracles, including OpenSlide,
+while the `signinum` benchmark harness compares codec tasks against
+libjpeg-turbo, `zune-jpeg`, `jpeg-decoder`, OpenJPEG, and Grok.
 
 The current integration release gate passes on eight real local slides: two
 NDPI slides, four JPEG-compressed SVS slides, and two JPEG 2000 SVS slides
