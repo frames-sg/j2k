@@ -359,7 +359,7 @@ fn package_preflight_is_staged_dependency_aware() {
 }
 
 #[test]
-fn public_docs_describe_cpu_first_1_0_and_cuda_runtime_surface_scope() {
+fn public_docs_describe_facade_auto_and_cuda_runtime_surface_scope() {
     let root = repo_root();
     let readme = fs::read_to_string(root.join("README.md")).expect("read README");
     let changelog = fs::read_to_string(root.join("CHANGELOG.md")).expect("read changelog");
@@ -375,8 +375,9 @@ fn public_docs_describe_cpu_first_1_0_and_cuda_runtime_surface_scope() {
         ("docs/release.md", release.as_str()),
     ] {
         assert!(
-            docs.contains("CPU-first 1.0"),
-            "{name} must name the CPU-first 1.0 release posture"
+            docs.contains("facade release")
+                && docs.contains("Runtime backend selection defaults to `Auto`"),
+            "{name} must name the facade release posture and Auto backend policy"
         );
     }
 
