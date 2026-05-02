@@ -5,6 +5,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/j2k_encode_kernels.cu");
+    println!("cargo:rerun-if-changed=src/j2k_encode_kernels.ptx");
     println!("cargo:rerun-if-env-changed=NVCC");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
@@ -27,7 +28,10 @@ fn main() {
             fs::write(&ptx, bytes).expect("NUL-terminate generated CUDA PTX");
         }
     } else {
-        fs::write(&ptx, b".version 7.0\n.target sm_52\n.address_size 64\n\0")
-            .expect("write fallback CUDA PTX");
+        let mut bytes = fs::read("src/j2k_encode_kernels.ptx").expect("read fallback CUDA PTX");
+        if bytes.last().copied() != Some(0) {
+            bytes.push(0);
+        }
+        fs::write(&ptx, bytes).expect("write fallback CUDA PTX");
     }
 }

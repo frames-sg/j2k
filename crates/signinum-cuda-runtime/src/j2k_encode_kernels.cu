@@ -1,3 +1,5 @@
+#include <math.h>
+
 extern "C" __global__ void signinum_j2k_forward_rct(
     float *plane0,
     float *plane1,
