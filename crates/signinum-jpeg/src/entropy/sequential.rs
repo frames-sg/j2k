@@ -3191,7 +3191,7 @@ mod tests {
     use alloc::vec;
 
     const BASELINE_420_JPG: &[u8] =
-        include_bytes!("../../../../corpus/conformance/baseline_420_16x16.jpg");
+        include_bytes!("../../fixtures/conformance/baseline_420_16x16.jpg");
 
     #[test]
     fn fast_tile_rgb_matches_generic_baseline_decode() {

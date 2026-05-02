@@ -6,9 +6,9 @@ use signinum_core::{
 };
 use signinum_jpeg_metal::{Decoder, Error, MetalBackendSession, MetalSession, ScratchPool};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const BASELINE_422: &[u8] = include_bytes!("../../../corpus/conformance/baseline_422_16x8.jpg");
-const GRAYSCALE: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
+const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[test]
 fn decode_to_metal_matches_cpu_decode_bytes() {

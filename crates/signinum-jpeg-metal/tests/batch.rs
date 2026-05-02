@@ -5,8 +5,8 @@ use signinum_core::{
 use signinum_jpeg::{Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
 use signinum_jpeg_metal::{Codec, MetalSession, ScratchPool};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const GRAYSCALE: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[test]
 fn tile_device_decode_matches_host_tile_decode() {

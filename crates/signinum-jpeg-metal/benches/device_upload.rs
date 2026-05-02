@@ -5,7 +5,7 @@ use signinum_core::{BackendRequest, ImageDecodeDevice, PixelFormat};
 use signinum_jpeg::Decoder as CpuDecoder;
 use signinum_jpeg_metal::Decoder as MetalDecoder;
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 
 fn bench_device_upload(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_metal_device");

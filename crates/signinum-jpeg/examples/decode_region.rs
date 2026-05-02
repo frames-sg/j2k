@@ -7,7 +7,7 @@
 
 use signinum_jpeg::{Decoder, PixelFormat, Rect};
 
-const TILE: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+const TILE: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decoder = Decoder::new(TILE)?;
