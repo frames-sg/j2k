@@ -11,6 +11,8 @@ crates.io.
 Metal and CUDA adapter crates are published as pre-1.0 `0.3.x` artifacts where
 their APIs changed for the facade boundary. `signinum-jpeg-metal` remains
 `0.2.0`.
+Runtime backend selection defaults to `Auto`; supported compiled device paths
+may run before CPU fallback.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
 `cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` can use
 NVIDIA nvJPEG for full-frame RGB8 JPEG decode when `libnvjpeg` is installed;
