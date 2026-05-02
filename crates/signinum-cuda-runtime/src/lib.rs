@@ -488,50 +488,34 @@ impl CudaContext {
         let mut current_height = height;
         let mut levels = Vec::new();
         let mut dispatches = 0usize;
+        let mut active_is_a = true;
 
         for _ in 0..num_levels {
             if current_width < 2 && current_height < 2 {
                 break;
             }
-            let low_width = current_width.div_ceil(2);
-            let low_height = current_height.div_ceil(2);
-            self.launch_j2k_forward_dwt53_pass(
-                CudaKernel::J2kForwardDwt53Horizontal,
+            let (level_dispatches, level_shape) = self.launch_j2k_forward_dwt53_level(
                 &buffer_a,
                 &buffer_b,
-                CudaDwt53Pass {
+                &mut active_is_a,
+                CudaDwt53LevelPass {
                     full_width: width,
                     current_width,
                     current_height,
-                    low_extent: low_width,
                 },
             )?;
-            self.launch_j2k_forward_dwt53_pass(
-                CudaKernel::J2kForwardDwt53Vertical,
-                &buffer_b,
-                &buffer_a,
-                CudaDwt53Pass {
-                    full_width: width,
-                    current_width,
-                    current_height,
-                    low_extent: low_height,
-                },
-            )?;
-            dispatches = dispatches.saturating_add(2);
-            levels.push(CudaDwt53LevelShape {
-                width: current_width,
-                height: current_height,
-                low_width,
-                low_height,
-                high_width: current_width / 2,
-                high_height: current_height / 2,
-            });
-            current_width = low_width;
-            current_height = low_height;
+            dispatches = dispatches.saturating_add(level_dispatches);
+            levels.push(level_shape);
+            current_width = level_shape.low_width;
+            current_height = level_shape.low_height;
         }
 
         let mut transformed = vec![0f32; samples.len()];
-        buffer_a.copy_to_host(f32_slice_as_bytes_mut(&mut transformed))?;
+        if active_is_a {
+            buffer_a.copy_to_host(f32_slice_as_bytes_mut(&mut transformed))?;
+        } else {
+            buffer_b.copy_to_host(f32_slice_as_bytes_mut(&mut transformed))?;
+        }
         Ok(CudaDwt53Output {
             transformed,
             levels,
@@ -544,6 +528,64 @@ impl CudaContext {
                 hardware_decode: false,
             },
         })
+    }
+
+    fn launch_j2k_forward_dwt53_level(
+        &self,
+        buffer_a: &CudaDeviceBuffer,
+        buffer_b: &CudaDeviceBuffer,
+        active_is_a: &mut bool,
+        pass: CudaDwt53LevelPass,
+    ) -> Result<(usize, CudaDwt53LevelShape), CudaError> {
+        let low_width = pass.current_width.div_ceil(2);
+        let low_height = pass.current_height.div_ceil(2);
+        let mut dispatches = 0usize;
+
+        if pass.current_width >= 2 {
+            let (input, output) = active_dwt53_buffers(buffer_a, buffer_b, *active_is_a);
+            self.launch_j2k_forward_dwt53_pass(
+                CudaKernel::J2kForwardDwt53Horizontal,
+                input,
+                output,
+                CudaDwt53Pass {
+                    full_width: pass.full_width,
+                    current_width: pass.current_width,
+                    current_height: pass.current_height,
+                    low_extent: low_width,
+                },
+            )?;
+            *active_is_a = !*active_is_a;
+            dispatches = dispatches.saturating_add(1);
+        }
+
+        if pass.current_height >= 2 {
+            let (input, output) = active_dwt53_buffers(buffer_a, buffer_b, *active_is_a);
+            self.launch_j2k_forward_dwt53_pass(
+                CudaKernel::J2kForwardDwt53Vertical,
+                input,
+                output,
+                CudaDwt53Pass {
+                    full_width: pass.full_width,
+                    current_width: pass.current_width,
+                    current_height: pass.current_height,
+                    low_extent: low_height,
+                },
+            )?;
+            *active_is_a = !*active_is_a;
+            dispatches = dispatches.saturating_add(1);
+        }
+
+        Ok((
+            dispatches,
+            CudaDwt53LevelShape {
+                width: pass.current_width,
+                height: pass.current_height,
+                low_width,
+                low_height,
+                high_width: pass.current_width / 2,
+                high_height: pass.current_height / 2,
+            },
+        ))
     }
 
     fn launch_j2k_forward_rct_buffers(
@@ -740,6 +782,25 @@ struct CudaDwt53Pass {
     low_extent: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CudaDwt53LevelPass {
+    full_width: u32,
+    current_width: u32,
+    current_height: u32,
+}
+
+fn active_dwt53_buffers<'a>(
+    buffer_a: &'a CudaDeviceBuffer,
+    buffer_b: &'a CudaDeviceBuffer,
+    active_is_a: bool,
+) -> (&'a CudaDeviceBuffer, &'a CudaDeviceBuffer) {
+    if active_is_a {
+        (buffer_a, buffer_b)
+    } else {
+        (buffer_b, buffer_a)
+    }
+}
+
 impl CudaKernelOutput {
     pub fn into_parts(self) -> (CudaDeviceBuffer, CudaExecutionStats) {
         (self.buffer, self.execution)
@@ -892,4 +953,156 @@ fn rgb8_layout(dimensions: (u32, u32)) -> Result<(usize, usize), CudaError> {
                 channels: 3,
             })?;
     Ok((row_bytes, byte_len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CudaContext;
+
+    fn cuda_runtime_required() -> bool {
+        std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
+    }
+
+    #[test]
+    fn j2k_forward_rct_matches_cpu_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let mut plane0 = vec![10.0, 1.0, 0.0, 255.0, 128.0];
+        let mut plane1 = vec![20.0, 2.0, 255.0, 0.0, 64.0];
+        let mut plane2 = vec![30.0, 3.0, 128.0, 127.0, 32.0];
+        let mut expected0 = plane0.clone();
+        let mut expected1 = plane1.clone();
+        let mut expected2 = plane2.clone();
+        for ((r, g), b) in expected0
+            .iter_mut()
+            .zip(expected1.iter_mut())
+            .zip(expected2.iter_mut())
+        {
+            let r0 = *r;
+            let g0 = *g;
+            let b0 = *b;
+            *r = ((r0 + 2.0_f32 * g0 + b0) * 0.25_f32).floor();
+            *g = b0 - g0;
+            *b = r0 - g0;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let execution = context
+            .j2k_forward_rct(&mut plane0, &mut plane1, &mut plane2)
+            .expect("CUDA forward RCT");
+
+        assert_eq!(execution.kernel_dispatches(), 1);
+        assert_eq!(plane0, expected0);
+        assert_eq!(plane1, expected1);
+        assert_eq!(plane2, expected2);
+    }
+
+    #[test]
+    fn j2k_forward_dwt53_matches_cpu_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let width = 5usize;
+        let height = 3usize;
+        let samples: Vec<f32> = (0..width * height)
+            .map(|value| {
+                let sample = u16::try_from((value * 7 + 3) % 19).expect("sample fits in u16");
+                f32::from(sample)
+            })
+            .collect();
+        let expected = cpu_forward_dwt53_buffer(&samples, width, height, 1);
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let output = context
+            .j2k_forward_dwt53(
+                &samples,
+                u32::try_from(width).expect("width fits in u32"),
+                u32::try_from(height).expect("height fits in u32"),
+                1,
+            )
+            .expect("CUDA forward 5/3 DWT");
+
+        assert_eq!(output.execution().kernel_dispatches(), 2);
+        assert_eq!(output.transformed(), expected.as_slice());
+        assert_eq!(output.ll_dimensions(), (3, 2));
+    }
+
+    fn cpu_forward_dwt53_buffer(
+        samples: &[f32],
+        width: usize,
+        height: usize,
+        levels: u8,
+    ) -> Vec<f32> {
+        let mut buffer = samples.to_vec();
+        let mut current_width = width;
+        let mut current_height = height;
+
+        for _ in 0..levels {
+            if current_width < 2 && current_height < 2 {
+                break;
+            }
+            if current_width >= 2 {
+                let mut row = vec![0.0; current_width];
+                for y in 0..current_height {
+                    let row_start = y * width;
+                    row.copy_from_slice(&buffer[row_start..row_start + current_width]);
+                    forward_lift_53(&mut row);
+                    let low_width = current_width.div_ceil(2);
+                    for x in 0..low_width {
+                        buffer[row_start + x] = row[x * 2];
+                    }
+                    for x in 0..current_width / 2 {
+                        buffer[row_start + low_width + x] = row[x * 2 + 1];
+                    }
+                }
+            }
+            if current_height >= 2 {
+                let low_height = current_height.div_ceil(2);
+                let mut col = vec![0.0; current_height];
+                for x in 0..current_width {
+                    for y in 0..current_height {
+                        col[y] = buffer[y * width + x];
+                    }
+                    forward_lift_53(&mut col);
+                    for y in 0..low_height {
+                        buffer[y * width + x] = col[y * 2];
+                    }
+                    for y in 0..current_height / 2 {
+                        buffer[(low_height + y) * width + x] = col[y * 2 + 1];
+                    }
+                }
+            }
+            current_width = current_width.div_ceil(2);
+            current_height = current_height.div_ceil(2);
+        }
+
+        buffer
+    }
+
+    fn forward_lift_53(data: &mut [f32]) {
+        let n = data.len();
+        if n < 2 {
+            return;
+        }
+
+        let last_even = if n.is_multiple_of(2) { n - 2 } else { n - 1 };
+        for i in (1..n).step_by(2) {
+            let left = data[i - 1];
+            let right = if i + 1 < n {
+                data[i + 1]
+            } else {
+                data[last_even]
+            };
+            data[i] -= ((left + right) * 0.5).floor();
+        }
+
+        for i in (0..n).step_by(2) {
+            let left = if i > 0 { data[i - 1] } else { data[1] };
+            let right = if i + 1 < n { data[i + 1] } else { left };
+            data[i] += ((left + right) * 0.25 + 0.5).floor();
+        }
+    }
 }
