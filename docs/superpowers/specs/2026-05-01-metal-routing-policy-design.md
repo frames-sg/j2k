@@ -128,7 +128,9 @@ Update Metal-facing docs to state the policy in user terms:
 - Metal is post-1.0 hardening work.
 - `Auto` is allowed to fall back.
 - explicit `Metal` is strict.
-- CUDA remains compatibility-only with no runtime CUDA decode.
+- CUDA remains outside the Metal routing policy; CUDA adapters expose
+  device-memory output by uploading CPU-decoded bytes and must not imply CUDA
+  kernel decode or NVIDIA performance.
 
 ## Verification
 
