@@ -4,7 +4,7 @@ use signinum_core::{
 };
 use signinum_jpeg_cuda::{Codec, CudaSession, Decoder, Error};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 
 #[test]
 fn auto_falls_back_to_cpu_surface() {

@@ -4,13 +4,11 @@
 
 use signinum_jpeg::{Decoder, Downscale, PixelFormat, Rect};
 
-const BASELINE_420_JPG: &[u8] =
-    include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const BASELINE_420_RGB: &[u8] =
-    include_bytes!("../../../corpus/conformance/baseline_420_16x16.rgb");
+const BASELINE_420_JPG: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+const BASELINE_420_RGB: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.rgb");
 
-const GRAYSCALE_8X8_JPG: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
-const GRAYSCALE_8X8_GRAY: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.gray");
+const GRAYSCALE_8X8_JPG: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+const GRAYSCALE_8X8_GRAY: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.gray");
 
 #[test]
 fn baseline_420_16x16_matches_libjpeg_turbo_bit_exact() {

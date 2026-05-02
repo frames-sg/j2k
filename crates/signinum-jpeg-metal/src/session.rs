@@ -237,9 +237,8 @@ mod tests {
     #[test]
     fn batch_shape_cache_hits_for_repeated_input() {
         let mut session = SessionState::default();
-        let input = Arc::<[u8]>::from(
-            include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg").as_slice(),
-        );
+        let input =
+            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg").as_slice());
 
         let first = session
             .resolve_batch_shape(&input, BackendRequest::Metal)
@@ -255,9 +254,8 @@ mod tests {
     #[test]
     fn fast_packet_cache_hits_for_repeated_input() {
         let mut session = SessionState::default();
-        let input = Arc::<[u8]>::from(
-            include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg").as_slice(),
-        );
+        let input =
+            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg").as_slice());
 
         let first = session.resolve_fast_packets(&input, BackendRequest::Metal);
         let second = session.resolve_fast_packets(&input, BackendRequest::Metal);
@@ -271,9 +269,8 @@ mod tests {
     #[test]
     fn batch_shape_tracks_fast422_sampling_family() {
         let mut session = SessionState::default();
-        let input = Arc::<[u8]>::from(
-            include_bytes!("../../../corpus/conformance/baseline_422_16x8.jpg").as_slice(),
-        );
+        let input =
+            Arc::<[u8]>::from(include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg").as_slice());
 
         let shape = session
             .resolve_batch_shape(&input, BackendRequest::Metal)

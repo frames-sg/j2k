@@ -10,8 +10,8 @@ use signinum_jpeg_metal::viewport::{
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::viewport::{compose_viewport_hybrid, decode_viewport_region_hybrid};
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
-const GRAYSCALE: &[u8] = include_bytes!("../../../corpus/conformance/grayscale_8x8.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 fn quadrant_tiles() -> [ViewportTile; 4] {
     [

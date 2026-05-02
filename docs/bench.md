@@ -243,10 +243,10 @@ Run the signinum-only microbenches:
 cargo bench -p signinum-jpeg --bench micro
 ```
 
-Run against the local SlideViewer corpus:
+Run against local extracted WSI JPEG tiles:
 
 ```sh
-SIGNINUM_BENCH_INPUTS=/Users/user/Bench/SlideViewer/downloads/openslide-testdata-extracted/hamamatsu-vms/hamamatsu-vms-cmu1 \
+SIGNINUM_BENCH_INPUTS="${SIGNINUM_WSI_ROOT:?set SIGNINUM_WSI_ROOT to extracted JPEG tiles}" \
   cargo bench -p signinum-jpeg --bench compare
 ```
 

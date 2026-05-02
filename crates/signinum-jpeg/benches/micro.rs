@@ -8,7 +8,7 @@ use signinum_jpeg::bench_support::{
 use signinum_jpeg::Decoder;
 
 fn bench_micro(c: &mut Criterion) {
-    let small = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+    let small = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 
     c.bench_function("micro/inspect_small", |b| {
         b.iter(|| {

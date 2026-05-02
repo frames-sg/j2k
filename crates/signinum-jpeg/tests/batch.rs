@@ -11,7 +11,7 @@ use signinum_jpeg::{
 };
 use std::thread;
 
-const BASELINE_420: &[u8] = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 
 const BATCH_SIZE: usize = 100;
 

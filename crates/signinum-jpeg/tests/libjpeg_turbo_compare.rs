@@ -17,7 +17,7 @@ fn turbojpeg_rgb_and_region_match_signinum_fixture() {
         return;
     }
 
-    let bytes = include_bytes!("../../../corpus/conformance/baseline_420_16x16.jpg");
+    let bytes = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let dec = Decoder::new(bytes).expect("signinum decoder");
     let mut turbo = libjpeg_turbo::TurboJpegDecoder::new().expect("turbojpeg decoder");
 

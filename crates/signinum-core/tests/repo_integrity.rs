@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fs, path::Path};
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -442,6 +446,137 @@ fn published_crates_have_crates_io_landing_readmes() {
     }
 }
 
+#[test]
+fn public_text_does_not_embed_local_user_home_paths() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for path in repo_text_files(root) {
+        if is_archived_handoff(&path) {
+            continue;
+        }
+        if path.ends_with("crates/signinum-core/tests/repo_integrity.rs") {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains("/Users/") || source.contains("C:\\Users\\") {
+            offenders.push(
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "public text must not embed local user-home paths; use env vars or repo-relative defaults: {offenders:?}"
+    );
+}
+
+#[test]
+fn referenced_shell_scripts_exist() {
+    let root = repo_root();
+    let mut missing = Vec::new();
+
+    for path in repo_text_files(root) {
+        if is_archived_handoff(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        for script in referenced_shell_scripts(&source) {
+            let root_relative = root.join(&script);
+            let file_relative = path.parent().expect("text file has parent").join(&script);
+            if !root_relative.exists() && !file_relative.exists() {
+                missing.push(format!(
+                    "{} references missing script {script}",
+                    path.strip_prefix(root).unwrap_or(&path).display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "all referenced shell scripts must exist: {missing:?}"
+    );
+}
+
+#[test]
+fn public_narrative_docs_do_not_carry_stale_zeiss_claims() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for relative in [
+        "README.md",
+        "docs/architecture.md",
+        "docs/bench.md",
+        "docs/parity.md",
+        "docs/release.md",
+        "docs/wsi-decode-api.md",
+        "paper/paper.md",
+        "paper/arxiv/main.tex",
+    ] {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains("Zeiss") {
+            offenders.push(relative);
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "public narrative docs must not carry stale Zeiss integration claims: {offenders:?}"
+    );
+}
+
+#[test]
+fn packaged_rust_sources_do_not_include_files_outside_their_crate() {
+    let root = repo_root();
+    let workspace_crates = root.join("crates");
+    let mut escaping = Vec::new();
+
+    for source_path in rust_sources(&workspace_crates) {
+        let Ok(relative_to_crates) = source_path.strip_prefix(&workspace_crates) else {
+            continue;
+        };
+        let Some(crate_name) = relative_to_crates.components().next() else {
+            continue;
+        };
+        let member_root = workspace_crates.join(crate_name.as_os_str());
+        let source = fs::read_to_string(&source_path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", source_path.display()));
+
+        for include_path in rust_include_paths(&source) {
+            let resolved = normalize_path(
+                &source_path
+                    .parent()
+                    .expect("source file has parent")
+                    .join(&include_path),
+            );
+            if !resolved.starts_with(&member_root) {
+                escaping.push(format!(
+                    "{} includes {} outside package root",
+                    source_path
+                        .strip_prefix(root)
+                        .unwrap_or(&source_path)
+                        .display(),
+                    include_path
+                ));
+            }
+        }
+    }
+
+    assert!(
+        escaping.is_empty(),
+        "package source include paths must stay inside their crate so packaged tests/benches/examples are not dead: {escaping:?}"
+    );
+}
+
 fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
     let marker = format!("  {job_name}:");
     let start = workflow
@@ -477,4 +612,90 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
             out.push(path);
         }
     }
+}
+
+fn repo_text_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_repo_text_files(root, &mut out);
+    out
+}
+
+fn collect_repo_text_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display())) {
+        let entry = entry.expect("read directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+            if should_skip_repo_dir(&path) {
+                continue;
+            }
+            collect_repo_text_files(&path, out);
+            continue;
+        }
+        if is_repo_text_file(&path) {
+            out.push(path);
+        }
+    }
+}
+
+fn should_skip_repo_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| matches!(name, ".git" | ".venv" | "target"))
+}
+
+fn is_repo_text_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(OsStr::to_str),
+        Some("bib" | "json" | "md" | "rs" | "sh" | "tex" | "toml" | "txt" | "yaml" | "yml")
+    )
+}
+
+fn is_archived_handoff(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with("HANDOFF-"))
+}
+
+fn referenced_shell_scripts(source: &str) -> Vec<String> {
+    source
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/')))
+        .filter(|token| {
+            Path::new(token)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+                && token.contains('/')
+        })
+        .filter(|token| !token.starts_with("http://") && !token.starts_with("https://"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn rust_include_paths(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for marker in ["include_bytes!(\"", "include_str!(\""] {
+        let mut rest = source;
+        while let Some(start) = rest.find(marker) {
+            let after_marker = &rest[start + marker.len()..];
+            let Some(end) = after_marker.find('"') else {
+                break;
+            };
+            out.push(after_marker[..end].to_string());
+            rest = &after_marker[end + 1..];
+        }
+    }
+    out
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }

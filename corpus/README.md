@@ -22,6 +22,19 @@ The committed corpus is intentionally small. `conformance/` currently carries
 baseline RGB, grayscale, restart-coded, and sampling-variant JPEG fixtures with
 raw reference outputs listed in `conformance/manifest.json`.
 
+Optional real-slide parity corpora stay out of the default test path. To fetch
+entries from a public manifest with URLs and SHA-256s, run:
+
+```sh
+scripts/parity-corpus-fetch.sh path/to/manifest.json corpus/wsi-samples
+```
+
+Then opt in to local WSI JPEG coverage with:
+
+```sh
+SIGNINUM_WSI_ROOT=corpus/wsi-samples cargo test -p signinum-jpeg --test external_wsi
+```
+
 ## Generating conformance fixtures
 
 Run `corpus/conformance/generate.sh` on a machine with libjpeg-turbo installed.
