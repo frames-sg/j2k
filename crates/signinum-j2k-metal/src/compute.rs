@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(all(target_os = "macos", test))]
+use std::cell::Cell;
+#[cfg(all(target_os = "macos", test))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(target_os = "macos")]
 use std::{
@@ -50,7 +52,11 @@ use crate::{Error, Surface};
 #[cfg(all(target_os = "macos", test))]
 static HT_BATCH_COEFFICIENT_COPY_BLITS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
-static PRIVATE_BUFFER_POOL_MISSES: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
+    static HT_SIMD_PROTOTYPE_DISPATCHES: Cell<usize> = const { Cell::new(0) };
+    static HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_ht_batch_coefficient_copy_blits_for_test() {
@@ -64,12 +70,42 @@ pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_private_buffer_pool_misses_for_test() {
-    PRIVATE_BUFFER_POOL_MISSES.store(0, Ordering::Relaxed);
+    PRIVATE_BUFFER_POOL_MISSES.with(|misses| misses.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn private_buffer_pool_misses_for_test() -> usize {
-    PRIVATE_BUFFER_POOL_MISSES.load(Ordering::Relaxed)
+    PRIVATE_BUFFER_POOL_MISSES.with(Cell::get)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_ht_simd_prototype_dispatches_for_test() {
+    HT_SIMD_PROTOTYPE_DISPATCHES.with(|dispatches| dispatches.set(0));
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn ht_simd_prototype_dispatches_for_test() -> usize {
+    HT_SIMD_PROTOTYPE_DISPATCHES.with(Cell::get)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) struct HtSimdPrototypeRouteOverrideGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(all(target_os = "macos", test))]
+impl Drop for HtSimdPrototypeRouteOverrideGuard {
+    fn drop(&mut self) {
+        HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(|route| route.set(self.previous));
+    }
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn force_ht_simd_prototype_route_for_test(
+    enabled: bool,
+) -> HtSimdPrototypeRouteOverrideGuard {
+    let previous = HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(|route| route.replace(Some(enabled)));
+    HtSimdPrototypeRouteOverrideGuard { previous }
 }
 
 #[cfg(target_os = "macos")]
@@ -1210,6 +1246,39 @@ const J2K_HT_ENCODE_MS_SIZE: usize = (16_384usize * 16).div_ceil(15);
 const HT_SIMD_PROTOTYPE_ENV: &str = "SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE";
 
 #[cfg(target_os = "macos")]
+fn ht_simd_prototype_env_requested() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(Cell::get) {
+        return enabled;
+    }
+    matches!(std::env::var(HT_SIMD_PROTOTYPE_ENV), Ok(value) if value == "1")
+}
+
+#[cfg(target_os = "macos")]
+fn compile_ht_simd_prototype_pipeline(
+    device: &Device,
+    options: &CompileOptions,
+) -> Option<ComputePipelineState> {
+    let prototype_source =
+        format!("#define SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE 1\n{SHADER_SOURCE}");
+    let library = device
+        .new_library_with_source(&prototype_source, options)
+        .ok()?;
+    let function = library
+        .get_function("j2k_encode_ht_code_blocks_simd_prototype", None)
+        .ok()?;
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&function)
+        .ok()?;
+    if pipeline.thread_execution_width() == 32 && pipeline.max_total_threads_per_threadgroup() >= 32
+    {
+        Some(pipeline)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct J2kClassicEncodeParams {
@@ -1522,7 +1591,7 @@ struct MetalRuntime {
     classic_encode_code_blocks: ComputePipelineState,
     ht_encode_code_block: ComputePipelineState,
     ht_encode_code_blocks: ComputePipelineState,
-    ht_encode_code_blocks_simd_prototype: ComputePipelineState,
+    ht_encode_code_blocks_simd_prototype: Option<ComputePipelineState>,
     packet_block_prepare_resident_classic: ComputePipelineState,
     packet_block_prepare_resident_ht: ComputePipelineState,
     packet_encode: ComputePipelineState,
@@ -1554,6 +1623,12 @@ impl MetalRuntime {
             let function = library.get_function(name, None)?;
             device.new_compute_pipeline_state_with_function(&function)
         };
+        let ht_encode_code_blocks_simd_prototype =
+            if cfg!(test) || ht_simd_prototype_env_requested() {
+                compile_ht_simd_prototype_pipeline(device, &options)
+            } else {
+                None
+            };
         let classic_cleanup_plain_batched_fn =
             library.get_function("j2k_decode_classic_cleanup_plain_batched", None)?;
         let classic_cleanup_batched_fn =
@@ -1716,9 +1791,7 @@ impl MetalRuntime {
             classic_encode_code_blocks: pipeline("j2k_encode_classic_code_blocks")?,
             ht_encode_code_block: pipeline("j2k_encode_ht_code_block")?,
             ht_encode_code_blocks: pipeline("j2k_encode_ht_code_blocks")?,
-            ht_encode_code_blocks_simd_prototype: pipeline(
-                "j2k_encode_ht_code_blocks_simd_prototype",
-            )?,
+            ht_encode_code_blocks_simd_prototype,
             packet_block_prepare_resident_classic: pipeline(
                 "j2k_prepare_packet_blocks_from_classic_status",
             )?,
@@ -1778,7 +1851,7 @@ impl MetalRuntime {
             buffer
         } else {
             #[cfg(test)]
-            PRIVATE_BUFFER_POOL_MISSES.fetch_add(1, Ordering::Relaxed);
+            PRIVATE_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
             self.device
                 .new_buffer(bytes as u64, MTLResourceOptions::StorageModePrivate)
         }
@@ -1854,6 +1927,13 @@ fn with_runtime_for_device<R>(
     device: &Device,
     f: impl FnOnce(&MetalRuntime) -> Result<R, Error>,
 ) -> Result<R, Error> {
+    let override_runtime = METAL_RUNTIME_OVERRIDE.with(|slot| slot.borrow().clone());
+    if let Some(runtime) = override_runtime {
+        if runtime.device.as_ptr() == device.as_ptr() {
+            return f(&runtime);
+        }
+    }
+
     let cache = METAL_DEVICE_RUNTIMES.get_or_init(|| Mutex::new(HashMap::new()));
     let key = device.as_ptr() as usize;
     let runtime = {
@@ -1869,6 +1949,34 @@ fn with_runtime_for_device<R>(
     let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime.clone())));
     let _guard = RuntimeOverrideGuard { previous };
     f(&runtime)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn with_isolated_runtime_for_device_for_test<R>(
+    device: &Device,
+    f: impl FnOnce() -> Result<R, Error>,
+) -> Result<R, Error> {
+    let runtime = Arc::new(
+        MetalRuntime::new_with_device(device)
+            .map_err(|message| runtime_initialization_error(&message))?,
+    );
+    let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime)));
+    let _guard = RuntimeOverrideGuard { previous };
+    f()
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn ht_simd_prototype_available_for_test() -> Result<bool, Error> {
+    with_runtime(|runtime| Ok(runtime.ht_encode_code_blocks_simd_prototype.is_some()))
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn ht_simd_prototype_available_for_device_for_test(
+    device: &Device,
+) -> Result<bool, Error> {
+    with_runtime_for_device(device, |runtime| {
+        Ok(runtime.ht_encode_code_blocks_simd_prototype.is_some())
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -11505,8 +11613,8 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
 
         let command_buffer = runtime.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        let kernel = HtEncodeCodeBlocksKernel::from_env();
-        let pipeline = kernel.pipeline(runtime);
+        let kernel = HtEncodeCodeBlocksKernel::from_env(runtime);
+        let pipeline = kernel.pipeline(runtime)?;
         encoder.set_compute_pipeline_state(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -11763,17 +11871,29 @@ enum HtEncodeCodeBlocksKernel {
 
 #[cfg(target_os = "macos")]
 impl HtEncodeCodeBlocksKernel {
-    fn from_env() -> Self {
-        match std::env::var(HT_SIMD_PROTOTYPE_ENV) {
-            Ok(value) if value == "1" => Self::SimdPrototype,
-            _ => Self::Scalar,
+    fn from_env(runtime: &MetalRuntime) -> Self {
+        if ht_simd_prototype_env_requested()
+            && runtime.ht_encode_code_blocks_simd_prototype.is_some()
+        {
+            Self::SimdPrototype
+        } else {
+            Self::Scalar
         }
     }
 
-    fn pipeline(self, runtime: &MetalRuntime) -> &ComputePipelineState {
+    fn pipeline(self, runtime: &MetalRuntime) -> Result<&ComputePipelineState, Error> {
         match self {
-            Self::Scalar => &runtime.ht_encode_code_blocks,
-            Self::SimdPrototype => &runtime.ht_encode_code_blocks_simd_prototype,
+            Self::Scalar => Ok(&runtime.ht_encode_code_blocks),
+            Self::SimdPrototype => {
+                runtime
+                    .ht_encode_code_blocks_simd_prototype
+                    .as_ref()
+                    .ok_or(Error::MetalKernel {
+                        message:
+                            "HTJ2K SIMD prototype pipeline is unavailable on this Metal device"
+                                .to_string(),
+                    })
+            }
         }
     }
 
@@ -11799,6 +11919,9 @@ impl HtEncodeCodeBlocksKernel {
                 );
             }
             Self::SimdPrototype => {
+                #[cfg(test)]
+                HT_SIMD_PROTOTYPE_DISPATCHES
+                    .with(|dispatches| dispatches.set(dispatches.get() + 1));
                 encoder.dispatch_thread_groups(
                     MTLSize {
                         width: u64::from(job_count),
@@ -11820,130 +11943,139 @@ impl HtEncodeCodeBlocksKernel {
 pub(crate) fn encode_ht_cleanup_code_blocks(
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    encode_ht_cleanup_code_blocks_with_kernel(jobs, HtEncodeCodeBlocksKernel::from_env())
+    with_runtime(|runtime| {
+        encode_ht_cleanup_code_blocks_with_runtime(
+            runtime,
+            jobs,
+            HtEncodeCodeBlocksKernel::from_env(runtime),
+        )
+    })
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn encode_ht_cleanup_code_blocks_simd_prototype_for_test(
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    encode_ht_cleanup_code_blocks_with_kernel(jobs, HtEncodeCodeBlocksKernel::SimdPrototype)
+    with_runtime(|runtime| {
+        encode_ht_cleanup_code_blocks_with_runtime(
+            runtime,
+            jobs,
+            HtEncodeCodeBlocksKernel::SimdPrototype,
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn encode_ht_cleanup_code_blocks_with_kernel(
+fn encode_ht_cleanup_code_blocks_with_runtime(
+    runtime: &MetalRuntime,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
     kernel: HtEncodeCodeBlocksKernel,
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    with_runtime(|runtime| {
-        if jobs.is_empty() {
-            return Ok(Vec::new());
-        }
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
 
-        let output_capacity =
-            J2K_HT_ENCODE_MS_SIZE + J2K_HT_ENCODE_MEL_SIZE + J2K_HT_ENCODE_VLC_SIZE;
-        let output_capacity_u32 =
-            u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
+    let output_capacity = J2K_HT_ENCODE_MS_SIZE + J2K_HT_ENCODE_MEL_SIZE + J2K_HT_ENCODE_VLC_SIZE;
+    let output_capacity_u32 = u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
+        message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
+    })?;
+    let mut coefficients = Vec::<i32>::new();
+    let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(jobs.len());
+    let mut output_capacity_total = 0usize;
+
+    for job in jobs {
+        let expected_coefficients = usize::try_from(job.width)
+            .ok()
+            .and_then(|w| {
+                usize::try_from(job.height)
+                    .ok()
+                    .and_then(|h| w.checked_mul(h))
+            })
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K Metal encode coefficient count overflow".to_string(),
             })?;
-        let mut coefficients = Vec::<i32>::new();
-        let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(jobs.len());
-        let mut output_capacity_total = 0usize;
-
-        for job in jobs {
-            let expected_coefficients = usize::try_from(job.width)
-                .ok()
-                .and_then(|w| {
-                    usize::try_from(job.height)
-                        .ok()
-                        .and_then(|h| w.checked_mul(h))
-                })
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal encode coefficient count overflow".to_string(),
-                })?;
-            if job.coefficients.len() < expected_coefficients {
-                return Err(Error::MetalKernel {
-                    message: "HTJ2K Metal encode coefficient slice is too small".to_string(),
-                });
-            }
-            let coefficient_offset =
-                u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal encode coefficient table exceeds u32".to_string(),
-                })?;
-            coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
-            let output_offset =
-                u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal encode output table exceeds u32".to_string(),
-                })?;
-            batch_jobs.push(J2kHtEncodeBatchJob {
-                coefficient_offset,
-                output_offset,
-                width: job.width,
-                height: job.height,
-                total_bitplanes: u32::from(job.total_bitplanes),
-                output_capacity: output_capacity_u32,
+        if job.coefficients.len() < expected_coefficients {
+            return Err(Error::MetalKernel {
+                message: "HTJ2K Metal encode coefficient slice is too small".to_string(),
             });
-            output_capacity_total = output_capacity_total
-                .checked_add(output_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal encode output buffer overflow".to_string(),
-                })?;
         }
+        let coefficient_offset =
+            u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal encode coefficient table exceeds u32".to_string(),
+            })?;
+        coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
+        let output_offset =
+            u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal encode output table exceeds u32".to_string(),
+            })?;
+        batch_jobs.push(J2kHtEncodeBatchJob {
+            coefficient_offset,
+            output_offset,
+            width: job.width,
+            height: job.height,
+            total_bitplanes: u32::from(job.total_bitplanes),
+            output_capacity: output_capacity_u32,
+        });
+        output_capacity_total = output_capacity_total
+            .checked_add(output_capacity)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K Metal encode output buffer overflow".to_string(),
+            })?;
+    }
 
-        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
-        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
-        let output = runtime.device.new_buffer(
-            output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let status_buffer = runtime.device.new_buffer(
-            (jobs.len() * size_of::<J2kHtEncodeStatus>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K Metal encode job count exceeds u32".to_string(),
-        })?;
+    let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
+    let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
+    let output = runtime.device.new_buffer(
+        output_capacity_total.max(1) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let status_buffer = runtime.device.new_buffer(
+        (jobs.len() * size_of::<J2kHtEncodeStatus>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "HTJ2K Metal encode job count exceeds u32".to_string(),
+    })?;
 
-        let command_buffer = runtime.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        let pipeline = kernel.pipeline(runtime);
-        encoder.set_compute_pipeline_state(pipeline);
-        encoder.set_buffer(0, Some(&coefficient_buffer), 0);
-        encoder.set_buffer(1, Some(&output), 0);
-        encoder.set_buffer(2, Some(&job_buffer), 0);
-        encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
-        encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
-        encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
-        encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-        kernel.dispatch(encoder, pipeline, job_count);
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+    let command_buffer = runtime.queue.new_command_buffer();
+    let encoder = command_buffer.new_compute_command_encoder();
+    let pipeline = kernel.pipeline(runtime)?;
+    encoder.set_compute_pipeline_state(pipeline);
+    encoder.set_buffer(0, Some(&coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(&output), 0);
+    encoder.set_buffer(2, Some(&job_buffer), 0);
+    encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
+    encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
+    encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
+    encoder.set_buffer(6, Some(&status_buffer), 0);
+    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
+    kernel.dispatch(encoder, pipeline, job_count);
+    encoder.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
 
-        let statuses = unsafe {
-            core::slice::from_raw_parts(
-                status_buffer.contents().cast::<J2kHtEncodeStatus>(),
-                jobs.len(),
-            )
-        };
-        let mut results = Vec::with_capacity(jobs.len());
-        for (idx, status) in statuses.iter().copied().enumerate() {
-            let batch_job = batch_jobs[idx];
-            results.push(read_ht_encoded_code_block(
-                status,
-                &output,
-                usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal encode output offset exceeds usize".to_string(),
-                })?,
-                usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal encode output capacity exceeds usize".to_string(),
-                })?,
-            )?);
-        }
+    let statuses = unsafe {
+        core::slice::from_raw_parts(
+            status_buffer.contents().cast::<J2kHtEncodeStatus>(),
+            jobs.len(),
+        )
+    };
+    let mut results = Vec::with_capacity(jobs.len());
+    for (idx, status) in statuses.iter().copied().enumerate() {
+        let batch_job = batch_jobs[idx];
+        results.push(read_ht_encoded_code_block(
+            status,
+            &output,
+            usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal encode output offset exceeds usize".to_string(),
+            })?,
+            usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal encode output capacity exceeds usize".to_string(),
+            })?,
+        )?);
+    }
 
-        Ok(results)
-    })
+    Ok(results)
 }
 
 #[cfg(target_os = "macos")]
@@ -13642,8 +13774,8 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         })?;
         if tier1_job_count > 0 {
             let encoder = command_buffer.new_compute_command_encoder();
-            let kernel = HtEncodeCodeBlocksKernel::from_env();
-            let pipeline = kernel.pipeline(runtime);
+            let kernel = HtEncodeCodeBlocksKernel::from_env(runtime);
+            let pipeline = kernel.pipeline(runtime)?;
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(&coefficient_buffer), 0);
             encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
