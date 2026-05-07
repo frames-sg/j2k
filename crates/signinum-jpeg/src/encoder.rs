@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::f64::consts::PI;
 
+use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::entropy::ZIGZAG;
@@ -388,6 +389,38 @@ fn encode_entropy(
     cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
 ) -> Result<Vec<u8>, JpegEncodeError> {
+    if let Some(restart_interval) = restart_interval {
+        return encode_entropy_restart_segments(
+            planes,
+            width,
+            height,
+            sampling,
+            q_luma,
+            q_chroma,
+            dc_tables,
+            ac_tables,
+            cosine,
+            restart_interval,
+        );
+    }
+    encode_entropy_serial(
+        planes, width, height, sampling, q_luma, q_chroma, dc_tables, ac_tables, cosine, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_entropy_serial(
+    planes: &[Vec<u8>],
+    width: u32,
+    height: u32,
+    sampling: Sampling,
+    q_luma: &[u8; 64],
+    q_chroma: &[u8; 64],
+    dc_tables: [&HuffmanEncoder; 2],
+    ac_tables: [&HuffmanEncoder; 2],
+    cosine: &[[f64; 8]; 8],
+    restart_interval: Option<u16>,
+) -> Result<Vec<u8>, JpegEncodeError> {
     let mcu_width = u32::from(sampling.max_h) * 8;
     let mcu_height = u32::from(sampling.max_v) * 8;
     let mcus_per_row = width.div_ceil(mcu_width);
@@ -440,6 +473,119 @@ fn encode_entropy(
         }
     }
 
+    Ok(writer.into_bytes())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_entropy_restart_segments(
+    planes: &[Vec<u8>],
+    width: u32,
+    height: u32,
+    sampling: Sampling,
+    q_luma: &[u8; 64],
+    q_chroma: &[u8; 64],
+    dc_tables: [&HuffmanEncoder; 2],
+    ac_tables: [&HuffmanEncoder; 2],
+    cosine: &[[f64; 8]; 8],
+    restart_interval: u16,
+) -> Result<Vec<u8>, JpegEncodeError> {
+    if restart_interval == 0 {
+        return Err(JpegEncodeError::InvalidRestartInterval);
+    }
+    let mcu_width = u32::from(sampling.max_h) * 8;
+    let mcu_height = u32::from(sampling.max_v) * 8;
+    let mcus_per_row = width.div_ceil(mcu_width);
+    let mcu_rows = height.div_ceil(mcu_height);
+    let total_mcus = mcus_per_row
+        .checked_mul(mcu_rows)
+        .ok_or_else(|| JpegEncodeError::Internal("JPEG MCU count overflow".into()))?;
+    if total_mcus == 0 {
+        return Ok(Vec::new());
+    }
+    let restart_interval = u32::from(restart_interval);
+    let segment_count = total_mcus.div_ceil(restart_interval);
+    let segments = (0..segment_count)
+        .into_par_iter()
+        .map(|segment_idx| {
+            let start_mcu = segment_idx * restart_interval;
+            let end_mcu = (start_mcu + restart_interval).min(total_mcus);
+            encode_entropy_mcu_range(
+                planes,
+                width,
+                height,
+                sampling,
+                q_luma,
+                q_chroma,
+                dc_tables,
+                ac_tables,
+                cosine,
+                mcus_per_row,
+                start_mcu,
+                end_mcu,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut out = Vec::new();
+    for (idx, segment) in segments.into_iter().enumerate() {
+        if idx > 0 {
+            out.push(0xFF);
+            out.push(0xD0 + ((idx - 1) as u8 & 0x07));
+        }
+        out.extend_from_slice(&segment);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_entropy_mcu_range(
+    planes: &[Vec<u8>],
+    width: u32,
+    height: u32,
+    sampling: Sampling,
+    q_luma: &[u8; 64],
+    q_chroma: &[u8; 64],
+    dc_tables: [&HuffmanEncoder; 2],
+    ac_tables: [&HuffmanEncoder; 2],
+    cosine: &[[f64; 8]; 8],
+    mcus_per_row: u32,
+    start_mcu: u32,
+    end_mcu: u32,
+) -> Result<Vec<u8>, JpegEncodeError> {
+    let mut writer = BitWriter::new();
+    let mut prev_dc = [0i32; 3];
+    for mcu_index in start_mcu..end_mcu {
+        let mcu_y = mcu_index / mcus_per_row;
+        let mcu_x = mcu_index % mcus_per_row;
+        for component in 0..sampling.components as usize {
+            let quant = if component == 0 { q_luma } else { q_chroma };
+            let dc_table = if component == 0 {
+                dc_tables[0]
+            } else {
+                dc_tables[1]
+            };
+            let ac_table = if component == 0 {
+                ac_tables[0]
+            } else {
+                ac_tables[1]
+            };
+            for block_y in 0..sampling.v[component] {
+                for block_x in 0..sampling.h[component] {
+                    let block = sample_block(
+                        planes, width, height, sampling, component, mcu_x, mcu_y, block_x, block_y,
+                    );
+                    let coeffs = fdct_quantize(&block, quant, cosine);
+                    encode_block(
+                        &coeffs,
+                        &mut prev_dc[component],
+                        dc_table,
+                        ac_table,
+                        &mut writer,
+                    )?;
+                }
+            }
+        }
+    }
     Ok(writer.into_bytes())
 }
 
@@ -769,3 +915,76 @@ const STD_CHROMA_AC_VALUES: [u8; 162] = [
     0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
     0xF9, 0xFA,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patterned_rgb(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+        for y in 0..height {
+            for x in 0..width {
+                pixels.push(((x * 17 + y * 3) & 0xFF) as u8);
+                pixels.push(((x * 5 + y * 11 + 40) & 0xFF) as u8);
+                pixels.push(((x * 13 + y * 7 + 90) & 0xFF) as u8);
+            }
+        }
+        pixels
+    }
+
+    #[test]
+    fn restart_entropy_segments_match_serial_entropy() {
+        let width = 160;
+        let height = 80;
+        let sampling = sampling_for(JpegSubsampling::Ybr422);
+        let q_luma = scaled_quant_table(&STD_LUMA_Q, 90);
+        let q_chroma = scaled_quant_table(&STD_CHROMA_Q, 90);
+        let huff_dc_luma = HuffmanEncoder::new(&STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES).unwrap();
+        let huff_ac_luma = HuffmanEncoder::new(&STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES).unwrap();
+        let huff_dc_chroma =
+            HuffmanEncoder::new(&STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES).unwrap();
+        let huff_ac_chroma =
+            HuffmanEncoder::new(&STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES).unwrap();
+        let cosine = cosine_table();
+        let pixels = patterned_rgb(width, height);
+        let planes = component_planes(
+            JpegSamples::Rgb8 {
+                data: &pixels,
+                width,
+                height,
+            },
+            JpegSubsampling::Ybr422,
+        )
+        .unwrap();
+
+        let serial = encode_entropy_serial(
+            &planes,
+            width,
+            height,
+            sampling,
+            &q_luma,
+            &q_chroma,
+            [&huff_dc_luma, &huff_dc_chroma],
+            [&huff_ac_luma, &huff_ac_chroma],
+            &cosine,
+            Some(64),
+        )
+        .unwrap();
+        let segmented = encode_entropy_restart_segments(
+            &planes,
+            width,
+            height,
+            sampling,
+            &q_luma,
+            &q_chroma,
+            [&huff_dc_luma, &huff_dc_chroma],
+            [&huff_ac_luma, &huff_ac_chroma],
+            &cosine,
+            64,
+        )
+        .unwrap();
+
+        assert_eq!(segmented, serial);
+        assert!(segmented.windows(2).any(|window| window == [0xFF, 0xD0]));
+    }
+}

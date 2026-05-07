@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(all(target_os = "macos", test))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(target_os = "macos")]
 use std::{
     cell::RefCell,
@@ -44,6 +46,31 @@ use crate::{
     mct::MetalMctDecoder, store::MetalStoreDecoder,
 };
 use crate::{Error, Surface};
+
+#[cfg(all(target_os = "macos", test))]
+static HT_BATCH_COEFFICIENT_COPY_BLITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(target_os = "macos", test))]
+static PRIVATE_BUFFER_POOL_MISSES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_ht_batch_coefficient_copy_blits_for_test() {
+    HT_BATCH_COEFFICIENT_COPY_BLITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
+    HT_BATCH_COEFFICIENT_COPY_BLITS.load(Ordering::Relaxed)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_private_buffer_pool_misses_for_test() {
+    PRIVATE_BUFFER_POOL_MISSES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn private_buffer_pool_misses_for_test() -> usize {
+    PRIVATE_BUFFER_POOL_MISSES.load(Ordering::Relaxed)
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -1276,6 +1303,29 @@ struct J2kPacketEncodeParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct J2kBatchedPacketEncodeJob {
+    resolution_offset: u32,
+    subband_offset: u32,
+    block_offset: u32,
+    descriptor_offset: u32,
+    state_block_offset: u32,
+    output_offset: u32,
+    header_offset: u32,
+    scratch_offset: u32,
+    resolution_count: u32,
+    num_layers: u32,
+    num_components: u32,
+    code_block_count: u32,
+    subband_count: u32,
+    descriptor_count: u32,
+    output_capacity: u32,
+    header_capacity: u32,
+    scratch_node_capacity: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct J2kPacketDescriptor {
     packet_index: u32,
     state_index: u32,
@@ -1376,6 +1426,26 @@ struct J2kLosslessCodestreamAssemblyParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+struct J2kBatchedCodestreamAssemblyJob {
+    tile_data_offset: u32,
+    codestream_offset: u32,
+    width: u32,
+    height: u32,
+    num_components: u32,
+    bit_depth: u32,
+    signed_samples: u32,
+    num_decomposition_levels: u32,
+    use_mct: u32,
+    guard_bits: u32,
+    progression_order: u32,
+    write_tlm: u32,
+    high_throughput: u32,
+    output_capacity: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct J2kCodestreamAssemblyStatus {
     code: u32,
     detail: u32,
@@ -1452,7 +1522,9 @@ struct MetalRuntime {
     packet_block_prepare_resident_classic: ComputePipelineState,
     packet_block_prepare_resident_ht: ComputePipelineState,
     packet_encode: ComputePipelineState,
+    packet_encode_batched: ComputePipelineState,
     lossless_codestream_assemble: ComputePipelineState,
+    lossless_codestream_assemble_batched: ComputePipelineState,
     ht_vlc_table0: Buffer,
     ht_vlc_table1: Buffer,
     ht_uvlc_table0: Buffer,
@@ -1645,7 +1717,11 @@ impl MetalRuntime {
             )?,
             packet_block_prepare_resident_ht: pipeline("j2k_prepare_packet_blocks_from_ht_status")?,
             packet_encode: pipeline("j2k_encode_packetization")?,
+            packet_encode_batched: pipeline("j2k_encode_packetization_batched")?,
             lossless_codestream_assemble: pipeline("j2k_assemble_lossless_classic_codestream")?,
+            lossless_codestream_assemble_batched: pipeline(
+                "j2k_assemble_lossless_codestream_batched",
+            )?,
             ht_vlc_table0: device.new_buffer_with_data(
                 ht_vlc_table0().as_ptr().cast(),
                 size_of_val(ht_vlc_table0()) as u64,
@@ -1694,6 +1770,8 @@ impl MetalRuntime {
         if let Some(buffer) = pool.get_mut(&bytes).and_then(Vec::pop) {
             buffer
         } else {
+            #[cfg(test)]
+            PRIVATE_BUFFER_POOL_MISSES.fetch_add(1, Ordering::Relaxed);
             self.device
                 .new_buffer(bytes as u64, MTLResourceOptions::StorageModePrivate)
         }
@@ -5809,6 +5887,28 @@ fn recycle_scratch_buffers(runtime: &MetalRuntime, scratch_buffers: Vec<DirectSc
 }
 
 #[cfg(target_os = "macos")]
+fn take_recyclable_private_buffer(
+    runtime: &MetalRuntime,
+    bytes: usize,
+    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+) -> Buffer {
+    let bytes = bytes.max(1);
+    let buffer = runtime.take_private_buffer(bytes);
+    recyclable_private_buffers.push((bytes, buffer.clone()));
+    buffer
+}
+
+#[cfg(target_os = "macos")]
+fn recycle_private_buffers(
+    runtime: &MetalRuntime,
+    recyclable_private_buffers: Vec<(usize, Buffer)>,
+) {
+    for (bytes, buffer) in recyclable_private_buffers {
+        runtime.recycle_private_buffer(bytes, buffer);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn validate_direct_status(status_check: DirectStatusCheck) -> Result<(), Error> {
     match status_check {
         DirectStatusCheck::Classic { buffer, len } => {
@@ -6596,9 +6696,20 @@ pub(crate) struct J2kLosslessDevicePrepareJob<'a> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) struct J2kLosslessDeviceBatchPrepareItem<'a> {
+    pub(crate) tile_index: usize,
+    pub(crate) job: J2kLosslessDevicePrepareJob<'a>,
+    pub(crate) code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) struct J2kPreparedLosslessDeviceCodeBlocks {
     coefficient_buffer: Buffer,
+    coefficient_byte_offset: usize,
+    coefficient_byte_len: usize,
+    coefficient_buffer_is_batch_shared: bool,
     code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
+    recyclable_private_buffers: Vec<(usize, Buffer)>,
     _prepare_command_buffer: CommandBuffer,
     _deinterleave_status_buffer: Buffer,
     _plane_buffers: Vec<Buffer>,
@@ -6693,6 +6804,7 @@ pub(crate) struct J2kResidentLosslessHtCodeBlocks {
 #[cfg(target_os = "macos")]
 pub(crate) struct J2kResidentLosslessCodestream {
     pub(crate) buffer: Buffer,
+    pub(crate) byte_offset: usize,
     pub(crate) byte_len: usize,
     pub(crate) capacity: usize,
     pub(crate) gpu_duration: Option<Duration>,
@@ -6709,6 +6821,68 @@ pub(crate) struct J2kPendingResidentLosslessCodestream {
     status_stage: &'static str,
     length_error: &'static str,
     capacity_error: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct J2kResidentHtBatchEncodeItem {
+    pub(crate) prepared: J2kPreparedLosslessDeviceCodeBlocks,
+    pub(crate) resolution_count: u32,
+    pub(crate) num_layers: u8,
+    pub(crate) num_components: u8,
+    pub(crate) code_block_count: u32,
+    pub(crate) packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
+    pub(crate) resolutions: Vec<J2kResidentPacketizationResolution>,
+    pub(crate) codestream: J2kLosslessCodestreamAssemblyJob,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct J2kResidentClassicBatchEncodeItem {
+    pub(crate) prepared: J2kPreparedLosslessDeviceCodeBlocks,
+    pub(crate) resolution_count: u32,
+    pub(crate) num_layers: u8,
+    pub(crate) num_components: u8,
+    pub(crate) code_block_count: u32,
+    pub(crate) packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
+    pub(crate) resolutions: Vec<J2kResidentPacketizationResolution>,
+    pub(crate) codestream: J2kLosslessCodestreamAssemblyJob,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
+    device: Device,
+    buffer: Buffer,
+    byte_offsets: Vec<usize>,
+    capacities: Vec<usize>,
+    status_buffer: Buffer,
+    command_buffer: CommandBuffer,
+    retained_command_buffers: Vec<CommandBuffer>,
+    _retained_buffers: Vec<Buffer>,
+    recyclable_private_buffers: Vec<(usize, Buffer)>,
+    status_stage: &'static str,
+    length_error: &'static str,
+    capacity_error: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+struct PreparedLosslessBatchTile {
+    coefficient_buffer: Buffer,
+    coefficient_byte_offset: usize,
+    coefficient_byte_len: usize,
+    coefficient_buffer_is_batch_shared: bool,
+    code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
+    recyclable_private_buffers: Vec<(usize, Buffer)>,
+    prepare_command_buffer: CommandBuffer,
+    deinterleave_status_buffer: Buffer,
+    plane_buffers: Vec<Buffer>,
+    scratch_buffers: Vec<Buffer>,
+    coefficient_job_buffer: Buffer,
+    resolution_count: u32,
+    num_layers: u8,
+    num_components: u8,
+    code_block_count: u32,
+    packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
+    resolutions: Vec<J2kResidentPacketizationResolution>,
+    codestream: J2kLosslessCodestreamAssemblyJob,
 }
 
 #[cfg(target_os = "macos")]
@@ -6744,10 +6918,74 @@ pub(crate) fn wait_resident_lossless_codestream(
     }
     Ok(J2kResidentLosslessCodestream {
         buffer: pending.buffer,
+        byte_offset: 0,
         byte_len: data_len,
         capacity: pending.capacity,
         gpu_duration,
     })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn wait_resident_lossless_codestream_batch(
+    pending: J2kPendingResidentLosslessCodestreamBatch,
+) -> Result<Vec<J2kResidentLosslessCodestream>, Error> {
+    pending.command_buffer.wait_until_completed();
+    let gpu_duration = completed_command_buffers_gpu_duration(
+        &pending.retained_command_buffers,
+        &pending.command_buffer,
+    );
+    let recyclable_private_buffers = pending.recyclable_private_buffers;
+    with_runtime_for_device(&pending.device, |runtime| {
+        recycle_private_buffers(runtime, recyclable_private_buffers);
+        Ok(())
+    })?;
+    let gpu_duration_share =
+        gpu_duration.map(|duration| duration_share(duration, pending.capacities.len()));
+    let statuses = unsafe {
+        core::slice::from_raw_parts(
+            pending
+                .status_buffer
+                .contents()
+                .cast::<J2kCodestreamAssemblyStatus>(),
+            pending.capacities.len(),
+        )
+    };
+    let mut codestreams = Vec::with_capacity(pending.capacities.len());
+    for (index, status) in statuses.iter().copied().enumerate() {
+        if status.code != J2K_ENCODE_STATUS_OK {
+            return Err(encode_status_error(
+                pending.status_stage,
+                status.code,
+                status.detail,
+            ));
+        }
+        let data_len = usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
+            message: pending.length_error.to_string(),
+        })?;
+        let capacity = pending.capacities[index];
+        if data_len > capacity {
+            return Err(Error::MetalKernel {
+                message: pending.capacity_error.to_string(),
+            });
+        }
+        codestreams.push(J2kResidentLosslessCodestream {
+            buffer: pending.buffer.clone(),
+            byte_offset: pending.byte_offsets[index],
+            byte_len: data_len,
+            capacity,
+            gpu_duration: gpu_duration_share,
+        });
+    }
+    Ok(codestreams)
+}
+
+#[cfg(target_os = "macos")]
+fn duration_share(duration: Duration, count: usize) -> Duration {
+    if count == 0 {
+        return Duration::ZERO;
+    }
+    let nanos = duration.as_nanos() / count as u128;
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
 #[cfg(target_os = "macos")]
@@ -7031,11 +7269,17 @@ fn dispatch_lossless_extract_coefficients(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn prepare_lossless_device_code_blocks(
-    session: &crate::MetalBackendSession,
+#[derive(Clone, Copy)]
+struct J2kLosslessPrepareSizes {
+    plane_len: usize,
+    plane_bytes: usize,
+    coefficient_bytes: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_prepare_sizes(
     job: J2kLosslessDevicePrepareJob<'_>,
-    code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
-) -> Result<J2kPreparedLosslessDeviceCodeBlocks, Error> {
+) -> Result<J2kLosslessPrepareSizes, Error> {
     if job.components != 1 && job.components != 3 {
         return Err(Error::UnsupportedMetalRequest {
             reason: "J2K Metal resident encode supports grayscale or RGB input",
@@ -7069,26 +7313,38 @@ pub(crate) fn prepare_lossless_device_code_blocks(
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal resident encode coefficient size overflow".to_string(),
         })?;
+    Ok(J2kLosslessPrepareSizes {
+        plane_len,
+        plane_bytes,
+        coefficient_bytes,
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn prepare_lossless_device_code_blocks(
+    session: &crate::MetalBackendSession,
+    job: J2kLosslessDevicePrepareJob<'_>,
+    code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
+) -> Result<J2kPreparedLosslessDeviceCodeBlocks, Error> {
+    let sizes = lossless_prepare_sizes(job)?;
 
     with_runtime_for_device(&session.device, |runtime| {
         let mut plane_buffers = Vec::with_capacity(3);
         let mut scratch_buffers = Vec::with_capacity(usize::from(job.components));
         for _ in 0..3 {
-            plane_buffers.push(
-                runtime
-                    .device
-                    .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModePrivate),
-            );
+            plane_buffers.push(runtime.device.new_buffer(
+                sizes.plane_bytes as u64,
+                MTLResourceOptions::StorageModePrivate,
+            ));
         }
         for _ in 0..job.components {
-            scratch_buffers.push(
-                runtime
-                    .device
-                    .new_buffer(plane_bytes as u64, MTLResourceOptions::StorageModePrivate),
-            );
+            scratch_buffers.push(runtime.device.new_buffer(
+                sizes.plane_bytes as u64,
+                MTLResourceOptions::StorageModePrivate,
+            ));
         }
         let coefficient_buffer = runtime.device.new_buffer(
-            coefficient_bytes as u64,
+            sizes.coefficient_bytes as u64,
             MTLResourceOptions::StorageModePrivate,
         );
         let deinterleave_status = J2kMctStatus::default();
@@ -7114,7 +7370,7 @@ pub(crate) fn prepare_lossless_device_code_blocks(
                 &plane_buffers[0],
                 &plane_buffers[1],
                 &plane_buffers[2],
-                plane_len,
+                sizes.plane_len,
                 &status_buffer,
             )?;
         }
@@ -7165,13 +7421,215 @@ pub(crate) fn prepare_lossless_device_code_blocks(
         command_buffer.commit();
         Ok(J2kPreparedLosslessDeviceCodeBlocks {
             coefficient_buffer,
+            coefficient_byte_offset: 0,
+            coefficient_byte_len: sizes.coefficient_bytes,
+            coefficient_buffer_is_batch_shared: false,
             code_blocks,
+            recyclable_private_buffers: Vec::new(),
             _prepare_command_buffer: command_buffer.to_owned(),
             _deinterleave_status_buffer: status_buffer,
             _plane_buffers: plane_buffers,
             _scratch_buffers: scratch_buffers,
             _coefficient_job_buffer: coefficient_job_buffer,
         })
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn prepare_lossless_device_code_blocks_batch(
+    session: &crate::MetalBackendSession,
+    items: Vec<J2kLosslessDeviceBatchPrepareItem<'_>>,
+) -> Result<Vec<J2kPreparedLosslessDeviceCodeBlocks>, Error> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut sizes = Vec::with_capacity(items.len());
+    let mut coefficient_byte_offsets = Vec::with_capacity(items.len());
+    let mut total_coefficient_bytes = 0usize;
+    for item in &items {
+        let item_sizes = lossless_prepare_sizes(item.job).map_err(|err| Error::MetalKernel {
+            message: format!(
+                "J2K Metal resident batch coefficient prep failed at tile {}: {err}",
+                item.tile_index
+            ),
+        })?;
+        coefficient_byte_offsets.push(total_coefficient_bytes);
+        total_coefficient_bytes = total_coefficient_bytes
+            .checked_add(item_sizes.coefficient_bytes)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal resident batch coefficient size overflow".to_string(),
+            })?;
+        sizes.push(item_sizes);
+    }
+
+    with_runtime_for_device(&session.device, |runtime| {
+        let mut shared_recyclable_private_buffers = Vec::new();
+        let coefficient_buffer = take_recyclable_private_buffer(
+            runtime,
+            total_coefficient_bytes.max(1),
+            &mut shared_recyclable_private_buffers,
+        );
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut prepared = Vec::with_capacity(items.len());
+
+        for ((item, item_sizes), coefficient_byte_offset) in items
+            .into_iter()
+            .zip(sizes.into_iter())
+            .zip(coefficient_byte_offsets.into_iter())
+        {
+            let job = item.job;
+            let mut recyclable_private_buffers = Vec::new();
+            if !shared_recyclable_private_buffers.is_empty() {
+                recyclable_private_buffers.append(&mut shared_recyclable_private_buffers);
+            }
+            let mut plane_buffers = Vec::with_capacity(3);
+            let mut scratch_buffers = Vec::with_capacity(usize::from(job.components));
+            for _ in 0..3 {
+                plane_buffers.push(take_recyclable_private_buffer(
+                    runtime,
+                    item_sizes.plane_bytes,
+                    &mut recyclable_private_buffers,
+                ));
+            }
+            for _ in 0..job.components {
+                scratch_buffers.push(take_recyclable_private_buffer(
+                    runtime,
+                    item_sizes.plane_bytes,
+                    &mut recyclable_private_buffers,
+                ));
+            }
+
+            let deinterleave_status = J2kMctStatus::default();
+            let status_buffer = runtime.device.new_buffer_with_data(
+                (&raw const deinterleave_status).cast(),
+                size_of::<J2kMctStatus>() as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+
+            dispatch_lossless_deinterleave(
+                runtime,
+                command_buffer,
+                job,
+                &plane_buffers[0],
+                &plane_buffers[1],
+                &plane_buffers[2],
+            )
+            .map_err(|err| Error::MetalKernel {
+                message: format!(
+                    "J2K Metal resident batch coefficient prep failed at tile {}: {err}",
+                    item.tile_index
+                ),
+            })?;
+            if job.components == 3 {
+                dispatch_forward_rct_on_buffers(
+                    runtime,
+                    command_buffer,
+                    &plane_buffers[0],
+                    &plane_buffers[1],
+                    &plane_buffers[2],
+                    item_sizes.plane_len,
+                    &status_buffer,
+                )
+                .map_err(|err| Error::MetalKernel {
+                    message: format!(
+                        "J2K Metal resident batch coefficient prep failed at tile {}: {err}",
+                        item.tile_index
+                    ),
+                })?;
+            }
+
+            let mut active_planes = Vec::with_capacity(usize::from(job.components));
+            for component in 0..usize::from(job.components) {
+                if job.num_decomposition_levels == 0 {
+                    active_planes.push(plane_buffers[component].clone());
+                } else {
+                    active_planes.push(dispatch_forward_dwt53_on_buffers(
+                        runtime,
+                        command_buffer,
+                        &plane_buffers[component],
+                        &scratch_buffers[component],
+                        job.output_width,
+                        job.output_height,
+                        job.num_decomposition_levels,
+                    ));
+                }
+            }
+            while active_planes.len() < 3 {
+                active_planes.push(active_planes[0].clone());
+            }
+
+            let coefficient_word_offset = coefficient_byte_offset
+                .checked_div(size_of::<i32>())
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal resident batch coefficient offset division failed"
+                        .to_string(),
+                })?;
+            let coefficient_word_offset_u32 =
+                u32::try_from(coefficient_word_offset).map_err(|_| Error::MetalKernel {
+                    message: format!(
+                        "J2K Metal resident batch coefficient offset exceeds u32 at tile {}",
+                        item.tile_index
+                    ),
+                })?;
+            let coefficient_jobs = item
+                .code_blocks
+                .iter()
+                .map(|block| {
+                    let coefficient_offset = block
+                        .coefficient_offset
+                        .checked_add(coefficient_word_offset_u32)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: format!(
+                                "J2K Metal resident batch coefficient offset overflow at tile {}",
+                                item.tile_index
+                            ),
+                        })?;
+                    Ok(J2kLosslessCoefficientJob {
+                        coefficient_offset,
+                        component: block.component,
+                        subband_x: block.subband_x,
+                        subband_y: block.subband_y,
+                        block_x: block.block_x,
+                        block_y: block.block_y,
+                        block_width: block.width,
+                        block_height: block.height,
+                        full_width: job.output_width,
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let coefficient_job_buffer = dispatch_lossless_extract_coefficients(
+                runtime,
+                command_buffer,
+                &active_planes,
+                &coefficient_buffer,
+                &coefficient_jobs,
+                job.output_width,
+            )
+            .map_err(|err| Error::MetalKernel {
+                message: format!(
+                    "J2K Metal resident batch coefficient prep failed at tile {}: {err}",
+                    item.tile_index
+                ),
+            })?;
+
+            prepared.push(J2kPreparedLosslessDeviceCodeBlocks {
+                coefficient_buffer: coefficient_buffer.clone(),
+                coefficient_byte_offset,
+                coefficient_byte_len: item_sizes.coefficient_bytes,
+                coefficient_buffer_is_batch_shared: true,
+                code_blocks: item.code_blocks,
+                recyclable_private_buffers,
+                _prepare_command_buffer: command_buffer.to_owned(),
+                _deinterleave_status_buffer: status_buffer,
+                _plane_buffers: plane_buffers,
+                _scratch_buffers: scratch_buffers,
+                _coefficient_job_buffer: coefficient_job_buffer,
+            });
+        }
+
+        command_buffer.commit();
+        Ok(prepared)
     })
 }
 
@@ -10788,7 +11246,11 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
 ) -> Result<J2kResidentLosslessTier1CodeBlocks, Error> {
     let J2kPreparedLosslessDeviceCodeBlocks {
         coefficient_buffer,
+        coefficient_byte_offset: _,
+        coefficient_byte_len: _,
+        coefficient_buffer_is_batch_shared: _,
         code_blocks,
+        recyclable_private_buffers: _,
         _prepare_command_buffer: prepare_command_buffer,
         _deinterleave_status_buffer: deinterleave_status_buffer,
         _plane_buffers: plane_buffers,
@@ -10951,7 +11413,11 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
 ) -> Result<J2kResidentLosslessHtCodeBlocks, Error> {
     let J2kPreparedLosslessDeviceCodeBlocks {
         coefficient_buffer,
+        coefficient_byte_offset: _,
+        coefficient_byte_len: _,
+        coefficient_buffer_is_batch_shared: _,
         code_blocks,
+        recyclable_private_buffers: _,
         _prepare_command_buffer: prepare_command_buffer,
         _deinterleave_status_buffer: deinterleave_status_buffer,
         _plane_buffers: plane_buffers,
@@ -12941,6 +13407,1532 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             status_stage: "HTJ2K codestream assembly",
             length_error: "HTJ2K Metal codestream output length exceeds usize",
             capacity_error: "HTJ2K Metal codestream output length exceeds buffer",
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
+    session: &crate::MetalBackendSession,
+    items: Vec<J2kResidentHtBatchEncodeItem>,
+) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
+    if items.is_empty() {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal resident batch encode requires at least one tile".to_string(),
+        });
+    }
+
+    let mut prepared_tiles = Vec::with_capacity(items.len());
+    for item in items {
+        let J2kPreparedLosslessDeviceCodeBlocks {
+            coefficient_buffer,
+            coefficient_byte_offset,
+            coefficient_byte_len,
+            coefficient_buffer_is_batch_shared,
+            code_blocks,
+            recyclable_private_buffers,
+            _prepare_command_buffer: prepare_command_buffer,
+            _deinterleave_status_buffer: deinterleave_status_buffer,
+            _plane_buffers: plane_buffers,
+            _scratch_buffers: scratch_buffers,
+            _coefficient_job_buffer: coefficient_job_buffer,
+        } = item.prepared;
+        prepared_tiles.push(PreparedLosslessBatchTile {
+            coefficient_buffer,
+            coefficient_byte_offset,
+            coefficient_byte_len,
+            coefficient_buffer_is_batch_shared,
+            code_blocks,
+            recyclable_private_buffers,
+            prepare_command_buffer,
+            deinterleave_status_buffer,
+            plane_buffers,
+            scratch_buffers,
+            coefficient_job_buffer,
+            resolution_count: item.resolution_count,
+            num_layers: item.num_layers,
+            num_components: item.num_components,
+            code_block_count: item.code_block_count,
+            packet_descriptors: item.packet_descriptors,
+            resolutions: item.resolutions,
+            codestream: item.codestream,
+        });
+    }
+
+    with_runtime_for_device(&session.device, |runtime| {
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut retained_command_buffers = Vec::with_capacity(prepared_tiles.len());
+        let mut retained_buffers = Vec::<Buffer>::new();
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
+            let ptr = first.coefficient_buffer.as_ptr();
+            prepared_tiles
+                .iter()
+                .all(|tile| {
+                    tile.coefficient_buffer_is_batch_shared
+                        && tile.coefficient_buffer.as_ptr() == ptr
+                })
+                .then(|| first.coefficient_buffer.clone())
+        });
+        let (coefficient_buffer, coefficient_offsets) = if let Some(coefficient_buffer) =
+            shared_coefficient_buffer
+        {
+            (
+                coefficient_buffer,
+                prepared_tiles
+                    .iter()
+                    .map(|tile| tile.coefficient_byte_offset)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            let mut coefficient_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+            let mut total_coefficient_bytes = 0usize;
+            for tile in &prepared_tiles {
+                coefficient_offsets.push(total_coefficient_bytes);
+                total_coefficient_bytes = total_coefficient_bytes
+                    .checked_add(tile.coefficient_byte_len)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch coefficient buffer size overflow".to_string(),
+                    })?;
+            }
+            let coefficient_buffer = take_recyclable_private_buffer(
+                runtime,
+                total_coefficient_bytes.max(1),
+                &mut recyclable_private_buffers,
+            );
+            let blit = command_buffer.new_blit_command_encoder();
+            for (tile, &dst_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
+                if tile.coefficient_byte_len > 0 {
+                    #[cfg(test)]
+                    HT_BATCH_COEFFICIENT_COPY_BLITS.fetch_add(1, Ordering::Relaxed);
+                    blit.copy_from_buffer(
+                        &tile.coefficient_buffer,
+                        tile.coefficient_byte_offset as u64,
+                        &coefficient_buffer,
+                        dst_offset as u64,
+                        tile.coefficient_byte_len as u64,
+                    );
+                }
+            }
+            blit.end_encoding();
+            (coefficient_buffer, coefficient_offsets)
+        };
+
+        let output_capacity_per_job =
+            J2K_HT_ENCODE_MS_SIZE + J2K_HT_ENCODE_MEL_SIZE + J2K_HT_ENCODE_VLC_SIZE;
+        let output_capacity_per_job_u32 =
+            u32::try_from(output_capacity_per_job).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal batch output capacity exceeds u32".to_string(),
+            })?;
+        let mut tier1_jobs = Vec::<J2kHtEncodeBatchJob>::new();
+        let mut tier1_output_capacity_total = 0usize;
+        let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
+        for (tile, &coefficient_byte_offset) in
+            prepared_tiles.iter().zip(coefficient_offsets.iter())
+        {
+            tile_tier1_job_bases.push(tier1_jobs.len());
+            let coefficient_word_offset = coefficient_byte_offset
+                .checked_div(size_of::<i32>())
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch coefficient offset division failed".to_string(),
+                })?;
+            let coefficient_word_offset_u32 =
+                u32::try_from(coefficient_word_offset).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal batch coefficient offset exceeds u32".to_string(),
+                })?;
+            for block in &tile.code_blocks {
+                let output_offset =
+                    u32::try_from(tier1_output_capacity_total).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch Tier-1 output offset exceeds u32".to_string(),
+                    })?;
+                let coefficient_offset = block
+                    .coefficient_offset
+                    .checked_add(coefficient_word_offset_u32)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch coefficient offset overflow".to_string(),
+                    })?;
+                tier1_jobs.push(J2kHtEncodeBatchJob {
+                    coefficient_offset,
+                    output_offset,
+                    width: block.width,
+                    height: block.height,
+                    total_bitplanes: u32::from(block.total_bitplanes),
+                    output_capacity: output_capacity_per_job_u32,
+                });
+                tier1_output_capacity_total = tier1_output_capacity_total
+                    .checked_add(output_capacity_per_job)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch Tier-1 output buffer overflow".to_string(),
+                    })?;
+            }
+        }
+
+        let tier1_job_buffer = owned_slice_buffer(&runtime.device, &tier1_jobs);
+        let tier1_output_buffer = take_recyclable_private_buffer(
+            runtime,
+            tier1_output_capacity_total.max(1),
+            &mut recyclable_private_buffers,
+        );
+        let tier1_status_buffer = take_recyclable_private_buffer(
+            runtime,
+            tier1_jobs.len().max(1) * size_of::<J2kHtEncodeStatus>(),
+            &mut recyclable_private_buffers,
+        );
+        let tier1_job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal batch Tier-1 job count exceeds u32".to_string(),
+        })?;
+        if tier1_job_count > 0 {
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&runtime.ht_encode_code_blocks);
+            encoder.set_buffer(0, Some(&coefficient_buffer), 0);
+            encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
+            encoder.set_buffer(2, Some(&tier1_job_buffer), 0);
+            encoder.set_buffer(3, Some(&runtime.ht_vlc_encode_table0), 0);
+            encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
+            encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
+            encoder.set_buffer(6, Some(&tier1_status_buffer), 0);
+            encoder.set_bytes(
+                7,
+                size_of::<u32>() as u64,
+                (&raw const tier1_job_count).cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize {
+                    width: u64::from(tier1_job_count),
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: runtime
+                        .ht_encode_code_blocks
+                        .thread_execution_width()
+                        .max(1),
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            encoder.end_encoding();
+        }
+
+        let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
+        let mut packet_subbands = Vec::<J2kPacketSubband>::new();
+        let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
+        let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
+        let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
+        let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
+        let mut assembly_jobs =
+            Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
+        let mut packet_output_capacity_total = 0usize;
+        let mut header_capacity_total = 0usize;
+        let mut scratch_words_total = 0usize;
+        let mut codestream_capacity_total = 0usize;
+        let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+        let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
+
+        for (tile_index, tile) in prepared_tiles.iter().enumerate() {
+            let local_resolution_offset = packet_resolutions.len();
+            let local_subband_offset = packet_subbands.len();
+            let local_block_offset = resident_blocks.len();
+            let local_descriptor_offset = packet_descriptors.len();
+            let local_state_block_offset = state_blocks.len();
+            let tier1_job_base = tile_tier1_job_bases[tile_index];
+            let mut max_tree_nodes = 1usize;
+            let mut local_subband_count = 0usize;
+            let mut local_resident_block_count = 0usize;
+
+            for resolution in &tile.resolutions {
+                let subband_offset =
+                    u32::try_from(local_subband_count).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet subband offset exceeds u32".to_string(),
+                    })?;
+                for subband in &resolution.subbands {
+                    let block_offset = u32::try_from(local_resident_block_count).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "HTJ2K Metal batch packet block offset exceeds u32"
+                                .to_string(),
+                        }
+                    })?;
+                    max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
+                        subband.num_cbs_x,
+                        subband.num_cbs_y,
+                    )?);
+                    let code_block_start =
+                        usize::try_from(subband.code_block_start).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "HTJ2K Metal batch packet code-block offset exceeds usize"
+                                    .to_string(),
+                            }
+                        })?;
+                    let code_block_count =
+                        usize::try_from(subband.code_block_count).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "HTJ2K Metal batch packet code-block count exceeds usize"
+                                    .to_string(),
+                            }
+                        })?;
+                    let code_block_end = code_block_start
+                        .checked_add(code_block_count)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "HTJ2K Metal batch packet code-block range overflow"
+                                .to_string(),
+                        })?;
+                    if code_block_end > tile.code_blocks.len() {
+                        return Err(Error::MetalKernel {
+                            message: "HTJ2K Metal batch packet code-block range out of bounds"
+                                .to_string(),
+                        });
+                    }
+                    for tier1_job_index in code_block_start..code_block_end {
+                        resident_blocks.push(J2kResidentPacketBlock {
+                            tier1_job_index: u32::try_from(
+                                tier1_job_base.checked_add(tier1_job_index).ok_or_else(|| {
+                                    Error::MetalKernel {
+                                        message: "HTJ2K Metal batch Tier-1 index overflow"
+                                            .to_string(),
+                                    }
+                                })?,
+                            )
+                            .map_err(|_| Error::MetalKernel {
+                                message: "HTJ2K Metal batch Tier-1 index exceeds u32".to_string(),
+                            })?,
+                            previously_included: 0,
+                            l_block: 3,
+                            block_coding_mode: 1,
+                        });
+                    }
+                    packet_subbands.push(J2kPacketSubband {
+                        block_offset,
+                        block_count: subband.code_block_count,
+                        num_cbs_x: subband.num_cbs_x,
+                        num_cbs_y: subband.num_cbs_y,
+                    });
+                    local_subband_count =
+                        local_subband_count
+                            .checked_add(1)
+                            .ok_or_else(|| Error::MetalKernel {
+                                message: "HTJ2K Metal batch subband count overflow".to_string(),
+                            })?;
+                    local_resident_block_count = local_resident_block_count
+                        .checked_add(code_block_count)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "HTJ2K Metal batch resident block count overflow".to_string(),
+                        })?;
+                }
+                packet_resolutions.push(J2kPacketResolution {
+                    subband_offset,
+                    subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "HTJ2K Metal batch resolution subband count exceeds u32"
+                                .to_string(),
+                        }
+                    })?,
+                });
+            }
+
+            if tile.resolutions.len()
+                != usize::try_from(tile.resolution_count).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal batch resolution count exceeds usize".to_string(),
+                })?
+            {
+                return Err(Error::MetalKernel {
+                    message: "HTJ2K Metal batch resolution count mismatch".to_string(),
+                });
+            }
+            if local_resident_block_count
+                != usize::try_from(tile.code_block_count).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal batch code-block count exceeds usize".to_string(),
+                })?
+            {
+                return Err(Error::MetalKernel {
+                    message: "HTJ2K Metal batch code-block count mismatch".to_string(),
+                });
+            }
+
+            let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
+            for descriptor in &tile.packet_descriptors {
+                let packet_index =
+                    usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor packet index exceeds usize"
+                            .to_string(),
+                    })?;
+                let resolution = packet_resolutions
+                    .get(local_resolution_offset + packet_index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor packet index out of range"
+                            .to_string(),
+                    })?;
+                let subband_start =
+                    usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor subband offset exceeds usize"
+                            .to_string(),
+                    })?;
+                let subband_count =
+                    usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor subband count exceeds usize"
+                            .to_string(),
+                    })?;
+                let mut packet_block_count = 0usize;
+                for subband in &packet_subbands[local_subband_offset + subband_start
+                    ..local_subband_offset + subband_start + subband_count]
+                {
+                    packet_block_count = packet_block_count
+                        .checked_add(usize::try_from(subband.block_count).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "HTJ2K Metal batch descriptor block count exceeds usize"
+                                    .to_string(),
+                            }
+                        })?)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "HTJ2K Metal batch descriptor block count overflow"
+                                .to_string(),
+                        })?;
+                }
+                let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
+                    state_block_offsets.get(&descriptor.state_index)
+                {
+                    (offset, count)
+                } else {
+                    let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
+                        .map_err(|_| Error::MetalKernel {
+                            message: "HTJ2K Metal batch state block offset exceeds u32".to_string(),
+                        })?;
+                    for subband in &packet_subbands[local_subband_offset + subband_start
+                        ..local_subband_offset + subband_start + subband_count]
+                    {
+                        for idx in 0..subband.block_count {
+                            let _ = idx;
+                            state_blocks.push(J2kPacketStateBlock {
+                                previously_included: 0,
+                                l_block: 3,
+                            });
+                        }
+                    }
+                    state_block_offsets
+                        .insert(descriptor.state_index, (offset, packet_block_count));
+                    (offset, packet_block_count)
+                };
+                if existing_count != packet_block_count {
+                    return Err(Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor state layout mismatch".to_string(),
+                    });
+                }
+                packet_descriptors.push(J2kPacketDescriptor {
+                    packet_index: descriptor.packet_index,
+                    state_index: descriptor.state_index,
+                    layer: u32::from(descriptor.layer),
+                    resolution: descriptor.resolution,
+                    component: u32::from(descriptor.component),
+                    precinct_lo: descriptor.precinct as u32,
+                    precinct_hi: (descriptor.precinct >> 32) as u32,
+                    state_block_offset,
+                });
+            }
+
+            let header_capacity = local_resident_block_count
+                .checked_mul(256)
+                .and_then(|bytes| bytes.checked_add(4096))
+                .map(|bytes| bytes.max(4096))
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet header capacity overflow".to_string(),
+                })?;
+            let packet_output_capacity = tile
+                .code_blocks
+                .len()
+                .checked_mul(output_capacity_per_job)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        header_capacity.saturating_mul(
+                            tile.packet_descriptors
+                                .len()
+                                .max(tile.resolutions.len())
+                                .max(1),
+                        ),
+                    )
+                })
+                .and_then(|bytes| bytes.checked_add(1024))
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet output capacity overflow".to_string(),
+                })?;
+            let codestream_capacity =
+                lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
+            let scratch_words =
+                max_tree_nodes
+                    .checked_mul(6)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch scratch size overflow".to_string(),
+                    })?;
+
+            let packet_output_offset = packet_output_capacity_total;
+            let header_offset = header_capacity_total;
+            let scratch_offset = scratch_words_total;
+            let codestream_offset = codestream_capacity_total;
+            packet_jobs.push(J2kBatchedPacketEncodeJob {
+                resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch resolution offset exceeds u32".to_string(),
+                    }
+                })?,
+                subband_offset: u32::try_from(local_subband_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch subband offset exceeds u32".to_string(),
+                    }
+                })?,
+                block_offset: u32::try_from(local_block_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch block offset exceeds u32".to_string(),
+                    }
+                })?,
+                descriptor_offset: u32::try_from(local_descriptor_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor offset exceeds u32".to_string(),
+                    }
+                })?,
+                state_block_offset: u32::try_from(local_state_block_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch state block offset exceeds u32".to_string(),
+                    }
+                })?,
+                output_offset: u32::try_from(packet_output_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet output offset exceeds u32".to_string(),
+                    }
+                })?,
+                header_offset: u32::try_from(header_offset).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal batch header offset exceeds u32".to_string(),
+                })?,
+                scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal batch scratch offset exceeds u32".to_string(),
+                })?,
+                resolution_count: tile.resolution_count,
+                num_layers: u32::from(tile.num_layers),
+                num_components: u32::from(tile.num_components),
+                code_block_count: tile.code_block_count,
+                subband_count: u32::try_from(local_subband_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch local subband count exceeds u32".to_string(),
+                    }
+                })?,
+                descriptor_count: u32::try_from(tile.packet_descriptors.len()).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch descriptor count exceeds u32".to_string(),
+                    }
+                })?,
+                output_capacity: u32::try_from(packet_output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet output capacity exceeds u32".to_string(),
+                    }
+                })?,
+                header_capacity: u32::try_from(header_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch header capacity exceeds u32".to_string(),
+                    }
+                })?,
+                scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch scratch node capacity exceeds u32".to_string(),
+                    }
+                })?,
+            });
+            assembly_jobs.push(J2kBatchedCodestreamAssemblyJob {
+                tile_data_offset: u32::try_from(packet_output_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch assembly packet offset exceeds u32".to_string(),
+                    }
+                })?,
+                codestream_offset: u32::try_from(codestream_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch codestream offset exceeds u32".to_string(),
+                    }
+                })?,
+                width: tile.codestream.width,
+                height: tile.codestream.height,
+                num_components: u32::from(tile.codestream.num_components),
+                bit_depth: u32::from(tile.codestream.bit_depth),
+                signed_samples: u32::from(tile.codestream.signed),
+                num_decomposition_levels: u32::from(tile.codestream.num_decomposition_levels),
+                use_mct: u32::from(tile.codestream.use_mct),
+                guard_bits: u32::from(tile.codestream.guard_bits),
+                progression_order: codestream_progression_order_code(
+                    tile.codestream.progression_order,
+                ),
+                write_tlm: u32::from(tile.codestream.write_tlm),
+                high_throughput: 1,
+                output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch codestream capacity exceeds u32".to_string(),
+                    }
+                })?,
+            });
+            codestream_offsets.push(codestream_offset);
+            codestream_capacities.push(codestream_capacity);
+            packet_output_capacity_total = packet_output_capacity_total
+                .checked_add(packet_output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet output total overflow".to_string(),
+                })?;
+            header_capacity_total = header_capacity_total
+                .checked_add(header_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch header total overflow".to_string(),
+                })?;
+            scratch_words_total =
+                scratch_words_total
+                    .checked_add(scratch_words)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch scratch total overflow".to_string(),
+                    })?;
+            codestream_capacity_total = codestream_capacity_total
+                .checked_add(codestream_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch codestream total overflow".to_string(),
+                })?;
+        }
+
+        let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
+        let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
+        let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
+        let packet_block_buffer = take_recyclable_private_buffer(
+            runtime,
+            resident_blocks.len().max(1) * size_of::<J2kPacketBlock>(),
+            &mut recyclable_private_buffers,
+        );
+        let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors);
+        let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
+        let packet_output_buffer = take_recyclable_private_buffer(
+            runtime,
+            packet_output_capacity_total.max(1),
+            &mut recyclable_private_buffers,
+        );
+        let header_buffer = take_recyclable_private_buffer(
+            runtime,
+            header_capacity_total.max(1),
+            &mut recyclable_private_buffers,
+        );
+        let scratch_buffer = take_recyclable_private_buffer(
+            runtime,
+            scratch_words_total.max(1) * size_of::<u32>(),
+            &mut recyclable_private_buffers,
+        );
+        let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs);
+        let packet_status_buffer = take_recyclable_private_buffer(
+            runtime,
+            packet_jobs.len().max(1) * size_of::<J2kPacketEncodeStatus>(),
+            &mut recyclable_private_buffers,
+        );
+        let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs);
+        let codestream_buffer = runtime.device.new_buffer(
+            codestream_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let codestream_status_buffer = runtime.device.new_buffer(
+            (assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let resident_block_params = J2kResidentPacketBlockParams {
+            block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal batch resident block count exceeds u32".to_string(),
+            })?,
+            tier1_job_count,
+        };
+        if !resident_blocks.is_empty() {
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
+            encoder.set_buffer(0, Some(&resident_block_buffer), 0);
+            encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
+            encoder.set_buffer(2, Some(&tier1_status_buffer), 0);
+            encoder.set_buffer(3, Some(&packet_block_buffer), 0);
+            encoder.set_bytes(
+                4,
+                size_of::<J2kResidentPacketBlockParams>() as u64,
+                (&raw const resident_block_params).cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize {
+                    width: resident_blocks.len() as u64,
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: runtime
+                        .packet_block_prepare_resident_ht
+                        .thread_execution_width()
+                        .max(1),
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            encoder.end_encoding();
+        }
+
+        let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal batch tile count exceeds u64".to_string(),
+        })?;
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
+        encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
+        encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
+        encoder.set_buffer(2, Some(&packet_block_buffer), 0);
+        encoder.set_buffer(3, Some(&tier1_output_buffer), 0);
+        encoder.set_buffer(4, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(5, Some(&header_buffer), 0);
+        encoder.set_buffer(6, Some(&scratch_buffer), 0);
+        encoder.set_buffer(7, Some(&packet_job_buffer), 0);
+        encoder.set_buffer(8, Some(&packet_status_buffer), 0);
+        encoder.set_buffer(9, Some(&packet_descriptor_buffer), 0);
+        encoder.set_buffer(10, Some(&state_block_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: tile_count,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: runtime
+                    .packet_encode_batched
+                    .thread_execution_width()
+                    .max(1),
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
+        encoder.set_buffer(0, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(1, Some(&packet_status_buffer), 0);
+        encoder.set_buffer(2, Some(&codestream_buffer), 0);
+        encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
+        encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: tile_count,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: runtime
+                    .lossless_codestream_assemble_batched
+                    .thread_execution_width()
+                    .max(1),
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+
+        for tile in prepared_tiles {
+            retained_command_buffers.push(tile.prepare_command_buffer);
+            retained_buffers.push(tile.coefficient_buffer);
+            retained_buffers.push(tile.deinterleave_status_buffer);
+            retained_buffers.extend(tile.plane_buffers);
+            retained_buffers.extend(tile.scratch_buffers);
+            retained_buffers.push(tile.coefficient_job_buffer);
+            recyclable_private_buffers.extend(tile.recyclable_private_buffers);
+        }
+        retained_buffers.push(coefficient_buffer);
+        retained_buffers.push(tier1_job_buffer);
+        retained_buffers.push(tier1_output_buffer);
+        retained_buffers.push(tier1_status_buffer);
+        retained_buffers.push(packet_resolution_buffer);
+        retained_buffers.push(packet_subband_buffer);
+        retained_buffers.push(resident_block_buffer);
+        retained_buffers.push(packet_block_buffer);
+        retained_buffers.push(packet_descriptor_buffer);
+        retained_buffers.push(state_block_buffer);
+        retained_buffers.push(packet_output_buffer);
+        retained_buffers.push(header_buffer);
+        retained_buffers.push(scratch_buffer);
+        retained_buffers.push(packet_job_buffer);
+        retained_buffers.push(packet_status_buffer);
+        retained_buffers.push(codestream_job_buffer);
+
+        Ok(J2kPendingResidentLosslessCodestreamBatch {
+            device: runtime.device.clone(),
+            buffer: codestream_buffer,
+            byte_offsets: codestream_offsets,
+            capacities: codestream_capacities,
+            status_buffer: codestream_status_buffer,
+            command_buffer: command_buffer.to_owned(),
+            retained_command_buffers,
+            _retained_buffers: retained_buffers,
+            recyclable_private_buffers,
+            status_stage: "HTJ2K batched codestream assembly",
+            length_error: "HTJ2K Metal batched codestream output length exceeds usize",
+            capacity_error: "HTJ2K Metal batched codestream output length exceeds buffer",
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
+    session: &crate::MetalBackendSession,
+    items: Vec<J2kResidentClassicBatchEncodeItem>,
+) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
+    if items.is_empty() {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal resident batch encode requires at least one tile".to_string(),
+        });
+    }
+
+    let mut prepared_tiles = Vec::with_capacity(items.len());
+    for item in items {
+        let J2kPreparedLosslessDeviceCodeBlocks {
+            coefficient_buffer,
+            coefficient_byte_offset,
+            coefficient_byte_len,
+            coefficient_buffer_is_batch_shared,
+            code_blocks,
+            recyclable_private_buffers,
+            _prepare_command_buffer: prepare_command_buffer,
+            _deinterleave_status_buffer: deinterleave_status_buffer,
+            _plane_buffers: plane_buffers,
+            _scratch_buffers: scratch_buffers,
+            _coefficient_job_buffer: coefficient_job_buffer,
+        } = item.prepared;
+        prepared_tiles.push(PreparedLosslessBatchTile {
+            coefficient_buffer,
+            coefficient_byte_offset,
+            coefficient_byte_len,
+            coefficient_buffer_is_batch_shared,
+            code_blocks,
+            recyclable_private_buffers,
+            prepare_command_buffer,
+            deinterleave_status_buffer,
+            plane_buffers,
+            scratch_buffers,
+            coefficient_job_buffer,
+            resolution_count: item.resolution_count,
+            num_layers: item.num_layers,
+            num_components: item.num_components,
+            code_block_count: item.code_block_count,
+            packet_descriptors: item.packet_descriptors,
+            resolutions: item.resolutions,
+            codestream: item.codestream,
+        });
+    }
+
+    with_runtime_for_device(&session.device, |runtime| {
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut retained_command_buffers = Vec::with_capacity(prepared_tiles.len());
+        let mut retained_buffers = Vec::<Buffer>::new();
+        let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
+            let ptr = first.coefficient_buffer.as_ptr();
+            prepared_tiles
+                .iter()
+                .all(|tile| {
+                    tile.coefficient_buffer_is_batch_shared
+                        && tile.coefficient_buffer.as_ptr() == ptr
+                })
+                .then(|| first.coefficient_buffer.clone())
+        });
+        let (coefficient_buffer, coefficient_offsets) =
+            if let Some(coefficient_buffer) = shared_coefficient_buffer {
+                (
+                    coefficient_buffer,
+                    prepared_tiles
+                        .iter()
+                        .map(|tile| tile.coefficient_byte_offset)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                let mut coefficient_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+                let mut total_coefficient_bytes = 0usize;
+                for tile in &prepared_tiles {
+                    coefficient_offsets.push(total_coefficient_bytes);
+                    total_coefficient_bytes = total_coefficient_bytes
+                        .checked_add(tile.coefficient_byte_len)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "J2K Metal batch coefficient buffer size overflow".to_string(),
+                        })?;
+                }
+                let coefficient_buffer = runtime.device.new_buffer(
+                    total_coefficient_bytes.max(1) as u64,
+                    MTLResourceOptions::StorageModePrivate,
+                );
+                let blit = command_buffer.new_blit_command_encoder();
+                for (tile, &dst_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
+                    if tile.coefficient_byte_len > 0 {
+                        blit.copy_from_buffer(
+                            &tile.coefficient_buffer,
+                            tile.coefficient_byte_offset as u64,
+                            &coefficient_buffer,
+                            dst_offset as u64,
+                            tile.coefficient_byte_len as u64,
+                        );
+                    }
+                }
+                blit.end_encoding();
+                (coefficient_buffer, coefficient_offsets)
+            };
+
+        let mut tier1_jobs = Vec::<J2kClassicEncodeBatchJob>::new();
+        let mut tier1_output_capacity_total = 0usize;
+        let mut tier1_segment_capacity_total = 0usize;
+        let segment_capacity_per_job = 256usize;
+        let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
+        let mut tile_tier1_output_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
+        for (tile, &coefficient_byte_offset) in
+            prepared_tiles.iter().zip(coefficient_offsets.iter())
+        {
+            tile_tier1_job_bases.push(tier1_jobs.len());
+            let tile_output_start = tier1_output_capacity_total;
+            let coefficient_word_offset = coefficient_byte_offset
+                .checked_div(size_of::<i32>())
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch coefficient offset division failed".to_string(),
+                })?;
+            let coefficient_word_offset_u32 =
+                u32::try_from(coefficient_word_offset).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal batch coefficient offset exceeds u32".to_string(),
+                })?;
+            for block in &tile.code_blocks {
+                let output_capacity = classic_encode_output_capacity(
+                    block.width,
+                    block.height,
+                    block.total_bitplanes,
+                )?;
+                let output_offset =
+                    u32::try_from(tier1_output_capacity_total).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal batch Tier-1 output offset exceeds u32".to_string(),
+                    })?;
+                let segment_offset = u32::try_from(tier1_segment_capacity_total).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch Tier-1 segment offset exceeds u32".to_string(),
+                    }
+                })?;
+                let coefficient_offset = block
+                    .coefficient_offset
+                    .checked_add(coefficient_word_offset_u32)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch coefficient offset overflow".to_string(),
+                    })?;
+                tier1_jobs.push(J2kClassicEncodeBatchJob {
+                    coefficient_offset,
+                    output_offset,
+                    segment_offset,
+                    width: block.width,
+                    height: block.height,
+                    sub_band_type: classic_encode_sub_band_code(block.sub_band_type),
+                    total_bitplanes: u32::from(block.total_bitplanes),
+                    style_flags: 0,
+                    output_capacity: u32::try_from(output_capacity).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "J2K Metal batch Tier-1 output capacity exceeds u32"
+                                .to_string(),
+                        }
+                    })?,
+                    segment_capacity: u32::try_from(segment_capacity_per_job).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "J2K Metal batch Tier-1 segment capacity exceeds u32"
+                                .to_string(),
+                        }
+                    })?,
+                });
+                tier1_output_capacity_total = tier1_output_capacity_total
+                    .checked_add(output_capacity)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch Tier-1 output buffer overflow".to_string(),
+                    })?;
+                tier1_segment_capacity_total = tier1_segment_capacity_total
+                    .checked_add(segment_capacity_per_job)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch Tier-1 segment buffer overflow".to_string(),
+                    })?;
+            }
+            tile_tier1_output_capacities.push(
+                tier1_output_capacity_total
+                    .checked_sub(tile_output_start)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch tile Tier-1 capacity underflow".to_string(),
+                    })?,
+            );
+        }
+
+        let tier1_job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal batch Tier-1 job count exceeds u32".to_string(),
+        })?;
+        let tier1_job_buffer = owned_slice_buffer(&runtime.device, &tier1_jobs);
+        let tier1_output_buffer = runtime.device.new_buffer(
+            tier1_output_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let tier1_status_buffer = runtime.device.new_buffer(
+            (tier1_jobs.len().max(1) * size_of::<J2kClassicEncodeStatus>()) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let tier1_segment_buffer = runtime.device.new_buffer(
+            (tier1_segment_capacity_total.max(1) * size_of::<J2kClassicSegment>()) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        if tier1_job_count > 0 {
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&runtime.classic_encode_code_blocks);
+            encoder.set_buffer(0, Some(&coefficient_buffer), 0);
+            encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
+            encoder.set_buffer(2, Some(&tier1_job_buffer), 0);
+            encoder.set_buffer(3, Some(&tier1_status_buffer), 0);
+            encoder.set_buffer(4, Some(&tier1_segment_buffer), 0);
+            encoder.set_bytes(
+                5,
+                size_of::<u32>() as u64,
+                (&raw const tier1_job_count).cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize {
+                    width: u64::from(tier1_job_count),
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: runtime
+                        .classic_encode_code_blocks
+                        .thread_execution_width()
+                        .max(1),
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            encoder.end_encoding();
+        }
+
+        let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
+        let mut packet_subbands = Vec::<J2kPacketSubband>::new();
+        let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
+        let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
+        let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
+        let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
+        let mut assembly_jobs =
+            Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
+        let mut packet_output_capacity_total = 0usize;
+        let mut header_capacity_total = 0usize;
+        let mut scratch_words_total = 0usize;
+        let mut codestream_capacity_total = 0usize;
+        let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+        let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
+
+        for (tile_index, tile) in prepared_tiles.iter().enumerate() {
+            let local_resolution_offset = packet_resolutions.len();
+            let local_subband_offset = packet_subbands.len();
+            let local_block_offset = resident_blocks.len();
+            let local_descriptor_offset = packet_descriptors.len();
+            let local_state_block_offset = state_blocks.len();
+            let tier1_job_base = tile_tier1_job_bases[tile_index];
+            let mut max_tree_nodes = 1usize;
+            let mut local_subband_count = 0usize;
+            let mut local_resident_block_count = 0usize;
+
+            for resolution in &tile.resolutions {
+                let subband_offset =
+                    u32::try_from(local_subband_count).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal batch packet subband offset exceeds u32".to_string(),
+                    })?;
+                for subband in &resolution.subbands {
+                    let block_offset = u32::try_from(local_resident_block_count).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "J2K Metal batch packet block offset exceeds u32".to_string(),
+                        }
+                    })?;
+                    max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
+                        subband.num_cbs_x,
+                        subband.num_cbs_y,
+                    )?);
+                    let code_block_start =
+                        usize::try_from(subband.code_block_start).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "J2K Metal batch packet code-block offset exceeds usize"
+                                    .to_string(),
+                            }
+                        })?;
+                    let code_block_count =
+                        usize::try_from(subband.code_block_count).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "J2K Metal batch packet code-block count exceeds usize"
+                                    .to_string(),
+                            }
+                        })?;
+                    let code_block_end = code_block_start
+                        .checked_add(code_block_count)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "J2K Metal batch packet code-block range overflow".to_string(),
+                        })?;
+                    if code_block_end > tile.code_blocks.len() {
+                        return Err(Error::MetalKernel {
+                            message: "J2K Metal batch packet code-block range out of bounds"
+                                .to_string(),
+                        });
+                    }
+                    for tier1_job_index in code_block_start..code_block_end {
+                        resident_blocks.push(J2kResidentPacketBlock {
+                            tier1_job_index: u32::try_from(
+                                tier1_job_base.checked_add(tier1_job_index).ok_or_else(|| {
+                                    Error::MetalKernel {
+                                        message: "J2K Metal batch Tier-1 index overflow"
+                                            .to_string(),
+                                    }
+                                })?,
+                            )
+                            .map_err(|_| Error::MetalKernel {
+                                message: "J2K Metal batch Tier-1 index exceeds u32".to_string(),
+                            })?,
+                            previously_included: 0,
+                            l_block: 3,
+                            block_coding_mode: 0,
+                        });
+                    }
+                    packet_subbands.push(J2kPacketSubband {
+                        block_offset,
+                        block_count: subband.code_block_count,
+                        num_cbs_x: subband.num_cbs_x,
+                        num_cbs_y: subband.num_cbs_y,
+                    });
+                    local_subband_count =
+                        local_subband_count
+                            .checked_add(1)
+                            .ok_or_else(|| Error::MetalKernel {
+                                message: "J2K Metal batch subband count overflow".to_string(),
+                            })?;
+                    local_resident_block_count = local_resident_block_count
+                        .checked_add(code_block_count)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "J2K Metal batch resident block count overflow".to_string(),
+                        })?;
+                }
+                packet_resolutions.push(J2kPacketResolution {
+                    subband_offset,
+                    subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "J2K Metal batch resolution subband count exceeds u32"
+                                .to_string(),
+                        }
+                    })?,
+                });
+            }
+
+            if tile.resolutions.len()
+                != usize::try_from(tile.resolution_count).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal batch resolution count exceeds usize".to_string(),
+                })?
+            {
+                return Err(Error::MetalKernel {
+                    message: "J2K Metal batch resolution count mismatch".to_string(),
+                });
+            }
+            if local_resident_block_count
+                != usize::try_from(tile.code_block_count).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal batch code-block count exceeds usize".to_string(),
+                })?
+            {
+                return Err(Error::MetalKernel {
+                    message: "J2K Metal batch code-block count mismatch".to_string(),
+                });
+            }
+
+            let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
+            for descriptor in &tile.packet_descriptors {
+                let packet_index =
+                    usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal batch descriptor packet index exceeds usize"
+                            .to_string(),
+                    })?;
+                let resolution = packet_resolutions
+                    .get(local_resolution_offset + packet_index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch descriptor packet index out of range".to_string(),
+                    })?;
+                let subband_start =
+                    usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal batch descriptor subband offset exceeds usize"
+                            .to_string(),
+                    })?;
+                let subband_count =
+                    usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal batch descriptor subband count exceeds usize"
+                            .to_string(),
+                    })?;
+                let mut packet_block_count = 0usize;
+                for subband in &packet_subbands[local_subband_offset + subband_start
+                    ..local_subband_offset + subband_start + subband_count]
+                {
+                    packet_block_count = packet_block_count
+                        .checked_add(usize::try_from(subband.block_count).map_err(|_| {
+                            Error::MetalKernel {
+                                message: "J2K Metal batch descriptor block count exceeds usize"
+                                    .to_string(),
+                            }
+                        })?)
+                        .ok_or_else(|| Error::MetalKernel {
+                            message: "J2K Metal batch descriptor block count overflow".to_string(),
+                        })?;
+                }
+                let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
+                    state_block_offsets.get(&descriptor.state_index)
+                {
+                    (offset, count)
+                } else {
+                    let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
+                        .map_err(|_| Error::MetalKernel {
+                            message: "J2K Metal batch state block offset exceeds u32".to_string(),
+                        })?;
+                    for subband in &packet_subbands[local_subband_offset + subband_start
+                        ..local_subband_offset + subband_start + subband_count]
+                    {
+                        for _ in 0..subband.block_count {
+                            state_blocks.push(J2kPacketStateBlock {
+                                previously_included: 0,
+                                l_block: 3,
+                            });
+                        }
+                    }
+                    state_block_offsets
+                        .insert(descriptor.state_index, (offset, packet_block_count));
+                    (offset, packet_block_count)
+                };
+                if existing_count != packet_block_count {
+                    return Err(Error::MetalKernel {
+                        message: "J2K Metal batch descriptor state layout mismatch".to_string(),
+                    });
+                }
+                packet_descriptors.push(J2kPacketDescriptor {
+                    packet_index: descriptor.packet_index,
+                    state_index: descriptor.state_index,
+                    layer: u32::from(descriptor.layer),
+                    resolution: descriptor.resolution,
+                    component: u32::from(descriptor.component),
+                    precinct_lo: descriptor.precinct as u32,
+                    precinct_hi: (descriptor.precinct >> 32) as u32,
+                    state_block_offset,
+                });
+            }
+
+            let header_capacity = local_resident_block_count
+                .checked_mul(256)
+                .and_then(|bytes| bytes.checked_add(4096))
+                .map(|bytes| bytes.max(4096))
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch packet header capacity overflow".to_string(),
+                })?;
+            let packet_output_capacity = tile_tier1_output_capacities[tile_index]
+                .checked_add(
+                    header_capacity.saturating_mul(
+                        tile.packet_descriptors
+                            .len()
+                            .max(tile.resolutions.len())
+                            .max(1),
+                    ),
+                )
+                .and_then(|bytes| bytes.checked_add(1024))
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch packet output capacity overflow".to_string(),
+                })?;
+            let codestream_capacity =
+                lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
+            let scratch_words =
+                max_tree_nodes
+                    .checked_mul(6)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch scratch size overflow".to_string(),
+                    })?;
+
+            let packet_output_offset = packet_output_capacity_total;
+            let header_offset = header_capacity_total;
+            let scratch_offset = scratch_words_total;
+            let codestream_offset = codestream_capacity_total;
+            packet_jobs.push(J2kBatchedPacketEncodeJob {
+                resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch resolution offset exceeds u32".to_string(),
+                    }
+                })?,
+                subband_offset: u32::try_from(local_subband_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch subband offset exceeds u32".to_string(),
+                    }
+                })?,
+                block_offset: u32::try_from(local_block_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch block offset exceeds u32".to_string(),
+                    }
+                })?,
+                descriptor_offset: u32::try_from(local_descriptor_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch descriptor offset exceeds u32".to_string(),
+                    }
+                })?,
+                state_block_offset: u32::try_from(local_state_block_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch state block offset exceeds u32".to_string(),
+                    }
+                })?,
+                output_offset: u32::try_from(packet_output_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch packet output offset exceeds u32".to_string(),
+                    }
+                })?,
+                header_offset: u32::try_from(header_offset).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal batch header offset exceeds u32".to_string(),
+                })?,
+                scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal batch scratch offset exceeds u32".to_string(),
+                })?,
+                resolution_count: tile.resolution_count,
+                num_layers: u32::from(tile.num_layers),
+                num_components: u32::from(tile.num_components),
+                code_block_count: tile.code_block_count,
+                subband_count: u32::try_from(local_subband_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch local subband count exceeds u32".to_string(),
+                    }
+                })?,
+                descriptor_count: u32::try_from(tile.packet_descriptors.len()).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch descriptor count exceeds u32".to_string(),
+                    }
+                })?,
+                output_capacity: u32::try_from(packet_output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch packet output capacity exceeds u32".to_string(),
+                    }
+                })?,
+                header_capacity: u32::try_from(header_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch header capacity exceeds u32".to_string(),
+                    }
+                })?,
+                scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch scratch node capacity exceeds u32".to_string(),
+                    }
+                })?,
+            });
+            assembly_jobs.push(J2kBatchedCodestreamAssemblyJob {
+                tile_data_offset: u32::try_from(packet_output_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch assembly packet offset exceeds u32".to_string(),
+                    }
+                })?,
+                codestream_offset: u32::try_from(codestream_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch codestream offset exceeds u32".to_string(),
+                    }
+                })?,
+                width: tile.codestream.width,
+                height: tile.codestream.height,
+                num_components: u32::from(tile.codestream.num_components),
+                bit_depth: u32::from(tile.codestream.bit_depth),
+                signed_samples: u32::from(tile.codestream.signed),
+                num_decomposition_levels: u32::from(tile.codestream.num_decomposition_levels),
+                use_mct: u32::from(tile.codestream.use_mct),
+                guard_bits: u32::from(tile.codestream.guard_bits),
+                progression_order: codestream_progression_order_code(
+                    tile.codestream.progression_order,
+                ),
+                write_tlm: u32::from(tile.codestream.write_tlm),
+                high_throughput: 0,
+                output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch codestream capacity exceeds u32".to_string(),
+                    }
+                })?,
+            });
+            codestream_offsets.push(codestream_offset);
+            codestream_capacities.push(codestream_capacity);
+            packet_output_capacity_total = packet_output_capacity_total
+                .checked_add(packet_output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch packet output total overflow".to_string(),
+                })?;
+            header_capacity_total = header_capacity_total
+                .checked_add(header_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch header total overflow".to_string(),
+                })?;
+            scratch_words_total =
+                scratch_words_total
+                    .checked_add(scratch_words)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch scratch total overflow".to_string(),
+                    })?;
+            codestream_capacity_total = codestream_capacity_total
+                .checked_add(codestream_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch codestream total overflow".to_string(),
+                })?;
+        }
+
+        let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
+        let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
+        let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
+        let packet_block_buffer = runtime.device.new_buffer(
+            (resident_blocks.len().max(1) * size_of::<J2kPacketBlock>()) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors);
+        let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
+        let packet_output_buffer = runtime.device.new_buffer(
+            packet_output_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let header_buffer = runtime.device.new_buffer(
+            header_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let scratch_buffer = runtime.device.new_buffer(
+            (scratch_words_total.max(1) * size_of::<u32>()) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs);
+        let packet_status_buffer = runtime.device.new_buffer(
+            (packet_jobs.len() * size_of::<J2kPacketEncodeStatus>()) as u64,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs);
+        let codestream_buffer = runtime.device.new_buffer(
+            codestream_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let codestream_status_buffer = runtime.device.new_buffer(
+            (assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let resident_block_params = J2kResidentPacketBlockParams {
+            block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal batch resident block count exceeds u32".to_string(),
+            })?,
+            tier1_job_count,
+        };
+        if !resident_blocks.is_empty() {
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_classic);
+            encoder.set_buffer(0, Some(&resident_block_buffer), 0);
+            encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
+            encoder.set_buffer(2, Some(&tier1_status_buffer), 0);
+            encoder.set_buffer(3, Some(&packet_block_buffer), 0);
+            encoder.set_bytes(
+                4,
+                size_of::<J2kResidentPacketBlockParams>() as u64,
+                (&raw const resident_block_params).cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize {
+                    width: resident_blocks.len() as u64,
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: runtime
+                        .packet_block_prepare_resident_classic
+                        .thread_execution_width()
+                        .max(1),
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            encoder.end_encoding();
+        }
+
+        let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal batch tile count exceeds u64".to_string(),
+        })?;
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
+        encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
+        encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
+        encoder.set_buffer(2, Some(&packet_block_buffer), 0);
+        encoder.set_buffer(3, Some(&tier1_output_buffer), 0);
+        encoder.set_buffer(4, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(5, Some(&header_buffer), 0);
+        encoder.set_buffer(6, Some(&scratch_buffer), 0);
+        encoder.set_buffer(7, Some(&packet_job_buffer), 0);
+        encoder.set_buffer(8, Some(&packet_status_buffer), 0);
+        encoder.set_buffer(9, Some(&packet_descriptor_buffer), 0);
+        encoder.set_buffer(10, Some(&state_block_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: tile_count,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: runtime
+                    .packet_encode_batched
+                    .thread_execution_width()
+                    .max(1),
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
+        encoder.set_buffer(0, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(1, Some(&packet_status_buffer), 0);
+        encoder.set_buffer(2, Some(&codestream_buffer), 0);
+        encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
+        encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
+        encoder.dispatch_threads(
+            MTLSize {
+                width: tile_count,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: runtime
+                    .lossless_codestream_assemble_batched
+                    .thread_execution_width()
+                    .max(1),
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        for tile in prepared_tiles {
+            retained_command_buffers.push(tile.prepare_command_buffer);
+            retained_buffers.push(tile.coefficient_buffer);
+            retained_buffers.push(tile.deinterleave_status_buffer);
+            retained_buffers.extend(tile.plane_buffers);
+            retained_buffers.extend(tile.scratch_buffers);
+            retained_buffers.push(tile.coefficient_job_buffer);
+            recyclable_private_buffers.extend(tile.recyclable_private_buffers);
+        }
+        retained_buffers.push(coefficient_buffer);
+        retained_buffers.push(tier1_job_buffer);
+        retained_buffers.push(tier1_output_buffer);
+        retained_buffers.push(tier1_status_buffer);
+        retained_buffers.push(tier1_segment_buffer);
+        retained_buffers.push(packet_resolution_buffer);
+        retained_buffers.push(packet_subband_buffer);
+        retained_buffers.push(resident_block_buffer);
+        retained_buffers.push(packet_block_buffer);
+        retained_buffers.push(packet_descriptor_buffer);
+        retained_buffers.push(state_block_buffer);
+        retained_buffers.push(packet_output_buffer);
+        retained_buffers.push(header_buffer);
+        retained_buffers.push(scratch_buffer);
+        retained_buffers.push(packet_job_buffer);
+        retained_buffers.push(packet_status_buffer);
+        retained_buffers.push(codestream_job_buffer);
+
+        Ok(J2kPendingResidentLosslessCodestreamBatch {
+            device: runtime.device.clone(),
+            buffer: codestream_buffer,
+            byte_offsets: codestream_offsets,
+            capacities: codestream_capacities,
+            status_buffer: codestream_status_buffer,
+            command_buffer: command_buffer.to_owned(),
+            retained_command_buffers,
+            _retained_buffers: retained_buffers,
+            recyclable_private_buffers,
+            status_stage: "J2K batched codestream assembly",
+            length_error: "J2K Metal batched codestream output length exceeds usize",
+            capacity_error: "J2K Metal batched codestream output length exceeds buffer",
         })
     })
 }

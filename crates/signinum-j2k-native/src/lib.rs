@@ -587,6 +587,15 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
+    /// Return whether native CPU code-block fallback should use internal rayon parallelism.
+    ///
+    /// External accelerators keep serial per-block fallback so their hooks still
+    /// observe every fallback block after a declined batch hook.
+    #[doc(hidden)]
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        false
+    }
+
     /// Optionally packetize prepared packet contributions.
     ///
     /// Return `Ok(Some(bytes))` with the complete tile bitstream. Return
@@ -604,7 +613,11 @@ pub trait J2kEncodeStageAccelerator {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuOnlyJ2kEncodeStageAccelerator;
 
-impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {}
+impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        true
+    }
+}
 
 /// Hidden classic J2K batched code-block decode job for one sub-band.
 #[doc(hidden)]
