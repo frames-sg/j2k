@@ -3550,7 +3550,13 @@ mod tests {
     #[test]
     fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
         let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
-        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let device = metal::Device::system_default().expect("Metal device");
+        if !compute::ht_simd_prototype_available_for_device_for_test(&device)
+            .expect("HTJ2K SIMD prototype availability query")
+        {
+            return;
+        }
+        let session = crate::MetalBackendSession::new(device);
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
             pixels.len() as u64,
@@ -4388,6 +4394,77 @@ mod tests {
         let second: Vec<u8> = (0..WIDTH * HEIGHT)
             .map(|i| 255u8.wrapping_sub(((i * 5 + 11) & 0xFF) as u8))
             .collect();
+        let device = metal::Device::system_default().expect("Metal device");
+        let session = crate::MetalBackendSession::new(device.clone());
+        let first_buffer = private_buffer_with_bytes(&session, &first);
+        let second_buffer = private_buffer_with_bytes(&session, &second);
+        let tiles = [
+            super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width: WIDTH as u32,
+                height: HEIGHT as u32,
+                pitch_bytes: WIDTH,
+                output_width: WIDTH as u32,
+                output_height: HEIGHT as u32,
+                format: PixelFormat::Gray8,
+            },
+            super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width: WIDTH as u32,
+                height: HEIGHT as u32,
+                pitch_bytes: WIDTH,
+                output_width: WIDTH as u32,
+                output_height: HEIGHT as u32,
+                format: PixelFormat::Gray8,
+            },
+        ];
+        let options = J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::RequireDevice,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+            ..J2kLosslessEncodeOptions::default()
+        };
+
+        compute::with_isolated_runtime_for_device_for_test(&device, || {
+            compute::reset_private_buffer_pool_misses_for_test();
+            super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+                &tiles, &options, &session,
+            )?;
+            let first_misses = compute::private_buffer_pool_misses_for_test();
+            assert!(
+                first_misses > 0,
+                "first unique HTJ2K batch should populate reusable private arenas"
+            );
+
+            compute::reset_private_buffer_pool_misses_for_test();
+            let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+                &tiles, &options, &session,
+            )?;
+
+            assert_eq!(
+                compute::private_buffer_pool_misses_for_test(),
+                0,
+                "second same-shape HTJ2K batch should reuse private arenas"
+            );
+            assert_eq!(encoded.len(), 2);
+            Ok(())
+        })
+        .expect("isolated HTJ2K Metal runtime");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_ht_private_batch_encode_uses_simd_prototype_when_enabled() {
+        const WIDTH: usize = 32;
+        const HEIGHT: usize = 32;
+        let first: Vec<u8> = (0..WIDTH * HEIGHT)
+            .map(|i| ((i * 3 + 17) & 0xFF) as u8)
+            .collect();
+        let second: Vec<u8> = (0..WIDTH * HEIGHT)
+            .map(|i| ((i * 11 + 5) & 0xFF) as u8)
+            .collect();
         let session = crate::MetalBackendSession::system_default().expect("Metal session");
         let first_buffer = private_buffer_with_bytes(&session, &first);
         let second_buffer = private_buffer_with_bytes(&session, &second);
@@ -4420,29 +4497,29 @@ mod tests {
             ..J2kLosslessEncodeOptions::default()
         };
 
-        compute::reset_private_buffer_pool_misses_for_test();
-        super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
-            &tiles, &options, &session,
-        )
-        .expect("first HTJ2K Metal batch");
-        let first_misses = compute::private_buffer_pool_misses_for_test();
-        assert!(
-            first_misses > 0,
-            "first unique HTJ2K batch should populate reusable private arenas"
-        );
-
-        compute::reset_private_buffer_pool_misses_for_test();
+        let _route = compute::force_ht_simd_prototype_route_for_test(true);
+        compute::reset_ht_simd_prototype_dispatches_for_test();
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles, &options, &session,
         )
-        .expect("second HTJ2K Metal batch");
+        .expect("HTJ2K SIMD prototype batch encode");
 
-        assert_eq!(
-            compute::private_buffer_pool_misses_for_test(),
-            0,
-            "second same-shape HTJ2K batch should reuse private arenas"
-        );
         assert_eq!(encoded.len(), 2);
+        assert!(
+            compute::ht_simd_prototype_dispatches_for_test() > 0,
+            "enabled HTJ2K batch encode should route through the SIMD prototype"
+        );
+        for (frame, expected) in encoded.iter().zip([first, second]) {
+            let codestream = frame
+                .encoded
+                .codestream_bytes()
+                .expect("Metal codestream bytes are CPU-readable");
+            let decoded = Image::new(codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+            assert_eq!(decoded.data, expected);
+        }
     }
 
     #[test]
@@ -5030,6 +5107,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn ht_simd_prototype_matches_scalar_for_64x64_block() {
+        if !compute::ht_simd_prototype_available_for_test()
+            .expect("HTJ2K SIMD prototype availability query")
+        {
+            return;
+        }
         let coeffs: Vec<i32> = (0..4096)
             .map(|idx| {
                 let value = ((idx * 37 + idx / 11 + 13) & 0xff) - 127;
@@ -5047,9 +5129,12 @@ mod tests {
             total_bitplanes: 8,
         };
 
-        let scalar = compute::encode_ht_cleanup_code_blocks(&[job])
-            .expect("scalar Metal HT encode")
-            .remove(0);
+        let scalar = {
+            let _route = compute::force_ht_simd_prototype_route_for_test(false);
+            compute::encode_ht_cleanup_code_blocks(&[job])
+                .expect("scalar Metal HT encode")
+                .remove(0)
+        };
         let simd = compute::encode_ht_cleanup_code_blocks_simd_prototype_for_test(&[job])
             .expect("SIMD prototype Metal HT encode")
             .remove(0);
@@ -5057,6 +5142,88 @@ mod tests {
         assert_eq!(simd.data, scalar.data);
         assert_eq!(simd.num_coding_passes, scalar.num_coding_passes);
         assert_eq!(simd.num_zero_bitplanes, scalar.num_zero_bitplanes);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ht_simd_prototype_matches_scalar_for_mixed_block_batch() {
+        if !compute::ht_simd_prototype_available_for_test()
+            .expect("HTJ2K SIMD prototype availability query")
+        {
+            return;
+        }
+        let all_zero = vec![0; 64];
+        let non_square: Vec<i32> = (0..512)
+            .map(|idx| {
+                let value = (idx * 23 + 9) & 0x7f;
+                if idx % 5 == 0 {
+                    -value
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let bitplane_edge: Vec<i32> = (0..256)
+            .map(|idx| match idx % 4 {
+                0 => 255,
+                1 => -255,
+                2 => 1,
+                _ => 0,
+            })
+            .collect();
+        let wide: Vec<i32> = (0..4096)
+            .map(|idx| {
+                let value = ((idx * 41 + idx / 7 + 3) & 0xff) - 128;
+                if idx % 31 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let jobs = [
+            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+                coefficients: &all_zero,
+                width: 8,
+                height: 8,
+                total_bitplanes: 8,
+            },
+            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+                coefficients: &non_square,
+                width: 16,
+                height: 32,
+                total_bitplanes: 8,
+            },
+            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+                coefficients: &bitplane_edge,
+                width: 16,
+                height: 16,
+                total_bitplanes: 8,
+            },
+            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+                coefficients: &wide,
+                width: 64,
+                height: 64,
+                total_bitplanes: 8,
+            },
+        ];
+
+        let scalar = {
+            let _route = compute::force_ht_simd_prototype_route_for_test(false);
+            compute::encode_ht_cleanup_code_blocks(&jobs).expect("scalar Metal HT batch")
+        };
+        let simd = compute::encode_ht_cleanup_code_blocks_simd_prototype_for_test(&jobs)
+            .expect("SIMD prototype Metal HT batch");
+
+        assert_eq!(simd.len(), scalar.len());
+        for (simd_block, scalar_block) in simd.iter().zip(scalar.iter()) {
+            assert_eq!(simd_block.data, scalar_block.data);
+            assert_eq!(simd_block.num_coding_passes, scalar_block.num_coding_passes);
+            assert_eq!(
+                simd_block.num_zero_bitplanes,
+                scalar_block.num_zero_bitplanes
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

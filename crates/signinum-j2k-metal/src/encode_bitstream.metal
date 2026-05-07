@@ -2015,6 +2015,7 @@ kernel void j2k_encode_ht_code_blocks(
     );
 }
 
+#if defined(SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE)
 kernel void j2k_encode_ht_code_blocks_simd_prototype(
     device const int *coefficients [[buffer(0)]],
     device uchar *out [[buffer(1)]],
@@ -2060,6 +2061,7 @@ kernel void j2k_encode_ht_code_blocks_simd_prototype(
         block_max
     );
 }
+#endif
 
 struct J2kPacketEncodeParams {
     uint resolution_count;
