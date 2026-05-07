@@ -8,6 +8,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use super::bitplane_encode;
 use super::build::SubBandType;
 use super::codestream_write::{self, BlockCodingMode, EncodeParams};
@@ -874,6 +877,10 @@ fn encode_all_ht_code_blocks(
             .collect());
     }
 
+    if accelerator.prefer_parallel_cpu_code_block_fallback() {
+        return encode_all_ht_code_blocks_parallel(&jobs);
+    }
+
     jobs.iter()
         .map(|job| {
             encode_ht_code_block(
@@ -920,6 +927,10 @@ fn encode_all_tier1_code_blocks(
             .collect());
     }
 
+    if accelerator.prefer_parallel_cpu_code_block_fallback() {
+        return encode_all_tier1_code_blocks_parallel(&jobs);
+    }
+
     let mut encoded = Vec::with_capacity(jobs.len());
     for subband in prepared_subbands {
         for block in &subband.code_blocks {
@@ -934,6 +945,72 @@ fn encode_all_tier1_code_blocks(
         }
     }
     Ok(encoded)
+}
+
+#[cfg(feature = "parallel")]
+fn encode_all_ht_code_blocks_parallel(
+    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    jobs.par_iter()
+        .map(|job| {
+            ht_block_encode::encode_code_block(
+                job.coefficients,
+                job.width,
+                job.height,
+                job.total_bitplanes,
+            )
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn encode_all_ht_code_blocks_parallel(
+    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    jobs.iter()
+        .map(|job| {
+            ht_block_encode::encode_code_block(
+                job.coefficients,
+                job.width,
+                job.height,
+                job.total_bitplanes,
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "parallel")]
+fn encode_all_tier1_code_blocks_parallel(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    jobs.par_iter()
+        .map(|job| {
+            Ok(bitplane_encode::encode_code_block(
+                job.coefficients,
+                job.width,
+                job.height,
+                internal_sub_band_type(job.sub_band_type),
+                job.total_bitplanes,
+            ))
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn encode_all_tier1_code_blocks_parallel(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    jobs.iter()
+        .map(|job| {
+            Ok(bitplane_encode::encode_code_block(
+                job.coefficients,
+                job.width,
+                job.height,
+                internal_sub_band_type(job.sub_band_type),
+                job.total_bitplanes,
+            ))
+        })
+        .collect()
 }
 
 fn encode_ht_code_block(
@@ -1009,6 +1086,15 @@ fn public_sub_band_type(sub_band_type: SubBandType) -> J2kSubBandType {
         SubBandType::HighLow => J2kSubBandType::HighLow,
         SubBandType::LowHigh => J2kSubBandType::LowHigh,
         SubBandType::HighHigh => J2kSubBandType::HighHigh,
+    }
+}
+
+fn internal_sub_band_type(sub_band_type: J2kSubBandType) -> SubBandType {
+    match sub_band_type {
+        J2kSubBandType::LowLow => SubBandType::LowLow,
+        J2kSubBandType::HighLow => SubBandType::HighLow,
+        J2kSubBandType::LowHigh => SubBandType::LowHigh,
+        J2kSubBandType::HighHigh => SubBandType::HighHigh,
     }
 }
 
@@ -1254,6 +1340,55 @@ mod tests {
             u32::try_from(accelerator.tier1_code_blocks).expect("test code-block count fits u32")
         );
         assert!(accelerator.packetization_saw_payload);
+    }
+
+    #[test]
+    fn cpu_only_accelerator_opts_into_parallel_block_fallback_only_for_native_cpu() {
+        #[derive(Default)]
+        struct ExternalAccelerator;
+
+        impl crate::J2kEncodeStageAccelerator for ExternalAccelerator {}
+
+        let cpu = crate::CpuOnlyJ2kEncodeStageAccelerator;
+        let external = ExternalAccelerator;
+
+        assert!(cpu.prefer_parallel_cpu_code_block_fallback());
+        assert!(!external.prefer_parallel_cpu_code_block_fallback());
+    }
+
+    #[test]
+    fn cpu_parallel_block_fallback_matches_serial_classic_and_htj2k_output() {
+        #[derive(Default)]
+        struct SerialCpuFallbackAccelerator;
+
+        impl crate::J2kEncodeStageAccelerator for SerialCpuFallbackAccelerator {}
+
+        let pixels = gradient_u8(96, 80);
+        for use_ht_block_coding in [false, true] {
+            let options = EncodeOptions {
+                num_decomposition_levels: 1,
+                code_block_width_exp: 2,
+                code_block_height_exp: 2,
+                use_ht_block_coding,
+                ..EncodeOptions::default()
+            };
+            let parallel = encode(&pixels, 96, 80, 1, 8, false, &options)
+                .expect("parallel CPU fallback encode");
+            let mut serial_accelerator = SerialCpuFallbackAccelerator;
+            let serial = encode_with_accelerator(
+                &pixels,
+                96,
+                80,
+                1,
+                8,
+                false,
+                &options,
+                &mut serial_accelerator,
+            )
+            .expect("serial CPU fallback encode");
+
+            assert_eq!(parallel, serial);
+        }
     }
 
     #[test]
