@@ -26,6 +26,7 @@ use crate::JpegCodec;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::num::NonZeroUsize;
 use signinum_core::{
     Colorspace as CoreColorspace, CompressedPayloadKind, CompressedTransferSyntax,
     DecodeOutcome as CoreDecodeOutcome, DecodeRowsError, DecoderContext as CoreDecoderContext,
@@ -57,6 +58,72 @@ pub struct DecodeOutcome {
     /// Warnings emitted during parse or decode. Empty when the stream is
     /// syntactically clean and every capability was exercised without fallback.
     pub warnings: Vec<Warning>,
+}
+
+/// One tile decode request for [`decode_tiles_into`].
+pub struct TileDecodeJob<'i, 'o> {
+    /// Compressed JPEG tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+}
+
+/// One scaled tile decode request for [`decode_tiles_scaled_into`].
+pub struct TileScaledDecodeJob<'i, 'o> {
+    /// Compressed JPEG tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Downscale factor applied to the full-tile decode.
+    pub scale: Downscale,
+}
+
+/// One ROI+scaled tile decode request for
+/// [`decode_tiles_region_scaled_into`].
+pub struct TileRegionScaledDecodeJob<'i, 'o> {
+    /// Compressed JPEG tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Region of interest in source-image coordinates.
+    pub roi: Rect,
+    /// Downscale factor applied to the region decode.
+    pub scale: Downscale,
+}
+
+/// Worker configuration for [`decode_tiles_into`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TileBatchOptions {
+    /// Worker count. `None` uses [`std::thread::available_parallelism`].
+    pub workers: Option<NonZeroUsize>,
+}
+
+/// Error returned by [`decode_tiles_into`], annotated with the failing tile
+/// index from the caller's input order.
+#[derive(Debug)]
+pub struct TileBatchError {
+    /// Index of the first failing tile in input order.
+    pub index: usize,
+    /// Decode error reported for that tile.
+    pub source: JpegError,
+}
+
+impl core::fmt::Display for TileBatchError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "tile {} decode failed: {}", self.index, self.source)
+    }
+}
+
+impl std::error::Error for TileBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Receives decoded component rows before they are packed into the final
@@ -705,6 +772,10 @@ impl<'a> Decoder<'a> {
             });
         }
 
+        if roi == Rect::full(self.info.dimensions) {
+            return self.decode_into_output_format_with_scratch(pool, out, stride, fmt);
+        }
+
         let downscale = fmt.downscale();
         let scaled_roi = scaled_rect_covering(roi, downscale)?;
         let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
@@ -906,9 +977,8 @@ impl<'a> Decoder<'a> {
 /// WSI tile-batch readers want: one function call per tile, with all
 /// heap state external.
 ///
-/// Parallelism is the caller's responsibility. The idiomatic shape is
-/// [`std::thread::scope`] with one `ScratchPool` per worker thread —
-/// no crate dependency on `rayon`.
+/// Parallelism is the caller's responsibility for this primitive. For
+/// production batch decode, use [`decode_tiles_into`].
 ///
 /// # Example
 ///
@@ -948,8 +1018,306 @@ pub fn decode_tile_into_in_context(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<DecodeOutcome, JpegError> {
-    let dec = Decoder::from_view_in_context(JpegView::parse(bytes)?, ctx)?;
+    decode_tile_into_in_context_with_options(
+        bytes,
+        ctx,
+        pool,
+        out,
+        stride,
+        fmt,
+        DecodeOptions::default(),
+    )
+}
+
+/// One-shot parse-plus-decode of an independent JPEG tile into the caller's
+/// buffer, reusing both caller-owned [`DecoderContext`] and caller-owned
+/// [`ScratchPool`], with explicit JPEG decode options.
+pub fn decode_tile_into_in_context_with_options(
+    bytes: &[u8],
+    ctx: &mut DecoderContext,
+    pool: &mut ScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    options: DecodeOptions,
+) -> Result<DecodeOutcome, JpegError> {
+    let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_into_with_scratch(pool, out, stride, fmt)
+}
+
+/// Decode independent JPEG tiles into caller-owned output buffers using a
+/// scoped CPU worker pool.
+///
+/// Each worker owns one [`DecoderContext`] and one [`ScratchPool`], so repeated
+/// tiles reuse parsed table state and heap scratch within that worker without
+/// sharing mutable decoder state across threads. Returned outcomes preserve
+/// the caller's input order.
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_into(
+    jobs: &mut [TileDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    decode_tiles_into_with_options(jobs, fmt, DecodeOptions::default(), options)
+}
+
+/// Decode independent JPEG tiles into caller-owned output buffers using a
+/// scoped CPU worker pool and explicit JPEG decode options.
+///
+/// Use this variant when container metadata has already resolved ambiguous
+/// three-component JPEG data to RGB or YCbCr via [`DecodeOptions`].
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_into_with_options(
+    jobs: &mut [TileDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    decode_options: DecodeOptions,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let job_count = jobs.len();
+    let worker_count = tile_batch_worker_count(job_count, options);
+    let chunk_size = job_count.div_ceil(worker_count);
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+            let start_index = chunk_index * chunk_size;
+            handles.push(
+                scope.spawn(move || decode_tile_job_chunk(start_index, chunk, fmt, decode_options)),
+            );
+        }
+
+        let mut results = Vec::with_capacity(job_count);
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        results
+    });
+
+    collect_tile_batch_results(job_count, results)
+}
+
+/// Decode independent JPEG tiles at reduced resolution into caller-owned
+/// output buffers using a scoped CPU worker pool.
+///
+/// Each worker owns one [`DecoderContext`] and one [`ScratchPool`], so repeated
+/// tiles reuse parsed table state and heap scratch within that worker without
+/// sharing mutable decoder state across threads. Returned outcomes preserve
+/// the caller's input order.
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_scaled_into(
+    jobs: &mut [TileScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    decode_tiles_scaled_into_with_options(jobs, fmt, DecodeOptions::default(), options)
+}
+
+/// Decode independent JPEG tiles at reduced resolution into caller-owned
+/// output buffers using a scoped CPU worker pool and explicit JPEG decode
+/// options.
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_scaled_into_with_options(
+    jobs: &mut [TileScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    decode_options: DecodeOptions,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let job_count = jobs.len();
+    let worker_count = tile_batch_worker_count(job_count, options);
+    let chunk_size = job_count.div_ceil(worker_count);
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+            let start_index = chunk_index * chunk_size;
+            handles.push(scope.spawn(move || {
+                decode_tile_scaled_job_chunk(start_index, chunk, fmt, decode_options)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(job_count);
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        results
+    });
+
+    collect_tile_batch_results(job_count, results)
+}
+
+/// Decode independent JPEG tile regions at reduced resolution into
+/// caller-owned output buffers using a scoped CPU worker pool.
+///
+/// Each worker owns one [`DecoderContext`] and one [`ScratchPool`], so repeated
+/// tiles reuse parsed table state and heap scratch within that worker without
+/// sharing mutable decoder state across threads. Returned outcomes preserve
+/// the caller's input order.
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_region_scaled_into(
+    jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    decode_tiles_region_scaled_into_with_options(jobs, fmt, DecodeOptions::default(), options)
+}
+
+/// Decode independent JPEG tile regions at reduced resolution into
+/// caller-owned output buffers using a scoped CPU worker pool and explicit JPEG
+/// decode options.
+///
+/// # Errors
+/// Returns [`TileBatchError`] with the first failing tile index in input order.
+pub fn decode_tiles_region_scaled_into_with_options(
+    jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    decode_options: DecodeOptions,
+    options: TileBatchOptions,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let job_count = jobs.len();
+    let worker_count = tile_batch_worker_count(job_count, options);
+    let chunk_size = job_count.div_ceil(worker_count);
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+            let start_index = chunk_index * chunk_size;
+            handles.push(scope.spawn(move || {
+                decode_tile_region_scaled_job_chunk(start_index, chunk, fmt, decode_options)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(job_count);
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        results
+    });
+
+    collect_tile_batch_results(job_count, results)
+}
+
+fn collect_tile_batch_results(
+    job_count: usize,
+    results: Vec<(usize, Result<DecodeOutcome, JpegError>)>,
+) -> Result<Vec<DecodeOutcome>, TileBatchError> {
+    let mut outcomes = Vec::with_capacity(job_count);
+    outcomes.resize_with(job_count, || None);
+    let mut first_error = None::<TileBatchError>;
+    for (index, result) in results {
+        match result {
+            Ok(outcome) => outcomes[index] = Some(outcome),
+            Err(source) => {
+                if first_error
+                    .as_ref()
+                    .is_none_or(|current| index < current.index)
+                {
+                    first_error = Some(TileBatchError { index, source });
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    Ok(outcomes
+        .into_iter()
+        .map(|outcome| outcome.expect("successful batch stores one outcome per tile"))
+        .collect())
+}
+
+fn tile_batch_worker_count(batch_size: usize, options: TileBatchOptions) -> usize {
+    if batch_size <= 1 {
+        return 1;
+    }
+    let workers = options.workers.map_or_else(
+        || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+        NonZeroUsize::get,
+    );
+    workers.max(1).min(batch_size)
+}
+
+fn decode_tile_job_chunk(
+    start_index: usize,
+    jobs: &mut [TileDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: DecodeOptions,
+) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    let mut results = Vec::with_capacity(jobs.len());
+    for (local_index, job) in jobs.iter_mut().enumerate() {
+        let outcome = decode_tile_into_in_context_with_options(
+            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, options,
+        );
+        results.push((start_index + local_index, outcome));
+    }
+    results
+}
+
+fn decode_tile_scaled_job_chunk(
+    start_index: usize,
+    jobs: &mut [TileScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: DecodeOptions,
+) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    let mut results = Vec::with_capacity(jobs.len());
+    for (local_index, job) in jobs.iter_mut().enumerate() {
+        let outcome = decode_tile_scaled_into_in_context_with_options(
+            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.scale, options,
+        );
+        results.push((start_index + local_index, outcome));
+    }
+    results
+}
+
+fn decode_tile_region_scaled_job_chunk(
+    start_index: usize,
+    jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: DecodeOptions,
+) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    let mut results = Vec::with_capacity(jobs.len());
+    for (local_index, job) in jobs.iter_mut().enumerate() {
+        let outcome = decode_tile_region_scaled_into_in_context_with_options(
+            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.roi, job.scale, options,
+        );
+        results.push((start_index + local_index, outcome));
+    }
+    results
 }
 
 /// One-shot parse-plus-region-decode of an independent JPEG tile into the
@@ -964,7 +1332,33 @@ pub fn decode_tile_region_into_in_context(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<DecodeOutcome, JpegError> {
-    let dec = Decoder::from_view_in_context(JpegView::parse(bytes)?, ctx)?;
+    decode_tile_region_into_in_context_with_options(
+        bytes,
+        ctx,
+        pool,
+        out,
+        stride,
+        fmt,
+        roi,
+        DecodeOptions::default(),
+    )
+}
+
+/// One-shot parse-plus-region-decode of an independent JPEG tile into the
+/// caller's buffer, reusing caller-owned state and explicit JPEG decode
+/// options.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_tile_region_into_in_context_with_options(
+    bytes: &[u8],
+    ctx: &mut DecoderContext,
+    pool: &mut ScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+    options: DecodeOptions,
+) -> Result<DecodeOutcome, JpegError> {
+    let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_region_into_with_scratch(pool, out, stride, fmt, roi)
 }
 
@@ -980,7 +1374,33 @@ pub fn decode_tile_scaled_into_in_context(
     fmt: PixelFormat,
     scale: Downscale,
 ) -> Result<DecodeOutcome, JpegError> {
-    let dec = Decoder::from_view_in_context(JpegView::parse(bytes)?, ctx)?;
+    decode_tile_scaled_into_in_context_with_options(
+        bytes,
+        ctx,
+        pool,
+        out,
+        stride,
+        fmt,
+        scale,
+        DecodeOptions::default(),
+    )
+}
+
+/// One-shot parse-plus-scaled-decode of an independent JPEG tile into the
+/// caller's buffer, reusing caller-owned state and explicit JPEG decode
+/// options.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_tile_scaled_into_in_context_with_options(
+    bytes: &[u8],
+    ctx: &mut DecoderContext,
+    pool: &mut ScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    scale: Downscale,
+    options: DecodeOptions,
+) -> Result<DecodeOutcome, JpegError> {
+    let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)
 }
 
@@ -998,7 +1418,35 @@ pub fn decode_tile_region_scaled_into_in_context(
     roi: Rect,
     scale: Downscale,
 ) -> Result<DecodeOutcome, JpegError> {
-    let dec = Decoder::from_view_in_context(JpegView::parse(bytes)?, ctx)?;
+    decode_tile_region_scaled_into_in_context_with_options(
+        bytes,
+        ctx,
+        pool,
+        out,
+        stride,
+        fmt,
+        roi,
+        scale,
+        DecodeOptions::default(),
+    )
+}
+
+/// One-shot parse-plus-region-scaled-decode of an independent JPEG tile into
+/// the caller's buffer, reusing caller-owned state and explicit JPEG decode
+/// options.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_tile_region_scaled_into_in_context_with_options(
+    bytes: &[u8],
+    ctx: &mut DecoderContext,
+    pool: &mut ScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+    options: DecodeOptions,
+) -> Result<DecodeOutcome, JpegError> {
+    let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi, scale)
 }
 

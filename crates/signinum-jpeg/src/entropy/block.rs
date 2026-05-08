@@ -157,14 +157,7 @@ pub(crate) fn decode_block_with_activity(
     block.clear_touched();
 
     // DC.
-    let ssss = dc_table.decode(br)?;
-    if ssss > 15 {
-        return Err(JpegError::HuffmanDecode {
-            mcu: 0,
-            reason: HuffmanFailure::InvalidSymbol,
-        });
-    }
-    let diff = br.receive_extend(ssss)?;
+    let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     // Dequant the DC in natural-order position 0 (zigzag index 0 → natural 0).
     let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
@@ -213,14 +206,7 @@ pub(crate) fn decode_block_with_dc_status(
 ) -> Result<bool, JpegError> {
     block.clear_touched();
 
-    let ssss = dc_table.decode(br)?;
-    if ssss > 15 {
-        return Err(JpegError::HuffmanDecode {
-            mcu: 0,
-            reason: HuffmanFailure::InvalidSymbol,
-        });
-    }
-    let diff = br.receive_extend(ssss)?;
+    let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
     block.store(0, clamp_i16(dc_dequant));
@@ -264,14 +250,7 @@ pub(crate) fn decode_block_for_reduced_idct(
 ) -> Result<bool, JpegError> {
     block.clear_touched();
 
-    let ssss = dc_table.decode(br)?;
-    if ssss > 15 {
-        return Err(JpegError::HuffmanDecode {
-            mcu: 0,
-            reason: HuffmanFailure::InvalidSymbol,
-        });
-    }
-    let diff = br.receive_extend(ssss)?;
+    let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
     block.store(0, clamp_i16(dc_dequant));
@@ -316,14 +295,7 @@ pub(crate) fn decode_block_for_1x1_idct(
 ) -> Result<(), JpegError> {
     block.clear_touched();
 
-    let ssss = dc_table.decode(br)?;
-    if ssss > 15 {
-        return Err(JpegError::HuffmanDecode {
-            mcu: 0,
-            reason: HuffmanFailure::InvalidSymbol,
-        });
-    }
-    let diff = br.receive_extend(ssss)?;
+    let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
     let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
     block.store(0, clamp_i16(dc_dequant));
@@ -357,14 +329,7 @@ pub(crate) fn skip_block(
     ac_table: &HuffmanTable,
     prev_dc: &mut i32,
 ) -> Result<(), JpegError> {
-    let ssss = dc_table.decode(br)?;
-    if ssss > 15 {
-        return Err(JpegError::HuffmanDecode {
-            mcu: 0,
-            reason: HuffmanFailure::InvalidSymbol,
-        });
-    }
-    let diff = br.receive_extend(ssss)?;
+    let diff = dc_table.decode_fast_dc(br)?;
     *prev_dc = prev_dc.wrapping_add(diff);
 
     let mut k: usize = 1;

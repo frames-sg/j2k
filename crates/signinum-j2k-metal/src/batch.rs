@@ -2,9 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use signinum_core::{BackendRequest, DeviceSubmission, Downscale, PixelFormat, Rect};
+use signinum_core::{BackendKind, BackendRequest, DeviceSubmission, Downscale, PixelFormat, Rect};
+use signinum_j2k::{
+    decode_tiles_into, decode_tiles_region_scaled_into, TileBatchOptions, TileDecodeJob,
+    TileRegionScaledDecodeJob,
+};
 
-use crate::{Error, J2kDecoder, MetalSession, Surface};
+use crate::{Error, J2kDecoder, MetalSession, Storage, Surface, SurfaceResidency};
 
 const AUTO_REGION_SCALED_GRAYSCALE_BATCH64_MIN_DIM: u32 = 512;
 const AUTO_REGION_SCALED_GRAYSCALE_BATCH64_MIN_COUNT: usize = 64;
@@ -106,13 +110,13 @@ fn flush_if_needed(session: &mut SessionState) {
 }
 
 fn group_metal_requests(queued: Vec<QueuedRequest>) -> Vec<Vec<QueuedRequest>> {
-    coalesce_distinct_region_scaled_grayscale_metal_requests(
+    coalesce_cpu_host_batches(coalesce_distinct_region_scaled_grayscale_metal_requests(
         coalesce_distinct_full_color_metal_requests(
             coalesce_distinct_full_grayscale_metal_requests(group_repeated_full_metal_requests(
                 queued,
             )),
         ),
-    )
+    ))
 }
 
 fn group_repeated_full_metal_requests(queued: Vec<QueuedRequest>) -> Vec<Vec<QueuedRequest>> {
@@ -258,6 +262,47 @@ fn coalesce_distinct_full_color_metal_requests(
     push_coalesced_or_single(&mut batches, rgba8);
     push_coalesced_or_single(&mut batches, rgb16);
     batches
+}
+
+fn coalesce_cpu_host_batches(batches: Vec<Vec<QueuedRequest>>) -> Vec<Vec<QueuedRequest>> {
+    let mut coalesced: Vec<Vec<QueuedRequest>> = Vec::new();
+    let mut cpu_groups: Vec<Vec<QueuedRequest>> = Vec::new();
+    for batch in batches {
+        if batch.len() == 1 && is_cpu_host_batch_candidate(&batch[0]) {
+            let request = batch
+                .into_iter()
+                .next()
+                .expect("single-entry batch has request");
+            if let Some(existing) = cpu_groups
+                .iter_mut()
+                .find(|existing| can_coalesce_cpu_host_batch(&existing[0], &request))
+            {
+                existing.push(request);
+            } else {
+                cpu_groups.push(vec![request]);
+            }
+        } else {
+            coalesced.push(batch);
+        }
+    }
+    coalesced.extend(cpu_groups);
+    coalesced
+}
+
+fn is_cpu_host_batch_candidate(request: &QueuedRequest) -> bool {
+    matches!(request.op, BatchOp::Full | BatchOp::RegionScaled { .. })
+        && matches!(request.backend, BackendRequest::Cpu | BackendRequest::Auto)
+}
+
+fn can_coalesce_cpu_host_batch(first: &QueuedRequest, next: &QueuedRequest) -> bool {
+    is_cpu_host_batch_candidate(first)
+        && is_cpu_host_batch_candidate(next)
+        && first.fmt == next.fmt
+        && matches!(
+            (&first.op, &next.op),
+            (BatchOp::Full, BatchOp::Full)
+                | (BatchOp::RegionScaled { .. }, BatchOp::RegionScaled { .. })
+        )
 }
 
 fn can_decode_as_repeated_full_grayscale_batch(
@@ -438,9 +483,156 @@ fn process_batch(session: &mut SessionState, requests: Vec<QueuedRequest>) {
         }
     }
 
+    if requests.len() > 1 {
+        if let Some(Ok(surfaces)) = decode_cpu_host_batch(&requests) {
+            if surfaces.len() == requests.len() {
+                session.submissions = session.submissions.saturating_add(1);
+                for (request, surface) in requests.into_iter().zip(surfaces) {
+                    session.completed[request.output_slot] = Some(Ok(surface));
+                }
+                return;
+            }
+        }
+    }
+
     for request in requests {
         session.submissions = session.submissions.saturating_add(1);
         session.completed[request.output_slot] = Some(decode_individual(&request));
+    }
+}
+
+fn decode_cpu_host_batch(requests: &[QueuedRequest]) -> Option<Result<Vec<Surface>, Error>> {
+    decode_cpu_full_batch(requests).or_else(|| decode_cpu_region_scaled_batch(requests))
+}
+
+fn decode_cpu_full_batch(requests: &[QueuedRequest]) -> Option<Result<Vec<Surface>, Error>> {
+    let first = requests.first()?;
+    if requests.len() <= 1
+        || !requests
+            .iter()
+            .all(|request| is_cpu_host_full_batch_candidate(request) && request.fmt == first.fmt)
+    {
+        return None;
+    }
+
+    Some(decode_cpu_full_batch_inner(requests, first.fmt))
+}
+
+fn is_cpu_host_full_batch_candidate(request: &QueuedRequest) -> bool {
+    matches!(request.op, BatchOp::Full)
+        && matches!(request.backend, BackendRequest::Cpu | BackendRequest::Auto)
+}
+
+fn decode_cpu_full_batch_inner(
+    requests: &[QueuedRequest],
+    fmt: PixelFormat,
+) -> Result<Vec<Surface>, Error> {
+    let mut dims = Vec::with_capacity(requests.len());
+    let mut outputs = Vec::with_capacity(requests.len());
+    for request in requests {
+        let decoder = J2kDecoder::new(request.input.as_ref())?;
+        let tile_dims = decoder.inner.info().dimensions;
+        let stride = tile_dims.0 as usize * fmt.bytes_per_pixel();
+        dims.push(tile_dims);
+        outputs.push(vec![0_u8; stride * tile_dims.1 as usize]);
+    }
+
+    {
+        let mut jobs = requests
+            .iter()
+            .zip(dims.iter())
+            .zip(outputs.iter_mut())
+            .map(|((request, dims), out)| TileDecodeJob {
+                input: request.input.as_ref(),
+                out: out.as_mut_slice(),
+                stride: dims.0 as usize * fmt.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default())
+            .map_err(|err| Error::Decode(err.source))?;
+    }
+
+    Ok(outputs
+        .into_iter()
+        .zip(dims)
+        .map(|(bytes, dimensions)| host_surface(bytes, dimensions, fmt))
+        .collect())
+}
+
+fn decode_cpu_region_scaled_batch(
+    requests: &[QueuedRequest],
+) -> Option<Result<Vec<Surface>, Error>> {
+    let first = requests.first()?;
+    if requests.len() <= 1
+        || !requests.iter().all(|request| {
+            is_cpu_host_region_scaled_batch_candidate(request) && request.fmt == first.fmt
+        })
+    {
+        return None;
+    }
+
+    Some(decode_cpu_region_scaled_batch_inner(requests, first.fmt))
+}
+
+fn is_cpu_host_region_scaled_batch_candidate(request: &QueuedRequest) -> bool {
+    matches!(request.op, BatchOp::RegionScaled { .. })
+        && matches!(request.backend, BackendRequest::Cpu | BackendRequest::Auto)
+}
+
+fn decode_cpu_region_scaled_batch_inner(
+    requests: &[QueuedRequest],
+    fmt: PixelFormat,
+) -> Result<Vec<Surface>, Error> {
+    let mut dims = Vec::with_capacity(requests.len());
+    let mut outputs = Vec::with_capacity(requests.len());
+    for request in requests {
+        let BatchOp::RegionScaled { roi, scale } = request.op else {
+            unreachable!("candidate op is restricted above");
+        };
+        let dimensions = roi.scaled_covering(scale);
+        let stride = dimensions.w as usize * fmt.bytes_per_pixel();
+        dims.push((dimensions.w, dimensions.h));
+        outputs.push(vec![0_u8; stride * dimensions.h as usize]);
+    }
+
+    {
+        let mut jobs = requests
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|(request, out)| {
+                let BatchOp::RegionScaled { roi, scale } = request.op else {
+                    unreachable!("candidate op is restricted above");
+                };
+                let dimensions = roi.scaled_covering(scale);
+                TileRegionScaledDecodeJob {
+                    input: request.input.as_ref(),
+                    out: out.as_mut_slice(),
+                    stride: dimensions.w as usize * fmt.bytes_per_pixel(),
+                    roi,
+                    scale,
+                }
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+            .map_err(|err| Error::Decode(err.source))?;
+    }
+
+    Ok(outputs
+        .into_iter()
+        .zip(dims)
+        .map(|(bytes, dimensions)| host_surface(bytes, dimensions, fmt))
+        .collect())
+}
+
+fn host_surface(bytes: Vec<u8>, dimensions: (u32, u32), fmt: PixelFormat) -> Surface {
+    Surface {
+        backend: BackendKind::Cpu,
+        residency: SurfaceResidency::Host,
+        dimensions,
+        fmt,
+        pitch_bytes: dimensions.0 as usize * fmt.bytes_per_pixel(),
+        byte_offset: 0,
+        storage: Storage::Host(bytes),
     }
 }
 

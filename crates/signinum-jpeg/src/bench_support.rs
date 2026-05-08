@@ -5,16 +5,22 @@
 use crate::backend::Backend;
 use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
+use crate::context::DecoderContext;
+use crate::decoder::{Decoder, JpegView};
 use crate::entropy::huffman::HuffmanTable;
+use crate::entropy::sequential::decode_scan_fast_tile_rgb_profiled;
 use crate::error::JpegError;
 use crate::idct::downscale::idct_islow_2x2_scalar;
-use crate::idct::idct_islow;
+use crate::idct::{idct_islow, idct_islow_dc_only};
 use crate::internal::bit_reader::BitReader;
+use crate::internal::scratch::{ScratchPool, SinkRows};
+use crate::output::{InterleavedRgbWriter, OutputWriter};
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::Cell;
 use core::ptr;
+use std::time::Instant;
 
 // `crate::backend::scalar` is intentionally private. Reuse the production
 // source file here so bench/test helpers call the real scalar row-pair kernel
@@ -48,6 +54,118 @@ impl Bench420DispatchStats {
     #[allow(dead_code)]
     pub(crate) fn record_neon_tail_chunk(&mut self) {
         self.neon_tail_chunks += 1;
+    }
+}
+
+#[doc(hidden)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BenchBlockActivityCounts {
+    total: usize,
+    dc_only: usize,
+    bottom_half_zero: usize,
+    general: usize,
+}
+
+impl BenchBlockActivityCounts {
+    pub fn total_blocks(self) -> usize {
+        self.total
+    }
+
+    pub fn dc_only_blocks(self) -> usize {
+        self.dc_only
+    }
+
+    pub fn bottom_half_zero_blocks(self) -> usize {
+        self.bottom_half_zero
+    }
+
+    pub fn general_blocks(self) -> usize {
+        self.general
+    }
+
+    pub(crate) fn record_dc_only(&mut self) {
+        self.total += 1;
+        self.dc_only += 1;
+    }
+
+    pub(crate) fn record_bottom_half_zero(&mut self) {
+        self.total += 1;
+        self.bottom_half_zero += 1;
+    }
+
+    pub(crate) fn record_general(&mut self) {
+        self.total += 1;
+        self.general += 1;
+    }
+}
+
+#[doc(hidden)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BenchFast420Profile {
+    total_ns: u128,
+    parse_plan_ns: u128,
+    mcu_decode_ns: u128,
+    rgb_emit_ns: u128,
+    finish_ns: u128,
+    tile_count: usize,
+    block_activity_counts: BenchBlockActivityCounts,
+}
+
+impl BenchFast420Profile {
+    pub fn total_ns(self) -> u128 {
+        self.total_ns
+    }
+
+    pub fn parse_plan_ns(self) -> u128 {
+        self.parse_plan_ns
+    }
+
+    pub fn mcu_decode_ns(self) -> u128 {
+        self.mcu_decode_ns
+    }
+
+    pub fn rgb_emit_ns(self) -> u128 {
+        self.rgb_emit_ns
+    }
+
+    pub fn finish_ns(self) -> u128 {
+        self.finish_ns
+    }
+
+    pub fn tile_count(self) -> usize {
+        self.tile_count
+    }
+
+    pub fn block_activity_counts(self) -> BenchBlockActivityCounts {
+        self.block_activity_counts
+    }
+
+    pub(crate) fn set_total_ns(&mut self, ns: u128) {
+        self.total_ns = ns;
+    }
+
+    pub(crate) fn set_tile_count(&mut self, tile_count: usize) {
+        self.tile_count = tile_count;
+    }
+
+    pub(crate) fn add_parse_plan_ns(&mut self, ns: u128) {
+        self.parse_plan_ns += ns;
+    }
+
+    pub(crate) fn add_mcu_decode_ns(&mut self, ns: u128) {
+        self.mcu_decode_ns += ns;
+    }
+
+    pub(crate) fn add_rgb_emit_ns(&mut self, ns: u128) {
+        self.rgb_emit_ns += ns;
+    }
+
+    pub(crate) fn add_finish_ns(&mut self, ns: u128) {
+        self.finish_ns += ns;
+    }
+
+    pub(crate) fn block_activity_counts_mut(&mut self) -> &mut BenchBlockActivityCounts {
+        &mut self.block_activity_counts
     }
 }
 
@@ -104,6 +222,113 @@ fn with_420_dispatch_stats<R>(stats: &mut Bench420DispatchStats, f: impl FnOnce(
     })
 }
 
+struct BenchProfileSinkWriter {
+    rows: SinkRows,
+    backend: Backend,
+}
+
+impl BenchProfileSinkWriter {
+    fn new(rows: SinkRows, backend: Backend) -> Self {
+        Self { rows, backend }
+    }
+
+    fn into_rows(self) -> SinkRows {
+        self.rows
+    }
+}
+
+impl InterleavedRgbWriter for BenchProfileSinkWriter {
+    fn with_rgb_rows<R, F>(&mut self, _y: u32, row_count: usize, fill: F) -> Result<R, JpegError>
+    where
+        F: FnOnce(&mut [u8], Option<&mut [u8]>) -> Result<R, JpegError>,
+    {
+        let result = match row_count {
+            1 => fill(&mut self.rows.top_row, None),
+            2 => fill(&mut self.rows.top_row, Some(&mut self.rows.bottom_row)),
+            _ => unreachable!("profile sink only supports one or two rows"),
+        }?;
+        std::hint::black_box(&self.rows.top_row);
+        if row_count == 2 {
+            std::hint::black_box(&self.rows.bottom_row);
+        }
+        Ok(result)
+    }
+}
+
+impl OutputWriter for BenchProfileSinkWriter {
+    fn write_rgb_row(
+        &mut self,
+        _y: u32,
+        r_row: &[u8],
+        g_row: &[u8],
+        b_row: &[u8],
+    ) -> Result<(), JpegError> {
+        self.backend
+            .fill_rgb_row_from_rgb(r_row, g_row, b_row, &mut self.rows.top_row);
+        std::hint::black_box(&self.rows.top_row);
+        Ok(())
+    }
+
+    fn write_ycbcr_row(
+        &mut self,
+        _y: u32,
+        y_row: &[u8],
+        cb_row: &[u8],
+        cr_row: &[u8],
+    ) -> Result<(), JpegError> {
+        self.backend
+            .fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, &mut self.rows.top_row);
+        std::hint::black_box(&self.rows.top_row);
+        Ok(())
+    }
+
+    fn write_gray_row(&mut self, _y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
+        self.backend
+            .fill_rgb_row_from_gray(gray_row, &mut self.rows.top_row);
+        std::hint::black_box(&self.rows.top_row);
+        Ok(())
+    }
+}
+
+#[doc(hidden)]
+pub fn bench_profile_fast420_tile_batch(
+    bytes: &[u8],
+    batch_size: usize,
+) -> Result<Option<BenchFast420Profile>, JpegError> {
+    let total_start = Instant::now();
+    let mut profile = BenchFast420Profile::default();
+    profile.set_tile_count(batch_size);
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+
+    for _ in 0..batch_size {
+        let parse_plan_start = Instant::now();
+        let view = JpegView::parse(bytes)?;
+        let dec = Decoder::from_view_in_context(view, &mut ctx)?;
+        profile.add_parse_plan_ns(parse_plan_start.elapsed().as_nanos());
+
+        if !dec.plan.matches_fast_tile_shape() {
+            return Ok(None);
+        }
+
+        let width = dec.info.dimensions.0 as usize;
+        let rows = pool.take_sink_rows(width);
+        let mut writer = BenchProfileSinkWriter::new(rows, dec.backend);
+        decode_scan_fast_tile_rgb_profiled(
+            &dec.plan,
+            dec.backend,
+            &dec.bytes[dec.plan.scan_offset..],
+            &mut pool,
+            &mut writer,
+            &mut profile,
+        )?;
+        pool.restore_sink_rows(writer.into_rows());
+    }
+
+    profile.set_total_ns(total_start.elapsed().as_nanos());
+    Ok(Some(profile))
+}
+
 #[doc(hidden)]
 pub struct BenchHuffmanState {
     table: HuffmanTable,
@@ -158,6 +383,12 @@ pub fn bench_idct_reference_block() -> [u8; 64] {
 #[doc(hidden)]
 pub fn bench_idct_reference_block_with(input: &[i16; 64], output: &mut [u8; 64]) {
     idct_islow(input, output);
+}
+
+/// Run the scalar DC-only ISLOW IDCT helper on a caller-provided coefficient.
+#[doc(hidden)]
+pub fn bench_idct_dc_only_block_with(dc_coeff: i16, output: &mut [u8; 64]) {
+    idct_islow_dc_only(dc_coeff, output);
 }
 
 /// Run the scalar reduced 2x2 IDCT on a caller-provided block. Used by future

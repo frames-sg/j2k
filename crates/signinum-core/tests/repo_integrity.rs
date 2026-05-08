@@ -612,8 +612,12 @@ fn public_narrative_docs_do_not_carry_stale_zeiss_claims() {
         "paper/arxiv/main.tex",
     ] {
         let path = root.join(relative);
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        let Ok(source) = fs::read_to_string(&path) else {
+            if relative.starts_with("paper/") {
+                continue;
+            }
+            panic!("read {}: missing required narrative doc", path.display());
+        };
         if source.contains("Zeiss") {
             offenders.push(relative);
         }

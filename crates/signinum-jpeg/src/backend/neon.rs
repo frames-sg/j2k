@@ -859,25 +859,6 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
     let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
 
-    let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
-    let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
-    unsafe {
-        fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
-        fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
-        fill_chunk_from_vectors_u16(
-            y_bottom_lo,
-            cb_bottom.0,
-            cr_bottom.0,
-            &mut rgb_bottom[..LANES * 3],
-        );
-        fill_chunk_from_vectors_u16(
-            y_bottom_hi,
-            cb_bottom.1,
-            cr_bottom.1,
-            &mut rgb_bottom[LANES * 3..],
-        );
-    }
-
     let top_cb = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
     let top_cr = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
     let bottom_cb = ((u32::from(next_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
@@ -885,11 +866,55 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[0], top_cb as u8, top_cr as u8);
     let (r_bottom, g_bottom, b_bottom) =
         ycbcr_to_rgb(y_bottom[0], bottom_cb as u8, bottom_cr as u8);
-    rgb_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
-    rgb_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
 
-    dst_top[..chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
-    dst_bottom[..chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+    if chunk_width == UPSAMPLED_LANES {
+        unsafe {
+            fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut dst_top[..LANES * 3]);
+            fill_chunk_from_vectors_u16(
+                y_top_hi,
+                cb_top.1,
+                cr_top.1,
+                &mut dst_top[LANES * 3..UPSAMPLED_LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_lo,
+                cb_bottom.0,
+                cr_bottom.0,
+                &mut dst_bottom[..LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_hi,
+                cb_bottom.1,
+                cr_bottom.1,
+                &mut dst_bottom[LANES * 3..UPSAMPLED_LANES * 3],
+            );
+        }
+        dst_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
+        dst_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+    } else {
+        let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
+        let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+        unsafe {
+            fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
+            fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
+            fill_chunk_from_vectors_u16(
+                y_bottom_lo,
+                cb_bottom.0,
+                cr_bottom.0,
+                &mut rgb_bottom[..LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_hi,
+                cb_bottom.1,
+                cr_bottom.1,
+                &mut rgb_bottom[LANES * 3..],
+            );
+        }
+        rgb_top[..3].copy_from_slice(&[r_top, g_top, b_top]);
+        rgb_bottom[..3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+        dst_top[..chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
+        dst_bottom[..chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -915,18 +940,30 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     let y_lo = unsafe { load_eight(&y_top_tail, 0) };
     let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
 
-    let mut rgb = [0u8; UPSAMPLED_LANES * 3];
-    unsafe {
-        fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
-        fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
-    }
-
     let cb0 = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
     let cr0 = ((u32::from(prev_cr[0]) + 3 * u32::from(curr_cr[0])) * 4 + 8) >> 4;
     let (r, g, b) = ycbcr_to_rgb(y_top[0], cb0 as u8, cr0 as u8);
-    rgb[..3].copy_from_slice(&[r, g, b]);
 
-    dst_top[..chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+    if chunk_width == UPSAMPLED_LANES {
+        unsafe {
+            fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst_top[..LANES * 3]);
+            fill_chunk_from_vectors_u16(
+                y_hi,
+                cb.1,
+                cr.1,
+                &mut dst_top[LANES * 3..UPSAMPLED_LANES * 3],
+            );
+        }
+        dst_top[..3].copy_from_slice(&[r, g, b]);
+    } else {
+        let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+        unsafe {
+            fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
+            fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
+        }
+        rgb[..3].copy_from_slice(&[r, g, b]);
+        dst_top[..chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -966,44 +1003,93 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
     let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
     let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
 
-    let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
-    let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
-    unsafe {
-        fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
-        fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
-        fill_chunk_from_vectors_u16(
-            y_bottom_lo,
-            cb_bottom.0,
-            cr_bottom.0,
-            &mut rgb_bottom[..LANES * 3],
-        );
-        fill_chunk_from_vectors_u16(
-            y_bottom_hi,
-            cb_bottom.1,
-            cr_bottom.1,
-            &mut rgb_bottom[LANES * 3..],
-        );
-    }
+    if chunk_width == UPSAMPLED_LANES {
+        unsafe {
+            fill_chunk_from_vectors_u16(
+                y_top_lo,
+                cb_top.0,
+                cr_top.0,
+                &mut dst_top[x * 3..x * 3 + LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_top_hi,
+                cb_top.1,
+                cr_top.1,
+                &mut dst_top[x * 3 + LANES * 3..x * 3 + UPSAMPLED_LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_lo,
+                cb_bottom.0,
+                cr_bottom.0,
+                &mut dst_bottom[x * 3..x * 3 + LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_hi,
+                cb_bottom.1,
+                cr_bottom.1,
+                &mut dst_bottom[x * 3 + LANES * 3..x * 3 + UPSAMPLED_LANES * 3],
+            );
+        }
 
-    if width.is_multiple_of(2) {
-        let last = width - 1;
-        let sample = curr_cb.len() - 1;
-        let top_cb = ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
-        let top_cr = ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-        let bottom_cb =
-            ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
-        let bottom_cr =
-            ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-        let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
-        let (r_bottom, g_bottom, b_bottom) =
-            ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
-        rgb_top[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r_top, g_top, b_top]);
-        rgb_bottom[(chunk_width - 1) * 3..chunk_width * 3]
-            .copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
-    }
+        if width.is_multiple_of(2) {
+            let last = width - 1;
+            let sample = curr_cb.len() - 1;
+            let top_cb =
+                ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let top_cr =
+                ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let bottom_cb =
+                ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let bottom_cr =
+                ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
+            let (r_bottom, g_bottom, b_bottom) =
+                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
+            dst_top[last * 3..last * 3 + 3].copy_from_slice(&[r_top, g_top, b_top]);
+            dst_bottom[last * 3..last * 3 + 3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+        }
+    } else {
+        let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
+        let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+        unsafe {
+            fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
+            fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
+            fill_chunk_from_vectors_u16(
+                y_bottom_lo,
+                cb_bottom.0,
+                cr_bottom.0,
+                &mut rgb_bottom[..LANES * 3],
+            );
+            fill_chunk_from_vectors_u16(
+                y_bottom_hi,
+                cb_bottom.1,
+                cr_bottom.1,
+                &mut rgb_bottom[LANES * 3..],
+            );
+        }
 
-    dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
-    dst_bottom[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+        if width.is_multiple_of(2) {
+            let last = width - 1;
+            let sample = curr_cb.len() - 1;
+            let top_cb =
+                ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let top_cr =
+                ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let bottom_cb =
+                ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let bottom_cr =
+                ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
+            let (r_bottom, g_bottom, b_bottom) =
+                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
+            rgb_top[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r_top, g_top, b_top]);
+            rgb_bottom[(chunk_width - 1) * 3..chunk_width * 3]
+                .copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+        }
+
+        dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
+        dst_bottom[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_bottom[..chunk_width * 3]);
+    }
 }
 
 #[target_feature(enable = "neon")]
@@ -1031,22 +1117,47 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
     let y_lo = unsafe { load_eight(&y_top_tail, 0) };
     let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
 
-    let mut rgb = [0u8; UPSAMPLED_LANES * 3];
-    unsafe {
-        fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
-        fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
-    }
+    if chunk_width == UPSAMPLED_LANES {
+        unsafe {
+            fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst_top[x * 3..x * 3 + LANES * 3]);
+            fill_chunk_from_vectors_u16(
+                y_hi,
+                cb.1,
+                cr.1,
+                &mut dst_top[x * 3 + LANES * 3..x * 3 + UPSAMPLED_LANES * 3],
+            );
+        }
 
-    if width.is_multiple_of(2) {
-        let last = width - 1;
-        let sample = curr_cb.len() - 1;
-        let cb_last = ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
-        let cr_last = ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-        let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
-        rgb[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r, g, b]);
-    }
+        if width.is_multiple_of(2) {
+            let last = width - 1;
+            let sample = curr_cb.len() - 1;
+            let cb_last =
+                ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let cr_last =
+                ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
+            dst_top[last * 3..last * 3 + 3].copy_from_slice(&[r, g, b]);
+        }
+    } else {
+        let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+        unsafe {
+            fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
+            fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
+        }
 
-    dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+        if width.is_multiple_of(2) {
+            let last = width - 1;
+            let sample = curr_cb.len() - 1;
+            let cb_last =
+                ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
+            let cr_last =
+                ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
+            let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
+            rgb[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r, g, b]);
+        }
+
+        dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
+    }
 }
 
 const TAIL_WINDOW: usize = LANES + 2;

@@ -69,6 +69,29 @@ fn compare_bench_distinct_and_external_region_scaled_expose_auto_variants() {
 }
 
 #[test]
+fn compare_bench_batch_sizes_are_env_configurable() {
+    let common = include_str!("../benches/common/mod.rs");
+    let compare = include_str!("../benches/compare.rs");
+
+    assert!(
+        common.contains("SIGNINUM_J2K_TILE_BATCH_SIZES"),
+        "J2K compare benches must expose env-controlled batch-size sweeps"
+    );
+    assert!(
+        common.contains("DEFAULT_J2K_TILE_BATCH_SIZES") && common.contains("&[16, 32, 64, 128]"),
+        "default J2K batch-size sweep must cover 16/32/64/128"
+    );
+    assert!(
+        compare.contains("let batch_sizes = j2k_tile_batch_sizes();"),
+        "compare bench must parse batch sizes once and reuse them across batch groups"
+    );
+    assert!(
+        compare.contains("external_wsi_tile_batches(max_batch_size)"),
+        "external WSI loader must load enough tiles for the largest requested batch"
+    );
+}
+
+#[test]
 fn compare_bench_keeps_multiple_htj2k_gray_sizes() {
     let common = include_str!("../benches/common/mod.rs");
 

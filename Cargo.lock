@@ -874,7 +874,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum"
-version = "1.0.4"
+version = "1.1.0"
 dependencies = [
  "signinum-core",
  "signinum-j2k",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-cli"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "signinum-j2k",
  "signinum-jpeg",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "jpeg-decoder",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-cuda"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "criterion",
  "jpeg-encoder",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-metal"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "criterion",
  "jpeg-decoder",
