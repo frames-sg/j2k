@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod backend;
+mod batch;
 mod decode;
 mod encode;
 
@@ -21,6 +22,12 @@ pub mod adapter;
 
 pub mod view;
 pub use view::{J2kCodec, J2kDecoder, J2kView};
+
+pub use batch::{
+    decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
+    decode_tiles_region_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob,
+    TileRegionScaledDecodeJob,
+};
 
 pub use encode::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,

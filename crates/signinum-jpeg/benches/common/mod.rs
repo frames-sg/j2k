@@ -9,8 +9,9 @@ pub(crate) use self::classification::DecodeMode;
 use self::classification::{classify_corpus_input, color_space_mode, CorpusInputClass};
 pub(crate) use self::libjpeg_turbo::TurboJpegDecoder;
 use signinum_jpeg::{
-    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context, Decoder,
+    decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, Decoder,
     DecoderContext, Downscale, JpegError, PixelFormat, Rect, RowSink, ScratchPool,
+    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -240,6 +241,41 @@ impl RowSink<u8> for NullSink {
     }
 }
 
+pub(crate) struct SigninumTileBatchRgbScratch {
+    outputs: Vec<Vec<u8>>,
+    stride: usize,
+}
+
+impl SigninumTileBatchRgbScratch {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize) -> Self {
+        let info = Decoder::inspect(bytes).expect("signinum inspect tile batch");
+        let stride = info.dimensions.0 as usize * 3;
+        let len = stride * info.dimensions.1 as usize;
+        Self {
+            outputs: (0..batch_size).map(|_| vec![0u8; len]).collect(),
+            stride,
+        }
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        let outcomes = {
+            let mut jobs = self
+                .outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes,
+                    out: out.as_mut_slice(),
+                    stride: self.stride,
+                })
+                .collect::<Vec<_>>();
+            decode_tiles_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::default())
+                .expect("signinum production tile batch")
+        };
+        std::hint::black_box(&outcomes);
+        std::hint::black_box(&self.outputs);
+    }
+}
+
 pub(crate) fn signinum_decode_rows(bytes: &[u8]) {
     let dec = Decoder::new(bytes).expect("signinum decoder");
     let mut sink = NullSink;
@@ -247,13 +283,55 @@ pub(crate) fn signinum_decode_rows(bytes: &[u8]) {
 }
 
 pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], batch_size: usize) {
+    let worker_count = signinum_tile_batch_worker_count(batch_size);
+    if worker_count == 1 {
+        signinum_decode_tile_batch_sequential(bytes, batch_size);
+        return;
+    }
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        let base_tiles = batch_size / worker_count;
+        let extra_tiles = batch_size % worker_count;
+        for worker in 0..worker_count {
+            let tile_count = base_tiles + usize::from(worker < extra_tiles);
+            handles.push(scope.spawn(move || signinum_decode_tile_batch_worker(bytes, tile_count)));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .expect("signinum decode_tile worker panicked")
+                .expect("signinum decode_tile batch");
+        }
+    });
+}
+
+pub(crate) fn signinum_decode_tile_batch_sequential(bytes: &[u8], batch_size: usize) {
+    signinum_decode_tile_batch_worker(bytes, batch_size).expect("signinum decode_tile batch");
+}
+
+fn signinum_tile_batch_worker_count(batch_size: usize) -> usize {
+    if batch_size <= 1 {
+        return 1;
+    }
+    let configured = std::env::var("SIGNINUM_JPEG_BATCH_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+    let available = configured.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    });
+    batch_size.min(available)
+}
+
+fn signinum_decode_tile_batch_worker(bytes: &[u8], tile_count: usize) -> Result<(), JpegError> {
     let mut ctx = DecoderContext::new();
     let mut pool = ScratchPool::new();
     let mut sink = NullSink;
-    for _ in 0..batch_size {
-        Decoder::decode_tile(bytes, &mut ctx, &mut pool, &mut sink)
-            .expect("signinum decode_tile batch");
+    for _ in 0..tile_count {
+        Decoder::decode_tile(bytes, &mut ctx, &mut pool, &mut sink)?;
     }
+    Ok(())
 }
 
 pub(crate) fn libjpeg_turbo_decode_batch(
@@ -276,22 +354,23 @@ pub(crate) fn signinum_decode_tile_batch_scaled(
     let out_width = info.dimensions.0.div_ceil(scale_denominator(factor));
     let out_height = info.dimensions.1.div_ceil(scale_denominator(factor));
     let stride = out_width as usize * 3;
-    let mut out = vec![0u8; stride * out_height as usize];
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    for _ in 0..batch_size {
-        decode_tile_scaled_into_in_context(
-            bytes,
-            &mut ctx,
-            &mut pool,
-            &mut out,
-            stride,
-            PixelFormat::Rgb8,
-            factor,
-        )
-        .expect("signinum scaled tile batch");
-    }
-    std::hint::black_box(out);
+    let len = stride * out_height as usize;
+    let mut outputs = (0..batch_size).map(|_| vec![0u8; len]).collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+                scale: factor,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::default())
+            .expect("signinum production scaled tile batch")
+    };
+    std::hint::black_box(outcomes);
+    std::hint::black_box(outputs);
 }
 
 pub(crate) fn signinum_decode_tile_batch_region_scaled(
@@ -304,23 +383,24 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
     let roi = centered_roi(info.dimensions, side);
     let scaled = scaled_rect(roi, factor);
     let stride = scaled.w as usize * 3;
-    let mut out = vec![0u8; stride * scaled.h as usize];
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    for _ in 0..batch_size {
-        decode_tile_region_scaled_into_in_context(
-            bytes,
-            &mut ctx,
-            &mut pool,
-            &mut out,
-            stride,
-            PixelFormat::Rgb8,
-            roi,
-            factor,
-        )
-        .expect("signinum region-scaled tile batch");
-    }
-    std::hint::black_box(out);
+    let len = stride * scaled.h as usize;
+    let mut outputs = (0..batch_size).map(|_| vec![0u8; len]).collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+                roi,
+                scale: factor,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::default())
+            .expect("signinum production region-scaled tile batch")
+    };
+    std::hint::black_box(outcomes);
+    std::hint::black_box(outputs);
 }
 
 pub(crate) fn signinum_decode_region(bytes: &[u8], side: u32) {

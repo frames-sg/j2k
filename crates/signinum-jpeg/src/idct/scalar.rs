@@ -62,10 +62,14 @@ pub(crate) fn idct_islow_bottom_half_zero(input: &[i16; 64], output: &mut [u8; 6
 /// Bit-exact DC-only ISLOW path. Equivalent to `idct_islow` when every AC
 /// coefficient is zero.
 pub(crate) fn idct_islow_dc_only(dc_coeff: i16, output: &mut [u8; 64]) {
-    let pixel = ((i32::from(dc_coeff) + 4) >> 3)
+    output.fill(idct_islow_dc_only_pixel(dc_coeff));
+}
+
+/// Return the uniform output sample produced by the DC-only ISLOW path.
+pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
+    ((i32::from(dc_coeff) + 4) >> 3)
         .wrapping_add(128)
-        .clamp(0, 255) as u8;
-    output.fill(pixel);
+        .clamp(0, 255) as u8
 }
 
 fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
@@ -321,6 +325,7 @@ mod tests {
         idct_islow(&input, &mut full);
         idct_islow_dc_only(input[0], &mut fast);
         assert_eq!(fast, full);
+        assert_eq!(idct_islow_dc_only_pixel(input[0]), full[0]);
     }
 
     #[test]

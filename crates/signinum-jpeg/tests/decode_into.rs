@@ -134,6 +134,34 @@ fn decode_owned_scaled_matches_decode_scaled_into() {
 }
 
 #[test]
+fn full_tile_region_scaled_matches_full_scaled_decode() {
+    let bytes = minimal_baseline_420_jpeg();
+    let dec = Decoder::new(&bytes).unwrap();
+    let (w, h) = dec.info().dimensions;
+    let roi = Rect { x: 0, y: 0, w, h };
+    let stride = w.div_ceil(4) as usize * 3;
+    let mut expected = vec![0u8; stride * h.div_ceil(4) as usize];
+    let expected_outcome = dec
+        .decode_scaled_into(&mut expected, stride, PixelFormat::Rgb8, Downscale::Quarter)
+        .unwrap();
+    let mut actual = vec![0u8; expected.len()];
+
+    let actual_outcome = dec
+        .decode_region_scaled_into(
+            &mut actual,
+            stride,
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Quarter,
+        )
+        .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual_outcome, expected_outcome);
+    assert_eq!(actual_outcome.decoded, roi);
+}
+
+#[test]
 fn decode_into_gray8_produces_single_byte_per_pixel() {
     let bytes = grayscale_8x8_jpeg();
     let dec = Decoder::new(&bytes).unwrap();

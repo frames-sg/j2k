@@ -25,7 +25,6 @@ const ACC_BITS: u8 = 64;
 /// before returning so the next 16-bit peek can always succeed without a
 /// mid-decode refill. 56 matches the spec's "refill when `bits < 56`, 4 bytes
 /// at a time" guidance (spec §5 hot-path discipline).
-#[cfg(test)]
 const REFILL_THRESHOLD: u8 = 56;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +93,7 @@ impl<'a> BitReader<'a> {
     /// malformed streams are rejected, not silently padded over.
     #[inline(always)]
     pub(crate) fn ensure_bits_padded(&mut self, n: u8) -> Result<(), JpegError> {
+        let mut refilled = false;
         while self.bits < n {
             if !self.refill_one_byte() {
                 if self.marker.is_none() {
@@ -108,6 +108,10 @@ impl<'a> BitReader<'a> {
                 }
                 return Ok(());
             }
+            refilled = true;
+        }
+        if refilled {
+            self.refill_to_threshold();
         }
         Ok(())
     }
@@ -190,7 +194,6 @@ impl<'a> BitReader<'a> {
 
     /// After consuming bits, top up the accumulator so the next Huffman peek
     /// can always examine 16 bits without further refill.
-    #[cfg(test)]
     fn refill_to_threshold(&mut self) {
         while self.bits < REFILL_THRESHOLD && self.refill_one_byte() {}
     }
@@ -297,6 +300,22 @@ mod tests {
         let err = br.read_bits(8).unwrap_err();
         assert!(matches!(err, JpegError::HuffmanDecode { .. }));
         assert_eq!(br.take_marker(), Some(0xD9));
+    }
+
+    #[test]
+    fn padded_huffman_lookahead_prefetches_reservoir_without_consuming_bits() {
+        let data = [0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        let mut br = BitReader::new(&data);
+
+        br.ensure_bits_padded(12).unwrap();
+
+        let snapshot = br.snapshot();
+        assert!(
+            snapshot.bits >= 56,
+            "expected full hot-path reservoir, got {} bits",
+            snapshot.bits
+        );
+        assert_eq!(br.peek_bits(16), 0x1234);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! color conversion.
 
 use crate::backend::Backend;
+use crate::bench_support::{BenchBlockActivityCounts, BenchFast420Profile};
 use crate::color::upsample::{
     upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
 };
@@ -25,6 +26,7 @@ use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr;
+use std::time::Instant;
 
 /// Per-component decode context. One entry per component declared in the
 /// SOF, in scan order.
@@ -599,6 +601,136 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
         DownscaleFactor::Full,
     )?;
 
+    finish_fast_tile_scan(&mut br)
+}
+
+pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRgbWriter>(
+    plan: &PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &[u8],
+    pool: &mut ScratchPool,
+    writer: &mut W,
+    profile: &mut BenchFast420Profile,
+) -> Result<Vec<Warning>, JpegError> {
+    debug_assert!(plan.matches_fast_tile_shape());
+
+    let (width, height) = plan.dimensions;
+    let max_h = plan.sampling.max_h as u32;
+    let max_v = plan.sampling.max_v as u32;
+    let mcu_width_px = 8 * max_h;
+    let mcu_height_px = 8 * max_v;
+    let mcus_per_row = width.div_ceil(mcu_width_px);
+    let mcu_rows = height.div_ceil(mcu_height_px);
+
+    pool.prepare_for(
+        plan,
+        mcus_per_row,
+        DownscaleFactor::Full.output_block_size(),
+    );
+
+    let mut br = BitReader::new(scan_bytes);
+    let mut coeff = CoefficientBlock::default();
+    let mut pixels = [0u8; 64];
+    let (y_comp, cb_comp, cr_comp) = fast_tile_components(plan);
+    let mut y_dc = 0i32;
+    let mut cb_dc = 0i32;
+    let mut cr_dc = 0i32;
+
+    let ScratchPool {
+        stripe_a,
+        stripe_b,
+        stripe_c,
+        ..
+    } = pool;
+    let mut prev_stripe: &mut StripeBuffer = stripe_a;
+    let mut curr_stripe: &mut StripeBuffer = stripe_b;
+    let mut next_stripe: &mut StripeBuffer = stripe_c;
+    let mut output_scratch = RgbOutputScratch::YCbCr420;
+
+    let mcu_start = Instant::now();
+    decode_mcu_row_fast_tile_420_profiled(
+        y_comp,
+        cb_comp,
+        cr_comp,
+        backend,
+        &mut br,
+        &mut y_dc,
+        &mut cb_dc,
+        &mut cr_dc,
+        &mut coeff,
+        &mut pixels,
+        mcus_per_row,
+        0,
+        mcus_per_row,
+        curr_stripe,
+        profile.block_activity_counts_mut(),
+    )?;
+    profile.add_mcu_decode_ns(mcu_start.elapsed().as_nanos());
+
+    let mut has_prev = false;
+    for my in 1..mcu_rows {
+        let mcu_start = Instant::now();
+        decode_mcu_row_fast_tile_420_profiled(
+            y_comp,
+            cb_comp,
+            cr_comp,
+            backend,
+            &mut br,
+            &mut y_dc,
+            &mut cb_dc,
+            &mut cr_dc,
+            &mut coeff,
+            &mut pixels,
+            mcus_per_row,
+            0,
+            mcus_per_row,
+            next_stripe,
+            profile.block_activity_counts_mut(),
+        )?;
+        profile.add_mcu_decode_ns(mcu_start.elapsed().as_nanos());
+
+        let emit_start = Instant::now();
+        emit_stripe_rgb(
+            plan,
+            backend,
+            has_prev.then_some(&*prev_stripe),
+            curr_stripe,
+            Some(&*next_stripe),
+            my - 1,
+            writer,
+            &mut output_scratch,
+            width as usize,
+            DownscaleFactor::Full,
+        )?;
+        profile.add_rgb_emit_ns(emit_start.elapsed().as_nanos());
+
+        core::mem::swap(&mut prev_stripe, &mut curr_stripe);
+        core::mem::swap(&mut curr_stripe, &mut next_stripe);
+        has_prev = true;
+    }
+
+    let emit_start = Instant::now();
+    emit_stripe_rgb(
+        plan,
+        backend,
+        has_prev.then_some(&*prev_stripe),
+        curr_stripe,
+        None,
+        mcu_rows - 1,
+        writer,
+        &mut output_scratch,
+        width as usize,
+        DownscaleFactor::Full,
+    )?;
+    profile.add_rgb_emit_ns(emit_start.elapsed().as_nanos());
+
+    let finish_start = Instant::now();
+    let result = finish_fast_tile_scan(&mut br);
+    profile.add_finish_ns(finish_start.elapsed().as_nanos());
+    result
+}
+
+fn finish_fast_tile_scan(br: &mut BitReader<'_>) -> Result<Vec<Warning>, JpegError> {
     let mut warnings = Vec::new();
     match br.take_marker() {
         Some(0xD9) => Ok(warnings),
@@ -1260,6 +1392,47 @@ fn deposit_block(plane: &mut [u8], stride: usize, x: u32, y: u32, block: &[u8; 6
             ptr::copy_nonoverlapping(src, dst, 8);
             dst = dst.add(stride);
             src = src.add(8);
+        }
+    }
+}
+
+fn deposit_dc_block(plane: &mut [u8], stride: usize, x: u32, y: u32, pixel: u8) {
+    let dst_row_start = (y as usize) * stride + (x as usize);
+    debug_assert!(x as usize + 8 <= stride);
+    debug_assert!(plane.len() >= dst_row_start + stride.saturating_mul(7) + 8);
+    let mut dst = unsafe { plane.as_mut_ptr().add(dst_row_start) };
+    for _ in 0..8 {
+        unsafe {
+            ptr::write_bytes(dst, pixel, 8);
+            dst = dst.add(stride);
+        }
+    }
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn idct_deposit_fast_tile_block(
+    activity: BlockActivity,
+    backend: Backend,
+    coeff: &CoefficientBlock,
+    pixels: &mut [u8; 64],
+    plane: &mut [u8],
+    stride: usize,
+    x: u32,
+    y: u32,
+) {
+    match activity {
+        BlockActivity::DcOnly => {
+            let pixel = crate::idct::idct_islow_dc_only_pixel(coeff.dc_coeff());
+            deposit_dc_block(plane, stride, x, y, pixel);
+        }
+        BlockActivity::BottomHalfZero => {
+            backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
+            deposit_block(plane, stride, x, y, pixels);
+        }
+        BlockActivity::General => {
+            backend.idct(coeff.coefficients(), pixels);
+            deposit_block(plane, stride, x, y, pixels);
         }
     }
 }
@@ -2237,19 +2410,15 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
-        match y0_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            y0_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[0],
             stripe.plane_strides[0],
             y_x,
             0,
-            pixels,
         );
 
         let y1_activity = decode_block_with_activity(
@@ -2260,19 +2429,15 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
-        match y1_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            y1_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[0],
             stripe.plane_strides[0],
             y_x + 8,
             0,
-            pixels,
         );
 
         let y2_activity = decode_block_with_activity(
@@ -2283,19 +2448,15 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
-        match y2_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            y2_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[0],
             stripe.plane_strides[0],
             y_x,
             8,
-            pixels,
         );
 
         let y3_activity = decode_block_with_activity(
@@ -2306,19 +2467,15 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
-        match y3_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            y3_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[0],
             stripe.plane_strides[0],
             y_x + 8,
             8,
-            pixels,
         );
 
         let cb_activity = decode_block_with_activity(
@@ -2329,19 +2486,15 @@ fn decode_mcu_row_fast_tile_420(
             cb_comp.quant.as_ref(),
             coeff,
         )?;
-        match cb_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            cb_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[1],
             stripe.plane_strides[1],
             c_x,
             0,
-            pixels,
         );
 
         let cr_activity = decode_block_with_activity(
@@ -2352,23 +2505,185 @@ fn decode_mcu_row_fast_tile_420(
             cr_comp.quant.as_ref(),
             coeff,
         )?;
-        match cr_activity {
-            BlockActivity::DcOnly => crate::idct::idct_islow_dc_only(coeff.dc_coeff(), pixels),
-            BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(coeff.coefficients(), pixels);
-            }
-            BlockActivity::General => backend.idct(coeff.coefficients(), pixels),
-        }
-        deposit_block(
+        idct_deposit_fast_tile_block(
+            cr_activity,
+            backend,
+            coeff,
+            pixels,
             &mut stripe.planes[2],
             stripe.plane_strides[2],
             c_x,
             0,
-            pixels,
         );
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_mcu_row_fast_tile_420_profiled(
+    y_comp: &PreparedComponentPlan,
+    cb_comp: &PreparedComponentPlan,
+    cr_comp: &PreparedComponentPlan,
+    backend: Backend,
+    br: &mut BitReader<'_>,
+    y_dc: &mut i32,
+    cb_dc: &mut i32,
+    cr_dc: &mut i32,
+    coeff: &mut CoefficientBlock,
+    pixels: &mut [u8; 64],
+    mcus_per_row: u32,
+    stripe_mcu_start: u32,
+    stripe_mcus_per_row: u32,
+    stripe: &mut StripeBuffer,
+    counts: &mut BenchBlockActivityCounts,
+) -> Result<(), JpegError> {
+    let stripe_mcu_end = stripe_mcu_start + stripe_mcus_per_row;
+    for mx in 0..mcus_per_row {
+        let in_region = mx >= stripe_mcu_start && mx < stripe_mcu_end;
+        if !in_region {
+            for _ in 0..4 {
+                skip_block(br, &y_comp.dc_table, &y_comp.ac_table, y_dc)?;
+            }
+            skip_block(br, &cb_comp.dc_table, &cb_comp.ac_table, cb_dc)?;
+            skip_block(br, &cr_comp.dc_table, &cr_comp.ac_table, cr_dc)?;
+            continue;
+        }
+
+        let local_mx = mx - stripe_mcu_start;
+        let y_x = local_mx * 16;
+        let c_x = local_mx * 8;
+
+        let y0_activity = decode_block_with_activity(
+            br,
+            &y_comp.dc_table,
+            &y_comp.ac_table,
+            y_dc,
+            y_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, y0_activity);
+        idct_deposit_fast_tile_block(
+            y0_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[0],
+            stripe.plane_strides[0],
+            y_x,
+            0,
+        );
+
+        let y1_activity = decode_block_with_activity(
+            br,
+            &y_comp.dc_table,
+            &y_comp.ac_table,
+            y_dc,
+            y_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, y1_activity);
+        idct_deposit_fast_tile_block(
+            y1_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[0],
+            stripe.plane_strides[0],
+            y_x + 8,
+            0,
+        );
+
+        let y2_activity = decode_block_with_activity(
+            br,
+            &y_comp.dc_table,
+            &y_comp.ac_table,
+            y_dc,
+            y_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, y2_activity);
+        idct_deposit_fast_tile_block(
+            y2_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[0],
+            stripe.plane_strides[0],
+            y_x,
+            8,
+        );
+
+        let y3_activity = decode_block_with_activity(
+            br,
+            &y_comp.dc_table,
+            &y_comp.ac_table,
+            y_dc,
+            y_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, y3_activity);
+        idct_deposit_fast_tile_block(
+            y3_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[0],
+            stripe.plane_strides[0],
+            y_x + 8,
+            8,
+        );
+
+        let cb_activity = decode_block_with_activity(
+            br,
+            &cb_comp.dc_table,
+            &cb_comp.ac_table,
+            cb_dc,
+            cb_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, cb_activity);
+        idct_deposit_fast_tile_block(
+            cb_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[1],
+            stripe.plane_strides[1],
+            c_x,
+            0,
+        );
+
+        let cr_activity = decode_block_with_activity(
+            br,
+            &cr_comp.dc_table,
+            &cr_comp.ac_table,
+            cr_dc,
+            cr_comp.quant.as_ref(),
+            coeff,
+        )?;
+        record_profiled_activity(counts, cr_activity);
+        idct_deposit_fast_tile_block(
+            cr_activity,
+            backend,
+            coeff,
+            pixels,
+            &mut stripe.planes[2],
+            stripe.plane_strides[2],
+            c_x,
+            0,
+        );
+    }
+
+    Ok(())
+}
+
+fn record_profiled_activity(counts: &mut BenchBlockActivityCounts, activity: BlockActivity) {
+    match activity {
+        BlockActivity::DcOnly => counts.record_dc_only(),
+        BlockActivity::BottomHalfZero => counts.record_bottom_half_zero(),
+        BlockActivity::General => counts.record_general(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3412,6 +3727,18 @@ mod tests {
             assert_eq!(plane[(8 + row) * 16 + 7], 0x5A);
         }
         assert_eq!(plane[plane.len() - 1], block[63]);
+    }
+
+    #[test]
+    fn deposit_dc_block_writes_uniform_rows_without_temp_block() {
+        let mut plane = vec![0u8; 16 * 16];
+        deposit_dc_block(&mut plane, 16, 4, 5, 217);
+
+        for row in 5..13 {
+            assert_eq!(&plane[row * 16 + 4..row * 16 + 12], &[217; 8]);
+        }
+        assert!(plane[..5 * 16].iter().all(|&value| value == 0));
+        assert!(plane[13 * 16..].iter().all(|&value| value == 0));
     }
 
     #[test]

@@ -57,7 +57,9 @@ fn bench_micro(c: &mut Criterion) {
     bottom_half_zero[24] = 11;
 
     {
-        use signinum_jpeg::bench_support::bench_idct_reference_block_with;
+        use signinum_jpeg::bench_support::{
+            bench_idct_dc_only_block_with, bench_idct_reference_block_with,
+        };
         c.bench_function("micro/idct_islow_scalar_block", |b| {
             let mut out = [0u8; 64];
             b.iter(|| {
@@ -70,6 +72,14 @@ fn bench_micro(c: &mut Criterion) {
             let mut out = [0u8; 64];
             b.iter(|| {
                 bench_idct_reference_block_with(std::hint::black_box(&bottom_half_zero), &mut out);
+                std::hint::black_box(&out);
+            });
+        });
+
+        c.bench_function("micro/idct_islow_dc_only_block", |b| {
+            let mut out = [0u8; 64];
+            b.iter(|| {
+                bench_idct_dc_only_block_with(std::hint::black_box(coeffs[0]), &mut out);
                 std::hint::black_box(&out);
             });
         });
@@ -137,6 +147,14 @@ fn bench_micro(c: &mut Criterion) {
         b.iter(|| {
             row_pair.run();
             std::hint::black_box(&row_pair);
+        });
+    });
+
+    let mut row_pair_even = BenchRgb420RowPairScratch::new(256);
+    c.bench_function("micro/rgb_420_row_pair_256", |b| {
+        b.iter(|| {
+            row_pair_even.run();
+            std::hint::black_box(&row_pair_even);
         });
     });
 

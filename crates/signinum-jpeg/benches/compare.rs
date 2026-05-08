@@ -13,10 +13,11 @@ use common::{
     libjpeg_turbo_decode_region_scaled, libjpeg_turbo_decode_scaled, libjpeg_turbo_inspect,
     load_bench_inputs, output_geometry, signinum_decode, signinum_decode_region,
     signinum_decode_region_scaled, signinum_decode_reused, signinum_decode_rows,
-    signinum_decode_scaled, signinum_decode_tile_batch, signinum_decode_tile_batch_region_scaled,
+    signinum_decode_scaled, signinum_decode_tile_batch_region_scaled,
     signinum_decode_tile_batch_scaled, signinum_decode_with_scratch, signinum_inspect, zune_decode,
     zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
-    zune_decode_region_scaled, zune_decode_scaled, zune_inspect, DecodeMode, TurboJpegDecoder,
+    zune_decode_region_scaled, zune_decode_scaled, zune_inspect, DecodeMode,
+    SigninumTileBatchRgbScratch, TurboJpegDecoder,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_jpeg::{Decoder, Downscale, ScratchPool};
@@ -158,15 +159,18 @@ fn bench_compare(c: &mut Criterion) {
     }
     decode_rows_rgb.finish();
 
+    let batch_size = wsi_tile_batch_size();
     let mut wsi_tile_batch_rgb = c.benchmark_group("wsi_tile_batch_rgb");
     for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb) {
-        wsi_tile_batch_rgb.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch(&input.bytes, 64));
+        let bytes = &input.bytes;
+        let mut signinum_batch = SigninumTileBatchRgbScratch::new(bytes, batch_size);
+        wsi_tile_batch_rgb.bench_function(format!("signinum/{}", input.name), move |b| {
+            b.iter(|| signinum_batch.run(bytes));
         });
         if libjpeg_turbo_available() {
             let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
             wsi_tile_batch_rgb.bench_function(format!("libjpeg-turbo/{}", input.name), move |b| {
-                b.iter(|| libjpeg_turbo_decode_batch(&mut turbo, &input.bytes, 64));
+                b.iter(|| libjpeg_turbo_decode_batch(&mut turbo, &input.bytes, batch_size));
             });
         }
     }
@@ -400,6 +404,14 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     wsi_tile_batch_region_scaled_rgb_q4.finish();
+}
+
+fn wsi_tile_batch_size() -> usize {
+    std::env::var("SIGNINUM_JPEG_TILE_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(64)
 }
 
 criterion_group!(compare_benches, bench_compare);

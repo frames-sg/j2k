@@ -8,8 +8,9 @@ use signinum_core::{
     TileBatchDecodeSubmit,
 };
 use signinum_j2k::{
-    CompressedTransferSyntax, DecoderContext, Downscale, J2kCodec, J2kContext, J2kDecoder,
-    J2kScratchPool, PixelFormat, Rect, TileBatchDecode,
+    decode_tiles_into, decode_tiles_region_scaled_into, CompressedTransferSyntax, DecoderContext,
+    Downscale, J2kContext, J2kDecoder, J2kScratchPool, PixelFormat, Rect, TileBatchOptions,
+    TileDecodeJob, TileRegionScaledDecodeJob,
 };
 use signinum_j2k_metal::{
     extract_dicom_encapsulated_frames_with_limit, Codec as MetalJ2kCodec,
@@ -56,6 +57,29 @@ enum ExternalCodecFamily {
 const AUTO_REPEATED_GRAYSCALE_MIN_DIM: u32 = 512;
 const AUTO_REPEATED_GRAYSCALE_MIN_COUNT: usize = 16;
 const EXTERNAL_WSI_TILE_DIR_ENV: &str = "SIGNINUM_J2K_METAL_WSI_TILE_DIR";
+const J2K_TILE_BATCH_SIZES_ENV: &str = "SIGNINUM_J2K_TILE_BATCH_SIZES";
+const DEFAULT_J2K_TILE_BATCH_SIZES: &[usize] = &[16, 32, 64, 128];
+
+pub(crate) fn j2k_tile_batch_sizes() -> Vec<usize> {
+    env::var(J2K_TILE_BATCH_SIZES_ENV)
+        .ok()
+        .map_or_else(default_j2k_tile_batch_sizes, |raw| {
+            let parsed = raw
+                .split(',')
+                .filter_map(|value| value.trim().parse::<usize>().ok())
+                .filter(|&value| value > 0)
+                .collect::<Vec<_>>();
+            if parsed.is_empty() {
+                default_j2k_tile_batch_sizes()
+            } else {
+                parsed
+            }
+        })
+}
+
+fn default_j2k_tile_batch_sizes() -> Vec<usize> {
+    DEFAULT_J2K_TILE_BATCH_SIZES.to_vec()
+}
 
 pub(crate) fn bench_inputs() -> Vec<BenchInput> {
     let mut inputs = vec![
@@ -469,17 +493,24 @@ pub(crate) fn signinum_decode_region_scaled(
 }
 
 pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    let mut pool = J2kScratchPool::new();
     let decoder = J2kDecoder::new(bytes).expect("signinum decoder");
     let dims = decoder.info().dimensions;
     let (fmt, stride) = mode_geometry(mode, dims);
-    let mut out = vec![0_u8; stride * dims.1 as usize];
-    for _ in 0..count {
-        J2kCodec::decode_tile(&mut ctx, &mut pool, bytes, &mut out, stride, fmt)
-            .expect("tile decode");
-    }
-    black_box(out);
+    let mut outputs = (0..count)
+        .map(|_| vec![0_u8; stride * dims.1 as usize])
+        .collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).expect("tile decode")
+    };
+    black_box((outputs, outcomes));
 }
 
 pub(crate) fn signinum_decode_tile_batch_region_scaled(
@@ -489,21 +520,29 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
     scale: Downscale,
     count: usize,
 ) {
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    let mut pool = J2kScratchPool::new();
     let decoder = J2kDecoder::new(bytes).expect("signinum decoder");
     let roi = centered_roi(decoder.info().dimensions, edge);
     let scaled = roi.scaled_covering(scale);
     let fmt = mode_format(mode);
     let stride = scaled.w as usize * fmt.bytes_per_pixel();
-    let mut out = vec![0_u8; stride * scaled.h as usize];
-    for _ in 0..count {
-        J2kCodec::decode_tile_region_scaled(
-            &mut ctx, &mut pool, bytes, &mut out, stride, fmt, roi, scale,
-        )
-        .expect("tile region scaled decode");
-    }
-    black_box(out);
+    let mut outputs = (0..count)
+        .map(|_| vec![0_u8; stride * scaled.h as usize])
+        .collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+            .expect("tile region scaled decode")
+    };
+    black_box((outputs, outcomes));
 }
 
 pub(crate) fn distinct_rgb_tile_batch_inputs(input: &BenchInput, count: usize) -> Vec<Vec<u8>> {
@@ -556,17 +595,26 @@ pub(crate) fn signinum_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: Deco
     let Some(first) = inputs.first() else {
         return;
     };
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    let mut pool = J2kScratchPool::new();
     let decoder = J2kDecoder::new(first).expect("signinum decoder");
     let dims = decoder.info().dimensions;
     let (fmt, stride) = mode_geometry(mode, dims);
-    let mut out = vec![0_u8; stride * dims.1 as usize];
-    for bytes in inputs {
-        J2kCodec::decode_tile(&mut ctx, &mut pool, bytes, &mut out, stride, fmt)
-            .expect("tile decode");
-    }
-    black_box(out);
+    let mut outputs = inputs
+        .iter()
+        .map(|_| vec![0_u8; stride * dims.1 as usize])
+        .collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = inputs
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|(bytes, out)| TileDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).expect("tile decode")
+    };
+    black_box((outputs, outcomes));
 }
 
 pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(
@@ -578,21 +626,31 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(
     let Some(first) = inputs.first() else {
         return;
     };
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    let mut pool = J2kScratchPool::new();
     let decoder = J2kDecoder::new(first).expect("signinum decoder");
     let roi = centered_roi(decoder.info().dimensions, edge);
     let scaled = roi.scaled_covering(scale);
     let fmt = mode_format(mode);
     let stride = scaled.w as usize * fmt.bytes_per_pixel();
-    let mut out = vec![0_u8; stride * scaled.h as usize];
-    for bytes in inputs {
-        J2kCodec::decode_tile_region_scaled(
-            &mut ctx, &mut pool, bytes, &mut out, stride, fmt, roi, scale,
-        )
-        .expect("tile region scaled decode");
-    }
-    black_box(out);
+    let mut outputs = inputs
+        .iter()
+        .map(|_| vec![0_u8; stride * scaled.h as usize])
+        .collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = inputs
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|(bytes, out)| TileRegionScaledDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+            .expect("tile region scaled decode")
+    };
+    black_box((outputs, outcomes));
 }
 
 pub(crate) fn signinum_decode_external_tile_batch_region_scaled(
@@ -606,18 +664,30 @@ pub(crate) fn signinum_decode_external_tile_batch_region_scaled(
         return;
     }
 
-    let mut ctx = DecoderContext::<J2kContext>::new();
-    let mut pool = J2kScratchPool::new();
     let fmt = mode_format(batch.mode);
     let (rois, stride, height) = external_batch_output_geometry(batch, count, edge, scale, fmt);
-    let mut out = vec![0_u8; stride * height as usize];
-    for (bytes, roi) in batch.inputs.iter().zip(rois.iter()).take(count) {
-        J2kCodec::decode_tile_region_scaled(
-            &mut ctx, &mut pool, bytes, &mut out, stride, fmt, *roi, scale,
-        )
-        .expect("external tile region scaled decode");
-    }
-    black_box(out);
+    let mut outputs = (0..count)
+        .map(|_| vec![0_u8; stride * height as usize])
+        .collect::<Vec<_>>();
+    let outcomes = {
+        let mut jobs = batch
+            .inputs
+            .iter()
+            .zip(rois.iter())
+            .take(count)
+            .zip(outputs.iter_mut())
+            .map(|((bytes, roi), out)| TileRegionScaledDecodeJob {
+                input: bytes,
+                out: out.as_mut_slice(),
+                stride,
+                roi: *roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+            .expect("external tile region scaled decode")
+    };
+    black_box((outputs, outcomes));
 }
 
 pub(crate) fn metal_available() -> bool {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use signinum_core::{
     BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeDevice, PixelFormat, Rect, TileBatchDecodeDevice,
-    TileBatchDecodeSubmit,
+    TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
 };
 use signinum_j2k::J2kContext;
 use signinum_j2k_metal::{
@@ -734,6 +734,43 @@ fn metal_tile_batch_decodes_submitted_tiles_in_order() {
 }
 
 #[test]
+fn tile_batch_decode_many_device_preserves_full_tile_order() {
+    let classic_bytes = fixture_gray8();
+    let reversed_bytes = fixture_gray8_reversed();
+    let mut ctx = signinum_core::DecoderContext::<J2kContext>::new();
+    let mut pool = J2kScratchPool::new();
+    let inputs = [classic_bytes.as_slice(), reversed_bytes.as_slice()];
+
+    let surfaces = Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Gray8,
+        BackendRequest::Metal,
+    )
+    .expect("decode full-tile batch");
+
+    let mut classic_host_decoder = J2kDecoder::new(&classic_bytes).expect("classic host decoder");
+    let mut classic_host = [0u8; 16];
+    classic_host_decoder
+        .decode_into(&mut classic_host, 4, PixelFormat::Gray8)
+        .expect("classic host decode");
+
+    let mut reversed_host_decoder =
+        J2kDecoder::new(&reversed_bytes).expect("reversed host decoder");
+    let mut reversed_host = [0u8; 16];
+    reversed_host_decoder
+        .decode_into(&mut reversed_host, 4, PixelFormat::Gray8)
+        .expect("reversed host decode");
+
+    assert_eq!(surfaces.len(), 2);
+    assert_eq!(surfaces[0].backend_kind(), BackendKind::Metal);
+    assert_eq!(surfaces[1].backend_kind(), BackendKind::Metal);
+    assert_eq!(surfaces[0].as_bytes(), classic_host.as_slice());
+    assert_eq!(surfaces[1].as_bytes(), reversed_host.as_slice());
+}
+
+#[test]
 fn metal_tile_batch_supports_region_and_scaled_requests() {
     let bytes = fixture_gray8();
     let roi = Rect {
@@ -996,6 +1033,66 @@ fn submitted_auto_region_scaled_grayscale_keeps_short_batch_on_cpu() {
         let surface = submission.wait().expect("auto region-scaled surface");
         assert_eq!(surface.backend_kind(), BackendKind::Cpu);
     }
+    assert_eq!(
+        session.submissions(),
+        1,
+        "short auto ROI+scaled grayscale tile batches should use one CPU batch fallback"
+    );
+}
+
+#[test]
+fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
+    let bytes = fixture_rgb8();
+    let roi = Rect {
+        x: 0,
+        y: 0,
+        w: 1,
+        h: 1,
+    };
+    let scale = Downscale::None;
+    let mut ctx = signinum_core::DecoderContext::<J2kContext>::new();
+    let mut session = MetalSession::default();
+    let mut pool = J2kScratchPool::new();
+    let submissions = (0..3)
+        .map(|_| {
+            Codec::submit_tile_region_scaled_to_device(
+                &mut ctx,
+                &mut session,
+                &mut pool,
+                &bytes,
+                PixelFormat::Rgb8,
+                roi,
+                scale,
+                BackendRequest::Auto,
+            )
+            .expect("submit auto RGB region-scaled tile")
+        })
+        .collect::<Vec<_>>();
+
+    let mut host_decoder = J2kDecoder::new(&bytes).expect("host decoder");
+    let mut host = [0u8; 3];
+    host_decoder
+        .decode_region_scaled_into(
+            &mut J2kScratchPool::new(),
+            &mut host,
+            3,
+            PixelFormat::Rgb8,
+            roi,
+            scale,
+        )
+        .expect("host region-scaled decode");
+
+    for submission in submissions {
+        let surface = submission.wait().expect("auto RGB region-scaled surface");
+        assert_eq!(surface.backend_kind(), BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
+        assert_eq!(surface.as_bytes(), host.as_slice());
+    }
+    assert_eq!(
+        session.submissions(),
+        1,
+        "auto RGB ROI+scaled tile batches should flush through one CPU batch fallback"
+    );
 }
 
 #[test]

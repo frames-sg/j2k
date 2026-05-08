@@ -45,6 +45,9 @@ const AC_FAST_LEN_MASK: u32 = 0x0F;
 const AC_FAST_RUN_MASK: u32 = 0xF0;
 const AC_FAST_VALUE_SHIFT: u32 = 8;
 
+const DC_FAST_LEN_MASK: u32 = 0x0F;
+const DC_FAST_VALUE_SHIFT: u32 = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HuffmanTable {
     /// Fast path: `fast[peek8] = (symbol, bit_length)`. `bit_length == 0`
@@ -60,6 +63,7 @@ pub(crate) struct HuffmanTable {
     max_code: [i32; 17],
     val_offset: [i32; 17],
     values: HuffmanValues,
+    fast_dc: Box<[u32; FAST_ENTRIES]>,
     fast_ac: Box<[u32; FAST_ENTRIES]>,
 }
 
@@ -76,6 +80,7 @@ impl HuffmanTable {
         let mut min_code = [i32::MAX; 17];
         let mut max_code = [-1i32; 17];
         let mut val_offset = [0i32; 17];
+        let mut fast_dc = Box::new([0u32; FAST_ENTRIES]);
         let mut fast_ac = Box::new([0u32; FAST_ENTRIES]);
 
         let total_values: usize = raw.bits.iter().map(|&b| b as usize).sum();
@@ -148,6 +153,23 @@ impl HuffmanTable {
             if len == 0 {
                 continue;
             }
+            if sym <= 15 {
+                let total_len = len + sym;
+                if total_len <= FAST_BITS {
+                    let diff = if sym == 0 {
+                        0
+                    } else {
+                        let mag_shift = FAST_BITS - total_len;
+                        let mag_mask = (1u16 << sym) - 1;
+                        let mag_bits = ((idx as u16) >> mag_shift) & mag_mask;
+                        huff_extend(mag_bits as i32, sym)
+                    };
+                    if (i16::MIN as i32..=i16::MAX as i32).contains(&diff) {
+                        fast_dc[idx] = pack_dc_value(total_len, diff as i16);
+                    }
+                }
+            }
+
             let run = usize::from((sym >> 4) & 0x0F);
             let ssss = sym & 0x0F;
             if ssss == 0 {
@@ -179,6 +201,7 @@ impl HuffmanTable {
             max_code,
             val_offset,
             values: raw.values.clone(),
+            fast_dc,
             fast_ac,
         })
     }
@@ -220,6 +243,28 @@ impl HuffmanTable {
             mcu: 0,
             reason: HuffmanFailure::CodeOverflow,
         })
+    }
+
+    #[inline(always)]
+    pub(crate) fn decode_fast_dc(&self, br: &mut BitReader<'_>) -> Result<i32, JpegError> {
+        br.ensure_bits_padded(FAST_BITS)?;
+        let peek = br.peek_bits(FAST_BITS) as usize;
+        let packed = self.fast_dc[peek];
+        if packed != 0 {
+            br.consume_bits((packed & DC_FAST_LEN_MASK) as u8);
+            return Ok(i32::from(
+                ((packed >> DC_FAST_VALUE_SHIFT) & 0xFFFF) as u16 as i16,
+            ));
+        }
+
+        let ssss = self.decode(br)?;
+        if ssss > 15 {
+            return Err(JpegError::HuffmanDecode {
+                mcu: 0,
+                reason: HuffmanFailure::InvalidSymbol,
+            });
+        }
+        br.receive_extend(ssss)
     }
 
     #[inline(always)]
@@ -319,6 +364,11 @@ fn pack_ac_eob(total_len: u8) -> u32 {
 #[inline]
 fn pack_ac_zrl(total_len: u8) -> u32 {
     AC_FAST_ZRL | (15 << 4) | u32::from(total_len)
+}
+
+#[inline]
+fn pack_dc_value(total_len: u8, value: i16) -> u32 {
+    (u32::from(value as u16) << DC_FAST_VALUE_SHIFT) | u32::from(total_len)
 }
 
 fn huff_extend(v: i32, ssss: u8) -> i32 {
@@ -421,6 +471,21 @@ mod tests {
             let sym = table.decode(&mut br).unwrap();
             assert_eq!(sym, expected, "code={code:b} len={len}");
         }
+    }
+
+    #[test]
+    fn fast_dc_decodes_symbol_and_magnitude_in_one_lookup() {
+        let table = HuffmanTable::from_raw(&luma_dc_raw()).unwrap();
+        // Standard luma DC code `011` => category 2, followed by magnitude
+        // bits `10` => diff +2. The fast DC path should consume all 5 bits.
+        let bytes = [0b0111_0000u8, 0, 0, 0, 0, 0, 0, 0];
+        let mut br = BitReader::new(&bytes);
+
+        let diff = table.decode_fast_dc(&mut br).unwrap();
+
+        assert_eq!(diff, 2);
+        assert_eq!(br.snapshot().bits, 51);
+        assert_eq!(br.peek_bits(3), 0);
     }
 
     #[test]

@@ -29,7 +29,8 @@ use std::{
 use signinum_core::{
     BackendKind, BackendRequest, BufferError, CodecError, DecodeOutcome, DeviceSubmission,
     DeviceSurface, Downscale, ImageCodec, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit,
-    PixelFormat, ReadySubmission, Rect, TileBatchDecodeDevice, TileBatchDecodeSubmit,
+    PixelFormat, ReadySubmission, Rect, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
+    TileBatchDecodeSubmit,
 };
 use signinum_j2k::{
     adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
@@ -2091,6 +2092,43 @@ impl TileBatchDecodeSubmit for Codec {
             backend,
             batch::BatchOp::RegionScaled { roi, scale },
         ))
+    }
+}
+
+impl TileBatchDecodeManyDevice for Codec {
+    type Context = CpuJ2kContext;
+    type DeviceSurface = Surface;
+
+    fn decode_tiles_to_device(
+        ctx: &mut signinum_core::DecoderContext<Self::Context>,
+        pool: &mut Self::Pool,
+        inputs: &[&[u8]],
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<Vec<Self::DeviceSurface>, Self::Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut session = MetalSession::default();
+        let submissions = inputs
+            .iter()
+            .map(|input| {
+                <Self as TileBatchDecodeSubmit>::submit_tile_to_device(
+                    ctx,
+                    &mut session,
+                    pool,
+                    input,
+                    fmt,
+                    backend,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        submissions
+            .into_iter()
+            .map(signinum_core::DeviceSubmission::wait)
+            .collect()
     }
 }
 

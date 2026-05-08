@@ -15,3 +15,4 @@ pub(crate) mod avx2;
 
 pub(crate) use scalar::idct_islow;
 pub(crate) use scalar::idct_islow_dc_only;
+pub(crate) use scalar::idct_islow_dc_only_pixel;

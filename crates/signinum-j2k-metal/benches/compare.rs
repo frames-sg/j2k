@@ -4,7 +4,7 @@ mod common;
 
 use common::{
     bench_inputs, distinct_gray_tile_batch_inputs, distinct_rgb_tile_batch_inputs,
-    external_wsi_tile_batches, metal_available, signinum_adaptive_decode,
+    external_wsi_tile_batches, j2k_tile_batch_sizes, metal_available, signinum_adaptive_decode,
     signinum_adaptive_decode_external_tile_batch_region_scaled, signinum_adaptive_decode_region,
     signinum_adaptive_decode_region_scaled, signinum_adaptive_decode_scaled,
     signinum_adaptive_decode_tile_batch, signinum_adaptive_decode_tile_batch_region_scaled,
@@ -29,6 +29,8 @@ use signinum_j2k::Downscale;
 
 fn bench_compare(c: &mut Criterion) {
     let inputs = bench_inputs();
+    let batch_sizes = j2k_tile_batch_sizes();
+    let max_batch_size = batch_sizes.iter().copied().max().unwrap_or(16);
 
     let mut inspect = c.benchmark_group("inspect");
     for input in &inputs {
@@ -161,16 +163,26 @@ fn bench_compare(c: &mut Criterion) {
         .iter()
         .filter(|input| input.mode == DecodeMode::Gray8)
     {
-        wsi_tile_batch.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, 16));
-        });
-        wsi_tile_batch.bench_function(format!("signinum-adaptive/{}", input.name), |b| {
-            b.iter(|| signinum_adaptive_decode_tile_batch(input, 16));
-        });
-        if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
-            wsi_tile_batch.bench_function(format!("signinum-metal/{}", input.name), |b| {
-                b.iter(|| signinum_metal_decode_tile_batch(&input.bytes, input.mode, 16));
+        for &count in &batch_sizes {
+            wsi_tile_batch.bench_function(format!("signinum/{}/batch_{count}", input.name), |b| {
+                b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, count));
             });
+            wsi_tile_batch.bench_function(
+                format!("signinum-adaptive/{}/batch_{count}", input.name),
+                |b| {
+                    b.iter(|| signinum_adaptive_decode_tile_batch(input, count));
+                },
+            );
+            if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
+                wsi_tile_batch.bench_function(
+                    format!("signinum-metal/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| {
+                            signinum_metal_decode_tile_batch(&input.bytes, input.mode, count);
+                        });
+                    },
+                );
+            }
         }
     }
     wsi_tile_batch.finish();
@@ -181,52 +193,57 @@ fn bench_compare(c: &mut Criterion) {
         .iter()
         .filter(|input| input.mode == DecodeMode::Gray8)
     {
-        wsi_tile_batch_region_scaled.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| {
-                signinum_decode_tile_batch_region_scaled(
-                    &input.bytes,
-                    input.mode,
-                    256,
-                    Downscale::Quarter,
-                    16,
-                );
-            });
-        });
-        wsi_tile_batch_region_scaled.bench_function(
-            format!("signinum-adaptive/{}", input.name),
-            |b| {
-                b.iter(|| {
-                    signinum_adaptive_decode_tile_batch_region_scaled(
-                        input,
-                        256,
-                        Downscale::Quarter,
-                        16,
-                    );
-                });
-            },
-        );
-        if metal_available()
-            && signinum_metal_supports_tile_batch_region_scaled(
-                &input.bytes,
-                input.mode,
-                256,
-                Downscale::Quarter,
-            )
-        {
+        for &count in &batch_sizes {
             wsi_tile_batch_region_scaled.bench_function(
-                format!("signinum-metal/{}", input.name),
+                format!("signinum/{}/batch_{count}", input.name),
                 |b| {
                     b.iter(|| {
-                        signinum_metal_decode_tile_batch_region_scaled(
+                        signinum_decode_tile_batch_region_scaled(
                             &input.bytes,
                             input.mode,
                             256,
                             Downscale::Quarter,
-                            16,
+                            count,
                         );
                     });
                 },
             );
+            wsi_tile_batch_region_scaled.bench_function(
+                format!("signinum-adaptive/{}/batch_{count}", input.name),
+                |b| {
+                    b.iter(|| {
+                        signinum_adaptive_decode_tile_batch_region_scaled(
+                            input,
+                            256,
+                            Downscale::Quarter,
+                            count,
+                        );
+                    });
+                },
+            );
+            if metal_available()
+                && signinum_metal_supports_tile_batch_region_scaled(
+                    &input.bytes,
+                    input.mode,
+                    256,
+                    Downscale::Quarter,
+                )
+            {
+                wsi_tile_batch_region_scaled.bench_function(
+                    format!("signinum-metal/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| {
+                            signinum_metal_decode_tile_batch_region_scaled(
+                                &input.bytes,
+                                input.mode,
+                                256,
+                                Downscale::Quarter,
+                                count,
+                            );
+                        });
+                    },
+                );
+            }
         }
     }
     wsi_tile_batch_region_scaled.finish();
@@ -237,7 +254,7 @@ fn bench_compare(c: &mut Criterion) {
         .iter()
         .filter(|input| input.mode == DecodeMode::Gray8)
     {
-        for &count in &[16_usize, 64] {
+        for &count in &batch_sizes {
             let distinct_inputs = distinct_gray_tile_batch_inputs(input, count);
             wsi_tile_batch_region_scaled_distinct.bench_function(
                 format!("signinum/{}/batch_{count}", input.name),
@@ -291,12 +308,12 @@ fn bench_compare(c: &mut Criterion) {
     }
     wsi_tile_batch_region_scaled_distinct.finish();
 
-    let external_batches = external_wsi_tile_batches(64);
+    let external_batches = external_wsi_tile_batches(max_batch_size);
     if !external_batches.is_empty() {
         let mut external_wsi_region_scaled =
             c.benchmark_group("external_wsi_tile_batch_region_scaled_q4");
         for batch in &external_batches {
-            for &count in &[16_usize, 64] {
+            for &count in &batch_sizes {
                 if batch.inputs.len() < count {
                     continue;
                 }
@@ -353,74 +370,51 @@ fn bench_compare(c: &mut Criterion) {
         external_wsi_region_scaled.finish();
     }
 
-    let mut wsi_tile_batch_32 = c.benchmark_group("wsi_tile_batch_gray_32");
-    for input in inputs
-        .iter()
-        .filter(|input| input.mode == DecodeMode::Gray8)
-    {
-        wsi_tile_batch_32.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, 32));
-        });
-        wsi_tile_batch_32.bench_function(format!("signinum-adaptive/{}", input.name), |b| {
-            b.iter(|| signinum_adaptive_decode_tile_batch(input, 32));
-        });
-        if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
-            wsi_tile_batch_32.bench_function(format!("signinum-metal/{}", input.name), |b| {
-                b.iter(|| signinum_metal_decode_tile_batch(&input.bytes, input.mode, 32));
-            });
-        }
-    }
-    wsi_tile_batch_32.finish();
-
-    let mut wsi_tile_batch_64 = c.benchmark_group("wsi_tile_batch_gray_64");
-    for input in inputs
-        .iter()
-        .filter(|input| input.mode == DecodeMode::Gray8)
-    {
-        wsi_tile_batch_64.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, 64));
-        });
-        wsi_tile_batch_64.bench_function(format!("signinum-adaptive/{}", input.name), |b| {
-            b.iter(|| signinum_adaptive_decode_tile_batch(input, 64));
-        });
-        if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
-            wsi_tile_batch_64.bench_function(format!("signinum-metal/{}", input.name), |b| {
-                b.iter(|| signinum_metal_decode_tile_batch(&input.bytes, input.mode, 64));
-            });
-        }
-    }
-    wsi_tile_batch_64.finish();
-
     let mut wsi_tile_batch_rgb = c.benchmark_group("wsi_tile_batch_rgb");
     for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb8) {
-        wsi_tile_batch_rgb.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, 16));
-        });
-        if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
-            wsi_tile_batch_rgb.bench_function(format!("signinum-metal/{}", input.name), |b| {
-                b.iter(|| signinum_metal_decode_tile_batch(&input.bytes, input.mode, 16));
-            });
+        for &count in &batch_sizes {
+            wsi_tile_batch_rgb.bench_function(
+                format!("signinum/{}/batch_{count}", input.name),
+                |b| {
+                    b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, count));
+                },
+            );
+            if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
+                wsi_tile_batch_rgb.bench_function(
+                    format!("signinum-metal/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| {
+                            signinum_metal_decode_tile_batch(&input.bytes, input.mode, count);
+                        });
+                    },
+                );
+            }
         }
     }
     wsi_tile_batch_rgb.finish();
 
     let mut wsi_tile_batch_rgb_distinct = c.benchmark_group("wsi_tile_batch_rgb_distinct");
     for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb8) {
-        let distinct_inputs = distinct_rgb_tile_batch_inputs(input, 16);
-        wsi_tile_batch_rgb_distinct.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_tile_batch_distinct(&distinct_inputs, input.mode));
-        });
-        if metal_available()
-            && signinum_metal_supports_tile_batch_distinct(&distinct_inputs, input.mode)
-        {
+        for &count in &batch_sizes {
+            let distinct_inputs = distinct_rgb_tile_batch_inputs(input, count);
             wsi_tile_batch_rgb_distinct.bench_function(
-                format!("signinum-metal/{}", input.name),
+                format!("signinum/{}/batch_{count}", input.name),
                 |b| {
-                    b.iter(|| {
-                        signinum_metal_decode_tile_batch_distinct(&distinct_inputs, input.mode);
-                    });
+                    b.iter(|| signinum_decode_tile_batch_distinct(&distinct_inputs, input.mode));
                 },
             );
+            if metal_available()
+                && signinum_metal_supports_tile_batch_distinct(&distinct_inputs, input.mode)
+            {
+                wsi_tile_batch_rgb_distinct.bench_function(
+                    format!("signinum-metal/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| {
+                            signinum_metal_decode_tile_batch_distinct(&distinct_inputs, input.mode);
+                        });
+                    },
+                );
+            }
         }
     }
     wsi_tile_batch_rgb_distinct.finish();
