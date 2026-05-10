@@ -341,6 +341,9 @@ pub fn j2k_lossless_decomposition_levels_for_options(
     options
         .max_decomposition_levels
         .map_or(levels, |requested| {
+            if samples.width.min(samples.height) < MIN_LOSSLESS_DWT_DIMENSION {
+                return 0;
+            }
             requested.min(max_decomposition_levels(samples.width, samples.height))
         })
 }
