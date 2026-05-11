@@ -248,19 +248,27 @@ unsafe extern "C" fn read_memory(
     bytes: OPJ_SIZE_T,
     user_data: *mut c_void,
 ) -> OPJ_SIZE_T {
-    let state = &mut *user_data.cast::<MemoryStream>();
+    // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
+    // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     let remaining = state.len.saturating_sub(state.offset);
     if remaining == 0 {
         return usize::MAX;
     }
     let count = remaining.min(bytes);
-    ptr::copy_nonoverlapping(state.ptr.add(state.offset), buffer.cast::<u8>(), count);
+    // SAFETY: `count` is bounded by the remaining source length, and OpenJPEG
+    // provides a writable buffer of the requested size for the read callback.
+    unsafe {
+        ptr::copy_nonoverlapping(state.ptr.add(state.offset), buffer.cast::<u8>(), count);
+    }
     state.offset += count;
     count
 }
 
 unsafe extern "C" fn skip_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OPJ_OFF_T {
-    let state = &mut *user_data.cast::<MemoryStream>();
+    // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
+    // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     if bytes < 0 {
         return -1;
     }
@@ -273,7 +281,9 @@ unsafe extern "C" fn skip_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OP
 }
 
 unsafe extern "C" fn seek_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OPJ_BOOL {
-    let state = &mut *user_data.cast::<MemoryStream>();
+    // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
+    // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     if bytes < 0 || bytes as usize > state.len {
         return bool_false();
     }
@@ -282,7 +292,9 @@ unsafe extern "C" fn seek_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OP
 }
 
 unsafe extern "C" fn drop_memory_stream(user_data: *mut c_void) {
-    drop(Box::from_raw(user_data.cast::<MemoryStream>()));
+    // SAFETY: `create_stream` allocated this pointer with `Box::into_raw` and
+    // registered this callback as the single owner responsible for freeing it.
+    unsafe { drop(Box::from_raw(user_data.cast::<MemoryStream>())) };
 }
 
 const fn bool_false() -> OPJ_BOOL {

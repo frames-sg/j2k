@@ -44,6 +44,7 @@ harness = false
 
 [lints.rust]
 unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
 
 [lints.clippy]

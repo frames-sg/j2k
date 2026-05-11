@@ -203,10 +203,11 @@ fn load_symbol<T: Copy>(library: &Library, name: &'static [u8]) -> Result<T, Cud
         })
 }
 
-// CUDA Driver API contexts and device pointers are process resources guarded by
-// the driver. They can be moved across Rust threads as opaque handles as long
-// as calls set the current context before use.
+// SAFETY: CUDA Driver API handles are process resources guarded by the driver.
+// The struct stores copied function pointers and owns the loaded library.
 unsafe impl Send for Driver {}
+// SAFETY: Driver entry points are immutable function pointers, and mutable CUDA
+// state is always addressed through explicit CUDA context calls.
 unsafe impl Sync for Driver {}
 
 struct ContextInner {
@@ -269,7 +270,11 @@ impl Drop for ContextInner {
     }
 }
 
+// SAFETY: ContextInner owns an opaque CUDA context handle and synchronizes its
+// Rust-side mutable caches with mutexes.
 unsafe impl Send for ContextInner {}
+// SAFETY: All shared Rust state is mutex-protected, and CUDA operations set the
+// current context before touching context-owned resources.
 unsafe impl Sync for ContextInner {}
 
 #[derive(Clone)]
@@ -400,9 +405,10 @@ impl CudaContext {
         })?;
         state.decode_rgb8(bytes, dimensions, output.device_ptr(), pitch_bytes)?;
 
-        self.inner.driver.check("cuCtxSynchronize", unsafe {
-            (self.inner.driver.cu_ctx_synchronize)()
-        })?;
+        // SAFETY: A CUDA context is current for this ContextInner before nvJPEG
+        // decode work is submitted; synchronize waits for that context's work.
+        let status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
+        self.inner.driver.check("cuCtxSynchronize", status)?;
 
         Ok(CudaKernelOutput {
             buffer: output,
@@ -438,9 +444,10 @@ impl CudaContext {
         let mut state = nvjpeg::NvjpegState::new_batched()?;
         state.decode_rgb8_batch(inputs, &pointers, &pitches)?;
 
-        self.inner.driver.check("cuCtxSynchronize", unsafe {
-            (self.inner.driver.cu_ctx_synchronize)()
-        })?;
+        // SAFETY: nvJPEG batched decode submits work to the current CUDA
+        // context; synchronize waits for completion before buffers are exposed.
+        let status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
+        self.inner.driver.check("cuCtxSynchronize", status)?;
 
         let execution = CudaExecutionStats {
             kernel_dispatches: 1,
@@ -689,7 +696,9 @@ impl CudaContext {
         geometry: kernels::CudaLaunchGeometry,
         params: &mut [*mut c_void],
     ) -> Result<(), CudaError> {
-        self.inner.driver.check("cuLaunchKernel", unsafe {
+        // SAFETY: `function` was loaded from a live module in this context, and
+        // `params` contains kernel argument pointers valid for the launch call.
+        let launch_status = unsafe {
             (self.inner.driver.cu_launch_kernel)(
                 function,
                 geometry.grid.0,
@@ -703,10 +712,12 @@ impl CudaContext {
                 params.as_mut_ptr(),
                 std::ptr::null_mut(),
             )
-        })?;
-        self.inner.driver.check("cuCtxSynchronize", unsafe {
-            (self.inner.driver.cu_ctx_synchronize)()
-        })
+        };
+        self.inner.driver.check("cuLaunchKernel", launch_status)?;
+        // SAFETY: The kernel was launched on the current context; synchronize
+        // waits for completion before callers inspect outputs.
+        let sync_status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
+        self.inner.driver.check("cuCtxSynchronize", sync_status)
     }
 
     pub fn copy_device_to_device_with_kernel(
@@ -904,6 +915,8 @@ impl CompiledKernel {
     }
 }
 
+// SAFETY: CompiledKernel stores opaque CUDA module/function handles. Lifetime
+// and unloading are coordinated by ContextInner's module cache mutex.
 unsafe impl Send for CompiledKernel {}
 
 impl CudaDeviceBuffer {
