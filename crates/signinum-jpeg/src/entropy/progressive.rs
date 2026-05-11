@@ -71,7 +71,7 @@ pub(crate) fn decode_progressive<W: OutputWriter>(
     for scan in &plan.scans {
         decode_progressive_scan(plan, scan, bytes, &mut coeffs)?;
     }
-    let images = render_component_images(plan, backend, &coeffs)?;
+    let images = render_component_images(plan, backend, &coeffs);
     emit_component_images(plan, &images, writer)?;
     Ok(Vec::new())
 }
@@ -445,7 +445,7 @@ fn render_component_images(
     plan: &PreparedProgressivePlan,
     backend: Backend,
     coeffs: &[Vec<[i32; 64]>],
-) -> Result<Vec<ComponentImage>, JpegError> {
+) -> Vec<ComponentImage> {
     let mut images = Vec::with_capacity(plan.components.len());
     for (component, component_coeffs) in plan.components.iter().zip(coeffs.iter()) {
         let stride = component.block_cols as usize * 8;
@@ -467,7 +467,7 @@ fn render_component_images(
         }
         images.push(ComponentImage { plane, stride });
     }
-    Ok(images)
+    images
 }
 
 fn dequantize_block(coeffs: &[i32; 64], quant: &[u16; 64], out: &mut [i16; 64]) {

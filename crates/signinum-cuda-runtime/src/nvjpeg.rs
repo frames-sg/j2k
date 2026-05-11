@@ -141,7 +141,11 @@ impl NvjpegLibrary {
     }
 }
 
+// SAFETY: NvjpegLibrary stores immutable copied function pointers and owns the
+// loaded shared library for at least as long as those pointers are used.
 unsafe impl Send for NvjpegLibrary {}
+// SAFETY: The library wrapper has no interior mutable Rust state; nvJPEG state
+// is kept in NvjpegState instances.
 unsafe impl Sync for NvjpegLibrary {}
 
 pub(crate) struct NvjpegState {
@@ -162,28 +166,28 @@ impl NvjpegState {
     fn new_with_backend(backend: Option<c_int>) -> Result<Self, CudaError> {
         let library = shared_library()?;
         let mut handle = std::ptr::null_mut();
-        match backend {
-            Some(backend) => {
-                let Some(create_ex) = library.create_ex else {
-                    return Err(CudaError::NvjpegUnavailable {
-                        message: "nvJPEG library does not export nvjpegCreateEx".to_string(),
-                    });
-                };
-                NvjpegLibrary::check("nvjpegCreateEx", unsafe {
-                    (create_ex)(
-                        backend,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        0,
-                        &raw mut handle,
-                    )
-                })?;
-            }
-            None => {
-                NvjpegLibrary::check("nvjpegCreateSimple", unsafe {
-                    (library.create_simple)(&raw mut handle)
-                })?;
-            }
+        if let Some(backend) = backend {
+            let Some(create_ex) = library.create_ex else {
+                return Err(CudaError::NvjpegUnavailable {
+                    message: "nvJPEG library does not export nvjpegCreateEx".to_string(),
+                });
+            };
+            // SAFETY: `handle` is a valid out-pointer, and null allocator
+            // arguments request nvJPEG defaults.
+            let status = unsafe {
+                (create_ex)(
+                    backend,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut handle,
+                )
+            };
+            NvjpegLibrary::check("nvjpegCreateEx", status)?;
+        } else {
+            // SAFETY: `handle` is a valid out-pointer for nvJPEG to fill.
+            let status = unsafe { (library.create_simple)(&raw mut handle) };
+            NvjpegLibrary::check("nvjpegCreateSimple", status)?;
         }
         if handle.is_null() {
             return Err(CudaError::NvjpegUnavailable {
@@ -191,9 +195,10 @@ impl NvjpegState {
             });
         }
         let mut state = std::ptr::null_mut();
-        if let Err(error) = NvjpegLibrary::check("nvjpegJpegStateCreate", unsafe {
-            (library.jpeg_state_create)(handle, &raw mut state)
-        }) {
+        // SAFETY: `handle` is a live nvJPEG handle and `state` is a valid
+        // out-pointer for the associated JPEG state.
+        let state_status = unsafe { (library.jpeg_state_create)(handle, &raw mut state) };
+        if let Err(error) = NvjpegLibrary::check("nvjpegJpegStateCreate", state_status) {
             // SAFETY: handle was created above and state creation failed before
             // ownership could be moved into NvjpegState.
             let _ = unsafe { (library.destroy)(handle) };
@@ -223,7 +228,9 @@ impl NvjpegState {
         self.validate_dimensions(bytes, dimensions)?;
         let mut image = rgb8_destination(device_ptr, pitch_bytes)?;
 
-        NvjpegLibrary::check("nvjpegDecode", unsafe {
+        // SAFETY: `bytes` is live for the duration of the call, `image` points
+        // at caller-owned device memory, and stream null selects the default.
+        let status = unsafe {
             (self.library.decode)(
                 self.handle,
                 self.state,
@@ -233,7 +240,8 @@ impl NvjpegState {
                 &raw mut image,
                 std::ptr::null_mut(),
             )
-        })
+        };
+        NvjpegLibrary::check("nvjpegDecode", status)
     }
 
     pub(crate) fn decode_rgb8_batch(
@@ -270,7 +278,9 @@ impl NvjpegState {
             destinations.push(rgb8_destination(*device_ptr, *pitch_bytes)?);
         }
 
-        NvjpegLibrary::check("nvjpegDecodeBatchedInitialize", unsafe {
+        // SAFETY: `self.handle`/`self.state` are live nvJPEG objects; the batch
+        // size was checked to fit c_int and match the prepared arrays.
+        let init_status = unsafe {
             (self.library.decode_batched_initialize)(
                 self.handle,
                 self.state,
@@ -278,8 +288,11 @@ impl NvjpegState {
                 1,
                 NVJPEG_OUTPUT_RGBI,
             )
-        })?;
-        NvjpegLibrary::check("nvjpegDecodeBatched", unsafe {
+        };
+        NvjpegLibrary::check("nvjpegDecodeBatchedInitialize", init_status)?;
+        // SAFETY: data/length/destination arrays have `batch_size` entries and
+        // remain live for the synchronous nvJPEG API call.
+        let decode_status = unsafe {
             (self.library.decode_batched)(
                 self.handle,
                 self.state,
@@ -288,7 +301,8 @@ impl NvjpegState {
                 destinations.as_mut_ptr(),
                 std::ptr::null_mut(),
             )
-        })
+        };
+        NvjpegLibrary::check("nvjpegDecodeBatched", decode_status)
     }
 
     fn validate_dimensions(&self, bytes: &[u8], dimensions: (u32, u32)) -> Result<(), CudaError> {
@@ -296,7 +310,9 @@ impl NvjpegState {
         let mut subsampling = 0;
         let mut widths = [0; NVJPEG_MAX_COMPONENT];
         let mut heights = [0; NVJPEG_MAX_COMPONENT];
-        NvjpegLibrary::check("nvjpegGetImageInfo", unsafe {
+        // SAFETY: `bytes` is live for the duration of the call and all output
+        // pointers refer to local storage sized for nvJPEG component metadata.
+        let status = unsafe {
             (self.library.get_image_info)(
                 self.handle,
                 bytes.as_ptr(),
@@ -306,7 +322,8 @@ impl NvjpegState {
                 widths.as_mut_ptr(),
                 heights.as_mut_ptr(),
             )
-        })?;
+        };
+        NvjpegLibrary::check("nvjpegGetImageInfo", status)?;
         let actual = (
             u32::try_from(widths[0]).unwrap_or(0),
             u32::try_from(heights[0]).unwrap_or(0),
@@ -336,6 +353,8 @@ impl Drop for NvjpegState {
     }
 }
 
+// SAFETY: NvjpegState owns opaque nvJPEG handles and is only used through
+// mutable methods or external synchronization by CudaContext.
 unsafe impl Send for NvjpegState {}
 
 fn load_nvjpeg_symbol<T: Copy>(library: &Library, name: &'static [u8]) -> Result<T, CudaError> {

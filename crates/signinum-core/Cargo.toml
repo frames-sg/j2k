@@ -18,6 +18,7 @@ path = "src/lib.rs"
 thiserror = { workspace = true }
 
 [lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
 
 [lints.clippy]

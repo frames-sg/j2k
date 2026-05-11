@@ -51,6 +51,7 @@ harness = false
 # SIMD backends use tightly-scoped intrinsics in `src/backend/`; keep unsafe
 # explicit there while the rest of the crate remains safe Rust.
 unsafe_code     = "allow"
+unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"
 # `missing_docs` remains disabled for now because CI uses `-D warnings` and the
 # public surface is still being documented crate-by-crate after the 1.0
