@@ -117,6 +117,20 @@ fn test() -> Result<(), String> {
         "--exclude",
         "signinum-j2k-metal",
     ])?;
+    if skip_j2k_metal_runtime_on_hosted_github_macos() {
+        eprintln!(
+            "skipping signinum-j2k-metal runtime tests on GitHub-hosted macOS; \
+             self-hosted gpu-validation runs the Metal runtime suite"
+        );
+        return run_cargo(&[
+            "test",
+            "-p",
+            "signinum-j2k-metal",
+            "--all-targets",
+            "--all-features",
+            "--no-run",
+        ]);
+    }
     run_cargo_with_env(
         &[
             "test",
@@ -217,6 +231,17 @@ fn release_metal() -> Result<(), String> {
         eprintln!("skipping Metal release tests on {}", env::consts::OS);
         return Ok(());
     }
+    if skip_j2k_metal_runtime_on_hosted_github_macos() {
+        eprintln!(
+            "skipping signinum-j2k-metal release runtime tests on GitHub-hosted macOS; \
+             self-hosted gpu-validation runs the Metal runtime suite"
+        );
+        run_cargo_with_env(
+            &["test", "--release", "-p", "signinum-jpeg-metal"],
+            &[("RUST_TEST_THREADS", "1")],
+        )?;
+        return run_cargo(&["test", "--release", "-p", "signinum-j2k-metal", "--no-run"]);
+    }
     run_cargo_with_env(
         &[
             "test",
@@ -228,6 +253,12 @@ fn release_metal() -> Result<(), String> {
         ],
         &[("RUST_TEST_THREADS", "1")],
     )
+}
+
+fn skip_j2k_metal_runtime_on_hosted_github_macos() -> bool {
+    env::consts::OS == "macos"
+        && env::var_os("GITHUB_ACTIONS").is_some()
+        && env::var_os("SIGNINUM_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS").is_none()
 }
 
 fn coverage() -> Result<(), String> {
