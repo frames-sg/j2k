@@ -8,9 +8,8 @@ artifacts are `signinum`, `signinum-core`, `signinum-jpeg`, `signinum-j2k`,
 a `0.3.x` implementation dependency so `signinum-j2k` can be installed from
 crates.io.
 
-Metal and CUDA adapter crates are published as pre-1.0 `0.3.x` artifacts where
-their APIs changed for the facade boundary. `signinum-jpeg-metal` remains
-`0.2.0`.
+Metal and CUDA adapter crates are published as pre-1.0 artifacts where their
+APIs changed for the facade boundary.
 Runtime backend selection defaults to `Auto`; supported compiled device paths
 may run before CPU fallback.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
@@ -65,23 +64,23 @@ failure. The publish workflow's dry-run mode mirrors that limit: it uses
 `cargo package --list` for crates blocked only by unpublished workspace
 dependencies. Real publishes still run `cargo publish` in dependency order.
 
-The crates.io publish order is:
+The crates.io publish order uses the current manifest versions and is enforced
+by `.github/workflows/publish.yml`:
 
-1. `signinum-cuda-runtime` `0.3.0`
-2. `signinum-j2k-native` `0.3.0`
-3. `signinum-j2k` `1.1.0`
-4. `signinum-j2k-metal` `0.3.0`
-5. `signinum-jpeg-cuda` `0.3.0`
-6. `signinum-j2k-cuda` `0.3.0`
-7. `signinum` `1.0.0`
+1. `signinum-core`
+2. `signinum-cuda-runtime`
+3. `signinum-j2k-native`
+4. `signinum-jpeg`
+5. `signinum-tilecodec`
+6. `signinum-j2k`
+7. `signinum-jpeg-metal`
+8. `signinum-j2k-metal`
+9. `signinum-jpeg-cuda`
+10. `signinum-j2k-cuda`
+11. `signinum-cli`
+12. `signinum`
 
-Already-published crates reused by this release:
-
-- `signinum-core` `1.0.0`
-- `signinum-jpeg` `1.0.0`
-- `signinum-tilecodec` `1.0.0`
-- `signinum-jpeg-metal` `0.2.0`
-- `signinum-cli` `1.0.0`
-
-`signinum-j2k-compare` remains `publish = false`; it is a local parity oracle
-helper, not a released runtime dependency.
+Every package in this list must have a fresh manifest version before a
+metadata-refresh release, because crates.io package metadata is immutable after
+publication. `signinum-j2k-compare` remains `publish = false`; it is a local
+parity oracle helper, not a released runtime dependency.

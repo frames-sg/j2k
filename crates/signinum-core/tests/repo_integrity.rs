@@ -326,6 +326,7 @@ fn crates_io_publish_policy_is_explicit() {
         "signinum-j2k-metal",
         "signinum-j2k-cuda",
         "signinum-cli",
+        "signinum",
     ] {
         assert!(
             publishable.contains(&format!("\"{package}\"")),
@@ -345,6 +346,23 @@ fn crates_io_publish_policy_is_explicit() {
     assert!(
         !publish_workflow.contains(&format!("publish-{package}:")),
         "publish workflow must not publish local comparator package {package}"
+    );
+}
+
+#[test]
+fn release_docs_use_manifest_versions_for_publish_order() {
+    let release =
+        fs::read_to_string(repo_root().join("docs/release.md")).expect("read release docs");
+
+    assert!(
+        release.contains("manifest versions"),
+        "release docs must describe publishing the current manifest versions instead of stale hard-coded versions"
+    );
+    assert!(
+        !release.contains("`signinum-j2k` `1.1.0`")
+            && !release.contains("`signinum-j2k-native` `0.3.0`")
+            && !release.contains("`signinum` `1.0.0`"),
+        "release docs must not carry stale pre-facade publish versions"
     );
 }
 

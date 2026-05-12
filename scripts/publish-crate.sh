@@ -14,7 +14,8 @@ has_unpublished_workspace_dependency() {
       signinum-j2k-metal | \
       signinum-jpeg-cuda | \
       signinum-j2k-cuda | \
-      signinum-cli)
+      signinum-cli | \
+      signinum)
       return 0
       ;;
     *)

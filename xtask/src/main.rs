@@ -14,6 +14,7 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
     "signinum-jpeg-cuda",
     "signinum-j2k-cuda",
     "signinum-cli",
+    "signinum",
 ];
 
 const REGISTRY_INDEPENDENT_PACKAGES: &[&str] = &[
@@ -31,6 +32,7 @@ const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
     "signinum-jpeg-cuda",
     "signinum-j2k-cuda",
     "signinum-cli",
+    "signinum",
 ];
 
 const CPU_RELEASE_PACKAGES: &[&str] = &[
