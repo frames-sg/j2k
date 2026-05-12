@@ -532,7 +532,8 @@ fn public_docs_route_users_to_current_crates() {
 #[test]
 fn public_repo_excludes_agent_private_artifacts() {
     let root = repo_root();
-    let private_dir = ["docs", "private-docs"].join("/");
+    let private_docs_name = ["super", "powers"].concat();
+    let private_dir = ["docs", private_docs_name.as_str()].join("/");
     let migration_doc = ["MIGRATION", ".md"].concat();
     let migration_doc_lower = migration_doc.to_ascii_lowercase();
     let mut offenders = Vec::new();
