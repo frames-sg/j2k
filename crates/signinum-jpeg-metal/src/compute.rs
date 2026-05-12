@@ -6418,192 +6418,213 @@ pub(crate) fn decode_full_batch_to_surfaces(
         return Ok(None);
     };
 
-    with_runtime(|runtime| {
-        if let Some(results) =
-            try_decode_fast420_full_rgb_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
-        if let Some(results) =
-            try_decode_fast422_full_rgb_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
-        if let Some(results) =
-            try_decode_repeated_region_scaled_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
-        if let Some(results) =
-            try_decode_fast444_region_scaled_rgb_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
-        if let Some(results) =
-            try_decode_fast420_region_scaled_rgb_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
-        if let Some(results) =
-            try_decode_fast422_region_scaled_rgb_batch_to_surfaces(runtime, requests, &packets)?
-        {
-            return Ok(Some(results));
-        }
+    with_runtime(|runtime| decode_full_batch_to_surfaces_with_runtime(runtime, requests, &packets))
+}
 
-        let mut results = Vec::with_capacity(requests.len());
-        let has_region_scaled = requests
-            .iter()
-            .any(|request| matches!(request.op, batch::BatchOp::RegionScaled { .. }));
-        let chunk_size = if has_region_scaled {
-            REGION_SCALED_BATCH_CHUNK
-        } else {
-            requests.len().max(1)
-        };
-        for chunk_start in (0..requests.len()).step_by(chunk_size) {
-            let chunk_end = (chunk_start + chunk_size).min(requests.len());
-            let command_buffer = runtime.queue.new_command_buffer();
-            let mut encoded = Vec::with_capacity(chunk_end - chunk_start);
-            let mut device_buffer_cache = BatchDeviceBufferCache::default();
-            for index in chunk_start..chunk_end {
-                let request = &requests[index];
-                let packet = &packets[index];
-                let item = match packet {
-                    BatchedFastPacket::Fast420(packet) => match request.op {
-                        batch::BatchOp::Full => encode_fast420_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                        )?,
-                        batch::BatchOp::Region(roi) => encode_fast420_region_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                            roi,
-                        )?,
-                        batch::BatchOp::Scaled(scale) => encode_fast420_scaled_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                            scale,
-                        )?,
-                        batch::BatchOp::RegionScaled { roi, scale } => {
-                            encode_fast420_scaled_region_batch_item(
-                                runtime,
-                                command_buffer,
-                                &mut device_buffer_cache,
-                                index,
-                                packet,
-                                request.fmt,
-                                roi,
-                                scale,
-                            )?
-                        }
-                    },
-                    BatchedFastPacket::Fast422(packet) => match request.op {
-                        batch::BatchOp::Full => encode_fast422_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                        )?,
-                        batch::BatchOp::Region(roi) => encode_fast422_region_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                            roi,
-                        )?,
-                        batch::BatchOp::Scaled(scale) => encode_fast422_scaled_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            request.fmt,
-                            scale,
-                        )?,
-                        batch::BatchOp::RegionScaled { roi, scale } => {
-                            encode_fast422_scaled_region_batch_item(
-                                runtime,
-                                command_buffer,
-                                &mut device_buffer_cache,
-                                index,
-                                packet,
-                                request.fmt,
-                                roi,
-                                scale,
-                            )?
-                        }
-                    },
-                    BatchedFastPacket::Fast444(packet, mode) => match request.op {
-                        batch::BatchOp::Full => encode_fast444_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            *mode,
-                            request.fmt,
-                        )?,
-                        batch::BatchOp::Region(roi) => encode_fast444_region_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            *mode,
-                            request.fmt,
-                            roi,
-                        )?,
-                        batch::BatchOp::Scaled(scale) => encode_fast444_scaled_batch_item(
-                            runtime,
-                            command_buffer,
-                            index,
-                            packet,
-                            *mode,
-                            request.fmt,
-                            scale,
-                        )?,
-                        batch::BatchOp::RegionScaled { roi, scale } => {
-                            encode_fast444_scaled_region_batch_item(
-                                runtime,
-                                command_buffer,
-                                &mut device_buffer_cache,
-                                index,
-                                packet,
-                                *mode,
-                                request.fmt,
-                                roi,
-                                scale,
-                            )?
-                        }
-                    },
-                };
-                encoded.push(item);
-            }
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_full_batch_to_surfaces_with_session(
+    requests: &[batch::QueuedRequest],
+    session: &crate::MetalBackendSession,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    let Some(packets) = batched_fast_packets(requests)? else {
+        return Ok(None);
+    };
 
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-
-            for item in encoded {
-                if let Some(status) =
-                    first_decode_error_status(&item.status_buffer, item.decode_threads)
-                {
-                    let request = &requests[item.request_index];
-                    let decoder = CpuDecoder::new(request.input.as_ref())?;
-                    results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
-                } else {
-                    results.push(Ok(item.surface));
-                }
-            }
-        }
-        Ok(Some(results))
+    with_runtime_for_session(session, |runtime| {
+        decode_full_batch_to_surfaces_with_runtime(runtime, requests, &packets)
     })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_full_batch_to_surfaces_with_runtime(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(results) =
+        try_decode_fast420_full_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast422_full_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_repeated_region_scaled_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast444_region_scaled_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast420_region_scaled_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast422_region_scaled_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    let has_region_scaled = requests
+        .iter()
+        .any(|request| matches!(request.op, batch::BatchOp::RegionScaled { .. }));
+    let chunk_size = if has_region_scaled {
+        REGION_SCALED_BATCH_CHUNK
+    } else {
+        requests.len().max(1)
+    };
+    for chunk_start in (0..requests.len()).step_by(chunk_size) {
+        let chunk_end = (chunk_start + chunk_size).min(requests.len());
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut encoded = Vec::with_capacity(chunk_end - chunk_start);
+        let mut device_buffer_cache = BatchDeviceBufferCache::default();
+        for index in chunk_start..chunk_end {
+            let request = &requests[index];
+            let packet = &packets[index];
+            let item = match packet {
+                BatchedFastPacket::Fast420(packet) => match request.op {
+                    batch::BatchOp::Full => encode_fast420_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                    )?,
+                    batch::BatchOp::Region(roi) => encode_fast420_region_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                        roi,
+                    )?,
+                    batch::BatchOp::Scaled(scale) => encode_fast420_scaled_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                        scale,
+                    )?,
+                    batch::BatchOp::RegionScaled { roi, scale } => {
+                        encode_fast420_scaled_region_batch_item(
+                            runtime,
+                            command_buffer,
+                            &mut device_buffer_cache,
+                            index,
+                            packet,
+                            request.fmt,
+                            roi,
+                            scale,
+                        )?
+                    }
+                },
+                BatchedFastPacket::Fast422(packet) => match request.op {
+                    batch::BatchOp::Full => encode_fast422_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                    )?,
+                    batch::BatchOp::Region(roi) => encode_fast422_region_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                        roi,
+                    )?,
+                    batch::BatchOp::Scaled(scale) => encode_fast422_scaled_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        request.fmt,
+                        scale,
+                    )?,
+                    batch::BatchOp::RegionScaled { roi, scale } => {
+                        encode_fast422_scaled_region_batch_item(
+                            runtime,
+                            command_buffer,
+                            &mut device_buffer_cache,
+                            index,
+                            packet,
+                            request.fmt,
+                            roi,
+                            scale,
+                        )?
+                    }
+                },
+                BatchedFastPacket::Fast444(packet, mode) => match request.op {
+                    batch::BatchOp::Full => encode_fast444_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        *mode,
+                        request.fmt,
+                    )?,
+                    batch::BatchOp::Region(roi) => encode_fast444_region_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        *mode,
+                        request.fmt,
+                        roi,
+                    )?,
+                    batch::BatchOp::Scaled(scale) => encode_fast444_scaled_batch_item(
+                        runtime,
+                        command_buffer,
+                        index,
+                        packet,
+                        *mode,
+                        request.fmt,
+                        scale,
+                    )?,
+                    batch::BatchOp::RegionScaled { roi, scale } => {
+                        encode_fast444_scaled_region_batch_item(
+                            runtime,
+                            command_buffer,
+                            &mut device_buffer_cache,
+                            index,
+                            packet,
+                            *mode,
+                            request.fmt,
+                            roi,
+                            scale,
+                        )?
+                    }
+                },
+            };
+            encoded.push(item);
+        }
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        for item in encoded {
+            if let Some(status) =
+                first_decode_error_status(&item.status_buffer, item.decode_threads)
+            {
+                let request = &requests[item.request_index];
+                let decoder = CpuDecoder::new(request.input.as_ref())?;
+                results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
+            } else {
+                results.push(Ok(item.surface));
+            }
+        }
+    }
+    Ok(Some(results))
 }
 
 #[cfg(target_os = "macos")]
