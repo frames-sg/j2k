@@ -297,6 +297,188 @@ impl core::fmt::Debug for MetalSession {
     }
 }
 
+/// Convenience wrapper for submitting a group of JPEG tiles to one decoder
+/// session.
+///
+/// The batch preserves submission order and lets compatible requests share a
+/// Metal submission. Callers still own slide metadata, level selection, cache
+/// policy, and viewport planning.
+#[derive(Default)]
+pub struct JpegTileBatch {
+    session: MetalSession,
+    submissions: Vec<batch::MetalSubmission>,
+}
+
+impl JpegTileBatch {
+    /// Create an empty tile batch.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create an empty tile batch with capacity for `capacity` submissions.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            submissions: Vec::with_capacity(capacity),
+            ..Self::default()
+        }
+    }
+
+    /// Number of queued tile requests.
+    pub fn len(&self) -> usize {
+        self.submissions.len()
+    }
+
+    /// Whether the batch has no queued tile requests.
+    pub fn is_empty(&self) -> bool {
+        self.submissions.is_empty()
+    }
+
+    /// Number of Metal session submissions already flushed.
+    ///
+    /// Queued requests normally do not increment this until `decode_all` waits
+    /// on the first result.
+    pub fn submissions(&self) -> u64 {
+        self.session.submissions()
+    }
+
+    /// Queue a full-tile decode request, copying the compressed tile bytes into
+    /// the batch.
+    pub fn push_tile(
+        &mut self,
+        input: &[u8],
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        self.push_shared_tile(Arc::<[u8]>::from(input), fmt, backend)
+    }
+
+    /// Queue a full-tile decode request backed by shared compressed tile bytes.
+    pub fn push_shared_tile(
+        &mut self,
+        input: Arc<[u8]>,
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        Ok(self.push_shared_request(input, fmt, backend, batch::BatchOp::Full))
+    }
+
+    /// Queue a region decode request, copying the compressed tile bytes into
+    /// the batch.
+    pub fn push_tile_region(
+        &mut self,
+        input: &[u8],
+        fmt: PixelFormat,
+        roi: Rect,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        self.push_shared_tile_region(Arc::<[u8]>::from(input), fmt, roi, backend)
+    }
+
+    /// Queue a region decode request backed by shared compressed tile bytes.
+    pub fn push_shared_tile_region(
+        &mut self,
+        input: Arc<[u8]>,
+        fmt: PixelFormat,
+        roi: Rect,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        Ok(self.push_shared_request(input, fmt, backend, batch::BatchOp::Region(roi)))
+    }
+
+    /// Queue a scaled decode request, copying the compressed tile bytes into
+    /// the batch.
+    pub fn push_tile_scaled(
+        &mut self,
+        input: &[u8],
+        fmt: PixelFormat,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        self.push_shared_tile_scaled(Arc::<[u8]>::from(input), fmt, scale, backend)
+    }
+
+    /// Queue a scaled decode request backed by shared compressed tile bytes.
+    pub fn push_shared_tile_scaled(
+        &mut self,
+        input: Arc<[u8]>,
+        fmt: PixelFormat,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        Ok(self.push_shared_request(input, fmt, backend, batch::BatchOp::Scaled(scale)))
+    }
+
+    /// Queue a region decode at reduced resolution, copying the compressed tile
+    /// bytes into the batch.
+    pub fn push_tile_region_scaled(
+        &mut self,
+        input: &[u8],
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        self.push_shared_tile_region_scaled(Arc::<[u8]>::from(input), fmt, roi, scale, backend)
+    }
+
+    /// Queue a region decode at reduced resolution backed by shared compressed
+    /// tile bytes.
+    pub fn push_shared_tile_region_scaled(
+        &mut self,
+        input: Arc<[u8]>,
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<usize, Error> {
+        Ok(self.push_shared_request(
+            input,
+            fmt,
+            backend,
+            batch::BatchOp::RegionScaled { roi, scale },
+        ))
+    }
+
+    /// Decode all queued tile requests and return surfaces in submission order.
+    pub fn decode_all(self) -> Result<Vec<Surface>, Error> {
+        let mut surfaces = Vec::with_capacity(self.submissions.len());
+        for submission in self.submissions {
+            surfaces.push(submission.wait()?);
+        }
+        Ok(surfaces)
+    }
+
+    fn push_shared_request(
+        &mut self,
+        input: Arc<[u8]>,
+        fmt: PixelFormat,
+        backend: BackendRequest,
+        op: batch::BatchOp,
+    ) -> usize {
+        let slot = self.submissions.len();
+        let submission = {
+            let mut state = self.session.shared.0.lock().expect("metal session");
+            let (fast444_packet, fast422_packet, fast420_packet) =
+                state.resolve_fast_packets(&input, backend);
+            let slot = state.queue_request(batch::QueuedRequest::new_shared(
+                input,
+                fmt,
+                backend,
+                op,
+                fast444_packet,
+                fast422_packet,
+                fast420_packet,
+            ));
+            batch::MetalSubmission {
+                session: self.session.shared.clone(),
+                slot,
+            }
+        };
+        self.submissions.push(submission);
+        slot
+    }
+}
+
 pub struct Decoder<'a> {
     inner: CpuDecoder<'a>,
     source: Arc<[u8]>,
@@ -1114,6 +1296,36 @@ pub(crate) fn decode_compatible_batch(
     }
 }
 
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn decode_rgb8_batch_to_device_with_session(
+    inputs: &[&[u8]],
+    session: &MetalBackendSession,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if inputs.len() < 2 {
+        return Ok(None);
+    }
+
+    let mut state = session::SessionState::default();
+    let mut requests = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let input = state.intern_input_slice(input);
+        let (fast444_packet, fast422_packet, fast420_packet) =
+            state.resolve_fast_packets(&input, BackendRequest::Metal);
+        requests.push(batch::QueuedRequest::new_shared(
+            input,
+            PixelFormat::Rgb8,
+            BackendRequest::Metal,
+            batch::BatchOp::Full,
+            fast444_packet,
+            fast422_packet,
+            fast420_packet,
+        ));
+    }
+
+    compute::decode_full_batch_to_surfaces_with_session(&requests, session)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_surface_from_decoder(
     decoder: &CpuDecoder<'_>,
@@ -1740,6 +1952,28 @@ mod tests {
             .expect("session runtime after second decode");
 
         assert_eq!(first_runtime, second_runtime);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn jpeg_rgb8_batch_decode_uses_backend_session_runtime() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        assert!(session.runtime.get().is_none());
+
+        let inputs = [BASELINE_420, BASELINE_420];
+        let results = decode_rgb8_batch_to_device_with_session(&inputs, &session)
+            .expect("session batch decode")
+            .expect("baseline JPEG batch should use Metal batch path");
+
+        assert_eq!(results.len(), 2);
+        assert!(session.runtime.get().is_some());
+        for result in results {
+            let surface = result.expect("surface");
+            assert_eq!(surface.backend_kind(), BackendKind::Metal);
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (16, 16));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+        }
     }
 
     #[cfg(target_os = "macos")]

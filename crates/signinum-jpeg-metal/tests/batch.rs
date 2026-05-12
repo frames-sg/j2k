@@ -3,7 +3,7 @@ use signinum_core::{
     Downscale, PixelFormat, Rect, TileBatchDecodeDevice, TileBatchDecodeSubmit,
 };
 use signinum_jpeg::{Decoder as CpuDecoder, DecoderContext as JpegDecoderContext};
-use signinum_jpeg_metal::{Codec, MetalSession, ScratchPool};
+use signinum_jpeg_metal::{Codec, JpegTileBatch, MetalSession, ScratchPool};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const BASELINE_420_RESTART: &[u8] =
@@ -130,6 +130,41 @@ fn compatible_tile_submits_flush_once() {
     }
 
     assert_eq!(session.submissions(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
+    let (expected, _) = CpuDecoder::new(BASELINE_420)
+        .expect("cpu decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("cpu decode");
+    let mut batch = JpegTileBatch::with_capacity(2);
+
+    assert!(batch.is_empty());
+    assert_eq!(
+        batch
+            .push_tile(BASELINE_420, PixelFormat::Rgb8, BackendRequest::Metal)
+            .expect("first push"),
+        0
+    );
+    assert_eq!(
+        batch
+            .push_tile(BASELINE_420, PixelFormat::Rgb8, BackendRequest::Metal)
+            .expect("second push"),
+        1
+    );
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch.submissions(), 0);
+
+    let surfaces = batch.decode_all().expect("decode JPEG tile batch");
+
+    assert_eq!(surfaces.len(), 2);
+    for surface in surfaces {
+        assert_eq!(surface.backend_kind(), BackendKind::Metal);
+        assert_eq!(surface.dimensions(), (16, 16));
+        assert_eq!(surface.as_bytes(), expected.as_slice());
+    }
 }
 
 #[test]
