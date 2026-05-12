@@ -114,7 +114,7 @@ For ordinary Rust code, start with the facade:
 
 ```toml
 [dependencies]
-signinum = "1.2.4"
+signinum = "0.4.0"
 ```
 
 Then choose the module that matches the compressed payload:
