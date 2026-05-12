@@ -9,7 +9,14 @@ writer. Use [`statumen`](https://github.com/frames-sg/statumen) for slide
 container parsing and [`wsi-dicom`](https://github.com/frames-sg/wsi-dicom)
 for DICOM VL Whole Slide Microscopy export.
 
-## Choose a crate
+The current public-source target is the `signinum` facade release.
+Runtime backend selection defaults to `Auto`: CPU decode is always available,
+and compiled Metal or CUDA adapters are used only for supported workloads. CUDA
+adapters expose CUDA device memory through `cuda-runtime` when a CUDA driver is
+available. JPEG full-frame RGB8 CUDA requests can use nvJPEG;
+NVIDIA performance claims require self-hosted GPU benchmark evidence.
+
+## Which crate should I use?
 
 | Task | Use | Install |
 |------|-----|---------|
@@ -232,7 +239,7 @@ See:
 - [docs/wsi-decode-api.md](docs/wsi-decode-api.md)
 - [docs/wsi-dicom-passthrough.md](docs/wsi-dicom-passthrough.md)
 
-## For LLM-assisted use
+## Fast Path For LLM-Assisted Use
 
 If you are asking an LLM to use this repository, give it this instruction:
 
