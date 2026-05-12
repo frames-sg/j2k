@@ -54,7 +54,6 @@ jobs:
           - { os: ubuntu-latest,      rust: "1.94", arch: x86_64 }
           - { os: ubuntu-24.04-arm,   rust: stable, arch: aarch64 }
           - { os: ubuntu-24.04-arm,   rust: "1.94", arch: aarch64 }
-          - { os: macos-13,           rust: stable, arch: x86_64 }
           - { os: macos-latest,       rust: stable, arch: aarch64 }
           - { os: macos-latest,       rust: "1.94", arch: aarch64 }
     runs-on: ${{ matrix.os }}

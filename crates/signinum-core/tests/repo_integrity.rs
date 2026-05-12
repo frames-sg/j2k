@@ -150,12 +150,16 @@ fn ci_workflow_keeps_docs_and_benchmark_compile_gates() {
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
     let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
 
-    for required in ["cargo xtask doc", "cargo xtask bench-build", "macos-13"] {
+    for required in ["cargo xtask doc", "cargo xtask bench-build", "macos-latest"] {
         assert!(
             workflow.contains(required),
             "CI workflow must contain `{required}`"
         );
     }
+    assert!(
+        !workflow.contains("macos-13"),
+        "hosted CI must not gate releases on unsupported Intel macOS runners"
+    );
 
     for required in [
         "\"doc\"",

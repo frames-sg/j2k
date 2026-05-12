@@ -25,8 +25,8 @@ Hosted CI must pass before release staging:
 
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-3. `cargo test --workspace --all-targets --all-features` on Linux x86_64,
-   Linux aarch64, macOS x86_64, and macOS aarch64 runners
+3. `cargo xtask test` on Linux x86_64, Linux aarch64, and Apple Silicon
+   macOS runners
 4. `cargo doc --workspace --all-features --no-deps` with rustdoc warnings
    denied
 5. Benchmark compile checks for JPEG, JPEG Metal, J2K Metal, and tilecodec
