@@ -190,11 +190,14 @@ fn xtask_fuzz_build_checks_every_fuzz_manifest() {
     );
 
     for manifest in manifests {
-        let relative = manifest
+        let relative_path = manifest
             .strip_prefix(root)
-            .expect("fuzz manifest under repo root")
-            .display()
-            .to_string();
+            .expect("fuzz manifest under repo root");
+        let relative = relative_path
+            .iter()
+            .map(|part| part.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         assert!(
             xtask.contains(&relative),
             "xtask fuzz-build must check {relative}"
