@@ -9,15 +9,19 @@ use rayon::prelude::*;
 use signinum_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
 use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
+#[cfg(target_os = "macos")]
 use signinum_j2k::{
-    EncodeBackendPreference, EncodedJ2k, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
+    EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kProgressionOrder,
+};
+use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions, J2kLosslessSamples};
+#[cfg(target_os = "macos")]
+use signinum_j2k_native::{
+    EncodeProgressionOrder, J2kPacketizationPacketDescriptor, J2kSubBandType,
 };
 use signinum_j2k_native::{
-    EncodeProgressionOrder, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(all(test, target_os = "macos"))]
 use std::cell::Cell;

@@ -168,6 +168,7 @@ pub enum SurfaceResidency {
     CpuStagedMetalUpload,
 }
 
+#[cfg(target_os = "macos")]
 const CPU_STAGED_METAL_REQUIRES_EXPLICIT_API: &str =
     "CPU-staged Metal upload requires the explicit CPU-staged API; BackendRequest::Metal only accepts resident Metal decode";
 
