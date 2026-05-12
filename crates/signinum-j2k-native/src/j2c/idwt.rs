@@ -7,6 +7,7 @@ use super::build::{Decomposition, SubBand};
 use super::codestream::WaveletTransform;
 use super::decode::{DecompositionStorage, TileDecodeContext};
 use super::rect::IntRect;
+use super::roi;
 use crate::error::DecodingError;
 use crate::j2c::Header;
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
@@ -59,6 +60,9 @@ pub(crate) fn apply(
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
     let tile_decompositions = &storage.tile_decompositions[component_idx];
+    if storage.roi_plan.is_some() {
+        return apply_roi(storage, tile_ctx, component_idx, header, transform);
+    }
 
     let mut decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     // If we requested a lower resolution level, we can skip some decompositions.
@@ -99,6 +103,10 @@ pub(crate) fn apply(
             .extend_from_slice(&storage.coefficients[ll_sub_band.coefficients.clone()]);
 
         output.rect = ll_sub_band.rect;
+        tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+            .debug_counters
+            .idwt_output_samples
+            .saturating_add(output.coefficients.len());
 
         return Ok(());
     }
@@ -173,11 +181,211 @@ pub(crate) fn apply(
             InputSource::Output
         };
         current_rect = temp_output.rect;
+        tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+            .debug_counters
+            .idwt_output_samples
+            .saturating_add(current_rect.width() as usize * current_rect.height() as usize);
         use_scratch = !use_scratch;
     }
 
     output.rect = temp_output.rect;
     Ok(())
+}
+
+fn apply_roi(
+    storage: &DecompositionStorage<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_idx: usize,
+    header: &Header<'_>,
+    transform: WaveletTransform,
+) -> Result<()> {
+    let roi_plan = storage
+        .roi_plan
+        .as_ref()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
+    let output = &mut tile_ctx.idwt_output;
+    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
+
+    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
+    let active_len = decompositions
+        .len()
+        .saturating_sub(header.skipped_resolution_levels as usize);
+
+    if active_len == 0 {
+        let Some(window) = roi_plan
+            .sub_band_window(tile_decompositions.first_ll_sub_band)
+            .or_else(|| roi_plan.final_window(component_idx))
+        else {
+            output.coefficients.clear();
+            output.rect = IntRect::from_xywh(0, 0, 0, 0);
+            return Ok(());
+        };
+        copy_sub_band_window_to_output(ll_sub_band, storage, window, output);
+        return Ok(());
+    }
+
+    let mut current_coefficients = Vec::new();
+    let mut current_rect = IntRect::from_xywh(0, 0, 0, 0);
+    let mut have_current = false;
+
+    for (local_idx, decomposition) in decompositions.iter().take(active_len).enumerate() {
+        let decomposition_idx = tile_decompositions.decompositions.start + local_idx;
+        let Some(output_window) = roi_plan.idwt_window(decomposition_idx) else {
+            output.coefficients.clear();
+            output.rect = IntRect::from_xywh(0, 0, 0, 0);
+            return Ok(());
+        };
+
+        let ll_input = if have_current {
+            CoefficientSource::new(&current_coefficients, current_rect, current_rect.width())
+        } else {
+            CoefficientSource::from_sub_band(ll_sub_band, storage)
+        };
+
+        let mut next = Vec::new();
+        apply_level_roi(
+            ll_input,
+            &mut next,
+            output_window,
+            decomposition,
+            transform,
+            storage,
+            &mut tile_ctx.debug_counters.idwt_output_samples,
+        )?;
+        current_coefficients = next;
+        current_rect = output_window;
+        have_current = true;
+    }
+
+    output.coefficients = current_coefficients;
+    output.rect = current_rect;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct CoefficientSource<'a> {
+    coefficients: &'a [f32],
+    rect: IntRect,
+    stride: u32,
+}
+
+impl<'a> CoefficientSource<'a> {
+    fn new(coefficients: &'a [f32], rect: IntRect, stride: u32) -> Self {
+        Self {
+            coefficients,
+            rect,
+            stride,
+        }
+    }
+
+    fn from_sub_band(sub_band: &'a SubBand, storage: &'a DecompositionStorage<'_>) -> Self {
+        Self {
+            coefficients: &storage.coefficients[sub_band.coefficients.clone()],
+            rect: sub_band.rect,
+            stride: sub_band.rect.width(),
+        }
+    }
+
+    fn get(self, x: u32, y: u32) -> f32 {
+        if x < self.rect.x0 || x >= self.rect.x1 || y < self.rect.y0 || y >= self.rect.y1 {
+            return 0.0;
+        }
+        let local_x = (x - self.rect.x0) as usize;
+        let local_y = (y - self.rect.y0) as usize;
+        self.coefficients[local_y * self.stride as usize + local_x]
+    }
+}
+
+fn copy_sub_band_window_to_output(
+    sub_band: &SubBand,
+    storage: &DecompositionStorage<'_>,
+    window: IntRect,
+    output: &mut IDWTOutput,
+) {
+    output.coefficients.clear();
+    output
+        .coefficients
+        .resize(window.width() as usize * window.height() as usize, 0.0);
+    let source = CoefficientSource::from_sub_band(sub_band, storage);
+    for y in window.y0..window.y1 {
+        for x in window.x0..window.x1 {
+            let dst = (y - window.y0) as usize * window.width() as usize + (x - window.x0) as usize;
+            output.coefficients[dst] = source.get(x, y);
+        }
+    }
+    output.rect = window;
+}
+
+fn apply_level_roi(
+    ll: CoefficientSource<'_>,
+    target: &mut Vec<f32>,
+    output_window: IntRect,
+    decomposition: &Decomposition,
+    transform: WaveletTransform,
+    storage: &DecompositionStorage<'_>,
+    idwt_output_samples: &mut usize,
+) -> Result<()> {
+    let hl =
+        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[0]], storage);
+    let lh =
+        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[1]], storage);
+    let hh =
+        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[2]], storage);
+
+    target.clear();
+    let required_len = output_window.width() as usize * output_window.height() as usize;
+    target.resize(required_len, 0.0);
+    *idwt_output_samples = idwt_output_samples.saturating_add(required_len);
+
+    interleave_samples_roi(ll, hl, lh, hh, target, output_window, decomposition.rect);
+    if output_window.width() > 0 && output_window.height() > 0 {
+        filter_horizontal(target, output_window, transform);
+        filter_vertical(target, output_window, transform);
+    }
+    Ok(())
+}
+
+fn interleave_samples_roi(
+    ll: CoefficientSource<'_>,
+    hl: CoefficientSource<'_>,
+    lh: CoefficientSource<'_>,
+    hh: CoefficientSource<'_>,
+    output: &mut [f32],
+    output_window: IntRect,
+    decomposition_rect: IntRect,
+) {
+    let width = output_window.width() as usize;
+    for y in output_window.y0..output_window.y1 {
+        let low_y = y % 2 == 0;
+        for x in output_window.x0..output_window.x1 {
+            let low_x = x % 2 == 0;
+            let (source, band_x, band_y) = match (low_x, low_y) {
+                (true, true) => (
+                    ll,
+                    roi::idwt_band_coord(decomposition_rect.x0, x, ll.rect.x0, true),
+                    roi::idwt_band_coord(decomposition_rect.y0, y, ll.rect.y0, true),
+                ),
+                (false, true) => (
+                    hl,
+                    roi::idwt_band_coord(decomposition_rect.x0, x, hl.rect.x0, false),
+                    roi::idwt_band_coord(decomposition_rect.y0, y, hl.rect.y0, true),
+                ),
+                (true, false) => (
+                    lh,
+                    roi::idwt_band_coord(decomposition_rect.x0, x, lh.rect.x0, true),
+                    roi::idwt_band_coord(decomposition_rect.y0, y, lh.rect.y0, false),
+                ),
+                (false, false) => (
+                    hh,
+                    roi::idwt_band_coord(decomposition_rect.x0, x, hh.rect.x0, false),
+                    roi::idwt_band_coord(decomposition_rect.y0, y, hh.rect.y0, false),
+                ),
+            };
+            let dst = (y - output_window.y0) as usize * width + (x - output_window.x0) as usize;
+            output[dst] = source.get(band_x, band_y);
+        }
+    }
 }
 
 fn apply_level(

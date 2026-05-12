@@ -106,13 +106,17 @@ fn parse_inner<'a>(
         let body_reader = tile_part.body();
 
         if !zero_length {
-            for sub_band in sub_band_iter {
-                let sub_band = &mut storage.sub_bands[sub_band];
+            for sub_band_idx in sub_band_iter {
+                let sub_band = &mut storage.sub_bands[sub_band_idx];
                 let precinct = &mut storage.precincts[sub_band.precincts.clone()]
                     [progression_data.precinct as usize];
                 let code_blocks = &mut storage.code_blocks[precinct.code_blocks.clone()];
 
                 for code_block in code_blocks {
+                    let required = storage
+                        .roi_plan
+                        .as_ref()
+                        .is_none_or(|plan| plan.code_block_required(sub_band_idx, code_block.rect));
                     let layer = &mut storage.layers[code_block.layers.clone()]
                         [progression_data.layer_num as usize];
 
@@ -120,7 +124,12 @@ fn parse_inner<'a>(
                         let segments = &mut storage.segments[segments.clone()];
 
                         for segment in segments {
-                            segment.data = body_reader.read_bytes(segment.data_length as usize)?;
+                            if required {
+                                segment.data =
+                                    body_reader.read_bytes(segment.data_length as usize)?;
+                            } else {
+                                body_reader.skip_bytes(segment.data_length as usize)?;
+                            }
                         }
                     }
                 }

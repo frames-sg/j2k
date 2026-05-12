@@ -7,7 +7,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
 };
 
 #[test]
@@ -25,6 +28,24 @@ fn classic_gray_full_decode_matches_grok() {
         .expect("signinum decode");
 
     let expected = decode_with_grok(&path, "grok_full_gray", &jp2, ".pgm", &[]);
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn classic_rgb_full_decode_matches_grok() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = classic_jp2(&pixels, 128, 128, 3).expect("classic jp2");
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 128 * 128 * 3];
+    decoder
+        .decode_into(&mut out, 128 * 3, PixelFormat::Rgb8)
+        .expect("signinum decode");
+
+    let expected = decode_with_grok(&path, "grok_full_rgb", &jp2, ".ppm", &[]);
     assert_eq!(out, expected);
 }
 
@@ -68,6 +89,45 @@ fn classic_gray_region_decode_matches_grok_area_decode() {
 }
 
 #[test]
+fn classic_rgb_region_decode_matches_grok_area_decode() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = classic_jp2(&pixels, 128, 128, 3).expect("classic jp2");
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 48,
+        h: 48,
+    };
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; roi.w as usize * roi.h as usize * 3];
+    decoder
+        .decode_region_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            roi.w as usize * 3,
+            PixelFormat::Rgb8,
+            roi,
+        )
+        .expect("signinum region decode");
+
+    let expected = decode_with_grok(
+        &path,
+        "grok_region_rgb",
+        &jp2,
+        ".ppm",
+        &[
+            "-d",
+            &format!("{},{},{},{}", roi.x, roi.y, roi.x + roi.w, roi.y + roi.h),
+        ],
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn classic_gray_scaled_decode_matches_grok_reduce() {
     let Some(path) = grok_decompress_bin() else {
         return;
@@ -92,6 +152,30 @@ fn classic_gray_scaled_decode_matches_grok_reduce() {
 }
 
 #[test]
+fn classic_rgb_scaled_decode_matches_grok_reduce() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = classic_jp2(&pixels, 128, 128, 3).expect("classic jp2");
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 32 * 32 * 3];
+    decoder
+        .decode_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            32 * 3,
+            PixelFormat::Rgb8,
+            Downscale::Quarter,
+        )
+        .expect("signinum scaled decode");
+
+    let expected = decode_with_grok(&path, "grok_scaled_rgb", &jp2, ".ppm", &["-r", "2"]);
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn ht_gray_full_decode_matches_grok() {
     let Some(path) = grok_decompress_bin() else {
         return;
@@ -109,15 +193,160 @@ fn ht_gray_full_decode_matches_grok() {
     assert_eq!(out, expected);
 }
 
+#[test]
+fn ht_gray_region_decode_matches_grok_area_decode() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 1);
+    let jp2 = ht_jp2(&pixels, 128, 128, 1);
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 48,
+        h: 48,
+    };
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; roi.w as usize * roi.h as usize];
+    decoder
+        .decode_region_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            roi.w as usize,
+            PixelFormat::Gray8,
+            roi,
+        )
+        .expect("signinum region decode");
+
+    let expected = decode_with_grok(
+        &path,
+        "grok_region_ht_gray",
+        &jp2,
+        ".pgm",
+        &[
+            "-d",
+            &format!("{},{},{},{}", roi.x, roi.y, roi.x + roi.w, roi.y + roi.h),
+        ],
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn ht_gray_scaled_decode_matches_grok_reduce() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 1);
+    let jp2 = ht_jp2(&pixels, 128, 128, 1);
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 32 * 32];
+    decoder
+        .decode_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            32,
+            PixelFormat::Gray8,
+            Downscale::Quarter,
+        )
+        .expect("signinum scaled decode");
+
+    let expected = decode_with_grok(&path, "grok_scaled_ht_gray", &jp2, ".pgm", &["-r", "2"]);
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn ht_rgb_full_decode_matches_grok() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 128 * 128 * 3];
+    decoder
+        .decode_into(&mut out, 128 * 3, PixelFormat::Rgb8)
+        .expect("signinum decode");
+
+    let expected = decode_with_grok(&path, "grok_full_ht_rgb", &jp2, ".ppm", &[]);
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn ht_rgb_region_decode_matches_grok_area_decode() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 48,
+        h: 48,
+    };
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; roi.w as usize * roi.h as usize * 3];
+    decoder
+        .decode_region_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            roi.w as usize * 3,
+            PixelFormat::Rgb8,
+            roi,
+        )
+        .expect("signinum region decode");
+
+    let expected = decode_with_grok(
+        &path,
+        "grok_region_ht_rgb",
+        &jp2,
+        ".ppm",
+        &[
+            "-d",
+            &format!("{},{},{},{}", roi.x, roi.y, roi.x + roi.w, roi.y + roi.h),
+        ],
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn ht_rgb_scaled_decode_matches_grok_reduce() {
+    let Some(path) = grok_decompress_bin() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = ht_jp2(&pixels, 128, 128, 3);
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 32 * 32 * 3];
+    decoder
+        .decode_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            32 * 3,
+            PixelFormat::Rgb8,
+            Downscale::Quarter,
+        )
+        .expect("signinum scaled decode");
+
+    let expected = decode_with_grok(&path, "grok_scaled_ht_rgb", &jp2, ".ppm", &["-r", "2"]);
+    assert_eq!(out, expected);
+}
+
 fn classic_jp2(pixels: &[u8], width: u32, height: u32, components: u8) -> Option<Vec<u8>> {
     let bin = grok_compress_bin()?;
     let dir = temp_dir();
+    let id = next_temp_id();
     let src_path = dir.join(if components == 1 {
-        "grok_classic_input.pgm"
+        format!("grok_classic_input_{id}.pgm")
     } else {
-        "grok_classic_input.ppm"
+        format!("grok_classic_input_{id}.ppm")
     });
-    let out_path = dir.join("grok_classic_output.jp2");
+    let out_path = dir.join(format!("grok_classic_output_{id}.jp2"));
     write_pnm(&src_path, pixels, width, height, components).ok()?;
     let status = Command::new(bin)
         .arg("-i")
@@ -136,6 +365,11 @@ fn classic_jp2(pixels: &[u8], width: u32, height: u32, components: u8) -> Option
         return None;
     }
     fs::read(out_path).ok()
+}
+
+fn next_temp_id() -> usize {
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn ht_jp2(pixels: &[u8], width: u32, height: u32, components: u8) -> Vec<u8> {

@@ -2351,6 +2351,19 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct DecodeWorkCounter {
+        classic_code_blocks: usize,
+        ht_code_blocks: usize,
+        idwt_output_samples: usize,
+    }
+
+    impl DecodeWorkCounter {
+        fn code_blocks(&self) -> usize {
+            self.classic_code_blocks + self.ht_code_blocks
+        }
+    }
+
     struct FailingHtDecoder {
         called: bool,
     }
@@ -2462,6 +2475,152 @@ mod tests {
             ..EncodeOptions::default()
         };
         encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode ht gray8")
+    }
+
+    fn gradient_pixels(width: u32, height: u32, components: u8) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * components as usize);
+        for y in 0..height {
+            for x in 0..width {
+                for component in 0..components {
+                    pixels.push(((x * 3 + y * 5 + u32::from(component) * 41) & 0xff) as u8);
+                }
+            }
+        }
+        pixels
+    }
+
+    fn roi_fixture(classic: bool, components: u8) -> Vec<u8> {
+        let width = 64;
+        let height = 64;
+        let pixels = gradient_pixels(width, height, components);
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            ..EncodeOptions::default()
+        };
+        if classic {
+            encode(&pixels, width, height, components, 8, false, &options)
+                .expect("encode ROI classic fixture")
+        } else {
+            encode_htj2k(&pixels, width, height, components, 8, false, &options)
+                .expect("encode ROI HT fixture")
+        }
+    }
+
+    fn crop_interleaved(
+        full: &[u8],
+        full_width: u32,
+        channels: usize,
+        roi: (u32, u32, u32, u32),
+    ) -> Vec<u8> {
+        let (x, y, width, height) = roi;
+        let mut out = Vec::with_capacity(width as usize * height as usize * channels);
+        let row_bytes = full_width as usize * channels;
+        let roi_row_bytes = width as usize * channels;
+        for row in y as usize..(y + height) as usize {
+            let start = row * row_bytes + x as usize * channels;
+            out.extend_from_slice(&full[start..start + roi_row_bytes]);
+        }
+        out
+    }
+
+    fn count_decode_work(bytes: &[u8], roi: Option<(u32, u32, u32, u32)>) -> DecodeWorkCounter {
+        let image = Image::new(bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+        match roi {
+            Some(roi) => {
+                image
+                    .decode_region_with_context(roi, &mut context)
+                    .expect("region decode with counter");
+            }
+            None => {
+                image
+                    .decode_with_context(&mut context)
+                    .expect("full decode with counter");
+            }
+        }
+        let counters = context.tile_decode_context.debug_counters;
+        DecodeWorkCounter {
+            classic_code_blocks: counters.decoded_code_blocks,
+            ht_code_blocks: 0,
+            idwt_output_samples: counters.idwt_output_samples,
+        }
+    }
+
+    #[test]
+    fn roi_decode_matches_full_crop_for_classic_and_htj2k_gray_and_rgb() {
+        let cases = [
+            (true, 1_u8, true, false),
+            (true, 3_u8, false, false),
+            (false, 1_u8, true, false),
+            (false, 3_u8, false, false),
+        ];
+        let rois = [
+            (20, 18, 17, 19),
+            (0, 0, 9, 11),
+            (63, 63, 1, 1),
+            (7, 5, 13, 9),
+            (0, 0, 64, 64),
+        ];
+
+        for (classic, components, expect_gray, has_alpha) in cases {
+            let bytes = roi_fixture(classic, components);
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+            let full = image.decode().expect("full decode");
+            let channels = components as usize;
+            for roi in rois {
+                let region = image.decode_region(roi).expect("region decode");
+                assert_eq!(matches!(region.color_space, ColorSpace::Gray), expect_gray);
+                assert_eq!(region.has_alpha, has_alpha);
+                assert_eq!(
+                    region.data,
+                    crop_interleaved(&full, 64, channels, roi),
+                    "classic={classic} components={components} roi={roi:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn roi_decode_prunes_code_blocks_and_idwt_work_for_classic_and_htj2k() {
+        let roi = (48, 48, 16, 16);
+        for classic in [true, false] {
+            let bytes = {
+                let pixels = gradient_pixels(128, 128, 1);
+                let options = EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 3,
+                    code_block_width_exp: 0,
+                    code_block_height_exp: 0,
+                    ..EncodeOptions::default()
+                };
+                if classic {
+                    encode(&pixels, 128, 128, 1, 8, false, &options)
+                        .expect("encode classic work fixture")
+                } else {
+                    encode_htj2k(&pixels, 128, 128, 1, 8, false, &options)
+                        .expect("encode ht work fixture")
+                }
+            };
+            let full = count_decode_work(&bytes, None);
+            let region = count_decode_work(&bytes, Some(roi));
+
+            assert!(
+                region.code_blocks() > 0 && region.code_blocks() < full.code_blocks(),
+                "ROI should decode fewer code-blocks for classic={classic}; full={}, region={}",
+                full.code_blocks(),
+                region.code_blocks()
+            );
+            assert!(
+                region.idwt_output_samples > 0
+                    && region.idwt_output_samples < full.idwt_output_samples,
+                "ROI should produce fewer IDWT output samples for classic={classic}; full={}, region={}",
+                full.idwt_output_samples,
+                region.idwt_output_samples
+            );
+        }
     }
 
     #[test]
