@@ -22,6 +22,7 @@ use super::progression::{
     resolution_layer_component_position_progression,
     resolution_position_component_layer_progression, IteratorInput, ProgressionData,
 };
+use super::roi::RoiPlan;
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
@@ -734,6 +735,13 @@ impl OutputRegion {
     }
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DecodeDebugCounters {
+    pub(crate) decoded_code_blocks: usize,
+    pub(crate) skipped_code_blocks: usize,
+    pub(crate) idwt_output_samples: usize,
+}
+
 /// CPU parallelism policy for native JPEG 2000 decode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CpuDecodeParallelism {
@@ -798,6 +806,12 @@ fn decode_tile<'a, 'b>(
     // First, we build the decompositions, including their sub-bands, precincts
     // and code blocks.
     build::build(tile, storage)?;
+    if let Some(output_region) = tile_ctx.output_region {
+        storage.roi_plan = RoiPlan::build(tile, header, storage, output_region);
+        if storage.roi_plan.is_some() {
+            storage.coefficients.fill(0.0);
+        }
+    }
     // Next, we parse the layers/segments for each code block.
     segment::parse(tile, progression_iterator, header, storage)?;
     // We then decode the bitplanes of each code block, yielding the
@@ -912,6 +926,7 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) sub_bands: Vec<SubBand>,
     pub(crate) decompositions: Vec<Decomposition>,
     pub(crate) tile_decompositions: Vec<TileDecompositions>,
+    pub(crate) roi_plan: Option<RoiPlan>,
 }
 
 impl DecompositionStorage<'_> {
@@ -927,6 +942,7 @@ impl DecompositionStorage<'_> {
         self.decompositions.clear();
         self.tile_decompositions.clear();
         self.tag_tree_nodes.clear();
+        self.roi_plan = None;
     }
 }
 
@@ -950,6 +966,8 @@ pub(crate) struct TileDecodeContext {
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
     pub(crate) output_region: Option<OutputRegion>,
+    /// Debug counters for tests and ROI instrumentation.
+    pub(crate) debug_counters: DecodeDebugCounters,
 }
 
 impl TileDecodeContext {
@@ -959,6 +977,7 @@ impl TileDecodeContext {
         // corresponding methods. IDWT output and scratch buffer will be
         // overridden on demand, so those don't need to be reset either.
         self.channel_data.clear();
+        self.debug_counters = DecodeDebugCounters::default();
 
         let (output_width, output_height) =
             self.output_region.map(OutputRegion::dimensions).unwrap_or((
@@ -1067,6 +1086,7 @@ fn decode_sub_band_bitplanes(
         .uses_high_throughput_block_coding()
     {
         decode_sub_band_ht_blocks(
+            sub_band_idx,
             &sub_band,
             component_info,
             tile_ctx,
@@ -1114,7 +1134,8 @@ fn decode_sub_band_bitplanes(
     };
 
     if let Some(ht_decoder) = ht_decoder.as_deref_mut() {
-        let pending_blocks = collect_pending_classic_blocks(&sub_band, component_info, storage)?;
+        let pending_blocks =
+            collect_pending_classic_blocks(sub_band_idx, &sub_band, component_info, storage)?;
 
         let batch_jobs: Vec<_> = pending_blocks
             .iter()
@@ -1147,11 +1168,13 @@ fn decode_sub_band_bitplanes(
             },
             base_store,
         )? {
+            tile_ctx.debug_counters.decoded_code_blocks += batch_jobs.len();
             return Ok(());
         }
 
         let output_stride = sub_band.rect.width() as usize;
         for job in batch_jobs {
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
             let base_idx = (job.output_y * sub_band.rect.width()) as usize + job.output_x as usize;
             let output_len = if job.code_block.height == 0 {
                 0
@@ -1171,12 +1194,12 @@ fn decode_sub_band_bitplanes(
         return Ok(());
     }
 
-    let code_block_count = count_classic_code_blocks(&sub_band, storage);
+    let code_block_count = count_classic_code_blocks(sub_band_idx, &sub_band, storage);
     if should_decode_classic_sub_band_in_parallel(cpu_decode_parallelism, code_block_count) {
         #[cfg(feature = "parallel")]
         {
             let pending_blocks =
-                collect_pending_classic_blocks(&sub_band, component_info, storage)?;
+                collect_pending_classic_blocks(sub_band_idx, &sub_band, component_info, storage)?;
             let decoded_blocks = decode_classic_sub_band_blocks_parallel(
                 &pending_blocks,
                 classic_job_sub_band_type,
@@ -1185,6 +1208,7 @@ fn decode_sub_band_bitplanes(
                 num_bitplanes,
                 dequantization_step,
             )?;
+            tile_ctx.debug_counters.decoded_code_blocks += decoded_blocks.len();
             copy_decoded_classic_blocks_to_sub_band(&decoded_blocks, &sub_band, storage)?;
             return Ok(());
         }
@@ -1200,6 +1224,11 @@ fn decode_sub_band_bitplanes(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                tile_ctx.debug_counters.skipped_code_blocks += 1;
+                continue;
+            }
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
             let x_offset = code_block.rect.x0 - sub_band.rect.x0;
             let y_offset = code_block.rect.y0 - sub_band.rect.y0;
             let output_stride = sub_band.rect.width() as usize;
@@ -1263,21 +1292,47 @@ struct DecodedClassicBlock {
     coefficients: Vec<f32>,
 }
 
-fn count_classic_code_blocks(sub_band: &SubBand, storage: &DecompositionStorage<'_>) -> usize {
+fn count_classic_code_blocks(
+    sub_band_idx: usize,
+    sub_band: &SubBand,
+    storage: &DecompositionStorage<'_>,
+) -> usize {
     sub_band
         .precincts
         .clone()
         .map(|idx| &storage.precincts[idx])
-        .map(|precinct| precinct.code_blocks.len())
+        .map(|precinct| {
+            precinct
+                .code_blocks
+                .clone()
+                .filter(|idx| {
+                    let code_block = &storage.code_blocks[*idx];
+                    code_block_required_by_index(storage, sub_band_idx, code_block)
+                })
+                .count()
+        })
         .sum()
 }
 
+fn code_block_required_by_index(
+    storage: &DecompositionStorage<'_>,
+    sub_band_idx: usize,
+    code_block: &CodeBlock,
+) -> bool {
+    storage
+        .roi_plan
+        .as_ref()
+        .is_none_or(|plan| plan.code_block_required(sub_band_idx, code_block.rect))
+}
+
 fn collect_pending_classic_blocks(
+    sub_band_idx: usize,
     sub_band: &SubBand,
     component_info: &ComponentInfo,
     storage: &DecompositionStorage<'_>,
 ) -> Result<Vec<PendingClassicBlock>> {
-    let mut pending_blocks = Vec::with_capacity(count_classic_code_blocks(sub_band, storage));
+    let mut pending_blocks =
+        Vec::with_capacity(count_classic_code_blocks(sub_band_idx, sub_band, storage));
     for precinct in sub_band
         .precincts
         .clone()
@@ -1288,6 +1343,9 @@ fn collect_pending_classic_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                continue;
+            }
             let (combined_data, segments) = collect_classic_code_block_data(
                 code_block,
                 &component_info.coding_style.parameters.code_block_style,
@@ -1405,6 +1463,7 @@ fn copy_decoded_classic_blocks_to_sub_band(
 }
 
 fn decode_sub_band_ht_blocks(
+    sub_band_idx: usize,
     sub_band: &SubBand,
     component_info: &ComponentInfo,
     tile_ctx: &mut TileDecodeContext,
@@ -1432,6 +1491,9 @@ fn decode_sub_band_ht_blocks(
                 .clone()
                 .map(|idx| &storage.code_blocks[idx])
             {
+                if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                    continue;
+                }
                 let actual_bitplanes = if header.strict {
                     num_bitplanes
                         .checked_sub(code_block.missing_bit_planes)
@@ -1494,11 +1556,13 @@ fn decode_sub_band_ht_blocks(
             },
             base_store,
         )? {
+            tile_ctx.debug_counters.decoded_code_blocks += batch_jobs.len();
             return Ok(());
         }
 
         let output_stride = sub_band.rect.width() as usize;
         for job in batch_jobs {
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
             let base_idx = (job.output_y * sub_band.rect.width()) as usize + job.output_x as usize;
             let output_len = if job.code_block.height == 0 {
                 0
@@ -1524,6 +1588,11 @@ fn decode_sub_band_ht_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                tile_ctx.debug_counters.skipped_code_blocks += 1;
+                continue;
+            }
+            tile_ctx.debug_counters.decoded_code_blocks += 1;
             ht_block_decode::decode(
                 code_block,
                 num_bitplanes,
@@ -1828,6 +1897,27 @@ fn store_region<'a>(
         if handled {
             return Ok(());
         }
+
+        if sign_shift != 0.0 {
+            for sample in idwt_output.coefficients.iter_mut() {
+                *sample += sign_shift;
+            }
+        }
+
+        if copy_x0 < copy_x1 && copy_y0 < copy_y1 {
+            let input_width = idwt_output.rect.width() as usize;
+            let copy_width = (copy_x1 - copy_x0) as usize;
+            for y in copy_y0..copy_y1 {
+                let src_start = (y - idwt_output.rect.y0) as usize * input_width
+                    + (copy_x0 - idwt_output.rect.x0) as usize;
+                let dst_start = (y - region_rect_y0) as usize * output_width
+                    + (copy_x0 - region_rect_x0) as usize;
+                channel_data.container[dst_start..dst_start + copy_width]
+                    .copy_from_slice(&idwt_output.coefficients[src_start..src_start + copy_width]);
+            }
+        }
+
+        return Ok(());
     }
 
     if sign_shift != 0.0 {

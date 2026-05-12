@@ -19,6 +19,7 @@ pub(crate) mod packet_encode;
 mod progression;
 pub(crate) mod quantize;
 mod rect;
+mod roi;
 mod segment;
 mod tag_tree;
 pub(crate) mod tag_tree_encode;

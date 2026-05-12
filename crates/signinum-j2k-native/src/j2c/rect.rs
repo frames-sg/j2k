@@ -30,6 +30,10 @@ impl IntRect {
         self.y1 - self.y0
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
     pub(crate) fn intersect(&self, other: Self) -> Self {
         if self.x1 < other.x0 || other.x1 < self.x0 || self.y1 < other.y0 || other.y1 < self.y0 {
             Self::from_xywh(0, 0, 0, 0)
@@ -41,5 +45,33 @@ impl IntRect {
                 u32::min(self.y1, other.y1),
             )
         }
+    }
+
+    pub(crate) fn union(&self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return *self;
+        }
+        Self::from_ltrb(
+            self.x0.min(other.x0),
+            self.y0.min(other.y0),
+            self.x1.max(other.x1),
+            self.y1.max(other.y1),
+        )
+    }
+
+    pub(crate) fn expanded_within(&self, margin: u32, bounds: Self) -> Self {
+        Self::from_ltrb(
+            self.x0.saturating_sub(margin).max(bounds.x0),
+            self.y0.saturating_sub(margin).max(bounds.y0),
+            self.x1.saturating_add(margin).min(bounds.x1),
+            self.y1.saturating_add(margin).min(bounds.y1),
+        )
+    }
+
+    pub(crate) fn intersects(&self, other: Self) -> bool {
+        self.x0 < other.x1 && other.x0 < self.x1 && self.y0 < other.y1 && other.y0 < self.y1
     }
 }

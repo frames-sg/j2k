@@ -31,6 +31,24 @@ fn classic_gray_full_decode_matches_openjpeg() {
 }
 
 #[test]
+fn classic_rgb_full_decode_matches_openjpeg() {
+    let Some(paths) = OpenJpegPaths::discover() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = encode_with_openjpeg(&paths, "parity_full_rgb", &pixels, 128, 128, 3);
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 128 * 128 * 3];
+    decoder
+        .decode_into(&mut out, 128 * 3, PixelFormat::Rgb8)
+        .expect("signinum decode");
+
+    let expected = decode_with_openjpeg(&paths, "parity_full_rgb", &jp2, ".ppm", &[]);
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn classic_gray_region_decode_matches_openjpeg_area_decode() {
     let Some(paths) = OpenJpegPaths::discover() else {
         return;
@@ -70,6 +88,45 @@ fn classic_gray_region_decode_matches_openjpeg_area_decode() {
 }
 
 #[test]
+fn classic_rgb_region_decode_matches_openjpeg_area_decode() {
+    let Some(paths) = OpenJpegPaths::discover() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = encode_with_openjpeg(&paths, "parity_region_rgb", &pixels, 128, 128, 3);
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 48,
+        h: 48,
+    };
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; roi.w as usize * roi.h as usize * 3];
+    decoder
+        .decode_region_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            roi.w as usize * 3,
+            PixelFormat::Rgb8,
+            roi,
+        )
+        .expect("signinum region decode");
+
+    let expected = decode_with_openjpeg(
+        &paths,
+        "parity_region_rgb",
+        &jp2,
+        ".ppm",
+        &[
+            "-d",
+            &format!("{},{},{},{}", roi.x, roi.y, roi.x + roi.w, roi.y + roi.h),
+        ],
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn classic_gray_scaled_decode_matches_openjpeg_reduce() {
     let Some(paths) = OpenJpegPaths::discover() else {
         return;
@@ -90,6 +147,30 @@ fn classic_gray_scaled_decode_matches_openjpeg_reduce() {
         .expect("signinum scaled decode");
 
     let expected = decode_with_openjpeg(&paths, "parity_scaled_gray", &jp2, ".pgm", &["-r", "2"]);
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn classic_rgb_scaled_decode_matches_openjpeg_reduce() {
+    let Some(paths) = OpenJpegPaths::discover() else {
+        return;
+    };
+    let pixels = gradient_u8(128, 128, 3);
+    let jp2 = encode_with_openjpeg(&paths, "parity_scaled_rgb", &pixels, 128, 128, 3);
+
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = vec![0_u8; 32 * 32 * 3];
+    decoder
+        .decode_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            32 * 3,
+            PixelFormat::Rgb8,
+            Downscale::Quarter,
+        )
+        .expect("signinum scaled decode");
+
+    let expected = decode_with_openjpeg(&paths, "parity_scaled_rgb", &jp2, ".ppm", &["-r", "2"]);
     assert_eq!(out, expected);
 }
 
