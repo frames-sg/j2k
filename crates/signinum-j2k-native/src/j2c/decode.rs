@@ -1284,6 +1284,7 @@ struct PendingClassicBlock {
     number_of_coding_passes: u8,
 }
 
+#[cfg(feature = "parallel")]
 struct DecodedClassicBlock {
     output_x: u32,
     output_y: u32,
@@ -1422,6 +1423,7 @@ fn decode_classic_sub_band_blocks_parallel(
         .collect()
 }
 
+#[cfg(feature = "parallel")]
 fn copy_decoded_classic_blocks_to_sub_band(
     decoded_blocks: &[DecodedClassicBlock],
     sub_band: &SubBand,

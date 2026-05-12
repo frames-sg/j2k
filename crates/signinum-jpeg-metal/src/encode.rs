@@ -4,10 +4,13 @@
 
 #[cfg(target_os = "macos")]
 use metal::Buffer;
+#[cfg(target_os = "macos")]
 use signinum_core::PixelFormat;
-use signinum_jpeg::{
-    EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling,
-};
+#[cfg(target_os = "macos")]
+use signinum_jpeg::JpegBackend;
+use signinum_jpeg::{EncodedJpeg, JpegEncodeOptions};
+#[cfg(target_os = "macos")]
+use signinum_jpeg::{JpegEncodeError, JpegSubsampling};
 
 #[cfg(target_os = "macos")]
 use crate::compute;
@@ -31,6 +34,7 @@ pub struct JpegBaselineMetalEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct Sampling {
     components: u8,
@@ -415,6 +419,7 @@ fn entropy_capacity_bytes(
     })
 }
 
+#[cfg(target_os = "macos")]
 fn validate_dimensions(width: u32, height: u32) -> Result<(), JpegEncodeError> {
     if width == 0 || height == 0 {
         return Err(JpegEncodeError::EmptyDimensions);
@@ -425,6 +430,7 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), JpegEncodeError> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn sampling_for(subsampling: JpegSubsampling) -> Sampling {
     match subsampling {
         JpegSubsampling::Gray => Sampling {
@@ -489,6 +495,7 @@ fn encode_huffman_table(
     Ok(table)
 }
 
+#[cfg(target_os = "macos")]
 fn scaled_quant_table(base: &[u8; 64], quality: u8) -> [u8; 64] {
     let quality = quality.clamp(1, 100);
     let scale = if quality < 50 {
@@ -504,11 +511,13 @@ fn scaled_quant_table(base: &[u8; 64], quality: u8) -> [u8; 64] {
     out
 }
 
+#[cfg(target_os = "macos")]
 fn write_marker(out: &mut Vec<u8>, marker: u8) {
     out.push(0xFF);
     out.push(marker);
 }
 
+#[cfg(target_os = "macos")]
 fn write_segment(
     out: &mut Vec<u8>,
     marker: u8,
@@ -526,6 +535,7 @@ fn write_segment(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn write_dqt(out: &mut Vec<u8>, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {
     let mut payload = Vec::with_capacity(65);
     payload.push(table_id);
@@ -535,10 +545,12 @@ fn write_dqt(out: &mut Vec<u8>, table_id: u8, quant: &[u8; 64]) -> Result<(), Jp
     write_segment(out, 0xDB, &payload, "DQT")
 }
 
+#[cfg(target_os = "macos")]
 fn write_dri(out: &mut Vec<u8>, restart_interval: u16) -> Result<(), JpegEncodeError> {
     write_segment(out, 0xDD, &restart_interval.to_be_bytes(), "DRI")
 }
 
+#[cfg(target_os = "macos")]
 fn write_sof0(
     out: &mut Vec<u8>,
     width: u32,
@@ -566,6 +578,7 @@ fn write_sof0(
     write_segment(out, 0xC0, &payload, "SOF0")
 }
 
+#[cfg(target_os = "macos")]
 fn write_dht(
     out: &mut Vec<u8>,
     class: u8,
@@ -580,6 +593,7 @@ fn write_dht(
     write_segment(out, 0xC4, &payload, "DHT")
 }
 
+#[cfg(target_os = "macos")]
 fn write_sos(out: &mut Vec<u8>, components: u8) -> Result<(), JpegEncodeError> {
     let mut payload = Vec::with_capacity(4 + components as usize * 2);
     payload.push(components);
@@ -600,30 +614,39 @@ fn metal_kernel_error(message: &'static str) -> crate::Error {
     }
 }
 
+#[cfg(target_os = "macos")]
 const ZIGZAG: [u8; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
+#[cfg(target_os = "macos")]
 const STD_LUMA_Q: [u8; 64] = [
     16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
     14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113,
     92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
 ];
 
+#[cfg(target_os = "macos")]
 const STD_CHROMA_Q: [u8; 64] = [
     17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56, 99, 99, 99, 99, 99,
     47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
     99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
 ];
 
+#[cfg(target_os = "macos")]
 const STD_LUMA_DC_BITS: [u8; 16] = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+#[cfg(target_os = "macos")]
 const STD_LUMA_DC_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+#[cfg(target_os = "macos")]
 const STD_CHROMA_DC_BITS: [u8; 16] = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
+#[cfg(target_os = "macos")]
 const STD_CHROMA_DC_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
+#[cfg(target_os = "macos")]
 const STD_LUMA_AC_BITS: [u8; 16] = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D];
+#[cfg(target_os = "macos")]
 const STD_LUMA_AC_VALUES: [u8; 162] = [
     0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
     0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
@@ -638,7 +661,9 @@ const STD_LUMA_AC_VALUES: [u8; 162] = [
     0xF9, 0xFA,
 ];
 
+#[cfg(target_os = "macos")]
 const STD_CHROMA_AC_BITS: [u8; 16] = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77];
+#[cfg(target_os = "macos")]
 const STD_CHROMA_AC_VALUES: [u8; 162] = [
     0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
     0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,

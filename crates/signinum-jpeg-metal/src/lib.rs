@@ -1621,6 +1621,7 @@ fn decode_region_scaled_surface_from_decoder(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn reject_cpu_staged_metal_upload(surface: Surface) -> Result<Surface, Error> {
     if surface.residency() == SurfaceResidency::CpuStagedMetalUpload {
         return Err(Error::UnsupportedMetalRequest {
