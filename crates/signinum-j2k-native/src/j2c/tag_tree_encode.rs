@@ -154,15 +154,6 @@ impl TagTreeEncoder {
             parent_val = node.current_value;
         }
     }
-
-    /// Reset the encoder state for re-encoding (new layer).
-    #[allow(dead_code)]
-    pub(crate) fn reset_state(&mut self) {
-        for node in &mut self.nodes {
-            node.current_value = 0;
-            node.known = false;
-        }
-    }
 }
 
 #[cfg(test)]

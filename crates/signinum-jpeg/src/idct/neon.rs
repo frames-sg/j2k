@@ -12,10 +12,10 @@
 //! between passes even on adversarial coefficients.
 
 use core::arch::aarch64::{
-    int16x4_t, int16x8_t, int32x4_t, vaddq_s32, vcombine_s16, vcombine_s32, vdupq_n_s32,
-    vget_high_s16, vget_high_s32, vget_low_s16, vget_low_s32, vgetq_lane_u64, vld1q_s16, vmovl_s16,
-    vmulq_n_s32, vorrq_u64, vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32,
-    vshrq_n_s32, vst1_u8, vsubq_s32, vtrnq_s32,
+    int16x8_t, int32x4_t, vaddq_s32, vcombine_s16, vcombine_s32, vdupq_n_s32, vget_high_s16,
+    vget_high_s32, vget_low_s16, vget_low_s32, vgetq_lane_u64, vld1q_s16, vmovl_s16, vmulq_n_s32,
+    vorrq_u64, vqmovn_s32, vqmovun_s16, vreinterpretq_u64_s16, vshlq_n_s32, vshrq_n_s32, vst1_u8,
+    vsubq_s32, vtrnq_s32,
 };
 
 const CONST_BITS: i32 = 13;
@@ -392,10 +392,6 @@ fn transpose_4x4_i32(a: int32x4_t, b: int32x4_t, c: int32x4_t, d: int32x4_t) -> 
     let col3 = vcombine_s32(vget_high_s32(t01.1), vget_high_s32(t23.1));
     [col0, col1, col2, col3]
 }
-
-// Silence unused-helper warnings left from the prior draft.
-#[allow(dead_code)]
-fn _unused_refs(_: int16x4_t) {}
 
 #[cfg(test)]
 mod tests {

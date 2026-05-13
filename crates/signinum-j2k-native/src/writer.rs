@@ -17,20 +17,10 @@ pub(crate) struct BitWriter {
     last_byte_was_ff: bool,
 }
 
-#[allow(dead_code)]
 impl BitWriter {
     pub(crate) fn new() -> Self {
         Self {
             data: Vec::new(),
-            buffer: 0,
-            bits_in_buffer: 0,
-            last_byte_was_ff: false,
-        }
-    }
-
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            data: Vec::with_capacity(capacity),
             buffer: 0,
             bits_in_buffer: 0,
             last_byte_was_ff: false,
@@ -57,14 +47,9 @@ impl BitWriter {
         }
     }
 
-    /// Write a full byte directly (no bit-stuffing applied at byte level).
-    #[inline]
-    pub(crate) fn write_byte(&mut self, byte: u8) {
-        self.write_bits(byte as u32, 8);
-    }
-
     /// Write a big-endian u16 directly to the output buffer.
     /// Flushes any pending bits first.
+    #[cfg(test)]
     pub(crate) fn write_u16_raw(&mut self, value: u16) {
         self.flush();
         self.data.push((value >> 8) as u8);
@@ -72,24 +57,8 @@ impl BitWriter {
         self.last_byte_was_ff = false;
     }
 
-    /// Write a big-endian u32 directly to the output buffer.
-    pub(crate) fn write_u32_raw(&mut self, value: u32) {
-        self.flush();
-        self.data.push((value >> 24) as u8);
-        self.data.push((value >> 16) as u8);
-        self.data.push((value >> 8) as u8);
-        self.data.push(value as u8);
-        self.last_byte_was_ff = false;
-    }
-
-    /// Write raw bytes directly, flushing bit buffer first.
-    pub(crate) fn write_bytes_raw(&mut self, bytes: &[u8]) {
-        self.flush();
-        self.data.extend_from_slice(bytes);
-        self.last_byte_was_ff = bytes.last().copied() == Some(0xFF);
-    }
-
     /// Write a JPEG 2000 marker (0xFF followed by the marker code).
+    #[cfg(test)]
     pub(crate) fn write_marker(&mut self, marker: u8) {
         self.flush();
         self.data.push(0xFF);
@@ -114,16 +83,6 @@ impl BitWriter {
     pub(crate) fn finish(mut self) -> Vec<u8> {
         self.flush();
         self.data
-    }
-
-    /// Current length of the assembled output (including partial byte).
-    pub(crate) fn len(&self) -> usize {
-        self.data.len() + if self.bits_in_buffer > 0 { 1 } else { 0 }
-    }
-
-    /// Access the underlying data buffer (partial byte not included).
-    pub(crate) fn data(&self) -> &[u8] {
-        &self.data
     }
 
     fn flush_byte(&mut self) {

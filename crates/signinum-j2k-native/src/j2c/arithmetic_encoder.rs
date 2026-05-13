@@ -35,12 +35,6 @@ impl ArithmeticEncoderContext {
     }
 
     #[inline(always)]
-    #[allow(dead_code)]
-    pub(crate) fn reset(&mut self) {
-        self.0 = 0;
-    }
-
-    #[inline(always)]
     pub(crate) fn reset_with_index(&mut self, index: u8) {
         self.0 = index;
     }
@@ -254,12 +248,6 @@ impl ArithmeticEncoder {
         // Remove sentinel byte at index 0
         self.data.drain(..1);
         self.data
-    }
-
-    /// Return the current length of encoded data so far (excluding sentinel).
-    #[allow(dead_code)]
-    pub(crate) fn encoded_len(&self) -> usize {
-        self.data.len().saturating_sub(1)
     }
 }
 
