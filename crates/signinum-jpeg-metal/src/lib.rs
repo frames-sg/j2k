@@ -7,6 +7,7 @@ mod batch;
 #[cfg(target_os = "macos")]
 mod compute;
 mod encode;
+mod profile;
 mod routing;
 mod session;
 pub mod viewport;
@@ -1649,7 +1650,57 @@ fn choose_route(
         fast422_packet,
         fast420_packet,
     );
-    routing::decide_route(backend, capabilities)
+    let decision = routing::decide_route(backend, capabilities);
+    if profile::gpu_route_profile_enabled() {
+        let request_s = format!("{backend:?}");
+        let fmt_s = format!("{fmt:?}");
+        let has_fast_packet_s = capabilities.has_fast_packet().to_string();
+        let supports_format_s = capabilities.supports_output_format().to_string();
+        let (decision_s, reason_s) = jpeg_route_decision_profile(decision);
+        profile::emit_gpu_route_profile(
+            "jpeg",
+            "gpu_route",
+            "metal",
+            &[
+                ("request", request_s.as_str()),
+                ("fmt", fmt_s.as_str()),
+                ("op", jpeg_batch_op_profile(op)),
+                ("has_fast_packet", has_fast_packet_s.as_str()),
+                ("supports_output_format", supports_format_s.as_str()),
+                ("decision", decision_s),
+                ("reason", reason_s),
+            ],
+        );
+    }
+    decision
+}
+
+fn jpeg_batch_op_profile(op: batch::BatchOp) -> &'static str {
+    match op {
+        batch::BatchOp::Full => "full",
+        batch::BatchOp::Region(_) => "region",
+        batch::BatchOp::Scaled(_) => "scaled",
+        batch::BatchOp::RegionScaled { .. } => "region_scaled",
+    }
+}
+
+fn jpeg_route_decision_profile(decision: routing::RouteDecision) -> (&'static str, &'static str) {
+    match decision {
+        routing::RouteDecision::CpuHost => ("cpu_host", "none"),
+        routing::RouteDecision::MetalKernel => ("metal_kernel", "none"),
+        routing::RouteDecision::RejectExplicitMetal { reason } => {
+            let reason_code = if reason.contains("fast") {
+                "no_fast_packet"
+            } else {
+                "unsupported_format"
+            };
+            ("reject_explicit_metal", reason_code)
+        }
+        routing::RouteDecision::RejectUnsupportedBackend { .. } => {
+            ("reject_unsupported_backend", "unsupported_backend")
+        }
+        routing::RouteDecision::MetalUnavailable => ("metal_unavailable", "metal_unavailable"),
+    }
 }
 
 fn decode_region_scaled_cpu_upload(

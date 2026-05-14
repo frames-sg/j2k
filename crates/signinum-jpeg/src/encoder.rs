@@ -16,6 +16,8 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::entropy::ZIGZAG;
+use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegBackend {
@@ -121,6 +123,15 @@ struct BitWriter {
     used: u8,
 }
 
+#[derive(Default)]
+struct JpegEncodeProfile {
+    validation: Duration,
+    setup: Duration,
+    planes: Duration,
+    header: Duration,
+    entropy: Duration,
+}
+
 impl BitWriter {
     fn new() -> Self {
         Self {
@@ -190,13 +201,23 @@ fn encode_jpeg_baseline_cpu(
     samples: JpegSamples<'_>,
     options: JpegEncodeOptions,
 ) -> Result<EncodedJpeg, JpegEncodeError> {
+    let profile_enabled = jpeg_profile_stages_enabled();
+    let total_start = profile_enabled.then(Instant::now);
+    let mut profile = JpegEncodeProfile::default();
+
+    let validation_start = profile_enabled.then(Instant::now);
     if options.restart_interval == Some(0) {
         return Err(JpegEncodeError::InvalidRestartInterval);
     }
     let (width, height) = samples.dimensions();
+    let sample_format = samples.name();
     validate_dimensions(width, height)?;
     samples.validate(options.subsampling)?;
+    if let Some(start) = validation_start {
+        profile.validation = start.elapsed();
+    }
 
+    let setup_start = profile_enabled.then(Instant::now);
     let sampling = sampling_for(options.subsampling);
     let q_luma = scaled_quant_table(&STD_LUMA_Q, options.quality);
     let q_chroma = scaled_quant_table(&STD_CHROMA_Q, options.quality);
@@ -205,8 +226,17 @@ fn encode_jpeg_baseline_cpu(
     let huff_dc_chroma = HuffmanEncoder::new(&STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES)?;
     let huff_ac_chroma = HuffmanEncoder::new(&STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
     let cosine = cosine_table();
-    let planes = component_planes(samples, options.subsampling)?;
+    if let Some(start) = setup_start {
+        profile.setup = start.elapsed();
+    }
 
+    let planes_start = profile_enabled.then(Instant::now);
+    let planes = component_planes(samples, options.subsampling)?;
+    if let Some(start) = planes_start {
+        profile.planes = start.elapsed();
+    }
+
+    let header_start = profile_enabled.then(Instant::now);
     let mut out = Vec::new();
     write_marker(&mut out, 0xD8);
     write_dqt(&mut out, 0, &q_luma)?;
@@ -224,7 +254,11 @@ fn encode_jpeg_baseline_cpu(
         write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
     }
     write_sos(&mut out, sampling.components)?;
+    if let Some(start) = header_start {
+        profile.header = start.elapsed();
+    }
 
+    let entropy_start = profile_enabled.then(Instant::now);
     let entropy = encode_entropy(
         &planes,
         width,
@@ -237,8 +271,49 @@ fn encode_jpeg_baseline_cpu(
         &cosine,
         options.restart_interval,
     )?;
+    if let Some(start) = entropy_start {
+        profile.entropy = start.elapsed();
+    }
     out.extend_from_slice(&entropy);
     write_marker(&mut out, 0xD9);
+
+    if let Some(start) = total_start {
+        let width_s = width.to_string();
+        let height_s = height.to_string();
+        let quality_s = options.quality.to_string();
+        let subsampling_s = format!("{:?}", options.subsampling);
+        let restart_s = options.restart_interval.unwrap_or(0).to_string();
+        let components_s = sampling.components.to_string();
+        let output_bytes_s = out.len().to_string();
+        let threads_s = rayon::current_num_threads().to_string();
+        let validation_us = duration_us_string(profile.validation);
+        let setup_us = duration_us_string(profile.setup);
+        let planes_us = duration_us_string(profile.planes);
+        let header_us = duration_us_string(profile.header);
+        let entropy_us = duration_us_string(profile.entropy);
+        let total_us = duration_us_string(start.elapsed());
+        emit_jpeg_profile_row(
+            "encode",
+            "cpu",
+            &[
+                ("sample", sample_format),
+                ("width", width_s.as_str()),
+                ("height", height_s.as_str()),
+                ("components", components_s.as_str()),
+                ("quality", quality_s.as_str()),
+                ("subsampling", subsampling_s.as_str()),
+                ("restart_interval", restart_s.as_str()),
+                ("validation_us", validation_us.as_str()),
+                ("setup_us", setup_us.as_str()),
+                ("planes_us", planes_us.as_str()),
+                ("header_us", header_us.as_str()),
+                ("entropy_us", entropy_us.as_str()),
+                ("total_us", total_us.as_str()),
+                ("output_bytes", output_bytes_s.as_str()),
+                ("rayon_threads", threads_s.as_str()),
+            ],
+        );
+    }
 
     Ok(EncodedJpeg {
         data: out,
@@ -247,6 +322,13 @@ fn encode_jpeg_baseline_cpu(
 }
 
 impl JpegSamples<'_> {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Gray8 { .. } => "Gray8",
+            Self::Rgb8 { .. } => "Rgb8",
+        }
+    }
+
     fn dimensions(self) -> (u32, u32) {
         match self {
             Self::Gray8 { width, height, .. } | Self::Rgb8 { width, height, .. } => (width, height),

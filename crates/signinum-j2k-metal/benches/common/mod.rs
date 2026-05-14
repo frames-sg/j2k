@@ -60,7 +60,9 @@ const AUTO_REPEATED_GRAYSCALE_MIN_DIM: u32 = 512;
 const AUTO_REPEATED_GRAYSCALE_MIN_COUNT: usize = 16;
 const EXTERNAL_WSI_TILE_DIR_ENV: &str = "SIGNINUM_J2K_METAL_WSI_TILE_DIR";
 const J2K_TILE_BATCH_SIZES_ENV: &str = "SIGNINUM_J2K_TILE_BATCH_SIZES";
+const J2K_REGION_EDGES_ENV: &str = "SIGNINUM_J2K_REGION_EDGES";
 const DEFAULT_J2K_TILE_BATCH_SIZES: &[usize] = &[16, 32, 64, 128];
+const DEFAULT_J2K_REGION_EDGES: &[u32] = &[256];
 
 pub(crate) fn j2k_tile_batch_sizes() -> Vec<usize> {
     env::var(J2K_TILE_BATCH_SIZES_ENV)
@@ -81,6 +83,27 @@ pub(crate) fn j2k_tile_batch_sizes() -> Vec<usize> {
 
 fn default_j2k_tile_batch_sizes() -> Vec<usize> {
     DEFAULT_J2K_TILE_BATCH_SIZES.to_vec()
+}
+
+pub(crate) fn j2k_region_edges() -> Vec<u32> {
+    env::var(J2K_REGION_EDGES_ENV)
+        .ok()
+        .map_or_else(default_j2k_region_edges, |raw| {
+            let parsed = raw
+                .split(',')
+                .filter_map(|value| value.trim().parse::<u32>().ok())
+                .filter(|&value| value > 0)
+                .collect::<Vec<_>>();
+            if parsed.is_empty() {
+                default_j2k_region_edges()
+            } else {
+                parsed
+            }
+        })
+}
+
+fn default_j2k_region_edges() -> Vec<u32> {
+    DEFAULT_J2K_REGION_EDGES.to_vec()
 }
 
 pub(crate) fn bench_inputs() -> Vec<BenchInput> {
@@ -515,6 +538,21 @@ pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: 
     black_box((outputs, outcomes));
 }
 
+pub(crate) fn openjpeg_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
+    let outputs = (0..count)
+        .into_par_iter()
+        .map(|_| match mode {
+            DecodeMode::Gray8 => openjpeg::decode_gray(bytes),
+            DecodeMode::Rgb8 => openjpeg::decode_rgb(bytes),
+            DecodeMode::Gray16 => {
+                Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .expect("OpenJPEG tile batch decode");
+    black_box(outputs);
+}
+
 pub(crate) fn signinum_decode_tile_batch_region_scaled(
     bytes: &[u8],
     mode: DecodeMode,
@@ -617,6 +655,21 @@ pub(crate) fn signinum_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: Deco
         decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).expect("tile decode")
     };
     black_box((outputs, outcomes));
+}
+
+pub(crate) fn openjpeg_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: DecodeMode) {
+    let outputs = inputs
+        .par_iter()
+        .map(|bytes| match mode {
+            DecodeMode::Gray8 => openjpeg::decode_gray(bytes),
+            DecodeMode::Rgb8 => openjpeg::decode_rgb(bytes),
+            DecodeMode::Gray16 => {
+                Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .expect("OpenJPEG distinct tile batch decode");
+    black_box(outputs);
 }
 
 pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(

@@ -27,6 +27,7 @@ use crate::output::{
 };
 use crate::parse::header::{parse_header, parse_info, ParsedHeader};
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
+use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
 use crate::JpegCodec;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -39,6 +40,7 @@ use signinum_core::{
     RowSink, TileBatchDecode,
 };
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
 const CPU_ROI_CHECKPOINT_CADENCE_MCUS: u32 = 1024;
@@ -766,12 +768,15 @@ impl<'a> Decoder<'a> {
         stride: usize,
         fmt: OutputFormat,
     ) -> Result<DecodeOutcome, JpegError> {
+        let profile_enabled = jpeg_profile_stages_enabled();
+        let total_start = profile_enabled.then(Instant::now);
         let downscale = fmt.downscale();
         let (w, h) = scaled_dimensions(self.info.dimensions, downscale);
-        let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
+        let scratch_bytes = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
         let bpp = fmt.bytes_per_pixel();
         validate_buffer(out, stride, w, h, bpp)?;
-        match fmt {
+        let decode_start = profile_enabled.then(Instant::now);
+        let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
                 let mut writer = Rgb8Writer::new(out, stride, w);
                 self.decode_rgb_with_writer(
@@ -799,7 +804,43 @@ impl<'a> Decoder<'a> {
                     Rect::full(self.info.dimensions),
                 )
             }
+        };
+        if let (Some(total_start), Some(decode_start), Ok(outcome)) =
+            (total_start, decode_start, &result)
+        {
+            let source_width_s = self.info.dimensions.0.to_string();
+            let source_height_s = self.info.dimensions.1.to_string();
+            let output_width_s = w.to_string();
+            let output_height_s = h.to_string();
+            let stride_s = stride.to_string();
+            let bpp_s = bpp.to_string();
+            let output_bytes_s = stride.saturating_mul(h as usize).to_string();
+            let scratch_bytes_s = scratch_bytes.to_string();
+            let warning_count_s = outcome.warnings.len().to_string();
+            let decode_us = duration_us_string(decode_start.elapsed());
+            let total_us = duration_us_string(total_start.elapsed());
+            emit_jpeg_profile_row(
+                "decode",
+                "cpu",
+                &[
+                    ("mode", "full"),
+                    ("fmt", output_format_profile_name(fmt)),
+                    ("downscale", downscale_profile_name(downscale)),
+                    ("source_width", source_width_s.as_str()),
+                    ("source_height", source_height_s.as_str()),
+                    ("output_width", output_width_s.as_str()),
+                    ("output_height", output_height_s.as_str()),
+                    ("stride", stride_s.as_str()),
+                    ("bpp", bpp_s.as_str()),
+                    ("scratch_bytes", scratch_bytes_s.as_str()),
+                    ("output_bytes", output_bytes_s.as_str()),
+                    ("decode_us", decode_us.as_str()),
+                    ("total_us", total_us.as_str()),
+                    ("warnings", warning_count_s.as_str()),
+                ],
+            );
         }
+        result
     }
 
     /// [`Self::decode_scaled_into`] with caller-owned scratch.
@@ -988,6 +1029,8 @@ impl<'a> Decoder<'a> {
         fmt: OutputFormat,
         roi: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
+        let profile_enabled = jpeg_profile_stages_enabled();
+        let total_start = profile_enabled.then(Instant::now);
         if !roi.is_within(self.info.dimensions) {
             return Err(JpegError::RectOutOfBounds {
                 rect: roi,
@@ -1002,7 +1045,7 @@ impl<'a> Decoder<'a> {
 
         let downscale = fmt.downscale();
         let scaled_roi = scaled_rect_covering(roi, downscale)?;
-        let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
+        let scratch_bytes = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
         validate_buffer(
             out,
             stride,
@@ -1011,7 +1054,8 @@ impl<'a> Decoder<'a> {
             fmt.bytes_per_pixel(),
         )?;
 
-        match fmt {
+        let decode_start = profile_enabled.then(Instant::now);
+        let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
                 if fmt == OutputFormat::Rgb8
                     && downscale == DownscaleFactor::Full
@@ -1081,7 +1125,56 @@ impl<'a> Decoder<'a> {
                 let mut writer = CroppedWriter::new(base, scaled_roi, source_x0, source_width);
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
+        };
+        if let (Some(total_start), Some(decode_start), Ok(outcome)) =
+            (total_start, decode_start, &result)
+        {
+            let source_width_s = self.info.dimensions.0.to_string();
+            let source_height_s = self.info.dimensions.1.to_string();
+            let roi_x_s = roi.x.to_string();
+            let roi_y_s = roi.y.to_string();
+            let roi_w_s = roi.w.to_string();
+            let roi_h_s = roi.h.to_string();
+            let output_width_s = scaled_roi.w.to_string();
+            let output_height_s = scaled_roi.h.to_string();
+            let stride_s = stride.to_string();
+            let bpp_s = fmt.bytes_per_pixel().to_string();
+            let output_bytes_s = stride.saturating_mul(scaled_roi.h as usize).to_string();
+            let scratch_bytes_s = scratch_bytes.to_string();
+            let warning_count_s = outcome.warnings.len().to_string();
+            let decode_us = duration_us_string(decode_start.elapsed());
+            let total_us = duration_us_string(total_start.elapsed());
+            let mode = if downscale == DownscaleFactor::Full {
+                "region"
+            } else {
+                "region_scaled"
+            };
+            emit_jpeg_profile_row(
+                "decode",
+                "cpu",
+                &[
+                    ("mode", mode),
+                    ("fmt", output_format_profile_name(fmt)),
+                    ("downscale", downscale_profile_name(downscale)),
+                    ("source_width", source_width_s.as_str()),
+                    ("source_height", source_height_s.as_str()),
+                    ("roi_x", roi_x_s.as_str()),
+                    ("roi_y", roi_y_s.as_str()),
+                    ("roi_w", roi_w_s.as_str()),
+                    ("roi_h", roi_h_s.as_str()),
+                    ("output_width", output_width_s.as_str()),
+                    ("output_height", output_height_s.as_str()),
+                    ("stride", stride_s.as_str()),
+                    ("bpp", bpp_s.as_str()),
+                    ("scratch_bytes", scratch_bytes_s.as_str()),
+                    ("output_bytes", output_bytes_s.as_str()),
+                    ("decode_us", decode_us.as_str()),
+                    ("total_us", total_us.as_str()),
+                    ("warnings", warning_count_s.as_str()),
+                ],
+            );
         }
+        result
     }
 
     /// Decode `roi` into the caller's buffer using the core `PixelFormat` +
@@ -1745,13 +1838,24 @@ impl Decoder<'_> {
         decoded: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
         let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
+        let profile_enabled = jpeg_profile_stages_enabled();
         if let Some(plan) = &self.progressive_plan {
             if downscale != DownscaleFactor::Full || decoded != Rect::full(self.info.dimensions) {
                 return Err(JpegError::NotImplemented {
                     sof: self.info.sof_kind,
                 });
             }
+            let scan_start = profile_enabled.then(Instant::now);
             let scan_warnings = decode_progressive(plan, self.backend, self.bytes, writer)?;
+            if let Some(start) = scan_start {
+                emit_decode_scan_profile(
+                    "progressive",
+                    self.info.dimensions,
+                    decoded,
+                    downscale,
+                    start.elapsed(),
+                );
+            }
             return Ok(DecodeOutcome {
                 decoded,
                 warnings: merged_warnings(&self.warnings, scan_warnings),
@@ -1759,6 +1863,7 @@ impl Decoder<'_> {
         }
         let output_rect = scaled_rect_covering(decoded, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let scan_start = profile_enabled.then(Instant::now);
         let scan_warnings = decode_scan_baseline(
             &self.plan,
             self.backend,
@@ -1768,6 +1873,15 @@ impl Decoder<'_> {
             downscale,
             output_rect,
         )?;
+        if let Some(start) = scan_start {
+            emit_decode_scan_profile(
+                "baseline",
+                self.info.dimensions,
+                decoded,
+                downscale,
+                start.elapsed(),
+            );
+        }
         Ok(DecodeOutcome {
             decoded,
             warnings: merged_warnings(&self.warnings, scan_warnings),
@@ -1782,13 +1896,24 @@ impl Decoder<'_> {
         decoded: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
         let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
+        let profile_enabled = jpeg_profile_stages_enabled();
         if let Some(plan) = &self.progressive_plan {
             if downscale != DownscaleFactor::Full || decoded != Rect::full(self.info.dimensions) {
                 return Err(JpegError::NotImplemented {
                     sof: self.info.sof_kind,
                 });
             }
+            let scan_start = profile_enabled.then(Instant::now);
             let scan_warnings = decode_progressive(plan, self.backend, self.bytes, writer)?;
+            if let Some(start) = scan_start {
+                emit_decode_scan_profile(
+                    "progressive_rgb",
+                    self.info.dimensions,
+                    decoded,
+                    downscale,
+                    start.elapsed(),
+                );
+            }
             return Ok(DecodeOutcome {
                 decoded,
                 warnings: merged_warnings(&self.warnings, scan_warnings),
@@ -1796,25 +1921,44 @@ impl Decoder<'_> {
         }
         let output_rect = scaled_rect_covering(decoded, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let scan_warnings =
+        let scan_start = profile_enabled.then(Instant::now);
+        let (scan_path, scan_warnings) =
             if downscale == DownscaleFactor::Full && self.plan.matches_fast_tile_shape() {
-                decode_scan_fast_tile_rgb(&self.plan, self.backend, scan_bytes, pool, writer)?
+                (
+                    "fast420_rgb",
+                    decode_scan_fast_tile_rgb(&self.plan, self.backend, scan_bytes, pool, writer)?,
+                )
             } else if downscale == DownscaleFactor::Full
                 && decoded == Rect::full(self.info.dimensions)
                 && self.plan.matches_fast_rgb444_shape()
             {
-                decode_scan_fast_rgb_444(&self.plan, self.backend, scan_bytes, pool, writer)?
+                (
+                    "fast444_rgb",
+                    decode_scan_fast_rgb_444(&self.plan, self.backend, scan_bytes, pool, writer)?,
+                )
             } else {
-                decode_scan_baseline_rgb(
-                    &self.plan,
-                    self.backend,
-                    scan_bytes,
-                    pool,
-                    writer,
-                    downscale,
-                    output_rect,
-                )?
+                (
+                    "baseline_rgb",
+                    decode_scan_baseline_rgb(
+                        &self.plan,
+                        self.backend,
+                        scan_bytes,
+                        pool,
+                        writer,
+                        downscale,
+                        output_rect,
+                    )?,
+                )
             };
+        if let Some(start) = scan_start {
+            emit_decode_scan_profile(
+                scan_path,
+                self.info.dimensions,
+                decoded,
+                downscale,
+                start.elapsed(),
+            );
+        }
         Ok(DecodeOutcome {
             decoded,
             warnings: merged_warnings(&self.warnings, scan_warnings),
@@ -1931,6 +2075,54 @@ fn restart_index_for_stream(
     Err(JpegError::MissingMarker {
         marker: MarkerKind::Eoi,
     })
+}
+
+fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
+    match fmt {
+        OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => "Rgb8",
+        OutputFormat::Rgba8 { .. } => "Rgba8",
+        OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
+    }
+}
+
+fn downscale_profile_name(downscale: DownscaleFactor) -> &'static str {
+    match downscale {
+        DownscaleFactor::Full => "full",
+        DownscaleFactor::Half => "half",
+        DownscaleFactor::Quarter => "quarter",
+        DownscaleFactor::Eighth => "eighth",
+    }
+}
+
+fn emit_decode_scan_profile(
+    scan_path: &str,
+    dimensions: (u32, u32),
+    decoded: Rect,
+    downscale: DownscaleFactor,
+    elapsed: Duration,
+) {
+    let source_width_s = dimensions.0.to_string();
+    let source_height_s = dimensions.1.to_string();
+    let decoded_x_s = decoded.x.to_string();
+    let decoded_y_s = decoded.y.to_string();
+    let decoded_w_s = decoded.w.to_string();
+    let decoded_h_s = decoded.h.to_string();
+    let scan_us = duration_us_string(elapsed);
+    emit_jpeg_profile_row(
+        "decode_scan",
+        "cpu",
+        &[
+            ("scan_path", scan_path),
+            ("downscale", downscale_profile_name(downscale)),
+            ("source_width", source_width_s.as_str()),
+            ("source_height", source_height_s.as_str()),
+            ("decoded_x", decoded_x_s.as_str()),
+            ("decoded_y", decoded_y_s.as_str()),
+            ("decoded_w", decoded_w_s.as_str()),
+            ("decoded_h", decoded_h_s.as_str()),
+            ("scan_us", scan_us.as_str()),
+        ],
+    );
 }
 
 fn merged_warnings(header_warnings: &[Warning], scan_warnings: Vec<Warning>) -> Vec<Warning> {

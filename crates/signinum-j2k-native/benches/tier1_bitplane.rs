@@ -102,5 +102,66 @@ fn bench_tier1_decode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_tier1_decode);
+fn bench_tier1_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tier1_bitplane_encode");
+    let cases = [
+        ("default", default_style(), J2kSubBandType::LowLow),
+        (
+            "bypass",
+            J2kCodeBlockStyle {
+                selective_arithmetic_coding_bypass: true,
+                ..default_style()
+            },
+            J2kSubBandType::HighLow,
+        ),
+        (
+            "segmented",
+            J2kCodeBlockStyle {
+                termination_on_each_pass: true,
+                reset_context_probabilities: true,
+                segmentation_symbols: true,
+                ..default_style()
+            },
+            J2kSubBandType::HighHigh,
+        ),
+        (
+            "vertically_causal",
+            J2kCodeBlockStyle {
+                vertically_causal_context: true,
+                ..default_style()
+            },
+            J2kSubBandType::LowHigh,
+        ),
+    ];
+
+    for (name, style, sub_band_type) in cases {
+        let width = 64;
+        let height = 64;
+        let total_bitplanes = 10;
+        let coefficients = generated_coefficients(width, height, 0x7171_0000);
+
+        group.bench_with_input(
+            BenchmarkId::new("encode_64x64", name),
+            &coefficients,
+            |b, coefficients| {
+                b.iter(|| {
+                    let encoded = encode_j2k_code_block_scalar_with_style(
+                        black_box(coefficients),
+                        width,
+                        height,
+                        sub_band_type,
+                        total_bitplanes,
+                        style,
+                    )
+                    .expect("encode code block");
+                    black_box(encoded);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_tier1_decode, bench_tier1_encode);
 criterion_main!(benches);

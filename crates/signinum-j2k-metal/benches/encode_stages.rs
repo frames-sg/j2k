@@ -4,8 +4,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(target_os = "macos")]
 use signinum_core::PixelFormat;
 use signinum_j2k::{
-    encode_j2k_lossless, EncodeBackendPreference, J2kEncodeValidation, J2kLosslessEncodeOptions,
-    J2kLosslessSamples,
+    encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
+    J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 use signinum_j2k_metal::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
@@ -93,6 +93,17 @@ fn bench_encode_stages(c: &mut Criterion) {
                 encode_j2k_lossless(samples, &cpu_options).expect("CPU J2K lossless encode")
             });
         });
+        let cpu_ht_options = J2kLosslessEncodeOptions {
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            ..cpu_options
+        };
+        encode.bench_with_input(BenchmarkId::new("cpu_htj2k", dim), &pixels, |b, pixels| {
+            b.iter(|| {
+                let samples = J2kLosslessSamples::new(pixels, dim, dim, 3, 8, false)
+                    .expect("valid RGB8 samples");
+                encode_j2k_lossless(samples, &cpu_ht_options).expect("CPU HTJ2K lossless encode")
+            });
+        });
 
         #[cfg(target_os = "macos")]
         if metal_encode_available() {
@@ -102,6 +113,15 @@ fn bench_encode_stages(c: &mut Criterion) {
                 backend: EncodeBackendPreference::RequireDevice,
                 validation: J2kEncodeValidation::External,
                 ..J2kLosslessEncodeOptions::default()
+            };
+            let auto_options = J2kLosslessEncodeOptions {
+                backend: EncodeBackendPreference::Auto,
+                validation: J2kEncodeValidation::External,
+                ..J2kLosslessEncodeOptions::default()
+            };
+            let auto_ht_options = J2kLosslessEncodeOptions {
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                ..auto_options
             };
             encode.bench_with_input(BenchmarkId::new("resident_metal", dim), &pixels, |b, _| {
                 b.iter(|| {
@@ -126,6 +146,60 @@ fn bench_encode_stages(c: &mut Criterion) {
                     encoded.encoded
                 });
             });
+            encode.bench_with_input(
+                BenchmarkId::new("auto_host_metal_buffer", dim),
+                &pixels,
+                |b, _| {
+                    b.iter(|| {
+                        let encoded = encode_lossless_from_padded_metal_buffer_with_report(
+                            MetalLosslessEncodeTile {
+                                buffer: &buffer,
+                                byte_offset: 0,
+                                width: dim,
+                                height: dim,
+                                pitch_bytes: dim as usize * 3,
+                                output_width: dim,
+                                output_height: dim,
+                                format: PixelFormat::Rgb8,
+                            },
+                            &auto_options,
+                            &session,
+                        )
+                        .expect("Auto J2K lossless encode from Metal buffer");
+                        assert!(!encoded.resident.coefficient_prep_used);
+                        assert!(!encoded.resident.packetization_used);
+                        assert!(!encoded.resident.codestream_assembly_used);
+                        encoded.encoded
+                    });
+                },
+            );
+            encode.bench_with_input(
+                BenchmarkId::new("auto_host_metal_buffer_htj2k", dim),
+                &pixels,
+                |b, _| {
+                    b.iter(|| {
+                        let encoded = encode_lossless_from_padded_metal_buffer_with_report(
+                            MetalLosslessEncodeTile {
+                                buffer: &buffer,
+                                byte_offset: 0,
+                                width: dim,
+                                height: dim,
+                                pitch_bytes: dim as usize * 3,
+                                output_width: dim,
+                                output_height: dim,
+                                format: PixelFormat::Rgb8,
+                            },
+                            &auto_ht_options,
+                            &session,
+                        )
+                        .expect("Auto HTJ2K lossless encode from Metal buffer");
+                        assert!(!encoded.resident.coefficient_prep_used);
+                        assert!(!encoded.resident.packetization_used);
+                        assert!(!encoded.resident.codestream_assembly_used);
+                        encoded.encoded
+                    });
+                },
+            );
         }
     }
     encode.finish();

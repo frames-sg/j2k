@@ -93,6 +93,7 @@ pub mod error;
 pub(crate) mod log;
 mod direct_plan;
 pub(crate) mod math;
+pub(crate) mod profile;
 pub(crate) mod writer;
 
 use crate::math::{dispatch, f32x8, Level, Simd, SIMD_WIDTH};

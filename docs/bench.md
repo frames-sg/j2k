@@ -269,6 +269,114 @@ host setup and GPU wait timings for fused decode and RGB pack. It is diagnostic
 only: enabling it splits fused decode and pack into separate command buffers, so
 use normal benchmark runs without the env var for acceptance wall-clock numbers.
 
+## Stage profiling diagnostics
+
+Stage profiling is for local investigation only. Capture a release-bench
+baseline first, enable the narrow diagnostic env var, then compare the stage
+rows against Criterion and an external sampler before changing kernels. Use
+`=summary` or `=aggregate` for Criterion runs so the profiler emits one
+aggregate line per route/stage group instead of one stderr line per iteration.
+
+Baseline commands:
+
+```sh
+cargo bench --profile release-bench -p signinum-jpeg
+cargo bench --profile release-bench -p signinum-j2k-native
+cargo bench --profile release-bench -p signinum-jpeg-metal --bench compare --no-run
+cargo bench --profile release-bench -p signinum-j2k-metal --bench compare --no-run
+```
+
+CPU codec stage rows:
+
+```sh
+# One row per operation; useful for focused tests.
+SIGNINUM_JPEG_PROFILE_STAGES=1 \
+  cargo test -p signinum-jpeg cpu_encoder_round_trips_gray_and_writes_required_markers \
+  --test encode_baseline -- --nocapture
+
+SIGNINUM_J2K_PROFILE_STAGES=1 \
+  cargo test -p signinum-j2k-native j2c::encode::tests::test_encode_decode_roundtrip_gray_8bit \
+  --features std -- --nocapture
+
+# Aggregated rows; suitable for release-bench investigation.
+SIGNINUM_JPEG_PROFILE_STAGES=summary \
+  cargo bench --profile release-bench -p signinum-jpeg --bench compare
+
+SIGNINUM_J2K_PROFILE_STAGES=summary \
+  cargo bench --profile release-bench -p signinum-j2k-metal --bench encode_stages
+```
+
+Rows and summaries are compact key-value stderr lines:
+
+```text
+signinum_profile codec=jpeg op=encode path=cpu width=... height=... entropy_us=... total_us=...
+signinum_profile codec=jpeg op=decode path=cpu mode=region_scaled decode_us=... total_us=...
+signinum_profile codec=j2k op=encode path=cpu dwt_us=... block_encode_us=... total_us=...
+signinum_profile codec=j2k op=decode path=cpu codeblock_us=... idwt_us=... total_us=...
+signinum_profile_summary codec=j2k op=encode path=cpu count=... dwt_us_sum=... dwt_us_avg=...
+```
+
+GPU route diagnostics:
+
+```sh
+# Helper smoke tests for the env parser and row formatter.
+SIGNINUM_GPU_ROUTE_PROFILE=1 cargo test -p signinum-jpeg-metal profile::tests --lib -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 cargo test -p signinum-j2k-metal profile::tests --lib -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 cargo test -p signinum-jpeg-cuda profile::tests --lib -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 cargo test -p signinum-j2k-cuda profile::tests --lib -- --nocapture
+
+# Route-producing adapter tests on local hardware or fallback paths.
+SIGNINUM_GPU_ROUTE_PROFILE=1 \
+  cargo test -p signinum-jpeg-metal explicit_metal_unsupported_grayscale_shape_is_rejected \
+  --test core_traits -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 \
+  cargo test -p signinum-j2k-metal explicit_metal_unsupported_rgba16_full_decode_is_rejected \
+  --test device -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 \
+  cargo test -p signinum-jpeg-cuda explicit_cuda_request_returns_cuda_surface_or_clear_unavailable_error \
+  --test host_surface -- --nocapture
+SIGNINUM_GPU_ROUTE_PROFILE=1 \
+  cargo test -p signinum-j2k-cuda explicit_cuda_request_returns_cuda_surface_or_clear_unavailable_error \
+  --test host_surface -- --nocapture
+
+# Aggregated route decisions for benches.
+SIGNINUM_GPU_ROUTE_PROFILE=summary \
+  cargo bench --profile release-bench -p signinum-jpeg-metal --bench device_upload
+```
+
+The helper tests only prove formatting. The adapter tests and benches report
+selected backend, fallback reason, batch eligibility, and CUDA/Metal upload or
+nvJPEG decisions. They do not replace wall-clock bench numbers because route
+logging itself is diagnostic output.
+
+Existing GPU timing env vars remain more specific:
+
+- `SIGNINUM_JPEG_METAL_FAST420_BATCH_TIMING=1` splits JPEG Metal fast 4:2:0
+  batch work into host setup, GPU wait, and pack timings.
+- `SIGNINUM_J2K_METAL_PROFILE_STAGES=1` labels J2K Metal command buffers and
+  reports Metal-stage GPU duration where available.
+
+Current J2K Metal lossless encode keeps the direct forward RCT, Tier-1, and
+packetization kernels available for explicit device experiments. For host-output
+`Auto` encode, route selection is deliberately hybrid: CPU forward RCT, Metal
+forward 5/3 DWT, then parallel CPU code-block encode and packetization. The
+forced resident Metal path remains available through explicit device requests,
+but current single-tile host-output benchmarks route away from it.
+
+Classic J2K Tier-1 arithmetic coding remains the dominant host-output encode
+cost after the hybrid route. When HTJ2K output is acceptable, set
+`J2kBlockCodingMode::HighThroughput`; the facade disables the native encoder's
+extra HTJ2K self-validation when the caller requested external validation, so
+the benchmark measures encode work rather than a second decode of the generated
+codestream.
+
+When stage rows point at a candidate bottleneck, confirm with platform tools
+before optimizing:
+
+- macOS: Instruments Time Profiler and Metal System Trace.
+- Linux: `perf record` / `perf report` for CPU paths.
+- Cross-platform Firefox Profiler workflow: `samply record -- cargo bench ...`.
+
 ## `signinum-j2k`
 
 `signinum-j2k` and `signinum-j2k-metal` carry a dedicated Criterion comparator

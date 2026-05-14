@@ -20,6 +20,7 @@ use super::ht_block_encode;
 use super::packet_encode::{self, CodeBlockPacketData, ResolutionPacket, SubbandPrecinct};
 use super::quantize::{self, QuantStepSize};
 use crate::math::{floor_f32, log2_f32};
+use crate::profile;
 use crate::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedJ2kCodeBlock, J2kEncodeStageAccelerator,
     J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardRctJob,
@@ -50,6 +51,8 @@ pub struct EncodeOptions {
     pub write_tlm: bool,
     /// Apply the JPEG 2000 multi-component color transform for 3+ component inputs.
     pub use_mct: bool,
+    /// Decode and verify HTJ2K codestreams inside the native encoder.
+    pub validate_high_throughput_codestream: bool,
 }
 
 impl Default for EncodeOptions {
@@ -64,6 +67,7 @@ impl Default for EncodeOptions {
             progression_order: EncodeProgressionOrder::Lrcp,
             write_tlm: false,
             use_mct: true,
+            validate_high_throughput_codestream: true,
         }
     }
 }
@@ -141,7 +145,9 @@ pub fn encode_with_accelerator(
         accelerator,
     )?;
 
-    if block_coding_mode == BlockCodingMode::HighThroughput {
+    if block_coding_mode == BlockCodingMode::HighThroughput
+        && options.validate_high_throughput_codestream
+    {
         validate_htj2k_codestream(
             &codestream,
             pixels,
@@ -282,10 +288,16 @@ fn encode_impl(
         return Err("pixel data too short");
     }
 
+    let profile_enabled = profile::profile_stages_enabled();
+    let total_start = profile::profile_now(profile_enabled);
+
     // Step 1: Convert pixel bytes to f32 component arrays
+    let stage_start = profile::profile_now(profile_enabled);
     let mut components = deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed);
+    let deinterleave_us = profile::elapsed_us(stage_start);
 
     // Step 2: Apply forward MCT if RGB with 3+ components
+    let stage_start = profile::profile_now(profile_enabled);
     let use_mct = options.use_mct && num_components >= 3;
     if use_mct {
         if options.reversible {
@@ -296,6 +308,7 @@ fn encode_impl(
             forward_mct::forward_ict(&mut components);
         }
     }
+    let mct_us = profile::elapsed_us(stage_start);
 
     // Step 3: Apply forward DWT to each component
     let num_levels = options.num_decomposition_levels.min(
@@ -303,6 +316,7 @@ fn encode_impl(
         max_decomposition_levels(width, height),
     );
 
+    let stage_start = profile::profile_now(profile_enabled);
     let decompositions: Vec<DwtDecomposition> = components
         .iter()
         .map(|comp| {
@@ -316,6 +330,7 @@ fn encode_impl(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let dwt_us = profile::elapsed_us(stage_start);
 
     // Step 4: Compute quantization step sizes
     let guard_bits = if options.reversible {
@@ -338,6 +353,7 @@ fn encode_impl(
     let mut component_resolution_packets: Vec<Vec<PreparedResolutionPacket>> =
         Vec::with_capacity(num_components as usize);
 
+    let stage_start = profile::profile_now(profile_enabled);
     for decomp in decompositions.iter().take(num_components as usize) {
         let mut packets = Vec::with_capacity(num_levels as usize + 1);
 
@@ -411,13 +427,17 @@ fn encode_impl(
 
         component_resolution_packets.push(packets);
     }
+    let subband_prepare_us = profile::elapsed_us(stage_start);
 
     let prepared_resolution_packets =
         ordered_prepared_resolution_packets(component_resolution_packets, options)?;
+    let stage_start = profile::profile_now(profile_enabled);
     let resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+    let block_encode_us = profile::elapsed_us(stage_start);
 
     // Step 6: Form tile bitstream (T2)
+    let stage_start = profile::profile_now(profile_enabled);
     let mut resolution_packets = resolution_packets;
     let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
     let packet_descriptors =
@@ -436,8 +456,10 @@ fn encode_impl(
         .unwrap_or_else(|| {
             packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
         });
+    let packetize_us = profile::elapsed_us(stage_start);
 
     // Step 7: Write codestream
+    let stage_start = profile::profile_now(profile_enabled);
     let quant_params: Vec<(u16, u16)> = step_sizes
         .iter()
         .map(|s| (s.exponent, s.mantissa))
@@ -461,11 +483,27 @@ fn encode_impl(
         write_tlm: options.write_tlm,
     };
 
-    Ok(codestream_write::write_codestream(
-        &params,
-        &tile_data,
-        &quant_params,
-    ))
+    let codestream = codestream_write::write_codestream(&params, &tile_data, &quant_params);
+    let codestream_us = profile::elapsed_us(stage_start);
+
+    if profile_enabled {
+        profile::emit_profile_row(
+            "encode",
+            "cpu",
+            &[
+                ("deinterleave_us", deinterleave_us),
+                ("mct_us", mct_us),
+                ("dwt_us", dwt_us),
+                ("subband_prepare_us", subband_prepare_us),
+                ("block_encode_us", block_encode_us),
+                ("packetize_us", packetize_us),
+                ("codestream_us", codestream_us),
+                ("total_us", profile::elapsed_us(total_start)),
+            ],
+        );
+    }
+
+    Ok(codestream)
 }
 
 fn try_encode_forward_rct(

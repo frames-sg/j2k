@@ -51,6 +51,8 @@ pub(crate) mod backend;
 
 pub(crate) mod output;
 
+pub(crate) mod profile;
+
 pub mod encoder;
 pub use encoder::{
     encode_jpeg_baseline, EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions,

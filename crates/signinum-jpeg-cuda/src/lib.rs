@@ -10,6 +10,8 @@
 
 #![warn(unreachable_pub)]
 
+mod profile;
+
 use signinum_core::{
     BackendKind, BackendRequest, BufferError, CodecError, DecodeOutcome, DeviceSubmission,
     DeviceSurface, Downscale, ImageCodec, ImageDecode, ImageDecodeDevice, ImageDecodeSubmit,
@@ -252,12 +254,46 @@ impl<'a> Decoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if profile::gpu_route_profile_enabled() {
+            let request_s = format!("{backend:?}");
+            let fmt_s = format!("{fmt:?}");
+            let width_s = self.inner.info().dimensions.0.to_string();
+            let height_s = self.inner.info().dimensions.1.to_string();
+            profile::emit_gpu_route_profile(
+                "jpeg",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "full"),
+                    ("request", request_s.as_str()),
+                    ("fmt", fmt_s.as_str()),
+                    ("width", width_s.as_str()),
+                    ("height", height_s.as_str()),
+                    ("decision", "begin"),
+                ],
+            );
+        }
         if backend == BackendRequest::Cuda && fmt == PixelFormat::Rgb8 {
             if let Some(surface) = self.try_decode_cuda_rgb8(session)? {
                 return Ok(surface);
             }
         }
         let (bytes, _outcome) = self.inner.decode(fmt)?;
+        if profile::gpu_route_profile_enabled() {
+            let request_s = format!("{backend:?}");
+            let fmt_s = format!("{fmt:?}");
+            profile::emit_gpu_route_profile(
+                "jpeg",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "full"),
+                    ("request", request_s.as_str()),
+                    ("fmt", fmt_s.as_str()),
+                    ("decision", "cpu_decode_then_wrap"),
+                ],
+            );
+        }
         wrap_surface(bytes, self.inner.info().dimensions, fmt, backend, session)
     }
 
@@ -273,6 +309,29 @@ impl<'a> Decoder<'a> {
             Ok(output) => {
                 let pitch_bytes = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
                 let (buffer, stats) = output.into_parts();
+                if profile::gpu_route_profile_enabled() {
+                    let width_s = dimensions.0.to_string();
+                    let height_s = dimensions.1.to_string();
+                    let kernel_dispatches_s = stats.kernel_dispatches().to_string();
+                    let decode_dispatches_s = stats.decode_kernel_dispatches().to_string();
+                    let hardware_decode_s = stats.used_hardware_decode().to_string();
+                    profile::emit_gpu_route_profile(
+                        "jpeg",
+                        "gpu_route",
+                        "cuda",
+                        &[
+                            ("op", "full"),
+                            ("request", "Cuda"),
+                            ("fmt", "Rgb8"),
+                            ("width", width_s.as_str()),
+                            ("height", height_s.as_str()),
+                            ("decision", "nvjpeg"),
+                            ("kernel_dispatches", kernel_dispatches_s.as_str()),
+                            ("decode_kernel_dispatches", decode_dispatches_s.as_str()),
+                            ("hardware_decode", hardware_decode_s.as_str()),
+                        ],
+                    );
+                }
                 Ok(Some(Surface {
                     backend: BackendKind::Cuda,
                     dimensions,
@@ -291,7 +350,23 @@ impl<'a> Decoder<'a> {
                 CudaError::NvjpegUnavailable { .. }
                 | CudaError::Nvjpeg { .. }
                 | CudaError::NvjpegDimensions { .. },
-            ) => Ok(None),
+            ) => {
+                if profile::gpu_route_profile_enabled() {
+                    profile::emit_gpu_route_profile(
+                        "jpeg",
+                        "gpu_route",
+                        "cuda",
+                        &[
+                            ("op", "full"),
+                            ("request", "Cuda"),
+                            ("fmt", "Rgb8"),
+                            ("decision", "nvjpeg_fallback"),
+                            ("reason", "nvjpeg_unavailable_or_rejected"),
+                        ],
+                    );
+                }
+                Ok(None)
+            }
             Err(error) => Err(cuda_error(error)),
         }
     }
@@ -302,6 +377,20 @@ impl<'a> Decoder<'a> {
         &mut self,
         _session: &mut CudaSession,
     ) -> Result<Option<Surface>, Error> {
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "jpeg",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "full"),
+                    ("request", "Cuda"),
+                    ("fmt", "Rgb8"),
+                    ("decision", "nvjpeg_fallback"),
+                    ("reason", "cuda_runtime_feature_disabled"),
+                ],
+            );
+        }
         Ok(None)
     }
 
@@ -910,6 +999,23 @@ fn try_decode_tiles_nvjpeg_batch(
     session: &mut CudaSession,
 ) -> Result<Option<Vec<Surface>>, Error> {
     if fmt != PixelFormat::Rgb8 || !matches!(backend, BackendRequest::Auto | BackendRequest::Cuda) {
+        if profile::gpu_route_profile_enabled() {
+            let request_s = format!("{backend:?}");
+            let fmt_s = format!("{fmt:?}");
+            let tiles_s = inputs.len().to_string();
+            profile::emit_gpu_route_profile(
+                "jpeg",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "batch_full"),
+                    ("request", request_s.as_str()),
+                    ("fmt", fmt_s.as_str()),
+                    ("tiles", tiles_s.as_str()),
+                    ("decision", "nvjpeg_batch_ineligible"),
+                ],
+            );
+        }
         return Ok(None);
     }
 
@@ -921,12 +1027,45 @@ fn try_decode_tiles_nvjpeg_batch(
 
     let context = match session.cuda_context() {
         Ok(context) => context,
-        Err(_) if backend == BackendRequest::Auto => return Ok(None),
+        Err(_) if backend == BackendRequest::Auto => {
+            if profile::gpu_route_profile_enabled() {
+                let tiles_s = inputs.len().to_string();
+                profile::emit_gpu_route_profile(
+                    "jpeg",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "batch_full"),
+                        ("request", "Auto"),
+                        ("fmt", "Rgb8"),
+                        ("tiles", tiles_s.as_str()),
+                        ("decision", "nvjpeg_batch_fallback"),
+                        ("reason", "cuda_unavailable"),
+                    ],
+                );
+            }
+            return Ok(None);
+        }
         Err(error) => return Err(error),
     };
 
     match context.decode_jpeg_rgb8_batch_with_nvjpeg(&batch_inputs) {
         Ok(outputs) => {
+            if profile::gpu_route_profile_enabled() {
+                let tiles_s = outputs.len().to_string();
+                profile::emit_gpu_route_profile(
+                    "jpeg",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "batch_full"),
+                        ("request", "AutoOrCuda"),
+                        ("fmt", "Rgb8"),
+                        ("tiles", tiles_s.as_str()),
+                        ("decision", "nvjpeg_batch"),
+                    ],
+                );
+            }
             let mut surfaces = Vec::with_capacity(outputs.len());
             for (output, (_, dimensions)) in outputs.into_iter().zip(batch_inputs) {
                 let pitch_bytes = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
@@ -951,7 +1090,25 @@ fn try_decode_tiles_nvjpeg_batch(
             CudaError::NvjpegUnavailable { .. }
             | CudaError::Nvjpeg { .. }
             | CudaError::NvjpegDimensions { .. },
-        ) => Ok(None),
+        ) => {
+            if profile::gpu_route_profile_enabled() {
+                let tiles_s = inputs.len().to_string();
+                profile::emit_gpu_route_profile(
+                    "jpeg",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "batch_full"),
+                        ("request", "AutoOrCuda"),
+                        ("fmt", "Rgb8"),
+                        ("tiles", tiles_s.as_str()),
+                        ("decision", "nvjpeg_batch_fallback"),
+                        ("reason", "nvjpeg_unavailable_or_rejected"),
+                    ],
+                );
+            }
+            Ok(None)
+        }
         Err(error) => Err(cuda_error(error)),
     }
 }
@@ -959,11 +1116,29 @@ fn try_decode_tiles_nvjpeg_batch(
 #[cfg(not(feature = "cuda-runtime"))]
 #[allow(clippy::unnecessary_wraps)]
 fn try_decode_tiles_nvjpeg_batch(
-    _inputs: &[&[u8]],
-    _fmt: PixelFormat,
-    _backend: BackendRequest,
+    inputs: &[&[u8]],
+    fmt: PixelFormat,
+    backend: BackendRequest,
     _session: &mut CudaSession,
 ) -> Result<Option<Vec<Surface>>, Error> {
+    if profile::gpu_route_profile_enabled() {
+        let request_s = format!("{backend:?}");
+        let fmt_s = format!("{fmt:?}");
+        let tiles_s = inputs.len().to_string();
+        profile::emit_gpu_route_profile(
+            "jpeg",
+            "gpu_route",
+            "cuda",
+            &[
+                ("op", "batch_full"),
+                ("request", request_s.as_str()),
+                ("fmt", fmt_s.as_str()),
+                ("tiles", tiles_s.as_str()),
+                ("decision", "nvjpeg_batch_fallback"),
+                ("reason", "cuda_runtime_feature_disabled"),
+            ],
+        );
+    }
     Ok(None)
 }
 
@@ -1026,14 +1201,35 @@ fn wrap_surface(
     validate_surface_request(backend)?;
     let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
     match backend {
-        BackendRequest::Cpu | BackendRequest::Auto => Ok(Surface {
-            backend: BackendKind::Cpu,
-            dimensions,
-            fmt,
-            pitch_bytes,
-            stats: CudaSurfaceStats::default(),
-            storage: Storage::Host(bytes),
-        }),
+        BackendRequest::Cpu | BackendRequest::Auto => {
+            if profile::gpu_route_profile_enabled() {
+                let request_s = format!("{backend:?}");
+                let fmt_s = format!("{fmt:?}");
+                let width_s = dimensions.0.to_string();
+                let height_s = dimensions.1.to_string();
+                profile::emit_gpu_route_profile(
+                    "jpeg",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "wrap_surface"),
+                        ("request", request_s.as_str()),
+                        ("fmt", fmt_s.as_str()),
+                        ("width", width_s.as_str()),
+                        ("height", height_s.as_str()),
+                        ("decision", "host_surface"),
+                    ],
+                );
+            }
+            Ok(Surface {
+                backend: BackendKind::Cpu,
+                dimensions,
+                fmt,
+                pitch_bytes,
+                stats: CudaSurfaceStats::default(),
+                storage: Storage::Host(bytes),
+            })
+        }
         BackendRequest::Cuda => wrap_cuda_surface(&bytes, dimensions, fmt, pitch_bytes, session),
         BackendRequest::Metal => Err(Error::UnsupportedBackend { request: backend }),
     }
@@ -1057,6 +1253,28 @@ fn wrap_cuda_surface(
     let context = session.cuda_context()?;
     let output = context.copy_with_kernel(bytes).map_err(cuda_error)?;
     let (buffer, stats) = output.into_parts();
+    if profile::gpu_route_profile_enabled() {
+        let fmt_s = format!("{fmt:?}");
+        let width_s = dimensions.0.to_string();
+        let height_s = dimensions.1.to_string();
+        let kernel_dispatches_s = stats.kernel_dispatches().to_string();
+        let copy_dispatches_s = stats.copy_kernel_dispatches().to_string();
+        profile::emit_gpu_route_profile(
+            "jpeg",
+            "gpu_route",
+            "cuda",
+            &[
+                ("op", "wrap_surface"),
+                ("request", "Cuda"),
+                ("fmt", fmt_s.as_str()),
+                ("width", width_s.as_str()),
+                ("height", height_s.as_str()),
+                ("decision", "cuda_upload"),
+                ("kernel_dispatches", kernel_dispatches_s.as_str()),
+                ("copy_kernel_dispatches", copy_dispatches_s.as_str()),
+            ],
+        );
+    }
     Ok(Surface {
         backend: BackendKind::Cuda,
         dimensions,
@@ -1075,11 +1293,29 @@ fn wrap_cuda_surface(
 #[cfg(not(feature = "cuda-runtime"))]
 fn wrap_cuda_surface(
     _bytes: &[u8],
-    _dimensions: (u32, u32),
-    _fmt: PixelFormat,
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
     _pitch_bytes: usize,
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
+    if profile::gpu_route_profile_enabled() {
+        let fmt_s = format!("{fmt:?}");
+        let width_s = dimensions.0.to_string();
+        let height_s = dimensions.1.to_string();
+        profile::emit_gpu_route_profile(
+            "jpeg",
+            "gpu_route",
+            "cuda",
+            &[
+                ("op", "wrap_surface"),
+                ("request", "Cuda"),
+                ("fmt", fmt_s.as_str()),
+                ("width", width_s.as_str()),
+                ("height", height_s.as_str()),
+                ("decision", "cuda_unavailable"),
+            ],
+        );
+    }
     Err(Error::CudaUnavailable)
 }
 

@@ -30,6 +30,14 @@ pub(crate) struct JpegMetalCapabilities {
 }
 
 impl JpegMetalCapabilities {
+    pub(crate) fn has_fast_packet(self) -> bool {
+        self.has_fast_packet
+    }
+
+    pub(crate) fn supports_output_format(self) -> bool {
+        self.supports_output_format
+    }
+
     pub(crate) fn for_request(
         _decoder: &CpuDecoder<'_>,
         fmt: PixelFormat,

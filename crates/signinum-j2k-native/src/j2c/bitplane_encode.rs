@@ -18,6 +18,7 @@ use crate::writer::BitWriter;
 const SIGNIFICANT: u8 = 1 << 7;
 const MAGNITUDE_REFINED: u8 = 1 << 6;
 const CODED_IN_CURRENT_PASS: u8 = 1 << 5;
+const NEGATIVE: u8 = 1 << 4;
 
 /// Result of encoding a single code-block.
 #[derive(Debug)]
@@ -157,6 +158,29 @@ pub(crate) fn encode_code_block(
     )
 }
 
+fn prepare_padded_coefficients(
+    coefficients: &[i32],
+    w: usize,
+    h: usize,
+    pw: usize,
+) -> (Vec<u32>, Vec<u8>) {
+    let mut magnitudes = vec![0u32; pw * (h + 2)];
+    let mut states = vec![0u8; magnitudes.len()];
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y + 1) * pw + (x + 1);
+            let coeff = coefficients[y * w + x];
+            magnitudes[idx] = coeff.unsigned_abs();
+            if coeff < 0 {
+                states[idx] = NEGATIVE;
+            }
+        }
+    }
+
+    (magnitudes, states)
+}
+
 pub(crate) fn encode_code_block_with_style(
     coefficients: &[i32],
     width: u32,
@@ -187,28 +211,17 @@ pub(crate) fn encode_code_block_with_style(
     debug_assert!(num_bitplanes as u8 <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
 
-    // Build coefficient magnitude and sign arrays
+    // Build padded coefficient magnitude and state arrays.
     let pw = w + 2; // Padded width for neighbor access
-    let ph = h + 2;
-    let mut magnitudes = vec![0u32; pw * ph];
-    let mut signs = vec![false; pw * ph];
-    let mut states = vec![0u8; pw * ph];
-    let mut neighbors = vec![0u8; pw * ph]; // Packed neighbor significances
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = (y + 1) * pw + (x + 1);
-            let coeff = coefficients[y * w + x];
-            magnitudes[idx] = coeff.unsigned_abs();
-            signs[idx] = coeff < 0;
-        }
-    }
+    let (magnitudes, mut states) = prepare_padded_coefficients(coefficients, w, h, pw);
+    let mut neighbors = vec![0u8; magnitudes.len()]; // Packed neighbor significances
 
     let mut encoder = ArithmeticEncoder::new();
     let mut contexts = [ArithmeticEncoderContext::default(); 19];
     reset_contexts(&mut contexts);
 
     let mut num_coding_passes = 0u8;
+    let mut coded_indices = Vec::new();
 
     // Process bitplanes from MSB to LSB
     for bp in (0..num_bitplanes).rev() {
@@ -219,7 +232,6 @@ pub(crate) fn encode_code_block_with_style(
             // First bitplane: cleanup pass only
             cleanup_pass(
                 &magnitudes,
-                &signs,
                 &mut states,
                 &mut neighbors,
                 &mut encoder,
@@ -242,9 +254,9 @@ pub(crate) fn encode_code_block_with_style(
             // Subsequent bitplanes: SPP, MRP, Cleanup
             significance_propagation_pass(
                 &magnitudes,
-                &signs,
                 &mut states,
                 &mut neighbors,
+                &mut coded_indices,
                 &mut encoder,
                 &mut contexts,
                 w,
@@ -278,7 +290,6 @@ pub(crate) fn encode_code_block_with_style(
 
             cleanup_pass(
                 &magnitudes,
-                &signs,
                 &mut states,
                 &mut neighbors,
                 &mut encoder,
@@ -299,10 +310,7 @@ pub(crate) fn encode_code_block_with_style(
             }
         }
 
-        // Clear coded-in-current-pass flags
-        for s in states.iter_mut() {
-            *s &= !CODED_IN_CURRENT_PASS;
-        }
+        clear_coded_in_current_pass(&mut states, &mut coded_indices);
     }
 
     let data = encoder.finish();
@@ -372,20 +380,8 @@ pub(crate) fn encode_code_block_segments_with_style(
     debug_assert!(num_bitplanes as u8 <= total_bitplanes);
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes as u8);
     let pw = w + 2;
-    let ph = h + 2;
-    let mut magnitudes = vec![0u32; pw * ph];
-    let mut signs = vec![false; pw * ph];
-    let mut states = vec![0u8; pw * ph];
-    let mut neighbors = vec![0u8; pw * ph];
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = (y + 1) * pw + (x + 1);
-            let coeff = coefficients[y * w + x];
-            magnitudes[idx] = coeff.unsigned_abs();
-            signs[idx] = coeff < 0;
-        }
-    }
+    let (magnitudes, mut states) = prepare_padded_coefficients(coefficients, w, h, pw);
+    let mut neighbors = vec![0u8; magnitudes.len()];
 
     let mut contexts = [ArithmeticEncoderContext::default(); 19];
     reset_contexts(&mut contexts);
@@ -398,6 +394,7 @@ pub(crate) fn encode_code_block_segments_with_style(
     let mut current_use_arithmetic = true;
     let mut arithmetic_encoder: Option<ArithmeticEncoder> = None;
     let mut bypass_writer: Option<BitWriter> = None;
+    let mut coded_indices = Vec::new();
 
     for coding_pass in 0..total_passes {
         let segment_idx = if style.termination_on_each_pass {
@@ -464,7 +461,6 @@ pub(crate) fn encode_code_block_segments_with_style(
                     .expect("cleanup pass uses arithmetic encoder");
                 cleanup_pass(
                     &magnitudes,
-                    &signs,
                     &mut states,
                     &mut neighbors,
                     encoder,
@@ -479,17 +475,15 @@ pub(crate) fn encode_code_block_segments_with_style(
                 if style.segmentation_symbols {
                     encode_segmentation_symbols(encoder, &mut contexts);
                 }
-                for state in &mut states {
-                    *state &= !CODED_IN_CURRENT_PASS;
-                }
+                clear_coded_in_current_pass(&mut states, &mut coded_indices);
             }
             1 => {
                 if current_use_arithmetic {
                     significance_propagation_pass(
                         &magnitudes,
-                        &signs,
                         &mut states,
                         &mut neighbors,
+                        &mut coded_indices,
                         arithmetic_encoder
                             .as_mut()
                             .expect("arithmetic encoder exists for significance pass"),
@@ -504,9 +498,9 @@ pub(crate) fn encode_code_block_segments_with_style(
                 } else {
                     significance_propagation_pass_raw(
                         &magnitudes,
-                        &signs,
                         &mut states,
                         &mut neighbors,
+                        &mut coded_indices,
                         bypass_writer
                             .as_mut()
                             .expect("bypass writer exists for significance pass"),
@@ -642,12 +636,25 @@ fn push_segment(
     });
 }
 
+fn mark_coded_in_current_pass(idx: usize, states: &mut [u8], coded_indices: &mut Vec<usize>) {
+    if states[idx] & CODED_IN_CURRENT_PASS == 0 {
+        states[idx] |= CODED_IN_CURRENT_PASS;
+        coded_indices.push(idx);
+    }
+}
+
+fn clear_coded_in_current_pass(states: &mut [u8], coded_indices: &mut Vec<usize>) {
+    for idx in coded_indices.drain(..) {
+        states[idx] &= !CODED_IN_CURRENT_PASS;
+    }
+}
+
 /// Significance Propagation Pass (D.3.1)
 fn significance_propagation_pass(
     magnitudes: &[u32],
-    signs: &[bool],
     states: &mut [u8],
     neighbors: &mut [u8],
+    coded_indices: &mut Vec<usize>,
     encoder: &mut ArithmeticEncoder,
     contexts: &mut [ArithmeticEncoderContext; 19],
     w: usize,
@@ -670,13 +677,10 @@ fn significance_propagation_pass(
                     let ctx_label = zero_coding_ctx(neighbor_sig, sub_band_type);
                     let bit = (magnitudes[idx] & bit_mask != 0) as u32;
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                    states[idx] |= CODED_IN_CURRENT_PASS;
+                    mark_coded_in_current_pass(idx, states, coded_indices);
 
                     if bit == 1 {
-                        encode_sign(
-                            idx, signs[idx], neighbors, signs, states, encoder, contexts, pw, y, h,
-                            style,
-                        );
+                        encode_sign(idx, neighbors, states, encoder, contexts, pw, y, h, style);
                         set_significant(idx, states, neighbors, pw);
                     }
                 }
@@ -687,9 +691,9 @@ fn significance_propagation_pass(
 
 fn significance_propagation_pass_raw(
     magnitudes: &[u32],
-    signs: &[bool],
     states: &mut [u8],
     neighbors: &mut [u8],
+    coded_indices: &mut Vec<usize>,
     writer: &mut BitWriter,
     w: usize,
     h: usize,
@@ -707,9 +711,9 @@ fn significance_propagation_pass_raw(
                 if !is_significant && neighbor_sig != 0 {
                     let bit = (magnitudes[idx] & bit_mask != 0) as u32;
                     writer.write_bit(bit);
-                    states[idx] |= CODED_IN_CURRENT_PASS;
+                    mark_coded_in_current_pass(idx, states, coded_indices);
                     if bit == 1 {
-                        encode_sign_raw(idx, signs[idx], states, writer);
+                        encode_sign_raw(idx, states, writer);
                         set_significant(idx, states, neighbors, pw);
                     }
                 }
@@ -785,7 +789,6 @@ fn magnitude_refinement_pass_raw(
 /// Cleanup Pass (D.3.4)
 fn cleanup_pass(
     magnitudes: &[u32],
-    signs: &[bool],
     states: &mut [u8],
     neighbors: &mut [u8],
     encoder: &mut ArithmeticEncoder,
@@ -835,10 +838,7 @@ fn cleanup_pass(
                         // Encode sign for the first significant
                         let y = y_base + pos;
                         let idx = (y + 1) * pw + (x + 1);
-                        encode_sign(
-                            idx, signs[idx], neighbors, signs, states, encoder, contexts, pw, y, h,
-                            style,
-                        );
+                        encode_sign(idx, neighbors, states, encoder, contexts, pw, y, h, style);
                         set_significant(idx, states, neighbors, pw);
 
                         // Continue cleanup for remaining samples in stripe
@@ -853,8 +853,7 @@ fn cleanup_pass(
                                 encoder.encode(bit, &mut contexts[ctx_label as usize]);
                                 if bit == 1 {
                                     encode_sign(
-                                        idx, signs[idx], neighbors, signs, states, encoder,
-                                        contexts, pw, y, h, style,
+                                        idx, neighbors, states, encoder, contexts, pw, y, h, style,
                                     );
                                     set_significant(idx, states, neighbors, pw);
                                 }
@@ -880,10 +879,7 @@ fn cleanup_pass(
                     let bit = (magnitudes[idx] & bit_mask != 0) as u32;
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
                     if bit == 1 {
-                        encode_sign(
-                            idx, signs[idx], neighbors, signs, states, encoder, contexts, pw, y, h,
-                            style,
-                        );
+                        encode_sign(idx, neighbors, states, encoder, contexts, pw, y, h, style);
                         set_significant(idx, states, neighbors, pw);
                     }
                 }
@@ -899,9 +895,7 @@ fn cleanup_pass(
 /// merged byte and look up SIGN_CONTEXT_LOOKUP.
 fn encode_sign(
     idx: usize,
-    is_negative: bool,
     neighbors: &[u8],
-    coeff_signs: &[bool],
     states: &[u8],
     encoder: &mut ArithmeticEncoder,
     contexts: &mut [ArithmeticEncoderContext; 19],
@@ -916,24 +910,24 @@ fn encode_sign(
     // Get sign of each cardinal neighbor (0=positive, 1=negative).
     // Only meaningful for significant neighbors; insignificant neighbors get 0.
     let top_sign = if states[idx - pw] & SIGNIFICANT != 0 {
-        coeff_signs[idx - pw] as u8
+        ((states[idx - pw] & NEGATIVE) != 0) as u8
     } else {
         0
     };
     let left_sign = if states[idx - 1] & SIGNIFICANT != 0 {
-        coeff_signs[idx - 1] as u8
+        ((states[idx - 1] & NEGATIVE) != 0) as u8
     } else {
         0
     };
     let right_sign = if states[idx + 1] & SIGNIFICANT != 0 {
-        coeff_signs[idx + 1] as u8
+        ((states[idx + 1] & NEGATIVE) != 0) as u8
     } else {
         0
     };
     let bottom_sign = if style.vertically_causal_context && neighbor_in_next_stripe(y, h) {
         0
     } else if states[idx + pw] & SIGNIFICANT != 0 {
-        coeff_signs[idx + pw] as u8
+        ((states[idx + pw] & NEGATIVE) != 0) as u8
     } else {
         0
     };
@@ -948,14 +942,14 @@ fn encode_sign(
     let merged = (negative_sigs << 1) | positive_sigs;
 
     let (ctx_label, xor_bit) = SIGN_CONTEXT_LOOKUP[merged as usize];
-    let sign_bit = is_negative as u32;
+    let sign_bit = ((states[idx] & NEGATIVE) != 0) as u32;
     encoder.encode(sign_bit ^ xor_bit as u32, &mut contexts[ctx_label as usize]);
 }
 
-fn encode_sign_raw(idx: usize, is_negative: bool, states: &[u8], writer: &mut BitWriter) {
+fn encode_sign_raw(idx: usize, states: &[u8], writer: &mut BitWriter) {
     let is_significant = states[idx] & SIGNIFICANT != 0;
     debug_assert!(!is_significant);
-    writer.write_bit(is_negative as u32);
+    writer.write_bit(((states[idx] & NEGATIVE) != 0) as u32);
 }
 
 #[inline]
@@ -1053,5 +1047,37 @@ mod tests {
         let coeffs = vec![7i32, -3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let result = encode_code_block(&coeffs, 4, 4, SubBandType::LowLow, 8);
         assert_eq!(result.num_zero_bitplanes, 5);
+    }
+
+    #[test]
+    fn padded_coefficient_preparation_stores_sign_in_state_flags() {
+        let coeffs = vec![7i32, -3, 0, -9];
+        let (magnitudes, states) = prepare_padded_coefficients(&coeffs, 2, 2, 4);
+
+        assert_eq!(magnitudes[5], 7);
+        assert_eq!(magnitudes[6], 3);
+        assert_eq!(magnitudes[9], 0);
+        assert_eq!(magnitudes[10], 9);
+        assert_eq!(states[5] & NEGATIVE, 0);
+        assert_ne!(states[6] & NEGATIVE, 0);
+        assert_eq!(states[9] & NEGATIVE, 0);
+        assert_ne!(states[10] & NEGATIVE, 0);
+    }
+
+    #[test]
+    fn clear_coded_in_current_pass_touches_only_recorded_indices() {
+        let mut states = vec![0u8; 8];
+        let mut coded_indices = Vec::new();
+
+        mark_coded_in_current_pass(2, &mut states, &mut coded_indices);
+        mark_coded_in_current_pass(5, &mut states, &mut coded_indices);
+        states[6] = SIGNIFICANT;
+
+        clear_coded_in_current_pass(&mut states, &mut coded_indices);
+
+        assert_eq!(states[2] & CODED_IN_CURRENT_PASS, 0);
+        assert_eq!(states[5] & CODED_IN_CURRENT_PASS, 0);
+        assert_eq!(states[6], SIGNIFICANT);
+        assert!(coded_indices.is_empty());
     }
 }

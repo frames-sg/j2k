@@ -5,12 +5,13 @@ mod common;
 use common::{
     bench_inputs, distinct_gray_tile_batch_inputs, distinct_rgb_tile_batch_inputs,
     external_wsi_tile_batches, grok_decode_external_tile_batch_region_scaled,
-    grok_supports_external_tile_batch_region_scaled, j2k_tile_batch_sizes, metal_available,
-    openjpeg_decode_external_tile_batch_region_scaled,
-    openjpeg_supports_external_tile_batch_region_scaled, signinum_adaptive_decode,
-    signinum_adaptive_decode_external_tile_batch_region_scaled, signinum_adaptive_decode_region,
-    signinum_adaptive_decode_region_scaled, signinum_adaptive_decode_scaled,
-    signinum_adaptive_decode_tile_batch, signinum_adaptive_decode_tile_batch_region_scaled,
+    grok_supports_external_tile_batch_region_scaled, j2k_region_edges, j2k_tile_batch_sizes,
+    metal_available, openjpeg_decode_external_tile_batch_region_scaled, openjpeg_decode_tile_batch,
+    openjpeg_decode_tile_batch_distinct, openjpeg_supports_external_tile_batch_region_scaled,
+    signinum_adaptive_decode, signinum_adaptive_decode_external_tile_batch_region_scaled,
+    signinum_adaptive_decode_region, signinum_adaptive_decode_region_scaled,
+    signinum_adaptive_decode_scaled, signinum_adaptive_decode_tile_batch,
+    signinum_adaptive_decode_tile_batch_region_scaled,
     signinum_adaptive_decode_tile_batch_region_scaled_distinct, signinum_decode,
     signinum_decode_external_tile_batch_region_scaled, signinum_decode_region,
     signinum_decode_region_scaled, signinum_decode_scaled, signinum_decode_tile_batch,
@@ -36,6 +37,7 @@ fn bench_compare(c: &mut Criterion) {
     let inputs = bench_inputs();
     let batch_sizes = j2k_tile_batch_sizes();
     let max_batch_size = batch_sizes.iter().copied().max().unwrap_or(16);
+    let region_edges = j2k_region_edges();
 
     let mut inspect = c.benchmark_group("inspect");
     for input in &inputs {
@@ -368,85 +370,87 @@ fn bench_compare(c: &mut Criterion) {
                 if batch.inputs.len() < count {
                     continue;
                 }
-                external_wsi_region_scaled.bench_function(
-                    format!("signinum/{}/batch_{count}", batch.name),
-                    |b| {
-                        b.iter(|| {
-                            signinum_decode_external_tile_batch_region_scaled(
-                                batch,
-                                count,
-                                256,
-                                Downscale::Quarter,
-                            );
-                        });
-                    },
-                );
-                external_wsi_region_scaled.bench_function(
-                    format!("signinum-adaptive/{}/batch_{count}", batch.name),
-                    |b| {
-                        b.iter(|| {
-                            signinum_adaptive_decode_external_tile_batch_region_scaled(
-                                batch,
-                                count,
-                                256,
-                                Downscale::Quarter,
-                            );
-                        });
-                    },
-                );
-                if openjpeg::is_available()
-                    && openjpeg_supports_external_tile_batch_region_scaled(batch, count)
-                {
+                for &edge in &region_edges {
                     external_wsi_region_scaled.bench_function(
-                        format!("openjpeg/{}/batch_{count}", batch.name),
+                        format!("signinum/{}/edge_{edge}/batch_{count}", batch.name),
                         |b| {
                             b.iter(|| {
-                                openjpeg_decode_external_tile_batch_region_scaled(
+                                signinum_decode_external_tile_batch_region_scaled(
                                     batch,
                                     count,
-                                    256,
+                                    edge,
                                     Downscale::Quarter,
                                 );
                             });
                         },
                     );
-                }
-                if grok_supports_external_tile_batch_region_scaled(batch, count) {
                     external_wsi_region_scaled.bench_function(
-                        format!("grok/{}/batch_{count}", batch.name),
+                        format!("signinum-adaptive/{}/edge_{edge}/batch_{count}", batch.name),
                         |b| {
                             b.iter(|| {
-                                grok_decode_external_tile_batch_region_scaled(
+                                signinum_adaptive_decode_external_tile_batch_region_scaled(
                                     batch,
                                     count,
-                                    256,
+                                    edge,
                                     Downscale::Quarter,
                                 );
                             });
                         },
                     );
-                }
-                if metal_available()
-                    && signinum_metal_supports_external_tile_batch_region_scaled(
-                        batch,
-                        count,
-                        256,
-                        Downscale::Quarter,
-                    )
-                {
-                    external_wsi_region_scaled.bench_function(
-                        format!("signinum-metal/{}/batch_{count}", batch.name),
-                        |b| {
-                            b.iter(|| {
-                                signinum_metal_decode_external_tile_batch_region_scaled(
-                                    batch,
-                                    count,
-                                    256,
-                                    Downscale::Quarter,
-                                );
-                            });
-                        },
-                    );
+                    if openjpeg::is_available()
+                        && openjpeg_supports_external_tile_batch_region_scaled(batch, count)
+                    {
+                        external_wsi_region_scaled.bench_function(
+                            format!("openjpeg/{}/edge_{edge}/batch_{count}", batch.name),
+                            |b| {
+                                b.iter(|| {
+                                    openjpeg_decode_external_tile_batch_region_scaled(
+                                        batch,
+                                        count,
+                                        edge,
+                                        Downscale::Quarter,
+                                    );
+                                });
+                            },
+                        );
+                    }
+                    if grok_supports_external_tile_batch_region_scaled(batch, count) {
+                        external_wsi_region_scaled.bench_function(
+                            format!("grok/{}/edge_{edge}/batch_{count}", batch.name),
+                            |b| {
+                                b.iter(|| {
+                                    grok_decode_external_tile_batch_region_scaled(
+                                        batch,
+                                        count,
+                                        edge,
+                                        Downscale::Quarter,
+                                    );
+                                });
+                            },
+                        );
+                    }
+                    if metal_available()
+                        && signinum_metal_supports_external_tile_batch_region_scaled(
+                            batch,
+                            count,
+                            edge,
+                            Downscale::Quarter,
+                        )
+                    {
+                        external_wsi_region_scaled.bench_function(
+                            format!("signinum-metal/{}/edge_{edge}/batch_{count}", batch.name),
+                            |b| {
+                                b.iter(|| {
+                                    signinum_metal_decode_external_tile_batch_region_scaled(
+                                        batch,
+                                        count,
+                                        edge,
+                                        Downscale::Quarter,
+                                    );
+                                });
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -462,6 +466,14 @@ fn bench_compare(c: &mut Criterion) {
                     b.iter(|| signinum_decode_tile_batch(&input.bytes, input.mode, count));
                 },
             );
+            if !input.is_ht && openjpeg::is_available() {
+                wsi_tile_batch_rgb.bench_function(
+                    format!("openjpeg/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| openjpeg_decode_tile_batch(&input.bytes, input.mode, count));
+                    },
+                );
+            }
             if metal_available() && signinum_metal_supports_tile_batch(&input.bytes, input.mode) {
                 wsi_tile_batch_rgb.bench_function(
                     format!("signinum-metal/{}/batch_{count}", input.name),
@@ -486,6 +498,16 @@ fn bench_compare(c: &mut Criterion) {
                     b.iter(|| signinum_decode_tile_batch_distinct(&distinct_inputs, input.mode));
                 },
             );
+            if !input.is_ht && openjpeg::is_available() {
+                wsi_tile_batch_rgb_distinct.bench_function(
+                    format!("openjpeg/{}/batch_{count}", input.name),
+                    |b| {
+                        b.iter(|| {
+                            openjpeg_decode_tile_batch_distinct(&distinct_inputs, input.mode);
+                        });
+                    },
+                );
+            }
             if metal_available()
                 && signinum_metal_supports_tile_batch_distinct(&distinct_inputs, input.mode)
             {

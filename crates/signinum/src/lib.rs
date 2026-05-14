@@ -135,7 +135,11 @@ pub mod j2k {
         samples: J2kLosslessSamples<'_>,
         options: J2kLosslessEncodeOptions,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
-        let mut accelerator = signinum_j2k_metal::MetalEncodeStageAccelerator::default();
+        let mut accelerator = if options.backend == EncodeBackendPreference::Auto {
+            signinum_j2k_metal::MetalEncodeStageAccelerator::for_auto_host_output()
+        } else {
+            signinum_j2k_metal::MetalEncodeStageAccelerator::with_cpu_forward_rct()
+        };
         encode_with_device_accelerator(samples, options, BackendKind::Metal, &mut accelerator)
     }
 

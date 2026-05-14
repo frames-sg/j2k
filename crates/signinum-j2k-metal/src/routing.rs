@@ -2,7 +2,7 @@
 
 use signinum_core::{BackendRequest, PixelFormat};
 
-use crate::Error;
+use crate::{profile, Error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteDecision {
@@ -31,28 +31,45 @@ pub(crate) fn supports_metal_format(fmt: PixelFormat) -> bool {
 }
 
 pub(crate) fn decide_route(backend: BackendRequest, fmt: PixelFormat) -> RouteDecision {
-    match backend {
+    let decision = match backend {
         BackendRequest::Cpu | BackendRequest::Auto => RouteDecision::CpuHost,
         BackendRequest::Metal => {
-            if !supports_metal_format(fmt) {
-                return RouteDecision::RejectExplicitMetal {
+            if supports_metal_format(fmt) {
+                #[cfg(not(target_os = "macos"))]
+                {
+                    RouteDecision::MetalUnavailable
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    RouteDecision::MetalKernel
+                }
+            } else {
+                RouteDecision::RejectExplicitMetal {
                     reason: unsupported_metal_format_reason(fmt),
-                };
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                RouteDecision::MetalUnavailable
-            }
-            #[cfg(target_os = "macos")]
-            {
-                RouteDecision::MetalKernel
+                }
             }
         }
         BackendRequest::Cuda => RouteDecision::RejectUnsupportedBackend {
             request: BackendRequest::Cuda,
         },
+    };
+    if profile::gpu_route_profile_enabled() {
+        let request_s = format!("{backend:?}");
+        let fmt_s = format!("{fmt:?}");
+        let (decision_s, reason_s) = j2k_route_decision_profile(decision);
+        profile::emit_gpu_route_profile(
+            "j2k",
+            "gpu_route",
+            "metal",
+            &[
+                ("request", request_s.as_str()),
+                ("fmt", fmt_s.as_str()),
+                ("decision", decision_s),
+                ("reason", reason_s),
+            ],
+        );
     }
+    decision
 }
 
 pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
@@ -72,6 +89,20 @@ fn unsupported_metal_format_reason(fmt: PixelFormat) -> &'static str {
     match fmt {
         PixelFormat::Rgba16 => "J2K Metal does not support PixelFormat::Rgba16",
         _ => "J2K Metal does not support the requested PixelFormat",
+    }
+}
+
+fn j2k_route_decision_profile(decision: RouteDecision) -> (&'static str, &'static str) {
+    match decision {
+        RouteDecision::CpuHost => ("cpu_host", "none"),
+        RouteDecision::MetalKernel => ("metal_kernel", "none"),
+        RouteDecision::RejectExplicitMetal { .. } => {
+            ("reject_explicit_metal", "unsupported_format")
+        }
+        RouteDecision::RejectUnsupportedBackend { .. } => {
+            ("reject_unsupported_backend", "unsupported_backend")
+        }
+        RouteDecision::MetalUnavailable => ("metal_unavailable", "metal_unavailable"),
     }
 }
 

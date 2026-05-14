@@ -298,6 +298,7 @@ fn native_lossless_options(
         progression_order,
         write_tlm: options.progression == J2kProgressionOrder::Rpcl,
         use_mct: options.reversible_transform == ReversibleTransform::Rct53,
+        validate_high_throughput_codestream: false,
         ..EncodeOptions::default()
     }
 }
@@ -502,9 +503,9 @@ fn validate_lossless_roundtrip(
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_j2k_lossless, j2k_lossless_decomposition_levels_for_options, J2kBlockCodingMode,
-        J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
-        ReversibleTransform,
+        encode_j2k_lossless, j2k_lossless_decomposition_levels_for_options,
+        native_lossless_options, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
+        J2kLosslessSamples, J2kProgressionOrder, ReversibleTransform,
     };
 
     fn cod_mct(codestream: &[u8]) -> u8 {
@@ -553,5 +554,31 @@ mod tests {
         );
 
         assert_eq!(levels, 5);
+    }
+
+    #[test]
+    fn facade_native_options_skip_internal_ht_validation_for_external_validation() {
+        let pixels = vec![0; 64 * 64];
+        let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+
+        let external = native_lossless_options(
+            samples,
+            J2kLosslessEncodeOptions {
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                validation: J2kEncodeValidation::External,
+                ..J2kLosslessEncodeOptions::default()
+            },
+        );
+        let roundtrip = native_lossless_options(
+            samples,
+            J2kLosslessEncodeOptions {
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                validation: J2kEncodeValidation::CpuRoundTrip,
+                ..J2kLosslessEncodeOptions::default()
+            },
+        );
+
+        assert!(!external.validate_high_throughput_codestream);
+        assert!(!roundtrip.validate_high_throughput_codestream);
     }
 }

@@ -29,6 +29,7 @@ use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
 use crate::error::{bail, ColorError, DecodingError, Result, TileError};
 use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::math::SimdBuffer;
+use crate::profile;
 use crate::reader::BitReader;
 use crate::{
     decode_j2k_code_block_scalar, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
@@ -47,7 +48,12 @@ pub(crate) fn decode<'a>(
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
 ) -> Result<()> {
     let mut reader = BitReader::new(data);
+    let profile_enabled = profile::profile_stages_enabled();
+    let total_start = profile::profile_now(profile_enabled);
+    let mut profile_timings = DecodeProfileTimings::default();
+    let stage_start = profile::profile_now(profile_enabled);
     let tiles = tile::parse(&mut reader, header)?;
+    profile_timings.parse_tiles_us += profile::elapsed_us(stage_start);
 
     if tiles.is_empty() {
         bail!(TileError::Invalid);
@@ -99,6 +105,8 @@ pub(crate) fn decode<'a>(
             storage,
             ht_decoder,
             cpu_decode_parallelism,
+            profile_enabled,
+            &mut profile_timings,
         )?;
     }
 
@@ -106,8 +114,27 @@ pub(crate) fn decode<'a>(
     // In theory, only some could have it... But hopefully no such cursed
     // images exist!
     if tiles[0].mct {
+        let stage_start = profile::profile_now(profile_enabled);
         mct::apply_inverse(tile_ctx, &tiles[0].component_infos, header, ht_decoder)?;
         apply_sign_shift(tile_ctx, &header.component_infos);
+        profile_timings.mct_us += profile::elapsed_us(stage_start);
+    }
+
+    if profile_enabled {
+        profile::emit_profile_row(
+            "decode",
+            "cpu",
+            &[
+                ("parse_tiles_us", profile_timings.parse_tiles_us),
+                ("build_us", profile_timings.build_us),
+                ("segment_us", profile_timings.segment_us),
+                ("codeblock_us", profile_timings.codeblock_us),
+                ("idwt_us", profile_timings.idwt_us),
+                ("store_us", profile_timings.store_us),
+                ("mct_us", profile_timings.mct_us),
+                ("total_us", profile::elapsed_us(total_start)),
+            ],
+        );
     }
 
     Ok(())
@@ -798,6 +825,8 @@ fn decode_tile<'a, 'b>(
     storage: &mut DecompositionStorage<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
     cpu_decode_parallelism: CpuDecodeParallelism,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
 ) -> Result<()> {
     storage.reset();
 
@@ -805,6 +834,7 @@ fn decode_tile<'a, 'b>(
 
     // First, we build the decompositions, including their sub-bands, precincts
     // and code blocks.
+    let stage_start = profile::profile_now(profile_enabled);
     build::build(tile, storage)?;
     if let Some(output_region) = tile_ctx.output_region {
         storage.roi_plan = RoiPlan::build(tile, header, storage, output_region);
@@ -812,10 +842,14 @@ fn decode_tile<'a, 'b>(
             storage.coefficients.fill(0.0);
         }
     }
+    profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
+    let stage_start = profile::profile_now(profile_enabled);
     segment::parse(tile, progression_iterator, header, storage)?;
+    profile_timings.segment_us += profile::elapsed_us(stage_start);
     // We then decode the bitplanes of each code block, yielding the
     // (possibly dequantized) coefficients of each code block.
+    let stage_start = profile::profile_now(profile_enabled);
     decode_component_tile_bit_planes(
         tile,
         tile_ctx,
@@ -824,11 +858,13 @@ fn decode_tile<'a, 'b>(
         ht_decoder,
         cpu_decode_parallelism,
     )?;
+    profile_timings.codeblock_us += profile::elapsed_us(stage_start);
 
     // Unlike before, we interleave the apply_idwt and store stages
     // for each component tile so we can reuse allocations better.
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         // Next, we apply the inverse discrete wavelet transform.
+        let stage_start = profile::profile_now(profile_enabled);
         idwt::apply(
             storage,
             tile_ctx,
@@ -837,6 +873,7 @@ fn decode_tile<'a, 'b>(
             component_info.wavelet_transform(),
             ht_decoder,
         )?;
+        profile_timings.idwt_us += profile::elapsed_us(stage_start);
         // Finally, we store the raw samples for the tile area in the correct
         // location. Note that in case we have MCT, we are not applying it yet.
         // It will be applied in the very end once all tiles have been processed.
@@ -847,10 +884,23 @@ fn decode_tile<'a, 'b>(
         // IDWT and store on a per-component basis. Thus, we only need to
         // store one IDWT output at a time, allowing for better reuse of
         // allocations.
+        let stage_start = profile::profile_now(profile_enabled);
         store(tile, header, tile_ctx, component_info, idx, ht_decoder)?;
+        profile_timings.store_us += profile::elapsed_us(stage_start);
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct DecodeProfileTimings {
+    parse_tiles_us: u128,
+    build_us: u128,
+    segment_us: u128,
+    codeblock_us: u128,
+    idwt_us: u128,
+    store_us: u128,
+    mct_us: u128,
 }
 
 /// All decompositions for a single tile.

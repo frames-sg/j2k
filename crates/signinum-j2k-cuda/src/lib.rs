@@ -9,6 +9,8 @@
 
 #![warn(unreachable_pub)]
 
+mod profile;
+
 use core::convert::Infallible;
 
 use signinum_core::{
@@ -142,10 +144,34 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 .j2k_forward_rct(job.plane0, job.plane1, job.plane2)
                 .map_err(|_| "CUDA forward RCT encode kernel failed")?;
             self.forward_rct_dispatches = self.forward_rct_dispatches.saturating_add(1);
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_forward_rct"),
+                        ("decision", "cuda_dispatch"),
+                        ("dispatches", "1"),
+                    ],
+                );
+            }
             return Ok(true);
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "encode_forward_rct"),
+                    ("decision", "cpu_fallback"),
+                    ("reason", "cuda_unavailable"),
+                ],
+            );
+        }
         Ok(false)
     }
 
@@ -155,6 +181,18 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_forward_dwt53"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "zero_levels"),
+                    ],
+                );
+            }
             return Ok(None);
         }
         #[cfg(feature = "cuda-runtime")]
@@ -165,10 +203,41 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let dispatches = output.execution().kernel_dispatches();
             self.forward_dwt53_dispatches =
                 self.forward_dwt53_dispatches.saturating_add(dispatches);
+            if profile::gpu_route_profile_enabled() {
+                let width_s = job.width.to_string();
+                let height_s = job.height.to_string();
+                let levels_s = job.num_levels.to_string();
+                let dispatches_s = dispatches.to_string();
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_forward_dwt53"),
+                        ("decision", "cuda_dispatch"),
+                        ("width", width_s.as_str()),
+                        ("height", height_s.as_str()),
+                        ("levels", levels_s.as_str()),
+                        ("dispatches", dispatches_s.as_str()),
+                    ],
+                );
+            }
             return Ok(Some(cuda_dwt53_output_to_j2k(&output)?));
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "encode_forward_dwt53"),
+                    ("decision", "cpu_fallback"),
+                    ("reason", "cuda_unavailable"),
+                ],
+            );
+        }
         Ok(None)
     }
 
@@ -177,6 +246,18 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         _job: J2kTier1CodeBlockEncodeJob<'_>,
     ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "encode_tier1_code_block"),
+                    ("decision", "cpu_fallback"),
+                    ("reason", "unsupported_stage"),
+                ],
+            );
+        }
         Ok(None)
     }
 
@@ -185,6 +266,18 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         _job: J2kHtCodeBlockEncodeJob<'_>,
     ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "encode_ht_code_block"),
+                    ("decision", "cpu_fallback"),
+                    ("reason", "unsupported_stage"),
+                ],
+            );
+        }
         Ok(None)
     }
 
@@ -193,6 +286,18 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         _job: J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
+        if profile::gpu_route_profile_enabled() {
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "encode_packetization"),
+                    ("decision", "cpu_fallback"),
+                    ("reason", "unsupported_stage"),
+                ],
+            );
+        }
         Ok(None)
     }
 }
@@ -480,6 +585,25 @@ impl<'a> J2kDecoder<'a> {
         let dims = self.inner.info().dimensions;
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
+        if profile::gpu_route_profile_enabled() {
+            let request_s = format!("{backend:?}");
+            let fmt_s = format!("{fmt:?}");
+            let width_s = dims.0.to_string();
+            let height_s = dims.1.to_string();
+            profile::emit_gpu_route_profile(
+                "j2k",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "full"),
+                    ("request", request_s.as_str()),
+                    ("fmt", fmt_s.as_str()),
+                    ("width", width_s.as_str()),
+                    ("height", height_s.as_str()),
+                    ("decision", "cpu_decode_then_wrap"),
+                ],
+            );
+        }
         self.inner
             .decode_into_with_scratch(&mut self.pool, &mut out, stride, fmt)?;
         wrap_surface(out, dims, fmt, backend, session)
@@ -1053,14 +1177,35 @@ fn wrap_surface(
     validate_surface_request(backend)?;
     let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
     match backend {
-        BackendRequest::Cpu | BackendRequest::Auto => Ok(Surface {
-            backend: BackendKind::Cpu,
-            dimensions,
-            fmt,
-            pitch_bytes,
-            stats: CudaSurfaceStats::default(),
-            storage: Storage::Host(bytes),
-        }),
+        BackendRequest::Cpu | BackendRequest::Auto => {
+            if profile::gpu_route_profile_enabled() {
+                let request_s = format!("{backend:?}");
+                let fmt_s = format!("{fmt:?}");
+                let width_s = dimensions.0.to_string();
+                let height_s = dimensions.1.to_string();
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "wrap_surface"),
+                        ("request", request_s.as_str()),
+                        ("fmt", fmt_s.as_str()),
+                        ("width", width_s.as_str()),
+                        ("height", height_s.as_str()),
+                        ("decision", "host_surface"),
+                    ],
+                );
+            }
+            Ok(Surface {
+                backend: BackendKind::Cpu,
+                dimensions,
+                fmt,
+                pitch_bytes,
+                stats: CudaSurfaceStats::default(),
+                storage: Storage::Host(bytes),
+            })
+        }
         BackendRequest::Cuda => wrap_cuda_surface(&bytes, dimensions, fmt, pitch_bytes, session),
         BackendRequest::Metal => Err(Error::UnsupportedBackend { request: backend }),
     }
@@ -1084,6 +1229,26 @@ fn wrap_cuda_surface(
     let context = session.cuda_context()?;
     let output = context.copy_with_kernel(bytes).map_err(cuda_error)?;
     let (buffer, stats) = output.into_parts();
+    if profile::gpu_route_profile_enabled() {
+        let fmt_s = format!("{fmt:?}");
+        let width_s = dimensions.0.to_string();
+        let height_s = dimensions.1.to_string();
+        let kernel_dispatches_s = stats.kernel_dispatches().to_string();
+        profile::emit_gpu_route_profile(
+            "j2k",
+            "gpu_route",
+            "cuda",
+            &[
+                ("op", "wrap_surface"),
+                ("request", "Cuda"),
+                ("fmt", fmt_s.as_str()),
+                ("width", width_s.as_str()),
+                ("height", height_s.as_str()),
+                ("decision", "cuda_upload"),
+                ("kernel_dispatches", kernel_dispatches_s.as_str()),
+            ],
+        );
+    }
     Ok(Surface {
         backend: BackendKind::Cuda,
         dimensions,
@@ -1099,11 +1264,29 @@ fn wrap_cuda_surface(
 #[cfg(not(feature = "cuda-runtime"))]
 fn wrap_cuda_surface(
     _bytes: &[u8],
-    _dimensions: (u32, u32),
-    _fmt: PixelFormat,
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
     _pitch_bytes: usize,
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
+    if profile::gpu_route_profile_enabled() {
+        let fmt_s = format!("{fmt:?}");
+        let width_s = dimensions.0.to_string();
+        let height_s = dimensions.1.to_string();
+        profile::emit_gpu_route_profile(
+            "j2k",
+            "gpu_route",
+            "cuda",
+            &[
+                ("op", "wrap_surface"),
+                ("request", "Cuda"),
+                ("fmt", fmt_s.as_str()),
+                ("width", width_s.as_str()),
+                ("height", height_s.as_str()),
+                ("decision", "cuda_unavailable"),
+            ],
+        );
+    }
     Err(Error::CudaUnavailable)
 }
 

@@ -38,8 +38,10 @@ use std::time::Instant;
 ///
 /// The type is wired into the native encoder hook interface and reports
 /// dispatches for each required encode stage.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct MetalEncodeStageAccelerator {
+    dispatch_stages: MetalEncodeDispatchStages,
+    parallel_cpu_code_block_fallback: bool,
     forward_rct_attempts: usize,
     forward_dwt53_attempts: usize,
     tier1_code_block_attempts: usize,
@@ -52,7 +54,76 @@ pub struct MetalEncodeStageAccelerator {
     packetization_dispatches: usize,
 }
 
+impl Default for MetalEncodeStageAccelerator {
+    fn default() -> Self {
+        Self {
+            dispatch_stages: MetalEncodeDispatchStages::ALL,
+            parallel_cpu_code_block_fallback: false,
+            forward_rct_attempts: 0,
+            forward_dwt53_attempts: 0,
+            tier1_code_block_attempts: 0,
+            ht_code_block_attempts: 0,
+            packetization_attempts: 0,
+            forward_rct_dispatches: 0,
+            forward_dwt53_dispatches: 0,
+            tier1_code_block_dispatches: 0,
+            ht_code_block_dispatches: 0,
+            packetization_dispatches: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MetalEncodeDispatchStages(u8);
+
+impl MetalEncodeDispatchStages {
+    const FORWARD_RCT: Self = Self(1 << 0);
+    const FORWARD_DWT53: Self = Self(1 << 1);
+    const TIER1_CODE_BLOCK: Self = Self(1 << 2);
+    const HT_CODE_BLOCK: Self = Self(1 << 3);
+    const PACKETIZATION: Self = Self(1 << 4);
+    const ALL: Self = Self(
+        Self::FORWARD_RCT.0
+            | Self::FORWARD_DWT53.0
+            | Self::TIER1_CODE_BLOCK.0
+            | Self::HT_CODE_BLOCK.0
+            | Self::PACKETIZATION.0,
+    );
+
+    fn contains(self, stage: Self) -> bool {
+        self.0 & stage.0 != 0
+    }
+
+    fn without(self, stage: Self) -> Self {
+        Self(self.0 & !stage.0)
+    }
+}
+
 impl MetalEncodeStageAccelerator {
+    pub fn with_cpu_forward_rct() -> Self {
+        Self {
+            dispatch_stages: MetalEncodeDispatchStages::ALL
+                .without(MetalEncodeDispatchStages::FORWARD_RCT),
+            ..Self::default()
+        }
+    }
+
+    pub fn for_auto_host_output() -> Self {
+        Self {
+            dispatch_stages: MetalEncodeDispatchStages::FORWARD_DWT53,
+            parallel_cpu_code_block_fallback: true,
+            ..Self::default()
+        }
+    }
+
+    fn for_host_output(options: J2kLosslessEncodeOptions) -> Self {
+        if options.backend == EncodeBackendPreference::Auto {
+            Self::for_auto_host_output()
+        } else {
+            Self::with_cpu_forward_rct()
+        }
+    }
+
     pub fn forward_rct_attempts(&self) -> usize {
         self.forward_rct_attempts
     }
@@ -129,11 +200,22 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
     }
 
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.parallel_cpu_code_block_fallback
+    }
+
     fn encode_forward_rct(
         &mut self,
         job: J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::FORWARD_RCT)
+        {
+            let _ = job;
+            return Ok(false);
+        }
         #[cfg(target_os = "macos")]
         {
             let result = compute::encode_forward_rct(job.plane0, job.plane1, job.plane2);
@@ -159,6 +241,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         if job.num_levels == 0 {
             return Ok(None);
         }
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::FORWARD_DWT53)
+        {
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let output = metal_dispatch_option(
@@ -182,6 +271,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         job: J2kTier1CodeBlockEncodeJob<'_>,
     ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::TIER1_CODE_BLOCK)
+        {
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
@@ -206,6 +302,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
     ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::TIER1_CODE_BLOCK)
+        {
+            let _ = jobs;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
@@ -230,6 +333,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         job: J2kHtCodeBlockEncodeJob<'_>,
     ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::HT_CODE_BLOCK)
+        {
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
@@ -253,6 +363,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         jobs: &[J2kHtCodeBlockEncodeJob<'_>],
     ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::HT_CODE_BLOCK)
+        {
+            let _ = jobs;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
@@ -276,6 +393,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         job: J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
+        if !self
+            .dispatch_stages
+            .contains(MetalEncodeDispatchStages::PACKETIZATION)
+        {
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
@@ -613,7 +737,7 @@ pub fn encode_lossless_from_metal_buffer_with_report(
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(*options);
     encode_lossless_tile_with_report(
         tile,
         *options,
@@ -677,7 +801,7 @@ pub fn encode_lossless_from_padded_metal_buffer_with_report(
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(*options);
     encode_lossless_tile_with_report(
         tile,
         *options,
@@ -907,7 +1031,7 @@ fn encode_lossless_tiles_with_report(
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    if options.backend != EncodeBackendPreference::CpuOnly {
+    if should_try_resident_lossless_host_encode(options) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
             tiles,
             options,
@@ -934,7 +1058,7 @@ fn encode_lossless_tiles_with_report(
         }
     }
 
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(options);
     tiles
         .iter()
         .map(|&tile| {
@@ -955,7 +1079,7 @@ fn encode_lossless_owned_tiles_with_report(
         .iter()
         .map(OwnedMetalLosslessEncodeTile::as_tile)
         .collect::<Vec<_>>();
-    if options.backend != EncodeBackendPreference::CpuOnly {
+    if should_try_resident_lossless_host_encode(options) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
             &borrowed, options, session, staging, config,
         )?;
@@ -978,7 +1102,7 @@ fn encode_lossless_owned_tiles_with_report(
         }
     }
 
-    let mut accelerator = MetalEncodeStageAccelerator::default();
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(options);
     borrowed
         .iter()
         .map(|&tile| {
@@ -1519,7 +1643,7 @@ fn submit_lossless_tiles(
     config: MetalLosslessEncodeConfig,
 ) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
-        && options.backend != EncodeBackendPreference::CpuOnly
+        && should_try_resident_lossless_host_encode(options)
     {
         let mut ready = Vec::with_capacity(tiles.len());
         let mut all_ready = true;
@@ -1566,6 +1690,17 @@ fn submit_lossless_tiles(
             config,
         },
     })
+}
+
+#[cfg(target_os = "macos")]
+fn should_try_resident_lossless_host_encode(options: J2kLosslessEncodeOptions) -> bool {
+    options.backend == EncodeBackendPreference::RequireDevice
+}
+
+#[cfg(target_os = "macos")]
+fn host_output_encode_options(mut options: J2kLosslessEncodeOptions) -> J2kLosslessEncodeOptions {
+    options.validation = J2kEncodeValidation::External;
+    options
 }
 
 #[cfg(target_os = "macos")]
@@ -2795,10 +2930,12 @@ fn encode_lossless_tile_with_report(
     validate_metal_encode_tile(tile)?;
     let (components, bit_depth) = lossless_sample_shape(tile.format)?;
     let bytes_per_pixel = tile.format.bytes_per_pixel();
-    if let Some(outcome) =
-        try_encode_lossless_tile_device_resident_with_report(tile, options, session, staging)?
-    {
-        return Ok(outcome);
+    if should_try_resident_lossless_host_encode(options) {
+        if let Some(outcome) =
+            try_encode_lossless_tile_device_resident_with_report(tile, options, session, staging)?
+        {
+            return Ok(outcome);
+        }
     }
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
         && options.backend == EncodeBackendPreference::RequireDevice
@@ -2813,6 +2950,23 @@ fn encode_lossless_tile_with_report(
     let mut source_byte_offset = tile.byte_offset;
     if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
         validate_padded_contiguous_metal_encode_tile(tile, bytes_per_pixel)?;
+        if tile.buffer.contents().is_null() {
+            let copy_started = Instant::now();
+            staged_buffer = Some(compute::copy_interleaved_padded_to_shared_buffer(
+                tile.buffer,
+                tile.byte_offset,
+                tile.width,
+                tile.height,
+                tile.pitch_bytes,
+                tile.output_width,
+                tile.output_height,
+                bytes_per_pixel,
+                session,
+            )?);
+            input_copy_duration = copy_started.elapsed();
+            input_copy_used = true;
+            source_byte_offset = 0;
+        }
     } else {
         let copy_started = Instant::now();
         staged_buffer = Some(compute::copy_interleaved_padded_to_shared_buffer(
@@ -2849,8 +3003,7 @@ fn encode_lossless_tile_with_report(
     )
     .map_err(crate::Error::Decode)?;
 
-    let mut encode_options = options;
-    encode_options.validation = J2kEncodeValidation::External;
+    let encode_options = host_output_encode_options(options);
     let encode_started = Instant::now();
     let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
         samples,
@@ -3333,9 +3486,12 @@ mod tests {
         J2kEncodeValidation, J2kLosslessSamples, J2kProgressionOrder,
     };
     use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
-    use signinum_j2k_native::{encode_with_accelerator, DecodeSettings, EncodeOptions, Image};
+    use signinum_j2k_native::{
+        encode_with_accelerator, DecodeSettings, EncodeOptions, Image, J2kEncodeStageAccelerator,
+        J2kForwardRctJob,
+    };
     #[cfg(target_os = "macos")]
-    use signinum_j2k_native::{J2kCodeBlockStyle, J2kEncodeStageAccelerator, J2kForwardDwt53Job};
+    use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
 
     #[cfg(target_os = "macos")]
     fn private_buffer_with_bytes(session: &crate::MetalBackendSession, bytes: &[u8]) -> Buffer {
@@ -3518,6 +3674,28 @@ mod tests {
         assert_eq!(accelerator.forward_dwt53_attempts(), 3);
         assert!(accelerator.tier1_code_block_attempts() > 0);
         assert_eq!(accelerator.packetization_attempts(), 1);
+    }
+
+    #[test]
+    fn metal_encode_stage_accelerator_can_leave_forward_rct_on_cpu() {
+        let mut plane0 = vec![0.0, 64.0, 128.0, 255.0];
+        let mut plane1 = vec![3.0, 67.0, 131.0, 252.0];
+        let mut plane2 = vec![7.0, 71.0, 135.0, 248.0];
+        let original = (plane0.clone(), plane1.clone(), plane2.clone());
+        let mut accelerator = MetalEncodeStageAccelerator::with_cpu_forward_rct();
+
+        let dispatched = accelerator
+            .encode_forward_rct(J2kForwardRctJob {
+                plane0: &mut plane0,
+                plane1: &mut plane1,
+                plane2: &mut plane2,
+            })
+            .expect("CPU RCT fallback should be selectable");
+
+        assert!(!dispatched);
+        assert_eq!(accelerator.forward_rct_attempts(), 1);
+        assert_eq!(accelerator.forward_rct_dispatches(), 0);
+        assert_eq!((plane0, plane1, plane2), original);
     }
 
     #[cfg(target_os = "macos")]
@@ -3743,6 +3921,93 @@ mod tests {
         assert!(encoded.resident.coefficient_prep_used);
         assert!(encoded.resident.packetization_used);
         assert!(encoded.resident.codestream_assembly_used);
+        let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+        assert_eq!(decoded.data, pixels);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
+        let routed = super::host_output_encode_options(J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::Auto,
+            validation: J2kEncodeValidation::CpuRoundTrip,
+            ..J2kLosslessEncodeOptions::default()
+        });
+
+        assert_eq!(routed.backend, EncodeBackendPreference::Auto);
+        assert_eq!(routed.validation, J2kEncodeValidation::External);
+
+        let prefer_device = super::host_output_encode_options(J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::PreferDevice,
+            validation: J2kEncodeValidation::CpuRoundTrip,
+            ..J2kLosslessEncodeOptions::default()
+        });
+        assert_eq!(prefer_device.backend, EncodeBackendPreference::PreferDevice);
+        assert_eq!(prefer_device.validation, J2kEncodeValidation::External);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn auto_host_output_accelerator_uses_metal_dwt_with_cpu_block_fallback() {
+        let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 17) & 0xff) as u8).collect();
+        let samples =
+            J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
+        let options = J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::Auto,
+            validation: J2kEncodeValidation::External,
+            ..J2kLosslessEncodeOptions::default()
+        };
+        let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("hybrid host-output encode");
+
+        assert_eq!(encoded.backend, BackendKind::Cpu);
+        assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
+        assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
+        assert_eq!(accelerator.packetization_dispatches(), 0);
+        assert!(accelerator.prefer_parallel_cpu_code_block_fallback());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_padded_private_rgb8_auto_host_encode_routes_away_from_resident_prep() {
+        let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 43) & 0xFF) as u8).collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+
+        let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 8,
+                height: 8,
+                pitch_bytes: 8 * 3,
+                output_width: 8,
+                output_height: 8,
+                format: PixelFormat::Rgb8,
+            },
+            &J2kLosslessEncodeOptions {
+                backend: EncodeBackendPreference::Auto,
+                validation: J2kEncodeValidation::External,
+                ..J2kLosslessEncodeOptions::default()
+            },
+            &session,
+        )
+        .expect("Auto host-output encode should avoid resident prep and still succeed");
+
+        assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
+        assert!(!encoded.resident.coefficient_prep_used);
+        assert!(!encoded.resident.packetization_used);
+        assert!(!encoded.resident.codestream_assembly_used);
         let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()

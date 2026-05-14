@@ -14,6 +14,7 @@ mod encode;
 mod ht;
 mod idwt;
 mod mct;
+mod profile;
 mod routing;
 mod store;
 
