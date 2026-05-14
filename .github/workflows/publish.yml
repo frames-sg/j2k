@@ -31,7 +31,7 @@ jobs:
 
   publish-signinum-j2k-native:
     needs:
-      - publish-signinum-core
+      - publish-signinum-profile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +47,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/publish-crate.sh signinum-cuda-runtime
 
+  publish-signinum-profile:
+    needs:
+      - publish-signinum-cuda-runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/publish-crate.sh signinum-profile
+
   publish-signinum-jpeg:
     needs:
       - publish-signinum-j2k-native
@@ -58,6 +67,7 @@ jobs:
 
   publish-signinum-tilecodec:
     needs:
+      - publish-signinum-jpeg
       - publish-signinum-j2k-native
     runs-on: ubuntu-latest
     steps:
@@ -67,7 +77,6 @@ jobs:
 
   publish-signinum-j2k:
     needs:
-      - publish-signinum-jpeg
       - publish-signinum-tilecodec
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +86,7 @@ jobs:
 
   publish-signinum-jpeg-metal:
     needs:
-      - publish-signinum-jpeg
+      - publish-signinum-j2k
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +95,7 @@ jobs:
 
   publish-signinum-j2k-metal:
     needs:
-      - publish-signinum-j2k
+      - publish-signinum-jpeg-metal
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,8 +104,8 @@ jobs:
 
   publish-signinum-jpeg-cuda:
     needs:
-      - publish-signinum-jpeg
       - publish-signinum-cuda-runtime
+      - publish-signinum-j2k-metal
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,8 +114,7 @@ jobs:
 
   publish-signinum-j2k-cuda:
     needs:
-      - publish-signinum-j2k
-      - publish-signinum-cuda-runtime
+      - publish-signinum-jpeg-cuda
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +123,7 @@ jobs:
 
   publish-signinum-cli:
     needs:
-      - publish-signinum-j2k
+      - publish-signinum-j2k-cuda
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

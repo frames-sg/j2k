@@ -35,6 +35,8 @@ backend APIs are still hardening.
 | Crate | Layer | Role |
 |-------|-------|------|
 | `signinum-core` | foundation | Shared traits, pixel/sample types, backend capability metadata, device-surface contracts, scratch/context contracts. No image-format logic. |
+| `signinum-profile` | instrumentation helper | Shared profiling helpers used by implementation crates at runtime. Published only because public crates depend on it; not a user-facing API. |
+| `signinum-cuda-runtime` | runtime helper | CUDA Driver API, CUDA memory, kernel launch, and nvJPEG runtime helpers used by CUDA adapters. Published support crate, not the primary user-facing API. |
 | `signinum-tilecodec` | codec | Tile decompression primitives: Deflate, Zstd, LZW, Uncompressed. Implements `TileDecompress` from `core`. |
 | `signinum-jpeg` | codec | Native pure-Rust JPEG inspect/decode for WSI tiles. CPU-first. Owns SIMD backends and fused entropy/IDCT/upsample paths. Its baseline JPEG encoder is a compatibility/fallback utility, not the diagnostic WSI/DICOM encode path. |
 | `signinum-j2k-native` | codec engine | Published implementation dependency for `signinum-j2k`; not the stable user-facing API. Lives under `#![forbid(unsafe_code)]` and uses `fearless_simd`. |
@@ -55,20 +57,22 @@ Out-of-tree but in-repo:
 
 ## Layered architecture and dependency rules
 
-signinum is organized as four concentric layers. Dependencies must flow
-inward only. An agent adding a dependency edge that points outward is changing
-the architecture and should stop and update this document first.
+signinum is organized as four concentric layers plus narrow helper crates.
+Dependencies must flow inward only. An agent adding a dependency edge that
+points outward is changing the architecture and should stop and update this
+document first.
 
 ```
-foundation  →  codec engines  →  codecs  →  adapters  →  binary
+foundation / helper crates  →  codec engines  →  codecs  →  adapters  →  binary
 ```
 
 | Layer | Members | May depend on |
 |-------|---------|---------------|
 | foundation | `signinum-core` | `thiserror` only. No other workspace crate. `no_std + alloc` posture. Contains only the x86 CPUID/XGETBV unsafe required for CPU feature detection. |
-| codec engines | `signinum-j2k-native` | foundation. Internal only. Not re-exported. |
-| codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | foundation, codec engines. Must not depend on each other. Must not depend on adapters or `cli`. |
-| adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | foundation, exactly one matching codec, optional engine for the matching codec. Adapters in different format families must not depend on each other. |
+| helper crates | `signinum-profile`, `signinum-cuda-runtime` | No workspace crate. `signinum-profile` may be used by codec engines, codecs, and adapters for runtime instrumentation support. `signinum-cuda-runtime` may be used by CUDA adapters for driver/runtime integration. These crates must not become primary user-facing APIs and must not depend on codecs or adapters. |
+| codec engines | `signinum-j2k-native` | helper crates. Internal only. Not re-exported. |
+| codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | foundation, codec engines, helper crates. Must not depend on each other. Must not depend on adapters or `cli`. |
+| adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | foundation, helper crates, exactly one matching codec, optional engine for the matching codec. Adapters in different format families must not depend on each other. |
 | binary | `signinum-cli` | foundation, codecs. Must not depend on adapters (kept host-neutral). |
 | dev-only | `signinum-j2k-compare` | foundation. Used as a reference comparator in tests/benches; never a runtime dependency. |
 
@@ -101,17 +105,19 @@ Workspace edges (excluding external crates and `dev-dependencies`):
 
 ```
 signinum-core         (leaf)
+signinum-profile      (instrumentation helper)
+signinum-cuda-runtime (CUDA runtime helper)
 
 signinum-tilecodec    -> signinum-core
 
-signinum-jpeg         -> signinum-core
-signinum-jpeg-metal   -> signinum-jpeg, signinum-core
-signinum-jpeg-cuda    -> signinum-jpeg, signinum-core
+signinum-jpeg         -> signinum-profile, signinum-core
+signinum-jpeg-metal   -> signinum-jpeg, signinum-profile, signinum-core
+signinum-jpeg-cuda    -> signinum-jpeg, signinum-cuda-runtime, signinum-profile, signinum-core
 
-signinum-j2k-native   -> signinum-core
+signinum-j2k-native   -> signinum-profile
 signinum-j2k          -> signinum-j2k-native, signinum-core
-signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-core
-signinum-j2k-cuda     -> signinum-j2k, signinum-core
+signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-profile, signinum-core
+signinum-j2k-cuda     -> signinum-j2k, signinum-j2k-native, signinum-cuda-runtime, signinum-profile, signinum-core
 
 signinum-cli          -> signinum-jpeg, signinum-j2k, signinum-core
 
@@ -360,8 +366,9 @@ provisional and check the most recent commits before relying on it.
 ## Stability posture
 
 The facade release covers `signinum`, `signinum-core`, `signinum-jpeg`,
-`signinum-j2k`, `signinum-tilecodec`, and `signinum-cli`. `signinum-j2k-native`
-is published as an implementation dependency, not as the primary stable API.
+`signinum-j2k`, `signinum-tilecodec`, and `signinum-cli`.
+`signinum-j2k-native`, `signinum-profile`, and `signinum-cuda-runtime` are
+published support crates, not primary stable APIs.
 Runtime backend selection defaults to `Auto`; supported compiled device paths
 may run before falling back to CPU. The Metal and CUDA adapter APIs remain on
 the hardening track while broader device decode, encode, and performance work

@@ -345,6 +345,7 @@ fn crates_io_publish_policy_is_explicit() {
     for package in [
         "signinum-core",
         "signinum-cuda-runtime",
+        "signinum-profile",
         "signinum-j2k-native",
         "signinum-tilecodec",
         "signinum-jpeg",
@@ -564,6 +565,7 @@ fn published_crates_have_crates_io_landing_readmes() {
     for crate_dir in [
         "crates/signinum-core",
         "crates/signinum-cuda-runtime",
+        "crates/signinum-profile",
         "crates/signinum-j2k-native",
         "crates/signinum-tilecodec",
         "crates/signinum-jpeg",

@@ -4,9 +4,9 @@
 
 The repository is staged for the `signinum` facade release. The stable release
 artifacts are `signinum`, `signinum-core`, `signinum-jpeg`, `signinum-j2k`,
-`signinum-tilecodec`, and `signinum-cli`. `signinum-j2k-native` is published as
-a `0.3.x` implementation dependency so `signinum-j2k` can be installed from
-crates.io.
+`signinum-tilecodec`, and `signinum-cli`. `signinum-cuda-runtime`,
+`signinum-profile`, and `signinum-j2k-native` are published support crates so
+the public runtime crates that depend on them can be installed from crates.io.
 
 Metal and CUDA adapter crates are published as pre-1.0 artifacts where their
 APIs changed for the facade boundary.
@@ -50,12 +50,13 @@ recorded benchmark output.
 
 Crates.io publication is staged because workspace crates depend on each other.
 Before publishing, run `cargo xtask package` from a clean worktree. The package
-preflight runs `cargo package --list` for every CPU-first publishable crate,
+preflight runs `cargo package --list` for every publishable crate,
 then runs strict `cargo package --no-verify` only for crates that do not depend
-on unpublished workspace versions. Downstream crates such as `signinum-jpeg`,
-`signinum-tilecodec`, `signinum-j2k`, and `signinum-cli` cannot pass strict
-pre-publish packaging until the prior staged crates exist on crates.io, because
-Cargo resolves their versioned path dependencies against the registry during
+on unpublished workspace versions. Downstream crates such as
+`signinum-j2k-native`, `signinum-jpeg`, `signinum-tilecodec`, `signinum-j2k`,
+adapter crates, `signinum-cli`, and `signinum` cannot pass strict pre-publish
+packaging until the prior staged crates exist on crates.io, because Cargo
+resolves their versioned path dependencies against the registry during
 packaging.
 
 This is an unpublished workspace dependencies limit, not a package content
@@ -69,16 +70,17 @@ by `.github/workflows/publish.yml`:
 
 1. `signinum-core`
 2. `signinum-cuda-runtime`
-3. `signinum-j2k-native`
-4. `signinum-jpeg`
-5. `signinum-tilecodec`
-6. `signinum-j2k`
-7. `signinum-jpeg-metal`
-8. `signinum-j2k-metal`
-9. `signinum-jpeg-cuda`
-10. `signinum-j2k-cuda`
-11. `signinum-cli`
-12. `signinum`
+3. `signinum-profile`
+4. `signinum-j2k-native`
+5. `signinum-jpeg`
+6. `signinum-tilecodec`
+7. `signinum-j2k`
+8. `signinum-jpeg-metal`
+9. `signinum-j2k-metal`
+10. `signinum-jpeg-cuda`
+11. `signinum-j2k-cuda`
+12. `signinum-cli`
+13. `signinum`
 
 Every package in this list must have a fresh manifest version before a
 metadata-refresh release, because crates.io package metadata is immutable after

@@ -212,6 +212,7 @@ foundation -> codecs / codec engines -> device adapters -> facade / CLI
 | Layer | Crates | Responsibility |
 |-------|--------|----------------|
 | Foundation | `signinum-core` | Shared traits, pixel/sample types, backend selection, device surfaces, scratch/context contracts, passthrough contracts |
+| Instrumentation helper | `signinum-profile` | Shared profiling row formatting, env parsing, and summary aggregation used by runtime crates |
 | Codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | Format-specific inspect, decode, encode, row, ROI, scaled, batch, and decompression APIs |
 | Engine | `signinum-j2k-native` | Published implementation dependency for the public J2K crate |
 | Adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | Device-output surfaces for downstream GPU pipelines |

@@ -5,6 +5,7 @@ use std::process::{Command, ExitCode};
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "signinum-core",
     "signinum-cuda-runtime",
+    "signinum-profile",
     "signinum-j2k-native",
     "signinum-jpeg",
     "signinum-tilecodec",
@@ -17,13 +18,11 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
     "signinum",
 ];
 
-const REGISTRY_INDEPENDENT_PACKAGES: &[&str] = &[
-    "signinum-core",
-    "signinum-cuda-runtime",
-    "signinum-j2k-native",
-];
+const REGISTRY_INDEPENDENT_PACKAGES: &[&str] =
+    &["signinum-core", "signinum-cuda-runtime", "signinum-profile"];
 
 const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
+    "signinum-j2k-native",
     "signinum-jpeg",
     "signinum-tilecodec",
     "signinum-j2k",
@@ -373,6 +372,6 @@ fn print_help() {
            release-cpu   run release-mode CPU codec tests\n\
            release-metal run release-mode Metal tests on macOS\n\
            coverage      generate lcov.info with cargo-llvm-cov\n\
-           package       preflight CPU-first 1.0 packaging from a clean worktree; strict for registry-independent crates and list-only for staged dependencies"
+           package       preflight publishable package contents from a clean worktree; strict for registry-independent crates and list-only for staged dependencies"
     );
 }

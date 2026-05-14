@@ -7,7 +7,8 @@ version="$(cargo pkgid -p "$crate" | sed 's/.*#//')"
 
 has_unpublished_workspace_dependency() {
   case "$1" in
-    signinum-jpeg | \
+    signinum-j2k-native | \
+      signinum-jpeg | \
       signinum-tilecodec | \
       signinum-j2k | \
       signinum-jpeg-metal | \
