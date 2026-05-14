@@ -1,48 +1,29 @@
 #[cfg(feature = "std")]
-use alloc::collections::BTreeMap;
-#[cfg(feature = "std")]
-use alloc::string::String;
-#[cfg(feature = "std")]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
 use core::cell::RefCell;
+
 #[cfg(feature = "std")]
-use core::fmt::Write as _;
+use signinum_profile::{profile_stage_mode_from_value, ProfileStageMode};
 
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 #[cfg(feature = "std")]
 use std::time::Instant;
 
+#[cfg(all(test, feature = "std"))]
+pub(crate) use signinum_profile::ProfileSummary;
+
 #[cfg(feature = "std")]
 const PROFILE_ENV_VAR: &str = "SIGNINUM_J2K_PROFILE_STAGES";
 
 #[cfg(feature = "std")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProfileStageMode {
-    Off,
-    Rows,
-    Summary,
-}
-
-#[cfg(feature = "std")]
 #[cfg(test)]
 pub(crate) fn parse_profile_env_flag(value: Option<&str>) -> bool {
-    profile_stage_mode_from_value(value) != ProfileStageMode::Off
-}
-
-#[cfg(feature = "std")]
-pub(crate) fn profile_stage_mode_from_value(value: Option<&str>) -> ProfileStageMode {
-    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("1" | "true" | "yes" | "on") => ProfileStageMode::Rows,
-        Some("summary" | "aggregate") => ProfileStageMode::Summary,
-        _ => ProfileStageMode::Off,
-    }
+    profile_stage_mode_from_value(value) != ProfileStageMode::Disabled
 }
 
 #[cfg(feature = "std")]
 pub(crate) fn profile_stages_enabled() -> bool {
-    profile_stage_mode() != ProfileStageMode::Off
+    profile_stage_mode() != ProfileStageMode::Disabled
 }
 
 #[cfg(feature = "std")]
@@ -86,24 +67,24 @@ pub(crate) fn elapsed_us(_start: Option<ProfileInstant>) -> u128 {
 
 #[cfg(feature = "std")]
 pub(crate) fn format_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) -> String {
-    let mut row = String::from("signinum_profile codec=j2k");
-    let _ = write!(row, " op={op} path={path}");
-    for (key, value) in fields {
-        let _ = write!(row, " {key}={value}");
-    }
-    row
+    signinum_profile::format_profile_row_u128("j2k", op, path, fields)
 }
 
 #[cfg(feature = "std")]
 pub(crate) fn emit_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) {
     match profile_stage_mode() {
+        ProfileStageMode::Disabled => {}
         ProfileStageMode::Rows => eprintln!("{}", format_profile_row(op, path, fields)),
         ProfileStageMode::Summary => {
-            PROFILE_SUMMARY.with(|summary| {
-                summary.borrow_mut().record_u128("j2k", op, path, fields);
-            });
+            signinum_profile::emit_profile_row_u128(
+                ProfileStageMode::Summary,
+                &PROFILE_SUMMARY,
+                "j2k",
+                op,
+                path,
+                fields,
+            );
         }
-        ProfileStageMode::Off => {}
     }
 }
 
@@ -112,95 +93,8 @@ pub(crate) fn emit_profile_row(_op: &str, _path: &str, _fields: &[(&str, u128)])
 
 #[cfg(feature = "std")]
 thread_local! {
-    static PROFILE_SUMMARY: RefCell<ProfileSummary> = RefCell::new(ProfileSummary::default());
-}
-
-#[cfg(feature = "std")]
-#[derive(Default)]
-pub(crate) struct ProfileSummary {
-    rows: BTreeMap<SummaryKey, SummaryRow>,
-}
-
-#[cfg(feature = "std")]
-impl ProfileSummary {
-    pub(crate) fn record_u128(
-        &mut self,
-        codec: &str,
-        op: &str,
-        path: &str,
-        fields: &[(&str, u128)],
-    ) {
-        let key = SummaryKey::new(codec, op, path);
-        let row = self.rows.entry(key).or_default();
-        row.count += 1;
-        for (field, value) in fields {
-            if is_timing_field(field) {
-                *row.metrics.entry((*field).to_owned()).or_default() += value;
-            }
-        }
-    }
-
-    pub(crate) fn format_rows(&self) -> Vec<String> {
-        self.rows
-            .iter()
-            .map(|(key, row)| key.format_summary_row(row))
-            .collect()
-    }
-}
-
-#[cfg(feature = "std")]
-impl Drop for ProfileSummary {
-    fn drop(&mut self) {
-        for row in self.format_rows() {
-            eprintln!("{row}");
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct SummaryKey {
-    codec: String,
-    op: String,
-    path: String,
-}
-
-#[cfg(feature = "std")]
-impl SummaryKey {
-    fn new(codec: &str, op: &str, path: &str) -> Self {
-        Self {
-            codec: codec.to_owned(),
-            op: op.to_owned(),
-            path: path.to_owned(),
-        }
-    }
-
-    fn format_summary_row(&self, row: &SummaryRow) -> String {
-        let mut output = String::from("signinum_profile_summary");
-        let _ = write!(
-            output,
-            " codec={} op={} path={}",
-            self.codec, self.op, self.path
-        );
-        let _ = write!(output, " count={}", row.count);
-        for (metric, sum) in &row.metrics {
-            let average = if row.count == 0 { 0 } else { sum / row.count };
-            let _ = write!(output, " {metric}_sum={sum} {metric}_avg={average}");
-        }
-        output
-    }
-}
-
-#[cfg(feature = "std")]
-#[derive(Default)]
-struct SummaryRow {
-    count: u128,
-    metrics: BTreeMap<String, u128>,
-}
-
-#[cfg(feature = "std")]
-fn is_timing_field(field: &str) -> bool {
-    field.ends_with("_us") || field.ends_with("_ns")
+    static PROFILE_SUMMARY: RefCell<signinum_profile::ProfileSummary> =
+        RefCell::new(signinum_profile::ProfileSummary::default());
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -248,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             profile_stage_mode_from_value(Some("0")),
-            ProfileStageMode::Off
+            ProfileStageMode::Disabled
         );
     }
 

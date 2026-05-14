@@ -969,6 +969,7 @@ dependencies = [
  "libm",
  "log",
  "rayon",
+ "signinum-profile",
 ]
 
 [[package]]
