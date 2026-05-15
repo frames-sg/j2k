@@ -92,6 +92,74 @@ pub fn profile_stage_mode_from_env(key: &str) -> ProfileStageMode {
     profile_stage_mode_from_value(std::env::var(key).ok().as_deref())
 }
 
+/// Environment variable that controls GPU route profiling rows or summaries.
+pub const GPU_ROUTE_PROFILE_ENV: &str = "SIGNINUM_GPU_ROUTE_PROFILE";
+
+/// Parses the GPU route profiling mode from an optional environment value.
+pub fn gpu_route_profile_stage_mode_from_value(value: Option<&str>) -> ProfileStageMode {
+    profile_stage_mode_from_value(value)
+}
+
+/// Returns whether a GPU route profiling mode emits rows or summaries.
+pub fn gpu_route_profile_mode_enabled(mode: ProfileStageMode) -> bool {
+    mode != ProfileStageMode::Disabled
+}
+
+#[cfg(feature = "std")]
+/// Returns the cached GPU route profiling mode from the process environment.
+pub fn gpu_route_profile_stage_mode() -> ProfileStageMode {
+    static MODE: std::sync::OnceLock<ProfileStageMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| profile_stage_mode_from_env(GPU_ROUTE_PROFILE_ENV))
+}
+
+#[cfg(feature = "std")]
+/// Returns whether GPU route profiling is enabled for this process.
+pub fn gpu_route_profile_enabled() -> bool {
+    gpu_route_profile_mode_enabled(gpu_route_profile_stage_mode())
+}
+
+/// Creates the summary labels used for GPU route profiling summaries.
+pub fn gpu_route_summary_labels() -> Vec<SummaryLabel> {
+    vec![
+        SummaryLabel::new("op", "route_op"),
+        SummaryLabel::same("request"),
+        SummaryLabel::same("fmt"),
+        SummaryLabel::same("decision"),
+        SummaryLabel::same("reason"),
+        SummaryLabel::same("has_fast_packet"),
+        SummaryLabel::same("supports_output_format"),
+        SummaryLabel::same("hardware_decode"),
+    ]
+}
+
+/// Creates a count-only summary configured for GPU route profiling.
+pub fn gpu_route_profile_summary() -> ProfileSummary {
+    ProfileSummary::counts_only(gpu_route_summary_labels())
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+    static GPU_ROUTE_PROFILE_SUMMARY: std::cell::RefCell<ProfileSummary> =
+        std::cell::RefCell::new(gpu_route_profile_summary());
+}
+
+#[cfg(feature = "std")]
+/// Emits or records a GPU route profile row.
+pub fn emit_gpu_route_profile<K, V>(codec: &str, path: &str, fields: &[(K, V)])
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    emit_profile_row(
+        gpu_route_profile_stage_mode(),
+        &GPU_ROUTE_PROFILE_SUMMARY,
+        codec,
+        "gpu_route",
+        path,
+        fields,
+    );
+}
+
 #[cfg(feature = "std")]
 /// Formats a duration as whole microseconds.
 pub fn duration_us_string(duration: std::time::Duration) -> String {
@@ -831,6 +899,66 @@ mod tests {
                 "signinum_profile_summary codec=jpeg op=decode path=cpu mode=full fmt=Rgb8 count=1 total_us_sum=5 total_us_avg=5"
             ],
             summary.format_rows()
+        );
+    }
+
+    #[test]
+    fn gpu_route_profile_stage_mode_uses_shared_env_parser() {
+        assert_eq!(
+            gpu_route_profile_stage_mode_from_value(Some("summary")),
+            ProfileStageMode::Summary
+        );
+        assert_eq!(
+            gpu_route_profile_stage_mode_from_value(Some("aggregate")),
+            ProfileStageMode::Summary
+        );
+        assert_eq!(
+            gpu_route_profile_stage_mode_from_value(Some("1")),
+            ProfileStageMode::Rows
+        );
+        assert_eq!(
+            gpu_route_profile_stage_mode_from_value(Some("0")),
+            ProfileStageMode::Disabled
+        );
+        assert!(!gpu_route_profile_mode_enabled(ProfileStageMode::Disabled));
+        assert!(gpu_route_profile_mode_enabled(ProfileStageMode::Rows));
+    }
+
+    #[test]
+    fn gpu_route_summary_counts_route_decisions() {
+        let mut summary = ProfileSummary::counts_only(gpu_route_summary_labels());
+        summary.record_str(
+            "jpeg",
+            "gpu_route",
+            "metal",
+            &[
+                ("op", "full"),
+                ("request", "Metal"),
+                ("fmt", "Rgb8"),
+                ("width", "16"),
+                ("decision", "metal_kernel"),
+                ("reason", "none"),
+            ],
+        );
+        summary.record_str(
+            "jpeg",
+            "gpu_route",
+            "metal",
+            &[
+                ("op", "full"),
+                ("request", "Metal"),
+                ("fmt", "Rgb8"),
+                ("width", "32"),
+                ("decision", "metal_kernel"),
+                ("reason", "none"),
+            ],
+        );
+
+        assert_eq!(
+            summary.format_rows(),
+            vec![
+                "signinum_profile_summary codec=jpeg op=gpu_route path=metal route_op=full request=Metal fmt=Rgb8 decision=metal_kernel reason=none count=2"
+            ]
         );
     }
 

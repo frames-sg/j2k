@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-05-15
+
+### Changed
+
+- Refactored shared core, profiling, JPEG adapter, and J2K adapter internals
+  toward focused crate-owned contracts without intended behavior changes.
+- Split CUDA adapter implementations into focused modules while preserving
+  their public exports.
+- Moved repeated benchmark and reference fixture generators into the dev-only
+  `signinum-test-support` crate.
+
 ## [0.4.1] - 2026-05-12
 
 ### Fixed

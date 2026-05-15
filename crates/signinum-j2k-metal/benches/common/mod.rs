@@ -112,7 +112,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
             name: "j2k_gray_1024",
             bytes: classic_bench_bytes(
                 "j2k_gray_1024",
-                &gradient_u8(1024, 1024, 1),
+                &signinum_test_support::gradient_u8(1024, 1024, 1),
                 1024,
                 1024,
                 DecodeMode::Gray8,
@@ -125,7 +125,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
             name: "j2k_gray_512",
             bytes: classic_bench_bytes(
                 "j2k_gray_512",
-                &gradient_u8(512, 512, 1),
+                &signinum_test_support::gradient_u8(512, 512, 1),
                 512,
                 512,
                 DecodeMode::Gray8,
@@ -138,7 +138,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
             name: "j2k_rgb_1024",
             bytes: classic_bench_bytes(
                 "j2k_rgb_1024",
-                &gradient_u8(1024, 1024, 3),
+                &signinum_test_support::gradient_u8(1024, 1024, 3),
                 1024,
                 1024,
                 DecodeMode::Rgb8,
@@ -151,7 +151,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
             name: "j2k_rgb_256",
             bytes: classic_bench_bytes(
                 "j2k_rgb_256",
-                &gradient_u8(256, 256, 3),
+                &signinum_test_support::gradient_u8(256, 256, 3),
                 256,
                 256,
                 DecodeMode::Rgb8,
@@ -592,7 +592,12 @@ pub(crate) fn distinct_rgb_tile_batch_inputs(input: &BenchInput, count: usize) -
             let name = format!("{}_distinct_{index}", input.name);
             classic_bench_bytes(
                 &name,
-                &gradient_variant_u8(input.dimensions.0, input.dimensions.1, 3, index as u32),
+                &signinum_test_support::gradient_variant_u8(
+                    input.dimensions.0,
+                    input.dimensions.1,
+                    3,
+                    index as u32,
+                ),
                 input.dimensions.0,
                 input.dimensions.1,
                 input.mode,
@@ -605,8 +610,12 @@ pub(crate) fn distinct_gray_tile_batch_inputs(input: &BenchInput, count: usize) 
     assert_eq!(input.mode, DecodeMode::Gray8);
     (0..count)
         .map(|index| {
-            let pixels =
-                gradient_variant_u8(input.dimensions.0, input.dimensions.1, 1, index as u32);
+            let pixels = signinum_test_support::gradient_variant_u8(
+                input.dimensions.0,
+                input.dimensions.1,
+                1,
+                index as u32,
+            );
             if input.is_ht {
                 wrap_codestream_jp2(
                     &try_encode_ht(&pixels, input.dimensions.0, input.dimensions.1, 1, 8)
@@ -1460,22 +1469,6 @@ fn classic_bench_bytes(
         8,
         colorspace,
     )
-}
-
-fn gradient_u8(width: u32, height: u32, channels: usize) -> Vec<u8> {
-    gradient_variant_u8(width, height, channels, 0)
-}
-
-fn gradient_variant_u8(width: u32, height: u32, channels: usize, seed: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * channels);
-    for y in 0..height {
-        for x in 0..width {
-            for c in 0..channels {
-                out.push(((x + y + seed * 13 + (c as u32 * 17)) & 0xFF) as u8);
-            }
-        }
-    }
-    out
 }
 
 fn wrap_codestream_jp2(

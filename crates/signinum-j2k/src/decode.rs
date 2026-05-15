@@ -4,7 +4,9 @@ use crate::backend::{ColorSpace, DecodeSettings, Image, RawBitmap};
 use crate::{backend, J2kError, J2kScratchPool};
 use alloc::{string::ToString, vec::Vec};
 use core::convert::Infallible;
-use signinum_core::{BufferError, DecodeOutcome, Downscale, PixelFormat, Rect, Unsupported};
+use signinum_core::{
+    validate_strided_output_buffer, DecodeOutcome, Downscale, PixelFormat, Rect, Unsupported,
+};
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
 
 pub(crate) fn decode_scaled_from_info(
@@ -235,37 +237,7 @@ pub(crate) fn validate_buffer(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
-    let row_bytes =
-        dims.0
-            .checked_mul(fmt.bytes_per_pixel() as u32)
-            .ok_or(J2kError::Backend("row byte count overflow".to_string()))? as usize;
-    if stride < row_bytes {
-        return Err(BufferError::StrideTooSmall { row_bytes, stride }.into());
-    }
-    let required = output_len(dims, stride, fmt)?;
-    if out_len < required {
-        return Err(BufferError::OutputTooSmall {
-            required,
-            have: out_len,
-        }
-        .into());
-    }
-    Ok(())
-}
-
-fn output_len(dims: (u32, u32), stride: usize, fmt: PixelFormat) -> Result<usize, J2kError> {
-    let row_bytes =
-        dims.0
-            .checked_mul(fmt.bytes_per_pixel() as u32)
-            .ok_or(J2kError::Backend("row byte count overflow".to_string()))? as usize;
-    let height = dims.1 as usize;
-    if height == 0 {
-        return Ok(0);
-    }
-    stride
-        .checked_mul(height - 1)
-        .and_then(|prefix| prefix.checked_add(row_bytes))
-        .ok_or(J2kError::Backend("output size overflow".to_string()))
+    validate_strided_output_buffer(dims, out_len, stride, fmt).map_err(Into::into)
 }
 
 pub(crate) fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kError> {

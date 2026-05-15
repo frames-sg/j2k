@@ -2,6 +2,53 @@
 
 use crate::{error::BufferError, pixel::PixelFormat};
 
+/// Returns the number of bytes required for a strided image output buffer.
+///
+/// The returned length covers the last written byte of the final row and does
+/// not include trailing padding after that row.
+pub fn strided_output_len(
+    dimensions: (u32, u32),
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<usize, BufferError> {
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return Ok(0);
+    }
+
+    let row_bytes = row_bytes(dimensions.0, fmt)?;
+    stride
+        .checked_mul(dimensions.1 as usize - 1)
+        .and_then(|prefix| prefix.checked_add(row_bytes))
+        .ok_or(BufferError::SizeOverflow {
+            what: "strided output size",
+        })
+}
+
+/// Validates that `out_len` and `stride` can hold an image output.
+pub fn validate_strided_output_buffer(
+    dimensions: (u32, u32),
+    out_len: usize,
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), BufferError> {
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return Ok(());
+    }
+
+    let row_bytes = row_bytes(dimensions.0, fmt)?;
+    if stride < row_bytes {
+        return Err(BufferError::StrideTooSmall { row_bytes, stride });
+    }
+    let required = strided_output_len(dimensions, stride, fmt)?;
+    if out_len < required {
+        return Err(BufferError::OutputTooSmall {
+            required,
+            have: out_len,
+        });
+    }
+    Ok(())
+}
+
 /// Copy tightly packed pixel rows into a caller-provided strided output buffer.
 ///
 /// `src` must contain at least `width * height * fmt.bytes_per_pixel()` bytes.
@@ -17,14 +64,7 @@ pub fn copy_tight_pixels_to_strided_output(
         return Ok(());
     }
 
-    let row_bytes = (dimensions.0 as usize)
-        .checked_mul(fmt.bytes_per_pixel())
-        .ok_or(BufferError::SizeOverflow {
-            what: "row byte count",
-        })?;
-    if stride < row_bytes {
-        return Err(BufferError::StrideTooSmall { row_bytes, stride });
-    }
+    let row_bytes = row_bytes(dimensions.0, fmt)?;
     let height = dimensions.1 as usize;
     let required_src = row_bytes
         .checked_mul(height)
@@ -37,18 +77,7 @@ pub fn copy_tight_pixels_to_strided_output(
             have: src.len(),
         });
     }
-    let required = stride
-        .checked_mul(height - 1)
-        .and_then(|prefix| prefix.checked_add(row_bytes))
-        .ok_or(BufferError::SizeOverflow {
-            what: "strided output size",
-        })?;
-    if out.len() < required {
-        return Err(BufferError::OutputTooSmall {
-            required,
-            have: out.len(),
-        });
-    }
+    validate_strided_output_buffer(dimensions, out.len(), stride, fmt)?;
 
     for y in 0..dimensions.1 as usize {
         let src_row = &src[y * row_bytes..(y + 1) * row_bytes];
@@ -57,4 +86,12 @@ pub fn copy_tight_pixels_to_strided_output(
     }
 
     Ok(())
+}
+
+fn row_bytes(width: u32, fmt: PixelFormat) -> Result<usize, BufferError> {
+    (width as usize)
+        .checked_mul(fmt.bytes_per_pixel())
+        .ok_or(BufferError::SizeOverflow {
+            what: "row byte count",
+        })
 }

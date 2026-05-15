@@ -5,6 +5,7 @@
 //! each call site so there is no dynamic dispatch on the per-pixel hot path.
 
 use crate::error::JpegError;
+use signinum_core::{validate_strided_output_buffer, BufferError, PixelFormat};
 
 pub(crate) mod gray8;
 pub(crate) mod rgb8;
@@ -56,33 +57,39 @@ pub(crate) fn validate_buffer(
     image_height: u32,
     bytes_per_pixel: usize,
 ) -> Result<(), JpegError> {
-    let row_bytes = (image_width as usize).checked_mul(bytes_per_pixel).ok_or(
-        JpegError::OutputBufferTooSmall {
-            required: usize::MAX,
-            provided: out.len(),
+    let fmt = match bytes_per_pixel {
+        1 => PixelFormat::Gray8,
+        3 => PixelFormat::Rgb8,
+        4 => PixelFormat::Rgba8,
+        _ => {
+            return Err(JpegError::OutputBufferTooSmall {
+                required: usize::MAX,
+                provided: out.len(),
+            })
+        }
+    };
+    validate_strided_output_buffer((image_width, image_height), out.len(), stride, fmt).map_err(
+        |err| match err {
+            BufferError::StrideTooSmall { row_bytes, stride } => JpegError::InvalidStride {
+                stride,
+                row: row_bytes,
+            },
+            BufferError::OutputTooSmall { required, have } => JpegError::OutputBufferTooSmall {
+                required,
+                provided: have,
+            },
+            BufferError::SizeOverflow { .. } => JpegError::OutputBufferTooSmall {
+                required: usize::MAX,
+                provided: out.len(),
+            },
+            BufferError::InputTooSmall { .. }
+            | BufferError::StrideNotAligned { .. }
+            | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
+                required: usize::MAX,
+                provided: out.len(),
+            },
         },
-    )?;
-    if stride < row_bytes {
-        return Err(JpegError::InvalidStride {
-            stride,
-            row: row_bytes,
-        });
-    }
-    let last_row_start = (image_height as usize)
-        .saturating_sub(1)
-        .checked_mul(stride)
-        .ok_or(JpegError::OutputBufferTooSmall {
-            required: usize::MAX,
-            provided: out.len(),
-        })?;
-    let required = last_row_start + row_bytes;
-    if out.len() < required {
-        return Err(JpegError::OutputBufferTooSmall {
-            required,
-            provided: out.len(),
-        });
-    }
-    Ok(())
+    )
 }
 
 #[cfg(test)]

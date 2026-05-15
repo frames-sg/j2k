@@ -2,6 +2,7 @@
 
 use signinum_core::{Downscale, PixelFormat, Rect};
 use signinum_j2k::J2kDecoder;
+use signinum_test_support::gradient_u8;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -116,18 +117,6 @@ fn signinum_rgb_scaled_q4(bytes: &[u8]) -> Vec<u8> {
             Downscale::Quarter,
         )
         .expect("scaled decode");
-    out
-}
-
-fn gradient_u8(width: u32, height: u32, channels: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * channels);
-    for y in 0..height {
-        for x in 0..width {
-            for c in 0..channels {
-                out.push(((x + y + (c as u32 * 17)) & 0xFF) as u8);
-            }
-        }
-    }
     out
 }
 

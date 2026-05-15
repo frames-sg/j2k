@@ -173,6 +173,28 @@ impl Rect {
     }
 }
 
+impl From<signinum_core::Rect> for Rect {
+    fn from(rect: signinum_core::Rect) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+        }
+    }
+}
+
+impl From<Rect> for signinum_core::Rect {
+    fn from(rect: Rect) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+        }
+    }
+}
+
 /// Internal JPEG-specific output format used behind the public core
 /// `PixelFormat` + `Downscale` API adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

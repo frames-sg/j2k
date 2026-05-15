@@ -27,7 +27,7 @@ fn bench_encode_baseline(c: &mut Criterion) {
     let dim = bench_dim();
     let batch_size = bench_batch_size();
     let tile_bytes = dim as usize * dim as usize * 3;
-    let rgb = generated_rgb_tiles(dim, batch_size);
+    let rgb = signinum_test_support::patterned_rgb8_tiles(dim, dim, batch_size);
     let cpu_options = options(JpegBackend::Cpu);
     #[cfg(target_os = "macos")]
     let metal_options = options(JpegBackend::Metal);
@@ -150,20 +150,6 @@ fn options(backend: JpegBackend) -> JpegEncodeOptions {
         restart_interval: None,
         backend,
     }
-}
-
-fn generated_rgb_tiles(dim: u32, tile_count: usize) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(dim as usize * dim as usize * 3 * tile_count);
-    for tile in 0..tile_count as u32 {
-        for y in 0..dim {
-            for x in 0..dim {
-                rgb.push(((x * 13 + y * 3 + tile * 29) & 0xff) as u8);
-                rgb.push(((x * 5 + y * 11 + (x ^ y) + tile * 17) & 0xff) as u8);
-                rgb.push(((x * 7 + y * 17 + (x.wrapping_mul(y) >> 5) + tile * 23) & 0xff) as u8);
-            }
-        }
-    }
-    rgb
 }
 
 fn bench_dim() -> u32 {

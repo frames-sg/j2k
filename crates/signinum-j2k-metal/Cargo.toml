@@ -1,7 +1,7 @@
 [package]
 name = "signinum-j2k-metal"
 description = "Metal device-output adapter for signinum-j2k"
-version = "0.4.1"
+version = "0.4.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,10 +15,10 @@ name = "signinum_j2k_metal"
 path = "src/lib.rs"
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.1" }
-signinum-j2k = { path = "../signinum-j2k", version = "=0.4.1" }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.1" }
-signinum-profile = { path = "../signinum-profile", version = "=0.4.1" }
+signinum-core = { path = "../signinum-core", version = "=0.4.2" }
+signinum-j2k = { path = "../signinum-j2k", version = "=0.4.2" }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.2" }
+signinum-profile = { path = "../signinum-profile", version = "=0.4.2" }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -30,6 +30,7 @@ rayon = "1"
 criterion = { workspace = true }
 rayon = "1"
 signinum-j2k-compare = { path = "../signinum-j2k-compare" }
+signinum-test-support = { path = "../signinum-test-support" }
 
 [[bench]]
 name = "device_upload"

@@ -103,6 +103,26 @@ pub use direct_plan::{
     J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
     J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan,
 };
+
+/// Maps an output coordinate within an IDWT step to the source sub-band index.
+///
+/// `origin` is the global coordinate of the IDWT output rectangle,
+/// `local_coord` is the coordinate within that output rectangle, and
+/// `low_pass` selects the low-pass (`LL`/`LH`) or high-pass (`HL`/`HH`) band
+/// along one axis. This helper is exposed so backend adapters can compute
+/// required input windows with the same odd-origin rounding as the native IDWT.
+#[must_use]
+pub fn idwt_band_index(origin: u32, local_coord: u32, low_pass: bool) -> u32 {
+    let global = u64::from(origin) + u64::from(local_coord);
+    let origin = u64::from(origin);
+    let index = if low_pass {
+        global.div_ceil(2).saturating_sub(origin.div_ceil(2))
+    } else {
+        (global / 2).saturating_sub(origin / 2)
+    };
+    u32::try_from(index).unwrap_or(u32::MAX)
+}
+
 pub use error::{
     ColorError, DecodeError, DecodingError, FormatError, MarkerError, Result, TileError,
     ValidationError,

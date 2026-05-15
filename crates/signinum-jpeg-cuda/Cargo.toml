@@ -1,7 +1,7 @@
 [package]
 name = "signinum-jpeg-cuda"
 description = "CUDA device-output adapter for signinum-jpeg"
-version = "0.4.1"
+version = "0.4.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,15 +19,16 @@ default = []
 cuda-runtime = ["dep:signinum-cuda-runtime"]
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.1" }
-signinum-cuda-runtime = { path = "../signinum-cuda-runtime", version = "=0.4.1", optional = true }
-signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.1" }
-signinum-profile = { path = "../signinum-profile", version = "=0.4.1" }
+signinum-core = { path = "../signinum-core", version = "=0.4.2" }
+signinum-cuda-runtime = { path = "../signinum-cuda-runtime", version = "=0.4.2", optional = true }
+signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.2" }
+signinum-profile = { path = "../signinum-profile", version = "=0.4.2" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 jpeg-encoder = "0.7.0"
+signinum-test-support = { path = "../signinum-test-support" }
 
 [[bench]]
 name = "device_decode"

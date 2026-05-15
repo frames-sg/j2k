@@ -38,14 +38,7 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
 
     let width = 19u32;
     let height = 17u32;
-    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
-    for y in 0..height {
-        for x in 0..width {
-            rgb.push(((x * 17 + y * 3) & 0xff) as u8);
-            rgb.push(((x * 5 + y * 11 + 40) & 0xff) as u8);
-            rgb.push(((x * 13 + y * 7 + 90) & 0xff) as u8);
-        }
-    }
+    let rgb = signinum_test_support::patterned_rgb8(width, height);
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let buffer = session.device().new_buffer_with_data(
@@ -179,12 +172,7 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
     let height = 5u32;
     let output_width = 13u32;
     let output_height = 11u32;
-    let mut gray = Vec::with_capacity(width as usize * height as usize);
-    for y in 0..height {
-        for x in 0..width {
-            gray.push(((x * 19 + y * 23) & 0xff) as u8);
-        }
-    }
+    let gray = signinum_test_support::patterned_gray8(width, height);
 
     let session = MetalBackendSession::system_default().expect("Metal backend session");
     let buffer = session.device().new_buffer_with_data(

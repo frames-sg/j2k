@@ -1,9 +1,11 @@
 use signinum_core::{
-    copy_tight_pixels_to_strided_output, BackendCapabilities, BackendKind, BackendRequest,
-    BufferError, CodecContext, CodecError, CpuFeatures, DecoderContext, DeviceSubmission,
-    DeviceSurface, Downscale, ImageCodec, PassthroughCandidate, PassthroughDecision,
+    copy_tight_pixels_to_strided_output, strided_output_len, validate_strided_output_buffer,
+    BackendCapabilities, BackendKind, BackendRequest, BufferError, CodecContext, CodecError,
+    CpuFeatures, DecoderContext, DeviceSubmission, DeviceSurface, Downscale, ImageCodec,
+    ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, ReadySubmission,
-    Rect, SampleType, ScratchPool, TileBatchDecodeManyDevice, TileBatchOptions,
+    Rect, SampleType, ScratchPool, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
+    TileBatchDecodeSubmit, TileBatchOptions,
 };
 use signinum_core::{
     CodedUnitLayout, Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout,
@@ -192,6 +194,39 @@ fn copy_tight_pixels_to_strided_output_rejects_strided_output_overflow() {
 }
 
 #[test]
+fn strided_output_len_counts_last_row_without_trailing_padding() {
+    assert_eq!(
+        strided_output_len((3, 4), 16, PixelFormat::Rgb8).expect("output length"),
+        57
+    );
+    assert_eq!(
+        strided_output_len((3, 0), 16, PixelFormat::Rgb8).expect("zero height"),
+        0
+    );
+}
+
+#[test]
+fn validate_strided_output_buffer_reports_stride_and_output_errors() {
+    assert_eq!(
+        validate_strided_output_buffer((3, 4), 57, 8, PixelFormat::Rgb8)
+            .expect_err("stride too small"),
+        BufferError::StrideTooSmall {
+            row_bytes: 9,
+            stride: 8,
+        }
+    );
+
+    assert_eq!(
+        validate_strided_output_buffer((3, 4), 56, 16, PixelFormat::Rgb8)
+            .expect_err("output too small"),
+        BufferError::OutputTooSmall {
+            required: 57,
+            have: 56,
+        }
+    );
+}
+
+#[test]
 fn tile_batch_worker_count_uses_available_workers_when_unspecified() {
     assert_eq!(
         signinum_core::tile_batch_worker_count(8, TileBatchOptions::default(), 4),
@@ -371,6 +406,303 @@ impl ImageCodec for DummyCodec {
     type Error = DummyError;
     type Warning = core::convert::Infallible;
     type Pool = DummyPool;
+}
+
+struct DummyImageDecoder {
+    submissions: usize,
+}
+
+impl ImageCodec for DummyImageDecoder {
+    type Error = DummyError;
+    type Warning = core::convert::Infallible;
+    type Pool = DummyPool;
+}
+
+impl<'a> ImageDecode<'a> for DummyImageDecoder {
+    type View = ();
+
+    fn inspect(_input: &'a [u8]) -> Result<Info, Self::Error> {
+        Err(DummyError)
+    }
+
+    fn parse(_input: &'a [u8]) -> Result<Self::View, Self::Error> {
+        Ok(())
+    }
+
+    fn from_view(_view: Self::View) -> Result<Self, Self::Error> {
+        Ok(Self { submissions: 0 })
+    }
+
+    fn decode_into(
+        &mut self,
+        _out: &mut [u8],
+        _stride: usize,
+        _fmt: PixelFormat,
+    ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        Err(DummyError)
+    }
+
+    fn decode_into_with_scratch(
+        &mut self,
+        _pool: &mut Self::Pool,
+        _out: &mut [u8],
+        _stride: usize,
+        _fmt: PixelFormat,
+    ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        Err(DummyError)
+    }
+
+    fn decode_region_into(
+        &mut self,
+        _pool: &mut Self::Pool,
+        _out: &mut [u8],
+        _stride: usize,
+        _fmt: PixelFormat,
+        _roi: Rect,
+    ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        Err(DummyError)
+    }
+
+    fn decode_scaled_into(
+        &mut self,
+        _pool: &mut Self::Pool,
+        _out: &mut [u8],
+        _stride: usize,
+        _fmt: PixelFormat,
+        _scale: Downscale,
+    ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        Err(DummyError)
+    }
+
+    fn decode_region_scaled_into(
+        &mut self,
+        _pool: &mut Self::Pool,
+        _out: &mut [u8],
+        _stride: usize,
+        _fmt: PixelFormat,
+        _roi: Rect,
+        _scale: Downscale,
+    ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
+        Err(DummyError)
+    }
+}
+
+impl ImageDecodeSubmit<'_> for DummyImageDecoder {
+    type Session = usize;
+    type DeviceSurface = DummySurface;
+    type SubmittedSurface = ReadySubmission<DummySurface, DummyError>;
+
+    fn submit_to_device(
+        &mut self,
+        session: &mut Self::Session,
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        self.submissions += 1;
+        *session += 1;
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (1, 1),
+            fmt,
+            len: fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_region_to_device(
+        &mut self,
+        session: &mut Self::Session,
+        fmt: PixelFormat,
+        roi: Rect,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        self.submissions += 1;
+        *session += 1;
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (roi.w, roi.h),
+            fmt,
+            len: roi.w as usize * roi.h as usize * fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_scaled_to_device(
+        &mut self,
+        session: &mut Self::Session,
+        fmt: PixelFormat,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        self.submissions += 1;
+        *session += 1;
+        let denom = scale.denominator();
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (8 / denom, 8 / denom),
+            fmt,
+            len: (64 / (denom * denom)) as usize * fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_region_scaled_to_device(
+        &mut self,
+        session: &mut Self::Session,
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        self.submissions += 1;
+        *session += 1;
+        let scaled = roi.scaled_covering(scale);
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (scaled.w, scaled.h),
+            fmt,
+            len: scaled.w as usize * scaled.h as usize * fmt.bytes_per_pixel(),
+        })))
+    }
+}
+
+impl ImageDecodeDevice<'_> for DummyImageDecoder {
+    type DeviceSurface = DummySurface;
+}
+
+impl TileBatchDecodeSubmit for DummyCodec {
+    type Context = DummyContext;
+    type Session = usize;
+    type DeviceSurface = DummySurface;
+    type SubmittedSurface = ReadySubmission<DummySurface, DummyError>;
+
+    fn submit_tile_to_device(
+        _ctx: &mut DecoderContext<Self::Context>,
+        session: &mut Self::Session,
+        _pool: &mut Self::Pool,
+        input: &[u8],
+        fmt: PixelFormat,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        *session += 1;
+        let input_width = u32::try_from(input.len()).expect("dummy test input fits in u32");
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (input_width, 1),
+            fmt,
+            len: input.len() * fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_tile_region_to_device(
+        _ctx: &mut DecoderContext<Self::Context>,
+        session: &mut Self::Session,
+        _pool: &mut Self::Pool,
+        _input: &[u8],
+        fmt: PixelFormat,
+        roi: Rect,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        *session += 1;
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (roi.w, roi.h),
+            fmt,
+            len: roi.w as usize * roi.h as usize * fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_tile_scaled_to_device(
+        _ctx: &mut DecoderContext<Self::Context>,
+        session: &mut Self::Session,
+        _pool: &mut Self::Pool,
+        input: &[u8],
+        fmt: PixelFormat,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        *session += 1;
+        let denom = scale.denominator();
+        let input_width = u32::try_from(input.len()).expect("dummy test input fits in u32");
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (input_width.div_ceil(denom), 1),
+            fmt,
+            len: input.len() * fmt.bytes_per_pixel(),
+        })))
+    }
+
+    fn submit_tile_region_scaled_to_device(
+        _ctx: &mut DecoderContext<Self::Context>,
+        session: &mut Self::Session,
+        _pool: &mut Self::Pool,
+        _input: &[u8],
+        fmt: PixelFormat,
+        roi: Rect,
+        scale: Downscale,
+        backend: BackendRequest,
+    ) -> Result<Self::SubmittedSurface, Self::Error> {
+        *session += 1;
+        let scaled = roi.scaled_covering(scale);
+        Ok(ReadySubmission::from_result(Ok(DummySurface {
+            backend: backend_kind_for_request(backend),
+            dims: (scaled.w, scaled.h),
+            fmt,
+            len: scaled.w as usize * scaled.h as usize * fmt.bytes_per_pixel(),
+        })))
+    }
+}
+
+impl TileBatchDecodeDevice for DummyCodec {
+    type Context = DummyContext;
+    type DeviceSurface = DummySurface;
+}
+
+fn backend_kind_for_request(request: BackendRequest) -> BackendKind {
+    match request {
+        BackendRequest::Cuda => BackendKind::Cuda,
+        BackendRequest::Metal => BackendKind::Metal,
+        BackendRequest::Auto | BackendRequest::Cpu => BackendKind::Cpu,
+    }
+}
+
+#[test]
+fn image_decode_device_defaults_wait_on_submit_calls() {
+    let mut decoder = DummyImageDecoder { submissions: 0 };
+
+    let surface = decoder
+        .decode_region_scaled_to_device(
+            PixelFormat::Gray8,
+            Rect {
+                x: 2,
+                y: 2,
+                w: 5,
+                h: 5,
+            },
+            Downscale::Half,
+            BackendRequest::Metal,
+        )
+        .expect("default decode delegates through submit");
+
+    assert_eq!(decoder.submissions, 1);
+    assert_eq!(surface.backend_kind(), BackendKind::Metal);
+    assert_eq!(surface.dimensions(), (3, 3));
+}
+
+#[test]
+fn tile_batch_decode_device_defaults_wait_on_submit_calls() {
+    let mut ctx = DecoderContext::<DummyContext>::new();
+    let mut pool = DummyPool;
+
+    let surface = DummyCodec::decode_tile_to_device(
+        &mut ctx,
+        &mut pool,
+        b"abc",
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+    )
+    .expect("default tile decode delegates through submit");
+
+    assert_eq!(surface.backend_kind(), BackendKind::Cuda);
+    assert_eq!(surface.dimensions(), (3, 1));
+    assert_eq!(surface.byte_len(), 9);
 }
 
 impl TileBatchDecodeManyDevice for DummyCodec {

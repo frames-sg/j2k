@@ -198,7 +198,13 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
         &mut self,
         fmt: PixelFormat,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as ImageDecodeDevice<'a>>::DeviceSurface, Self::Error>
+    where
+        Self: ImageDecodeSubmit<'a, DeviceSurface = <Self as ImageDecodeDevice<'a>>::DeviceSurface>,
+    {
+        let mut session = <Self as ImageDecodeSubmit<'a>>::Session::default();
+        <Self as ImageDecodeSubmit<'a>>::submit_to_device(self, &mut session, fmt, backend)?.wait()
+    }
 
     /// Decode a source-coordinate region to the requested backend.
     fn decode_region_to_device(
@@ -206,7 +212,20 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
         fmt: PixelFormat,
         roi: Rect,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as ImageDecodeDevice<'a>>::DeviceSurface, Self::Error>
+    where
+        Self: ImageDecodeSubmit<'a, DeviceSurface = <Self as ImageDecodeDevice<'a>>::DeviceSurface>,
+    {
+        let mut session = <Self as ImageDecodeSubmit<'a>>::Session::default();
+        <Self as ImageDecodeSubmit<'a>>::submit_region_to_device(
+            self,
+            &mut session,
+            fmt,
+            roi,
+            backend,
+        )?
+        .wait()
+    }
 
     /// Decode the full image at reduced resolution to the requested backend.
     fn decode_scaled_to_device(
@@ -214,7 +233,20 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
         fmt: PixelFormat,
         scale: Downscale,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as ImageDecodeDevice<'a>>::DeviceSurface, Self::Error>
+    where
+        Self: ImageDecodeSubmit<'a, DeviceSurface = <Self as ImageDecodeDevice<'a>>::DeviceSurface>,
+    {
+        let mut session = <Self as ImageDecodeSubmit<'a>>::Session::default();
+        <Self as ImageDecodeSubmit<'a>>::submit_scaled_to_device(
+            self,
+            &mut session,
+            fmt,
+            scale,
+            backend,
+        )?
+        .wait()
+    }
 
     /// Decode a source-coordinate region at reduced resolution to the requested backend.
     fn decode_region_scaled_to_device(
@@ -223,7 +255,21 @@ pub trait ImageDecodeDevice<'a>: ImageDecode<'a> {
         roi: Rect,
         scale: Downscale,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as ImageDecodeDevice<'a>>::DeviceSurface, Self::Error>
+    where
+        Self: ImageDecodeSubmit<'a, DeviceSurface = <Self as ImageDecodeDevice<'a>>::DeviceSurface>,
+    {
+        let mut session = <Self as ImageDecodeSubmit<'a>>::Session::default();
+        <Self as ImageDecodeSubmit<'a>>::submit_region_scaled_to_device(
+            self,
+            &mut session,
+            fmt,
+            roi,
+            scale,
+            backend,
+        )?
+        .wait()
+    }
 }
 
 /// Row-streaming decode API for large images or stripe-oriented callers.
@@ -295,43 +341,115 @@ pub trait TileBatchDecodeDevice: ImageCodec {
 
     /// Decode one tile to the requested backend.
     fn decode_tile_to_device<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
         input: &'a [u8],
         fmt: PixelFormat,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as TileBatchDecodeDevice>::DeviceSurface, Self::Error>
+    where
+        Self: TileBatchDecodeSubmit<
+            Context = <Self as TileBatchDecodeDevice>::Context,
+            DeviceSurface = <Self as TileBatchDecodeDevice>::DeviceSurface,
+        >,
+    {
+        let mut session = <Self as TileBatchDecodeSubmit>::Session::default();
+        <Self as TileBatchDecodeSubmit>::submit_tile_to_device(
+            ctx,
+            &mut session,
+            pool,
+            input,
+            fmt,
+            backend,
+        )?
+        .wait()
+    }
 
     /// Decode one tile region to the requested backend.
     fn decode_tile_region_to_device<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
         input: &'a [u8],
         fmt: PixelFormat,
         roi: Rect,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as TileBatchDecodeDevice>::DeviceSurface, Self::Error>
+    where
+        Self: TileBatchDecodeSubmit<
+            Context = <Self as TileBatchDecodeDevice>::Context,
+            DeviceSurface = <Self as TileBatchDecodeDevice>::DeviceSurface,
+        >,
+    {
+        let mut session = <Self as TileBatchDecodeSubmit>::Session::default();
+        <Self as TileBatchDecodeSubmit>::submit_tile_region_to_device(
+            ctx,
+            &mut session,
+            pool,
+            input,
+            fmt,
+            roi,
+            backend,
+        )?
+        .wait()
+    }
 
     /// Decode one tile at reduced resolution to the requested backend.
     fn decode_tile_scaled_to_device<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
         input: &'a [u8],
         fmt: PixelFormat,
         scale: Downscale,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as TileBatchDecodeDevice>::DeviceSurface, Self::Error>
+    where
+        Self: TileBatchDecodeSubmit<
+            Context = <Self as TileBatchDecodeDevice>::Context,
+            DeviceSurface = <Self as TileBatchDecodeDevice>::DeviceSurface,
+        >,
+    {
+        let mut session = <Self as TileBatchDecodeSubmit>::Session::default();
+        <Self as TileBatchDecodeSubmit>::submit_tile_scaled_to_device(
+            ctx,
+            &mut session,
+            pool,
+            input,
+            fmt,
+            scale,
+            backend,
+        )?
+        .wait()
+    }
 
     /// Decode one tile region at reduced resolution to the requested backend.
     fn decode_tile_region_scaled_to_device<'a>(
-        ctx: &mut DecoderContext<Self::Context>,
+        ctx: &mut DecoderContext<<Self as TileBatchDecodeDevice>::Context>,
         pool: &mut Self::Pool,
         input: &'a [u8],
         fmt: PixelFormat,
         roi: Rect,
         scale: Downscale,
         backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error>;
+    ) -> Result<<Self as TileBatchDecodeDevice>::DeviceSurface, Self::Error>
+    where
+        Self: TileBatchDecodeSubmit<
+            Context = <Self as TileBatchDecodeDevice>::Context,
+            DeviceSurface = <Self as TileBatchDecodeDevice>::DeviceSurface,
+        >,
+    {
+        let mut session = <Self as TileBatchDecodeSubmit>::Session::default();
+        <Self as TileBatchDecodeSubmit>::submit_tile_region_scaled_to_device(
+            ctx,
+            &mut session,
+            pool,
+            input,
+            fmt,
+            roi,
+            scale,
+            backend,
+        )?
+        .wait()
+    }
 }
 
 /// Full-tile batch helpers that decode many independent tiles to device surfaces.

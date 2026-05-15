@@ -29,8 +29,8 @@ use signinum_jpeg::{
         build_metal_fast444_packet, build_metal_fast444_packet_for_decoder, decoder_bytes,
         JpegMetalFast420PacketV1, JpegMetalFast422PacketV1, JpegMetalFast444PacketV1,
     },
-    DecodeOutcome as JpegDecodeOutcome, Decoder as CpuDecoder, DecoderContext as CpuDecoderContext,
-    JpegError, JpegView, Rect as JpegRect, ScratchPool as CpuScratchPool, Warning as CpuWarning,
+    Decoder as CpuDecoder, DecoderContext as CpuDecoderContext, JpegError, JpegView,
+    ScratchPool as CpuScratchPool, Warning as CpuWarning,
 };
 
 pub use encode::{
@@ -669,7 +669,7 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(convert_outcome(self.inner.decode_into(out, stride, fmt)?))
+        Ok(self.inner.decode_into(out, stride, fmt)?.into())
     }
 
     fn decode_into_with_scratch(
@@ -679,10 +679,10 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(convert_outcome(
-            self.inner
-                .decode_into_with_scratch(pool, out, stride, fmt)?,
-        ))
+        Ok(self
+            .inner
+            .decode_into_with_scratch(pool, out, stride, fmt)?
+            .into())
     }
 
     fn decode_region_into(
@@ -693,15 +693,10 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         fmt: PixelFormat,
         roi: Rect,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(convert_outcome(
-            self.inner.decode_region_into_with_scratch(
-                pool,
-                out,
-                stride,
-                fmt,
-                to_jpeg_rect(roi),
-            )?,
-        ))
+        Ok(self
+            .inner
+            .decode_region_into_with_scratch(pool, out, stride, fmt, roi.into())?
+            .into())
     }
 
     fn decode_scaled_into(
@@ -712,10 +707,10 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         fmt: PixelFormat,
         scale: Downscale,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(convert_outcome(
-            self.inner
-                .decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)?,
-        ))
+        Ok(self
+            .inner
+            .decode_scaled_into_with_scratch(pool, out, stride, fmt, scale)?
+            .into())
     }
 
     fn decode_region_scaled_into(
@@ -727,74 +722,15 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         roi: Rect,
         scale: Downscale,
     ) -> Result<DecodeOutcome<Self::Warning>, Self::Error> {
-        Ok(convert_outcome(
-            self.inner.decode_region_scaled_into_with_scratch(
-                pool,
-                out,
-                stride,
-                fmt,
-                to_jpeg_rect(roi),
-                scale,
-            )?,
-        ))
+        Ok(self
+            .inner
+            .decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi.into(), scale)?
+            .into())
     }
 }
 
 impl<'a> ImageDecodeDevice<'a> for Decoder<'a> {
     type DeviceSurface = Surface;
-
-    fn decode_to_device(
-        &mut self,
-        fmt: PixelFormat,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as ImageDecodeSubmit<'a>>::submit_to_device(self, &mut session, fmt, backend)?.wait()
-    }
-
-    fn decode_region_to_device(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as ImageDecodeSubmit<'a>>::submit_region_to_device(
-            self,
-            &mut session,
-            fmt,
-            roi,
-            backend,
-        )?
-        .wait()
-    }
-
-    fn decode_scaled_to_device(
-        &mut self,
-        fmt: PixelFormat,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as ImageDecodeSubmit<'a>>::submit_scaled_to_device(
-            self,
-            &mut session,
-            fmt,
-            scale,
-            backend,
-        )?
-        .wait()
-    }
-
-    fn decode_region_scaled_to_device(
-        &mut self,
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        Decoder::decode_region_scaled_to_device(self, fmt, roi, scale, backend)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -838,29 +774,6 @@ impl Codec {
             session: session.shared.clone(),
             slot,
         })
-    }
-
-    pub fn decode_tile_region_scaled_to_device(
-        ctx: &mut signinum_core::DecoderContext<CpuDecoderContext>,
-        pool: &mut CpuScratchPool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Surface, Error> {
-        let mut session = MetalSession::default();
-        Self::submit_tile_region_scaled_to_device(
-            ctx,
-            &mut session,
-            pool,
-            input,
-            fmt,
-            roi,
-            scale,
-            backend,
-        )?
-        .wait()
     }
 }
 
@@ -1155,79 +1068,6 @@ impl TileBatchDecodeSubmit for Codec {
 impl TileBatchDecodeDevice for Codec {
     type Context = CpuDecoderContext;
     type DeviceSurface = Surface;
-
-    fn decode_tile_to_device(
-        ctx: &mut signinum_core::DecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as TileBatchDecodeSubmit>::submit_tile_to_device(
-            ctx,
-            &mut session,
-            pool,
-            input,
-            fmt,
-            backend,
-        )?
-        .wait()
-    }
-
-    fn decode_tile_region_to_device(
-        ctx: &mut signinum_core::DecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as TileBatchDecodeSubmit>::submit_tile_region_to_device(
-            ctx,
-            &mut session,
-            pool,
-            input,
-            fmt,
-            roi,
-            backend,
-        )?
-        .wait()
-    }
-
-    fn decode_tile_scaled_to_device(
-        ctx: &mut signinum_core::DecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        let mut session = MetalSession::default();
-        <Self as TileBatchDecodeSubmit>::submit_tile_scaled_to_device(
-            ctx,
-            &mut session,
-            pool,
-            input,
-            fmt,
-            scale,
-            backend,
-        )?
-        .wait()
-    }
-
-    fn decode_tile_region_scaled_to_device(
-        ctx: &mut signinum_core::DecoderContext<Self::Context>,
-        pool: &mut Self::Pool,
-        input: &[u8],
-        fmt: PixelFormat,
-        roi: Rect,
-        scale: Downscale,
-        backend: BackendRequest,
-    ) -> Result<Self::DeviceSurface, Self::Error> {
-        Codec::decode_tile_region_scaled_to_device(ctx, pool, input, fmt, roi, scale, backend)
-    }
 }
 
 pub(crate) fn decode_surface_from_bytes(
@@ -1415,7 +1255,7 @@ fn decode_surface_from_decoder(
                                 decoder,
                                 pool,
                                 fmt,
-                                to_jpeg_rect(roi),
+                                roi.into(),
                                 fast444_packet,
                                 fast422_packet,
                                 fast420_packet,
@@ -1530,7 +1370,7 @@ fn decode_region_cpu_upload(
     let dims = (roi.w, roi.h);
     let stride = dims.0 as usize * fmt.bytes_per_pixel();
     let mut out = vec![0u8; stride * dims.1 as usize];
-    decoder.decode_region_into_with_scratch(pool, &mut out, stride, fmt, to_jpeg_rect(roi))?;
+    decoder.decode_region_into_with_scratch(pool, &mut out, stride, fmt, roi.into())?;
     upload_surface(out, dims, fmt, BackendRequest::Cpu)
 }
 
@@ -1592,7 +1432,7 @@ fn decode_region_scaled_surface_from_decoder(
                             decoder,
                             pool,
                             fmt,
-                            to_jpeg_rect(roi),
+                            roi.into(),
                             scale,
                             fast444_packet,
                             fast422_packet,
@@ -1721,31 +1561,10 @@ fn decode_region_scaled_cpu_upload(
         &mut out,
         stride,
         fmt,
-        to_jpeg_rect(roi),
+        roi.into(),
         scale,
     )?;
     upload_surface(out, dims, fmt, backend)
-}
-
-fn convert_outcome(outcome: JpegDecodeOutcome) -> DecodeOutcome<CpuWarning> {
-    DecodeOutcome {
-        decoded: Rect {
-            x: outcome.decoded.x,
-            y: outcome.decoded.y,
-            w: outcome.decoded.w,
-            h: outcome.decoded.h,
-        },
-        warnings: outcome.warnings,
-    }
-}
-
-fn to_jpeg_rect(rect: Rect) -> JpegRect {
-    JpegRect {
-        x: rect.x,
-        y: rect.y,
-        w: rect.w,
-        h: rect.h,
-    }
 }
 
 fn scaled_dims(full: (u32, u32), scale: Downscale) -> (u32, u32) {

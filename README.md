@@ -33,7 +33,7 @@ Most application code should start with the facade:
 
 ```toml
 [dependencies]
-signinum = "0.4.1"
+signinum = "0.4.2"
 ```
 
 The facade exposes:

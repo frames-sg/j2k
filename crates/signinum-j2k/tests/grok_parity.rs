@@ -3,6 +3,7 @@
 use signinum_core::{Downscale, PixelFormat, Rect};
 use signinum_j2k::J2kDecoder;
 use signinum_j2k_native::{encode_htj2k, EncodeOptions};
+use signinum_test_support::gradient_u8;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -414,18 +415,6 @@ fn wrap_codestream_jp2(
     bytes.extend_from_slice(b"jp2c");
     bytes.extend_from_slice(codestream);
     bytes
-}
-
-fn gradient_u8(width: u32, height: u32, channels: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * channels);
-    for y in 0..height {
-        for x in 0..width {
-            for c in 0..channels {
-                out.push(((x + y + (c as u32 * 17)) & 0xFF) as u8);
-            }
-        }
-    }
-    out
 }
 
 fn grok_decompress_bin() -> Option<PathBuf> {

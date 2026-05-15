@@ -72,6 +72,81 @@ fn adapter_crates_do_not_import_codec_private_modules() {
 }
 
 #[test]
+fn cuda_adapter_crates_keep_public_libs_as_module_shells() {
+    let root = repo_root();
+    let expected_modules = [
+        (
+            "crates/signinum-jpeg-cuda",
+            [
+                "codec.rs",
+                "decoder.rs",
+                "error.rs",
+                "runtime.rs",
+                "session.rs",
+                "surface.rs",
+            ]
+            .as_slice(),
+        ),
+        (
+            "crates/signinum-j2k-cuda",
+            [
+                "codec.rs",
+                "decoder.rs",
+                "encode.rs",
+                "error.rs",
+                "runtime.rs",
+                "session.rs",
+                "surface.rs",
+            ]
+            .as_slice(),
+        ),
+    ];
+
+    for (crate_dir, modules) in expected_modules {
+        let src_dir = root.join(crate_dir).join("src");
+        let lib_path = src_dir.join("lib.rs");
+        let lib = fs::read_to_string(&lib_path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", lib_path.display()));
+        let line_count = lib.lines().count();
+        assert!(
+            line_count <= 220,
+            "{} should stay a thin public module shell; found {line_count} lines",
+            lib_path.strip_prefix(root).unwrap_or(&lib_path).display()
+        );
+
+        for module in modules {
+            let module_path = src_dir.join(module);
+            assert!(
+                module_path.exists(),
+                "{} must exist to keep CUDA adapter responsibilities focused",
+                module_path
+                    .strip_prefix(root)
+                    .unwrap_or(&module_path)
+                    .display()
+            );
+        }
+    }
+}
+
+#[test]
+fn reusable_benchmark_generators_live_in_test_support() {
+    let root = repo_root();
+    let support = fs::read_to_string(root.join("crates/signinum-test-support/src/lib.rs"))
+        .expect("read signinum-test-support");
+
+    for required in [
+        "pub fn gradient_u8",
+        "pub fn patterned_rgb8_tiles",
+        "pub fn gpu_bench_rgb8",
+    ] {
+        assert!(
+            support.contains(required),
+            "signinum-test-support must expose reusable generator `{required}`"
+        );
+    }
+}
+
+#[test]
 fn workspace_contains_public_signinum_facade_crate() {
     let root = repo_root();
     let manifest_path = root.join("crates/signinum/Cargo.toml");
@@ -338,7 +413,7 @@ fn crates_io_publish_policy_is_explicit() {
         .expect("read publish workflow");
 
     assert!(
-        workspace.contains("version      = \"0.4.1\""),
+        workspace.contains("version      = \"0.4.2\""),
         "workspace package version must match the current staged release version"
     );
 

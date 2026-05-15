@@ -13,13 +13,14 @@ members = [
     "crates/signinum-jpeg",
     "crates/signinum-jpeg-cuda",
     "crates/signinum-jpeg-metal",
+    "crates/signinum-test-support",
     "crates/signinum-tilecodec",
     "crates/signinum-cli",
     "xtask",
 ]
 
 [workspace.package]
-version      = "0.4.1"
+version      = "0.4.2"
 edition      = "2021"
 rust-version = "1.94"
 license      = "Apache-2.0"

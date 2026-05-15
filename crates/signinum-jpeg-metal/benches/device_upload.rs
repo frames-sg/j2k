@@ -70,16 +70,7 @@ fn bench_input() -> Vec<u8> {
 }
 
 fn generated_jpeg(dim: u16) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(dim as usize * dim as usize * 3);
-    for y in 0..dim {
-        for x in 0..dim {
-            let xf = u32::from(x);
-            let yf = u32::from(y);
-            rgb.push(((xf * 13 + yf * 3) & 0xff) as u8);
-            rgb.push(((xf * 5 + yf * 11 + (xf ^ yf)) & 0xff) as u8);
-            rgb.push(((xf * 7 + yf * 17 + (xf.wrapping_mul(yf) >> 5)) & 0xff) as u8);
-        }
-    }
+    let rgb = signinum_test_support::gpu_bench_rgb8(u32::from(dim), u32::from(dim));
 
     let mut jpeg = Vec::new();
     let mut encoder = Encoder::new(&mut jpeg, 90);

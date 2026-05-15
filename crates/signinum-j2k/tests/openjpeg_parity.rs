@@ -5,6 +5,7 @@ use signinum_j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kDecoder, J2kLosslessEncodeOptions,
     J2kLosslessSamples,
 };
+use signinum_test_support::gradient_u8;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -193,18 +194,6 @@ fn classic_lossless_encode_decodes_with_openjpeg() {
 
     let decoded = decode_j2k_with_openjpeg(&paths, "signinum_encode_rgb", &encoded.codestream);
     assert_eq!(decoded, pixels);
-}
-
-fn gradient_u8(width: u32, height: u32, channels: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(width as usize * height as usize * channels);
-    for y in 0..height {
-        for x in 0..width {
-            for c in 0..channels {
-                out.push(((x + y + (c as u32 * 17)) & 0xFF) as u8);
-            }
-        }
-    }
-    out
 }
 
 #[derive(Clone)]

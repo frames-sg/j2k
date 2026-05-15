@@ -2,34 +2,13 @@ use signinum_jpeg::{
     encode_jpeg_baseline, DecodeOptions, Decoder, EncodedJpeg, JpegBackend, JpegEncodeOptions,
     JpegSamples, JpegSubsampling, PixelFormat,
 };
+use signinum_test_support::{patterned_gray8, patterned_rgb8};
 use std::io::Cursor;
-
-fn patterned_rgb(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
-    for y in 0..height {
-        for x in 0..width {
-            pixels.push(((x * 17 + y * 3) & 0xFF) as u8);
-            pixels.push(((x * 5 + y * 11 + 40) & 0xFF) as u8);
-            pixels.push(((x * 13 + y * 7 + 90) & 0xFF) as u8);
-        }
-    }
-    pixels
-}
-
-fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(width as usize * height as usize);
-    for y in 0..height {
-        for x in 0..width {
-            pixels.push(((x * 19 + y * 23) & 0xFF) as u8);
-        }
-    }
-    pixels
-}
 
 fn encode_rgb(subsampling: JpegSubsampling) -> EncodedJpeg {
     let width = 19;
     let height = 17;
-    let rgb = patterned_rgb(width, height);
+    let rgb = patterned_rgb8(width, height);
     encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &rgb,
@@ -98,7 +77,7 @@ fn cpu_encoder_round_trips_rgb_444_422_420() {
 fn cpu_encoder_round_trips_gray_and_writes_required_markers() {
     let width = 13;
     let height = 11;
-    let gray = patterned_gray(width, height);
+    let gray = patterned_gray8(width, height);
     let encoded = encode_jpeg_baseline(
         JpegSamples::Gray8 {
             data: &gray,

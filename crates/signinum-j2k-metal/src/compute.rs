@@ -3640,28 +3640,18 @@ fn idwt_input_required_region(
     band_width: u32,
     band_height: u32,
 ) -> BandRequiredRegion {
-    let x0 = idwt_band_index(output_origin_x, output_region.x0, low_x);
-    let x1 = idwt_band_index(output_origin_x, output_region.x1 - 1, low_x).saturating_add(1);
-    let y0 = idwt_band_index(output_origin_y, output_region.y0, low_y);
-    let y1 = idwt_band_index(output_origin_y, output_region.y1 - 1, low_y).saturating_add(1);
+    let x0 = signinum_j2k_native::idwt_band_index(output_origin_x, output_region.x0, low_x);
+    let x1 = signinum_j2k_native::idwt_band_index(output_origin_x, output_region.x1 - 1, low_x)
+        .saturating_add(1);
+    let y0 = signinum_j2k_native::idwt_band_index(output_origin_y, output_region.y0, low_y);
+    let y1 = signinum_j2k_native::idwt_band_index(output_origin_y, output_region.y1 - 1, low_y)
+        .saturating_add(1);
     BandRequiredRegion {
         x0: x0.min(band_width),
         y0: y0.min(band_height),
         x1: x1.min(band_width),
         y1: y1.min(band_height),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn idwt_band_index(origin: u32, local_coord: u32, low: bool) -> u32 {
-    let global = u64::from(origin) + u64::from(local_coord);
-    let origin = u64::from(origin);
-    let index = if low {
-        global.div_ceil(2).saturating_sub(origin.div_ceil(2))
-    } else {
-        (global / 2).saturating_sub(origin / 2)
-    };
-    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 #[cfg(target_os = "macos")]

@@ -68,6 +68,15 @@ pub struct DecodeOutcome {
     pub warnings: Vec<Warning>,
 }
 
+impl From<DecodeOutcome> for CoreDecodeOutcome<Warning> {
+    fn from(outcome: DecodeOutcome) -> Self {
+        Self {
+            decoded: outcome.decoded.into(),
+            warnings: outcome.warnings,
+        }
+    }
+}
+
 /// One tile decode request for [`decode_tiles_into`].
 pub struct TileDecodeJob<'i, 'o> {
     /// Compressed JPEG tile bytes.
@@ -2115,29 +2124,8 @@ fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
     }
 }
 
-fn core_rect(rect: Rect) -> signinum_core::Rect {
-    signinum_core::Rect {
-        x: rect.x,
-        y: rect.y,
-        w: rect.w,
-        h: rect.h,
-    }
-}
-
-fn jpeg_rect(rect: signinum_core::Rect) -> Rect {
-    Rect {
-        x: rect.x,
-        y: rect.y,
-        w: rect.w,
-        h: rect.h,
-    }
-}
-
 fn core_outcome(outcome: DecodeOutcome) -> CoreDecodeOutcome<Warning> {
-    CoreDecodeOutcome {
-        decoded: core_rect(outcome.decoded),
-        warnings: outcome.warnings,
-    }
+    outcome.into()
 }
 
 fn jpeg_downscale(scale: Downscale) -> DownscaleFactor {
@@ -2227,7 +2215,7 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
         fmt: PixelFormat,
         roi: signinum_core::Rect,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
-        Decoder::decode_region_into_with_scratch(self, pool, out, stride, fmt, jpeg_rect(roi))
+        Decoder::decode_region_into_with_scratch(self, pool, out, stride, fmt, roi.into())
             .map(core_outcome)
     }
 
@@ -2258,7 +2246,7 @@ impl<'a> ImageDecode<'a> for Decoder<'a> {
             out,
             stride,
             fmt,
-            jpeg_rect(roi),
+            roi.into(),
             scale,
         )
         .map(core_outcome)
@@ -2331,7 +2319,7 @@ impl TileBatchDecode for JpegCodec {
         roi: signinum_core::Rect,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
         let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_region_into_with_scratch(pool, out, stride, fmt, jpeg_rect(roi))
+        dec.decode_region_into_with_scratch(pool, out, stride, fmt, roi.into())
             .map(core_outcome)
     }
 
@@ -2360,7 +2348,7 @@ impl TileBatchDecode for JpegCodec {
         scale: Downscale,
     ) -> Result<CoreDecodeOutcome<Self::Warning>, Self::Error> {
         let dec = Decoder::from_view_in_context(JpegView::parse(input)?, ctx.codec_mut())?;
-        dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, jpeg_rect(roi), scale)
+        dec.decode_region_scaled_into_with_scratch(pool, out, stride, fmt, roi.into(), scale)
             .map(core_outcome)
     }
 }

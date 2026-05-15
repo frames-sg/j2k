@@ -15,7 +15,11 @@ use core::f64::consts::PI;
 use rayon::prelude::*;
 use thiserror::Error;
 
-use crate::entropy::ZIGZAG;
+use crate::adapter::{
+    assemble_jpeg_baseline_frame, baseline_encode_tables, validate_jpeg_baseline_dimensions,
+    validate_jpeg_baseline_restart_interval, JpegBaselineHuffmanTable, JpegBaselineSampling,
+    JPEG_BASELINE_ZIGZAG,
+};
 use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
 use std::time::{Duration, Instant};
 
@@ -96,25 +100,6 @@ pub enum JpegEncodeError {
     MissingHuffmanCode { symbol: u8 },
     #[error("JPEG encode failed: {0}")]
     Internal(String),
-}
-
-#[derive(Clone, Copy)]
-struct Sampling {
-    components: u8,
-    h: [u8; 3],
-    v: [u8; 3],
-    max_h: u8,
-    max_v: u8,
-}
-
-#[derive(Clone, Copy)]
-struct HuffmanCode {
-    code: u16,
-    len: u8,
-}
-
-struct HuffmanEncoder {
-    codes: [Option<HuffmanCode>; 256],
 }
 
 struct BitWriter {
@@ -206,25 +191,18 @@ fn encode_jpeg_baseline_cpu(
     let mut profile = JpegEncodeProfile::default();
 
     let validation_start = profile_enabled.then(Instant::now);
-    if options.restart_interval == Some(0) {
-        return Err(JpegEncodeError::InvalidRestartInterval);
-    }
+    validate_jpeg_baseline_restart_interval(options.restart_interval)?;
     let (width, height) = samples.dimensions();
     let sample_format = samples.name();
-    validate_dimensions(width, height)?;
+    validate_jpeg_baseline_dimensions(width, height)?;
     samples.validate(options.subsampling)?;
     if let Some(start) = validation_start {
         profile.validation = start.elapsed();
     }
 
     let setup_start = profile_enabled.then(Instant::now);
-    let sampling = sampling_for(options.subsampling);
-    let q_luma = scaled_quant_table(&STD_LUMA_Q, options.quality);
-    let q_chroma = scaled_quant_table(&STD_CHROMA_Q, options.quality);
-    let huff_dc_luma = HuffmanEncoder::new(&STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES)?;
-    let huff_ac_luma = HuffmanEncoder::new(&STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES)?;
-    let huff_dc_chroma = HuffmanEncoder::new(&STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES)?;
-    let huff_ac_chroma = HuffmanEncoder::new(&STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
+    let tables = baseline_encode_tables(options)?;
+    let sampling = tables.sampling;
     let cosine = cosine_table();
     if let Some(start) = setup_start {
         profile.setup = start.elapsed();
@@ -236,46 +214,28 @@ fn encode_jpeg_baseline_cpu(
         profile.planes = start.elapsed();
     }
 
-    let header_start = profile_enabled.then(Instant::now);
-    let mut out = Vec::new();
-    write_marker(&mut out, 0xD8);
-    write_dqt(&mut out, 0, &q_luma)?;
-    if sampling.components == 3 {
-        write_dqt(&mut out, 1, &q_chroma)?;
-    }
-    if let Some(restart_interval) = options.restart_interval {
-        write_dri(&mut out, restart_interval)?;
-    }
-    write_sof0(&mut out, width, height, sampling)?;
-    write_dht(&mut out, 0, 0, &STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES)?;
-    write_dht(&mut out, 1, 0, &STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES)?;
-    if sampling.components == 3 {
-        write_dht(&mut out, 0, 1, &STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES)?;
-        write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
-    }
-    write_sos(&mut out, sampling.components)?;
-    if let Some(start) = header_start {
-        profile.header = start.elapsed();
-    }
-
     let entropy_start = profile_enabled.then(Instant::now);
     let entropy = encode_entropy(
         &planes,
         width,
         height,
         sampling,
-        &q_luma,
-        &q_chroma,
-        [&huff_dc_luma, &huff_dc_chroma],
-        [&huff_ac_luma, &huff_ac_chroma],
+        &tables.q_luma,
+        &tables.q_chroma,
+        [&tables.huff_dc_luma, &tables.huff_dc_chroma],
+        [&tables.huff_ac_luma, &tables.huff_ac_chroma],
         &cosine,
         options.restart_interval,
     )?;
     if let Some(start) = entropy_start {
         profile.entropy = start.elapsed();
     }
-    out.extend_from_slice(&entropy);
-    write_marker(&mut out, 0xD9);
+    let header_start = profile_enabled.then(Instant::now);
+    let encoded =
+        assemble_jpeg_baseline_frame(&entropy, width, height, &tables, options, JpegBackend::Cpu)?;
+    if let Some(start) = header_start {
+        profile.header = start.elapsed();
+    }
 
     if let Some(start) = total_start {
         let width_s = width.to_string();
@@ -284,7 +244,7 @@ fn encode_jpeg_baseline_cpu(
         let subsampling_s = format!("{:?}", options.subsampling);
         let restart_s = options.restart_interval.unwrap_or(0).to_string();
         let components_s = sampling.components.to_string();
-        let output_bytes_s = out.len().to_string();
+        let output_bytes_s = encoded.data.len().to_string();
         let threads_s = rayon::current_num_threads().to_string();
         let validation_us = duration_us_string(profile.validation);
         let setup_us = duration_us_string(profile.setup);
@@ -315,10 +275,7 @@ fn encode_jpeg_baseline_cpu(
         );
     }
 
-    Ok(EncodedJpeg {
-        data: out,
-        backend: JpegBackend::Cpu,
-    })
+    Ok(encoded)
 }
 
 impl JpegSamples<'_> {
@@ -366,49 +323,6 @@ impl JpegSamples<'_> {
                 samples: name,
             }),
         }
-    }
-}
-
-fn validate_dimensions(width: u32, height: u32) -> Result<(), JpegEncodeError> {
-    if width == 0 || height == 0 {
-        return Err(JpegEncodeError::EmptyDimensions);
-    }
-    if width > u16::MAX as u32 || height > u16::MAX as u32 {
-        return Err(JpegEncodeError::DimensionsTooLarge { width, height });
-    }
-    Ok(())
-}
-
-fn sampling_for(subsampling: JpegSubsampling) -> Sampling {
-    match subsampling {
-        JpegSubsampling::Gray => Sampling {
-            components: 1,
-            h: [1, 0, 0],
-            v: [1, 0, 0],
-            max_h: 1,
-            max_v: 1,
-        },
-        JpegSubsampling::Ybr444 => Sampling {
-            components: 3,
-            h: [1, 1, 1],
-            v: [1, 1, 1],
-            max_h: 1,
-            max_v: 1,
-        },
-        JpegSubsampling::Ybr422 => Sampling {
-            components: 3,
-            h: [2, 1, 1],
-            v: [1, 1, 1],
-            max_h: 2,
-            max_v: 1,
-        },
-        JpegSubsampling::Ybr420 => Sampling {
-            components: 3,
-            h: [2, 1, 1],
-            v: [2, 1, 1],
-            max_h: 2,
-            max_v: 2,
-        },
     }
 }
 
@@ -463,11 +377,11 @@ fn encode_entropy(
     planes: &[Vec<u8>],
     width: u32,
     height: u32,
-    sampling: Sampling,
+    sampling: JpegBaselineSampling,
     q_luma: &[u8; 64],
     q_chroma: &[u8; 64],
-    dc_tables: [&HuffmanEncoder; 2],
-    ac_tables: [&HuffmanEncoder; 2],
+    dc_tables: [&JpegBaselineHuffmanTable; 2],
+    ac_tables: [&JpegBaselineHuffmanTable; 2],
     cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
 ) -> Result<Vec<u8>, JpegEncodeError> {
@@ -495,11 +409,11 @@ fn encode_entropy_serial(
     planes: &[Vec<u8>],
     width: u32,
     height: u32,
-    sampling: Sampling,
+    sampling: JpegBaselineSampling,
     q_luma: &[u8; 64],
     q_chroma: &[u8; 64],
-    dc_tables: [&HuffmanEncoder; 2],
-    ac_tables: [&HuffmanEncoder; 2],
+    dc_tables: [&JpegBaselineHuffmanTable; 2],
+    ac_tables: [&JpegBaselineHuffmanTable; 2],
     cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
 ) -> Result<Vec<u8>, JpegEncodeError> {
@@ -563,11 +477,11 @@ fn encode_entropy_restart_segments(
     planes: &[Vec<u8>],
     width: u32,
     height: u32,
-    sampling: Sampling,
+    sampling: JpegBaselineSampling,
     q_luma: &[u8; 64],
     q_chroma: &[u8; 64],
-    dc_tables: [&HuffmanEncoder; 2],
-    ac_tables: [&HuffmanEncoder; 2],
+    dc_tables: [&JpegBaselineHuffmanTable; 2],
+    ac_tables: [&JpegBaselineHuffmanTable; 2],
     cosine: &[[f64; 8]; 8],
     restart_interval: u16,
 ) -> Result<Vec<u8>, JpegEncodeError> {
@@ -624,11 +538,11 @@ fn encode_entropy_mcu_range(
     planes: &[Vec<u8>],
     width: u32,
     height: u32,
-    sampling: Sampling,
+    sampling: JpegBaselineSampling,
     q_luma: &[u8; 64],
     q_chroma: &[u8; 64],
-    dc_tables: [&HuffmanEncoder; 2],
-    ac_tables: [&HuffmanEncoder; 2],
+    dc_tables: [&JpegBaselineHuffmanTable; 2],
+    ac_tables: [&JpegBaselineHuffmanTable; 2],
     cosine: &[[f64; 8]; 8],
     mcus_per_row: u32,
     start_mcu: u32,
@@ -676,7 +590,7 @@ fn sample_block(
     planes: &[Vec<u8>],
     width: u32,
     height: u32,
-    sampling: Sampling,
+    sampling: JpegBaselineSampling,
     component: usize,
     mcu_x: u32,
     mcu_y: u32,
@@ -751,38 +665,51 @@ fn fdct_quantize(block: &[u8; 64], quant: &[u8; 64], cosine: &[[f64; 8]; 8]) -> 
 fn encode_block(
     coeffs: &[i32; 64],
     prev_dc: &mut i32,
-    dc_table: &HuffmanEncoder,
-    ac_table: &HuffmanEncoder,
+    dc_table: &JpegBaselineHuffmanTable,
+    ac_table: &JpegBaselineHuffmanTable,
     writer: &mut BitWriter,
 ) -> Result<(), JpegEncodeError> {
     let diff = coeffs[0] - *prev_dc;
     *prev_dc = coeffs[0];
     let dc_size = magnitude_category(diff);
-    dc_table.write_symbol(dc_size, writer)?;
+    write_huffman_symbol(dc_table, dc_size, writer)?;
     if dc_size > 0 {
         writer.write_bits(magnitude_bits(diff, dc_size), dc_size);
     }
 
     let mut zero_run = 0u8;
     for k in 1..64 {
-        let coeff = coeffs[ZIGZAG[k] as usize];
+        let coeff = coeffs[JPEG_BASELINE_ZIGZAG[k] as usize];
         if coeff == 0 {
             zero_run = zero_run.saturating_add(1);
             continue;
         }
         while zero_run >= 16 {
-            ac_table.write_symbol(0xF0, writer)?;
+            write_huffman_symbol(ac_table, 0xF0, writer)?;
             zero_run -= 16;
         }
         let size = magnitude_category(coeff);
         let symbol = (zero_run << 4) | size;
-        ac_table.write_symbol(symbol, writer)?;
+        write_huffman_symbol(ac_table, symbol, writer)?;
         writer.write_bits(magnitude_bits(coeff, size), size);
         zero_run = 0;
     }
     if zero_run > 0 {
-        ac_table.write_symbol(0, writer)?;
+        write_huffman_symbol(ac_table, 0, writer)?;
     }
+    Ok(())
+}
+
+fn write_huffman_symbol(
+    table: &JpegBaselineHuffmanTable,
+    symbol: u8,
+    writer: &mut BitWriter,
+) -> Result<(), JpegEncodeError> {
+    let len = table.lens[symbol as usize];
+    if len == 0 {
+        return Err(JpegEncodeError::MissingHuffmanCode { symbol });
+    }
+    writer.write_bits(table.codes[symbol as usize], len);
     Ok(())
 }
 
@@ -820,184 +747,6 @@ fn cosine_table() -> [[f64; 8]; 8] {
     table
 }
 
-impl HuffmanEncoder {
-    fn new(bits: &[u8; 16], values: &[u8]) -> Result<Self, JpegEncodeError> {
-        let mut codes = [None; 256];
-        let mut code = 0u16;
-        let mut idx = 0usize;
-        for (len_minus_1, count) in bits.iter().copied().enumerate() {
-            let len = (len_minus_1 + 1) as u8;
-            for _ in 0..count {
-                let symbol = *values.get(idx).ok_or_else(|| {
-                    JpegEncodeError::Internal("Huffman table count exceeds values".into())
-                })?;
-                codes[symbol as usize] = Some(HuffmanCode { code, len });
-                code = code
-                    .checked_add(1)
-                    .ok_or_else(|| JpegEncodeError::Internal("Huffman code overflow".into()))?;
-                idx += 1;
-            }
-            code <<= 1;
-        }
-        if idx != values.len() {
-            return Err(JpegEncodeError::Internal(
-                "Huffman values exceed table counts".into(),
-            ));
-        }
-        Ok(Self { codes })
-    }
-
-    fn write_symbol(&self, symbol: u8, writer: &mut BitWriter) -> Result<(), JpegEncodeError> {
-        let code =
-            self.codes[symbol as usize].ok_or(JpegEncodeError::MissingHuffmanCode { symbol })?;
-        writer.write_bits(code.code, code.len);
-        Ok(())
-    }
-}
-
-fn scaled_quant_table(base: &[u8; 64], quality: u8) -> [u8; 64] {
-    let quality = quality.clamp(1, 100);
-    let scale = if quality < 50 {
-        5000 / u32::from(quality)
-    } else {
-        200 - u32::from(quality) * 2
-    };
-    let mut out = [0u8; 64];
-    for (idx, value) in base.iter().copied().enumerate() {
-        let scaled = (u32::from(value) * scale + 50) / 100;
-        out[idx] = scaled.clamp(1, 255) as u8;
-    }
-    out
-}
-
-fn write_marker(out: &mut Vec<u8>, marker: u8) {
-    out.push(0xFF);
-    out.push(marker);
-}
-
-fn write_segment(
-    out: &mut Vec<u8>,
-    marker: u8,
-    payload: &[u8],
-    name: &'static str,
-) -> Result<(), JpegEncodeError> {
-    let len = payload
-        .len()
-        .checked_add(2)
-        .and_then(|value| u16::try_from(value).ok())
-        .ok_or(JpegEncodeError::SegmentTooLarge { name })?;
-    write_marker(out, marker);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(payload);
-    Ok(())
-}
-
-fn write_dqt(out: &mut Vec<u8>, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(65);
-    payload.push(table_id);
-    for &natural_idx in &ZIGZAG {
-        payload.push(quant[natural_idx as usize]);
-    }
-    write_segment(out, 0xDB, &payload, "DQT")
-}
-
-fn write_dri(out: &mut Vec<u8>, restart_interval: u16) -> Result<(), JpegEncodeError> {
-    write_segment(out, 0xDD, &restart_interval.to_be_bytes(), "DRI")
-}
-
-fn write_sof0(
-    out: &mut Vec<u8>,
-    width: u32,
-    height: u32,
-    sampling: Sampling,
-) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(6 + sampling.components as usize * 3);
-    payload.push(8);
-    payload.extend_from_slice(&(height as u16).to_be_bytes());
-    payload.extend_from_slice(&(width as u16).to_be_bytes());
-    payload.push(sampling.components);
-    for component in 0..sampling.components as usize {
-        payload.push((component + 1) as u8);
-        payload.push((sampling.h[component] << 4) | sampling.v[component]);
-        payload.push(u8::from(component != 0));
-    }
-    write_segment(out, 0xC0, &payload, "SOF0")
-}
-
-fn write_dht(
-    out: &mut Vec<u8>,
-    class: u8,
-    table_id: u8,
-    bits: &[u8; 16],
-    values: &[u8],
-) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(17 + values.len());
-    payload.push((class << 4) | table_id);
-    payload.extend_from_slice(bits);
-    payload.extend_from_slice(values);
-    write_segment(out, 0xC4, &payload, "DHT")
-}
-
-fn write_sos(out: &mut Vec<u8>, components: u8) -> Result<(), JpegEncodeError> {
-    let mut payload = Vec::with_capacity(4 + components as usize * 2);
-    payload.push(components);
-    for component in 0..components {
-        payload.push(component + 1);
-        payload.push(if component == 0 { 0x00 } else { 0x11 });
-    }
-    payload.push(0);
-    payload.push(63);
-    payload.push(0);
-    write_segment(out, 0xDA, &payload, "SOS")
-}
-
-const STD_LUMA_Q: [u8; 64] = [
-    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
-    14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113,
-    92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
-];
-
-const STD_CHROMA_Q: [u8; 64] = [
-    17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56, 99, 99, 99, 99, 99,
-    47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
-];
-
-const STD_LUMA_DC_BITS: [u8; 16] = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
-const STD_LUMA_DC_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-const STD_CHROMA_DC_BITS: [u8; 16] = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
-const STD_CHROMA_DC_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-
-const STD_LUMA_AC_BITS: [u8; 16] = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D];
-const STD_LUMA_AC_VALUES: [u8; 162] = [
-    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
-    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
-    0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
-    0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
-    0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
-    0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-    0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-    0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
-    0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
-    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-    0xF9, 0xFA,
-];
-
-const STD_CHROMA_AC_BITS: [u8; 16] = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77];
-const STD_CHROMA_AC_VALUES: [u8; 162] = [
-    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
-    0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,
-    0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26,
-    0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
-    0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
-    0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-    0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
-    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
-    0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA,
-    0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-    0xF9, 0xFA,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,15 +767,14 @@ mod tests {
     fn restart_entropy_segments_match_serial_entropy() {
         let width = 160;
         let height = 80;
-        let sampling = sampling_for(JpegSubsampling::Ybr422);
-        let q_luma = scaled_quant_table(&STD_LUMA_Q, 90);
-        let q_chroma = scaled_quant_table(&STD_CHROMA_Q, 90);
-        let huff_dc_luma = HuffmanEncoder::new(&STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES).unwrap();
-        let huff_ac_luma = HuffmanEncoder::new(&STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES).unwrap();
-        let huff_dc_chroma =
-            HuffmanEncoder::new(&STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES).unwrap();
-        let huff_ac_chroma =
-            HuffmanEncoder::new(&STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES).unwrap();
+        let tables = baseline_encode_tables(JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Ybr422,
+            restart_interval: Some(64),
+            backend: JpegBackend::Cpu,
+        })
+        .unwrap();
+        let sampling = tables.sampling;
         let cosine = cosine_table();
         let pixels = patterned_rgb(width, height);
         let planes = component_planes(
@@ -1044,10 +792,10 @@ mod tests {
             width,
             height,
             sampling,
-            &q_luma,
-            &q_chroma,
-            [&huff_dc_luma, &huff_dc_chroma],
-            [&huff_ac_luma, &huff_ac_chroma],
+            &tables.q_luma,
+            &tables.q_chroma,
+            [&tables.huff_dc_luma, &tables.huff_dc_chroma],
+            [&tables.huff_ac_luma, &tables.huff_ac_chroma],
             &cosine,
             Some(64),
         )
@@ -1057,10 +805,10 @@ mod tests {
             width,
             height,
             sampling,
-            &q_luma,
-            &q_chroma,
-            [&huff_dc_luma, &huff_dc_chroma],
-            [&huff_ac_luma, &huff_ac_chroma],
+            &tables.q_luma,
+            &tables.q_chroma,
+            [&tables.huff_dc_luma, &tables.huff_dc_chroma],
+            [&tables.huff_ac_luma, &tables.huff_ac_chroma],
             &cosine,
             64,
         )
