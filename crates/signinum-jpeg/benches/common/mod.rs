@@ -8,6 +8,7 @@ mod libjpeg_turbo;
 pub(crate) use self::classification::DecodeMode;
 use self::classification::{classify_corpus_input, color_space_mode, CorpusInputClass};
 pub(crate) use self::libjpeg_turbo::TurboJpegDecoder;
+use signinum_core::tile_batch_worker_count;
 use signinum_jpeg::{
     decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, Decoder,
     DecoderContext, Downscale, JpegError, PixelFormat, Rect, RowSink, ScratchPool,
@@ -311,17 +312,17 @@ pub(crate) fn signinum_decode_tile_batch_sequential(bytes: &[u8], batch_size: us
 }
 
 fn signinum_tile_batch_worker_count(batch_size: usize) -> usize {
-    if batch_size <= 1 {
-        return 1;
-    }
     let configured = std::env::var("SIGNINUM_JPEG_BATCH_THREADS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&value| value > 0);
-    let available = configured.unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-    });
-    batch_size.min(available)
+        .and_then(std::num::NonZeroUsize::new);
+    tile_batch_worker_count(
+        batch_size,
+        TileBatchOptions {
+            workers: configured,
+        },
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+    )
 }
 
 fn signinum_decode_tile_batch_worker(bytes: &[u8], tile_count: usize) -> Result<(), JpegError> {

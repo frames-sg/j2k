@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use signinum_core::tile_batch_worker_count;
 use signinum_j2k::{decode_tiles_into, J2kDecoder, PixelFormat, TileBatchOptions, TileDecodeJob};
 use signinum_j2k_compare::{grok, openjpeg};
 
@@ -282,13 +283,11 @@ fn decode_external_once(
     workers: Option<NonZeroUsize>,
     decoder: ExternalDecoder,
 ) -> Result<usize, String> {
-    let worker_count = workers
-        .map_or_else(
-            || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
-            NonZeroUsize::get,
-        )
-        .max(1)
-        .min(tiles.len().max(1));
+    let worker_count = tile_batch_worker_count(
+        tiles.len(),
+        TileBatchOptions { workers },
+        std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+    );
     let chunk_size = tiles.len().div_ceil(worker_count);
     let total_decoded = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);

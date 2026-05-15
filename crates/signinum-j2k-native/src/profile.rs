@@ -2,7 +2,7 @@
 use core::cell::RefCell;
 
 #[cfg(feature = "std")]
-use signinum_profile::{profile_stage_mode_from_value, ProfileStageMode};
+use signinum_profile::{profile_stage_mode_from_env, ProfileStageMode};
 
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -18,7 +18,7 @@ const PROFILE_ENV_VAR: &str = "SIGNINUM_J2K_PROFILE_STAGES";
 #[cfg(feature = "std")]
 #[cfg(test)]
 pub(crate) fn parse_profile_env_flag(value: Option<&str>) -> bool {
-    profile_stage_mode_from_value(value) != ProfileStageMode::Disabled
+    signinum_profile::profile_stage_mode_from_value(value) != ProfileStageMode::Disabled
 }
 
 #[cfg(feature = "std")]
@@ -29,9 +29,7 @@ pub(crate) fn profile_stages_enabled() -> bool {
 #[cfg(feature = "std")]
 fn profile_stage_mode() -> ProfileStageMode {
     static MODE: OnceLock<ProfileStageMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        profile_stage_mode_from_value(std::env::var(PROFILE_ENV_VAR).ok().as_deref())
-    })
+    *MODE.get_or_init(|| profile_stage_mode_from_env(PROFILE_ENV_VAR))
 }
 
 #[cfg(not(feature = "std"))]
@@ -66,26 +64,15 @@ pub(crate) fn elapsed_us(_start: Option<ProfileInstant>) -> u128 {
 }
 
 #[cfg(feature = "std")]
-pub(crate) fn format_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) -> String {
-    signinum_profile::format_profile_row_u128("j2k", op, path, fields)
-}
-
-#[cfg(feature = "std")]
 pub(crate) fn emit_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) {
-    match profile_stage_mode() {
-        ProfileStageMode::Disabled => {}
-        ProfileStageMode::Rows => eprintln!("{}", format_profile_row(op, path, fields)),
-        ProfileStageMode::Summary => {
-            signinum_profile::emit_profile_row_u128(
-                ProfileStageMode::Summary,
-                &PROFILE_SUMMARY,
-                "j2k",
-                op,
-                path,
-                fields,
-            );
-        }
-    }
+    signinum_profile::emit_profile_row_u128(
+        profile_stage_mode(),
+        &PROFILE_SUMMARY,
+        "j2k",
+        op,
+        path,
+        fields,
+    );
 }
 
 #[cfg(not(feature = "std"))]
@@ -110,40 +97,6 @@ mod tests {
         assert!(!parse_profile_env_flag(None));
         assert!(!parse_profile_env_flag(Some("")));
         assert!(!parse_profile_env_flag(Some("0")));
-    }
-
-    #[test]
-    fn formats_profile_row_as_compact_key_value_pairs() {
-        let row = format_profile_row(
-            "encode",
-            "cpu",
-            &[("deinterleave_us", 10), ("mct_us", 0), ("total_us", 42)],
-        );
-
-        assert_eq!(
-            row,
-            "signinum_profile codec=j2k op=encode path=cpu deinterleave_us=10 mct_us=0 total_us=42"
-        );
-    }
-
-    #[test]
-    fn parses_profile_env_flag_summary_mode() {
-        assert_eq!(
-            profile_stage_mode_from_value(Some("summary")),
-            ProfileStageMode::Summary
-        );
-        assert_eq!(
-            profile_stage_mode_from_value(Some("aggregate")),
-            ProfileStageMode::Summary
-        );
-        assert_eq!(
-            profile_stage_mode_from_value(Some("1")),
-            ProfileStageMode::Rows
-        );
-        assert_eq!(
-            profile_stage_mode_from_value(Some("0")),
-            ProfileStageMode::Disabled
-        );
     }
 
     #[test]

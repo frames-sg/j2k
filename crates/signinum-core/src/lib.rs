@@ -10,6 +10,7 @@
 extern crate alloc;
 
 pub mod backend;
+pub mod batch;
 mod buffer;
 pub mod context;
 pub mod error;
@@ -23,6 +24,9 @@ pub mod traits;
 pub mod types;
 
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};
+pub use batch::{
+    collect_indexed_batch_results, tile_batch_worker_count, IndexedBatchResult, TileBatchOptions,
+};
 pub use buffer::copy_tight_pixels_to_strided_output;
 pub use context::{CacheStats, CodecContext, DecoderContext};
 pub use error::{BufferError, CodecError, InputError, NotImplemented, Unsupported};

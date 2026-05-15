@@ -3,11 +3,12 @@ use signinum_core::{
     BufferError, CodecContext, CodecError, CpuFeatures, DecoderContext, DeviceSubmission,
     DeviceSurface, Downscale, ImageCodec, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, ReadySubmission,
-    Rect, SampleType, ScratchPool, TileBatchDecodeManyDevice,
+    Rect, SampleType, ScratchPool, TileBatchDecodeManyDevice, TileBatchOptions,
 };
 use signinum_core::{
     CodedUnitLayout, Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout,
 };
+use std::num::NonZeroUsize;
 
 #[test]
 fn pixel_format_reports_layout_and_sample_type() {
@@ -188,6 +189,69 @@ fn copy_tight_pixels_to_strided_output_rejects_strided_output_overflow() {
             what: "strided output size",
         }
     );
+}
+
+#[test]
+fn tile_batch_worker_count_uses_available_workers_when_unspecified() {
+    assert_eq!(
+        signinum_core::tile_batch_worker_count(8, TileBatchOptions::default(), 4),
+        4
+    );
+}
+
+#[test]
+fn tile_batch_worker_count_clamps_to_batch_size_and_at_least_one_worker() {
+    let options = TileBatchOptions {
+        workers: Some(NonZeroUsize::new(16).expect("nonzero")),
+    };
+
+    assert_eq!(signinum_core::tile_batch_worker_count(3, options, 8), 3);
+    assert_eq!(
+        signinum_core::tile_batch_worker_count(8, TileBatchOptions::default(), 0),
+        1
+    );
+    assert_eq!(
+        signinum_core::tile_batch_worker_count(0, TileBatchOptions::default(), 8),
+        1
+    );
+}
+
+#[test]
+fn collect_indexed_batch_results_restores_input_order() {
+    let results = vec![(2, Ok("two")), (0, Ok("zero")), (1, Ok("one"))];
+
+    let outcomes =
+        signinum_core::collect_indexed_batch_results(3, results, |index, source: &str| {
+            (index, source)
+        })
+        .expect("ordered outcomes");
+
+    assert_eq!(outcomes, ["zero", "one", "two"]);
+}
+
+#[test]
+fn collect_indexed_batch_results_returns_first_error_by_input_index() {
+    let results = vec![
+        (2, Err("later")),
+        (0, Ok("zero")),
+        (1, Err("first")),
+        (3, Ok("three")),
+    ];
+
+    let err =
+        signinum_core::collect_indexed_batch_results(4, results, |index, source| (index, source))
+            .expect_err("first failing input index");
+
+    assert_eq!(err, (1, "first"));
+}
+
+#[test]
+#[should_panic(expected = "indexed batch result index 3 outside job count 3")]
+fn collect_indexed_batch_results_rejects_out_of_bounds_error_index() {
+    let results = vec![(3, Err::<&str, _>("outside"))];
+
+    let _ =
+        signinum_core::collect_indexed_batch_results(3, results, |index, source| (index, source));
 }
 
 #[test]

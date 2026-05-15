@@ -3,7 +3,11 @@
 use core::convert::Infallible;
 use std::num::NonZeroUsize;
 
-use signinum_core::{DecodeOutcome, DecoderContext, Downscale, PixelFormat, Rect, TileBatchDecode};
+pub use signinum_core::TileBatchOptions;
+use signinum_core::{
+    collect_indexed_batch_results, tile_batch_worker_count, DecodeOutcome, DecoderContext,
+    Downscale, IndexedBatchResult, PixelFormat, Rect, TileBatchDecode,
+};
 
 use crate::{CpuDecodeParallelism, J2kCodec, J2kContext, J2kError, J2kScratchPool};
 
@@ -31,13 +35,6 @@ pub struct TileRegionScaledDecodeJob<'i, 'o> {
     pub scale: Downscale,
 }
 
-/// Worker configuration for J2K CPU tile batches.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TileBatchOptions {
-    /// Worker count. `None` uses [`std::thread::available_parallelism`].
-    pub workers: Option<NonZeroUsize>,
-}
-
 /// Error returned by J2K CPU tile batches, annotated with the first failing
 /// tile index from the caller's input order.
 #[derive(Debug)]
@@ -61,7 +58,7 @@ impl std::error::Error for TileBatchError {
 }
 
 type BatchOutcome = DecodeOutcome<Infallible>;
-type IndexedBatchResult = (usize, Result<BatchOutcome, J2kError>);
+type J2kIndexedBatchResult = IndexedBatchResult<BatchOutcome, J2kError>;
 
 /// One-shot parse-plus-decode of an independent J2K/HTJ2K tile into the
 /// caller's buffer, reusing both caller-owned [`DecoderContext`] and
@@ -111,7 +108,7 @@ pub fn decode_tiles_into(
     }
 
     let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options);
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
     let chunk_size = job_count.div_ceil(worker_count);
     let results =
         std::thread::scope(|scope| {
@@ -134,7 +131,10 @@ pub fn decode_tiles_into(
             results
         });
 
-    collect_tile_batch_results(job_count, results)
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
 }
 
 /// Decode independent J2K/HTJ2K tile regions at reduced resolution into
@@ -149,7 +149,7 @@ pub fn decode_tiles_region_scaled_into(
     }
 
     let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options);
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
     let chunk_size = job_count.div_ceil(worker_count);
     let results = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -175,18 +175,14 @@ pub fn decode_tiles_region_scaled_into(
         results
     });
 
-    collect_tile_batch_results(job_count, results)
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
 }
 
-fn tile_batch_worker_count(batch_size: usize, options: TileBatchOptions) -> usize {
-    if batch_size <= 1 {
-        return 1;
-    }
-    let workers = options.workers.map_or_else(
-        || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
-        NonZeroUsize::get,
-    );
-    workers.max(1).min(batch_size)
+fn available_tile_batch_workers() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
 }
 
 fn inner_parallelism_for_batch(batch_size: usize) -> CpuDecodeParallelism {
@@ -202,7 +198,7 @@ fn decode_tile_job_chunk(
     jobs: &mut [TileDecodeJob<'_, '_>],
     fmt: PixelFormat,
     inner_parallelism: CpuDecodeParallelism,
-) -> Vec<IndexedBatchResult> {
+) -> Vec<J2kIndexedBatchResult> {
     let mut ctx = DecoderContext::<J2kContext>::new();
     ctx.codec_mut()
         .set_cpu_decode_parallelism(inner_parallelism);
@@ -221,7 +217,7 @@ fn decode_tile_region_scaled_job_chunk(
     jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
     inner_parallelism: CpuDecodeParallelism,
-) -> Vec<IndexedBatchResult> {
+) -> Vec<J2kIndexedBatchResult> {
     let mut ctx = DecoderContext::<J2kContext>::new();
     ctx.codec_mut()
         .set_cpu_decode_parallelism(inner_parallelism);
@@ -234,35 +230,4 @@ fn decode_tile_region_scaled_job_chunk(
         results.push((start_index + local_index, outcome));
     }
     results
-}
-
-fn collect_tile_batch_results(
-    job_count: usize,
-    results: Vec<IndexedBatchResult>,
-) -> Result<Vec<BatchOutcome>, TileBatchError> {
-    let mut outcomes = Vec::with_capacity(job_count);
-    outcomes.resize_with(job_count, || None);
-    let mut first_error = None::<TileBatchError>;
-    for (index, result) in results {
-        match result {
-            Ok(outcome) => outcomes[index] = Some(outcome),
-            Err(source) => {
-                if first_error
-                    .as_ref()
-                    .is_none_or(|current| index < current.index)
-                {
-                    first_error = Some(TileBatchError { index, source });
-                }
-            }
-        }
-    }
-
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-
-    Ok(outcomes
-        .into_iter()
-        .map(|outcome| outcome.expect("successful batch stores one outcome per tile"))
-        .collect())
 }

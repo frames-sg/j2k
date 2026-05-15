@@ -44,6 +44,11 @@ impl SummaryLabel {
     }
 }
 
+/// Creates same-key summary labels from field keys.
+pub fn same_summary_labels(keys: &[&str]) -> Vec<SummaryLabel> {
+    keys.iter().map(SummaryLabel::same).collect()
+}
+
 /// Returns whether an optional environment value is a recognized truthy flag.
 pub fn env_flag_from_value(value: Option<&str>) -> bool {
     let Some(value) = value else {
@@ -79,6 +84,20 @@ pub fn profile_stage_mode_from_value(value: Option<&str>) -> ProfileStageMode {
     } else {
         ProfileStageMode::Disabled
     }
+}
+
+#[cfg(feature = "std")]
+/// Parses a profiling stage mode from a named environment variable.
+pub fn profile_stage_mode_from_env(key: &str) -> ProfileStageMode {
+    profile_stage_mode_from_value(std::env::var(key).ok().as_deref())
+}
+
+#[cfg(feature = "std")]
+/// Formats a duration as whole microseconds.
+pub fn duration_us_string(duration: std::time::Duration) -> String {
+    let mut value = String::new();
+    write!(value, "{}", duration.as_micros()).expect("writing to String failed");
+    value
 }
 
 /// Formats a profiling row from string fields.
@@ -272,6 +291,23 @@ impl ProfileSummary {
     }
 }
 
+/// Records a string-valued summary row using only configured labels and timing fields.
+pub fn record_timing_summary_str(
+    summary: &mut ProfileSummary,
+    codec: &str,
+    op: &str,
+    path: &str,
+    fields: &[(&str, &str)],
+    summary_label_keys: &[&str],
+) {
+    let summary_fields = fields
+        .iter()
+        .copied()
+        .filter(|(field, _)| summary_label_keys.contains(field) || is_timing_field(field))
+        .collect::<Vec<_>>();
+    summary.record_str(codec, op, path, &summary_fields);
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SummaryNumericMode {
     Aggregate,
@@ -437,6 +473,37 @@ pub fn emit_profile_row_u128<K>(
                     op.as_ref(),
                     path.as_ref(),
                     fields,
+                );
+            });
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+/// Emits string-valued rows, or records a timing-filtered summary row.
+pub fn emit_profile_row_with_timing_summary(
+    mode: ProfileStageMode,
+    summary: &'static std::thread::LocalKey<std::cell::RefCell<ProfileSummary>>,
+    codec: &str,
+    op: &str,
+    path: &str,
+    fields: &[(&str, &str)],
+    summary_label_keys: &[&str],
+) {
+    match mode {
+        ProfileStageMode::Disabled => {}
+        ProfileStageMode::Rows => {
+            std::eprintln!("{}", format_profile_row(codec, op, path, fields));
+        }
+        ProfileStageMode::Summary => {
+            summary.with(|summary| {
+                record_timing_summary_str(
+                    &mut summary.borrow_mut(),
+                    codec,
+                    op,
+                    path,
+                    fields,
+                    summary_label_keys,
                 );
             });
         }
@@ -728,5 +795,121 @@ mod tests {
                 summary.borrow().format_rows()
             );
         });
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn parses_stage_mode_from_named_env_var() {
+        const ENV_KEY: &str = "SIGNINUM_PROFILE_TEST_STAGE_MODE";
+
+        std::env::set_var(ENV_KEY, "summary");
+        assert_eq!(
+            ProfileStageMode::Summary,
+            profile_stage_mode_from_env(ENV_KEY)
+        );
+        std::env::set_var(ENV_KEY, "1");
+        assert_eq!(ProfileStageMode::Rows, profile_stage_mode_from_env(ENV_KEY));
+        std::env::remove_var(ENV_KEY);
+        assert_eq!(
+            ProfileStageMode::Disabled,
+            profile_stage_mode_from_env(ENV_KEY)
+        );
+    }
+
+    #[test]
+    fn builds_same_summary_labels_from_field_keys() {
+        let mut summary = ProfileSummary::new(same_summary_labels(&["mode", "fmt"]));
+        summary.record_str(
+            "jpeg",
+            "decode",
+            "cpu",
+            &[("mode", "full"), ("fmt", "Rgb8"), ("total_us", "5")],
+        );
+
+        assert_eq!(
+            vec![
+                "signinum_profile_summary codec=jpeg op=decode path=cpu mode=full fmt=Rgb8 count=1 total_us_sum=5 total_us_avg=5"
+            ],
+            summary.format_rows()
+        );
+    }
+
+    #[test]
+    fn records_timing_summary_str_with_only_labels_and_timing_fields() {
+        let mut summary = ProfileSummary::new(same_summary_labels(&["mode", "fmt", "downscale"]));
+        record_timing_summary_str(
+            &mut summary,
+            "jpeg",
+            "decode",
+            "cpu",
+            &[
+                ("mode", "full"),
+                ("fmt", "Rgb8"),
+                ("source_width", "16"),
+                ("decode_us", "4"),
+                ("output_bytes", "48"),
+                ("total_us", "6"),
+            ],
+            &["mode", "fmt", "downscale"],
+        );
+        record_timing_summary_str(
+            &mut summary,
+            "jpeg",
+            "decode",
+            "cpu",
+            &[
+                ("mode", "full"),
+                ("fmt", "Rgb8"),
+                ("source_width", "32"),
+                ("decode_us", "8"),
+                ("output_bytes", "96"),
+                ("total_us", "10"),
+            ],
+            &["mode", "fmt", "downscale"],
+        );
+
+        assert_eq!(
+            vec![
+                "signinum_profile_summary codec=jpeg op=decode path=cpu mode=full fmt=Rgb8 count=2 decode_us_sum=12 decode_us_avg=6 total_us_sum=16 total_us_avg=8"
+            ],
+            summary.format_rows()
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn emits_string_profile_rows_with_timing_summary_filter() {
+        thread_local! {
+            static TEST_SUMMARY: RefCell<ProfileSummary> =
+                RefCell::new(ProfileSummary::new(same_summary_labels(&["stage"])));
+        }
+
+        emit_profile_row_with_timing_summary(
+            ProfileStageMode::Summary,
+            &TEST_SUMMARY,
+            "jpeg",
+            "decode",
+            "cpu",
+            &[("stage", "entropy"), ("width", "512"), ("elapsed_us", "9")],
+            &["stage"],
+        );
+
+        TEST_SUMMARY.with(|summary| {
+            assert_eq!(
+                vec![
+                    "signinum_profile_summary codec=jpeg op=decode path=cpu stage=entropy count=1 elapsed_us_sum=9 elapsed_us_avg=9"
+                ],
+                summary.borrow().format_rows()
+            );
+        });
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn formats_duration_as_microsecond_string() {
+        assert_eq!(
+            duration_us_string(std::time::Duration::from_nanos(1_234_567)),
+            "1234"
+        );
     }
 }

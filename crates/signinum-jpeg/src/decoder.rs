@@ -33,10 +33,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::num::NonZeroUsize;
+pub use signinum_core::TileBatchOptions;
 use signinum_core::{
-    CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome,
-    DecodeRowsError, DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeRows, PassthroughCandidate, PixelFormat, RowSink, TileBatchDecode,
+    collect_indexed_batch_results, tile_batch_worker_count, CompressedPayloadKind,
+    CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError,
+    DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
+    IndexedBatchResult, PassthroughCandidate, PixelFormat, RowSink, TileBatchDecode,
 };
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -101,13 +103,6 @@ pub struct TileRegionScaledDecodeJob<'i, 'o> {
     pub roi: Rect,
     /// Downscale factor applied to the region decode.
     pub scale: Downscale,
-}
-
-/// Worker configuration for [`decode_tiles_into`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TileBatchOptions {
-    /// Worker count. `None` uses [`std::thread::available_parallelism`].
-    pub workers: Option<NonZeroUsize>,
 }
 
 /// Error returned by [`decode_tiles_into`], annotated with the failing tile
@@ -1398,7 +1393,7 @@ pub fn decode_tiles_into_with_options(
     }
 
     let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options);
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
     let chunk_size = job_count.div_ceil(worker_count);
     let results = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -1419,7 +1414,10 @@ pub fn decode_tiles_into_with_options(
         results
     });
 
-    collect_tile_batch_results(job_count, results)
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
 }
 
 /// Decode independent JPEG tiles at reduced resolution into caller-owned
@@ -1457,7 +1455,7 @@ pub fn decode_tiles_scaled_into_with_options(
     }
 
     let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options);
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
     let chunk_size = job_count.div_ceil(worker_count);
     let results = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -1478,7 +1476,10 @@ pub fn decode_tiles_scaled_into_with_options(
         results
     });
 
-    collect_tile_batch_results(job_count, results)
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
 }
 
 /// Decode independent JPEG tile regions at reduced resolution into
@@ -1516,7 +1517,7 @@ pub fn decode_tiles_region_scaled_into_with_options(
     }
 
     let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options);
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
     let chunk_size = job_count.div_ceil(worker_count);
     let results = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -1537,49 +1538,14 @@ pub fn decode_tiles_region_scaled_into_with_options(
         results
     });
 
-    collect_tile_batch_results(job_count, results)
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
 }
 
-fn collect_tile_batch_results(
-    job_count: usize,
-    results: Vec<(usize, Result<DecodeOutcome, JpegError>)>,
-) -> Result<Vec<DecodeOutcome>, TileBatchError> {
-    let mut outcomes = Vec::with_capacity(job_count);
-    outcomes.resize_with(job_count, || None);
-    let mut first_error = None::<TileBatchError>;
-    for (index, result) in results {
-        match result {
-            Ok(outcome) => outcomes[index] = Some(outcome),
-            Err(source) => {
-                if first_error
-                    .as_ref()
-                    .is_none_or(|current| index < current.index)
-                {
-                    first_error = Some(TileBatchError { index, source });
-                }
-            }
-        }
-    }
-
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-
-    Ok(outcomes
-        .into_iter()
-        .map(|outcome| outcome.expect("successful batch stores one outcome per tile"))
-        .collect())
-}
-
-fn tile_batch_worker_count(batch_size: usize, options: TileBatchOptions) -> usize {
-    if batch_size <= 1 {
-        return 1;
-    }
-    let workers = options.workers.map_or_else(
-        || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
-        NonZeroUsize::get,
-    );
-    workers.max(1).min(batch_size)
+fn available_tile_batch_workers() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
 }
 
 fn decode_tile_job_chunk(
@@ -1587,7 +1553,7 @@ fn decode_tile_job_chunk(
     jobs: &mut [TileDecodeJob<'_, '_>],
     fmt: PixelFormat,
     options: DecodeOptions,
-) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
     let mut ctx = DecoderContext::new();
     let mut pool = ScratchPool::new();
     let mut results = Vec::with_capacity(jobs.len());
@@ -1605,7 +1571,7 @@ fn decode_tile_scaled_job_chunk(
     jobs: &mut [TileScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
     options: DecodeOptions,
-) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
     let mut ctx = DecoderContext::new();
     let mut pool = ScratchPool::new();
     let mut results = Vec::with_capacity(jobs.len());
@@ -1623,7 +1589,7 @@ fn decode_tile_region_scaled_job_chunk(
     jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
     fmt: PixelFormat,
     options: DecodeOptions,
-) -> Vec<(usize, Result<DecodeOutcome, JpegError>)> {
+) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
     let mut ctx = DecoderContext::new();
     let mut pool = ScratchPool::new();
     let mut results = Vec::with_capacity(jobs.len());
