@@ -899,6 +899,7 @@ dependencies = [
 name = "signinum-core"
 version = "0.4.2"
 dependencies = [
+ "serde_json",
  "thiserror",
 ]
 
