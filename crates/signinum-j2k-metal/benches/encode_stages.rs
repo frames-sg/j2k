@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(target_os = "macos")]
-use signinum_core::PixelFormat;
+use signinum_core::{DeviceSubmission, PixelFormat};
 use signinum_j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
 };
 use signinum_j2k_metal::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use signinum_j2k_metal::{
-    encode_lossless_from_padded_metal_buffer_with_report, MetalBackendSession,
-    MetalLosslessEncodeTile,
+    encode_lossless_from_padded_metal_buffer_with_report,
+    submit_lossless_from_padded_metal_buffers_to_metal_batch, MetalBackendSession,
+    MetalLosslessEncodeConfig, MetalLosslessEncodeTile,
 };
+use signinum_j2k_native::J2kHtCodeBlockEncodeJob;
 use signinum_j2k_native::{J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob};
 
 const BENCH_DIMS: &[u32] = &[512, 1024, 2048];
@@ -203,6 +205,105 @@ fn bench_encode_stages(c: &mut Criterion) {
         }
     }
     encode.finish();
+
+    let mut ht_tier1 = c.benchmark_group("j2k_metal_ht_tier1_code_blocks");
+    for &count in &[192usize, 768] {
+        let blocks = generate_ht_code_block_coefficients(count, 64, 64);
+        ht_tier1.bench_with_input(BenchmarkId::new("cpu", count), &blocks, |b, blocks| {
+            b.iter(|| {
+                blocks
+                    .iter()
+                    .map(|coefficients| {
+                        signinum_j2k_native::encode_ht_code_block_scalar(
+                            black_box(coefficients),
+                            64,
+                            64,
+                            10,
+                        )
+                        .expect("CPU HTJ2K code-block encode")
+                    })
+                    .collect::<Vec<_>>()
+            });
+        });
+
+        if metal_encode_available() {
+            ht_tier1.bench_with_input(BenchmarkId::new("metal", count), &blocks, |b, blocks| {
+                let jobs = blocks
+                    .iter()
+                    .map(|coefficients| J2kHtCodeBlockEncodeJob {
+                        coefficients,
+                        width: 64,
+                        height: 64,
+                        total_bitplanes: 10,
+                    })
+                    .collect::<Vec<_>>();
+                b.iter(|| {
+                    let mut accelerator = MetalEncodeStageAccelerator::default();
+                    let encoded = accelerator
+                        .encode_ht_code_blocks(black_box(&jobs))
+                        .expect("Metal HTJ2K Tier-1 batch")
+                        .expect("Metal HTJ2K Tier-1 dispatch");
+                    assert_eq!(encoded.len(), jobs.len());
+                    encoded
+                });
+            });
+        }
+    }
+    ht_tier1.finish();
+
+    #[cfg(target_os = "macos")]
+    if metal_encode_available() {
+        let mut htj2k_batch = c.benchmark_group("j2k_metal_htj2k_rpcl_rgb8_512_batch");
+        let session = MetalBackendSession::system_default().expect("Metal session");
+        let pixels = generate_rgb8_pixels(512, 512);
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+        let options = J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::RequireDevice,
+            validation: J2kEncodeValidation::External,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            progression: J2kProgressionOrder::Rpcl,
+            ..J2kLosslessEncodeOptions::default()
+        };
+        let config = MetalLosslessEncodeConfig {
+            gpu_encode_inflight_tiles: None,
+            gpu_encode_memory_budget_bytes: None,
+        };
+        for &count in &[16usize, 64, 128] {
+            htj2k_batch.bench_with_input(
+                BenchmarkId::new("resident_metal", count),
+                &count,
+                |b, &count| {
+                    b.iter(|| {
+                        let requests = (0..count)
+                            .map(|_| MetalLosslessEncodeTile {
+                                buffer: &buffer,
+                                byte_offset: 0,
+                                width: 512,
+                                height: 512,
+                                pitch_bytes: 512 * 3,
+                                output_width: 512,
+                                output_height: 512,
+                                format: PixelFormat::Rgb8,
+                            })
+                            .collect::<Vec<_>>();
+                        let submitted = submit_lossless_from_padded_metal_buffers_to_metal_batch(
+                            black_box(&requests),
+                            &options,
+                            &session,
+                            config,
+                        )
+                        .expect("submit resident Metal HTJ2K RPCL batch");
+                        let outcome = submitted
+                            .wait()
+                            .expect("wait resident Metal HTJ2K RPCL batch");
+                        assert_eq!(outcome.outcomes.len(), count);
+                        black_box(outcome.stats)
+                    });
+                },
+            );
+        }
+        htj2k_batch.finish();
+    }
 }
 
 fn metal_encode_available() -> bool {
@@ -257,6 +358,23 @@ fn generate_rgb8_pixels(width: u32, height: u32) -> Vec<u8> {
         }
     }
     pixels
+}
+
+fn generate_ht_code_block_coefficients(count: usize, width: usize, height: usize) -> Vec<Vec<i32>> {
+    (0..count)
+        .map(|block| {
+            (0..width * height)
+                .map(|idx| {
+                    let raw = ((idx * 37 + block * 19 + idx / 11) & 0x3ff) as i32 - 512;
+                    if (idx + block) % 23 == 0 || idx % 41 == 0 {
+                        0
+                    } else {
+                        raw
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]

@@ -92,3 +92,57 @@ kernel void j2k_forward_rct(
         status->detail = 0;
     }
 }
+
+kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(
+    device const uchar *src [[buffer(0)]],
+    device float *plane0 [[buffer(1)]],
+    device float *plane1 [[buffer(2)]],
+    device float *plane2 [[buffer(3)]],
+    constant J2kLosslessDeinterleaveParams &params [[buffer(4)]],
+    device J2kMctStatus *status [[buffer(5)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.dst_width || gid.y >= params.dst_height) {
+        return;
+    }
+
+    const bool inside_src = gid.x < params.src_width && gid.y < params.src_height;
+    const uint src_base = gid.y * params.src_stride + gid.x * 3u;
+    const uint dst_idx = gid.y * params.dst_width + gid.x;
+    const float r = j2k_lossless_load_sample(
+        src,
+        src_base,
+        0u,
+        3u,
+        1u,
+        params.sample_offset,
+        inside_src
+    );
+    const float g = j2k_lossless_load_sample(
+        src,
+        src_base,
+        1u,
+        3u,
+        1u,
+        params.sample_offset,
+        inside_src
+    );
+    const float b = j2k_lossless_load_sample(
+        src,
+        src_base,
+        2u,
+        3u,
+        1u,
+        params.sample_offset,
+        inside_src
+    );
+
+    plane0[dst_idx] = floor((r + 2.0f * g + b) * 0.25f);
+    plane1[dst_idx] = b - g;
+    plane2[dst_idx] = r - g;
+
+    if (gid.x == 0u && gid.y == 0u) {
+        status->code = J2K_MCT_STATUS_OK;
+        status->detail = 0;
+    }
+}

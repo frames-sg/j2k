@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     mem::{size_of, size_of_val},
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(target_os = "macos")]
@@ -54,6 +54,7 @@ static HT_BATCH_COEFFICIENT_COPY_BLITS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 std::thread_local! {
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
+    static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static HT_SIMD_PROTOTYPE_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
 }
@@ -76,6 +77,16 @@ pub(crate) fn reset_private_buffer_pool_misses_for_test() {
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn private_buffer_pool_misses_for_test() -> usize {
     PRIVATE_BUFFER_POOL_MISSES.with(Cell::get)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_lossless_deinterleave_rct_fused_dispatches_for_test() {
+    LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES.with(|dispatches| dispatches.set(0));
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn lossless_deinterleave_rct_fused_dispatches_for_test() -> usize {
+    LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -1202,8 +1213,9 @@ fn ht_simd_prototype_env_requested() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn metal_profile_stages_enabled() -> bool {
-    env_flag_enabled(METAL_PROFILE_STAGES_ENV)
+pub(crate) fn metal_profile_stages_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_STAGES_ENV))
 }
 
 #[cfg(target_os = "macos")]
@@ -1521,6 +1533,7 @@ struct MetalRuntime {
     validate_bytes_equal: ComputePipelineState,
     copy_interleaved_padded: ComputePipelineState,
     lossless_deinterleave_to_planes: ComputePipelineState,
+    lossless_deinterleave_rct_rgb8_to_planes: ComputePipelineState,
     lossless_extract_coefficients: ComputePipelineState,
     pack_gray8: ComputePipelineState,
     pack_rgb8: ComputePipelineState,
@@ -1724,6 +1737,9 @@ impl MetalRuntime {
             validate_bytes_equal: pipeline("j2k_validate_bytes_equal")?,
             copy_interleaved_padded: pipeline("j2k_copy_interleaved_padded")?,
             lossless_deinterleave_to_planes: pipeline("j2k_lossless_deinterleave_to_planes")?,
+            lossless_deinterleave_rct_rgb8_to_planes: pipeline(
+                "j2k_lossless_deinterleave_rct_rgb8_to_planes",
+            )?,
             lossless_extract_coefficients: pipeline("j2k_lossless_extract_coefficients")?,
             pack_gray8: pipeline("j2k_pack_gray8")?,
             pack_rgb8: pipeline("j2k_pack_rgb8")?,
@@ -6622,6 +6638,21 @@ pub(crate) struct J2kResidentClassicBatchEncodeItem {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct J2kResidentEncodeStageStats {
+    pub(crate) ht_table_build_duration: Duration,
+    pub(crate) ht_buffer_allocation_duration: Duration,
+    pub(crate) ht_command_encode_duration: Duration,
+    pub(crate) code_block_count: usize,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct J2kResidentLosslessCodestreamBatchResult {
+    pub(crate) codestreams: Vec<J2kResidentLosslessCodestream>,
+    pub(crate) stage_stats: J2kResidentEncodeStageStats,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
     device: Device,
     buffer: Buffer,
@@ -6632,6 +6663,7 @@ pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
     retained_command_buffers: Vec<CommandBuffer>,
     _retained_buffers: Vec<Buffer>,
     recyclable_private_buffers: Vec<(usize, Buffer)>,
+    stage_stats: J2kResidentEncodeStageStats,
     status_stage: &'static str,
     length_error: &'static str,
     capacity_error: &'static str,
@@ -6702,12 +6734,13 @@ pub(crate) fn wait_resident_lossless_codestream(
 #[cfg(target_os = "macos")]
 pub(crate) fn wait_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
-) -> Result<Vec<J2kResidentLosslessCodestream>, Error> {
+) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
     pending.command_buffer.wait_until_completed();
     let gpu_duration = completed_command_buffers_gpu_duration(
         &pending.retained_command_buffers,
         &pending.command_buffer,
     );
+    let stage_stats = pending.stage_stats;
     let recyclable_private_buffers = pending.recyclable_private_buffers;
     with_runtime_for_device(&pending.device, |runtime| {
         recycle_private_buffers(runtime, recyclable_private_buffers);
@@ -6750,7 +6783,10 @@ pub(crate) fn wait_resident_lossless_codestream_batch(
             gpu_duration: gpu_duration_share,
         });
     }
-    Ok(codestreams)
+    Ok(J2kResidentLosslessCodestreamBatchResult {
+        codestreams,
+        stage_stats,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -6862,6 +6898,87 @@ fn dispatch_lossless_deinterleave(
     );
     encoder.end_encoding();
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_lossless_deinterleave_rct_rgb8(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    job: J2kLosslessDevicePrepareJob<'_>,
+    plane0: &Buffer,
+    plane1: &Buffer,
+    plane2: &Buffer,
+    status_buffer: &Buffer,
+) -> Result<(), Error> {
+    let input_byte_offset =
+        u64::try_from(job.input_byte_offset).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal resident encode input offset exceeds u64".to_string(),
+        })?;
+    let src_stride = u32::try_from(job.input_pitch_bytes).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal resident encode input pitch exceeds u32".to_string(),
+    })?;
+    let sample_offset = if job.bit_depth == 0 || job.bit_depth > 16 {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal resident encode bit depth must be 1-16".to_string(),
+        });
+    } else {
+        1u32 << (u32::from(job.bit_depth) - 1)
+    };
+    let params = J2kLosslessDeinterleaveParams {
+        src_width: job.input_width,
+        src_height: job.input_height,
+        src_stride,
+        dst_width: job.output_width,
+        dst_height: job.output_height,
+        components: u32::from(job.components),
+        bytes_per_sample: u32::from(job.bytes_per_sample),
+        sample_offset,
+    };
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K input deinterleave + RCT");
+    encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_rct_rgb8_to_planes);
+    encoder.set_buffer(0, Some(job.input), input_byte_offset);
+    encoder.set_buffer(1, Some(plane0), 0);
+    encoder.set_buffer(2, Some(plane1), 0);
+    encoder.set_buffer(3, Some(plane2), 0);
+    encoder.set_bytes(
+        4,
+        size_of::<J2kLosslessDeinterleaveParams>() as u64,
+        (&raw const params).cast(),
+    );
+    encoder.set_buffer(5, Some(status_buffer), 0);
+    let width = runtime
+        .lossless_deinterleave_rct_rgb8_to_planes
+        .thread_execution_width()
+        .max(1);
+    let max_threads = runtime
+        .lossless_deinterleave_rct_rgb8_to_planes
+        .max_total_threads_per_threadgroup()
+        .max(width);
+    let height = (max_threads / width).max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job.output_width),
+            height: u64::from(job.output_height),
+            depth: 1,
+        },
+        MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    #[cfg(test)]
+    LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES.with(|dispatches| {
+        dispatches.set(dispatches.get().saturating_add(1));
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_deinterleave_rct_rgb8_supported(job: J2kLosslessDevicePrepareJob<'_>) -> bool {
+    job.components == 3 && job.bytes_per_sample == 1
 }
 
 #[cfg(target_os = "macos")]
@@ -7066,11 +7183,6 @@ fn lossless_prepare_sizes(
             reason: "J2K Metal resident encode supports 8-bit or 16-bit samples",
         });
     }
-    if job.num_decomposition_levels > 1 {
-        return Err(Error::UnsupportedMetalRequest {
-            reason: "J2K Metal resident encode currently supports up to one DWT level",
-        });
-    }
     let plane_len = (job.output_width as usize)
         .checked_mul(job.output_height as usize)
         .ok_or_else(|| Error::MetalKernel {
@@ -7131,15 +7243,27 @@ pub(crate) fn prepare_lossless_device_code_blocks(
         );
         let command_buffer = runtime.queue.new_command_buffer();
 
-        dispatch_lossless_deinterleave(
-            runtime,
-            command_buffer,
-            job,
-            &plane_buffers[0],
-            &plane_buffers[1],
-            &plane_buffers[2],
-        )?;
-        if job.components == 3 {
+        if lossless_deinterleave_rct_rgb8_supported(job) {
+            dispatch_lossless_deinterleave_rct_rgb8(
+                runtime,
+                command_buffer,
+                job,
+                &plane_buffers[0],
+                &plane_buffers[1],
+                &plane_buffers[2],
+                &status_buffer,
+            )?;
+        } else {
+            dispatch_lossless_deinterleave(
+                runtime,
+                command_buffer,
+                job,
+                &plane_buffers[0],
+                &plane_buffers[1],
+                &plane_buffers[2],
+            )?;
+        }
+        if job.components == 3 && !lossless_deinterleave_rct_rgb8_supported(job) {
             dispatch_forward_rct_on_buffers(
                 runtime,
                 command_buffer,
@@ -7281,21 +7405,33 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                 MTLResourceOptions::StorageModeShared,
             );
 
-            dispatch_lossless_deinterleave(
-                runtime,
-                command_buffer,
-                job,
-                &plane_buffers[0],
-                &plane_buffers[1],
-                &plane_buffers[2],
-            )
+            if lossless_deinterleave_rct_rgb8_supported(job) {
+                dispatch_lossless_deinterleave_rct_rgb8(
+                    runtime,
+                    command_buffer,
+                    job,
+                    &plane_buffers[0],
+                    &plane_buffers[1],
+                    &plane_buffers[2],
+                    &status_buffer,
+                )
+            } else {
+                dispatch_lossless_deinterleave(
+                    runtime,
+                    command_buffer,
+                    job,
+                    &plane_buffers[0],
+                    &plane_buffers[1],
+                    &plane_buffers[2],
+                )
+            }
             .map_err(|err| Error::MetalKernel {
                 message: format!(
                     "J2K Metal resident batch coefficient prep failed at tile {}: {err}",
                     item.tile_index
                 ),
             })?;
-            if job.components == 3 {
+            if job.components == 3 && !lossless_deinterleave_rct_rgb8_supported(job) {
                 dispatch_forward_rct_on_buffers(
                     runtime,
                     command_buffer,
@@ -12660,6 +12796,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
     }
 
     with_runtime_for_device(&session.device, |runtime| {
+        let profile_stages = metal_profile_stages_enabled();
+        let mut stage_stats = J2kResidentEncodeStageStats::default();
+        let mut ht_table_build_duration = Duration::ZERO;
+        let mut ht_command_encode_duration = Duration::ZERO;
+        let mut ht_table_build_started = profile_stages.then(Instant::now);
         let command_buffer = runtime.queue.new_command_buffer();
         label_command_buffer(command_buffer, "signinum-j2k htj2k resident encode batch");
         let mut retained_command_buffers = Vec::with_capacity(prepared_tiles.len());
@@ -12784,8 +12925,12 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         let tier1_job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K Metal batch Tier-1 job count exceeds u32".to_string(),
         })?;
+        if let Some(started) = ht_table_build_started.take() {
+            ht_table_build_duration = ht_table_build_duration.saturating_add(started.elapsed());
+        }
         let kernel = HtEncodeCodeBlocksKernel::from_env(runtime);
         if tier1_job_count > 0 {
+            let command_encode_started = profile_stages.then(Instant::now);
             let encoder = command_buffer.new_compute_command_encoder();
             label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
             let pipeline = kernel.pipeline(runtime)?;
@@ -12804,8 +12949,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             );
             kernel.dispatch(encoder, pipeline, tier1_job_count);
             encoder.end_encoding();
+            if let Some(started) = command_encode_started {
+                ht_command_encode_duration =
+                    ht_command_encode_duration.saturating_add(started.elapsed());
+            }
         }
 
+        ht_table_build_started = profile_stages.then(Instant::now);
         let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
         let mut packet_subbands = Vec::<J2kPacketSubband>::new();
         let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
@@ -13180,6 +13330,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 })?;
         }
 
+        if let Some(started) = ht_table_build_started.take() {
+            ht_table_build_duration = ht_table_build_duration.saturating_add(started.elapsed());
+        }
+        let ht_buffer_allocation_started = profile_stages.then(Instant::now);
         let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
         let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
         let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
@@ -13220,7 +13374,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             (assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
+        if let Some(started) = ht_buffer_allocation_started {
+            stage_stats.ht_buffer_allocation_duration = started.elapsed();
+        }
 
+        let command_encode_started = profile_stages.then(Instant::now);
         let resident_block_params = J2kResidentPacketBlockParams {
             block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
                 message: "HTJ2K Metal batch resident block count exceeds u32".to_string(),
@@ -13317,6 +13475,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         );
         encoder.end_encoding();
         command_buffer.commit();
+        if let Some(started) = command_encode_started {
+            ht_command_encode_duration =
+                ht_command_encode_duration.saturating_add(started.elapsed());
+        }
 
         for tile in prepared_tiles {
             retained_command_buffers.push(tile.prepare_command_buffer);
@@ -13344,6 +13506,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         retained_buffers.push(packet_status_buffer);
         retained_buffers.push(codestream_job_buffer);
 
+        stage_stats.ht_table_build_duration = ht_table_build_duration;
+        stage_stats.ht_command_encode_duration = ht_command_encode_duration;
+        stage_stats.code_block_count = tier1_jobs.len();
+
         Ok(J2kPendingResidentLosslessCodestreamBatch {
             device: runtime.device.clone(),
             buffer: codestream_buffer,
@@ -13354,6 +13520,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             retained_command_buffers,
             _retained_buffers: retained_buffers,
             recyclable_private_buffers,
+            stage_stats,
             status_stage: "HTJ2K batched codestream assembly",
             length_error: "HTJ2K Metal batched codestream output length exceeds usize",
             capacity_error: "HTJ2K Metal batched codestream output length exceeds buffer",
@@ -14125,6 +14292,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             retained_command_buffers,
             _retained_buffers: retained_buffers,
             recyclable_private_buffers,
+            stage_stats: J2kResidentEncodeStageStats::default(),
             status_stage: "J2K batched codestream assembly",
             length_error: "J2K Metal batched codestream output length exceeds usize",
             capacity_error: "J2K Metal batched codestream output length exceeds buffer",
