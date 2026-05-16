@@ -547,6 +547,66 @@ pub struct MetalLosslessEncodeConfig {
     pub gpu_encode_memory_budget_bytes: Option<usize>,
 }
 
+/// Optional resident Metal encode stage timings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MetalLosslessEncodeStageStats {
+    pub plan_duration: Duration,
+    pub prepare_submit_duration: Duration,
+    pub ht_table_build_duration: Duration,
+    pub ht_buffer_allocation_duration: Duration,
+    pub ht_command_encode_duration: Duration,
+    pub codestream_wait_duration: Duration,
+    pub chunk_count: usize,
+    pub tile_count: usize,
+    pub code_block_count: usize,
+}
+
+impl MetalLosslessEncodeStageStats {
+    pub fn has_timings(&self) -> bool {
+        self.plan_duration > Duration::ZERO
+            || self.prepare_submit_duration > Duration::ZERO
+            || self.ht_table_build_duration > Duration::ZERO
+            || self.ht_buffer_allocation_duration > Duration::ZERO
+            || self.ht_command_encode_duration > Duration::ZERO
+            || self.codestream_wait_duration > Duration::ZERO
+    }
+
+    fn add_assign(&mut self, other: Self) {
+        self.plan_duration = self.plan_duration.saturating_add(other.plan_duration);
+        self.prepare_submit_duration = self
+            .prepare_submit_duration
+            .saturating_add(other.prepare_submit_duration);
+        self.ht_table_build_duration = self
+            .ht_table_build_duration
+            .saturating_add(other.ht_table_build_duration);
+        self.ht_buffer_allocation_duration = self
+            .ht_buffer_allocation_duration
+            .saturating_add(other.ht_buffer_allocation_duration);
+        self.ht_command_encode_duration = self
+            .ht_command_encode_duration
+            .saturating_add(other.ht_command_encode_duration);
+        self.codestream_wait_duration = self
+            .codestream_wait_duration
+            .saturating_add(other.codestream_wait_duration);
+        self.chunk_count = self.chunk_count.saturating_add(other.chunk_count);
+        self.tile_count = self.tile_count.saturating_add(other.tile_count);
+        self.code_block_count = self.code_block_count.saturating_add(other.code_block_count);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStats {
+    fn from(stats: compute::J2kResidentEncodeStageStats) -> Self {
+        Self {
+            ht_table_build_duration: stats.ht_table_build_duration,
+            ht_buffer_allocation_duration: stats.ht_buffer_allocation_duration,
+            ht_command_encode_duration: stats.ht_command_encode_duration,
+            code_block_count: stats.code_block_count,
+            ..Self::default()
+        }
+    }
+}
+
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeBatchStats {
@@ -557,6 +617,7 @@ pub struct MetalLosslessEncodeBatchStats {
     pub estimated_peak_bytes_per_tile: usize,
     pub max_observed_inflight_tiles: usize,
     pub encode_wall_duration: Duration,
+    pub stage_stats: MetalLosslessEncodeStageStats,
 }
 
 /// Resident Metal lossless J2K/HTJ2K tile batch output and batch-level metrics.
@@ -576,6 +637,11 @@ pub struct SubmittedJ2kLosslessMetalEncodeBatch {
 }
 
 #[cfg(target_os = "macos")]
+pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
+    state: SubmittedJ2kLosslessMetalBufferEncodeBatchState,
+}
+
+#[cfg(target_os = "macos")]
 enum SubmittedJ2kLosslessMetalEncodeBatchState {
     Ready(Vec<EncodedJ2k>),
     Deferred {
@@ -584,6 +650,17 @@ enum SubmittedJ2kLosslessMetalEncodeBatchState {
         session: crate::MetalBackendSession,
         staging: MetalEncodeInputStaging,
         config: MetalLosslessEncodeConfig,
+    },
+}
+
+#[cfg(target_os = "macos")]
+enum SubmittedJ2kLosslessMetalBufferEncodeBatchState {
+    Resident(Box<SubmittedResidentLosslessMetalBufferEncodeBatch>),
+    Deferred {
+        tiles: Vec<OwnedMetalLosslessEncodeTile>,
+        options: J2kLosslessEncodeOptions,
+        session: crate::MetalBackendSession,
+        staging: MetalEncodeInputStaging,
     },
 }
 
@@ -638,6 +715,11 @@ pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     _private: (),
 }
 
+#[cfg(not(target_os = "macos"))]
+pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
+    _private: (),
+}
+
 #[cfg(target_os = "macos")]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncode {
     type Output = EncodedJ2k;
@@ -682,6 +764,28 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
+    type Output = MetalLosslessBufferEncodeBatchOutcome;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        match self.state {
+            SubmittedJ2kLosslessMetalBufferEncodeBatchState::Resident(submitted) => {
+                wait_submitted_resident_lossless_buffer_encode_batch(*submitted)
+            }
+            SubmittedJ2kLosslessMetalBufferEncodeBatchState::Deferred {
+                tiles,
+                options,
+                session,
+                staging,
+            } => encode_owned_lossless_tiles_to_metal_buffer_fallback_batch(
+                &tiles, options, &session, staging,
+            ),
+        }
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncode {
     type Output = EncodedJ2k;
@@ -696,6 +800,17 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalEncode {
 #[cfg(not(target_os = "macos"))]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
     type Output = Vec<EncodedJ2k>;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        let _ = self;
+        Err(crate::Error::MetalUnavailable)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
+    type Output = MetalLosslessBufferEncodeBatchOutcome;
     type Error = crate::Error;
 
     fn wait(self) -> Result<Self::Output, Self::Error> {
@@ -912,19 +1027,29 @@ pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
-pub fn encode_lossless_from_metal_buffers_to_metal_batch(
+pub fn submit_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    encode_lossless_tiles_to_metal_buffer_batch(
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    submit_lossless_tiles_to_metal_buffer_batch(
         tiles,
         *options,
         session,
         MetalEncodeInputStaging::CopyAndPad,
         config,
     )
+}
+
+#[cfg(target_os = "macos")]
+pub fn encode_lossless_from_metal_buffers_to_metal_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    config: MetalLosslessEncodeConfig,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    submit_lossless_from_metal_buffers_to_metal_batch(tiles, options, session, config)?.wait()
 }
 
 #[cfg(target_os = "macos")]
@@ -1010,19 +1135,30 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
-pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
+pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    encode_lossless_tiles_to_metal_buffer_batch(
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    submit_lossless_tiles_to_metal_buffer_batch(
         tiles,
         *options,
         session,
         MetalEncodeInputStaging::AlreadyPaddedContiguous,
         config,
     )
+}
+
+#[cfg(target_os = "macos")]
+pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    config: MetalLosslessEncodeConfig,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    submit_lossless_from_padded_metal_buffers_to_metal_batch(tiles, options, session, config)?
+        .wait()
 }
 
 #[cfg(target_os = "macos")]
@@ -1113,25 +1249,58 @@ fn encode_lossless_owned_tiles_with_report(
 }
 
 #[cfg(target_os = "macos")]
-fn encode_lossless_tiles_to_metal_buffer_batch(
+fn submit_lossless_tiles_to_metal_buffer_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
     config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
     if options.backend != EncodeBackendPreference::CpuOnly {
-        if let Some(batch) = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
+        if let Some(submitted) = try_submit_resident_lossless_tiles_to_metal_buffer_batch(
             tiles, options, session, staging, config,
         )? {
-            return Ok(batch);
+            return Ok(SubmittedJ2kLosslessMetalBufferEncodeBatch {
+                state: SubmittedJ2kLosslessMetalBufferEncodeBatchState::Resident(Box::new(
+                    submitted,
+                )),
+            });
         }
     }
 
-    let mut outcomes = Vec::with_capacity(tiles.len());
+    let mut owned = Vec::with_capacity(tiles.len());
     for &tile in tiles {
+        validate_metal_encode_tile(tile)?;
+        if matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous) {
+            lossless_sample_shape(tile.format)?;
+            validate_padded_contiguous_metal_encode_tile(tile, tile.format.bytes_per_pixel())?;
+        }
+        owned.push(OwnedMetalLosslessEncodeTile::from_tile(tile));
+    }
+    Ok(SubmittedJ2kLosslessMetalBufferEncodeBatch {
+        state: SubmittedJ2kLosslessMetalBufferEncodeBatchState::Deferred {
+            tiles: owned,
+            options,
+            session: session.clone(),
+            staging,
+        },
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn encode_owned_lossless_tiles_to_metal_buffer_fallback_batch(
+    tiles: &[OwnedMetalLosslessEncodeTile],
+    options: J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    staging: MetalEncodeInputStaging,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    let mut outcomes = Vec::with_capacity(tiles.len());
+    for tile in tiles {
         outcomes.push(encode_lossless_tile_to_metal_buffer_with_report(
-            tile, options, session, staging,
+            tile.as_tile(),
+            options,
+            session,
+            staging,
         )?);
     }
     Ok(MetalLosslessBufferEncodeBatchOutcome {
@@ -1141,20 +1310,25 @@ fn encode_lossless_tiles_to_metal_buffer_batch(
 }
 
 #[cfg(target_os = "macos")]
-fn try_encode_resident_lossless_tiles_to_metal_buffer_batch(
+fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
     config: MetalLosslessEncodeConfig,
-) -> Result<Option<MetalLosslessBufferEncodeBatchOutcome>, crate::Error> {
+) -> Result<Option<SubmittedResidentLosslessMetalBufferEncodeBatch>, crate::Error> {
+    let profile_stages = compute::metal_profile_stages_enabled();
     if tiles.is_empty() {
-        return Ok(Some(MetalLosslessBufferEncodeBatchOutcome {
-            outcomes: Vec::new(),
+        return Ok(Some(SubmittedResidentLosslessMetalBufferEncodeBatch {
+            options,
+            session: session.clone(),
             stats: resolve_lossless_encode_config(0, 1, config)?,
+            encode_started: Instant::now(),
+            kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
         }));
     }
 
+    let plan_started = profile_stages.then(Instant::now);
     let mut planned = Vec::with_capacity(tiles.len());
     for (index, &tile) in tiles.iter().enumerate() {
         let Some(item) = plan_resident_lossless_buffer_encode(index, tile, options, staging)?
@@ -1168,31 +1342,62 @@ fn try_encode_resident_lossless_tiles_to_metal_buffer_batch(
         .map(PlannedResidentLosslessBufferEncode::estimated_peak_bytes)
         .max()
         .unwrap_or(1);
+    let uniform_resident_mode = planned.iter().all(|planned| {
+        planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::HighThroughput
+    }) || planned
+        .iter()
+        .all(|planned| planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::Classic);
+    if !uniform_resident_mode {
+        return Ok(None);
+    }
     let mut stats =
         resolve_lossless_encode_config(tiles.len(), estimated_peak_bytes_per_tile, config)?;
+    if let Some(started) = plan_started {
+        stats.stage_stats.plan_duration = started.elapsed();
+    }
     let encode_started = Instant::now();
-    let outcomes = encode_planned_resident_lossless_tiles(
+    let kind = submit_planned_resident_lossless_tiles(
         planned,
-        options,
         session,
         stats.effective_inflight_tiles,
         &mut stats,
     )?;
-    stats.encode_wall_duration = encode_started.elapsed();
-    Ok(Some(MetalLosslessBufferEncodeBatchOutcome {
-        outcomes,
+    Ok(Some(SubmittedResidentLosslessMetalBufferEncodeBatch {
+        options,
+        session: session.clone(),
         stats,
+        encode_started,
+        kind,
     }))
 }
 
+#[cfg(target_os = "macos")]
+fn try_encode_resident_lossless_tiles_to_metal_buffer_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    staging: MetalEncodeInputStaging,
+    config: MetalLosslessEncodeConfig,
+) -> Result<Option<MetalLosslessBufferEncodeBatchOutcome>, crate::Error> {
+    let Some(submitted) = try_submit_resident_lossless_tiles_to_metal_buffer_batch(
+        tiles, options, session, staging, config,
+    )?
+    else {
+        return Ok(None);
+    };
+    wait_submitted_resident_lossless_buffer_encode_batch(submitted).map(Some)
+}
+
 #[cfg(any(test, target_os = "macos"))]
-const GPU_ENCODE_DEFAULT_INFLIGHT_TILES: usize = 64;
+const GPU_ENCODE_DEFAULT_INFLIGHT_TILES: usize = 512;
 #[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_FALLBACK_HW_MEM_BYTES: usize = 8 * 1024 * 1024 * 1024;
 #[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_MAX_DEFAULT_MEMORY_BUDGET_BYTES: usize = 10 * 1024 * 1024 * 1024;
 #[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_MEMORY_BUDGET_PERCENT: usize = 40;
+#[cfg(any(test, target_os = "macos"))]
+const RESIDENT_HT_DEFAULT_CHUNK_CODE_BLOCKS: usize = 131_072;
 
 #[cfg(any(test, target_os = "macos"))]
 fn default_gpu_encode_memory_budget_bytes_for_hw_mem(hw_memsize: usize) -> usize {
@@ -1273,6 +1478,7 @@ fn resolve_lossless_encode_config(
         estimated_peak_bytes_per_tile,
         max_observed_inflight_tiles: 0,
         encode_wall_duration: Duration::ZERO,
+        stage_stats: MetalLosslessEncodeStageStats::default(),
     })
 }
 
@@ -1293,6 +1499,60 @@ fn checked_add_bytes(lhs: usize, rhs: usize) -> usize {
 #[cfg(target_os = "macos")]
 fn checked_mul_bytes(lhs: usize, rhs: usize) -> usize {
     lhs.saturating_mul(rhs)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn resident_lossless_code_block_chunk_cap(code_block_counts: &[usize]) -> usize {
+    code_block_counts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(RESIDENT_HT_DEFAULT_CHUNK_CODE_BLOCKS)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn resident_lossless_chunk_ranges_from_code_blocks(
+    code_block_counts: &[usize],
+    max_tiles: usize,
+    max_code_blocks: usize,
+) -> Vec<std::ops::Range<usize>> {
+    if code_block_counts.is_empty() {
+        return Vec::new();
+    }
+    let max_tiles = max_tiles.max(1);
+    let max_code_blocks = max_code_blocks.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    while start < code_block_counts.len() {
+        let mut end = start;
+        let mut chunk_code_blocks = 0usize;
+        while end < code_block_counts.len() && end - start < max_tiles {
+            let next_code_blocks = code_block_counts[end].max(1);
+            let would_exceed_code_blocks =
+                end > start && chunk_code_blocks.saturating_add(next_code_blocks) > max_code_blocks;
+            if would_exceed_code_blocks {
+                break;
+            }
+            chunk_code_blocks = chunk_code_blocks.saturating_add(next_code_blocks);
+            end += 1;
+        }
+        if end == start {
+            end += 1;
+        }
+        ranges.push(start..end);
+        start = end;
+    }
+    ranges
+}
+
+#[cfg(test)]
+fn resident_lossless_chunk_ranges_for_test(
+    code_block_counts: &[usize],
+    max_tiles: usize,
+    max_code_blocks: usize,
+) -> Vec<std::ops::Range<usize>> {
+    resident_lossless_chunk_ranges_from_code_blocks(code_block_counts, max_tiles, max_code_blocks)
 }
 
 #[cfg(target_os = "macos")]
@@ -1360,15 +1620,26 @@ impl PlannedResidentLosslessBufferEncode {
 }
 
 #[cfg(target_os = "macos")]
-enum ResidentLosslessTier1 {
-    Classic(compute::J2kResidentLosslessTier1CodeBlocks),
-    HighThroughput(compute::J2kResidentLosslessHtCodeBlocks),
+struct SubmittedResidentLosslessMetalBufferEncodeBatch {
+    options: J2kLosslessEncodeOptions,
+    session: crate::MetalBackendSession,
+    stats: MetalLosslessEncodeBatchStats,
+    encode_started: Instant,
+    kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind,
 }
 
 #[cfg(target_os = "macos")]
-struct SubmittedResidentLosslessBufferEncode {
-    metadata: ResidentLosslessBufferEncodeMetadata,
-    pending_codestream: compute::J2kPendingResidentLosslessCodestream,
+enum SubmittedResidentLosslessMetalBufferEncodeBatchKind {
+    Empty,
+    Chunks(Vec<SubmittedResidentLosslessMetalBufferEncodeChunk>),
+}
+
+#[cfg(target_os = "macos")]
+struct SubmittedResidentLosslessMetalBufferEncodeChunk {
+    metadatas: Vec<ResidentLosslessBufferEncodeMetadata>,
+    prepare_durations: Vec<Duration>,
+    pending: compute::J2kPendingResidentLosslessCodestreamBatch,
+    batch_started: Instant,
 }
 
 #[cfg(target_os = "macos")]
@@ -1411,6 +1682,15 @@ fn lossless_device_encode_levels(width: u32, height: u32, options: J2kLosslessEn
             };
             requested.min(max_levels)
         })
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct LosslessDwtLevelPlan {
+    low_width: u32,
+    low_height: u32,
+    high_width: u32,
+    high_height: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1487,6 +1767,32 @@ fn push_lossless_subband_plan(
 }
 
 #[cfg(target_os = "macos")]
+fn lossless_dwt_level_plans(
+    width: u32,
+    height: u32,
+    num_decomposition_levels: u8,
+) -> Vec<LosslessDwtLevelPlan> {
+    let mut levels = Vec::with_capacity(usize::from(num_decomposition_levels));
+    let mut current_width = width;
+    let mut current_height = height;
+    for _ in 0..num_decomposition_levels {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let high_width = current_width / 2;
+        let high_height = current_height / 2;
+        levels.push(LosslessDwtLevelPlan {
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        });
+        current_width = low_width;
+        current_height = low_height;
+    }
+    levels
+}
+
+#[cfg(target_os = "macos")]
 fn lossless_device_encode_plan(
     width: u32,
     height: u32,
@@ -1501,9 +1807,6 @@ fn lossless_device_encode_plan(
         return Ok(None);
     }
     let num_decomposition_levels = lossless_device_encode_levels(width, height, options);
-    if num_decomposition_levels > 1 {
-        return Ok(None);
-    }
     let progression_order = match options.progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
         J2kProgressionOrder::Rpcl => EncodeProgressionOrder::Rpcl,
@@ -1515,6 +1818,7 @@ fn lossless_device_encode_plan(
     let mut component_resolutions = Vec::<Vec<LosslessResolutionPlan>>::new();
     for component in 0..components {
         let mut component_packets = Vec::new();
+        let dwt_levels = lossless_dwt_level_plans(width, height, num_decomposition_levels);
         let mut base_packet = LosslessResolutionPlan {
             subbands: Vec::new(),
         };
@@ -1535,10 +1839,9 @@ fn lossless_device_encode_plan(
             )?;
             component_packets.push(base_packet);
         } else {
-            let low_width = width.div_ceil(2);
-            let low_height = height.div_ceil(2);
-            let high_width = width / 2;
-            let high_height = height / 2;
+            let final_ll = dwt_levels
+                .last()
+                .expect("nonzero DWT level count has a final LL level");
             push_lossless_subband_plan(
                 &mut base_packet,
                 &mut code_blocks,
@@ -1547,60 +1850,62 @@ fn lossless_device_encode_plan(
                     component: u32::from(component),
                     subband_x: 0,
                     subband_y: 0,
-                    width: low_width,
-                    height: low_height,
+                    width: final_ll.low_width,
+                    height: final_ll.low_height,
                     sub_band_type: J2kSubBandType::LowLow,
                     total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_sub(1),
                 },
             )?;
             component_packets.push(base_packet);
 
-            let mut detail_packet = LosslessResolutionPlan {
-                subbands: Vec::new(),
-            };
-            push_lossless_subband_plan(
-                &mut detail_packet,
-                &mut code_blocks,
-                &mut coefficient_offset,
-                LosslessSubbandInput {
-                    component: u32::from(component),
-                    subband_x: low_width,
-                    subband_y: 0,
-                    width: high_width,
-                    height: low_height,
-                    sub_band_type: J2kSubBandType::HighLow,
-                    total_bitplanes: guard_bits.saturating_add(bit_depth),
-                },
-            )?;
-            push_lossless_subband_plan(
-                &mut detail_packet,
-                &mut code_blocks,
-                &mut coefficient_offset,
-                LosslessSubbandInput {
-                    component: u32::from(component),
-                    subband_x: 0,
-                    subband_y: low_height,
-                    width: low_width,
-                    height: high_height,
-                    sub_band_type: J2kSubBandType::LowHigh,
-                    total_bitplanes: guard_bits.saturating_add(bit_depth),
-                },
-            )?;
-            push_lossless_subband_plan(
-                &mut detail_packet,
-                &mut code_blocks,
-                &mut coefficient_offset,
-                LosslessSubbandInput {
-                    component: u32::from(component),
-                    subband_x: low_width,
-                    subband_y: low_height,
-                    width: high_width,
-                    height: high_height,
-                    sub_band_type: J2kSubBandType::HighHigh,
-                    total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_add(1),
-                },
-            )?;
-            component_packets.push(detail_packet);
+            for level in dwt_levels.iter().rev().copied() {
+                let mut detail_packet = LosslessResolutionPlan {
+                    subbands: Vec::new(),
+                };
+                push_lossless_subband_plan(
+                    &mut detail_packet,
+                    &mut code_blocks,
+                    &mut coefficient_offset,
+                    LosslessSubbandInput {
+                        component: u32::from(component),
+                        subband_x: level.low_width,
+                        subband_y: 0,
+                        width: level.high_width,
+                        height: level.low_height,
+                        sub_band_type: J2kSubBandType::HighLow,
+                        total_bitplanes: guard_bits.saturating_add(bit_depth),
+                    },
+                )?;
+                push_lossless_subband_plan(
+                    &mut detail_packet,
+                    &mut code_blocks,
+                    &mut coefficient_offset,
+                    LosslessSubbandInput {
+                        component: u32::from(component),
+                        subband_x: 0,
+                        subband_y: level.low_height,
+                        width: level.low_width,
+                        height: level.high_height,
+                        sub_band_type: J2kSubBandType::LowHigh,
+                        total_bitplanes: guard_bits.saturating_add(bit_depth),
+                    },
+                )?;
+                push_lossless_subband_plan(
+                    &mut detail_packet,
+                    &mut code_blocks,
+                    &mut coefficient_offset,
+                    LosslessSubbandInput {
+                        component: u32::from(component),
+                        subband_x: level.low_width,
+                        subband_y: level.low_height,
+                        width: level.high_width,
+                        height: level.high_height,
+                        sub_band_type: J2kSubBandType::HighHigh,
+                        total_bitplanes: guard_bits.saturating_add(bit_depth).saturating_add(1),
+                    },
+                )?;
+                component_packets.push(detail_packet);
+            }
         }
         component_resolutions.push(component_packets);
     }
@@ -1959,48 +2264,6 @@ fn estimated_tier1_output_bytes(plan: &LosslessDeviceEncodePlan) -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn encode_prepared_resident_lossless_tier1(
-    prepared: PreparedResidentLosslessBufferEncode,
-    session: &crate::MetalBackendSession,
-) -> Result<(ResidentLosslessBufferEncodeMetadata, ResidentLosslessTier1), crate::Error> {
-    let tier1 = match prepared.metadata.plan.block_coding_mode {
-        J2kBlockCodingMode::Classic => ResidentLosslessTier1::Classic(
-            compute::encode_classic_tier1_prepared_device_code_blocks_resident(
-                session,
-                prepared.prepared,
-            )?,
-        ),
-        J2kBlockCodingMode::HighThroughput => ResidentLosslessTier1::HighThroughput(
-            compute::encode_ht_prepared_device_code_blocks_resident(session, prepared.prepared)?,
-        ),
-    };
-
-    Ok((prepared.metadata, tier1))
-}
-
-#[cfg(target_os = "macos")]
-fn resident_packetization_job_for_metadata(
-    metadata: &ResidentLosslessBufferEncodeMetadata,
-) -> Result<compute::J2kResidentPacketizationEncodeJob<'_>, crate::Error> {
-    Ok(compute::J2kResidentPacketizationEncodeJob {
-        resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
-            crate::Error::MetalKernel {
-                message: "J2K Metal resident encode resolution count exceeds u32".to_string(),
-            }
-        })?,
-        num_layers: 1,
-        num_components: metadata.plan.components,
-        code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
-            crate::Error::MetalKernel {
-                message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
-            }
-        })?,
-        packet_descriptors: &metadata.packet_descriptors,
-        resolutions: &metadata.packetization_resolutions,
-    })
-}
-
-#[cfg(target_os = "macos")]
 fn resident_codestream_assembly_job_for_metadata(
     metadata: &ResidentLosslessBufferEncodeMetadata,
 ) -> compute::J2kLosslessCodestreamAssemblyJob {
@@ -2025,49 +2288,56 @@ fn resident_codestream_assembly_job_for_metadata(
 }
 
 #[cfg(target_os = "macos")]
-fn submit_resident_lossless_buffer_encode(
-    metadata: ResidentLosslessBufferEncodeMetadata,
-    tier1: &ResidentLosslessTier1,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedResidentLosslessBufferEncode, crate::Error> {
-    let packetization_job = resident_packetization_job_for_metadata(&metadata)?;
-    let assembly_job = resident_codestream_assembly_job_for_metadata(&metadata);
-    let pending_codestream = match tier1 {
-        ResidentLosslessTier1::Classic(tier1) => {
-            compute::submit_lossless_codestream_buffer_from_resident_classic_tier1(
-                session,
-                tier1,
-                packetization_job,
-                assembly_job,
-            )?
+fn wait_submitted_resident_lossless_buffer_encode_batch(
+    mut submitted: SubmittedResidentLosslessMetalBufferEncodeBatch,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    let mut outcomes = Vec::new();
+    match submitted.kind {
+        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => {}
+        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => {
+            outcomes.reserve(chunks.iter().map(|chunk| chunk.metadatas.len()).sum());
+            for chunk in chunks {
+                let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
+                let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
+                if let Some(started) = wait_started {
+                    submitted.stats.stage_stats.codestream_wait_duration = submitted
+                        .stats
+                        .stage_stats
+                        .codestream_wait_duration
+                        .saturating_add(started.elapsed());
+                    submitted
+                        .stats
+                        .stage_stats
+                        .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
+                }
+                let codestreams = batch.codestreams;
+                let batch_duration =
+                    duration_share(chunk.batch_started.elapsed(), codestreams.len());
+                for ((metadata, prepare_duration), codestream) in chunk
+                    .metadatas
+                    .into_iter()
+                    .zip(chunk.prepare_durations)
+                    .zip(codestreams)
+                {
+                    let finished = finished_resident_lossless_buffer_encode(
+                        metadata,
+                        codestream,
+                        prepare_duration.saturating_add(batch_duration),
+                    );
+                    outcomes.push(validate_finished_resident_lossless_buffer_encode(
+                        finished,
+                        submitted.options,
+                        &submitted.session,
+                    )?);
+                }
+            }
         }
-        ResidentLosslessTier1::HighThroughput(tier1) => {
-            compute::submit_lossless_codestream_buffer_from_resident_ht_tier1(
-                session,
-                tier1,
-                packetization_job,
-                assembly_job,
-            )?
-        }
-    };
-    Ok(SubmittedResidentLosslessBufferEncode {
-        metadata,
-        pending_codestream,
+    }
+    submitted.stats.encode_wall_duration = submitted.encode_started.elapsed();
+    Ok(MetalLosslessBufferEncodeBatchOutcome {
+        outcomes,
+        stats: submitted.stats,
     })
-}
-
-#[cfg(target_os = "macos")]
-fn wait_submitted_resident_lossless_buffer_encode(
-    submitted: SubmittedResidentLosslessBufferEncode,
-) -> Result<FinishedResidentLosslessBufferEncode, crate::Error> {
-    let encode_started = Instant::now();
-    let codestream = compute::wait_resident_lossless_codestream(submitted.pending_codestream)?;
-    let encode_duration = encode_started.elapsed();
-    Ok(finished_resident_lossless_buffer_encode(
-        submitted.metadata,
-        codestream,
-        encode_duration,
-    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -2223,22 +2493,20 @@ where
 }
 
 #[cfg(target_os = "macos")]
-fn encode_planned_resident_lossless_tiles(
+fn submit_planned_resident_lossless_tiles(
     planned: Vec<PlannedResidentLosslessBufferEncode>,
-    options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
+) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
     if planned.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty);
     }
     if planned.iter().all(|planned| {
         planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::HighThroughput
     }) {
-        return encode_planned_resident_ht_lossless_tiles_batch(
+        return submit_planned_resident_ht_lossless_tiles_batch(
             planned,
-            options,
             session,
             inflight_tiles,
             stats,
@@ -2248,27 +2516,14 @@ fn encode_planned_resident_lossless_tiles(
         .iter()
         .all(|planned| planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::Classic)
     {
-        return encode_planned_resident_classic_lossless_tiles_batch(
+        return submit_planned_resident_classic_lossless_tiles_batch(
             planned,
-            options,
             session,
             inflight_tiles,
             stats,
         );
     }
-
-    let encoded = collect_inflight_limited_ordered(planned, inflight_tiles, |_, planned| {
-        let index = planned.index;
-        encode_planned_resident_lossless_tile(planned, options, session).map_err(|err| {
-            crate::Error::MetalKernel {
-                message: format!("J2K Metal resident encode failed at tile {index}: {err}"),
-            }
-        })
-    })?;
-    stats.max_observed_inflight_tiles = stats
-        .max_observed_inflight_tiles
-        .max(encoded.max_observed_inflight_items);
-    Ok(encoded.items)
+    Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty)
 }
 
 #[cfg(target_os = "macos")]
@@ -2348,86 +2603,125 @@ fn prepare_planned_resident_ht_lossless_tiles_batch(
 }
 
 #[cfg(target_os = "macos")]
-fn encode_planned_resident_ht_lossless_tiles_batch(
-    planned: Vec<PlannedResidentLosslessBufferEncode>,
-    options: J2kLosslessEncodeOptions,
+fn submit_planned_resident_ht_lossless_tiles_batch(
+    mut planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
+) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
     let planned_len = planned.len();
-    let prepared =
-        prepare_planned_resident_ht_lossless_tiles_batch(planned, session).map_err(|err| {
-            crate::Error::MetalKernel {
-                message: format!("J2K Metal resident HT batch encode failed: {err}"),
-            }
-        })?;
+    let profile_stages = compute::metal_profile_stages_enabled();
+    let code_block_counts = planned
+        .iter()
+        .map(|planned| planned.metadata.plan.code_blocks.len())
+        .collect::<Vec<_>>();
+    let chunk_ranges = resident_lossless_chunk_ranges_from_code_blocks(
+        &code_block_counts,
+        inflight_tiles,
+        resident_lossless_code_block_chunk_cap(&code_block_counts),
+    );
+    if profile_stages {
+        stats.stage_stats.chunk_count = stats
+            .stage_stats
+            .chunk_count
+            .saturating_add(chunk_ranges.len());
+        stats.stage_stats.tile_count = stats.stage_stats.tile_count.saturating_add(planned_len);
+    }
     stats.max_observed_inflight_tiles = stats.max_observed_inflight_tiles.max(
-        planned_len
-            .min(inflight_tiles)
-            .max(usize::from(planned_len > 0)),
+        chunk_ranges
+            .iter()
+            .map(std::ops::Range::len)
+            .max()
+            .unwrap_or(0),
     );
 
-    let mut metadatas = Vec::with_capacity(prepared.len());
-    let mut prepare_durations = Vec::with_capacity(prepared.len());
-    let mut batch_items = Vec::with_capacity(prepared.len());
-    for item in prepared {
-        let PreparedResidentLosslessBatchItem {
-            prepared,
-            prepare_duration,
-        } = item;
-        let metadata = prepared.metadata;
-        let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
-        batch_items.push(compute::J2kResidentHtBatchEncodeItem {
-            prepared: prepared.prepared,
-            resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
-                crate::Error::MetalKernel {
-                    message: "J2K Metal resident encode resolution count exceeds u32".to_string(),
-                }
-            })?,
-            num_layers: 1,
-            num_components: metadata.plan.components,
-            code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
-                crate::Error::MetalKernel {
-                    message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
-                }
-            })?,
-            packet_descriptors: metadata.packet_descriptors.clone(),
-            resolutions: metadata.packetization_resolutions.clone(),
-            codestream,
+    let mut chunks = Vec::with_capacity(chunk_ranges.len());
+    for range in chunk_ranges {
+        let take = range.len();
+        let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
+        let prepare_submit_started = profile_stages.then(Instant::now);
+        let prepared = prepare_planned_resident_ht_lossless_tiles_batch(chunk_planned, session)
+            .map_err(|err| crate::Error::MetalKernel {
+                message: format!("J2K Metal resident HT batch encode failed: {err}"),
+            })?;
+
+        let mut metadatas = Vec::with_capacity(prepared.len());
+        let mut prepare_durations = Vec::with_capacity(prepared.len());
+        let mut batch_items = Vec::with_capacity(prepared.len());
+        for item in prepared {
+            let PreparedResidentLosslessBatchItem {
+                prepared,
+                prepare_duration,
+            } = item;
+            let metadata = prepared.metadata;
+            let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
+            batch_items.push(compute::J2kResidentHtBatchEncodeItem {
+                prepared: prepared.prepared,
+                resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode resolution count exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                num_layers: 1,
+                num_components: metadata.plan.components,
+                code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode code-block count exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                packet_descriptors: metadata.packet_descriptors.clone(),
+                resolutions: metadata.packetization_resolutions.clone(),
+                codestream,
+            });
+            prepare_durations.push(prepare_duration);
+            metadatas.push(metadata);
+        }
+
+        let batch_started = Instant::now();
+        let pending = compute::submit_lossless_codestream_buffers_from_prepared_ht_batch(
+            session,
+            batch_items,
+        )?;
+        if let Some(started) = prepare_submit_started {
+            stats.stage_stats.prepare_submit_duration = stats
+                .stage_stats
+                .prepare_submit_duration
+                .saturating_add(started.elapsed());
+        }
+        chunks.push(SubmittedResidentLosslessMetalBufferEncodeChunk {
+            metadatas,
+            prepare_durations,
+            pending,
+            batch_started,
         });
-        prepare_durations.push(prepare_duration);
-        metadatas.push(metadata);
     }
 
-    let batch_started = Instant::now();
-    let pending =
-        compute::submit_lossless_codestream_buffers_from_prepared_ht_batch(session, batch_items)?;
-    let codestreams = compute::wait_resident_lossless_codestream_batch(pending)?;
-    let batch_duration = duration_share(batch_started.elapsed(), codestreams.len());
-    metadatas
-        .into_iter()
-        .zip(prepare_durations)
-        .zip(codestreams)
-        .map(|((metadata, prepare_duration), codestream)| {
-            let finished = finished_resident_lossless_buffer_encode(
-                metadata,
-                codestream,
-                prepare_duration.saturating_add(batch_duration),
-            );
-            validate_finished_resident_lossless_buffer_encode(finished, options, session)
-        })
-        .collect()
+    if !planned.is_empty() {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal resident HT batch chunking left unsubmitted tiles".to_string(),
+        });
+    }
+
+    if chunks.is_empty() && planned_len > 0 {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal resident HT batch chunking produced no chunks".to_string(),
+        });
+    }
+
+    Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(
+        chunks,
+    ))
 }
 
 #[cfg(target_os = "macos")]
-fn encode_planned_resident_classic_lossless_tiles_batch(
+fn submit_planned_resident_classic_lossless_tiles_batch(
     planned: Vec<PlannedResidentLosslessBufferEncode>,
-    options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
+) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
     let prepared = collect_inflight_limited_ordered(planned, inflight_tiles, |_, planned| {
         let index = planned.index;
         let started = Instant::now();
@@ -2477,7 +2771,7 @@ fn encode_planned_resident_classic_lossless_tiles_batch(
     }
 
     let batch_limit = inflight_tiles.max(1);
-    let mut outcomes = Vec::with_capacity(metadatas.len());
+    let mut chunks = Vec::new();
     while !batch_items.is_empty() {
         let take = batch_items.len().min(batch_limit);
         let chunk_items = batch_items.drain(..take).collect();
@@ -2488,24 +2782,16 @@ fn encode_planned_resident_classic_lossless_tiles_batch(
             session,
             chunk_items,
         )?;
-        let codestreams = compute::wait_resident_lossless_codestream_batch(pending)?;
-        let batch_duration = duration_share(batch_started.elapsed(), codestreams.len());
-        for ((metadata, prepare_duration), codestream) in chunk_metadatas
-            .into_iter()
-            .zip(chunk_prepare_durations)
-            .zip(codestreams)
-        {
-            let finished = finished_resident_lossless_buffer_encode(
-                metadata,
-                codestream,
-                prepare_duration.saturating_add(batch_duration),
-            );
-            outcomes.push(validate_finished_resident_lossless_buffer_encode(
-                finished, options, session,
-            )?);
-        }
+        chunks.push(SubmittedResidentLosslessMetalBufferEncodeChunk {
+            metadatas: chunk_metadatas,
+            prepare_durations: chunk_prepare_durations,
+            pending,
+            batch_started,
+        });
     }
-    Ok(outcomes)
+    Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(
+        chunks,
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -2582,21 +2868,6 @@ impl Drop for ActiveTileGuard<'_> {
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::AcqRel);
     }
-}
-
-#[cfg(target_os = "macos")]
-fn encode_planned_resident_lossless_tile(
-    planned: PlannedResidentLosslessBufferEncode,
-    options: J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
-    let encode_started = Instant::now();
-    let prepared = prepare_planned_resident_lossless_tile(planned, session)?;
-    let (metadata, tier1) = encode_prepared_resident_lossless_tier1(prepared, session)?;
-    let submitted = submit_resident_lossless_buffer_encode(metadata, &tier1, session)?;
-    let mut finished = wait_submitted_resident_lossless_buffer_encode(submitted)?;
-    finished.encode_duration = encode_started.elapsed();
-    validate_finished_resident_lossless_buffer_encode(finished, options, session)
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -3206,6 +3477,17 @@ pub fn encode_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+pub fn submit_lossless_from_metal_buffers_to_metal_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    config: MetalLosslessEncodeConfig,
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    let _ = (tiles, options, session, config);
+    Err(crate::Error::MetalUnavailable)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn encode_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3262,6 +3544,17 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     session: &crate::MetalBackendSession,
     config: MetalLosslessEncodeConfig,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    let _ = (tiles, options, session, config);
+    Err(crate::Error::MetalUnavailable)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    config: MetalLosslessEncodeConfig,
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
     let _ = (tiles, options, session, config);
     Err(crate::Error::MetalUnavailable)
 }
@@ -3625,6 +3918,69 @@ mod tests {
         assert_submit_single_fn(crate::submit_lossless_from_padded_metal_buffer);
         assert_submit_batch_fn(crate::submit_lossless_from_metal_buffers);
         assert_submit_batch_fn(crate::submit_lossless_from_padded_metal_buffers);
+    }
+
+    #[test]
+    fn submitted_lossless_metal_buffer_encode_public_api_is_available() {
+        fn assert_buffer_batch_submission<
+            S: DeviceSubmission<
+                Output = super::MetalLosslessBufferEncodeBatchOutcome,
+                Error = crate::Error,
+            >,
+        >() {
+        }
+        fn assert_submit_buffer_batch_fn(
+            _submit: for<'slice, 'tile, 'options, 'session> fn(
+                &'slice [super::MetalLosslessEncodeTile<'tile>],
+                &'options J2kLosslessEncodeOptions,
+                &'session crate::MetalBackendSession,
+                super::MetalLosslessEncodeConfig,
+            ) -> Result<
+                crate::SubmittedJ2kLosslessMetalBufferEncodeBatch,
+                crate::Error,
+            >,
+        ) {
+        }
+
+        assert_buffer_batch_submission::<crate::SubmittedJ2kLosslessMetalBufferEncodeBatch>();
+        assert_submit_buffer_batch_fn(crate::submit_lossless_from_metal_buffers_to_metal_batch);
+        assert_submit_buffer_batch_fn(
+            crate::submit_lossless_from_padded_metal_buffers_to_metal_batch,
+        );
+    }
+
+    #[test]
+    fn resident_lossless_stage_stats_default_to_zero() {
+        let stats = super::MetalLosslessEncodeBatchStats::default();
+
+        assert_eq!(
+            stats.stage_stats,
+            super::MetalLosslessEncodeStageStats::default()
+        );
+        assert!(!stats.stage_stats.has_timings());
+    }
+
+    #[test]
+    fn resident_lossless_chunk_ranges_respect_inflight_and_code_block_caps() {
+        assert_eq!(
+            super::resident_lossless_chunk_ranges_for_test(&[32, 32, 32, 32, 32], 3, 96),
+            vec![0..3, 3..5]
+        );
+        assert_eq!(
+            super::resident_lossless_chunk_ranges_for_test(&[80, 80, 10], 8, 96),
+            vec![0..1, 1..3]
+        );
+    }
+
+    #[test]
+    fn resident_lossless_default_code_block_cap_allows_large_wsi_chunks() {
+        let code_blocks = vec![192usize; 600];
+        let cap = super::resident_lossless_code_block_chunk_cap(&code_blocks);
+
+        assert_eq!(
+            super::resident_lossless_chunk_ranges_for_test(&code_blocks, 512, cap),
+            vec![0..512, 512..600]
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -4377,6 +4733,126 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn metal_padded_private_rgb8_ht_rpcl_512_encode_preserves_three_dwt_levels_and_stays_resident()
+    {
+        let pixels: Vec<u8> = (0..512 * 512 * 3)
+            .map(|idx| ((idx * 47 + idx / 17) & 0xFF) as u8)
+            .collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+
+        let encoded = super::encode_lossless_from_padded_metal_buffer_to_metal_with_report(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 512,
+                height: 512,
+                pitch_bytes: 512 * 3,
+                output_width: 512,
+                output_height: 512,
+                format: PixelFormat::Rgb8,
+            },
+            &J2kLosslessEncodeOptions {
+                backend: EncodeBackendPreference::RequireDevice,
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                progression: J2kProgressionOrder::Rpcl,
+                ..J2kLosslessEncodeOptions::default()
+            },
+            &session,
+        )
+        .expect("Metal private padded HTJ2K RPCL 512 buffer lossless encode");
+
+        assert!(!encoded.input_copy_used);
+        assert!(encoded.resident.coefficient_prep_used);
+        assert!(encoded.resident.packetization_used);
+        assert!(encoded.resident.codestream_assembly_used);
+        let codestream = encoded
+            .encoded
+            .codestream_bytes()
+            .expect("Metal codestream bytes are CPU-readable");
+        let cod_marker = codestream
+            .windows(2)
+            .position(|window| window == [0xFF, 0x52])
+            .expect("COD marker");
+        assert_eq!(codestream[cod_marker + 5], 0x02);
+        assert_eq!(codestream[cod_marker + 9], 3);
+        assert_eq!(codestream[cod_marker + 12], 0x40);
+        let decoded = Image::new(codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+        assert_eq!(decoded.data, pixels);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_rgb8_ht_batch_uses_fused_deinterleave_rct_kernel() {
+        const WIDTH: usize = 32;
+        const HEIGHT: usize = 32;
+        let first: Vec<u8> = (0..WIDTH * HEIGHT * 3)
+            .map(|idx| ((idx * 29 + idx / 7) & 0xFF) as u8)
+            .collect();
+        let second: Vec<u8> = (0..WIDTH * HEIGHT * 3)
+            .map(|idx| 255u8.wrapping_sub(((idx * 13 + idx / 5) & 0xFF) as u8))
+            .collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let first_buffer = private_buffer_with_bytes(&session, &first);
+        let second_buffer = private_buffer_with_bytes(&session, &second);
+        let tiles = [
+            super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width: WIDTH as u32,
+                height: HEIGHT as u32,
+                pitch_bytes: WIDTH * 3,
+                output_width: WIDTH as u32,
+                output_height: HEIGHT as u32,
+                format: PixelFormat::Rgb8,
+            },
+            super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width: WIDTH as u32,
+                height: HEIGHT as u32,
+                pitch_bytes: WIDTH * 3,
+                output_width: WIDTH as u32,
+                output_height: HEIGHT as u32,
+                format: PixelFormat::Rgb8,
+            },
+        ];
+        let options = J2kLosslessEncodeOptions {
+            backend: EncodeBackendPreference::RequireDevice,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+            ..J2kLosslessEncodeOptions::default()
+        };
+
+        compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
+        let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles, &options, &session,
+        )
+        .expect("Metal RGB8 HTJ2K batch encode");
+
+        assert_eq!(encoded.len(), 2);
+        assert!(
+            compute::lossless_deinterleave_rct_fused_dispatches_for_test() > 0,
+            "RGB8 resident lossless encode should fuse deinterleave and RCT"
+        );
+        for (frame, expected) in encoded.iter().zip([first, second]) {
+            let codestream = frame
+                .encoded
+                .codestream_bytes()
+                .expect("Metal codestream bytes are CPU-readable");
+            let decoded = Image::new(codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+            assert_eq!(decoded.data, expected);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn metal_buffer_lossless_batch_encodes_padded_contiguous_inputs() {
         let first: Vec<u8> = (0..8 * 8 * 3).map(|i| ((i * 7) & 0xFF) as u8).collect();
         let second: Vec<u8> = (0..8 * 8 * 3)
@@ -4846,9 +5322,9 @@ mod tests {
     }
 
     #[test]
-    fn gpu_encode_default_inflight_uses_sixty_four_when_memory_allows() {
+    fn gpu_encode_default_inflight_uses_large_wsi_batch_when_memory_allows() {
         let stats = super::resolve_lossless_encode_config_for_test(
-            100,
+            600,
             1_000,
             super::MetalLosslessEncodeConfig {
                 gpu_encode_inflight_tiles: None,
@@ -4858,7 +5334,7 @@ mod tests {
         .expect("resolved config");
 
         assert_eq!(stats.configured_inflight_tiles, None);
-        assert_eq!(stats.effective_inflight_tiles, 64);
+        assert_eq!(stats.effective_inflight_tiles, 512);
     }
 
     #[test]
