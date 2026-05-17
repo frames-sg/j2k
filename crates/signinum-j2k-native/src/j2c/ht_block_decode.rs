@@ -605,6 +605,605 @@ fn decode_mag_sgn_sample_with_vn(
     (value, v_n)
 }
 
+fn cleanup_symbol_stride(width: u32) -> usize {
+    ((width + 2 + 7) & !7) as usize
+}
+
+fn sigma_stride(width: u32) -> usize {
+    ((width.div_ceil(4) + 2 + 7) & !7) as usize
+}
+
+fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> Option<usize> {
+    if lcup < 2 || coded_data.len() < lcup {
+        return None;
+    }
+
+    let scup = ((coded_data[lcup - 1] as usize) << 4) + usize::from(coded_data[lcup - 2] & 0x0F);
+    if !(2..=lcup).contains(&scup) || scup > 4079 {
+        return None;
+    }
+
+    Some(scup)
+}
+
+#[inline(never)]
+fn decode_cleanup_symbols(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    width: u32,
+    height: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+) -> Option<()> {
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+
+    let mut mel = MelDecoder::new(coded_data, lcup, scup);
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let mut run = mel.get_run()?;
+    let mut c_q = 0u32;
+    let mut row_offset = 0usize;
+    let mut x = 0u32;
+
+    while x < width {
+        let mut vlc_val = vlc.fetch();
+        let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 {
+            run -= 2;
+            t0 = if run == -1 { t0 } else { 0 };
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+        scratch[row_offset] = t0 as u16;
+        x += 2;
+        c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
+        vlc_val = vlc.advance(t0 & 0x7);
+
+        let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 && x < width {
+            run -= 2;
+            t1 = if run == -1 { t1 } else { 0 };
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+        if x >= width {
+            t1 = 0;
+        }
+        scratch[row_offset + 2] = t1 as u16;
+        x += 2;
+        c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
+        vlc_val = vlc.advance(t1 & 0x7);
+
+        let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+        if uvlc_mode == 0xC0 {
+            run -= 2;
+            if run == -1 {
+                uvlc_mode += 0x40;
+            }
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+
+        let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+        vlc_val = vlc.advance(uvlc_entry & 0x7);
+        uvlc_entry >>= 3;
+        let mut len = uvlc_entry & 0xF;
+        let tmp = vlc_val & ((1_u32 << len) - 1);
+        vlc_val = vlc.advance(len);
+        uvlc_entry >>= 4;
+        len = uvlc_entry & 0x7;
+        uvlc_entry >>= 3;
+        scratch[row_offset + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+        scratch[row_offset + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+        row_offset += 4;
+    }
+    scratch[row_offset] = 0;
+    scratch[row_offset + 1] = 0;
+
+    for y in (2..height).step_by(2) {
+        let row_base = (y >> 1) as usize * sstr;
+        let prev_base = row_base - sstr;
+        let mut x = 0u32;
+        let mut c_q = 0u32;
+        let mut row_offset = row_base;
+
+        while x < width {
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
+
+            let mut vlc_val = vlc.fetch();
+            let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+            if c_q == 0 {
+                run -= 2;
+                t0 = if run == -1 { t0 } else { 0 };
+                if run < 0 {
+                    run = mel.get_run()?;
+                }
+            }
+            scratch[row_offset] = t0 as u16;
+            x += 2;
+
+            c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+            c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
+            vlc_val = vlc.advance(t0 & 0x7);
+
+            let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+            if c_q == 0 && x < width {
+                run -= 2;
+                t1 = if run == -1 { t1 } else { 0 };
+                if run < 0 {
+                    run = mel.get_run()?;
+                }
+            }
+            if x >= width {
+                t1 = 0;
+            }
+            scratch[row_offset + 2] = t1 as u16;
+            x += 2;
+
+            c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+            c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
+            vlc_val = vlc.advance(t1 & 0x7);
+
+            let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+            let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+            vlc_val = vlc.advance(uvlc_entry & 0x7);
+            uvlc_entry >>= 3;
+            let mut len = uvlc_entry & 0xF;
+            let tmp = vlc_val & ((1_u32 << len) - 1);
+            vlc_val = vlc.advance(len);
+            uvlc_entry >>= 4;
+            len = uvlc_entry & 0x7;
+            uvlc_entry >>= 3;
+            scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+            scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+            row_offset += 4;
+        }
+
+        scratch[row_offset] = 0;
+        scratch[row_offset + 1] = 0;
+    }
+
+    Some(())
+}
+
+#[inline(never)]
+fn build_sigma_from_cleanup_phase(
+    cleanup: &[u16],
+    sigma: &mut [u16],
+    width: u32,
+    height: u32,
+    sstr: usize,
+    mstr: usize,
+) -> Option<()> {
+    let sigma_rows = height.div_ceil(4) as usize + 1;
+    if sigma.len() < sigma_rows * mstr {
+        return None;
+    }
+
+    let mut y = 0u32;
+    while y < height {
+        let sp_base = (y >> 1) as usize * sstr;
+        let dp_base = (y >> 2) as usize * mstr;
+        let mut x = 0u32;
+        let mut sp = sp_base;
+        let mut dp = dp_base;
+        while x < width {
+            let mut t0 =
+                ((u32::from(cleanup[sp]) & 0x30) >> 4) | ((u32::from(cleanup[sp]) & 0xC0) >> 2);
+            t0 |= ((u32::from(cleanup[sp + 2]) & 0x30) << 4)
+                | ((u32::from(cleanup[sp + 2]) & 0xC0) << 6);
+            let mut t1 = ((u32::from(cleanup[sp + sstr]) & 0x30) >> 2)
+                | (u32::from(cleanup[sp + sstr]) & 0xC0);
+            t1 |= ((u32::from(cleanup[sp + sstr + 2]) & 0x30) << 6)
+                | ((u32::from(cleanup[sp + sstr + 2]) & 0xC0) << 8);
+            sigma[dp] = (t0 | t1) as u16;
+            x += 4;
+            sp += 4;
+            dp += 1;
+        }
+        sigma[dp] = 0;
+        y += 4;
+    }
+
+    let dp_base = (height.div_ceil(4) as usize) * mstr;
+    for x in 0..=width.div_ceil(4) as usize {
+        sigma[dp_base + x] = 0;
+    }
+
+    Some(())
+}
+
+#[inline(never)]
+fn apply_significance_propagation_phase(
+    coded_data: &[u8],
+    lcup: usize,
+    len2: usize,
+    sigma: &[u16],
+    decoded_data: &mut [u32],
+    width: u32,
+    height: u32,
+    stride: u32,
+    mstr: usize,
+    stripe_causal: bool,
+    p: u32,
+    prev_row_sig: &mut [u16],
+) -> Option<()> {
+    if coded_data.len() < lcup.saturating_add(len2)
+        || prev_row_sig.len() < width.div_ceil(4) as usize + 8
+    {
+        return None;
+    }
+
+    prev_row_sig.fill(0);
+    let mut sigprop = ForwardBitReader::<0>::new(&coded_data[lcup..lcup + len2]);
+
+    for y in (0..height).step_by(4) {
+        let mut pattern = 0xFFFFu32;
+        if height - y < 4 {
+            pattern = 0x7777;
+            if height - y < 3 {
+                pattern = 0x3333;
+                if height - y < 2 {
+                    pattern = 0x1111;
+                }
+            }
+        }
+
+        let mut prev = 0u32;
+        let cur_row = (y >> 2) as usize * mstr;
+        let next_row = cur_row + mstr;
+        let dpp = (y * stride) as usize;
+
+        for x in (0..width).step_by(4) {
+            let mut col_pattern = pattern;
+            let mut s = x as i32 + 4 - width as i32;
+            s = s.max(0);
+            col_pattern >>= (s * 4) as u32;
+
+            let idx = (x >> 2) as usize;
+            let ps = u32::from(prev_row_sig[idx]) | (u32::from(prev_row_sig[idx + 1]) << 16);
+            let ns = read_u32_pair(sigma, next_row + idx);
+            let mut u = (ps & 0x8888_8888) >> 3;
+            if !stripe_causal {
+                u |= (ns & 0x1111_1111) << 3;
+            }
+
+            let cs = read_u32_pair(sigma, cur_row + idx);
+            let mut mbr = cs;
+            mbr |= (cs & 0x7777_7777) << 1;
+            mbr |= (cs & 0xEEEE_EEEE) >> 1;
+            mbr |= u;
+            let t = mbr;
+            mbr |= t << 4;
+            mbr |= t >> 4;
+            mbr |= prev >> 12;
+            mbr &= col_pattern;
+            mbr &= !cs;
+
+            let mut new_sig = mbr;
+            if new_sig != 0 {
+                let mut cwd = sigprop.fetch();
+                let mut cnt = 0u32;
+                let mut col_mask = 0xFu32;
+                let inv_sig = !cs & col_pattern;
+
+                for i in (0..16).step_by(4) {
+                    if (col_mask & new_sig) == 0 {
+                        col_mask <<= 4;
+                        continue;
+                    }
+
+                    let mut sample_mask = 0x1111u32 & col_mask;
+                    if (new_sig & sample_mask) != 0 {
+                        new_sig &= !sample_mask;
+                        if (cwd & 1) != 0 {
+                            let t = 0x33u32 << i;
+                            new_sig |= t & inv_sig;
+                        }
+                        cwd >>= 1;
+                        cnt += 1;
+                    }
+
+                    sample_mask <<= 1;
+                    if (new_sig & sample_mask) != 0 {
+                        new_sig &= !sample_mask;
+                        if (cwd & 1) != 0 {
+                            let t = 0x76u32 << i;
+                            new_sig |= t & inv_sig;
+                        }
+                        cwd >>= 1;
+                        cnt += 1;
+                    }
+
+                    sample_mask <<= 1;
+                    if (new_sig & sample_mask) != 0 {
+                        new_sig &= !sample_mask;
+                        if (cwd & 1) != 0 {
+                            let t = 0xECu32 << i;
+                            new_sig |= t & inv_sig;
+                        }
+                        cwd >>= 1;
+                        cnt += 1;
+                    }
+
+                    sample_mask <<= 1;
+                    if (new_sig & sample_mask) != 0 {
+                        new_sig &= !sample_mask;
+                        if (cwd & 1) != 0 {
+                            let t = 0xC8u32 << i;
+                            new_sig |= t & inv_sig;
+                        }
+                        cwd >>= 1;
+                        cnt += 1;
+                    }
+
+                    col_mask <<= 4;
+                }
+
+                if new_sig != 0 {
+                    let mut dp = dpp + x as usize;
+                    let value = 3u32 << (p - 2);
+                    let mut col_mask = 0xFu32;
+
+                    for _ in 0..4 {
+                        if (col_mask & new_sig) == 0 {
+                            col_mask <<= 4;
+                            dp += 1;
+                            continue;
+                        }
+
+                        let mut sample_mask = 0x1111u32 & col_mask;
+                        if (new_sig & sample_mask) != 0 {
+                            decoded_data[dp] = (cwd << 31) | value;
+                            cwd >>= 1;
+                            cnt += 1;
+                        }
+
+                        sample_mask <<= 1;
+                        if (new_sig & sample_mask) != 0 {
+                            decoded_data[dp + stride as usize] = (cwd << 31) | value;
+                            cwd >>= 1;
+                            cnt += 1;
+                        }
+
+                        sample_mask <<= 1;
+                        if (new_sig & sample_mask) != 0 {
+                            decoded_data[dp + 2 * stride as usize] = (cwd << 31) | value;
+                            cwd >>= 1;
+                            cnt += 1;
+                        }
+
+                        sample_mask <<= 1;
+                        if (new_sig & sample_mask) != 0 {
+                            decoded_data[dp + 3 * stride as usize] = (cwd << 31) | value;
+                            cwd >>= 1;
+                            cnt += 1;
+                        }
+
+                        col_mask <<= 4;
+                        dp += 1;
+                    }
+                }
+
+                sigprop.advance(cnt);
+            }
+
+            let combined_sig = new_sig | cs;
+            prev_row_sig[idx] = combined_sig as u16;
+            if idx + 1 < prev_row_sig.len() {
+                prev_row_sig[idx + 1] = (combined_sig >> 16) as u16;
+            }
+
+            let t = combined_sig;
+            let mut next_prev = combined_sig;
+            next_prev |= (t & 0x7777) << 1;
+            next_prev |= (t & 0xEEEE) >> 1;
+            prev = (next_prev | u) & 0xF000;
+        }
+    }
+
+    Some(())
+}
+
+#[inline(never)]
+fn apply_magnitude_refinement_phase(
+    coded_data: &[u8],
+    lcup: usize,
+    len2: usize,
+    sigma: &[u16],
+    decoded_data: &mut [u32],
+    width: u32,
+    height: u32,
+    stride: u32,
+    mstr: usize,
+    p: u32,
+) -> Option<()> {
+    if p < 2 || coded_data.len() < lcup.saturating_add(len2) {
+        return None;
+    }
+
+    let mut magref = ReverseBitReader::new_mrp(coded_data, lcup, len2);
+    let half = 1u32 << (p - 2);
+
+    for y in (0..height).step_by(4) {
+        let mut cur_sig_idx = (y >> 2) as usize * mstr;
+        let dpp = (y * stride) as usize;
+
+        for i in (0..width).step_by(8) {
+            let cwd = magref.fetch();
+            let sig = read_u32_pair(sigma, cur_sig_idx);
+            cur_sig_idx += 2;
+            let mut col_mask = 0xFu32;
+            let mut cwd_mut = cwd;
+
+            if sig != 0 {
+                for j in 0..8 {
+                    if (sig & col_mask) != 0 {
+                        let mut dp = dpp + i as usize + j;
+                        let mut sample_mask = 0x1111_1111u32 & col_mask;
+
+                        for _ in 0..4 {
+                            if (sig & sample_mask) != 0 {
+                                let mut sym = cwd_mut & 1;
+                                sym = (1 - sym) << (p - 1);
+                                sym |= half;
+                                decoded_data[dp] ^= sym;
+                                cwd_mut >>= 1;
+                            }
+                            sample_mask <<= 1;
+                            dp += stride as usize;
+                        }
+                    }
+                    col_mask <<= 4;
+                }
+            }
+
+            magref.advance(sig.count_ones());
+        }
+    }
+
+    Some(())
+}
+
+#[inline(never)]
+fn decode_magnitude_sign_phase(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    scratch: &[u16],
+    decoded_data: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    v_n_scratch: &mut [u32],
+) -> Option<()> {
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let p = 30 - missing_msbs;
+    let mmsbp2 = missing_msbs + 2;
+    let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
+    let mut prev_v_n = 0u32;
+    let mut x = 0u32;
+    let mut sp = 0usize;
+    let mut vp = 0usize;
+    let mut dp = 0usize;
+    let second_row_present = height > 1;
+
+    while x < width {
+        let inf = u32::from(scratch[sp]);
+        let uq = u32::from(scratch[sp + 1]);
+        if uq > mmsbp2 {
+            return None;
+        }
+
+        let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
+        decoded_data[dp] = val0;
+
+        let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
+        if second_row_present {
+            decoded_data[dp + stride as usize] = val1;
+        }
+        v_n_scratch[vp] = prev_v_n | v_n1;
+        prev_v_n = 0;
+        dp += 1;
+        x += 1;
+
+        if x >= width {
+            vp += 1;
+            break;
+        }
+
+        let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
+        decoded_data[dp] = val2;
+
+        let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
+        if second_row_present {
+            decoded_data[dp + stride as usize] = val3;
+        }
+        prev_v_n = v_n3;
+        dp += 1;
+        x += 1;
+        sp += 2;
+        vp += 1;
+    }
+    v_n_scratch[vp] = prev_v_n;
+
+    for y in (2..height).step_by(2) {
+        let row_base = (y >> 1) as usize * sstr;
+        let mut sp = row_base;
+        let mut vp = 0usize;
+        let mut dp = (y * stride) as usize;
+        let mut prev_v_n = 0u32;
+        let mut x = 0u32;
+        let second_row_present = y + 1 < height;
+
+        while x < width {
+            let inf = u32::from(scratch[sp]);
+            let u_q = u32::from(scratch[sp + 1]);
+            let mut gamma = inf & 0xF0;
+            gamma &= gamma.wrapping_sub(0x10);
+            let mut emax = v_n_scratch[vp] | v_n_scratch[vp + 1];
+            emax = 31 - (emax | 2).leading_zeros();
+            let kappa = if gamma != 0 { emax } else { 1 };
+            let uq = u_q + kappa;
+            if uq > mmsbp2 {
+                return None;
+            }
+
+            let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
+            decoded_data[dp] = val0;
+
+            let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
+            if second_row_present {
+                decoded_data[dp + stride as usize] = val1;
+            }
+            v_n_scratch[vp] = prev_v_n | v_n1;
+            prev_v_n = 0;
+            dp += 1;
+            x += 1;
+
+            if x >= width {
+                vp += 1;
+                break;
+            }
+
+            let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
+            decoded_data[dp] = val2;
+
+            let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
+            if second_row_present {
+                decoded_data[dp + stride as usize] = val3;
+            }
+            prev_v_n = v_n3;
+            dp += 1;
+            x += 1;
+            sp += 2;
+            vp += 1;
+        }
+
+        v_n_scratch[vp] = prev_v_n;
+    }
+
+    Some(())
+}
+
 fn decode_impl(
     coded_data: &[u8],
     decoded_data: &mut [u32],
@@ -642,546 +1241,67 @@ fn decode_impl(
         return None;
     }
 
-    let scup = ((coded_data[lcup - 1] as usize) << 4) + usize::from(coded_data[lcup - 2] & 0x0F);
-    if !(2..=lcup).contains(&scup) || scup > 4079 {
-        return None;
-    }
+    let scup = cleanup_segment_suffix_length(coded_data, lcup)?;
 
     let quad_rows = height.div_ceil(2) as usize;
-    let sstr = ((width + 2 + 7) & !7) as usize;
+    let sstr = cleanup_symbol_stride(width);
     let scratch = zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1));
-    let mmsbp2 = missing_msbs + 2;
+    decode_cleanup_symbols(coded_data, lcup, scup, width, height, sstr, scratch)?;
 
-    {
-        let mut mel = MelDecoder::new(coded_data, lcup, scup);
-        let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
-        let mut run = mel.get_run()?;
-        let mut c_q = 0u32;
-        let mut row_offset = 0usize;
-        let mut x = 0u32;
-
-        while x < width {
-            let mut vlc_val = vlc.fetch();
-            let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 {
-                run -= 2;
-                t0 = if run == -1 { t0 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-            scratch[row_offset] = t0 as u16;
-            x += 2;
-            c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
-            vlc_val = vlc.advance(t0 & 0x7);
-
-            let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 && x < width {
-                run -= 2;
-                t1 = if run == -1 { t1 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-            if x >= width {
-                t1 = 0;
-            }
-            scratch[row_offset + 2] = t1 as u16;
-            x += 2;
-            c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
-            vlc_val = vlc.advance(t1 & 0x7);
-
-            let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-            if uvlc_mode == 0xC0 {
-                run -= 2;
-                if run == -1 {
-                    uvlc_mode += 0x40;
-                }
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-
-            let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-            vlc_val = vlc.advance(uvlc_entry & 0x7);
-            uvlc_entry >>= 3;
-            let mut len = uvlc_entry & 0xF;
-            let tmp = vlc_val & ((1_u32 << len) - 1);
-            vlc_val = vlc.advance(len);
-            uvlc_entry >>= 4;
-            len = uvlc_entry & 0x7;
-            uvlc_entry >>= 3;
-            scratch[row_offset + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-            scratch[row_offset + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
-
-            row_offset += 4;
-        }
-        scratch[row_offset] = 0;
-        scratch[row_offset + 1] = 0;
-
-        for y in (2..height).step_by(2) {
-            let row_base = (y >> 1) as usize * sstr;
-            let prev_base = row_base - sstr;
-            let mut x = 0u32;
-            let mut c_q = 0u32;
-            let mut row_offset = row_base;
-
-            while x < width {
-                c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
-                c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
-
-                let mut vlc_val = vlc.fetch();
-                let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-                if c_q == 0 {
-                    run -= 2;
-                    t0 = if run == -1 { t0 } else { 0 };
-                    if run < 0 {
-                        run = mel.get_run()?;
-                    }
-                }
-                scratch[row_offset] = t0 as u16;
-                x += 2;
-
-                c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-                c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
-                c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
-                c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
-                vlc_val = vlc.advance(t0 & 0x7);
-
-                let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-                if c_q == 0 && x < width {
-                    run -= 2;
-                    t1 = if run == -1 { t1 } else { 0 };
-                    if run < 0 {
-                        run = mel.get_run()?;
-                    }
-                }
-                if x >= width {
-                    t1 = 0;
-                }
-                scratch[row_offset + 2] = t1 as u16;
-                x += 2;
-
-                c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-                c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
-                vlc_val = vlc.advance(t1 & 0x7);
-
-                let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-                let mut uvlc_entry =
-                    u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-                vlc_val = vlc.advance(uvlc_entry & 0x7);
-                uvlc_entry >>= 3;
-                let mut len = uvlc_entry & 0xF;
-                let tmp = vlc_val & ((1_u32 << len) - 1);
-                vlc_val = vlc.advance(len);
-                uvlc_entry >>= 4;
-                len = uvlc_entry & 0x7;
-                uvlc_entry >>= 3;
-                scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-                scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-
-                row_offset += 4;
-            }
-
-            scratch[row_offset] = 0;
-            scratch[row_offset + 1] = 0;
-        }
-    }
-
-    {
-        let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
-        let v_n_width = width.div_ceil(2) as usize + 2;
-        let v_n_scratch = zeroed_u32_scratch(&mut scratch_buffers.v_n, v_n_width);
-        let mut prev_v_n = 0u32;
-        let mut x = 0u32;
-        let mut sp = 0usize;
-        let mut vp = 0usize;
-        let mut dp = 0usize;
-        let second_row_present = height > 1;
-
-        while x < width {
-            let inf = u32::from(scratch[sp]);
-            let uq = u32::from(scratch[sp + 1]);
-            if uq > mmsbp2 {
-                return None;
-            }
-
-            let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
-            decoded_data[dp] = val0;
-
-            let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
-            if second_row_present {
-                decoded_data[dp + stride as usize] = val1;
-            }
-            v_n_scratch[vp] = prev_v_n | v_n1;
-            prev_v_n = 0;
-            dp += 1;
-            x += 1;
-
-            if x >= width {
-                vp += 1;
-                break;
-            }
-
-            let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
-            decoded_data[dp] = val2;
-
-            let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
-            if second_row_present {
-                decoded_data[dp + stride as usize] = val3;
-            }
-            prev_v_n = v_n3;
-            dp += 1;
-            x += 1;
-            sp += 2;
-            vp += 1;
-        }
-        v_n_scratch[vp] = prev_v_n;
-
-        for y in (2..height).step_by(2) {
-            let row_base = (y >> 1) as usize * sstr;
-            let mut sp = row_base;
-            let mut vp = 0usize;
-            let mut dp = (y * stride) as usize;
-            let mut prev_v_n = 0u32;
-            let mut x = 0u32;
-            let second_row_present = y + 1 < height;
-
-            while x < width {
-                let inf = u32::from(scratch[sp]);
-                let u_q = u32::from(scratch[sp + 1]);
-                let mut gamma = inf & 0xF0;
-                gamma &= gamma.wrapping_sub(0x10);
-                let mut emax = v_n_scratch[vp] | v_n_scratch[vp + 1];
-                emax = 31 - (emax | 2).leading_zeros();
-                let kappa = if gamma != 0 { emax } else { 1 };
-                let uq = u_q + kappa;
-                if uq > mmsbp2 {
-                    return None;
-                }
-
-                let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
-                decoded_data[dp] = val0;
-
-                let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
-                if second_row_present {
-                    decoded_data[dp + stride as usize] = val1;
-                }
-                v_n_scratch[vp] = prev_v_n | v_n1;
-                prev_v_n = 0;
-                dp += 1;
-                x += 1;
-
-                if x >= width {
-                    vp += 1;
-                    break;
-                }
-
-                let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
-                decoded_data[dp] = val2;
-
-                let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
-                if second_row_present {
-                    decoded_data[dp + stride as usize] = val3;
-                }
-                prev_v_n = v_n3;
-                dp += 1;
-                x += 1;
-                sp += 2;
-                vp += 1;
-            }
-
-            v_n_scratch[vp] = prev_v_n;
-        }
-    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    let v_n_scratch = zeroed_u32_scratch(&mut scratch_buffers.v_n, v_n_width);
+    decode_magnitude_sign_phase(
+        coded_data,
+        lcup,
+        scup,
+        scratch,
+        decoded_data,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        v_n_scratch,
+    )?;
 
     if num_passes > 1 {
         let sigma_rows = height.div_ceil(4) as usize + 1;
-        let mstr = ((width.div_ceil(4) + 2 + 7) & !7) as usize;
+        let mstr = sigma_stride(width);
         let sigma = zeroed_u16_scratch(&mut scratch_buffers.sigma, sigma_rows * mstr);
+        build_sigma_from_cleanup_phase(scratch, sigma, width, height, sstr, mstr)?;
 
-        {
-            let mut y = 0u32;
-            while y < height {
-                let sp_base = (y >> 1) as usize * sstr;
-                let dp_base = (y >> 2) as usize * mstr;
-                let mut x = 0u32;
-                let mut sp = sp_base;
-                let mut dp = dp_base;
-
-                while x < width {
-                    let mut t0 = ((u32::from(scratch[sp]) & 0x30) >> 4)
-                        | ((u32::from(scratch[sp]) & 0xC0) >> 2);
-                    t0 |= ((u32::from(scratch[sp + 2]) & 0x30) << 4)
-                        | ((u32::from(scratch[sp + 2]) & 0xC0) << 6);
-                    let mut t1 = ((u32::from(scratch[sp + sstr]) & 0x30) >> 2)
-                        | (u32::from(scratch[sp + sstr]) & 0xC0);
-                    t1 |= ((u32::from(scratch[sp + sstr + 2]) & 0x30) << 6)
-                        | ((u32::from(scratch[sp + sstr + 2]) & 0xC0) << 8);
-                    sigma[dp] = (t0 | t1) as u16;
-
-                    x += 4;
-                    sp += 4;
-                    dp += 1;
-                }
-
-                sigma[dp] = 0;
-                y += 4;
-            }
-
-            let dp_base = (height.div_ceil(4) as usize) * mstr;
-            for x in 0..=width.div_ceil(4) as usize {
-                sigma[dp_base + x] = 0;
-            }
-        }
-
-        {
-            let prev_row_sig = zeroed_u16_scratch(
-                &mut scratch_buffers.prev_row_sig,
-                width.div_ceil(4) as usize + 8,
-            );
-            let mut sigprop = ForwardBitReader::<0>::new(&coded_data[lcup..lcup + len2]);
-
-            for y in (0..height).step_by(4) {
-                let mut pattern = 0xFFFFu32;
-                if height - y < 4 {
-                    pattern = 0x7777;
-                    if height - y < 3 {
-                        pattern = 0x3333;
-                        if height - y < 2 {
-                            pattern = 0x1111;
-                        }
-                    }
-                }
-
-                let mut prev = 0u32;
-                let cur_row = (y >> 2) as usize * mstr;
-                let next_row = cur_row + mstr;
-                let dpp = (y * stride) as usize;
-
-                for x in (0..width).step_by(4) {
-                    let mut col_pattern = pattern;
-                    let mut s = x as i32 + 4 - width as i32;
-                    s = s.max(0);
-                    col_pattern >>= (s * 4) as u32;
-
-                    let idx = (x >> 2) as usize;
-                    let ps =
-                        u32::from(prev_row_sig[idx]) | (u32::from(prev_row_sig[idx + 1]) << 16);
-                    let ns = read_u32_pair(sigma, next_row + idx);
-                    let mut u = (ps & 0x8888_8888) >> 3;
-                    if !stripe_causal {
-                        u |= (ns & 0x1111_1111) << 3;
-                    }
-
-                    let cs = read_u32_pair(sigma, cur_row + idx);
-                    let mut mbr = cs;
-                    mbr |= (cs & 0x7777_7777) << 1;
-                    mbr |= (cs & 0xEEEE_EEEE) >> 1;
-                    mbr |= u;
-                    let t = mbr;
-                    mbr |= t << 4;
-                    mbr |= t >> 4;
-                    mbr |= prev >> 12;
-                    mbr &= col_pattern;
-                    mbr &= !cs;
-
-                    let mut new_sig = mbr;
-                    if new_sig != 0 {
-                        let mut cwd = sigprop.fetch();
-                        let mut cnt = 0u32;
-                        let mut col_mask = 0xFu32;
-                        let inv_sig = !cs & col_pattern;
-
-                        for i in (0..16).step_by(4) {
-                            if (col_mask & new_sig) == 0 {
-                                col_mask <<= 4;
-                                continue;
-                            }
-
-                            let mut sample_mask = 0x1111u32 & col_mask;
-                            if (new_sig & sample_mask) != 0 {
-                                new_sig &= !sample_mask;
-                                if (cwd & 1) != 0 {
-                                    let t = 0x33u32 << i;
-                                    new_sig |= t & inv_sig;
-                                }
-                                cwd >>= 1;
-                                cnt += 1;
-                            }
-
-                            sample_mask <<= 1;
-                            if (new_sig & sample_mask) != 0 {
-                                new_sig &= !sample_mask;
-                                if (cwd & 1) != 0 {
-                                    let t = 0x76u32 << i;
-                                    new_sig |= t & inv_sig;
-                                }
-                                cwd >>= 1;
-                                cnt += 1;
-                            }
-
-                            sample_mask <<= 1;
-                            if (new_sig & sample_mask) != 0 {
-                                new_sig &= !sample_mask;
-                                if (cwd & 1) != 0 {
-                                    let t = 0xECu32 << i;
-                                    new_sig |= t & inv_sig;
-                                }
-                                cwd >>= 1;
-                                cnt += 1;
-                            }
-
-                            sample_mask <<= 1;
-                            if (new_sig & sample_mask) != 0 {
-                                new_sig &= !sample_mask;
-                                if (cwd & 1) != 0 {
-                                    let t = 0xC8u32 << i;
-                                    new_sig |= t & inv_sig;
-                                }
-                                cwd >>= 1;
-                                cnt += 1;
-                            }
-
-                            col_mask <<= 4;
-                        }
-
-                        if new_sig != 0 {
-                            let mut dp = dpp + x as usize;
-                            let value = 3u32 << (p - 2);
-                            let mut col_mask = 0xFu32;
-
-                            for _ in 0..4 {
-                                if (col_mask & new_sig) == 0 {
-                                    col_mask <<= 4;
-                                    dp += 1;
-                                    continue;
-                                }
-
-                                let mut sample_mask = 0x1111u32 & col_mask;
-                                if (new_sig & sample_mask) != 0 {
-                                    decoded_data[dp] = (cwd << 31) | value;
-                                    cwd >>= 1;
-                                    cnt += 1;
-                                }
-
-                                sample_mask <<= 1;
-                                if (new_sig & sample_mask) != 0 {
-                                    decoded_data[dp + stride as usize] = (cwd << 31) | value;
-                                    cwd >>= 1;
-                                    cnt += 1;
-                                }
-
-                                sample_mask <<= 1;
-                                if (new_sig & sample_mask) != 0 {
-                                    decoded_data[dp + 2 * stride as usize] = (cwd << 31) | value;
-                                    cwd >>= 1;
-                                    cnt += 1;
-                                }
-
-                                sample_mask <<= 1;
-                                if (new_sig & sample_mask) != 0 {
-                                    decoded_data[dp + 3 * stride as usize] = (cwd << 31) | value;
-                                    cwd >>= 1;
-                                    cnt += 1;
-                                }
-
-                                col_mask <<= 4;
-                                dp += 1;
-                            }
-                        }
-
-                        sigprop.advance(cnt);
-                    }
-
-                    let combined_sig = new_sig | cs;
-                    prev_row_sig[idx] = combined_sig as u16;
-                    if idx + 1 < prev_row_sig.len() {
-                        prev_row_sig[idx + 1] = (combined_sig >> 16) as u16;
-                    }
-
-                    let t = combined_sig;
-                    let mut next_prev = combined_sig;
-                    next_prev |= (t & 0x7777) << 1;
-                    next_prev |= (t & 0xEEEE) >> 1;
-                    prev = (next_prev | u) & 0xF000;
-                }
-            }
-        }
+        let prev_row_sig = zeroed_u16_scratch(
+            &mut scratch_buffers.prev_row_sig,
+            width.div_ceil(4) as usize + 8,
+        );
+        apply_significance_propagation_phase(
+            coded_data,
+            lcup,
+            len2,
+            sigma,
+            decoded_data,
+            width,
+            height,
+            stride,
+            mstr,
+            stripe_causal,
+            p,
+            prev_row_sig,
+        )?;
 
         if num_passes > 2 {
-            let mut magref = ReverseBitReader::new_mrp(coded_data, lcup, len2);
-            let half = 1u32 << (p - 2);
-            let mstr = ((width.div_ceil(4) + 2 + 7) & !7) as usize;
-            let sigma_rows = height.div_ceil(4) as usize + 1;
-            let sigma = zeroed_u16_scratch(&mut scratch_buffers.sigma, sigma_rows * mstr);
-
-            let mut y = 0u32;
-            while y < height {
-                let sp_base = (y >> 1) as usize * sstr;
-                let dp_base = (y >> 2) as usize * mstr;
-                let mut x = 0u32;
-                let mut sp = sp_base;
-                let mut dp = dp_base;
-                while x < width {
-                    let mut t0 = ((u32::from(scratch[sp]) & 0x30) >> 4)
-                        | ((u32::from(scratch[sp]) & 0xC0) >> 2);
-                    t0 |= ((u32::from(scratch[sp + 2]) & 0x30) << 4)
-                        | ((u32::from(scratch[sp + 2]) & 0xC0) << 6);
-                    let mut t1 = ((u32::from(scratch[sp + sstr]) & 0x30) >> 2)
-                        | (u32::from(scratch[sp + sstr]) & 0xC0);
-                    t1 |= ((u32::from(scratch[sp + sstr + 2]) & 0x30) << 6)
-                        | ((u32::from(scratch[sp + sstr + 2]) & 0xC0) << 8);
-                    sigma[dp] = (t0 | t1) as u16;
-                    x += 4;
-                    sp += 4;
-                    dp += 1;
-                }
-                sigma[dp] = 0;
-                y += 4;
-            }
-
-            let dp_base = (height.div_ceil(4) as usize) * mstr;
-            for x in 0..=width.div_ceil(4) as usize {
-                sigma[dp_base + x] = 0;
-            }
-
-            for y in (0..height).step_by(4) {
-                let mut cur_sig_idx = (y >> 2) as usize * mstr;
-                let dpp = (y * stride) as usize;
-
-                for i in (0..width).step_by(8) {
-                    let cwd = magref.fetch();
-                    let sig = read_u32_pair(sigma, cur_sig_idx);
-                    cur_sig_idx += 2;
-                    let mut col_mask = 0xFu32;
-                    let mut cwd_mut = cwd;
-
-                    if sig != 0 {
-                        for j in 0..8 {
-                            if (sig & col_mask) != 0 {
-                                let mut dp = dpp + i as usize + j;
-                                let mut sample_mask = 0x1111_1111u32 & col_mask;
-
-                                for _ in 0..4 {
-                                    if (sig & sample_mask) != 0 {
-                                        let mut sym = cwd_mut & 1;
-                                        sym = (1 - sym) << (p - 1);
-                                        sym |= half;
-                                        decoded_data[dp] ^= sym;
-                                        cwd_mut >>= 1;
-                                    }
-                                    sample_mask <<= 1;
-                                    dp += stride as usize;
-                                }
-                            }
-                            col_mask <<= 4;
-                        }
-                    }
-
-                    magref.advance(sig.count_ones());
-                }
-            }
+            apply_magnitude_refinement_phase(
+                coded_data,
+                lcup,
+                len2,
+                sigma,
+                decoded_data,
+                width,
+                height,
+                stride,
+                mstr,
+                p,
+            )?;
         }
     }
 
@@ -1260,6 +1380,145 @@ mod tests {
             .map(|value| coefficient_to_i32(value, total_bitplanes))
             .collect();
         assert_eq!(decoded_i32, original, "encoded={:02x?}", encoded.data);
+    }
+
+    #[test]
+    fn cleanup_and_magnitude_sign_phases_decode_odd_sized_block() {
+        let width = 15u32;
+        let height = 13u32;
+        let original: Vec<i32> = (0..(width * height))
+            .map(|i| {
+                let value = (i as i32 % 61) - 30;
+                if i % 7 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let total_bitplanes = 6u8;
+        let encoded =
+            encode_code_block(&original, width, height, total_bitplanes).expect("encode HT block");
+        assert_eq!(encoded.num_coding_passes, 1);
+
+        let lcup = encoded.data.len();
+        let scup = cleanup_segment_suffix_length(&encoded.data, lcup).expect("valid cleanup info");
+        let sstr = cleanup_symbol_stride(width);
+        let quad_rows = height.div_ceil(2) as usize;
+        let mut cleanup = vec![0u16; sstr * (quad_rows + 1)];
+        decode_cleanup_symbols(&encoded.data, lcup, scup, width, height, sstr, &mut cleanup)
+            .expect("decode cleanup symbols");
+
+        let mut decoded = vec![0u32; original.len()];
+        let mut v_n_scratch = vec![0u32; width.div_ceil(2) as usize + 2];
+        decode_magnitude_sign_phase(
+            &encoded.data,
+            lcup,
+            scup,
+            &cleanup,
+            &mut decoded,
+            u32::from(encoded.num_zero_bitplanes),
+            width,
+            height,
+            width,
+            sstr,
+            &mut v_n_scratch,
+        )
+        .expect("decode magnitude/sign phase");
+
+        let decoded_i32: Vec<i32> = decoded
+            .into_iter()
+            .map(|value| coefficient_to_i32(value, total_bitplanes))
+            .collect();
+        assert_eq!(decoded_i32, original, "encoded={:02x?}", encoded.data);
+    }
+
+    #[test]
+    fn sigma_phase_builds_masks_and_zeroes_edge_sentinels() {
+        let width = 7u32;
+        let height = 5u32;
+        let sstr = cleanup_symbol_stride(width);
+        let mstr = sigma_stride(width);
+        let sigma_rows = height.div_ceil(4) as usize + 1;
+        let mut cleanup = vec![0u16; sstr * (height.div_ceil(2) as usize + 1)];
+        cleanup[0] = 0x30;
+        cleanup[2] = 0xC0;
+        cleanup[sstr] = 0xF0;
+        cleanup[sstr + 2] = 0x30;
+        cleanup[2 * sstr] = 0xC0;
+        cleanup[2 * sstr + 2] = 0xF0;
+        let mut sigma = vec![0u16; sigma_rows * mstr];
+
+        build_sigma_from_cleanup_phase(&cleanup, &mut sigma, width, height, sstr, mstr)
+            .expect("build sigma");
+
+        let expected_first = (((u32::from(cleanup[0]) & 0x30) >> 4)
+            | ((u32::from(cleanup[0]) & 0xC0) >> 2)
+            | ((u32::from(cleanup[2]) & 0x30) << 4)
+            | ((u32::from(cleanup[2]) & 0xC0) << 6)
+            | ((u32::from(cleanup[sstr]) & 0x30) >> 2)
+            | (u32::from(cleanup[sstr]) & 0xC0)
+            | ((u32::from(cleanup[sstr + 2]) & 0x30) << 6)
+            | ((u32::from(cleanup[sstr + 2]) & 0xC0) << 8)) as u16;
+        let expected_second = (((u32::from(cleanup[4]) & 0x30) >> 4)
+            | ((u32::from(cleanup[4]) & 0xC0) >> 2)
+            | ((u32::from(cleanup[6]) & 0x30) << 4)
+            | ((u32::from(cleanup[6]) & 0xC0) << 6)
+            | ((u32::from(cleanup[sstr + 4]) & 0x30) >> 2)
+            | (u32::from(cleanup[sstr + 4]) & 0xC0)
+            | ((u32::from(cleanup[sstr + 6]) & 0x30) << 6)
+            | ((u32::from(cleanup[sstr + 6]) & 0xC0) << 8)) as u16;
+        assert_eq!(sigma[0], expected_first);
+        assert_eq!(sigma[1], expected_second);
+        assert_eq!(sigma[2], 0);
+
+        let bottom = height.div_ceil(4) as usize * mstr;
+        for x in 0..=width.div_ceil(4) as usize {
+            assert_eq!(sigma[bottom + x], 0);
+        }
+    }
+
+    #[test]
+    fn refinement_phases_leave_output_unchanged_for_empty_sigma() {
+        let width = 7u32;
+        let height = 5u32;
+        let stride = width;
+        let mstr = sigma_stride(width);
+        let sigma = vec![0u16; (height.div_ceil(4) as usize + 1) * mstr];
+        let mut prev_row_sig = vec![0u16; width.div_ceil(4) as usize + 8];
+        let mut decoded = vec![0x1234_5678u32; (stride * height) as usize];
+        let expected = decoded.clone();
+
+        apply_significance_propagation_phase(
+            &[],
+            0,
+            0,
+            &sigma,
+            &mut decoded,
+            width,
+            height,
+            stride,
+            mstr,
+            false,
+            5,
+            &mut prev_row_sig,
+        )
+        .expect("empty sigma sigprop");
+        apply_magnitude_refinement_phase(
+            &[],
+            0,
+            0,
+            &sigma,
+            &mut decoded,
+            width,
+            height,
+            stride,
+            mstr,
+            5,
+        )
+        .expect("empty sigma magref");
+
+        assert_eq!(decoded, expected);
     }
 
     #[test]
