@@ -298,6 +298,39 @@ fn xtask_test_does_not_run_benchmarks_as_tests() {
 }
 
 #[test]
+fn xtask_exposes_nextest_machete_and_strict_clippy_gates() {
+    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let help_section = xtask
+        .split("fn print_help()")
+        .nth(1)
+        .expect("xtask help section");
+
+    for task in ["nextest", "machete", "clippy-strict"] {
+        assert!(
+            xtask.contains(&format!("\"{task}\" =>")),
+            "xtask must dispatch `{task}`"
+        );
+        assert!(
+            help_section.contains(task),
+            "xtask help must document `{task}`"
+        );
+    }
+
+    for required in [
+        "\"nextest\"",
+        "\"run\"",
+        "\"cargo-machete\"",
+        "\"--no-deps\"",
+        "\"clippy::pedantic\"",
+        "\"clippy::nursery\"",
+        "\"signinum-j2k-native\"",
+        "\"signinum-j2k\"",
+    ] {
+        assert!(xtask.contains(required), "xtask must contain `{required}`");
+    }
+}
+
+#[test]
 fn xtask_fuzz_build_checks_every_fuzz_manifest() {
     let root = repo_root();
     let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");

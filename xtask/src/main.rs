@@ -62,13 +62,16 @@ fn run() -> Result<(), String> {
     match task.as_str() {
         "fmt" => fmt(),
         "clippy" => clippy(),
+        "clippy-strict" => clippy_strict(),
         "test" => test(),
+        "nextest" => nextest(),
         "doc" | "docs" => doc(),
         "typos" => typos(),
         "bench-build" => bench_build(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "deny" => deny(),
+        "machete" => machete(),
         "no-std" => no_std(),
         "release-cpu" => release_cpu(),
         "release-metal" => release_metal(),
@@ -101,6 +104,26 @@ fn clippy() -> Result<(), String> {
         "--all-targets",
         "--all-features",
         "--",
+        "-D",
+        "warnings",
+    ])
+}
+
+fn clippy_strict() -> Result<(), String> {
+    run_cargo(&[
+        "clippy",
+        "-p",
+        "signinum-j2k-native",
+        "-p",
+        "signinum-j2k",
+        "--all-targets",
+        "--all-features",
+        "--no-deps",
+        "--",
+        "-W",
+        "clippy::pedantic",
+        "-W",
+        "clippy::nursery",
         "-D",
         "warnings",
     ])
@@ -159,6 +182,18 @@ fn test_package_without_benches(package: &str, no_run: bool) -> Result<(), Strin
 
     run_cargo_with_env(&test_args, &[("RUST_TEST_THREADS", "1")])?;
     run_cargo(&["test", "-p", package, "--all-features", "--doc"])
+}
+
+fn nextest() -> Result<(), String> {
+    run_cargo(&[
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+        "--lib",
+        "--bins",
+        "--tests",
+    ])
 }
 
 fn doc() -> Result<(), String> {
@@ -233,6 +268,10 @@ fn fuzz_build() -> Result<(), String> {
 
 fn deny() -> Result<(), String> {
     run_cargo(&["deny", "check", "licenses", "advisories", "bans", "sources"])
+}
+
+fn machete() -> Result<(), String> {
+    run_program(OsString::from("cargo-machete"), &[], &[])
 }
 
 fn no_std() -> Result<(), String> {
@@ -382,13 +421,16 @@ fn print_help() {
            ci            fmt, clippy, test, and docs\n\
            fmt           check rustfmt\n\
            clippy        run clippy with warnings denied\n\
+           clippy-strict run stricter J2K clippy gates\n\
            test          run workspace tests\n\
+           nextest       run workspace tests with cargo-nextest\n\
            doc           build workspace docs with warnings denied\n\
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
            j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\
            deny          run cargo-deny\n\
+           machete       run cargo-machete unused-dependency scan\n\
            no-std        check no_std-compatible codec crates\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-metal run release-mode Metal tests on macOS\n\
