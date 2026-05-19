@@ -571,6 +571,7 @@ impl MetalLosslessEncodeStageStats {
             || self.codestream_wait_duration > Duration::ZERO
     }
 
+    #[cfg(target_os = "macos")]
     fn add_assign(&mut self, other: Self) {
         self.plan_duration = self.plan_duration.saturating_add(other.plan_duration);
         self.prepare_submit_duration = self
