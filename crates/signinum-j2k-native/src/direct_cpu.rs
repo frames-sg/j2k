@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::error::{bail, DecodingError, Result};
 use crate::j2c::idwt;
-use crate::math::floor_f32;
+use crate::math::{floor_f32, round_f32};
 use crate::{
     decode_ht_code_block_scalar, decode_j2k_code_block_scalar, HtCodeBlockDecodeJob,
     HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kDirectBandId, J2kDirectColorPlan,
@@ -640,7 +640,7 @@ fn sign_addend(bit_depth: u8) -> f32 {
 }
 
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
-    let rounded = sample.round();
+    let rounded = round_f32(sample);
     if bit_depth == 8 {
         return rounded.clamp(0.0, f32::from(u8::MAX)) as u8;
     }
@@ -649,7 +649,7 @@ fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     } else {
         f32::from(((1_u16 << bit_depth) - 1).max(1))
     };
-    ((rounded.clamp(0.0, max_value) / max_value) * f32::from(u8::MAX)).round() as u8
+    round_f32((rounded.clamp(0.0, max_value) / max_value) * f32::from(u8::MAX)) as u8
 }
 
 #[cfg(test)]
