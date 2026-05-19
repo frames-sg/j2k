@@ -3,9 +3,11 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(target_os = "macos")]
 use signinum_core::{DeviceSubmission, PixelFormat};
+#[cfg(target_os = "macos")]
+use signinum_j2k::J2kProgressionOrder;
 use signinum_j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
+    J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 use signinum_j2k_metal::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
