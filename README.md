@@ -34,6 +34,7 @@ supported compiled workloads.
 | CLI header inspection | `signinum-cli` | `cargo install signinum-cli` |
 | Apple Metal device-output surfaces | `signinum-jpeg-metal`, `signinum-j2k-metal`, or the facade `metal` feature | `cargo add signinum-jpeg-metal` |
 | CUDA device-memory output | `signinum-jpeg-cuda`, `signinum-j2k-cuda`, plus the adapter `cuda-runtime` feature | `cargo add signinum-jpeg-cuda --features cuda-runtime` or `cargo add signinum-j2k-cuda --features cuda-runtime` |
+| Experimental JPEG DCT to HTJ2K coefficient transcode | `signinum-transcode` | workspace-only until the promotion gate is met |
 
 Most application code should start with the facade:
 
@@ -166,6 +167,11 @@ signinum inspect tile.jp2
 - pure-Rust in-repo JPEG 2000 / HTJ2K decode engine
 - lossless JPEG 2000 / HTJ2K encode for new diagnostic codestreams
 - parity and benchmark coverage against Grok and OpenJPEG where available
+
+`signinum-transcode` is an experimental workspace crate for coefficient-domain
+JPEG DCT to HTJ2K 5/3 wavelet work. It is not part of the stable facade surface.
+The promotion gate is documented in
+[`crates/signinum-transcode/README.md`](crates/signinum-transcode/README.md).
 
 `signinum-tilecodec` provides tile decompression primitives:
 
