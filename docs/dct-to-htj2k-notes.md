@@ -55,9 +55,9 @@ cargo bench --profile release-bench -p signinum-transcode --bench dct53 dct53_la
 
 Run on 2026-05-23 against 64 synthetic natural-order DCT blocks:
 
-- `row_window_packed_f64`: 793.96-797.79 ns
-- `aos_8x8_f64`: 973.37-985.08 ns
-- `soa_coefficient_major_f64`: 1.1081-1.1131 us
+- `row_window_packed_f64`: 801.45-804.71 ns
+- `aos_8x8_f64`: 988.16-991.98 ns
+- `soa_coefficient_major_f64`: 1.3766-1.3817 us
 
 These numbers only measure scalar packing cost. They are not a final SIMD layout
 decision; row-window packing is currently the cheapest scalar conversion
@@ -72,16 +72,16 @@ as the stateless `jpeg_to_htj2k` convenience function. The benchmark suite
 includes `grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so
 future allocation/layout changes can be measured against the stateless path.
 
-Initial 2026-05-23 tiny-fixture timing is effectively flat: stateless
-`grayscale_8x8` measured 90.493-92.108 us and stateful
-`grayscale_8x8_stateful_reuse` measured 91.675-92.858 us. This is not a
-performance claim; it mainly verifies the benchmark surface and shows that DCT
-conversion scratch is not the dominant cost for an 8x8 tile.
+Initial 2026-05-23 tiny-fixture timing is the same order of magnitude: stateless
+`grayscale_8x8` measured 92.394-93.799 us and stateful
+`grayscale_8x8_stateful_reuse` measured 90.359-91.116 us. This is not a broad
+performance claim; it verifies the benchmark surface and shows that scratch
+reuse needs larger tile/corpus measurement before promotion.
 
 The direct 2D-grid projection benchmark now has a scratch-reuse comparison for
 cached 5/3 weight rows. On the 13x11 synthetic grid, stateless
-`direct_linear_13x11` measured 96.635-97.699 us, while
-`direct_linear_13x11_scratch_reuse` measured 94.369-94.766 us. This is a small
+`direct_linear_13x11` measured 97.579-98.022 us, while
+`direct_linear_13x11_scratch_reuse` measured 95.646-96.028 us. This is a small
 scalar allocation/layout win, not a SIMD result.
 
 ## Open Issues
