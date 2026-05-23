@@ -12,8 +12,8 @@ use signinum_j2k_native::{
 use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions, JpegDctComponent};
 
 use crate::dct53_2d::{
-    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear, Dct53GridError,
-    Dwt53TwoDimensional,
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
+    linearized_53_2d_from_plane, Dct53GridError, Dwt53TwoDimensional,
 };
 use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 
@@ -89,6 +89,8 @@ pub struct TranscodeReport {
     /// Rounded coefficient metrics against the optional float IDCT-then-DWT
     /// oracle.
     pub float_reference_metrics: Option<TranscodeValidationMetrics>,
+    /// Number of reversible 5/3 decomposition levels encoded.
+    pub decomposition_levels: u8,
     /// Name of the experimental path used.
     pub path: &'static str,
     /// Wall-clock extraction time in microseconds.
@@ -180,6 +182,10 @@ pub fn jpeg_to_htj2k(
     }
     let component_sampling =
         component_sampling_for_jpeg(&jpeg.components, jpeg.width, jpeg.height)?;
+    let decomposition_levels = decomposition_levels_for_components(
+        &jpeg.components,
+        options.encode_options.num_decomposition_levels,
+    )?;
     let all_unit_sampled = component_sampling
         .iter()
         .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
@@ -211,6 +217,7 @@ pub fn jpeg_to_htj2k(
             component,
             x_rsiz,
             y_rsiz,
+            decomposition_levels,
             options.validate_against_float_reference,
         )?;
         precomputed_components.push(component_result.precomputed);
@@ -247,6 +254,7 @@ pub fn jpeg_to_htj2k(
             component_count: jpeg.components.len(),
             components: component_reports,
             float_reference_metrics,
+            decomposition_levels,
             path: if all_unit_sampled {
                 "full_resolution_components_float_direct_53"
             } else {
@@ -264,10 +272,18 @@ struct ComponentTranscodeResult {
     validation_coefficients: Option<(Vec<i32>, Vec<i32>)>,
 }
 
+struct ComponentWavelet {
+    final_ll: Vec<f64>,
+    final_ll_width: usize,
+    final_ll_height: usize,
+    levels: Vec<Dwt53TwoDimensional<f64>>,
+}
+
 fn component_to_precomputed_htj2k(
     component: &JpegDctComponent,
     x_rsiz: u8,
     y_rsiz: u8,
+    decomposition_levels: u8,
     validate_against_float_reference: bool,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
@@ -278,34 +294,29 @@ fn component_to_precomputed_htj2k(
         component.width as usize,
         component.height as usize,
     )?;
+    let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
     let validation_coefficients = if validate_against_float_reference {
-        let reference = dct8x8_blocks_then_dwt53_float(
+        let first_reference_level = dct8x8_blocks_then_dwt53_float(
             &blocks,
             component.block_cols as usize,
             component.block_rows as usize,
             component.width as usize,
             component.height as usize,
         )?;
-        Some((rounded_bands_i32(&bands)?, rounded_bands_i32(&reference)?))
+        let reference =
+            decompose_from_first_level(first_reference_level, usize::from(decomposition_levels));
+        Some((
+            rounded_wavelet_i32(&wavelet)?,
+            rounded_wavelet_i32(&reference)?,
+        ))
     } else {
         None
     };
-    let dwt = J2kForwardDwt53Output {
-        ll: bands.ll.iter().map(|&value| value as f32).collect(),
-        ll_width: bands.low_width as u32,
-        ll_height: bands.low_height as u32,
-        levels: vec![J2kForwardDwt53Level {
-            hl: bands.hl.iter().map(|&value| value as f32).collect(),
-            lh: bands.lh.iter().map(|&value| value as f32).collect(),
-            hh: bands.hh.iter().map(|&value| value as f32).collect(),
-            width: component.width,
-            height: component.height,
-            low_width: bands.low_width as u32,
-            low_height: bands.low_height as u32,
-            high_width: bands.high_width as u32,
-            high_height: bands.high_height as u32,
-        }],
-    };
+    let dwt = j2k_dwt_from_wavelet(
+        &wavelet,
+        component.width as usize,
+        component.height as usize,
+    );
 
     Ok(ComponentTranscodeResult {
         precomputed: PrecomputedHtj2k53Component {
@@ -317,13 +328,80 @@ fn component_to_precomputed_htj2k(
     })
 }
 
-fn rounded_bands_i32(bands: &Dwt53TwoDimensional<f64>) -> Result<Vec<i32>, JpegToHtj2kError> {
-    let mut output =
-        Vec::with_capacity(bands.ll.len() + bands.hl.len() + bands.lh.len() + bands.hh.len());
-    append_rounded_i32(&bands.ll, &mut output)?;
-    append_rounded_i32(&bands.hl, &mut output)?;
-    append_rounded_i32(&bands.lh, &mut output)?;
-    append_rounded_i32(&bands.hh, &mut output)?;
+fn decompose_from_first_level(
+    first_level: Dwt53TwoDimensional<f64>,
+    decomposition_levels: usize,
+) -> ComponentWavelet {
+    let mut wavelet = ComponentWavelet {
+        final_ll: first_level.ll.clone(),
+        final_ll_width: first_level.low_width,
+        final_ll_height: first_level.low_height,
+        levels: vec![first_level],
+    };
+
+    while wavelet.levels.len() < decomposition_levels {
+        let next = linearized_53_2d_from_plane(
+            &wavelet.final_ll,
+            wavelet.final_ll_width,
+            wavelet.final_ll_height,
+        );
+        wavelet.final_ll.clone_from(&next.ll);
+        wavelet.final_ll_width = next.low_width;
+        wavelet.final_ll_height = next.low_height;
+        wavelet.levels.push(next);
+    }
+
+    wavelet
+}
+
+fn j2k_dwt_from_wavelet(
+    wavelet: &ComponentWavelet,
+    width: usize,
+    height: usize,
+) -> J2kForwardDwt53Output {
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut levels = Vec::with_capacity(wavelet.levels.len());
+
+    for level in &wavelet.levels {
+        levels.push(J2kForwardDwt53Level {
+            hl: level.hl.iter().map(|&value| value as f32).collect(),
+            lh: level.lh.iter().map(|&value| value as f32).collect(),
+            hh: level.hh.iter().map(|&value| value as f32).collect(),
+            width: current_width as u32,
+            height: current_height as u32,
+            low_width: level.low_width as u32,
+            low_height: level.low_height as u32,
+            high_width: level.high_width as u32,
+            high_height: level.high_height as u32,
+        });
+        current_width = level.low_width;
+        current_height = level.low_height;
+    }
+    levels.reverse();
+
+    J2kForwardDwt53Output {
+        ll: wavelet.final_ll.iter().map(|&value| value as f32).collect(),
+        ll_width: wavelet.final_ll_width as u32,
+        ll_height: wavelet.final_ll_height as u32,
+        levels,
+    }
+}
+
+fn rounded_wavelet_i32(wavelet: &ComponentWavelet) -> Result<Vec<i32>, JpegToHtj2kError> {
+    let coefficient_count = wavelet.final_ll.len()
+        + wavelet
+            .levels
+            .iter()
+            .map(|level| level.hl.len() + level.lh.len() + level.hh.len())
+            .sum::<usize>();
+    let mut output = Vec::with_capacity(coefficient_count);
+    append_rounded_i32(&wavelet.final_ll, &mut output)?;
+    for level in wavelet.levels.iter().rev() {
+        append_rounded_i32(&level.hl, &mut output)?;
+        append_rounded_i32(&level.lh, &mut output)?;
+        append_rounded_i32(&level.hh, &mut output)?;
+    }
     Ok(output)
 }
 
@@ -347,6 +425,40 @@ fn round_f64_to_i32(value: f64) -> Result<i32, JpegToHtj2kError> {
         ));
     }
     Ok(rounded as i32)
+}
+
+fn decomposition_levels_for_components(
+    components: &[JpegDctComponent],
+    requested_levels: u8,
+) -> Result<u8, JpegToHtj2kError> {
+    if requested_levels == 0 {
+        return Err(JpegToHtj2kError::Unsupported(
+            "jpeg_to_htj2k requires at least one decomposition level",
+        ));
+    }
+
+    let available_levels = components
+        .iter()
+        .map(|component| available_decomposition_levels(component.width, component.height))
+        .min()
+        .ok_or(JpegToHtj2kError::Unsupported("missing JPEG components"))?;
+    let decomposition_levels = requested_levels.min(available_levels);
+    if decomposition_levels == 0 {
+        return Err(JpegToHtj2kError::Unsupported(
+            "component dimensions are too small for a 5/3 decomposition",
+        ));
+    }
+
+    Ok(decomposition_levels)
+}
+
+fn available_decomposition_levels(width: u32, height: u32) -> u8 {
+    let min_dim = width.min(height);
+    if min_dim <= 1 {
+        0
+    } else {
+        min_dim.ilog2() as u8
+    }
 }
 
 fn component_sampling_for_jpeg(
