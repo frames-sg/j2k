@@ -15,7 +15,10 @@ JPEG bytes
 
 - `cargo test -p signinum-transcode --test corpus_validation` runs committed
   grayscale, 4:4:4, 4:2:2, and 4:2:0 JPEG fixtures through `jpeg_to_htj2k`.
-- The corpus report aggregates rounded float-reference coefficient metrics:
+- The default production path is `IntegerDirect53`: the first 5/3 level is
+  computed from JPEG DCT blocks without materializing a full spatial image
+  plane, then later levels recurse over LL.
+- The corpus report aggregates integer-reference coefficient metrics:
   sample count, exact-match count, maximum absolute error, and absolute-error
   histogram buckets.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
@@ -55,9 +58,9 @@ cargo bench --profile release-bench -p signinum-transcode --bench dct53 dct53_la
 
 Run on 2026-05-23 against 64 synthetic natural-order DCT blocks:
 
-- `row_window_packed_f64`: 801.45-804.71 ns
-- `aos_8x8_f64`: 988.16-991.98 ns
-- `soa_coefficient_major_f64`: 1.3766-1.3817 us
+- `row_window_packed_f64`: 803.21-810.43 ns
+- `aos_8x8_f64`: 998.67 ns-1.0092 us
+- `soa_coefficient_major_f64`: 1.3608-1.3680 us
 
 These numbers only measure scalar packing cost. They are not a final SIMD layout
 decision; row-window packing is currently the cheapest scalar conversion
@@ -66,10 +69,10 @@ candidate, while SoA remains a candidate for vectorized coefficient-lane work.
 ## Reusable Scratch
 
 `signinum_transcode::JpegToHtj2kTranscoder` is the stateful API for repeated tile
-work. It currently reuses the DCT block conversion buffer and direct 2D
-projection weight-row scratch across calls while preserving the same output path
-as the stateless `jpeg_to_htj2k` convenience function. The benchmark suite
-includes `grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so
+work. For the float-linear path it reuses the DCT block conversion buffer and
+direct 2D projection weight-row scratch across calls while preserving the same
+output path as the stateless `jpeg_to_htj2k` convenience function. The benchmark
+suite includes `grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so
 future allocation/layout changes can be measured against the stateless path.
 
 Initial 2026-05-23 tiny-fixture timing is the same order of magnitude: stateless
@@ -80,15 +83,34 @@ reuse needs larger tile/corpus measurement before promotion.
 
 The direct 2D-grid projection benchmark now has a scratch-reuse comparison for
 cached 5/3 weight rows. On the 13x11 synthetic grid, stateless
-`direct_linear_13x11` measured 97.579-98.022 us, while
-`direct_linear_13x11_scratch_reuse` measured 95.646-96.028 us. This is a small
+`direct_linear_13x11` measured 99.164-99.506 us, while
+`direct_linear_13x11_scratch_reuse` measured 96.724-97.816 us. This is a small
 scalar allocation/layout win, not a SIMD result.
+
+## Integer-Direct Default Benchmark
+
+After switching the default production path to `IntegerDirect53`, the
+`jpeg_to_htj2k` Criterion group measured:
+
+- `grayscale_8x8`: 62.877-63.362 us
+- `grayscale_8x8_stateful_reuse`: 61.564-62.220 us
+- `grayscale_13x11`: 98.036-98.905 us
+- `ycbcr_444_8x8`: 142.78-144.31 us
+- `ycbcr_422_16x8`: 164.29-166.29 us
+- `ycbcr_420_16x16`: 199.35-201.90 us
+
+These are tiny conformance fixtures, not WSI-scale throughput claims. The
+integer-direct path is faster than the previous float-linear default here
+because it avoids the expensive scalar matrix projection while producing exact
+integer 5/3 coefficients relative to the signinum ISLOW oracle.
 
 ## Open Issues
 
-- The production path still emits rounded float-direct coefficients. The
-  integer-reference path is a validation oracle, not yet a replacement
-  production transform.
+- The integer-direct production path still uses scalar, on-demand ISLOW block
+  sample evaluation for exactness; it is correct-first rather than optimized.
+- `JpegToHtj2kTranscoder` scratch currently helps the float-linear projection
+  path more than the default integer-direct path; integer-direct row/block
+  caching is a follow-on optimization.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
 - Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain out

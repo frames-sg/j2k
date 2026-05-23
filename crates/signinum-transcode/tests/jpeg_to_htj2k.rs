@@ -6,7 +6,8 @@ use signinum_jpeg::{
 };
 use signinum_jpeg::{JpegError, SofKind};
 use signinum_transcode::{
-    jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+    jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
+    JpegToHtj2kTranscoder,
 };
 use std::{
     env, fs,
@@ -39,6 +40,7 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
 fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::default()
     };
@@ -73,15 +75,46 @@ fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
         .expect("integer reference metrics are reported");
 
     assert_eq!(metrics.total, 64);
-    assert!(metrics.max_abs_error <= 2);
+    assert_eq!(metrics.exact_matches, metrics.total);
+    assert_eq!(metrics.max_abs_error, 0);
+}
+
+#[test]
+fn default_transcode_uses_integer_direct_coefficients() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let options = JpegToHtj2kOptions {
+        validate_against_integer_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded = jpeg_to_htj2k(jpeg, &options)
+        .expect("transcode 4:2:0 JPEG with default integer direct path");
+    let metrics = encoded
+        .report
+        .integer_reference_metrics
+        .as_ref()
+        .expect("integer reference metrics are reported");
+
+    assert_eq!(
+        encoded.report.path,
+        "native_component_sampling_integer_direct_53"
+    );
+    assert_eq!(metrics.total, 384);
+    assert_eq!(metrics.exact_matches, metrics.total);
+    assert_eq!(metrics.max_abs_error, 0);
 }
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
-    let mut options = JpegToHtj2kOptions::default();
-    options.encode_options.num_decomposition_levels = 2;
-    options.validate_against_float_reference = true;
+    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
+    encode_options.num_decomposition_levels = 2;
+    let options = JpegToHtj2kOptions {
+        encode_options,
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with two DWT levels");
@@ -100,6 +133,35 @@ fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
     assert_eq!(decoded.num_components, 1);
     assert_eq!(metrics.total, 64);
     assert_eq!(metrics.exact_matches, 64);
+}
+
+#[test]
+fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
+    encode_options.num_decomposition_levels = 2;
+    let options = JpegToHtj2kOptions {
+        encode_options,
+        validate_against_integer_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("integer-direct transcode supports two DWT levels");
+    let metrics = encoded
+        .report
+        .integer_reference_metrics
+        .as_ref()
+        .expect("integer reference metrics are reported");
+
+    assert_eq!(
+        encoded.report.path,
+        "full_resolution_components_integer_direct_53"
+    );
+    assert_eq!(encoded.report.decomposition_levels, 2);
+    assert_eq!(metrics.total, 64);
+    assert_eq!(metrics.exact_matches, metrics.total);
+    assert_eq!(metrics.max_abs_error, 0);
 }
 
 #[test]
@@ -239,6 +301,7 @@ fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
 fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::default()
     };
@@ -261,7 +324,10 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
     let larger_jpeg =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
     let smaller_jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions::default();
+    let options = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+        ..JpegToHtj2kOptions::default()
+    };
     let mut transcoder = JpegToHtj2kTranscoder::default();
 
     let larger = transcoder

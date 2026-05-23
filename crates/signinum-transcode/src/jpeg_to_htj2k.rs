@@ -24,6 +24,8 @@ use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 pub struct JpegToHtj2kOptions {
     /// Native HTJ2K encode options used after wavelet bands are produced.
     pub encode_options: EncodeOptions,
+    /// Coefficient production path used for HTJ2K precomputed bands.
+    pub coefficient_path: JpegToHtj2kCoefficientPath,
     /// Materialize the float IDCT-then-DWT oracle and report rounded
     /// coefficient differences. This is intended for validation and tests, not
     /// the production direct path.
@@ -46,10 +48,26 @@ impl Default for JpegToHtj2kOptions {
                 validate_high_throughput_codestream: false,
                 ..EncodeOptions::default()
             },
+            coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
             validate_against_float_reference: false,
             validate_against_integer_reference: false,
         }
     }
+}
+
+/// Experimental production path used to generate HTJ2K 5/3 coefficients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JpegToHtj2kCoefficientPath {
+    /// Exact reversible 5/3 coefficients relative to `signinum-jpeg` scalar
+    /// ISLOW block decode semantics. The first 5/3 level is computed from DCT
+    /// blocks without materializing a full spatial image plane; later levels
+    /// recurse conventionally over the LL coefficient band.
+    IntegerDirect53,
+    /// Floating-point linear composition of IDCT and 5/3 analysis. This is the
+    /// linear math oracle path and remains useful for validating the direct
+    /// matrix composition, but it is not the integer reversible production
+    /// default.
+    FloatDirectLinear53,
 }
 
 /// Reusable experimental JPEG-to-HTJ2K transcoder state.
@@ -293,11 +311,7 @@ fn jpeg_to_htj2k_with_scratch(
             float_reference_metrics: component_batch.float_reference_metrics,
             integer_reference_metrics: component_batch.integer_reference_metrics,
             decomposition_levels,
-            path: if all_unit_sampled {
-                "full_resolution_components_float_direct_53"
-            } else {
-                "native_component_sampling_float_direct_53"
-            },
+            path: transcode_path_name(all_unit_sampled, options.coefficient_path),
             extract_us,
             transform_us,
             encode_us,
@@ -325,6 +339,12 @@ struct ComponentWavelet {
 }
 
 struct IntegerWaveletLevel {
+    width: usize,
+    height: usize,
+    low_width: usize,
+    low_height: usize,
+    high_width: usize,
+    high_height: usize,
     hl: Vec<i32>,
     lh: Vec<i32>,
     hh: Vec<i32>,
@@ -332,6 +352,8 @@ struct IntegerWaveletLevel {
 
 struct IntegerWavelet {
     final_ll: Vec<i32>,
+    final_ll_width: usize,
+    final_ll_height: usize,
     levels: Vec<IntegerWaveletLevel>,
 }
 
@@ -354,8 +376,7 @@ fn transcode_component_batch(
             x_rsiz,
             y_rsiz,
             decomposition_levels,
-            options.validate_against_float_reference,
-            options.validate_against_integer_reference,
+            options,
             scratch,
         )?;
         precomputed_components.push(component_result.precomputed);
@@ -398,49 +419,42 @@ fn component_to_precomputed_htj2k(
     x_rsiz: u8,
     y_rsiz: u8,
     decomposition_levels: u8,
-    validate_against_float_reference: bool,
-    validate_against_integer_reference: bool,
+    options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
-    dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
-    let blocks = &scratch.dct_blocks_f64;
-    let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
-        blocks,
-        component.block_cols as usize,
-        component.block_rows as usize,
-        component.width as usize,
-        component.height as usize,
-        &mut scratch.dct53_grid,
-    )?;
-    let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
-    let float_validation_coefficients = if validate_against_float_reference {
-        let first_reference_level = dct8x8_blocks_then_dwt53_float(
-            blocks,
-            component.block_cols as usize,
-            component.block_rows as usize,
-            component.width as usize,
-            component.height as usize,
-        )?;
-        let reference =
-            decompose_from_first_level(first_reference_level, usize::from(decomposition_levels));
-        Some((
-            rounded_wavelet_i32(&wavelet)?,
-            rounded_wavelet_i32(&reference)?,
-        ))
+    let (dwt, actual_coefficients) = match options.coefficient_path {
+        JpegToHtj2kCoefficientPath::IntegerDirect53 => {
+            let wavelet = integer_direct_wavelet_from_component(component, decomposition_levels)?;
+            (
+                j2k_dwt_from_integer_wavelet(&wavelet),
+                flatten_integer_wavelet(&wavelet),
+            )
+        }
+        JpegToHtj2kCoefficientPath::FloatDirectLinear53 => {
+            let wavelet =
+                float_direct_wavelet_from_component(component, decomposition_levels, scratch)?;
+            (
+                j2k_dwt_from_wavelet(
+                    &wavelet,
+                    component.width as usize,
+                    component.height as usize,
+                ),
+                rounded_wavelet_i32(&wavelet)?,
+            )
+        }
+    };
+    let float_validation_coefficients = if options.validate_against_float_reference {
+        let expected = float_reference_coefficients(component, decomposition_levels, scratch)?;
+        Some((actual_coefficients.clone(), expected))
     } else {
         None
     };
-    let integer_validation_coefficients = if validate_against_integer_reference {
+    let integer_validation_coefficients = if options.validate_against_integer_reference {
         let expected = integer_reference_coefficients(component, decomposition_levels)?;
-        Some((rounded_wavelet_i32(&wavelet)?, expected))
+        Some((actual_coefficients, expected))
     } else {
         None
     };
-    let dwt = j2k_dwt_from_wavelet(
-        &wavelet,
-        component.width as usize,
-        component.height as usize,
-    );
 
     Ok(ComponentTranscodeResult {
         precomputed: PrecomputedHtj2k53Component {
@@ -451,6 +465,66 @@ fn component_to_precomputed_htj2k(
         float_validation_coefficients,
         integer_validation_coefficients,
     })
+}
+
+fn transcode_path_name(
+    all_unit_sampled: bool,
+    coefficient_path: JpegToHtj2kCoefficientPath,
+) -> &'static str {
+    match (all_unit_sampled, coefficient_path) {
+        (true, JpegToHtj2kCoefficientPath::IntegerDirect53) => {
+            "full_resolution_components_integer_direct_53"
+        }
+        (false, JpegToHtj2kCoefficientPath::IntegerDirect53) => {
+            "native_component_sampling_integer_direct_53"
+        }
+        (true, JpegToHtj2kCoefficientPath::FloatDirectLinear53) => {
+            "full_resolution_components_float_direct_53"
+        }
+        (false, JpegToHtj2kCoefficientPath::FloatDirectLinear53) => {
+            "native_component_sampling_float_direct_53"
+        }
+    }
+}
+
+fn float_direct_wavelet_from_component(
+    component: &JpegDctComponent,
+    decomposition_levels: u8,
+    scratch: &mut JpegToHtj2kScratch,
+) -> Result<ComponentWavelet, JpegToHtj2kError> {
+    dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
+    let blocks = &scratch.dct_blocks_f64;
+    let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+        blocks,
+        component.block_cols as usize,
+        component.block_rows as usize,
+        component.width as usize,
+        component.height as usize,
+        &mut scratch.dct53_grid,
+    )?;
+    Ok(decompose_from_first_level(
+        bands,
+        usize::from(decomposition_levels),
+    ))
+}
+
+fn float_reference_coefficients(
+    component: &JpegDctComponent,
+    decomposition_levels: u8,
+    scratch: &mut JpegToHtj2kScratch,
+) -> Result<Vec<i32>, JpegToHtj2kError> {
+    dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
+    let blocks = &scratch.dct_blocks_f64;
+    let first_reference_level = dct8x8_blocks_then_dwt53_float(
+        blocks,
+        component.block_cols as usize,
+        component.block_rows as usize,
+        component.width as usize,
+        component.height as usize,
+    )?;
+    let reference =
+        decompose_from_first_level(first_reference_level, usize::from(decomposition_levels));
+    rounded_wavelet_i32(&reference)
 }
 
 fn decompose_from_first_level(
@@ -513,6 +587,31 @@ fn j2k_dwt_from_wavelet(
     }
 }
 
+fn j2k_dwt_from_integer_wavelet(wavelet: &IntegerWavelet) -> J2kForwardDwt53Output {
+    let mut levels = Vec::with_capacity(wavelet.levels.len());
+    for level in &wavelet.levels {
+        levels.push(J2kForwardDwt53Level {
+            hl: level.hl.iter().map(|&value| value as f32).collect(),
+            lh: level.lh.iter().map(|&value| value as f32).collect(),
+            hh: level.hh.iter().map(|&value| value as f32).collect(),
+            width: level.width as u32,
+            height: level.height as u32,
+            low_width: level.low_width as u32,
+            low_height: level.low_height as u32,
+            high_width: level.high_width as u32,
+            high_height: level.high_height as u32,
+        });
+    }
+    levels.reverse();
+
+    J2kForwardDwt53Output {
+        ll: wavelet.final_ll.iter().map(|&value| value as f32).collect(),
+        ll_width: wavelet.final_ll_width as u32,
+        ll_height: wavelet.final_ll_height as u32,
+        levels,
+    }
+}
+
 fn rounded_wavelet_i32(wavelet: &ComponentWavelet) -> Result<Vec<i32>, JpegToHtj2kError> {
     let coefficient_count = wavelet.final_ll.len()
         + wavelet
@@ -530,6 +629,182 @@ fn rounded_wavelet_i32(wavelet: &ComponentWavelet) -> Result<Vec<i32>, JpegToHtj
     Ok(output)
 }
 
+fn integer_direct_wavelet_from_component(
+    component: &JpegDctComponent,
+    decomposition_levels: u8,
+) -> Result<IntegerWavelet, JpegToHtj2kError> {
+    validate_component_block_grid(component)?;
+
+    let (mut final_ll, mut final_ll_width, mut final_ll_height, first_level) =
+        integer_direct_first_level_from_component(component)?;
+    let mut levels = vec![first_level];
+
+    let remaining_levels = usize::from(decomposition_levels.saturating_sub(1));
+    if remaining_levels > 0 {
+        let tail =
+            reversible_dwt53_i32(final_ll, final_ll_width, final_ll_height, remaining_levels);
+        final_ll = tail.final_ll;
+        final_ll_width = tail.final_ll_width;
+        final_ll_height = tail.final_ll_height;
+        levels.extend(tail.levels);
+    }
+
+    Ok(IntegerWavelet {
+        final_ll,
+        final_ll_width,
+        final_ll_height,
+        levels,
+    })
+}
+
+fn integer_direct_first_level_from_component(
+    component: &JpegDctComponent,
+) -> Result<(Vec<i32>, usize, usize, IntegerWaveletLevel), JpegToHtj2kError> {
+    let width = component.width as usize;
+    let height = component.height as usize;
+    let low_width = width.div_ceil(2);
+    let low_height = height.div_ceil(2);
+    let high_width = width / 2;
+    let high_height = height / 2;
+
+    let mut ll = Vec::with_capacity(low_width * low_height);
+    let mut hl = Vec::with_capacity(high_width * low_height);
+    let mut lh = Vec::with_capacity(low_width * high_height);
+    let mut hh = Vec::with_capacity(high_width * high_height);
+    let mut row = Vec::with_capacity(width);
+
+    for output_y in 0..low_height {
+        row.clear();
+        for x in 0..width {
+            row.push(vertical_53_i32_at(component, x, output_y, true)?);
+        }
+        reversible_lift_53_i32(&mut row);
+        ll.extend(row.iter().step_by(2).copied());
+        hl.extend(row.iter().skip(1).step_by(2).copied());
+    }
+
+    for output_y in 0..high_height {
+        row.clear();
+        for x in 0..width {
+            row.push(vertical_53_i32_at(component, x, output_y, false)?);
+        }
+        reversible_lift_53_i32(&mut row);
+        lh.extend(row.iter().step_by(2).copied());
+        hh.extend(row.iter().skip(1).step_by(2).copied());
+    }
+
+    let level = IntegerWaveletLevel {
+        width,
+        height,
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+        hl,
+        lh,
+        hh,
+    };
+
+    Ok((ll, low_width, low_height, level))
+}
+
+fn vertical_53_i32_at(
+    component: &JpegDctComponent,
+    x: usize,
+    output_y: usize,
+    low_pass: bool,
+) -> Result<i32, JpegToHtj2kError> {
+    if low_pass {
+        vertical_low_53_i32_at(component, x, output_y)
+    } else {
+        vertical_high_53_i32_at(component, x, output_y)
+    }
+}
+
+fn vertical_low_53_i32_at(
+    component: &JpegDctComponent,
+    x: usize,
+    low_idx: usize,
+) -> Result<i32, JpegToHtj2kError> {
+    let height = component.height as usize;
+    let even_idx = low_idx * 2;
+    let current = component_sample_i32(component, x, even_idx)?;
+    if height < 2 {
+        return Ok(current);
+    }
+
+    if height.is_multiple_of(2) {
+        let right = vertical_high_53_i32_at(component, x, low_idx)?;
+        if low_idx == 0 {
+            return Ok(current + floor_div_i32(right + 1, 2));
+        }
+        let left = vertical_high_53_i32_at(component, x, low_idx - 1)?;
+        return Ok(current + floor_div_i32(left + right + 2, 4));
+    }
+
+    let high_len = height / 2;
+    if high_len == 0 {
+        return Ok(current);
+    }
+    let left = if low_idx > 0 {
+        vertical_high_53_i32_at(component, x, low_idx - 1)?
+    } else {
+        vertical_high_53_i32_at(component, x, 0)?
+    };
+    let right = if low_idx < high_len {
+        vertical_high_53_i32_at(component, x, low_idx)?
+    } else {
+        left
+    };
+    Ok(current + floor_div_i32(left + right + 2, 4))
+}
+
+fn vertical_high_53_i32_at(
+    component: &JpegDctComponent,
+    x: usize,
+    high_idx: usize,
+) -> Result<i32, JpegToHtj2kError> {
+    let height = component.height as usize;
+    let odd_idx = high_idx * 2 + 1;
+    let current = component_sample_i32(component, x, odd_idx)?;
+    let left = component_sample_i32(component, x, odd_idx - 1)?;
+    if height.is_multiple_of(2) && odd_idx + 1 == height {
+        return Ok(current - left);
+    }
+
+    let right_idx = if odd_idx + 1 < height {
+        odd_idx + 1
+    } else {
+        height - 1
+    };
+    let right = component_sample_i32(component, x, right_idx)?;
+    Ok(current - floor_div_i32(left + right, 2))
+}
+
+fn component_sample_i32(
+    component: &JpegDctComponent,
+    x: usize,
+    y: usize,
+) -> Result<i32, JpegToHtj2kError> {
+    if x >= component.width as usize || y >= component.height as usize {
+        return Err(JpegToHtj2kError::Validation(
+            "component sample coordinate exceeds dimensions",
+        ));
+    }
+    let block_cols = component.block_cols as usize;
+    let block_x = x / 8;
+    let block_y = y / 8;
+    let block = component
+        .dequantized_blocks
+        .get(block_y * block_cols + block_x)
+        .ok_or(JpegToHtj2kError::Validation(
+            "component block grid does not cover requested sample",
+        ))?;
+    let block_samples = idct_islow_block(block);
+    let local_idx = (y % 8) * 8 + (x % 8);
+    Ok(i32::from(block_samples[local_idx]) - 128)
+}
+
 fn integer_reference_coefficients(
     component: &JpegDctComponent,
     decomposition_levels: u8,
@@ -545,22 +820,12 @@ fn integer_reference_coefficients(
 }
 
 fn idct_component_samples_i32(component: &JpegDctComponent) -> Result<Vec<i32>, JpegToHtj2kError> {
+    validate_component_block_grid(component)?;
+
     let width = component.width as usize;
     let height = component.height as usize;
     let block_cols = component.block_cols as usize;
     let block_rows = component.block_rows as usize;
-    let expected_blocks =
-        block_cols
-            .checked_mul(block_rows)
-            .ok_or(JpegToHtj2kError::Validation(
-                "component block grid overflow",
-            ))?;
-    if component.dequantized_blocks.len() != expected_blocks {
-        return Err(JpegToHtj2kError::Validation(
-            "component block count does not match block grid",
-        ));
-    }
-
     let mut samples = vec![0; width * height];
     for block_y in 0..block_rows {
         for block_x in 0..block_cols {
@@ -583,6 +848,24 @@ fn idct_component_samples_i32(component: &JpegDctComponent) -> Result<Vec<i32>, 
     }
 
     Ok(samples)
+}
+
+fn validate_component_block_grid(component: &JpegDctComponent) -> Result<(), JpegToHtj2kError> {
+    let block_cols = component.block_cols as usize;
+    let block_rows = component.block_rows as usize;
+    let expected_blocks =
+        block_cols
+            .checked_mul(block_rows)
+            .ok_or(JpegToHtj2kError::Validation(
+                "component block grid overflow",
+            ))?;
+    if component.dequantized_blocks.len() != expected_blocks {
+        return Err(JpegToHtj2kError::Validation(
+            "component block count does not match block grid",
+        ));
+    }
+
+    Ok(())
 }
 
 fn reversible_dwt53_i32(
@@ -648,7 +931,17 @@ fn reversible_dwt53_i32(
             }
         }
 
-        levels.push(IntegerWaveletLevel { hl, lh, hh });
+        levels.push(IntegerWaveletLevel {
+            width: current_width,
+            height: current_height,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+            hl,
+            lh,
+            hh,
+        });
         current_width = low_width;
         current_height = low_height;
     }
@@ -660,7 +953,12 @@ fn reversible_dwt53_i32(
         }
     }
 
-    IntegerWavelet { final_ll, levels }
+    IntegerWavelet {
+        final_ll,
+        final_ll_width: current_width,
+        final_ll_height: current_height,
+        levels,
+    }
 }
 
 fn reversible_lift_53_i32(values: &mut [i32]) {

@@ -200,8 +200,9 @@ impl std::error::Error for CorpusValidationError {
     }
 }
 
-/// Validate a deterministic set of JPEG fixtures against the float DCT→DWT
-/// oracle and aggregate the rounded coefficient error metrics.
+/// Validate a deterministic set of JPEG fixtures against the integer
+/// ISLOW-IDCT-then-reversible-5/3 oracle and aggregate coefficient error
+/// metrics.
 pub fn validate_transcode_corpus(
     fixtures: &[CorpusFixture<'_>],
     options: &CorpusValidationOptions,
@@ -244,7 +245,7 @@ fn validate_fixture(
     options: &CorpusValidationOptions,
 ) -> Result<ValidatedFixture, CorpusValidationError> {
     let mut transcode_options = options.transcode_options.clone();
-    transcode_options.validate_against_float_reference = true;
+    transcode_options.validate_against_integer_reference = true;
     let encoded = jpeg_to_htj2k(fixture.bytes, &transcode_options).map_err(|source| {
         CorpusValidationError::Transcode {
             name: fixture.name.to_string(),
@@ -253,7 +254,7 @@ fn validate_fixture(
     })?;
     let metrics = encoded
         .report
-        .float_reference_metrics
+        .integer_reference_metrics
         .as_ref()
         .ok_or_else(|| CorpusValidationError::MissingMetrics {
             name: fixture.name.to_string(),
