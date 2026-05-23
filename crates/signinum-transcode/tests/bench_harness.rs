@@ -10,6 +10,7 @@ fn dct53_benchmark_group_names_are_stable() {
         "dct53_2d_single_level_scalar",
         "dct53_2d_grid_scalar",
         "dct53_multilevel_scalar",
+        "dct53_layout_candidates",
         "jpeg_dct_extract",
         "jpeg_to_htj2k",
     ] {
