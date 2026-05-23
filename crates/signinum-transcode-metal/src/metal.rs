@@ -14,7 +14,7 @@ use metal::{
 use signinum_transcode::accelerator::DctGridToDwt97Job;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
-use crate::weights::Dwt97WeightRows;
+use crate::weights::{SparseDwt97WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;
 
 const SHADER_SOURCE: &str = include_str!("dct97.metal");
@@ -38,6 +38,25 @@ struct Dct97ProjectionParams {
     block_cols: u32,
     band_width: u32,
     band_height: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetalSparseRow {
+    offset: u32,
+    count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetalWeightTap {
+    sample_idx: u32,
+    weight: f32,
+}
+
+struct MetalSparseRows {
+    rows: Vec<MetalSparseRow>,
+    taps: Vec<MetalWeightTap>,
 }
 
 impl MetalRuntime {
@@ -90,12 +109,20 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     let low_height = job.height.div_ceil(2);
     let high_height = job.height / 2;
 
-    let x_weights = Dwt97WeightRows::for_len(job.width);
-    let y_weights = Dwt97WeightRows::for_len(job.height);
-    let x_low = buffer_with_slice(&runtime.device, &flatten_rows(&x_weights.low));
-    let x_high = buffer_with_slice(&runtime.device, &flatten_rows(&x_weights.high));
-    let y_low = buffer_with_slice(&runtime.device, &flatten_rows(&y_weights.low));
-    let y_high = buffer_with_slice(&runtime.device, &flatten_rows(&y_weights.high));
+    let x_weights = SparseDwt97WeightRows::for_len(job.width);
+    let y_weights = SparseDwt97WeightRows::for_len(job.height);
+    let x_low = metal_sparse_rows(&x_weights.low)?;
+    let x_high = metal_sparse_rows(&x_weights.high)?;
+    let y_low = metal_sparse_rows(&y_weights.low)?;
+    let y_high = metal_sparse_rows(&y_weights.high)?;
+    let x_low_rows = buffer_with_slice(&runtime.device, &x_low.rows);
+    let x_low_taps = buffer_with_slice(&runtime.device, &x_low.taps);
+    let x_high_rows = buffer_with_slice(&runtime.device, &x_high.rows);
+    let x_high_taps = buffer_with_slice(&runtime.device, &x_high.taps);
+    let y_low_rows = buffer_with_slice(&runtime.device, &y_low.rows);
+    let y_low_taps = buffer_with_slice(&runtime.device, &y_low.taps);
+    let y_high_rows = buffer_with_slice(&runtime.device, &y_high.rows);
+    let y_high_taps = buffer_with_slice(&runtime.device, &y_high.taps);
     let blocks = buffer_with_slice(&runtime.device, &flatten_blocks(job.blocks));
 
     let ll_buffer = output_buffer(&runtime.device, low_width * low_height);
@@ -108,12 +135,12 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct97_project_band);
     encoder.set_buffer(0, Some(&blocks), 0);
-    encoder.set_buffer(3, Some(&runtime.idct_basis), 0);
+    encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
 
     dispatch_band(
         encoder,
-        &x_low,
-        &y_low,
+        (&x_low_rows, &x_low_taps),
+        (&y_low_rows, &y_low_taps),
         &ll_buffer,
         BandGeometry {
             width,
@@ -125,8 +152,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     );
     dispatch_band(
         encoder,
-        &x_high,
-        &y_low,
+        (&x_high_rows, &x_high_taps),
+        (&y_low_rows, &y_low_taps),
         &hl_buffer,
         BandGeometry {
             width,
@@ -138,8 +165,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     );
     dispatch_band(
         encoder,
-        &x_low,
-        &y_high,
+        (&x_low_rows, &x_low_taps),
+        (&y_high_rows, &y_high_taps),
         &lh_buffer,
         BandGeometry {
             width,
@@ -151,8 +178,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     );
     dispatch_band(
         encoder,
-        &x_high,
-        &y_high,
+        (&x_high_rows, &x_high_taps),
+        (&y_high_rows, &y_high_taps),
         &hh_buffer,
         BandGeometry {
             width,
@@ -199,8 +226,8 @@ struct BandGeometry {
 
 fn dispatch_band(
     encoder: &ComputeCommandEncoderRef,
-    x_weights: &Buffer,
-    y_weights: &Buffer,
+    x_weights: (&Buffer, &Buffer),
+    y_weights: (&Buffer, &Buffer),
     output: &Buffer,
     geometry: BandGeometry,
 ) {
@@ -215,11 +242,13 @@ fn dispatch_band(
         band_width: geometry.band_width,
         band_height: geometry.band_height,
     };
-    encoder.set_buffer(1, Some(x_weights), 0);
-    encoder.set_buffer(2, Some(y_weights), 0);
-    encoder.set_buffer(4, Some(output), 0);
+    encoder.set_buffer(1, Some(x_weights.0), 0);
+    encoder.set_buffer(2, Some(x_weights.1), 0);
+    encoder.set_buffer(3, Some(y_weights.0), 0);
+    encoder.set_buffer(4, Some(y_weights.1), 0);
+    encoder.set_buffer(6, Some(output), 0);
     encoder.set_bytes(
-        5,
+        7,
         size_of::<Dct97ProjectionParams>() as u64,
         (&raw const params).cast(),
     );
@@ -275,8 +304,24 @@ fn u32_param(value: usize) -> Result<u32, MetalTranscodeError> {
         .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))
 }
 
-fn flatten_rows(rows: &[Vec<f32>]) -> Vec<f32> {
-    rows.iter().flat_map(|row| row.iter().copied()).collect()
+fn metal_sparse_rows(rows: &[SparseWeightRow]) -> Result<MetalSparseRows, MetalTranscodeError> {
+    let mut metal_rows = Vec::with_capacity(rows.len());
+    let mut taps = Vec::new();
+    for row in rows {
+        let offset = u32_param(taps.len())?;
+        let count = u32_param(row.taps.len())?;
+        metal_rows.push(MetalSparseRow { offset, count });
+        for tap in &row.taps {
+            taps.push(MetalWeightTap {
+                sample_idx: u32_param(tap.sample_idx)?,
+                weight: tap.weight,
+            });
+        }
+    }
+    Ok(MetalSparseRows {
+        rows: metal_rows,
+        taps,
+    })
 }
 
 fn flatten_blocks(blocks: &[[[f64; 8]; 8]]) -> Vec<f32> {

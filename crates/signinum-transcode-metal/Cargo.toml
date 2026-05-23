@@ -24,6 +24,7 @@ rayon = "1"
 [dev-dependencies]
 criterion = { workspace = true }
 signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.2" }
+signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.2" }
 
 [[bench]]
 name = "dct97"

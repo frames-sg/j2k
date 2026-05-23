@@ -5,7 +5,7 @@ use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccele
 use signinum_transcode::dct97_2d::{
     dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
-use signinum_transcode_metal::weights::Dwt97WeightRows;
+use signinum_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
 use signinum_transcode_metal::MetalTranscodeError;
@@ -128,9 +128,41 @@ fn weight_rows_are_deterministic() {
     );
 }
 
+#[test]
+fn sparse_weight_rows_reconstruct_dense_rows_for_wsi_lengths() {
+    for sample_len in [8_usize, 13, 16, 512, 1024, 2048] {
+        let dense = Dwt97WeightRows::for_len(sample_len);
+        let sparse = SparseDwt97WeightRows::for_len(sample_len);
+
+        assert!(sparse.max_taps_per_row() <= 16);
+        assert_eq!(sparse.low.len(), dense.low.len());
+        assert_eq!(sparse.high.len(), dense.high.len());
+        assert_eq!(reconstruct_sparse_rows(&sparse.low, sample_len), dense.low);
+        assert_eq!(
+            reconstruct_sparse_rows(&sparse.high, sample_len),
+            dense.high
+        );
+    }
+}
+
 fn f32_rows_to_bits(rows: &[Vec<f32>]) -> Vec<Vec<u32>> {
     rows.iter()
         .map(|row| row.iter().map(|value| value.to_bits()).collect())
+        .collect()
+}
+
+fn reconstruct_sparse_rows(
+    rows: &[signinum_transcode_metal::weights::SparseWeightRow],
+    sample_len: usize,
+) -> Vec<Vec<f32>> {
+    rows.iter()
+        .map(|row| {
+            let mut dense = vec![0.0; sample_len];
+            for tap in &row.taps {
+                dense[tap.sample_idx] = tap.weight;
+            }
+            dense
+        })
         .collect()
 }
 

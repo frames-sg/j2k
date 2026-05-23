@@ -139,16 +139,16 @@ pub fn dct8x8_blocks_to_dwt97_float_linear_with_scratch(
             ll.push(project_dct_grid(
                 blocks,
                 block_cols,
-                &y_weights.low[y],
-                &x_weights.low[x],
+                &y_weights.low[y].taps,
+                &x_weights.low[x].taps,
             ));
         }
         for x in 0..high_width {
             hl.push(project_dct_grid(
                 blocks,
                 block_cols,
-                &y_weights.low[y],
-                &x_weights.high[x],
+                &y_weights.low[y].taps,
+                &x_weights.high[x].taps,
             ));
         }
     }
@@ -158,16 +158,16 @@ pub fn dct8x8_blocks_to_dwt97_float_linear_with_scratch(
             lh.push(project_dct_grid(
                 blocks,
                 block_cols,
-                &y_weights.high[y],
-                &x_weights.low[x],
+                &y_weights.high[y].taps,
+                &x_weights.low[x].taps,
             ));
         }
         for x in 0..high_width {
             hh.push(project_dct_grid(
                 blocks,
                 block_cols,
-                &y_weights.high[y],
-                &x_weights.high[x],
+                &y_weights.high[y].taps,
+                &x_weights.high[x].taps,
             ));
         }
     }
@@ -265,22 +265,24 @@ pub(crate) fn linearized_97_2d_from_plane(
 fn project_dct_grid(
     blocks: &[[[f64; 8]; 8]],
     block_cols: usize,
-    y_weights: &[f64],
-    x_weights: &[f64],
+    y_weights: &[SparseWeightTap],
+    x_weights: &[SparseWeightTap],
 ) -> f64 {
     let mut output = 0.0;
 
-    for (sample_y, &y_weight) in y_weights.iter().enumerate() {
-        if y_weight == 0.0 {
-            continue;
-        }
+    for &SparseWeightTap {
+        sample_idx: sample_y,
+        weight: y_weight,
+    } in y_weights
+    {
         let block_y = sample_y / 8;
         let local_y = sample_y % 8;
 
-        for (sample_x, &x_weight) in x_weights.iter().enumerate() {
-            if x_weight == 0.0 {
-                continue;
-            }
+        for &SparseWeightTap {
+            sample_idx: sample_x,
+            weight: x_weight,
+        } in x_weights
+        {
             let block_x = sample_x / 8;
             let local_x = sample_x % 8;
             let block = &blocks[block_y * block_cols + block_x];
@@ -422,8 +424,8 @@ fn validate_grid(
 #[derive(Debug, Default)]
 struct Dwt97WeightRows {
     sample_len: Option<usize>,
-    low: Vec<Vec<f64>>,
-    high: Vec<Vec<f64>>,
+    low: Vec<SparseWeightRow>,
+    high: Vec<SparseWeightRow>,
 }
 
 impl Dwt97WeightRows {
@@ -432,18 +434,22 @@ impl Dwt97WeightRows {
             return;
         }
 
-        resize_weight_rows(&mut self.low, low_len(sample_len), sample_len);
-        resize_weight_rows(&mut self.high, high_len(sample_len), sample_len);
+        resize_weight_rows(&mut self.low, low_len(sample_len));
+        resize_weight_rows(&mut self.high, high_len(sample_len));
 
         for sample_idx in 0..sample_len {
             let mut basis = vec![0.0; sample_len];
             basis[sample_idx] = 1.0;
             let transformed = linearized_97_from_sample_slice(&basis);
             for (row, &weight) in self.low.iter_mut().zip(transformed.low.iter()) {
-                row[sample_idx] = weight;
+                if weight != 0.0 {
+                    row.taps.push(SparseWeightTap { sample_idx, weight });
+                }
             }
             for (row, &weight) in self.high.iter_mut().zip(transformed.high.iter()) {
-                row[sample_idx] = weight;
+                if weight != 0.0 {
+                    row.taps.push(SparseWeightTap { sample_idx, weight });
+                }
             }
         }
 
@@ -451,20 +457,37 @@ impl Dwt97WeightRows {
     }
 
     fn weight_capacity(&self) -> usize {
-        self.low.iter().map(Vec::capacity).sum::<usize>()
-            + self.high.iter().map(Vec::capacity).sum::<usize>()
+        self.low
+            .iter()
+            .map(|row| row.taps.capacity())
+            .sum::<usize>()
+            + self
+                .high
+                .iter()
+                .map(|row| row.taps.capacity())
+                .sum::<usize>()
     }
 }
 
-fn resize_weight_rows(rows: &mut Vec<Vec<f64>>, row_count: usize, sample_len: usize) {
+fn resize_weight_rows(rows: &mut Vec<SparseWeightRow>, row_count: usize) {
     if rows.len() < row_count {
-        rows.resize_with(row_count, Vec::new);
+        rows.resize_with(row_count, SparseWeightRow::default);
     }
     for row in rows.iter_mut().take(row_count) {
-        row.clear();
-        row.resize(sample_len, 0.0);
+        row.taps.clear();
     }
     rows.truncate(row_count);
+}
+
+#[derive(Debug, Default)]
+struct SparseWeightRow {
+    taps: Vec<SparseWeightTap>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SparseWeightTap {
+    sample_idx: usize,
+    weight: f64,
 }
 
 struct Dwt97OneDimensional {
