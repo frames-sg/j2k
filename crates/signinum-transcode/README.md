@@ -36,6 +36,12 @@ Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
 thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
 over the same scalar path. Reusable scratch covers the float-linear validation
 path and the default integer-direct block-local ISLOW sample cache.
+`JpegToHtj2kTranscoder::transcode_with_accelerator` accepts an optional
+`DctToWaveletStageAccelerator` for future SIMD/GPU backends; the default
+accelerator always falls back to the scalar oracle.
+Use `JpegToHtj2kOptions::lossless_53()` and `JpegToHtj2kOptions::lossy_97()`
+instead of manually combining coefficient paths with reversible/irreversible
+encoder settings. Contradictory options fail before JPEG parsing.
 
 `TranscodeReport` includes the typed coefficient path and optional validation
 classifications. When an oracle is enabled, metrics are classified as exact,

@@ -104,6 +104,14 @@ direct 2D projection weight-row scratch. For the integer-direct path it reuses a
 block-local ISLOW sample cache and row scratch. The benchmark suite includes
 `grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so future
 allocation/layout changes can be measured against the stateless path.
+`transcode_with_accelerator` adds a narrow `DctToWaveletStageAccelerator` hook
+for future SIMD/GPU backends to replace the direct 5/3 or 9/7 DCT-grid
+projection stages; the default backend returns `None` and uses the scalar
+fallback.
+`JpegToHtj2kOptions::lossless_53()` and `JpegToHtj2kOptions::lossy_97()` are the
+safe constructors for the two currently supported codec modes. The transcode
+entry point rejects contradictory reversible/irreversible settings rather than
+silently normalizing them.
 
 Initial 2026-05-23 tiny-fixture timing is the same order of magnitude: stateless
 `grayscale_8x8` measured 92.394-93.799 us and stateful
@@ -169,7 +177,7 @@ it expands cached lifting weights over every DCT basis contribution.
   the correct boundary for later pure coefficient-domain experiments, but it
   adds extraction-only work until an option or downstream consumer can avoid
   one representation.
-- No SIMD optimization claims are made yet. The scalar Criterion groups are the
-  baseline for later work.
+- No SIMD optimization claims are made yet. The scalar Criterion groups and
+  acceleration hook are the baseline for later work.
 - RGB conversion and chroma upsample remain out of scope for this experimental
   path.

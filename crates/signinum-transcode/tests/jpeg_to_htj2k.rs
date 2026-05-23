@@ -4,6 +4,15 @@ use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
+use signinum_transcode::accelerator::{
+    DctGridToDwt53Job, DctGridToDwt97Job, DctToWaveletStageAccelerator,
+};
+use signinum_transcode::dct53_2d::{
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
+};
+use signinum_transcode::dct97_2d::{
+    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
+};
 use signinum_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder, TranscodeValidationClassification,
@@ -60,13 +69,9 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
-    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
-    encode_options.reversible = false;
     let options = JpegToHtj2kOptions {
-        encode_options,
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
         validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::default()
+        ..JpegToHtj2kOptions::lossy_97()
     };
 
     let encoded =
@@ -98,15 +103,47 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
 }
 
 #[test]
+fn option_constructors_select_consistent_default_codec_modes() {
+    let lossless = JpegToHtj2kOptions::lossless_53();
+    assert_eq!(
+        lossless.coefficient_path,
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+    );
+    assert!(lossless.encode_options.reversible);
+    assert!(!lossless.encode_options.use_mct);
+
+    let lossy = JpegToHtj2kOptions::lossy_97();
+    assert_eq!(
+        lossy.coefficient_path,
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97
+    );
+    assert!(!lossy.encode_options.reversible);
+    assert!(!lossy.encode_options.use_mct);
+}
+
+#[test]
+fn transcode_rejects_inconsistent_codec_mode_options() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let err = jpeg_to_htj2k(jpeg, &options).expect_err("9/7 path requires irreversible encode");
+
+    assert!(
+        err.to_string()
+            .contains("9/7 coefficient path requires irreversible HTJ2K encode"),
+        "{err}"
+    );
+}
+
+#[test]
 fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
-    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
-    encode_options.reversible = false;
     let options = JpegToHtj2kOptions {
-        encode_options,
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
         validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::default()
+        ..JpegToHtj2kOptions::lossy_97()
     };
 
     let encoded = jpeg_to_htj2k(jpeg, &options).expect("transcode 4:2:0 JPEG to lossy 9/7 HTJ2K");
@@ -440,6 +477,31 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
 }
 
 #[test]
+fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = CountingAccelerator::default();
+
+    let options_53 = JpegToHtj2kOptions {
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+        ..JpegToHtj2kOptions::default()
+    };
+    transcoder
+        .transcode_with_accelerator(jpeg, &options_53, &mut accelerator)
+        .expect("accelerated 5/3 float transcode succeeds");
+
+    let options_97 = JpegToHtj2kOptions {
+        ..JpegToHtj2kOptions::lossy_97()
+    };
+    transcoder
+        .transcode_with_accelerator(jpeg, &options_97, &mut accelerator)
+        .expect("accelerated 9/7 float transcode succeeds");
+
+    assert_eq!(accelerator.dwt53_calls, 1);
+    assert_eq!(accelerator.dwt97_calls, 1);
+}
+
+#[test]
 fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
     let larger_jpeg =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
@@ -466,6 +528,50 @@ fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
         capacity_after_larger
     );
     assert_eq!(smaller.codestream, stateless.codestream);
+}
+
+#[derive(Default)]
+struct CountingAccelerator {
+    dwt53_calls: usize,
+    dwt97_calls: usize,
+    dwt53_scratch: Dct53GridScratch,
+    dwt97_scratch: Dct97GridScratch,
+}
+
+impl DctToWaveletStageAccelerator for CountingAccelerator {
+    fn dct_grid_to_dwt53(
+        &mut self,
+        job: DctGridToDwt53Job<'_>,
+    ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
+        self.dwt53_calls += 1;
+        let dwt = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+            job.blocks,
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+            &mut self.dwt53_scratch,
+        )
+        .map_err(|_| "test DCT 5/3 grid failed")?;
+        Ok(Some(dwt))
+    }
+
+    fn dct_grid_to_dwt97(
+        &mut self,
+        job: DctGridToDwt97Job<'_>,
+    ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
+        self.dwt97_calls += 1;
+        let dwt = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+            job.blocks,
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+            &mut self.dwt97_scratch,
+        )
+        .map_err(|_| "test DCT 9/7 grid failed")?;
+        Ok(Some(dwt))
+    }
 }
 
 fn patterned_gray(width: u32, height: u32) -> Vec<u8> {

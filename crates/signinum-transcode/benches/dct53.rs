@@ -21,9 +21,7 @@ use signinum_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_with_scratch,
     Dct97GridScratch,
 };
-use signinum_transcode::{
-    jpeg_to_htj2k, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
-};
+use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 
 fn bench_dct53_math(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
@@ -201,9 +199,7 @@ fn bench_jpeg_paths(c: &mut Criterion) {
     let jpeg_420 =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
     let transcode_options = JpegToHtj2kOptions::default();
-    let mut transcode_97_options = JpegToHtj2kOptions::default();
-    transcode_97_options.encode_options.reversible = false;
-    transcode_97_options.coefficient_path = JpegToHtj2kCoefficientPath::FloatDirectLinear97;
+    let transcode_97_options = JpegToHtj2kOptions::lossy_97();
     let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k");
     jpeg_to_htj2k_group.bench_function("grayscale_8x8", |b| {
         b.iter(|| {
