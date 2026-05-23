@@ -55,6 +55,12 @@ pub struct EncodeOptions {
     pub use_mct: bool,
     /// Decode and verify HTJ2K codestreams inside the native encoder.
     pub validate_high_throughput_codestream: bool,
+    /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
+    ///
+    /// `None` means every component is stored at the reference-grid
+    /// resolution. This is experimental and primarily intended for precomputed
+    /// coefficient encoders that preserve JPEG-native chroma subsampling.
+    pub component_sampling: Option<Vec<(u8, u8)>>,
 }
 
 impl Default for EncodeOptions {
@@ -70,6 +76,7 @@ impl Default for EncodeOptions {
             write_tlm: false,
             use_mct: true,
             validate_high_throughput_codestream: true,
+            component_sampling: None,
         }
     }
 }
@@ -190,6 +197,154 @@ pub fn encode_htj2k(
     )
 }
 
+/// Precomputed reversible 5/3 wavelet coefficients for one component.
+#[derive(Debug, Clone)]
+pub struct PrecomputedHtj2k53Component {
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+    /// Forward 5/3 DWT output, ordered as the encoder expects.
+    pub dwt: J2kForwardDwt53Output,
+}
+
+/// Precomputed reversible 5/3 wavelet image.
+#[derive(Debug, Clone)]
+pub struct PrecomputedHtj2k53Image {
+    /// Reference-grid image width.
+    pub width: u32,
+    /// Reference-grid image height.
+    pub height: u32,
+    /// Component precision in bits.
+    pub bit_depth: u8,
+    /// Whether component samples are signed.
+    pub signed: bool,
+    /// Components at their native resolution.
+    pub components: Vec<PrecomputedHtj2k53Component>,
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
+/// codestream.
+///
+/// This experimental entry point reuses the existing quantization, HT block
+/// coding, packetization, and codestream writer stages. It bypasses the
+/// encoder's forward DWT stage by supplying precomputed DWT output through the
+/// internal stage hook. Coefficients are expected in the same sample domain as
+/// the native encoder's FDWT input: unsigned components are already level
+/// shifted by subtracting `2^(bit_depth - 1)`.
+pub fn encode_precomputed_htj2k_53(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = precomputed_level_count(&image.components)?;
+    let mut precomputed_options = options.clone();
+    precomputed_options.num_decomposition_levels = num_levels;
+    precomputed_options.reversible = true;
+    precomputed_options.use_ht_block_coding = true;
+    precomputed_options.use_mct = false;
+    precomputed_options.validate_high_throughput_codestream = false;
+    precomputed_options.component_sampling = Some(
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz))
+            .collect(),
+    );
+
+    let dummy_pixels =
+        zero_pixel_buffer(image.width, image.height, num_components, image.bit_depth)?;
+    let mut accelerator = PrecomputedDwtAccelerator {
+        outputs: image
+            .components
+            .iter()
+            .map(|component| component.dwt.clone())
+            .collect(),
+    };
+
+    encode_with_accelerator(
+        &dummy_pixels,
+        image.width,
+        image.height,
+        num_components,
+        image.bit_depth,
+        image.signed,
+        &precomputed_options,
+        &mut accelerator,
+    )
+}
+
+fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result<u8, &'static str> {
+    let first = components
+        .first()
+        .ok_or("unsupported component count")?
+        .dwt
+        .levels
+        .len();
+    if components
+        .iter()
+        .any(|component| component.dwt.levels.len() != first)
+    {
+        return Err("precomputed components must use the same decomposition level count");
+    }
+    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+}
+
+fn zero_pixel_buffer(
+    width: u32,
+    height: u32,
+    num_components: u8,
+    bit_depth: u8,
+) -> Result<Vec<u8>, &'static str> {
+    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let len = width as usize;
+    let len = len
+        .checked_mul(height as usize)
+        .and_then(|value| value.checked_mul(usize::from(num_components)))
+        .and_then(|value| value.checked_mul(bytes_per_sample))
+        .ok_or("pixel buffer dimensions overflow")?;
+    Ok(vec![0; len])
+}
+
+struct PrecomputedDwtAccelerator {
+    outputs: Vec<J2kForwardDwt53Output>,
+}
+
+impl J2kEncodeStageAccelerator for PrecomputedDwtAccelerator {
+    fn encode_forward_dwt53(
+        &mut self,
+        _job: J2kForwardDwt53Job<'_>,
+    ) -> Result<Option<J2kForwardDwt53Output>, &'static str> {
+        if self.outputs.is_empty() {
+            return Err("precomputed DWT output exhausted");
+        }
+
+        Ok(Some(self.outputs.remove(0)))
+    }
+
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        true
+    }
+}
+
 fn block_coding_mode(options: &EncodeOptions) -> BlockCodingMode {
     if options.use_ht_block_coding {
         BlockCodingMode::HighThroughput
@@ -289,6 +444,7 @@ fn encode_impl(
     if pixels.len() < expected_len {
         return Err("pixel data too short");
     }
+    let component_sampling = component_sampling_for_options(options, num_components)?;
 
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
@@ -483,6 +639,7 @@ fn encode_impl(
         block_coding_mode,
         progression_order: options.progression_order,
         write_tlm: options.write_tlm,
+        component_sampling,
     };
 
     let codestream = codestream_write::write_codestream(&params, &tile_data, &quant_params);
@@ -586,6 +743,27 @@ fn validate_band_len(actual: usize, width: u32, height: u32) -> Result<(), &'sta
         return Err("accelerated DWT output length mismatch");
     }
     Ok(())
+}
+
+fn component_sampling_for_options(
+    options: &EncodeOptions,
+    num_components: u8,
+) -> Result<Vec<(u8, u8)>, &'static str> {
+    match &options.component_sampling {
+        Some(component_sampling) => {
+            if component_sampling.len() != usize::from(num_components) {
+                return Err("component sampling count does not match component count");
+            }
+            if component_sampling
+                .iter()
+                .any(|&(x_rsiz, y_rsiz)| x_rsiz == 0 || y_rsiz == 0)
+            {
+                return Err("component sampling factors must be non-zero");
+            }
+            Ok(component_sampling.clone())
+        }
+        None => Ok(vec![(1, 1); usize::from(num_components)]),
+    }
 }
 
 fn count_code_blocks(resolution_packets: &[ResolutionPacket]) -> Result<u32, &'static str> {

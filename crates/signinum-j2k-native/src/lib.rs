@@ -133,7 +133,8 @@ pub use error::{
     ValidationError,
 };
 pub use j2c::encode::{
-    encode, encode_htj2k, encode_with_accelerator, EncodeOptions, EncodeProgressionOrder,
+    encode, encode_htj2k, encode_precomputed_htj2k_53, encode_with_accelerator, EncodeOptions,
+    EncodeProgressionOrder, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext};
 
