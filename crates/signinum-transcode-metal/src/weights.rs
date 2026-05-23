@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Scalar-derived 9/7 projection weight rows for Metal kernels.
+//! Scalar-derived wavelet projection weight rows for Metal kernels.
 
 const ALPHA: f64 = -1.586_134_342_059_924;
 const BETA: f64 = -0.052_980_118_572_961;
@@ -43,6 +43,40 @@ impl Dwt97WeightRows {
     }
 }
 
+/// One-dimensional 5/3 projection weights for every output row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt53WeightRows {
+    /// Low-pass output rows, each indexed by input sample position.
+    pub low: Vec<Vec<f32>>,
+    /// High-pass output rows, each indexed by input sample position.
+    pub high: Vec<Vec<f32>>,
+}
+
+impl Dwt53WeightRows {
+    /// Build deterministic 5/3 projection rows for a one-dimensional sample
+    /// extent.
+    #[must_use]
+    pub fn for_len(sample_len: usize) -> Self {
+        let mut low = vec![vec![0.0; sample_len]; low_len(sample_len)];
+        let mut high = vec![vec![0.0; sample_len]; high_len(sample_len)];
+
+        for sample_idx in 0..sample_len {
+            let mut basis = vec![0.0; sample_len];
+            basis[sample_idx] = 1.0;
+            let transformed = linearized_53_from_sample_slice(&basis);
+
+            for (row, &weight) in low.iter_mut().zip(transformed.low.iter()) {
+                row[sample_idx] = weight as f32;
+            }
+            for (row, &weight) in high.iter_mut().zip(transformed.high.iter()) {
+                row[sample_idx] = weight as f32;
+            }
+        }
+
+        Self { low, high }
+    }
+}
+
 /// Sparse one-dimensional 9/7 projection rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SparseDwt97WeightRows {
@@ -57,6 +91,38 @@ impl SparseDwt97WeightRows {
     #[must_use]
     pub fn for_len(sample_len: usize) -> Self {
         let dense = Dwt97WeightRows::for_len(sample_len);
+        Self {
+            low: sparse_rows_from_dense(&dense.low),
+            high: sparse_rows_from_dense(&dense.high),
+        }
+    }
+
+    /// Largest tap count across low-pass and high-pass rows.
+    #[must_use]
+    pub fn max_taps_per_row(&self) -> usize {
+        self.low
+            .iter()
+            .chain(self.high.iter())
+            .map(|row| row.taps.len())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Sparse one-dimensional 5/3 projection rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseDwt53WeightRows {
+    /// Low-pass sparse output rows.
+    pub low: Vec<SparseWeightRow>,
+    /// High-pass sparse output rows.
+    pub high: Vec<SparseWeightRow>,
+}
+
+impl SparseDwt53WeightRows {
+    /// Build sparse 5/3 projection rows for a one-dimensional sample extent.
+    #[must_use]
+    pub fn for_len(sample_len: usize) -> Self {
+        let dense = Dwt53WeightRows::for_len(sample_len);
         Self {
             low: sparse_rows_from_dense(&dense.low),
             high: sparse_rows_from_dense(&dense.high),
@@ -103,6 +169,32 @@ fn sparse_rows_from_dense(rows: &[Vec<f32>]) -> Vec<SparseWeightRow> {
                 .collect(),
         })
         .collect()
+}
+
+fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
+    let mut high = Vec::with_capacity(high_len(samples.len()));
+    for odd_idx in (1..samples.len()).step_by(2) {
+        let left = samples[odd_idx - 1];
+        let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
+        high.push(samples[odd_idx] - ((left + right) * 0.5));
+    }
+
+    let mut low = Vec::with_capacity(low_len(samples.len()));
+    for even_idx in (0..samples.len()).step_by(2) {
+        let current = samples[even_idx];
+        let even_output_idx = even_idx / 2;
+        let left_high = even_output_idx.checked_sub(1).and_then(|idx| high.get(idx));
+        let right_high = high.get(even_output_idx);
+        let update = match (left_high, right_high) {
+            (Some(left), Some(right)) => (*left + *right) * 0.25,
+            (None, Some(right)) => *right * 0.5,
+            (Some(left), None) => *left * 0.5,
+            (None, None) => 0.0,
+        };
+        low.push(current + update);
+    }
+
+    Dwt53OneDimensional { low, high }
 }
 
 fn linearized_97_from_sample_slice(samples: &[f64]) -> Dwt97OneDimensional {
@@ -186,6 +278,11 @@ const fn high_len(sample_len: usize) -> usize {
 }
 
 struct Dwt97OneDimensional {
+    low: Vec<f64>,
+    high: Vec<f64>,
+}
+
+struct Dwt53OneDimensional {
     low: Vec<f64>,
     high: Vec<f64>,
 }

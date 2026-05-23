@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metal runtime for direct DCT-grid to one-level 9/7 projection.
+//! Metal runtime for direct DCT-grid to one-level wavelet projection.
 
 use std::sync::{Arc, OnceLock};
 
@@ -11,14 +11,16 @@ use metal::{
     Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
     MTLResourceOptions, MTLSize,
 };
-use signinum_transcode::accelerator::DctGridToDwt97Job;
+use signinum_transcode::accelerator::{DctGridToDwt53Job, DctGridToDwt97Job};
+use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
-use crate::weights::{SparseDwt97WeightRows, SparseWeightRow};
+use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;
 
 const SHADER_SOURCE: &str = include_str!("dct97.metal");
-const METAL_DCT97_KERNEL_FAILED: &str = "Metal DCT 9/7 projection failed";
+const METAL_DCT_KERNEL_FAILED: &str = "Metal DCT wavelet projection failed";
+const METAL_DCT53_UNSUPPORTED_GRID: &str = "Metal DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT97_UNSUPPORTED_GRID: &str = "Metal DCT 9/7 job has unsupported grid geometry";
 
 static METAL_RUNTIME: OnceLock<Result<Arc<MetalRuntime>, MetalTranscodeError>> = OnceLock::new();
@@ -26,13 +28,13 @@ static METAL_RUNTIME: OnceLock<Result<Arc<MetalRuntime>, MetalTranscodeError>> =
 struct MetalRuntime {
     device: Device,
     queue: CommandQueue,
-    dct97_project_band: ComputePipelineState,
+    dct_project_band: ComputePipelineState,
     idct_basis: Buffer,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Dct97ProjectionParams {
+struct DctProjectionParams {
     width: u32,
     height: u32,
     block_cols: u32,
@@ -65,13 +67,13 @@ impl MetalRuntime {
         let options = CompileOptions::new();
         let library = device
             .new_library_with_source(SHADER_SOURCE, &options)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT97_KERNEL_FAILED))?;
+            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
         let function = library
             .get_function("dct97_project_band", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT97_KERNEL_FAILED))?;
-        let dct97_project_band = device
+            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
+        let dct_project_band = device
             .new_compute_pipeline_state_with_function(&function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT97_KERNEL_FAILED))?;
+            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
         let queue = device.new_command_queue();
         let idct_basis_data = idct8_basis_table();
         let idct_basis = device.new_buffer_with_data(
@@ -83,17 +85,73 @@ impl MetalRuntime {
         Ok(Self {
             device,
             queue,
-            dct97_project_band,
+            dct_project_band,
             idct_basis,
         })
     }
 }
 
+pub(crate) fn dispatch_dct_grid_to_dwt53(
+    job: DctGridToDwt53Job<'_>,
+) -> Result<Dwt53TwoDimensional<f64>, MetalTranscodeError> {
+    validate_grid(
+        job.blocks.len(),
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+        METAL_DCT53_UNSUPPORTED_GRID,
+    )?;
+    with_runtime(|runtime| dispatch_dct_grid_to_dwt53_with_runtime(runtime, job))
+}
+
 pub(crate) fn dispatch_dct_grid_to_dwt97(
     job: DctGridToDwt97Job<'_>,
 ) -> Result<Dwt97TwoDimensional<f64>, MetalTranscodeError> {
-    validate_job(job)?;
+    validate_grid(
+        job.blocks.len(),
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+        METAL_DCT97_UNSUPPORTED_GRID,
+    )?;
     with_runtime(|runtime| dispatch_dct_grid_to_dwt97_with_runtime(runtime, job))
+}
+
+#[allow(clippy::similar_names)]
+fn dispatch_dct_grid_to_dwt53_with_runtime(
+    runtime: &MetalRuntime,
+    job: DctGridToDwt53Job<'_>,
+) -> Result<Dwt53TwoDimensional<f64>, MetalTranscodeError> {
+    let x_weights = SparseDwt53WeightRows::for_len(job.width);
+    let y_weights = SparseDwt53WeightRows::for_len(job.height);
+    let bands = dispatch_projected_bands_with_runtime(
+        runtime,
+        ProjectionJob {
+            blocks: job.blocks,
+            block_cols: job.block_cols,
+            width: job.width,
+            height: job.height,
+            x_low: &x_weights.low,
+            x_high: &x_weights.high,
+            y_low: &y_weights.low,
+            y_high: &y_weights.high,
+            unsupported_grid: METAL_DCT53_UNSUPPORTED_GRID,
+            label: "signinum-transcode-metal dct53 projection",
+        },
+    )?;
+
+    Ok(Dwt53TwoDimensional {
+        ll: bands.ll,
+        hl: bands.hl,
+        lh: bands.lh,
+        hh: bands.hh,
+        low_width: bands.low_width,
+        low_height: bands.low_height,
+        high_width: bands.high_width,
+        high_height: bands.high_height,
+    })
 }
 
 #[allow(clippy::similar_names)]
@@ -101,20 +159,78 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     runtime: &MetalRuntime,
     job: DctGridToDwt97Job<'_>,
 ) -> Result<Dwt97TwoDimensional<f64>, MetalTranscodeError> {
-    let width = u32_param(job.width)?;
-    let height = u32_param(job.height)?;
-    let block_cols = u32_param(job.block_cols)?;
+    let x_weights = SparseDwt97WeightRows::for_len(job.width);
+    let y_weights = SparseDwt97WeightRows::for_len(job.height);
+    let bands = dispatch_projected_bands_with_runtime(
+        runtime,
+        ProjectionJob {
+            blocks: job.blocks,
+            block_cols: job.block_cols,
+            width: job.width,
+            height: job.height,
+            x_low: &x_weights.low,
+            x_high: &x_weights.high,
+            y_low: &y_weights.low,
+            y_high: &y_weights.high,
+            unsupported_grid: METAL_DCT97_UNSUPPORTED_GRID,
+            label: "signinum-transcode-metal dct97 projection",
+        },
+    )?;
+
+    Ok(Dwt97TwoDimensional {
+        ll: bands.ll,
+        hl: bands.hl,
+        lh: bands.lh,
+        hh: bands.hh,
+        low_width: bands.low_width,
+        low_height: bands.low_height,
+        high_width: bands.high_width,
+        high_height: bands.high_height,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ProjectionJob<'a> {
+    blocks: &'a [[[f64; 8]; 8]],
+    block_cols: usize,
+    width: usize,
+    height: usize,
+    x_low: &'a [SparseWeightRow],
+    x_high: &'a [SparseWeightRow],
+    y_low: &'a [SparseWeightRow],
+    y_high: &'a [SparseWeightRow],
+    unsupported_grid: &'static str,
+    label: &'static str,
+}
+
+struct ProjectedBands {
+    ll: Vec<f64>,
+    hl: Vec<f64>,
+    lh: Vec<f64>,
+    hh: Vec<f64>,
+    low_width: usize,
+    low_height: usize,
+    high_width: usize,
+    high_height: usize,
+}
+
+#[allow(clippy::similar_names)]
+fn dispatch_projected_bands_with_runtime(
+    runtime: &MetalRuntime,
+    job: ProjectionJob<'_>,
+) -> Result<ProjectedBands, MetalTranscodeError> {
+    let width = u32_param(job.width, job.unsupported_grid)?;
+    let height = u32_param(job.height, job.unsupported_grid)?;
+    let block_cols = u32_param(job.block_cols, job.unsupported_grid)?;
     let low_width = job.width.div_ceil(2);
     let high_width = job.width / 2;
     let low_height = job.height.div_ceil(2);
     let high_height = job.height / 2;
 
-    let x_weights = SparseDwt97WeightRows::for_len(job.width);
-    let y_weights = SparseDwt97WeightRows::for_len(job.height);
-    let x_low = metal_sparse_rows(&x_weights.low)?;
-    let x_high = metal_sparse_rows(&x_weights.high)?;
-    let y_low = metal_sparse_rows(&y_weights.low)?;
-    let y_high = metal_sparse_rows(&y_weights.high)?;
+    let x_low = metal_sparse_rows(job.x_low, job.unsupported_grid)?;
+    let x_high = metal_sparse_rows(job.x_high, job.unsupported_grid)?;
+    let y_low = metal_sparse_rows(job.y_low, job.unsupported_grid)?;
+    let y_high = metal_sparse_rows(job.y_high, job.unsupported_grid)?;
     let x_low_rows = buffer_with_slice(&runtime.device, &x_low.rows);
     let x_low_taps = buffer_with_slice(&runtime.device, &x_low.taps);
     let x_high_rows = buffer_with_slice(&runtime.device, &x_high.rows);
@@ -131,9 +247,9 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     let hh_buffer = output_buffer(&runtime.device, high_width * high_height);
 
     let command_buffer = runtime.queue.new_command_buffer();
-    command_buffer.set_label("signinum-transcode-metal dct97 projection");
+    command_buffer.set_label(job.label);
     let encoder = command_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&runtime.dct97_project_band);
+    encoder.set_compute_pipeline_state(&runtime.dct_project_band);
     encoder.set_buffer(0, Some(&blocks), 0);
     encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
 
@@ -146,8 +262,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
             width,
             height,
             block_cols,
-            band_width: u32_param(low_width)?,
-            band_height: u32_param(low_height)?,
+            band_width: u32_param(low_width, job.unsupported_grid)?,
+            band_height: u32_param(low_height, job.unsupported_grid)?,
         },
     );
     dispatch_band(
@@ -159,8 +275,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
             width,
             height,
             block_cols,
-            band_width: u32_param(high_width)?,
-            band_height: u32_param(low_height)?,
+            band_width: u32_param(high_width, job.unsupported_grid)?,
+            band_height: u32_param(low_height, job.unsupported_grid)?,
         },
     );
     dispatch_band(
@@ -172,8 +288,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
             width,
             height,
             block_cols,
-            band_width: u32_param(low_width)?,
-            band_height: u32_param(high_height)?,
+            band_width: u32_param(low_width, job.unsupported_grid)?,
+            band_height: u32_param(high_height, job.unsupported_grid)?,
         },
     );
     dispatch_band(
@@ -185,8 +301,8 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
             width,
             height,
             block_cols,
-            band_width: u32_param(high_width)?,
-            band_height: u32_param(high_height)?,
+            band_width: u32_param(high_width, job.unsupported_grid)?,
+            band_height: u32_param(high_height, job.unsupported_grid)?,
         },
     );
 
@@ -194,7 +310,7 @@ fn dispatch_dct_grid_to_dwt97_with_runtime(
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
-    Ok(Dwt97TwoDimensional {
+    Ok(ProjectedBands {
         ll: read_f32_buffer(&ll_buffer, low_width * low_height),
         hl: read_f32_buffer(&hl_buffer, high_width * low_height),
         lh: read_f32_buffer(&lh_buffer, low_width * high_height),
@@ -235,7 +351,7 @@ fn dispatch_band(
         return;
     }
 
-    let params = Dct97ProjectionParams {
+    let params = DctProjectionParams {
         width: geometry.width,
         height: geometry.height,
         block_cols: geometry.block_cols,
@@ -249,7 +365,7 @@ fn dispatch_band(
     encoder.set_buffer(6, Some(output), 0);
     encoder.set_bytes(
         7,
-        size_of::<Dct97ProjectionParams>() as u64,
+        size_of::<DctProjectionParams>() as u64,
         (&raw const params).cast(),
     );
     encoder.dispatch_threads(
@@ -266,54 +382,52 @@ fn dispatch_band(
     );
 }
 
-fn validate_job(job: DctGridToDwt97Job<'_>) -> Result<(), MetalTranscodeError> {
-    let expected_blocks =
-        job.block_cols
-            .checked_mul(job.block_rows)
-            .ok_or(MetalTranscodeError::UnsupportedJob(
-                METAL_DCT97_UNSUPPORTED_GRID,
-            ))?;
-    let covered_width =
-        job.block_cols
-            .checked_mul(8)
-            .ok_or(MetalTranscodeError::UnsupportedJob(
-                METAL_DCT97_UNSUPPORTED_GRID,
-            ))?;
-    let covered_height =
-        job.block_rows
-            .checked_mul(8)
-            .ok_or(MetalTranscodeError::UnsupportedJob(
-                METAL_DCT97_UNSUPPORTED_GRID,
-            ))?;
+fn validate_grid(
+    block_count: usize,
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+    unsupported_grid: &'static str,
+) -> Result<(), MetalTranscodeError> {
+    let expected_blocks = block_cols
+        .checked_mul(block_rows)
+        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
+    let covered_width = block_cols
+        .checked_mul(8)
+        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
+    let covered_height = block_rows
+        .checked_mul(8)
+        .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))?;
 
-    if job.blocks.len() != expected_blocks
-        || job.width == 0
-        || job.height == 0
-        || job.width > covered_width
-        || job.height > covered_height
+    if block_count != expected_blocks
+        || width == 0
+        || height == 0
+        || width > covered_width
+        || height > covered_height
     {
-        return Err(MetalTranscodeError::UnsupportedJob(
-            METAL_DCT97_UNSUPPORTED_GRID,
-        ));
+        return Err(MetalTranscodeError::UnsupportedJob(unsupported_grid));
     }
     Ok(())
 }
 
-fn u32_param(value: usize) -> Result<u32, MetalTranscodeError> {
-    u32::try_from(value)
-        .map_err(|_| MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID))
+fn u32_param(value: usize, unsupported_grid: &'static str) -> Result<u32, MetalTranscodeError> {
+    u32::try_from(value).map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))
 }
 
-fn metal_sparse_rows(rows: &[SparseWeightRow]) -> Result<MetalSparseRows, MetalTranscodeError> {
+fn metal_sparse_rows(
+    rows: &[SparseWeightRow],
+    unsupported_grid: &'static str,
+) -> Result<MetalSparseRows, MetalTranscodeError> {
     let mut metal_rows = Vec::with_capacity(rows.len());
     let mut taps = Vec::new();
     for row in rows {
-        let offset = u32_param(taps.len())?;
-        let count = u32_param(row.taps.len())?;
+        let offset = u32_param(taps.len(), unsupported_grid)?;
+        let count = u32_param(row.taps.len(), unsupported_grid)?;
         metal_rows.push(MetalSparseRow { offset, count });
         for tap in &row.taps {
             taps.push(MetalWeightTap {
-                sample_idx: u32_param(tap.sample_idx)?,
+                sample_idx: u32_param(tap.sample_idx, unsupported_grid)?,
                 weight: tap.weight,
             });
         }
