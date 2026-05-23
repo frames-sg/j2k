@@ -11,7 +11,7 @@ use signinum_j2k_native::{
 };
 use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
 
-use crate::dct53_2d::dct8x8_to_dwt53_float_linear;
+use crate::dct53_2d::{dct8x8_blocks_to_dwt53_float_linear, Dct53GridError};
 
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
@@ -70,6 +70,8 @@ pub enum JpegToHtj2kError {
     Jpeg(signinum_jpeg::JpegError),
     /// Input is outside the currently implemented experimental slice.
     Unsupported(&'static str),
+    /// DCT block grid metadata did not cover the component dimensions.
+    Grid(Dct53GridError),
     /// Native HTJ2K encode failed.
     Encode(&'static str),
 }
@@ -79,6 +81,7 @@ impl fmt::Display for JpegToHtj2kError {
         match self {
             Self::Jpeg(err) => write!(f, "JPEG extraction failed: {err}"),
             Self::Unsupported(reason) => write!(f, "unsupported transcode input: {reason}"),
+            Self::Grid(err) => write!(f, "DCT grid transform failed: {err}"),
             Self::Encode(reason) => write!(f, "HTJ2K encode failed: {reason}"),
         }
     }
@@ -88,6 +91,7 @@ impl std::error::Error for JpegToHtj2kError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Jpeg(err) => Some(err),
+            Self::Grid(err) => Some(err),
             Self::Unsupported(_) | Self::Encode(_) => None,
         }
     }
@@ -99,13 +103,18 @@ impl From<signinum_jpeg::JpegError> for JpegToHtj2kError {
     }
 }
 
+impl From<Dct53GridError> for JpegToHtj2kError {
+    fn from(value: Dct53GridError) -> Self {
+        Self::Grid(value)
+    }
+}
+
 /// Transcode a constrained baseline grayscale JPEG tile into an HTJ2K
 /// codestream using direct DCT-domain 5/3 wavelet coefficients.
 ///
-/// Current implementation scope is intentionally narrow: one 8x8 grayscale
-/// baseline JPEG component, no subsampling, one reversible 5/3 decomposition
-/// level. Wider component grids and YCbCr sampling build on the same public
-/// extraction and precomputed-band encode contracts.
+/// Current implementation scope is grayscale baseline JPEG, no component
+/// subsampling, and one reversible 5/3 decomposition level. YCbCr sampling
+/// builds on the same public extraction and precomputed-band encode contracts.
 pub fn jpeg_to_htj2k(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
@@ -125,20 +134,16 @@ pub fn jpeg_to_htj2k(
             "component subsampling is not implemented in jpeg_to_htj2k yet",
         ));
     }
-    if component.block_cols != 1 || component.block_rows != 1 {
-        return Err(JpegToHtj2kError::Unsupported(
-            "only one 8x8 DCT block is implemented in jpeg_to_htj2k yet",
-        ));
-    }
-    if component.width != 8 || component.height != 8 {
-        return Err(JpegToHtj2kError::Unsupported(
-            "only uncropped 8x8 grayscale components are implemented",
-        ));
-    }
 
     let transform_start = Instant::now();
-    let block = dct_block_to_8x8_f64(&component.dequantized_blocks[0]);
-    let bands = dct8x8_to_dwt53_float_linear(block);
+    let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
+    let bands = dct8x8_blocks_to_dwt53_float_linear(
+        &blocks,
+        component.block_cols as usize,
+        component.block_rows as usize,
+        component.width as usize,
+        component.height as usize,
+    )?;
     let dwt = J2kForwardDwt53Output {
         ll: bands.ll.iter().map(|&value| value as f32).collect(),
         ll_width: bands.low_width as u32,
@@ -180,7 +185,7 @@ pub fn jpeg_to_htj2k(
             width: jpeg.width,
             height: jpeg.height,
             component_count: 1,
-            path: "grayscale_8x8_float_direct_53",
+            path: "grayscale_float_direct_53",
             extract_us,
             transform_us,
             encode_us,
@@ -188,10 +193,15 @@ pub fn jpeg_to_htj2k(
     })
 }
 
-fn dct_block_to_8x8_f64(block: &[i16; 64]) -> [[f64; 8]; 8] {
-    let mut output = [[0.0; 8]; 8];
-    for (idx, &coefficient) in block.iter().enumerate() {
-        output[idx / 8][idx % 8] = f64::from(coefficient);
-    }
-    output
+fn dct_blocks_to_8x8_f64(blocks: &[[i16; 64]]) -> Vec<[[f64; 8]; 8]> {
+    blocks
+        .iter()
+        .map(|block| {
+            let mut output = [[0.0; 8]; 8];
+            for (idx, &coefficient) in block.iter().enumerate() {
+                output[idx / 8][idx % 8] = f64::from(coefficient);
+            }
+            output
+        })
+        .collect()
 }

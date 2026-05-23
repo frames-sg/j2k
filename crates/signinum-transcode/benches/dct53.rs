@@ -2,17 +2,23 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
+use signinum_jpeg::{
+    encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
+};
 use signinum_transcode::dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_to_dwt53_float_linear, idct8_blocks_then_dwt53_float,
     idct8_then_dwt53_float,
 };
-use signinum_transcode::dct53_2d::{dct8x8_to_dwt53_float_linear, idct8x8_then_dwt53_float};
+use signinum_transcode::dct53_2d::{
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
+    dct8x8_to_dwt53_float_linear, idct8x8_then_dwt53_float,
+};
 use signinum_transcode::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
 use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions};
 
-fn bench_dct53(c: &mut Criterion) {
+fn bench_dct53_math(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
 
     let mut single_block = c.benchmark_group("dct53_1d_single_block_scalar");
@@ -46,6 +52,34 @@ fn bench_dct53(c: &mut Criterion) {
     });
     two_dimensional.finish();
 
+    let grid_blocks = synthetic_8x8_grid_blocks(2, 2);
+    let mut two_dimensional_grid = c.benchmark_group("dct53_2d_grid_scalar");
+    two_dimensional_grid.bench_function("direct_linear_13x11", |b| {
+        b.iter(|| {
+            dct8x8_blocks_to_dwt53_float_linear(
+                black_box(&grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    two_dimensional_grid.bench_function("idct_then_dwt_reference_13x11", |b| {
+        b.iter(|| {
+            dct8x8_blocks_then_dwt53_float(
+                black_box(&grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    two_dimensional_grid.finish();
+
     let mut multilevel = c.benchmark_group("dct53_multilevel_scalar");
     multilevel.bench_function("direct_level1_then_ll_recursion", |b| {
         b.iter(|| {
@@ -60,7 +94,9 @@ fn bench_dct53(c: &mut Criterion) {
         });
     });
     multilevel.finish();
+}
 
+fn bench_jpeg_paths(c: &mut Criterion) {
     let jpeg_420 =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
     let jpeg_restart =
@@ -90,7 +126,22 @@ fn bench_dct53(c: &mut Criterion) {
                 .expect("transcode grayscale JPEG to HTJ2K");
         });
     });
+    let jpeg_gray_multiblock = grayscale_jpeg(13, 11);
+    jpeg_to_htj2k_group.bench_function("grayscale_13x11", |b| {
+        b.iter(|| {
+            jpeg_to_htj2k(
+                black_box(&jpeg_gray_multiblock),
+                black_box(&transcode_options),
+            )
+            .expect("transcode multi-block grayscale JPEG to HTJ2K");
+        });
+    });
     jpeg_to_htj2k_group.finish();
+}
+
+fn bench_dct53(c: &mut Criterion) {
+    bench_dct53_math(c);
+    bench_jpeg_paths(c);
 }
 
 fn pseudo_random_blocks(block_count: usize) -> Vec<[f64; 8]> {
@@ -116,6 +167,49 @@ fn synthetic_8x8_block() -> [[f64; 8]; 8] {
     block[2][3] = 9.0;
     block[7][7] = -6.0;
     block
+}
+
+fn synthetic_8x8_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
+    let mut blocks = Vec::with_capacity(block_cols * block_rows);
+    for block_y in 0..block_rows {
+        for block_x in 0..block_cols {
+            let mut block = synthetic_8x8_block();
+            block[0][0] += (block_x * 17 + block_y * 23) as f64;
+            block[0][1] += block_x as f64;
+            block[1][0] -= block_y as f64;
+            blocks.push(block);
+        }
+    }
+    blocks
+}
+
+fn grayscale_jpeg(width: u32, height: u32) -> Vec<u8> {
+    let samples = patterned_gray(width, height);
+    encode_jpeg_baseline(
+        JpegSamples::Gray8 {
+            data: &samples,
+            width,
+            height,
+        },
+        JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Gray,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .expect("encode grayscale JPEG")
+    .data
+}
+
+fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            out.push(((x * 7 + y * 11 + 19) & 0xff) as u8);
+        }
+    }
+    out
 }
 
 criterion_group!(dct53_benches, bench_dct53);
