@@ -22,10 +22,16 @@ It preserves native component sampling for grayscale, 4:4:4, 4:2:2, and 4:2:0
 inputs. Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain
 out of scope.
 
+`JpegToHtj2kCoefficientPath::IntegerDirect53` is the default production path. It
+computes the first reversible 5/3 level from DCT blocks without a full spatial
+image plane, then recurses conventionally over LL for additional levels. The
+floating-point linear path remains selectable for math-oracle validation.
+
 Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
-thread; it keeps DCT block conversion and 5/3 grid-projection scratch allocated
-between calls. The `jpeg_to_htj2k` function remains a stateless convenience
-wrapper over the same scalar path.
+thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
+over the same scalar path. Current reusable scratch primarily benefits the
+float-linear validation path; integer-direct row/block caching remains a
+follow-on optimization.
 
 ## Promotion Gate
 
