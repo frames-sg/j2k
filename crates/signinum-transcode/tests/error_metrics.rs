@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_transcode::metrics::error_metrics_i32;
+use signinum_transcode::TranscodeValidationClassification;
 
 #[test]
 fn error_metrics_report_exact_rate_max_abs_error_and_histogram() {
@@ -28,6 +29,31 @@ fn error_metrics_accept_one_lsb_bounded_claim_when_thresholds_pass() {
 
     assert!(metrics.is_one_lsb_bounded(0.75));
     assert!(!metrics.is_one_lsb_bounded(0.999));
+}
+
+#[test]
+fn transcode_validation_classification_applies_thresholds() {
+    let exact = error_metrics_i32(&[4, 5, 6], &[4, 5, 6]).expect("matching lengths");
+    assert_eq!(
+        TranscodeValidationClassification::classify_metrics(&exact),
+        TranscodeValidationClassification::Exact
+    );
+
+    let mut actual = vec![7; 1000];
+    let expected = vec![7; 1000];
+    actual[999] = 8;
+    let one_lsb = error_metrics_i32(&actual, &expected).expect("matching lengths");
+    assert_eq!(
+        TranscodeValidationClassification::classify_metrics(&one_lsb),
+        TranscodeValidationClassification::OneLsbBounded
+    );
+
+    actual[998] = 8;
+    let outside = error_metrics_i32(&actual, &expected).expect("matching lengths");
+    assert_eq!(
+        TranscodeValidationClassification::classify_metrics(&outside),
+        TranscodeValidationClassification::OutsideThreshold
+    );
 }
 
 #[test]

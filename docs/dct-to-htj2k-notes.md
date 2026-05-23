@@ -26,6 +26,10 @@ JPEG bytes
 - The corpus report aggregates integer-reference coefficient metrics:
   sample count, exact-match count, maximum absolute error, and absolute-error
   histogram buckets.
+- `TranscodeReport` now carries the typed coefficient path plus optional
+  validation classifications. Enabled validation metrics are classified as
+  `Exact`, `OneLsbBounded` using the 99.9% exact-match / max-1-LSB threshold,
+  or `OutsideThreshold`.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
   decoder acceptance, SIZ component sampling, multilevel output, optional
   integer-reference metrics, and external decoder acceptance when OpenJPEG or

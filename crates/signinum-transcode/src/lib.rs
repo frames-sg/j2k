@@ -16,5 +16,5 @@ pub mod metrics;
 pub use jpeg_to_htj2k::{
     jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
     JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeComponentReport, TranscodeReport,
-    TranscodeValidationMetrics,
+    TranscodeValidationClassification, TranscodeValidationMetrics,
 };
