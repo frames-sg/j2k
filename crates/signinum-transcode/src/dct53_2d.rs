@@ -104,6 +104,27 @@ impl fmt::Display for Dct53GridError {
 
 impl std::error::Error for Dct53GridError {}
 
+/// Scratch storage for repeated DCT-grid to 5/3 projection calls.
+///
+/// Reuse one value per worker when transforming many components or tiles with
+/// matching geometry. The scratch caches linearized 5/3 weight rows; it does
+/// not store spatial samples.
+#[derive(Debug, Default)]
+pub struct Dct53GridScratch {
+    x_weights: Dwt53WeightRows,
+    y_weights: Dwt53WeightRows,
+}
+
+impl Dct53GridScratch {
+    /// Aggregate capacity of cached weight rows.
+    ///
+    /// This is intended for experimental tests and benchmark instrumentation.
+    #[must_use]
+    pub fn weight_row_capacity(&self) -> usize {
+        self.x_weights.weight_capacity() + self.y_weights.weight_capacity()
+    }
+}
+
 /// Map one 8x8 DCT block directly into a linearized one-level 2D 5/3 result.
 #[must_use]
 pub fn dct8x8_to_dwt53_float_linear(block: [[f64; 8]; 8]) -> Dwt53TwoDimensional<f64> {
@@ -160,14 +181,37 @@ pub fn dct8x8_blocks_to_dwt53_float_linear(
     width: usize,
     height: usize,
 ) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+    let mut scratch = Dct53GridScratch::default();
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+        blocks,
+        block_cols,
+        block_rows,
+        width,
+        height,
+        &mut scratch,
+    )
+}
+
+/// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
+/// 5/3 result using caller-owned scratch for reusable weight rows.
+pub fn dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+    scratch: &mut Dct53GridScratch,
+) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
     validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
 
     let low_width = low_len(width);
     let low_height = low_len(height);
     let high_width = high_len(width);
     let high_height = high_len(height);
-    let x_weights = linearized_53_weight_rows(width);
-    let y_weights = linearized_53_weight_rows(height);
+    scratch.x_weights.ensure_sample_len(width);
+    scratch.y_weights.ensure_sample_len(height);
+    let x_weights = &scratch.x_weights;
+    let y_weights = &scratch.y_weights;
 
     let mut ll = Vec::with_capacity(low_width * low_height);
     let mut hl = Vec::with_capacity(high_width * low_height);
@@ -427,26 +471,6 @@ fn linearized_53_sample_weight(
     }
 }
 
-fn linearized_53_weight_rows(sample_len: usize) -> Dwt53WeightRows {
-    let output = linearized_53_from_sample_slice(&vec![0.0; sample_len]);
-    let mut low = vec![vec![0.0; sample_len]; output.low.len()];
-    let mut high = vec![vec![0.0; sample_len]; output.high.len()];
-
-    for sample_idx in 0..sample_len {
-        let mut basis = vec![0.0; sample_len];
-        basis[sample_idx] = 1.0;
-        let transformed = linearized_53_from_sample_slice(&basis);
-        for (row, &weight) in low.iter_mut().zip(transformed.low.iter()) {
-            row[sample_idx] = weight;
-        }
-        for (row, &weight) in high.iter_mut().zip(transformed.high.iter()) {
-            row[sample_idx] = weight;
-        }
-    }
-
-    Dwt53WeightRows { low, high }
-}
-
 fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
     let mut high = Vec::with_capacity(high_len(samples.len()));
     for odd_idx in (1..samples.len()).step_by(2) {
@@ -521,9 +545,52 @@ fn validate_grid(
     Ok(())
 }
 
+#[derive(Debug, Default)]
 struct Dwt53WeightRows {
+    sample_len: Option<usize>,
     low: Vec<Vec<f64>>,
     high: Vec<Vec<f64>>,
+}
+
+impl Dwt53WeightRows {
+    fn ensure_sample_len(&mut self, sample_len: usize) {
+        if self.sample_len == Some(sample_len) {
+            return;
+        }
+
+        resize_weight_rows(&mut self.low, low_len(sample_len), sample_len);
+        resize_weight_rows(&mut self.high, high_len(sample_len), sample_len);
+
+        for sample_idx in 0..sample_len {
+            let mut basis = vec![0.0; sample_len];
+            basis[sample_idx] = 1.0;
+            let transformed = linearized_53_from_sample_slice(&basis);
+            for (row, &weight) in self.low.iter_mut().zip(transformed.low.iter()) {
+                row[sample_idx] = weight;
+            }
+            for (row, &weight) in self.high.iter_mut().zip(transformed.high.iter()) {
+                row[sample_idx] = weight;
+            }
+        }
+
+        self.sample_len = Some(sample_len);
+    }
+
+    fn weight_capacity(&self) -> usize {
+        self.low.iter().map(Vec::capacity).sum::<usize>()
+            + self.high.iter().map(Vec::capacity).sum::<usize>()
+    }
+}
+
+fn resize_weight_rows(rows: &mut Vec<Vec<f64>>, row_count: usize, sample_len: usize) {
+    if rows.len() < row_count {
+        rows.resize_with(row_count, Vec::new);
+    }
+    for row in rows.iter_mut().take(row_count) {
+        row.clear();
+        row.resize(sample_len, 0.0);
+    }
+    rows.truncate(row_count);
 }
 
 struct Dwt53OneDimensional {

@@ -2,7 +2,8 @@
 
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    dct8x8_to_dwt53_float_linear, idct8x8_then_dwt53_float,
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch, dct8x8_to_dwt53_float_linear,
+    idct8x8_then_dwt53_float, Dct53GridScratch,
 };
 
 #[test]
@@ -59,6 +60,28 @@ fn dct8x8_grid_to_2d_53_crosses_block_boundaries() {
         "max diff {}",
         direct.max_abs_diff(&reference)
     );
+}
+
+#[test]
+fn dct8x8_grid_scratch_reuses_weight_rows_for_same_geometry() {
+    let blocks = synthetic_grid_blocks(2, 2);
+    let mut scratch = Dct53GridScratch::default();
+
+    let direct =
+        dct8x8_blocks_to_dwt53_float_linear_with_scratch(&blocks, 2, 2, 13, 11, &mut scratch)
+            .expect("valid DCT grid");
+    let stateless =
+        dct8x8_blocks_to_dwt53_float_linear(&blocks, 2, 2, 13, 11).expect("valid DCT grid");
+    let capacity_after_first = scratch.weight_row_capacity();
+
+    let repeated =
+        dct8x8_blocks_to_dwt53_float_linear_with_scratch(&blocks, 2, 2, 13, 11, &mut scratch)
+            .expect("valid DCT grid");
+
+    assert!(capacity_after_first > 0);
+    assert_eq!(scratch.weight_row_capacity(), capacity_after_first);
+    assert!(direct.max_abs_diff(&stateless) <= 1.0e-9);
+    assert!(repeated.max_abs_diff(&stateless) <= 1.0e-9);
 }
 
 fn dc_only_block() -> [[f64; 8]; 8] {

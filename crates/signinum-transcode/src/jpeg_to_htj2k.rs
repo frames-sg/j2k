@@ -14,8 +14,8 @@ use signinum_jpeg::transcode::{
 };
 
 use crate::dct53_2d::{
-    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    linearized_53_2d_from_plane, Dct53GridError, Dwt53TwoDimensional,
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
+    linearized_53_2d_from_plane, Dct53GridError, Dct53GridScratch, Dwt53TwoDimensional,
 };
 use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 
@@ -86,6 +86,7 @@ impl JpegToHtj2kTranscoder {
 #[derive(Debug, Default)]
 struct JpegToHtj2kScratch {
     dct_blocks_f64: Vec<[[f64; 8]; 8]>,
+    dct53_grid: Dct53GridScratch,
 }
 
 /// Encoded transcode output and validation/report metadata.
@@ -403,12 +404,13 @@ fn component_to_precomputed_htj2k(
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
     let blocks = &scratch.dct_blocks_f64;
-    let bands = dct8x8_blocks_to_dwt53_float_linear(
+    let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
         blocks,
         component.block_cols as usize,
         component.block_rows as usize,
         component.width as usize,
         component.height as usize,
+        &mut scratch.dct53_grid,
     )?;
     let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
     let float_validation_coefficients = if validate_against_float_reference {

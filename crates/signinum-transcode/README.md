@@ -23,9 +23,9 @@ inputs. Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain
 out of scope.
 
 Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
-thread; it keeps conversion scratch buffers allocated between calls. The
-`jpeg_to_htj2k` function remains a stateless convenience wrapper over the same
-scalar path.
+thread; it keeps DCT block conversion and 5/3 grid-projection scratch allocated
+between calls. The `jpeg_to_htj2k` function remains a stateless convenience
+wrapper over the same scalar path.
 
 ## Promotion Gate
 
