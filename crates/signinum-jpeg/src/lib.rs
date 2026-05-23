@@ -59,6 +59,8 @@ pub use encoder::{
     JpegSamples, JpegSubsampling,
 };
 
+pub mod transcode;
+
 pub mod decoder;
 pub use decoder::{
     decode_tile_into, decode_tile_into_in_context, decode_tile_into_in_context_with_options,

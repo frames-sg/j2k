@@ -1047,6 +1047,12 @@ dependencies = [
 [[package]]
 name = "signinum-transcode"
 version = "0.4.2"
+dependencies = [
+ "criterion",
+ "proptest",
+ "signinum-j2k-native",
+ "signinum-jpeg",
+]
 
 [[package]]
 name = "simd-adler32"

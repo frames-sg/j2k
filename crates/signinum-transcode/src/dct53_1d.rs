@@ -9,6 +9,7 @@
 //! integer arithmetic rather than a single linear matrix.
 
 use core::f64::consts::PI;
+use core::fmt;
 
 /// One single-level 5/3 transform result for an 8-sample 1D signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,48 @@ pub struct Dwt53OneLevel<T> {
     /// High-pass samples, corresponding to odd positions after lifting.
     pub high: [T; 4],
 }
+
+/// One single-level 5/3 transform result for an arbitrary-length 1D row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dwt53Row<T> {
+    /// Low-pass samples, corresponding to even positions after lifting.
+    pub low: Vec<T>,
+    /// High-pass samples, corresponding to odd positions after lifting.
+    pub high: Vec<T>,
+}
+
+/// Error returned when a logical row length cannot be covered by DCT blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dct53RowLengthError {
+    sample_len: usize,
+    capacity: usize,
+}
+
+impl Dct53RowLengthError {
+    /// Requested logical sample length.
+    #[must_use]
+    pub const fn sample_len(self) -> usize {
+        self.sample_len
+    }
+
+    /// Number of samples covered by the provided 8-point DCT blocks.
+    #[must_use]
+    pub const fn capacity(self) -> usize {
+        self.capacity
+    }
+}
+
+impl fmt::Display for Dct53RowLengthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "row length {} exceeds DCT block sample capacity {}",
+            self.sample_len, self.capacity
+        )
+    }
+}
+
+impl std::error::Error for Dct53RowLengthError {}
 
 /// Map one 8-point DCT coefficient vector directly into a linearized one-level
 /// 5/3 wavelet result.
@@ -50,6 +93,72 @@ pub fn idct8_then_dwt53_float(coefficients: [f64; 8]) -> Dwt53OneLevel<f64> {
         *sample = idct8_sample(&coefficients, idx);
     }
     linearized_53_from_samples(samples)
+}
+
+/// Map adjacent 8-point DCT blocks directly into a linearized one-level 5/3
+/// wavelet row.
+///
+/// This keeps the production direction honest: output coefficients are
+/// projected from the DCT basis without first creating a row of spatial samples.
+#[must_use]
+pub fn dct8_blocks_to_dwt53_float_linear(blocks: &[[f64; 8]]) -> Dwt53Row<f64> {
+    dct8_blocks_to_dwt53_float_linear_with_len(blocks, blocks.len() * 8)
+        .expect("full row length is always covered by the provided blocks")
+}
+
+/// Map adjacent 8-point DCT blocks directly into a linearized one-level 5/3
+/// wavelet row using a logical sample length.
+///
+/// Use this for image component rows whose JPEG block storage includes padded
+/// samples beyond the real component width.
+pub fn dct8_blocks_to_dwt53_float_linear_with_len(
+    blocks: &[[f64; 8]],
+    sample_len: usize,
+) -> Result<Dwt53Row<f64>, Dct53RowLengthError> {
+    validate_sample_len(blocks, sample_len)?;
+
+    let low_len = low_len(sample_len);
+    let high_len = high_len(sample_len);
+    let mut low = Vec::with_capacity(low_len);
+    let mut high = Vec::with_capacity(high_len);
+
+    for output_idx in 0..low_len {
+        low.push(project_blocks_with_linearized_53_weights(
+            blocks, sample_len, true, output_idx,
+        ));
+    }
+    for output_idx in 0..high_len {
+        high.push(project_blocks_with_linearized_53_weights(
+            blocks, sample_len, false, output_idx,
+        ));
+    }
+
+    Ok(Dwt53Row { low, high })
+}
+
+/// Reference path for an arbitrary-length row:
+/// DCT coefficients -> float IDCT samples -> linearized 5/3.
+#[must_use]
+pub fn idct8_blocks_then_dwt53_float(blocks: &[[f64; 8]]) -> Dwt53Row<f64> {
+    idct8_blocks_then_dwt53_float_with_len(blocks, blocks.len() * 8)
+        .expect("full row length is always covered by the provided blocks")
+}
+
+/// Reference path for a logical row length:
+/// DCT coefficients -> float IDCT samples -> linearized 5/3.
+pub fn idct8_blocks_then_dwt53_float_with_len(
+    blocks: &[[f64; 8]],
+    sample_len: usize,
+) -> Result<Dwt53Row<f64>, Dct53RowLengthError> {
+    validate_sample_len(blocks, sample_len)?;
+
+    let mut samples = Vec::with_capacity(sample_len);
+    for sample_idx in 0..sample_len {
+        let block = &blocks[sample_idx / 8];
+        samples.push(idct8_sample(block, sample_idx % 8));
+    }
+
+    Ok(linearized_53_from_sample_slice(&samples))
 }
 
 /// Map one 8-point integer DCT coefficient vector into one reversible 5/3
@@ -111,6 +220,31 @@ fn dct_row_projection(sample_weights: &[f64; 8], coefficients: &[f64; 8]) -> f64
         .sum()
 }
 
+fn project_blocks_with_linearized_53_weights(
+    blocks: &[[f64; 8]],
+    sample_len: usize,
+    is_low: bool,
+    output_idx: usize,
+) -> f64 {
+    let mut output = 0.0;
+
+    for sample_idx in 0..sample_len {
+        let sample_weight = linearized_53_sample_weight(sample_len, is_low, output_idx, sample_idx);
+        if sample_weight == 0.0 {
+            continue;
+        }
+
+        let block_idx = sample_idx / 8;
+        let local_sample_idx = sample_idx % 8;
+        let block = &blocks[block_idx];
+        for (freq, coefficient) in block.iter().copied().enumerate() {
+            output += sample_weight * idct8_basis(local_sample_idx, freq) * coefficient;
+        }
+    }
+
+    output
+}
+
 fn idct8_sample(coefficients: &[f64; 8], sample_idx: usize) -> f64 {
     coefficients
         .iter()
@@ -122,6 +256,22 @@ fn idct8_sample(coefficients: &[f64; 8], sample_idx: usize) -> f64 {
 fn rounded_idct8_sample(coefficients: &[i16; 8], sample_idx: usize) -> i32 {
     let float_coefficients = coefficients.map(f64::from);
     idct8_sample(&float_coefficients, sample_idx).round() as i32
+}
+
+fn linearized_53_sample_weight(
+    sample_len: usize,
+    is_low: bool,
+    output_idx: usize,
+    sample_idx: usize,
+) -> f64 {
+    let mut basis = vec![0.0; sample_len];
+    basis[sample_idx] = 1.0;
+    let row = linearized_53_from_sample_slice(&basis);
+    if is_low {
+        row.low[output_idx]
+    } else {
+        row.high[output_idx]
+    }
 }
 
 fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
@@ -137,26 +287,43 @@ fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
 }
 
 fn linearized_53_from_samples(samples: [f64; 8]) -> Dwt53OneLevel<f64> {
-    let rows = linearized_53_rows();
-    let mut low = [0.0; 4];
-    let mut high = [0.0; 4];
-
-    for (dst, row) in low.iter_mut().zip(rows[..4].iter()) {
-        *dst = row
-            .iter()
-            .zip(samples.iter())
-            .map(|(weight, sample)| weight * sample)
-            .sum();
+    let row = linearized_53_from_sample_slice(&samples);
+    Dwt53OneLevel {
+        low: row
+            .low
+            .try_into()
+            .expect("8 samples produce exactly 4 low-pass outputs"),
+        high: row
+            .high
+            .try_into()
+            .expect("8 samples produce exactly 4 high-pass outputs"),
     }
-    for (dst, row) in high.iter_mut().zip(rows[4..].iter()) {
-        *dst = row
-            .iter()
-            .zip(samples.iter())
-            .map(|(weight, sample)| weight * sample)
-            .sum();
+}
+
+fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53Row<f64> {
+    let mut high = Vec::with_capacity(high_len(samples.len()));
+    for odd_idx in (1..samples.len()).step_by(2) {
+        let left = samples[odd_idx - 1];
+        let right = samples.get(odd_idx + 1).copied().unwrap_or(left);
+        high.push(samples[odd_idx] - ((left + right) * 0.5));
     }
 
-    Dwt53OneLevel { low, high }
+    let mut low = Vec::with_capacity(low_len(samples.len()));
+    for even_idx in (0..samples.len()).step_by(2) {
+        let current = samples[even_idx];
+        let even_output_idx = even_idx / 2;
+        let left_high = even_output_idx.checked_sub(1).and_then(|idx| high.get(idx));
+        let right_high = high.get(even_output_idx);
+        let update = match (left_high, right_high) {
+            (Some(left), Some(right)) => (*left + *right) * 0.25,
+            (None, Some(right)) => *right * 0.5,
+            (Some(left), None) => *left * 0.5,
+            (None, None) => 0.0,
+        };
+        low.push(current + update);
+    }
+
+    Dwt53Row { low, high }
 }
 
 fn reversible_53_from_samples(mut samples: [i32; 8]) -> Dwt53OneLevel<i32> {
@@ -178,6 +345,26 @@ fn reversible_53_from_samples(mut samples: [i32; 8]) -> Dwt53OneLevel<i32> {
 
 fn floor_div(numerator: i32, denominator: i32) -> i32 {
     numerator.div_euclid(denominator)
+}
+
+fn validate_sample_len(blocks: &[[f64; 8]], sample_len: usize) -> Result<(), Dct53RowLengthError> {
+    let capacity = blocks.len() * 8;
+    if sample_len > capacity {
+        return Err(Dct53RowLengthError {
+            sample_len,
+            capacity,
+        });
+    }
+
+    Ok(())
+}
+
+fn low_len(sample_len: usize) -> usize {
+    sample_len.div_ceil(2)
+}
+
+fn high_len(sample_len: usize) -> usize {
+    sample_len / 2
 }
 
 fn linearized_53_rows() -> [[f64; 8]; 8] {

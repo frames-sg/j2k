@@ -46,7 +46,7 @@ backend APIs are still hardening.
 | `signinum-j2k-metal` | adapter | Apple Metal device-output adapter for `signinum-j2k`. Same shape as the JPEG adapter. |
 | `signinum-jpeg-cuda` | adapter | CUDA-facing API adapter for JPEG. `Auto`/`Cpu` stay host-backed; explicit full-frame RGB8 CUDA requests use nvJPEG when `cuda-runtime`, a CUDA driver, and `libnvjpeg` are available, with CPU decode plus CUDA upload fallback for unsupported shapes. |
 | `signinum-j2k-cuda` | adapter | CUDA-facing API adapter for J2K. Explicit CUDA requests upload CPU-decoded output into CUDA device memory when `cuda-runtime` and a CUDA driver are available. |
-| `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Starts with synthetic DCT-to-5/3 proofs before depending on codec crates. APIs in this crate are not stable until validation coverage and codestream integration land. |
+| `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Owns the coupling between JPEG DCT extraction and native HTJ2K coefficient encode so codec crates stay independent. APIs in this crate are not stable until validation coverage and codestream integration land. |
 | `signinum` | facade | Stable public import surface over `core`, the CPU codecs, tile decompression, and optional Metal/CUDA adapters behind facade features. |
 | `signinum-cli` | binary | `signinum inspect <file>` entry point. Header parsing only, no decode. |
 
@@ -124,7 +124,7 @@ signinum-j2k          -> signinum-j2k-native, signinum-core
 signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-profile, signinum-core
 signinum-j2k-cuda     -> signinum-j2k, signinum-j2k-native, signinum-cuda-runtime, signinum-profile, signinum-core
 
-signinum-transcode    (experimental coefficient-domain math, no workspace dependencies yet)
+signinum-transcode    -> signinum-jpeg, signinum-j2k-native
 
 signinum              -> signinum-core, signinum-jpeg, signinum-j2k, signinum-tilecodec, signinum-jpeg-metal, signinum-j2k-metal, signinum-jpeg-cuda, signinum-j2k-cuda
 signinum-cli          -> signinum-jpeg, signinum-j2k

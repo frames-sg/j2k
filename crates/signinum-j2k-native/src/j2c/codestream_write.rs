@@ -35,6 +35,7 @@ pub(crate) struct EncodeParams {
     pub(crate) block_coding_mode: BlockCodingMode,
     pub(crate) progression_order: EncodeProgressionOrder,
     pub(crate) write_tlm: bool,
+    pub(crate) component_sampling: Vec<(u8, u8)>,
 }
 
 impl Default for EncodeParams {
@@ -55,6 +56,7 @@ impl Default for EncodeParams {
             block_coding_mode: BlockCodingMode::Classic,
             progression_order: EncodeProgressionOrder::Lrcp,
             write_tlm: false,
+            component_sampling: Vec::new(),
         }
     }
 }
@@ -140,7 +142,7 @@ fn write_siz_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     out.extend_from_slice(&num_comp.to_be_bytes());
 
     // Per-component info
-    for _ in 0..params.num_components {
+    for component_index in 0..params.num_components as usize {
         // Ssiz: bit depth - 1 (unsigned) or bit depth - 1 + 0x80 (signed)
         let ssiz = if params.signed {
             (params.bit_depth - 1) | 0x80
@@ -148,10 +150,15 @@ fn write_siz_marker(out: &mut Vec<u8>, params: &EncodeParams) {
             params.bit_depth - 1
         };
         out.push(ssiz);
+        let (x_rsiz, y_rsiz) = params
+            .component_sampling
+            .get(component_index)
+            .copied()
+            .unwrap_or((1, 1));
         // XRsiz (horizontal sampling factor)
-        out.push(1);
+        out.push(x_rsiz);
         // YRsiz (vertical sampling factor)
-        out.push(1);
+        out.push(y_rsiz);
     }
 }
 
