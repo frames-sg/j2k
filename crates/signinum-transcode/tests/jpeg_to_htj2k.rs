@@ -4,7 +4,6 @@ use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
-use signinum_jpeg::{JpegError, SofKind};
 use signinum_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder, TranscodeValidationClassification,
@@ -199,18 +198,22 @@ fn generated_htj2k_is_accepted_by_available_external_decoder() {
 }
 
 #[test]
-fn progressive_jpeg_fails_loudly_at_transcode_entry_point() {
+fn progressive_ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
     let jpeg = jpeg_fixtures::progressive_8x8_jpeg();
 
-    let err = jpeg_to_htj2k(&jpeg, &JpegToHtj2kOptions::default())
-        .expect_err("progressive JPEG is out of scope for DCT transcode");
+    let encoded = jpeg_to_htj2k(&jpeg, &JpegToHtj2kOptions::default())
+        .expect("transcode progressive 4:2:0 JPEG to HTJ2K");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated HTJ2K");
 
-    assert!(matches!(
-        err,
-        signinum_transcode::JpegToHtj2kError::Jpeg(JpegError::NotImplemented {
-            sof: SofKind::Progressive8
-        })
-    ));
+    assert_eq!((encoded.report.width, encoded.report.height), (8, 8));
+    assert_eq!(encoded.report.component_count, 3);
+    assert_report_sampling(&encoded, &[(8, 8, 1, 1), (4, 4, 2, 2), (4, 4, 2, 2)]);
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 3);
+    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
 }
 
 #[test]

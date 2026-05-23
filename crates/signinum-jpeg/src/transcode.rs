@@ -3,7 +3,9 @@
 //! Experimental JPEG coefficient extraction for transcode pipelines.
 
 use crate::decoder::Decoder;
+use crate::entropy::progressive::{decode_progressive_dct_blocks, ProgressiveDctBlocks};
 use crate::entropy::sequential::{decode_scan_dct_blocks, DecodedDctBlocks};
+use crate::entropy::ZIGZAG;
 use crate::error::{JpegError, MarkerKind};
 use crate::info::{ColorSpace, RestartIndex, SofKind};
 use alloc::vec::Vec;
@@ -22,10 +24,23 @@ pub struct JpegDctImage {
     pub height: u32,
     /// JPEG color space after APP14 detection.
     pub color_space: ColorSpace,
+    /// Entropy coding mode that produced the extracted DCT coefficients.
+    pub coding_mode: JpegDctCodingMode,
+    /// Number of SOS marker segments parsed for this image.
+    pub scan_count: u16,
     /// Components in SOF declaration order, each at native resolution.
     pub components: Vec<JpegDctComponent>,
     /// Restart-marker metadata when the stream uses a non-zero DRI interval.
     pub restart_index: Option<RestartIndex>,
+}
+
+/// JPEG DCT entropy coding mode represented by [`JpegDctImage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JpegDctCodingMode {
+    /// SOF0 baseline sequential Huffman DCT.
+    BaselineSequential,
+    /// SOF2 progressive Huffman DCT with accumulated scan coefficients.
+    Progressive,
 }
 
 /// One JPEG component's natural-order DCT blocks.
@@ -63,24 +78,44 @@ pub fn extract_dct_blocks(
     _options: DctExtractOptions,
 ) -> Result<JpegDctImage, JpegError> {
     let decoder = Decoder::new(bytes)?;
-    match decoder.info().sof_kind {
-        SofKind::Baseline8 => {}
-        other => return Err(JpegError::NotImplemented { sof: other }),
-    }
     match decoder.info().color_space {
         ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb => {}
         color_space => return Err(JpegError::UnsupportedColorSpace { color_space }),
     }
 
-    let scan_bytes = &decoder.bytes[decoder.plan.scan_offset..];
-    let decoded_blocks = decode_scan_dct_blocks(&decoder.plan, scan_bytes)?;
+    let (coding_mode, components) = match decoder.info().sof_kind {
+        SofKind::Baseline8 => {
+            let scan_bytes = &decoder.bytes[decoder.plan.scan_offset..];
+            let decoded_blocks = decode_scan_dct_blocks(&decoder.plan, scan_bytes)?;
+            (
+                JpegDctCodingMode::BaselineSequential,
+                build_sequential_components(&decoder, decoded_blocks)?,
+            )
+        }
+        SofKind::Progressive8 => {
+            let progressive_plan =
+                decoder
+                    .progressive_plan
+                    .as_ref()
+                    .ok_or(JpegError::NotImplemented {
+                        sof: SofKind::Progressive8,
+                    })?;
+            let decoded_blocks = decode_progressive_dct_blocks(progressive_plan, decoder.bytes)?;
+            (
+                JpegDctCodingMode::Progressive,
+                build_progressive_components(&decoder, decoded_blocks)?,
+            )
+        }
+        other => return Err(JpegError::NotImplemented { sof: other }),
+    };
     let restart_index = decoder.restart_index()?;
-    let components = build_components(&decoder, decoded_blocks)?;
 
     Ok(JpegDctImage {
         width: decoder.info().dimensions.0,
         height: decoder.info().dimensions.1,
         color_space: decoder.info().color_space,
+        coding_mode,
+        scan_count: decoder.info().scan_count,
         components,
         restart_index,
     })
@@ -97,7 +132,7 @@ pub fn idct_islow_block(block: &[i16; 64]) -> [u8; 64] {
     output
 }
 
-fn build_components(
+fn build_sequential_components(
     decoder: &Decoder<'_>,
     decoded_blocks: DecodedDctBlocks,
 ) -> Result<Vec<JpegDctComponent>, JpegError> {
@@ -156,4 +191,64 @@ fn build_components(
     }
 
     Ok(components)
+}
+
+fn build_progressive_components(
+    decoder: &Decoder<'_>,
+    decoded_blocks: ProgressiveDctBlocks,
+) -> Result<Vec<JpegDctComponent>, JpegError> {
+    let plan = decoder
+        .progressive_plan
+        .as_ref()
+        .ok_or(JpegError::NotImplemented {
+            sof: SofKind::Progressive8,
+        })?;
+    let mut components = Vec::with_capacity(plan.components.len());
+    for component in &plan.components {
+        let quantized_i32 = decoded_blocks.quantized.get(component.output_index).ok_or(
+            JpegError::MissingMarker {
+                marker: MarkerKind::Sos,
+            },
+        )?;
+        let mut quantized_blocks = Vec::with_capacity(quantized_i32.len());
+        let mut dequantized_blocks = Vec::with_capacity(quantized_i32.len());
+        for block in quantized_i32 {
+            let quantized = quantized_i16_block(block);
+            let dequantized = dequantize_progressive_block(block, &component.quant);
+            quantized_blocks.push(quantized);
+            dequantized_blocks.push(dequantized);
+        }
+
+        components.push(JpegDctComponent {
+            component_index: component.output_index,
+            width: component.sample_width,
+            height: component.sample_height,
+            h_samp: component.h,
+            v_samp: component.v,
+            block_cols: component.block_cols,
+            block_rows: component.block_rows,
+            quant_table: *component.quant.as_ref(),
+            quantized_blocks,
+            dequantized_blocks,
+        });
+    }
+
+    Ok(components)
+}
+
+fn quantized_i16_block(block: &[i32; 64]) -> [i16; 64] {
+    let mut out = [0i16; 64];
+    for (dst, &value) in out.iter_mut().zip(block.iter()) {
+        *dst = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    out
+}
+
+fn dequantize_progressive_block(block: &[i32; 64], quant: &[u16; 64]) -> [i16; 64] {
+    let mut out = [0i16; 64];
+    for (zigzag_idx, &natural_idx) in ZIGZAG.iter().enumerate() {
+        let value = block[usize::from(natural_idx)].wrapping_mul(i32::from(quant[zigzag_idx]));
+        out[usize::from(natural_idx)] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    out
 }
