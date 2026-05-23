@@ -3,7 +3,9 @@
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
-use signinum_transcode::{JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use signinum_transcode::{
+    JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+};
 #[cfg(target_os = "macos")]
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
@@ -158,6 +160,52 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
         &[(1, 1), (2, 2), (2, 2)],
         2,
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let options = JpegToHtj2kOptions {
+        validate_against_integer_reference: true,
+        ..JpegToHtj2kOptions::lossless_53()
+    };
+    let mut scalar_transcoder = JpegToHtj2kTranscoder::default();
+    let scalar = scalar_transcoder
+        .transcode(jpeg, &options)
+        .expect("scalar IntegerDirect53 transcode succeeds");
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    let batch = match transcoder.transcode_batch_with_accelerator(
+        &inputs,
+        &options,
+        &mut accelerator,
+    ) {
+        Ok(batch) => batch,
+        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+            eprintln!(
+                    "skipping Metal reversible batch transcode integration test because no Metal device is available"
+                );
+            return;
+        }
+        Err(error) => panic!("explicit Metal reversible 5/3 batch transcode failed: {error}"),
+    };
+
+    assert_eq!(batch.report.tile_count, inputs.len());
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(batch.report.failed_tiles, 0);
+    assert_eq!(batch.report.reversible_dwt53_batches, 3);
+    assert_eq!(batch.report.reversible_dwt53_batch_jobs, 12);
+    assert_eq!(accelerator.reversible_dwt53_attempts(), 0);
+    assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 3);
+    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 3);
+    for tile in batch.tiles {
+        let tile = tile.expect("valid tile transcodes");
+        assert_eq!(tile.codestream, scalar.codestream);
+        assert_component_sampling(&tile.codestream, &[(1, 1), (2, 2), (2, 2)]);
+    }
 }
 
 #[cfg(target_os = "macos")]

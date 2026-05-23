@@ -15,8 +15,8 @@ use signinum_transcode::dct97_2d::{
     dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 use signinum_transcode::{
-    jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
-    JpegToHtj2kTranscoder, TranscodeValidationClassification,
+    jpeg_to_htj2k, EncodedTranscode, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
+    JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeValidationClassification,
 };
 use std::{
     env, fs,
@@ -633,6 +633,100 @@ fn integer_direct_transcode_batches_same_geometry_components_when_available() {
             fixture.name
         );
     }
+}
+
+#[test]
+fn integer_direct_batch_transcode_groups_components_across_tiles() {
+    for fixture in [
+        BatchFixture {
+            name: "grayscale",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            expected_batch_sizes: &[4],
+        },
+        BatchFixture {
+            name: "ycbcr_444",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+        BatchFixture {
+            name: "ycbcr_422",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+        BatchFixture {
+            name: "ycbcr_420",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+    ] {
+        let options = JpegToHtj2kOptions {
+            validate_against_integer_reference: true,
+            ..JpegToHtj2kOptions::default()
+        };
+        let inputs = vec![
+            JpegTileBatchInput {
+                bytes: fixture.jpeg
+            };
+            4
+        ];
+        let expected = jpeg_to_htj2k(fixture.jpeg, &options)
+            .expect("scalar integer-direct transcode succeeds");
+        let mut transcoder = JpegToHtj2kTranscoder::default();
+        let mut accelerator = CountingAccelerator::default();
+
+        let batch = transcoder
+            .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+            .expect("batched transcode accepts valid options");
+
+        assert_eq!(batch.tiles.len(), inputs.len());
+        assert_eq!(batch.report.tile_count, inputs.len());
+        assert_eq!(batch.report.successful_tiles, inputs.len());
+        assert_eq!(batch.report.failed_tiles, 0);
+        assert_eq!(
+            accelerator.reversible_dwt53_batch_sizes, fixture.expected_batch_sizes,
+            "unexpected cross-tile component grouping for {}",
+            fixture.name
+        );
+        assert_eq!(accelerator.reversible_dwt53_calls, 0);
+        for tile in batch.tiles {
+            let tile = tile.expect("valid tile transcodes");
+            assert_eq!(
+                tile.codestream, expected.codestream,
+                "batch tile must match scalar output for {}",
+                fixture.name
+            );
+            assert_eq!(
+                tile.report.integer_reference_classification,
+                Some(TranscodeValidationClassification::Exact)
+            );
+        }
+    }
+}
+
+#[test]
+fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
+    let good = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let inputs = [
+        JpegTileBatchInput { bytes: good },
+        JpegTileBatchInput {
+            bytes: b"not a jpeg",
+        },
+        JpegTileBatchInput { bytes: good },
+    ];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = CountingAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerator(&inputs, &JpegToHtj2kOptions::default(), &mut accelerator)
+        .expect("valid batch options do not fail globally");
+
+    assert_eq!(batch.report.tile_count, 3);
+    assert_eq!(batch.report.successful_tiles, 2);
+    assert_eq!(batch.report.failed_tiles, 1);
+    assert!(batch.tiles[0].is_ok());
+    assert!(batch.tiles[1].is_err());
+    assert!(batch.tiles[2].is_ok());
+    assert_eq!(accelerator.reversible_dwt53_batch_sizes, vec![2]);
 }
 
 #[test]

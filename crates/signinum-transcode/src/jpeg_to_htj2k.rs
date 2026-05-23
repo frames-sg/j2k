@@ -12,7 +12,7 @@ use signinum_j2k_native::{
     PrecomputedHtj2k97Image,
 };
 use signinum_jpeg::transcode::{
-    extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent,
+    extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent, JpegDctImage,
 };
 
 use crate::accelerator::{
@@ -143,6 +143,28 @@ impl JpegToHtj2kTranscoder {
         jpeg_to_htj2k_with_scratch(bytes, options, &mut self.scratch, accelerator)
     }
 
+    /// Transcode many JPEG tiles, preserving per-tile failures in the returned
+    /// batch. Integer-direct 5/3 groups same-geometry components across tiles
+    /// before calling the accelerator.
+    pub fn transcode_batch(
+        &mut self,
+        tiles: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+        let mut accelerator = CpuOnlyDctToWaveletStageAccelerator;
+        self.transcode_batch_with_accelerator(tiles, options, &mut accelerator)
+    }
+
+    /// Transcode many JPEG tiles with an optional stage accelerator.
+    pub fn transcode_batch_with_accelerator<A: DctToWaveletStageAccelerator>(
+        &mut self,
+        tiles: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+        accelerator: &mut A,
+    ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+        jpeg_tile_batch_to_htj2k_with_scratch(tiles, options, &mut self.scratch, accelerator)
+    }
+
     /// Current capacity of the reusable DCT block conversion scratch.
     ///
     /// This is exposed for benchmark and validation harnesses while the API is
@@ -178,6 +200,48 @@ pub struct EncodedTranscode {
     pub codestream: Vec<u8>,
     /// Summary of the experimental path used.
     pub report: TranscodeReport,
+}
+
+/// One JPEG tile input for batch transcode.
+#[derive(Debug, Clone, Copy)]
+pub struct JpegTileBatchInput<'a> {
+    /// JPEG codestream bytes for one tile.
+    pub bytes: &'a [u8],
+}
+
+/// Batch transcode output. Tile-level parse/encode failures are preserved so a
+/// WSI ingest queue can continue past isolated bad tiles.
+#[derive(Debug)]
+pub struct EncodedTranscodeBatch {
+    /// Per-input tile result in input order.
+    pub tiles: Vec<Result<EncodedTranscode, JpegToHtj2kError>>,
+    /// Aggregate batch report.
+    pub report: BatchTranscodeReport,
+}
+
+/// Aggregate report for multi-tile transcode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchTranscodeReport {
+    /// Number of input tiles.
+    pub tile_count: usize,
+    /// Number of successfully encoded output tiles.
+    pub successful_tiles: usize,
+    /// Number of tile-local failures.
+    pub failed_tiles: usize,
+    /// Number of transformed components across successful extracted tiles.
+    pub transformed_components: usize,
+    /// Number of same-geometry reversible 5/3 batches submitted.
+    pub reversible_dwt53_batches: usize,
+    /// Number of reversible 5/3 component jobs in submitted batches.
+    pub reversible_dwt53_batch_jobs: usize,
+    /// Batch extraction time in microseconds.
+    pub extract_us: u128,
+    /// Batch DCT-to-wavelet time in microseconds.
+    pub transform_us: u128,
+    /// Batch HTJ2K encode time in microseconds.
+    pub encode_us: u128,
+    /// Coefficient path used by the batch.
+    pub coefficient_path: JpegToHtj2kCoefficientPath,
 }
 
 /// Per-component transcode geometry preserved in the generated codestream.
@@ -351,6 +415,421 @@ pub fn jpeg_to_htj2k(
     options: &JpegToHtj2kOptions,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
     JpegToHtj2kTranscoder::default().transcode(bytes, options)
+}
+
+/// Transcode many JPEG tiles into HTJ2K codestreams.
+pub fn jpeg_to_htj2k_batch(
+    tiles: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+    JpegToHtj2kTranscoder::default().transcode_batch(tiles, options)
+}
+
+fn jpeg_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
+    tiles: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+    validate_transcode_options(options)?;
+    if !matches!(
+        options.coefficient_path,
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+    ) {
+        return Ok(transcode_tile_batch_individually(
+            tiles,
+            options,
+            scratch,
+            accelerator,
+        ));
+    }
+
+    let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
+        (0..tiles.len()).map(|_| None).collect();
+    let mut prepared_tiles = Vec::new();
+    let extract_start = Instant::now();
+    for (tile_index, tile) in tiles.iter().enumerate() {
+        match prepare_integer_batch_tile(tile_index, tile.bytes, options) {
+            Ok(prepared) => prepared_tiles.push(prepared),
+            Err(error) => tile_results[tile_index] = Some(Err(error)),
+        }
+    }
+    let extract_us = extract_start.elapsed().as_micros();
+
+    let transform_start = Instant::now();
+    let (reversible_dwt53_batches, reversible_dwt53_batch_jobs) =
+        transform_integer_batch_tiles(&mut prepared_tiles, options, scratch, accelerator)?;
+    let transform_us = transform_start.elapsed().as_micros();
+
+    let encode_start = Instant::now();
+    for prepared in prepared_tiles {
+        let tile_index = prepared.tile_index;
+        tile_results[tile_index] = Some(encode_integer_batch_tile(
+            prepared,
+            options,
+            extract_us,
+            transform_us,
+        ));
+    }
+    let encode_us = encode_start.elapsed().as_micros();
+
+    let output_tiles = tile_results
+        .into_iter()
+        .map(|tile| {
+            tile.unwrap_or(Err(JpegToHtj2kError::Validation(
+                "batch transcode did not produce a tile result",
+            )))
+        })
+        .collect::<Vec<_>>();
+    Ok(batch_output(
+        output_tiles,
+        BatchTranscodeReport {
+            tile_count: tiles.len(),
+            successful_tiles: 0,
+            failed_tiles: 0,
+            transformed_components: reversible_dwt53_batch_jobs,
+            reversible_dwt53_batches,
+            reversible_dwt53_batch_jobs,
+            extract_us,
+            transform_us,
+            encode_us,
+            coefficient_path: options.coefficient_path,
+        },
+    ))
+}
+
+fn transcode_tile_batch_individually<A: DctToWaveletStageAccelerator>(
+    tiles: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+) -> EncodedTranscodeBatch {
+    let start = Instant::now();
+    let output_tiles = tiles
+        .iter()
+        .map(|tile| jpeg_to_htj2k_with_scratch(tile.bytes, options, scratch, accelerator))
+        .collect::<Vec<_>>();
+    let elapsed_us = start.elapsed().as_micros();
+    batch_output(
+        output_tiles,
+        BatchTranscodeReport {
+            tile_count: tiles.len(),
+            successful_tiles: 0,
+            failed_tiles: 0,
+            transformed_components: 0,
+            reversible_dwt53_batches: 0,
+            reversible_dwt53_batch_jobs: 0,
+            extract_us: elapsed_us,
+            transform_us: 0,
+            encode_us: 0,
+            coefficient_path: options.coefficient_path,
+        },
+    )
+}
+
+fn batch_output(
+    tiles: Vec<Result<EncodedTranscode, JpegToHtj2kError>>,
+    mut report: BatchTranscodeReport,
+) -> EncodedTranscodeBatch {
+    report.successful_tiles = tiles.iter().filter(|tile| tile.is_ok()).count();
+    report.failed_tiles = tiles.len().saturating_sub(report.successful_tiles);
+    EncodedTranscodeBatch { tiles, report }
+}
+
+struct IntegerBatchTile {
+    tile_index: usize,
+    jpeg: JpegDctImage,
+    component_sampling: Vec<(u8, u8)>,
+    decomposition_levels: u8,
+    all_unit_sampled: bool,
+    component_reports: Vec<TranscodeComponentReport>,
+    precomputed_components: Vec<Option<PrecomputedHtj2k53Component>>,
+    float_validation_actual: Vec<i32>,
+    float_validation_expected: Vec<i32>,
+    integer_validation_actual: Vec<i32>,
+    integer_validation_expected: Vec<i32>,
+}
+
+#[derive(Clone, Copy)]
+struct BatchComponentRef {
+    tile_index: usize,
+    component_index: usize,
+}
+
+fn prepare_integer_batch_tile(
+    tile_index: usize,
+    bytes: &[u8],
+    options: &JpegToHtj2kOptions,
+) -> Result<IntegerBatchTile, JpegToHtj2kError> {
+    let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
+    if jpeg.components.is_empty() || jpeg.components.len() > 4 {
+        return Err(JpegToHtj2kError::Unsupported(
+            "unsupported JPEG component count for jpeg_to_htj2k",
+        ));
+    }
+    let component_sampling =
+        component_sampling_for_jpeg(&jpeg.components, jpeg.width, jpeg.height)?;
+    let decomposition_levels = decomposition_levels_for_components(
+        &jpeg.components,
+        options.encode_options.num_decomposition_levels,
+    )?;
+    let all_unit_sampled = component_sampling
+        .iter()
+        .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
+    let component_reports = jpeg
+        .components
+        .iter()
+        .zip(component_sampling.iter().copied())
+        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
+            component_index: component.component_index,
+            width: component.width,
+            height: component.height,
+            block_cols: component.block_cols,
+            block_rows: component.block_rows,
+            x_rsiz,
+            y_rsiz,
+        })
+        .collect::<Vec<_>>();
+    let precomputed_components = (0..jpeg.components.len()).map(|_| None).collect();
+
+    Ok(IntegerBatchTile {
+        tile_index,
+        jpeg,
+        component_sampling,
+        decomposition_levels,
+        all_unit_sampled,
+        component_reports,
+        precomputed_components,
+        float_validation_actual: Vec::new(),
+        float_validation_expected: Vec::new(),
+        integer_validation_actual: Vec::new(),
+        integer_validation_expected: Vec::new(),
+    })
+}
+
+fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
+    tiles: &mut [IntegerBatchTile],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+) -> Result<(usize, usize), JpegToHtj2kError> {
+    let groups = batch_component_groups(tiles);
+    let mut batch_count = 0usize;
+    let mut job_count = 0usize;
+
+    for group in groups {
+        batch_count = batch_count.saturating_add(1);
+        job_count = job_count.saturating_add(group.len());
+        let wavelets = integer_wavelets_for_batch_group(&group, tiles, scratch, accelerator)?;
+        for (component_ref, wavelet) in group.into_iter().zip(wavelets) {
+            store_integer_batch_wavelet(component_ref, &wavelet, tiles, options, scratch)?;
+        }
+    }
+
+    Ok((batch_count, job_count))
+}
+
+fn batch_component_groups(tiles: &[IntegerBatchTile]) -> Vec<Vec<BatchComponentRef>> {
+    let mut groups: Vec<Vec<BatchComponentRef>> = Vec::new();
+
+    for (tile_index, tile) in tiles.iter().enumerate() {
+        for (component_index, component) in tile.jpeg.components.iter().enumerate() {
+            let component_ref = BatchComponentRef {
+                tile_index,
+                component_index,
+            };
+            if let Some(group) = groups.iter_mut().find(|group| {
+                let first = group[0];
+                same_batch_component_key(
+                    &tiles[first.tile_index],
+                    first.component_index,
+                    tile,
+                    component_index,
+                )
+            }) {
+                group.push(component_ref);
+            } else {
+                let _ = component;
+                groups.push(vec![component_ref]);
+            }
+        }
+    }
+
+    groups
+}
+
+fn same_batch_component_key(
+    left_tile: &IntegerBatchTile,
+    left_component_index: usize,
+    right_tile: &IntegerBatchTile,
+    right_component_index: usize,
+) -> bool {
+    let left = &left_tile.jpeg.components[left_component_index];
+    let right = &right_tile.jpeg.components[right_component_index];
+    left.component_index == right.component_index
+        && left.width == right.width
+        && left.height == right.height
+        && left.block_cols == right.block_cols
+        && left.block_rows == right.block_rows
+        && left_tile.component_sampling[left_component_index]
+            == right_tile.component_sampling[right_component_index]
+}
+
+fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
+    group: &[BatchComponentRef],
+    tiles: &[IntegerBatchTile],
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+) -> Result<Vec<IntegerWavelet>, JpegToHtj2kError> {
+    let jobs = group
+        .iter()
+        .map(|component_ref| {
+            integer_dct_job_for_component(
+                &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index],
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let accelerated = accelerator
+        .dct_grid_to_reversible_dwt53_batch(&jobs)
+        .map_err(JpegToHtj2kError::Accelerator)?;
+
+    if let Some(first_levels) = accelerated {
+        if first_levels.len() != group.len() {
+            return Err(JpegToHtj2kError::Validation(
+                "reversible 5/3 batch accelerator returned wrong component count",
+            ));
+        }
+        return Ok(first_levels
+            .into_iter()
+            .zip(group.iter().copied())
+            .map(|(first_level, component_ref)| {
+                integer_wavelet_from_first_level(
+                    first_level,
+                    tiles[component_ref.tile_index].decomposition_levels,
+                )
+            })
+            .collect());
+    }
+
+    group
+        .iter()
+        .map(|component_ref| {
+            integer_direct_wavelet_from_component(
+                &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index],
+                tiles[component_ref.tile_index].decomposition_levels,
+                scratch,
+                accelerator,
+            )
+        })
+        .collect()
+}
+
+fn store_integer_batch_wavelet(
+    component_ref: BatchComponentRef,
+    wavelet: &IntegerWavelet,
+    tiles: &mut [IntegerBatchTile],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+) -> Result<(), JpegToHtj2kError> {
+    let tile = &mut tiles[component_ref.tile_index];
+    let component = &tile.jpeg.components[component_ref.component_index];
+    let (x_rsiz, y_rsiz) = tile.component_sampling[component_ref.component_index];
+    let actual_coefficients = flatten_integer_wavelet(wavelet);
+    tile.precomputed_components[component_ref.component_index] =
+        Some(PrecomputedHtj2k53Component {
+            x_rsiz,
+            y_rsiz,
+            dwt: j2k_dwt_from_integer_wavelet(wavelet),
+        });
+
+    if options.validate_against_float_reference {
+        tile.float_validation_actual
+            .extend(actual_coefficients.clone());
+        tile.float_validation_expected
+            .extend(float_reference_coefficients(
+                component,
+                tile.decomposition_levels,
+                scratch,
+            )?);
+    }
+    if options.validate_against_integer_reference {
+        tile.integer_validation_actual.extend(actual_coefficients);
+        tile.integer_validation_expected
+            .extend(integer_reference_coefficients(
+                component,
+                tile.decomposition_levels,
+            )?);
+    }
+
+    Ok(())
+}
+
+fn encode_integer_batch_tile(
+    tile: IntegerBatchTile,
+    options: &JpegToHtj2kOptions,
+    extract_us: u128,
+    transform_us: u128,
+) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    let components = tile
+        .precomputed_components
+        .into_iter()
+        .map(|component| {
+            component.ok_or(JpegToHtj2kError::Validation(
+                "integer batch transcode did not produce all components",
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let encode_start = Instant::now();
+    let precomputed = PrecomputedHtj2k53Image {
+        width: tile.jpeg.width,
+        height: tile.jpeg.height,
+        bit_depth: 8,
+        signed: false,
+        components,
+    };
+    let codestream = encode_precomputed_htj2k_53(&precomputed, &options.encode_options)
+        .map_err(JpegToHtj2kError::Encode)?;
+    let encode_us = encode_start.elapsed().as_micros();
+    let integer_reference_metrics = if options.validate_against_integer_reference {
+        Some(error_metrics_i32(
+            &tile.integer_validation_actual,
+            &tile.integer_validation_expected,
+        )?)
+    } else {
+        None
+    };
+    let float_reference_metrics = if options.validate_against_float_reference {
+        Some(error_metrics_i32(
+            &tile.float_validation_actual,
+            &tile.float_validation_expected,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(EncodedTranscode {
+        codestream,
+        report: TranscodeReport {
+            width: tile.jpeg.width,
+            height: tile.jpeg.height,
+            component_count: tile.jpeg.components.len(),
+            components: tile.component_reports,
+            float_reference_classification: float_reference_metrics
+                .as_ref()
+                .map(TranscodeValidationClassification::classify_metrics),
+            float_reference_metrics,
+            integer_reference_classification: integer_reference_metrics
+                .as_ref()
+                .map(TranscodeValidationClassification::classify_metrics),
+            integer_reference_metrics,
+            decomposition_levels: tile.decomposition_levels,
+            coefficient_path: options.coefficient_path,
+            path: transcode_path_name(tile.all_unit_sampled, options.coefficient_path),
+            extract_us,
+            transform_us,
+            encode_us,
+        },
+    })
 }
 
 fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(

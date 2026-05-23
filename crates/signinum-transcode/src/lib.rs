@@ -16,7 +16,8 @@ mod jpeg_to_htj2k;
 pub mod metrics;
 
 pub use jpeg_to_htj2k::{
-    jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
+    jpeg_to_htj2k, jpeg_to_htj2k_batch, BatchTranscodeReport, EncodedTranscode,
+    EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
     JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeComponentReport, TranscodeReport,
     TranscodeValidationClassification, TranscodeValidationMetrics,
 };
