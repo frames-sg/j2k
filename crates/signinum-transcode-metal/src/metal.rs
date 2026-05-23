@@ -54,8 +54,10 @@ struct Reversible53ProjectionParams {
     width: u32,
     height: u32,
     block_cols: u32,
+    blocks_per_item: u32,
     band_width: u32,
     band_height: u32,
+    output_stride: u32,
     vertical_low: u32,
     horizontal_low: u32,
 }
@@ -119,22 +121,36 @@ impl MetalRuntime {
 pub(crate) fn dispatch_dct_grid_to_reversible_dwt53(
     job: DctGridToReversibleDwt53Job<'_>,
 ) -> Result<ReversibleDwt53FirstLevel, MetalTranscodeError> {
-    validate_grid(
-        job.dequantized_blocks.len(),
-        job.block_cols,
-        job.block_rows,
-        job.width,
-        job.height,
-        METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    let mut outputs = dispatch_dct_grid_to_reversible_dwt53_batch(core::slice::from_ref(&job))?;
+    outputs
+        .pop()
+        .ok_or(MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
+}
+
+pub(crate) fn dispatch_dct_grid_to_reversible_dwt53_batch(
+    jobs: &[DctGridToReversibleDwt53Job<'_>],
+) -> Result<Vec<ReversibleDwt53FirstLevel>, MetalTranscodeError> {
+    let Some(first) = jobs.first() else {
+        return Ok(Vec::new());
+    };
+    validate_reversible_batch_geometry(jobs)?;
+
+    let blocks_per_item = first.block_cols.checked_mul(first.block_rows).ok_or(
+        MetalTranscodeError::UnsupportedJob(METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID),
     )?;
-    let block_samples = idct_blocks_to_signed_samples_rayon(job.dequantized_blocks);
+    let mut block_samples = Vec::with_capacity(blocks_per_item.saturating_mul(jobs.len()));
+    for job in jobs {
+        block_samples.extend(idct_blocks_to_signed_samples_rayon(job.dequantized_blocks));
+    }
+
     with_runtime(|runtime| {
-        dispatch_reversible_dwt53_with_runtime(
+        dispatch_reversible_dwt53_batch_with_runtime(
             runtime,
             &block_samples,
-            job.block_cols,
-            job.width,
-            job.height,
+            jobs.len(),
+            first.block_cols,
+            first.width,
+            first.height,
         )
     })
 }
@@ -154,26 +170,67 @@ pub(crate) fn dispatch_dct_grid_to_dwt53(
 }
 
 #[allow(clippy::similar_names)]
-fn dispatch_reversible_dwt53_with_runtime(
+fn dispatch_reversible_dwt53_batch_with_runtime(
     runtime: &MetalRuntime,
     block_samples: &[[i32; 64]],
+    batch_count: usize,
     block_cols: usize,
     width: usize,
     height: usize,
-) -> Result<ReversibleDwt53FirstLevel, MetalTranscodeError> {
+) -> Result<Vec<ReversibleDwt53FirstLevel>, MetalTranscodeError> {
+    if batch_count == 0 {
+        return Ok(Vec::new());
+    }
+    if !block_samples.len().is_multiple_of(batch_count) {
+        return Err(MetalTranscodeError::UnsupportedJob(
+            METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+        ));
+    }
+
+    let blocks_per_item = block_samples.len() / batch_count;
+    let blocks_per_item_u32 = u32_param(blocks_per_item, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let batch_count_u32 = u32_param(batch_count, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
     let width_u32 = u32_param(width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
     let height_u32 = u32_param(height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
     let block_cols_u32 = u32_param(block_cols, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let kernel_geometry = ReversibleBatchKernelGeometry {
+        width: width_u32,
+        height: height_u32,
+        block_cols: block_cols_u32,
+        blocks_per_item: blocks_per_item_u32,
+        batch_count: batch_count_u32,
+    };
     let low_width = width.div_ceil(2);
     let high_width = width / 2;
     let low_height = height.div_ceil(2);
     let high_height = height / 2;
+    let ll_len = low_width * low_height;
+    let hl_len = high_width * low_height;
+    let lh_len = low_width * high_height;
+    let hh_len = high_width * high_height;
+    let output_shape = ReversibleBatchOutputShape {
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+        ll_len,
+        hl_len,
+        lh_len,
+        hh_len,
+        batch_count,
+    };
     let blocks = buffer_with_slice(&runtime.device, block_samples);
 
-    let ll_buffer = output_i32_buffer(&runtime.device, low_width * low_height);
-    let hl_buffer = output_i32_buffer(&runtime.device, high_width * low_height);
-    let lh_buffer = output_i32_buffer(&runtime.device, low_width * high_height);
-    let hh_buffer = output_i32_buffer(&runtime.device, high_width * high_height);
+    let ll_buffer = output_i32_buffer(&runtime.device, checked_batch_len(ll_len, batch_count)?);
+    let hl_buffer = output_i32_buffer(&runtime.device, checked_batch_len(hl_len, batch_count)?);
+    let lh_buffer = output_i32_buffer(&runtime.device, checked_batch_len(lh_len, batch_count)?);
+    let hh_buffer = output_i32_buffer(&runtime.device, checked_batch_len(hh_len, batch_count)?);
+    let output_buffers = ReversibleOutputBuffers {
+        ll: &ll_buffer,
+        hl: &hl_buffer,
+        lh: &lh_buffer,
+        hh: &hh_buffer,
+    };
 
     let command_buffer = runtime.queue.new_command_buffer();
     command_buffer.set_label("signinum-transcode-metal reversible dct53 projection");
@@ -184,70 +241,36 @@ fn dispatch_reversible_dwt53_with_runtime(
     dispatch_reversible_band(
         encoder,
         &ll_buffer,
-        ReversibleBandGeometry {
-            width: width_u32,
-            height: height_u32,
-            block_cols: block_cols_u32,
-            band_width: u32_param(low_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            band_height: u32_param(low_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            vertical_low: true,
-            horizontal_low: true,
-        },
+        reversible_band_geometry(kernel_geometry, low_width, low_height, ll_len, true, true)?,
     );
     dispatch_reversible_band(
         encoder,
         &hl_buffer,
-        ReversibleBandGeometry {
-            width: width_u32,
-            height: height_u32,
-            block_cols: block_cols_u32,
-            band_width: u32_param(high_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            band_height: u32_param(low_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            vertical_low: true,
-            horizontal_low: false,
-        },
+        reversible_band_geometry(kernel_geometry, high_width, low_height, hl_len, true, false)?,
     );
     dispatch_reversible_band(
         encoder,
         &lh_buffer,
-        ReversibleBandGeometry {
-            width: width_u32,
-            height: height_u32,
-            block_cols: block_cols_u32,
-            band_width: u32_param(low_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            band_height: u32_param(high_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            vertical_low: false,
-            horizontal_low: true,
-        },
+        reversible_band_geometry(kernel_geometry, low_width, high_height, lh_len, false, true)?,
     );
     dispatch_reversible_band(
         encoder,
         &hh_buffer,
-        ReversibleBandGeometry {
-            width: width_u32,
-            height: height_u32,
-            block_cols: block_cols_u32,
-            band_width: u32_param(high_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            band_height: u32_param(high_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
-            vertical_low: false,
-            horizontal_low: false,
-        },
+        reversible_band_geometry(
+            kernel_geometry,
+            high_width,
+            high_height,
+            hh_len,
+            false,
+            false,
+        )?,
     );
 
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
-    Ok(ReversibleDwt53FirstLevel {
-        ll: read_i32_buffer(&ll_buffer, low_width * low_height),
-        hl: read_i32_buffer(&hl_buffer, high_width * low_height),
-        lh: read_i32_buffer(&lh_buffer, low_width * high_height),
-        hh: read_i32_buffer(&hh_buffer, high_width * high_height),
-        low_width,
-        low_height,
-        high_width,
-        high_height,
-    })
+    read_reversible_batch_outputs(output_buffers, output_shape)
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt97(
@@ -357,6 +380,65 @@ struct ProjectedBands {
     low_height: usize,
     high_width: usize,
     high_height: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ReversibleBatchOutputShape {
+    low_width: usize,
+    low_height: usize,
+    high_width: usize,
+    high_height: usize,
+    ll_len: usize,
+    hl_len: usize,
+    lh_len: usize,
+    hh_len: usize,
+    batch_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ReversibleOutputBuffers<'a> {
+    ll: &'a Buffer,
+    hl: &'a Buffer,
+    lh: &'a Buffer,
+    hh: &'a Buffer,
+}
+
+fn read_reversible_batch_outputs(
+    buffers: ReversibleOutputBuffers<'_>,
+    shape: ReversibleBatchOutputShape,
+) -> Result<Vec<ReversibleDwt53FirstLevel>, MetalTranscodeError> {
+    let ll = read_i32_buffer(
+        buffers.ll,
+        checked_batch_len(shape.ll_len, shape.batch_count)?,
+    );
+    let hl = read_i32_buffer(
+        buffers.hl,
+        checked_batch_len(shape.hl_len, shape.batch_count)?,
+    );
+    let lh = read_i32_buffer(
+        buffers.lh,
+        checked_batch_len(shape.lh_len, shape.batch_count)?,
+    );
+    let hh = read_i32_buffer(
+        buffers.hh,
+        checked_batch_len(shape.hh_len, shape.batch_count)?,
+    );
+
+    let mut outputs = Vec::with_capacity(shape.batch_count);
+    for idx in 0..shape.batch_count {
+        outputs.push(ReversibleDwt53FirstLevel {
+            ll: ll[idx * shape.ll_len..idx * shape.ll_len + shape.ll_len].to_vec(),
+            hl: hl[idx * shape.hl_len..idx * shape.hl_len + shape.hl_len].to_vec(),
+            lh: lh[idx * shape.lh_len..idx * shape.lh_len + shape.lh_len].to_vec(),
+            hh: hh[idx * shape.hh_len..idx * shape.hh_len + shape.hh_len].to_vec(),
+            low_width: shape.low_width,
+            low_height: shape.low_height,
+            high_width: shape.high_width,
+            high_height: shape.high_height,
+        });
+    }
+
+    Ok(outputs)
 }
 
 #[allow(clippy::similar_names)]
@@ -490,10 +572,44 @@ struct ReversibleBandGeometry {
     width: u32,
     height: u32,
     block_cols: u32,
+    blocks_per_item: u32,
     band_width: u32,
     band_height: u32,
+    output_stride: u32,
+    batch_count: u32,
     vertical_low: bool,
     horizontal_low: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ReversibleBatchKernelGeometry {
+    width: u32,
+    height: u32,
+    block_cols: u32,
+    blocks_per_item: u32,
+    batch_count: u32,
+}
+
+fn reversible_band_geometry(
+    base: ReversibleBatchKernelGeometry,
+    band_width: usize,
+    band_height: usize,
+    output_stride: usize,
+    vertical_low: bool,
+    horizontal_low: bool,
+) -> Result<ReversibleBandGeometry, MetalTranscodeError> {
+    Ok(ReversibleBandGeometry {
+        width: base.width,
+        height: base.height,
+        block_cols: base.block_cols,
+        blocks_per_item: base.blocks_per_item,
+        band_width: u32_param(band_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+        band_height: u32_param(band_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+        output_stride: u32_param(output_stride, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+        batch_count: base.batch_count,
+        vertical_low,
+        horizontal_low,
+    })
 }
 
 fn dispatch_reversible_band(
@@ -509,8 +625,10 @@ fn dispatch_reversible_band(
         width: geometry.width,
         height: geometry.height,
         block_cols: geometry.block_cols,
+        blocks_per_item: geometry.blocks_per_item,
         band_width: geometry.band_width,
         band_height: geometry.band_height,
+        output_stride: geometry.output_stride,
         vertical_low: u32::from(geometry.vertical_low),
         horizontal_low: u32::from(geometry.horizontal_low),
     };
@@ -524,7 +642,7 @@ fn dispatch_reversible_band(
         MTLSize {
             width: u64::from(geometry.band_width),
             height: u64::from(geometry.band_height),
-            depth: 1,
+            depth: u64::from(geometry.batch_count),
         },
         MTLSize {
             width: 16,
@@ -603,6 +721,45 @@ fn validate_grid(
         return Err(MetalTranscodeError::UnsupportedJob(unsupported_grid));
     }
     Ok(())
+}
+
+fn validate_reversible_batch_geometry(
+    jobs: &[DctGridToReversibleDwt53Job<'_>],
+) -> Result<(), MetalTranscodeError> {
+    let Some(first) = jobs.first() else {
+        return Ok(());
+    };
+
+    for job in jobs {
+        validate_grid(
+            job.dequantized_blocks.len(),
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+            METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+        )?;
+
+        if job.block_cols != first.block_cols
+            || job.block_rows != first.block_rows
+            || job.width != first.width
+            || job.height != first.height
+        {
+            return Err(MetalTranscodeError::UnsupportedJob(
+                METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn checked_batch_len(value_len: usize, batch_count: usize) -> Result<usize, MetalTranscodeError> {
+    value_len
+        .checked_mul(batch_count)
+        .ok_or(MetalTranscodeError::UnsupportedJob(
+            METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+        ))
 }
 
 fn u32_param(value: usize, unsupported_grid: &'static str) -> Result<u32, MetalTranscodeError> {

@@ -20,6 +20,8 @@ use signinum_transcode::{JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToH
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
+const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];
+const MAX_REVERSIBLE_BATCH_SAMPLES: usize = 512 * 512 * 512;
 
 const DIRECT_BENCH_MARKERS: [&str; 8] = [
     "scalar_224x224",
@@ -41,6 +43,20 @@ const REVERSIBLE_BENCH_MARKERS: [&str; 8] = [
     "metal_explicit_1024x1024",
     "rayon_2048x2048",
     "metal_explicit_2048x2048",
+];
+
+const REVERSIBLE_BATCH_BENCH_MARKERS: [&str; 11] = [
+    "reversible_dct53_batch_metal_projection",
+    "batch_1",
+    "batch_8",
+    "batch_32",
+    "batch_128",
+    "batch_512",
+    "rayon_224x224_batch_1",
+    "metal_explicit_224x224_batch_1",
+    "rayon_512x512_batch_512",
+    "rayon_1024x1024_batch_128",
+    "rayon_2048x2048_batch_32",
 ];
 
 const WSI_FIXTURES: [WsiFixtureSpec; 12] = [
@@ -299,6 +315,91 @@ fn bench_reversible_dct53_projection(c: &mut Criterion) {
             );
         } else {
             eprintln!("skipping metal_explicit_{dim}x{dim} benchmark: {METAL_UNAVAILABLE}");
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_reversible_dct53_batch_projection(c: &mut Criterion) {
+    black_box(REVERSIBLE_BATCH_BENCH_MARKERS);
+    let mut group = c.benchmark_group("reversible_dct53_batch_metal_projection");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for dim in WSI_DIMS {
+        for batch_size in REVERSIBLE_BATCH_SIZES {
+            let total_samples = dim.saturating_mul(dim).saturating_mul(batch_size);
+            if total_samples > MAX_REVERSIBLE_BATCH_SAMPLES {
+                continue;
+            }
+
+            let block_cols = dim / 8;
+            let block_rows = dim / 8;
+            let batch_blocks: Vec<_> = (0..batch_size)
+                .map(|idx| {
+                    let offset =
+                        i16::try_from(idx.saturating_mul(3)).expect("benchmark offset fits i16");
+                    structured_i16_blocks_with_offset(block_cols, block_rows, offset)
+                })
+                .collect();
+            let jobs: Vec<_> = batch_blocks
+                .iter()
+                .map(|blocks| DctGridToReversibleDwt53Job {
+                    dequantized_blocks: blocks,
+                    block_cols,
+                    block_rows,
+                    width: dim,
+                    height: dim,
+                })
+                .collect();
+
+            group.throughput(Throughput::Elements(total_samples as u64));
+
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("rayon_{dim}x{dim}_batch_{batch_size}")),
+                &jobs,
+                |b, jobs| {
+                    let mut accelerator = RayonReversibleDwt53Accelerator::default();
+                    b.iter(|| {
+                        let mut outputs = Vec::with_capacity(jobs.len());
+                        for job in jobs {
+                            outputs.push(
+                                accelerator
+                                    .dct_grid_to_reversible_dwt53(black_box(*job))
+                                    .expect("rayon reversible 5/3 batch item succeeds")
+                                    .expect("rayon handles reversible 5/3 batch item"),
+                            );
+                        }
+                        black_box(outputs);
+                    });
+                },
+            );
+
+            if explicit_metal_accepts_reversible_53_batch(&jobs) {
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(format!(
+                        "metal_explicit_{dim}x{dim}_batch_{batch_size}"
+                    )),
+                    &jobs,
+                    |b, jobs| {
+                        let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                        b.iter(|| {
+                            black_box(
+                                accelerator
+                                    .dct_grid_to_reversible_dwt53_batch(black_box(jobs))
+                                    .expect("explicit Metal reversible 5/3 batch succeeds")
+                                    .expect("explicit Metal handles benchmark batch"),
+                            );
+                        });
+                    },
+                );
+            } else {
+                eprintln!(
+                    "skipping metal_explicit_{dim}x{dim}_batch_{batch_size} benchmark: \
+                     {METAL_UNAVAILABLE}"
+                );
+            }
         }
     }
 
@@ -583,6 +684,14 @@ fn explicit_metal_accepts_reversible_53(job: DctGridToReversibleDwt53Job<'_>) ->
     matches!(accelerator.dct_grid_to_reversible_dwt53(job), Ok(Some(_)))
 }
 
+fn explicit_metal_accepts_reversible_53_batch(jobs: &[DctGridToReversibleDwt53Job<'_>]) -> bool {
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    matches!(
+        accelerator.dct_grid_to_reversible_dwt53_batch(jobs),
+        Ok(Some(_))
+    )
+}
+
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
@@ -601,15 +710,23 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
 }
 
 fn structured_i16_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
+    structured_i16_blocks_with_offset(block_cols, block_rows, 0)
+}
+
+fn structured_i16_blocks_with_offset(
+    block_cols: usize,
+    block_rows: usize,
+    base_offset: i16,
+) -> Vec<[i16; 64]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
         for block_x in 0..block_cols {
             let mut block = [0i16; 64];
-            let dc_offset =
+            let block_offset =
                 i16::try_from(block_x * 19 + block_y * 23).expect("fixture offset fits i16");
             let x_offset = i16::try_from(block_x).expect("fixture x offset fits i16");
             let y_offset = i16::try_from(block_y).expect("fixture y offset fits i16");
-            block[0] = 384 + dc_offset;
+            block[0] = 384 + base_offset + block_offset;
             block[1] = -17 + x_offset;
             block[8] = 11 - y_offset;
             block[19] = 7;
@@ -629,6 +746,10 @@ criterion_group!(
     bench_reversible_dct53_projection
 );
 criterion_group!(
+    reversible_dct53_batch_metal_projection,
+    bench_reversible_dct53_batch_projection
+);
+criterion_group!(
     jpeg_to_htj2k_wsi_integer_53,
     bench_jpeg_to_htj2k_wsi_integer_53
 );
@@ -637,6 +758,7 @@ criterion_main!(
     dct53_metal_projection,
     dct97_metal_projection,
     reversible_dct53_metal_projection,
+    reversible_dct53_batch_metal_projection,
     jpeg_to_htj2k_wsi_53,
     jpeg_to_htj2k_wsi_integer_53,
     jpeg_to_htj2k_wsi_97
