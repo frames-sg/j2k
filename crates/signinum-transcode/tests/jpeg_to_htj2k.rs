@@ -5,7 +5,9 @@ use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use signinum_jpeg::{JpegError, SofKind};
-use signinum_transcode::{jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions};
+use signinum_transcode::{
+    jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+};
 use std::{
     env, fs,
     path::PathBuf,
@@ -252,6 +254,35 @@ fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
     assert_eq!(metrics.total, 384);
     assert_eq!(metrics.exact_matches, 384);
     assert_eq!(metrics.max_abs_error, 0);
+}
+
+#[test]
+fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
+    let larger_jpeg =
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let smaller_jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::default();
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+
+    let larger = transcoder
+        .transcode(larger_jpeg, &options)
+        .expect("stateful transcode accepts 4:2:0 JPEG");
+    let capacity_after_larger = transcoder.dct_block_scratch_capacity();
+    assert!(capacity_after_larger >= 4);
+
+    let smaller = transcoder
+        .transcode(smaller_jpeg, &options)
+        .expect("stateful transcode accepts grayscale JPEG");
+    let stateless =
+        jpeg_to_htj2k(smaller_jpeg, &options).expect("stateless transcode accepts grayscale JPEG");
+
+    assert_eq!(larger.report.component_count, 3);
+    assert_eq!(smaller.report.component_count, 1);
+    assert_eq!(
+        transcoder.dct_block_scratch_capacity(),
+        capacity_after_larger
+    );
+    assert_eq!(smaller.codestream, stateless.codestream);
 }
 
 fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
