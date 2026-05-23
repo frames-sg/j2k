@@ -15,6 +15,10 @@ use signinum_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent,
 };
 
+use crate::accelerator::{
+    CpuOnlyDctToWaveletStageAccelerator, DctGridToDwt53Job, DctGridToDwt97Job,
+    DctToWaveletStageAccelerator,
+};
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
     linearized_53_2d_from_plane, Dct53GridError, Dct53GridScratch, Dwt53TwoDimensional,
@@ -45,19 +49,42 @@ pub struct JpegToHtj2kOptions {
 
 impl Default for JpegToHtj2kOptions {
     fn default() -> Self {
+        Self::lossless_53()
+    }
+}
+
+impl JpegToHtj2kOptions {
+    /// Options for the default reversible 5/3 HTJ2K coefficient path.
+    #[must_use]
+    pub fn lossless_53() -> Self {
         Self {
-            encode_options: EncodeOptions {
-                num_decomposition_levels: 1,
-                reversible: true,
-                use_ht_block_coding: true,
-                use_mct: false,
-                validate_high_throughput_codestream: false,
-                ..EncodeOptions::default()
-            },
+            encode_options: transcode_encode_options(true),
             coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
             validate_against_float_reference: false,
             validate_against_integer_reference: false,
         }
+    }
+
+    /// Options for the irreversible 9/7 HTJ2K float-linear coefficient path.
+    #[must_use]
+    pub fn lossy_97() -> Self {
+        Self {
+            encode_options: transcode_encode_options(false),
+            coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
+            validate_against_float_reference: false,
+            validate_against_integer_reference: false,
+        }
+    }
+}
+
+fn transcode_encode_options(reversible: bool) -> EncodeOptions {
+    EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible,
+        use_ht_block_coding: true,
+        use_mct: false,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
     }
 }
 
@@ -98,7 +125,22 @@ impl JpegToHtj2kTranscoder {
         bytes: &[u8],
         options: &JpegToHtj2kOptions,
     ) -> Result<EncodedTranscode, JpegToHtj2kError> {
-        jpeg_to_htj2k_with_scratch(bytes, options, &mut self.scratch)
+        let mut accelerator = CpuOnlyDctToWaveletStageAccelerator;
+        self.transcode_with_accelerator(bytes, options, &mut accelerator)
+    }
+
+    /// Transcode with an optional stage accelerator.
+    ///
+    /// Accelerators may handle the direct float DCT-grid projection stages and
+    /// return `None` for scalar fallback. Integer-direct 5/3 remains scalar in
+    /// this experimental API.
+    pub fn transcode_with_accelerator<A: DctToWaveletStageAccelerator>(
+        &mut self,
+        bytes: &[u8],
+        options: &JpegToHtj2kOptions,
+        accelerator: &mut A,
+    ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+        jpeg_to_htj2k_with_scratch(bytes, options, &mut self.scratch, accelerator)
     }
 
     /// Current capacity of the reusable DCT block conversion scratch.
@@ -235,6 +277,8 @@ pub enum JpegToHtj2kError {
     /// DCT block grid metadata did not cover the component dimensions for the
     /// 9/7 path.
     Grid97(Dct97GridError),
+    /// Optional transform acceleration failed.
+    Accelerator(&'static str),
     /// Validation metric inputs were inconsistent.
     Metrics(MetricsLengthError),
     /// Validation encountered an out-of-range or non-finite coefficient.
@@ -250,6 +294,7 @@ impl fmt::Display for JpegToHtj2kError {
             Self::Unsupported(reason) => write!(f, "unsupported transcode input: {reason}"),
             Self::Grid(err) => write!(f, "DCT grid transform failed: {err}"),
             Self::Grid97(err) => write!(f, "DCT grid transform failed: {err}"),
+            Self::Accelerator(reason) => write!(f, "transform accelerator failed: {reason}"),
             Self::Metrics(err) => write!(f, "validation metrics failed: {err}"),
             Self::Validation(reason) => write!(f, "validation failed: {reason}"),
             Self::Encode(reason) => write!(f, "HTJ2K encode failed: {reason}"),
@@ -264,7 +309,9 @@ impl std::error::Error for JpegToHtj2kError {
             Self::Grid(err) => Some(err),
             Self::Grid97(err) => Some(err),
             Self::Metrics(err) => Some(err),
-            Self::Unsupported(_) | Self::Validation(_) | Self::Encode(_) => None,
+            Self::Unsupported(_) | Self::Accelerator(_) | Self::Validation(_) | Self::Encode(_) => {
+                None
+            }
         }
     }
 }
@@ -306,11 +353,14 @@ pub fn jpeg_to_htj2k(
     JpegToHtj2kTranscoder::default().transcode(bytes, options)
 }
 
-fn jpeg_to_htj2k_with_scratch(
+fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    validate_transcode_options(options)?;
+
     let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
     let extract_us = extract_start.elapsed().as_micros();
@@ -351,6 +401,7 @@ fn jpeg_to_htj2k_with_scratch(
         decomposition_levels,
         options,
         scratch,
+        accelerator,
     )?;
     let transform_us = transform_start.elapsed().as_micros();
 
@@ -406,6 +457,40 @@ fn jpeg_to_htj2k_with_scratch(
             encode_us,
         },
     })
+}
+
+fn validate_transcode_options(options: &JpegToHtj2kOptions) -> Result<(), JpegToHtj2kError> {
+    if !options.encode_options.use_ht_block_coding {
+        return Err(JpegToHtj2kError::Unsupported(
+            "jpeg_to_htj2k requires HT block coding",
+        ));
+    }
+    if options.encode_options.use_mct {
+        return Err(JpegToHtj2kError::Unsupported(
+            "jpeg_to_htj2k requires use_mct=false because JPEG components stay in native color space",
+        ));
+    }
+
+    match (options.coefficient_path, options.encode_options.reversible) {
+        (
+            JpegToHtj2kCoefficientPath::IntegerDirect53
+            | JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+            true,
+        )
+        | (JpegToHtj2kCoefficientPath::FloatDirectLinear97, false) => Ok(()),
+        (
+            JpegToHtj2kCoefficientPath::IntegerDirect53
+            | JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+            false,
+        ) => Err(JpegToHtj2kError::Unsupported(
+            "5/3 coefficient path requires reversible HTJ2K encode",
+        )),
+        (JpegToHtj2kCoefficientPath::FloatDirectLinear97, true) => {
+            Err(JpegToHtj2kError::Unsupported(
+                "9/7 coefficient path requires irreversible HTJ2K encode",
+            ))
+        }
+    }
 }
 
 struct ComponentTranscodeBatch {
@@ -469,6 +554,7 @@ fn transcode_component_batch(
     decomposition_levels: u8,
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
     if matches!(
         options.coefficient_path,
@@ -495,6 +581,7 @@ fn transcode_component_batch(
             decomposition_levels,
             options,
             scratch,
+            accelerator,
         )?;
         match component_result.precomputed {
             PrecomputedComponent::Dwt53(precomputed) => precomputed_53.push(precomputed),
@@ -550,6 +637,7 @@ fn component_to_precomputed_htj2k(
     decomposition_levels: u8,
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let (dwt, actual_coefficients) = match options.coefficient_path {
         JpegToHtj2kCoefficientPath::IntegerDirect53 => {
@@ -565,8 +653,12 @@ fn component_to_precomputed_htj2k(
             )
         }
         JpegToHtj2kCoefficientPath::FloatDirectLinear53 => {
-            let wavelet =
-                float_direct_wavelet_from_component(component, decomposition_levels, scratch)?;
+            let wavelet = float_direct_wavelet_from_component(
+                component,
+                decomposition_levels,
+                scratch,
+                accelerator,
+            )?;
             (
                 PrecomputedComponent::Dwt53(PrecomputedHtj2k53Component {
                     x_rsiz,
@@ -581,8 +673,12 @@ fn component_to_precomputed_htj2k(
             )
         }
         JpegToHtj2kCoefficientPath::FloatDirectLinear97 => {
-            let wavelet =
-                float_direct_97_wavelet_from_component(component, decomposition_levels, scratch)?;
+            let wavelet = float_direct_97_wavelet_from_component(
+                component,
+                decomposition_levels,
+                scratch,
+                accelerator,
+            )?;
             (
                 PrecomputedComponent::Dwt97(PrecomputedHtj2k97Component {
                     x_rsiz,
@@ -655,17 +751,31 @@ fn float_direct_wavelet_from_component(
     component: &JpegDctComponent,
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<ComponentWavelet, JpegToHtj2kError> {
     dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
     let blocks = &scratch.dct_blocks_f64;
-    let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+    let job = DctGridToDwt53Job {
         blocks,
-        component.block_cols as usize,
-        component.block_rows as usize,
-        component.width as usize,
-        component.height as usize,
-        &mut scratch.dct53_grid,
-    )?;
+        block_cols: component.block_cols as usize,
+        block_rows: component.block_rows as usize,
+        width: component.width as usize,
+        height: component.height as usize,
+    };
+    let bands = match accelerator
+        .dct_grid_to_dwt53(job)
+        .map_err(JpegToHtj2kError::Accelerator)?
+    {
+        Some(bands) => bands,
+        None => dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+            blocks,
+            component.block_cols as usize,
+            component.block_rows as usize,
+            component.width as usize,
+            component.height as usize,
+            &mut scratch.dct53_grid,
+        )?,
+    };
     Ok(decompose_from_first_level(
         bands,
         usize::from(decomposition_levels),
@@ -676,17 +786,31 @@ fn float_direct_97_wavelet_from_component(
     component: &JpegDctComponent,
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<ComponentWavelet97, JpegToHtj2kError> {
     dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
     let blocks = &scratch.dct_blocks_f64;
-    let bands = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+    let job = DctGridToDwt97Job {
         blocks,
-        component.block_cols as usize,
-        component.block_rows as usize,
-        component.width as usize,
-        component.height as usize,
-        &mut scratch.dct97_grid,
-    )?;
+        block_cols: component.block_cols as usize,
+        block_rows: component.block_rows as usize,
+        width: component.width as usize,
+        height: component.height as usize,
+    };
+    let bands = match accelerator
+        .dct_grid_to_dwt97(job)
+        .map_err(JpegToHtj2kError::Accelerator)?
+    {
+        Some(bands) => bands,
+        None => dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+            blocks,
+            component.block_cols as usize,
+            component.block_rows as usize,
+            component.width as usize,
+            component.height as usize,
+            &mut scratch.dct97_grid,
+        )?,
+    };
     Ok(decompose_97_from_first_level(
         bands,
         usize::from(decomposition_levels),
