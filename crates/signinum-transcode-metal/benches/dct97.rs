@@ -6,11 +6,16 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
-use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+use signinum_transcode::accelerator::{
+    DctGridToDwt53Job, DctGridToDwt97Job, DctToWaveletStageAccelerator,
+};
+use signinum_transcode::dct53_2d::{
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch,
+};
 use signinum_transcode::dct97_2d::{
     dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch,
 };
-use signinum_transcode::{JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use signinum_transcode::{JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
@@ -165,6 +170,70 @@ fn bench_dct97_projection(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_dct53_projection(c: &mut Criterion) {
+    black_box(DIRECT_BENCH_MARKERS);
+    let mut group = c.benchmark_group("dct53_metal_projection");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for dim in WSI_DIMS {
+        let block_cols = dim / 8;
+        let block_rows = dim / 8;
+        let blocks = structured_blocks(block_cols, block_rows);
+        let job = DctGridToDwt53Job {
+            blocks: &blocks,
+            block_cols,
+            block_rows,
+            width: dim,
+            height: dim,
+        };
+        group.throughput(Throughput::Elements((dim * dim) as u64));
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("scalar_{dim}x{dim}")),
+            &job,
+            |b, job| {
+                let mut scratch = Dct53GridScratch::default();
+                b.iter(|| {
+                    black_box(
+                        dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+                            black_box(job.blocks),
+                            job.block_cols,
+                            job.block_rows,
+                            job.width,
+                            job.height,
+                            &mut scratch,
+                        )
+                        .expect("scalar 5/3 projection accepts fixture grid"),
+                    );
+                });
+            },
+        );
+
+        if explicit_metal_accepts_53(job) {
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("metal_explicit_{dim}x{dim}")),
+                &job,
+                |b, job| {
+                    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                    b.iter(|| {
+                        black_box(
+                            accelerator
+                                .dct_grid_to_dwt53(black_box(*job))
+                                .expect("explicit Metal 5/3 projection succeeds")
+                                .expect("explicit Metal handles benchmark job"),
+                        );
+                    });
+                },
+            );
+        } else {
+            eprintln!("skipping metal_explicit_{dim}x{dim} benchmark: {METAL_UNAVAILABLE}");
+        }
+    }
+
+    group.finish();
+}
+
 fn bench_jpeg_to_htj2k_wsi(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_97");
     group.sample_size(10);
@@ -203,6 +272,65 @@ fn bench_jpeg_to_htj2k_wsi(c: &mut Criterion) {
                                     &mut accelerator,
                                 )
                                 .expect("Metal JPEG to HTJ2K 9/7 transcode succeeds"),
+                        );
+                    });
+                },
+            );
+        } else {
+            eprintln!(
+                "skipping {}/metal_explicit benchmark: {METAL_UNAVAILABLE}",
+                spec.name
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_53");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for spec in WSI_FIXTURES {
+        let jpeg = encoded_fixture(spec);
+        group.throughput(Throughput::Bytes(jpeg.len() as u64));
+
+        group.bench_with_input(BenchmarkId::new(spec.name, "scalar"), &jpeg, |b, jpeg| {
+            let mut transcoder = JpegToHtj2kTranscoder::default();
+            let options = JpegToHtj2kOptions {
+                coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+                ..JpegToHtj2kOptions::lossless_53()
+            };
+            b.iter(|| {
+                black_box(
+                    transcoder
+                        .transcode(black_box(jpeg), &options)
+                        .expect("scalar JPEG to HTJ2K 5/3 transcode succeeds"),
+                );
+            });
+        });
+
+        if metal_available() {
+            group.bench_with_input(
+                BenchmarkId::new(spec.name, "metal_explicit"),
+                &jpeg,
+                |b, jpeg| {
+                    let mut transcoder = JpegToHtj2kTranscoder::default();
+                    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                    let options = JpegToHtj2kOptions {
+                        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+                        ..JpegToHtj2kOptions::lossless_53()
+                    };
+                    b.iter(|| {
+                        black_box(
+                            transcoder
+                                .transcode_with_accelerator(
+                                    black_box(jpeg),
+                                    &options,
+                                    &mut accelerator,
+                                )
+                                .expect("Metal JPEG to HTJ2K 5/3 transcode succeeds"),
                         );
                     });
                 },
@@ -308,6 +436,11 @@ fn explicit_metal_accepts(job: DctGridToDwt97Job<'_>) -> bool {
     matches!(accelerator.dct_grid_to_dwt97(job), Ok(Some(_)))
 }
 
+fn explicit_metal_accepts_53(job: DctGridToDwt53Job<'_>) -> bool {
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    matches!(accelerator.dct_grid_to_dwt53(job), Ok(Some(_)))
+}
+
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
@@ -325,6 +458,13 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
     blocks
 }
 
+criterion_group!(dct53_metal_projection, bench_dct53_projection);
 criterion_group!(dct97_metal_projection, bench_dct97_projection);
+criterion_group!(jpeg_to_htj2k_wsi_53, bench_jpeg_to_htj2k_wsi_53);
 criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
-criterion_main!(dct97_metal_projection, jpeg_to_htj2k_wsi_97);
+criterion_main!(
+    dct53_metal_projection,
+    dct97_metal_projection,
+    jpeg_to_htj2k_wsi_53,
+    jpeg_to_htj2k_wsi_97
+);

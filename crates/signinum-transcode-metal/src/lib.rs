@@ -2,8 +2,8 @@
 
 //! Metal acceleration for coefficient-domain JPEG to HTJ2K transcode stages.
 //!
-//! The first supported target is the direct DCT-grid to one-level 9/7 wavelet
-//! projection used by `signinum-transcode`'s lossy HTJ2K path. CPU scalar code
+//! The supported targets are direct DCT-grid to one-level 5/3 and 9/7 wavelet
+//! projections used by `signinum-transcode`'s HTJ2K paths. CPU scalar code
 //! remains the oracle and fallback.
 
 #[cfg(target_os = "macos")]
@@ -14,7 +14,10 @@ pub mod weights;
 
 use core::fmt;
 
-use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+use signinum_transcode::accelerator::{
+    DctGridToDwt53Job, DctGridToDwt97Job, DctToWaveletStageAccelerator,
+};
+use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
 /// Stable message returned when Metal is unavailable.
@@ -57,6 +60,8 @@ impl std::error::Error for MetalTranscodeError {}
 pub struct MetalDctToWaveletStageAccelerator {
     mode: MetalDispatchMode,
     min_auto_samples: usize,
+    dwt53_attempts: usize,
+    dwt53_dispatches: usize,
     dwt97_attempts: usize,
     dwt97_dispatches: usize,
 }
@@ -75,6 +80,8 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Explicit,
             min_auto_samples: 0,
+            dwt53_attempts: 0,
+            dwt53_dispatches: 0,
             dwt97_attempts: 0,
             dwt97_dispatches: 0,
         }
@@ -87,9 +94,23 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Auto,
             min_auto_samples: DEFAULT_AUTO_MIN_SAMPLES,
+            dwt53_attempts: 0,
+            dwt53_dispatches: 0,
             dwt97_attempts: 0,
             dwt97_dispatches: 0,
         }
+    }
+
+    /// Number of 5/3 projection jobs offered to this accelerator.
+    #[must_use]
+    pub const fn dwt53_attempts(&self) -> usize {
+        self.dwt53_attempts
+    }
+
+    /// Number of 5/3 projection jobs handled by Metal.
+    #[must_use]
+    pub const fn dwt53_dispatches(&self) -> usize {
+        self.dwt53_dispatches
     }
 
     /// Number of 9/7 projection jobs offered to this accelerator.
@@ -112,6 +133,42 @@ impl Default for MetalDctToWaveletStageAccelerator {
 }
 
 impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
+    fn dct_grid_to_dwt53(
+        &mut self,
+        job: DctGridToDwt53Job<'_>,
+    ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
+        self.dwt53_attempts = self.dwt53_attempts.saturating_add(1);
+
+        if self.mode == MetalDispatchMode::Auto && job.width * job.height < self.min_auto_samples {
+            return Ok(None);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            match self.mode {
+                MetalDispatchMode::Explicit => {
+                    Err(MetalTranscodeError::MetalUnavailable.as_static_str())
+                }
+                MetalDispatchMode::Auto => Ok(None),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match metal::dispatch_dct_grid_to_dwt53(job) {
+                Ok(output) => {
+                    self.dwt53_dispatches = self.dwt53_dispatches.saturating_add(1);
+                    Ok(Some(output))
+                }
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
+            }
+        }
+    }
+
     fn dct_grid_to_dwt97(
         &mut self,
         job: DctGridToDwt97Job<'_>,

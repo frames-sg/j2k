@@ -5,6 +5,8 @@ const DCT97_BENCH: &str = include_str!("../benches/dct97.rs");
 #[test]
 fn dct97_benchmark_groups_are_stable() {
     for expected in [
+        "dct53_metal_projection",
+        "jpeg_to_htj2k_wsi_53",
         "dct97_metal_projection",
         "scalar_224x224",
         "metal_explicit_224x224",

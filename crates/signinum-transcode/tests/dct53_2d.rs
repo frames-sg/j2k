@@ -84,6 +84,31 @@ fn dct8x8_grid_scratch_reuses_weight_rows_for_same_geometry() {
     assert!(repeated.max_abs_diff(&stateless) <= 1.0e-9);
 }
 
+#[test]
+fn dct8x8_grid_scratch_uses_sparse_weight_rows_for_wsi_tile() {
+    let dim = 224_usize;
+    let block_cols = dim / 8;
+    let block_rows = dim / 8;
+    let blocks = vec![[[0.0; 8]; 8]; block_cols * block_rows];
+    let mut scratch = Dct53GridScratch::default();
+
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+        &blocks,
+        block_cols,
+        block_rows,
+        dim,
+        dim,
+        &mut scratch,
+    )
+    .expect("valid DCT grid");
+
+    assert!(
+        scratch.weight_row_capacity() <= dim * 10,
+        "5/3 grid weights should stay sparse at WSI tile sizes, got capacity {}",
+        scratch.weight_row_capacity()
+    );
+}
+
 fn dc_only_block() -> [[f64; 8]; 8] {
     let mut block = [[0.0; 8]; 8];
     block[0][0] = 384.0;
