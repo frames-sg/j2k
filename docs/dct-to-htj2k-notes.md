@@ -63,6 +63,21 @@ These numbers only measure scalar packing cost. They are not a final SIMD layout
 decision; row-window packing is currently the cheapest scalar conversion
 candidate, while SoA remains a candidate for vectorized coefficient-lane work.
 
+## Reusable Scratch
+
+`signinum_transcode::JpegToHtj2kTranscoder` is the stateful API for repeated tile
+work. It currently reuses the DCT block conversion buffer across calls while
+preserving the same output path as the stateless `jpeg_to_htj2k` convenience
+function. The benchmark suite includes `grayscale_8x8_stateful_reuse` under the
+`jpeg_to_htj2k` group so future allocation/layout changes can be measured
+against the stateless path.
+
+Initial 2026-05-23 tiny-fixture timing is effectively flat: stateless
+`grayscale_8x8` measured 90.493-92.108 us and stateful
+`grayscale_8x8_stateful_reuse` measured 91.675-92.858 us. This is not a
+performance claim; it mainly verifies the benchmark surface and shows that DCT
+conversion scratch is not the dominant cost for an 8x8 tile.
+
 ## Open Issues
 
 - The production path still emits rounded float-direct coefficients. The

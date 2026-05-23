@@ -16,7 +16,7 @@ use signinum_transcode::dct53_2d::{
 use signinum_transcode::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
-use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions};
+use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 
 fn bench_dct53_math(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
@@ -152,6 +152,14 @@ fn bench_jpeg_paths(c: &mut Criterion) {
         b.iter(|| {
             jpeg_to_htj2k(black_box(jpeg_gray), black_box(&transcode_options))
                 .expect("transcode grayscale JPEG to HTJ2K");
+        });
+    });
+    let mut stateful_transcoder = JpegToHtj2kTranscoder::default();
+    jpeg_to_htj2k_group.bench_function("grayscale_8x8_stateful_reuse", |b| {
+        b.iter(|| {
+            stateful_transcoder
+                .transcode(black_box(jpeg_gray), black_box(&transcode_options))
+                .expect("stateful transcode grayscale JPEG to HTJ2K");
         });
     });
     let jpeg_gray_multiblock = grayscale_jpeg(13, 11);

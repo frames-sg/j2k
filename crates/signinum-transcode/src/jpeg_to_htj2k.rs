@@ -52,6 +52,42 @@ impl Default for JpegToHtj2kOptions {
     }
 }
 
+/// Reusable experimental JPEG-to-HTJ2K transcoder state.
+///
+/// Create one value per worker thread and reuse it across many tiles to keep
+/// scratch buffers allocated between calls. The scalar math and output are the
+/// same as [`jpeg_to_htj2k`].
+#[derive(Debug, Default)]
+pub struct JpegToHtj2kTranscoder {
+    scratch: JpegToHtj2kScratch,
+}
+
+impl JpegToHtj2kTranscoder {
+    /// Transcode a constrained baseline JPEG tile into HTJ2K using this
+    /// instance's reusable scratch buffers.
+    pub fn transcode(
+        &mut self,
+        bytes: &[u8],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+        jpeg_to_htj2k_with_scratch(bytes, options, &mut self.scratch)
+    }
+
+    /// Current capacity of the reusable DCT block conversion scratch.
+    ///
+    /// This is exposed for benchmark and validation harnesses while the API is
+    /// experimental.
+    #[must_use]
+    pub fn dct_block_scratch_capacity(&self) -> usize {
+        self.scratch.dct_blocks_f64.capacity()
+    }
+}
+
+#[derive(Debug, Default)]
+struct JpegToHtj2kScratch {
+    dct_blocks_f64: Vec<[[f64; 8]; 8]>,
+}
+
 /// Encoded transcode output and validation/report metadata.
 #[derive(Debug, Clone)]
 pub struct EncodedTranscode {
@@ -182,6 +218,14 @@ pub fn jpeg_to_htj2k(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    JpegToHtj2kTranscoder::default().transcode(bytes, options)
+}
+
+fn jpeg_to_htj2k_with_scratch(
+    bytes: &[u8],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+) -> Result<EncodedTranscode, JpegToHtj2kError> {
     let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
     let extract_us = extract_start.elapsed().as_micros();
@@ -221,6 +265,7 @@ pub fn jpeg_to_htj2k(
         &component_sampling,
         decomposition_levels,
         options,
+        scratch,
     )?;
     let transform_us = transform_start.elapsed().as_micros();
 
@@ -294,6 +339,7 @@ fn transcode_component_batch(
     component_sampling: &[(u8, u8)],
     decomposition_levels: u8,
     options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
     let mut precomputed_components = Vec::with_capacity(components.len());
     let mut float_validation_actual = Vec::new();
@@ -309,6 +355,7 @@ fn transcode_component_batch(
             decomposition_levels,
             options.validate_against_float_reference,
             options.validate_against_integer_reference,
+            scratch,
         )?;
         precomputed_components.push(component_result.precomputed);
         if let Some((actual, expected)) = component_result.float_validation_coefficients {
@@ -352,10 +399,12 @@ fn component_to_precomputed_htj2k(
     decomposition_levels: u8,
     validate_against_float_reference: bool,
     validate_against_integer_reference: bool,
+    scratch: &mut JpegToHtj2kScratch,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
-    let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
+    dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
+    let blocks = &scratch.dct_blocks_f64;
     let bands = dct8x8_blocks_to_dwt53_float_linear(
-        &blocks,
+        blocks,
         component.block_cols as usize,
         component.block_rows as usize,
         component.width as usize,
@@ -364,7 +413,7 @@ fn component_to_precomputed_htj2k(
     let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
     let float_validation_coefficients = if validate_against_float_reference {
         let first_reference_level = dct8x8_blocks_then_dwt53_float(
-            &blocks,
+            blocks,
             component.block_cols as usize,
             component.block_rows as usize,
             component.width as usize,
@@ -765,15 +814,14 @@ fn component_sampling_for_jpeg(
         .collect()
 }
 
-fn dct_blocks_to_8x8_f64(blocks: &[[i16; 64]]) -> Vec<[[f64; 8]; 8]> {
-    blocks
-        .iter()
-        .map(|block| {
-            let mut output = [[0.0; 8]; 8];
-            for (idx, &coefficient) in block.iter().enumerate() {
-                output[idx / 8][idx % 8] = f64::from(coefficient);
-            }
-            output
-        })
-        .collect()
+fn dct_blocks_to_8x8_f64_into(blocks: &[[i16; 64]], output: &mut Vec<[[f64; 8]; 8]>) {
+    output.clear();
+    output.reserve(blocks.len());
+    for block in blocks {
+        let mut converted = [[0.0; 8]; 8];
+        for (idx, &coefficient) in block.iter().enumerate() {
+            converted[idx / 8][idx % 8] = f64::from(coefficient);
+        }
+        output.push(converted);
+    }
 }

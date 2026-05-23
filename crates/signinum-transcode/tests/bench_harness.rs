@@ -13,6 +13,7 @@ fn dct53_benchmark_group_names_are_stable() {
         "dct53_layout_candidates",
         "jpeg_dct_extract",
         "jpeg_to_htj2k",
+        "grayscale_8x8_stateful_reuse",
     ] {
         assert!(
             DCT53_BENCH.contains(group_name),

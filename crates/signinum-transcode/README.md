@@ -22,6 +22,11 @@ It preserves native component sampling for grayscale, 4:4:4, 4:2:2, and 4:2:0
 inputs. Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain
 out of scope.
 
+Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
+thread; it keeps conversion scratch buffers allocated between calls. The
+`jpeg_to_htj2k` function remains a stateless convenience wrapper over the same
+scalar path.
+
 ## Promotion Gate
 
 Do not expose this crate as a stable conversion API until all of the following
