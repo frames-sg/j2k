@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+use signinum_transcode_metal::weights::Dwt97WeightRows;
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
 use signinum_transcode_metal::MetalTranscodeError;
@@ -44,4 +45,42 @@ fn auto_metal_falls_back_for_tiny_jobs() {
     assert!(output.is_none());
     assert_eq!(accelerator.dwt97_attempts(), 1);
     assert_eq!(accelerator.dwt97_dispatches(), 0);
+}
+
+#[test]
+fn weight_rows_match_expected_geometry_for_supported_lengths() {
+    for sample_len in [8_usize, 13, 16] {
+        let rows = Dwt97WeightRows::for_len(sample_len);
+
+        assert_eq!(rows.low.len(), sample_len.div_ceil(2));
+        assert_eq!(rows.high.len(), sample_len / 2);
+        assert!(rows.low.iter().all(|row| row.len() == sample_len));
+        assert!(rows.high.iter().all(|row| row.len() == sample_len));
+        assert!(rows
+            .low
+            .iter()
+            .all(|row| row.iter().any(|&value| value.to_bits() != 0)));
+        assert!(rows
+            .high
+            .iter()
+            .all(|row| row.iter().any(|&value| value.to_bits() != 0)));
+    }
+}
+
+#[test]
+fn weight_rows_are_deterministic() {
+    let first = Dwt97WeightRows::for_len(13);
+    let second = Dwt97WeightRows::for_len(13);
+
+    assert_eq!(f32_rows_to_bits(&first.low), f32_rows_to_bits(&second.low));
+    assert_eq!(
+        f32_rows_to_bits(&first.high),
+        f32_rows_to_bits(&second.high)
+    );
+}
+
+fn f32_rows_to_bits(rows: &[Vec<f32>]) -> Vec<Vec<u32>> {
+    rows.iter()
+        .map(|row| row.iter().map(|value| value.to_bits()).collect())
+        .collect()
 }
