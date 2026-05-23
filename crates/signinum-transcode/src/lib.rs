@@ -5,6 +5,7 @@
 //! The first target is a constrained synthetic proof for mapping one 8-sample
 //! DCT block into one level of the reversible 5/3 wavelet transform.
 
+pub mod corpus_validation;
 pub mod dct53_1d;
 pub mod dct53_2d;
 pub mod dct53_multilevel;
