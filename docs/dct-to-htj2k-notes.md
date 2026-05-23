@@ -33,6 +33,11 @@ JPEG bytes
 - `signinum-j2k-native::encode_precomputed_htj2k_53` validates precomputed
   5/3 band geometry against the component dimensions implied by SIZ
   `XRsiz`/`YRsiz` before the accelerated DWT hook reaches packetization.
+- `signinum-transcode::htj2k_wavelet::WaveletImage53<i32>` now converts to the
+  native precomputed HTJ2K representation after descriptor validation and
+  reference-grid/SIZ sampling checks. This gives the standalone wavelet-band
+  descriptor a direct, tested route into the encoder while keeping the adapter
+  outside both codec crates.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
   decoder acceptance, SIZ component sampling, multilevel output, optional
   integer-reference metrics, and external decoder acceptance when OpenJPEG or

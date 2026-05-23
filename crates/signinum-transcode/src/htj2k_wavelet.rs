@@ -4,6 +4,11 @@
 
 use core::fmt;
 
+use signinum_j2k_native::{
+    J2kForwardDwt53Level, J2kForwardDwt53Output, PrecomputedHtj2k53Component,
+    PrecomputedHtj2k53Image,
+};
+
 /// JPEG 2000 SIZ component sampling factors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentSampling {
@@ -73,6 +78,95 @@ impl<T> WaveletImage53<T> {
         }
 
         Ok(())
+    }
+}
+
+impl WaveletImage53<i32> {
+    /// Convert validated integer 5/3 bands into the precomputed HTJ2K encoder
+    /// representation.
+    pub fn to_precomputed_htj2k_53(
+        &self,
+        reference_width: u32,
+        reference_height: u32,
+    ) -> Result<PrecomputedHtj2k53Image, WaveletToPrecomputedError> {
+        if reference_width == 0 || reference_height == 0 {
+            return Err(WaveletToPrecomputedError::InvalidReferenceDimensions {
+                width: reference_width,
+                height: reference_height,
+            });
+        }
+        self.validate()
+            .map_err(WaveletToPrecomputedError::Validation)?;
+
+        let first = self
+            .components
+            .first()
+            .ok_or(WaveletToPrecomputedError::Validation(
+                WaveletValidationError::NoComponents,
+            ))?;
+        let bit_depth = first.bit_depth;
+        let signed = first.is_signed;
+
+        let mut components = Vec::with_capacity(self.components.len());
+        for (component_index, component) in self.components.iter().enumerate() {
+            if component.bit_depth != bit_depth {
+                return Err(WaveletToPrecomputedError::MixedBitDepth {
+                    component: component_index,
+                    expected: bit_depth,
+                    actual: component.bit_depth,
+                });
+            }
+            if component.is_signed != signed {
+                return Err(WaveletToPrecomputedError::MixedSignedness {
+                    component: component_index,
+                    expected: signed,
+                    actual: component.is_signed,
+                });
+            }
+            let x_rsiz = u8::try_from(component.sampling.x_rsiz).map_err(|_| {
+                WaveletToPrecomputedError::SamplingTooLarge {
+                    component: component_index,
+                    x_rsiz: component.sampling.x_rsiz,
+                    y_rsiz: component.sampling.y_rsiz,
+                }
+            })?;
+            let y_rsiz = u8::try_from(component.sampling.y_rsiz).map_err(|_| {
+                WaveletToPrecomputedError::SamplingTooLarge {
+                    component: component_index,
+                    x_rsiz: component.sampling.x_rsiz,
+                    y_rsiz: component.sampling.y_rsiz,
+                }
+            })?;
+
+            let expected_width = reference_width.div_ceil(u32::from(x_rsiz));
+            let expected_height = reference_height.div_ceil(u32::from(y_rsiz));
+            let actual_width = usize_to_u32(component.width, component_index, "component width")?;
+            let actual_height =
+                usize_to_u32(component.height, component_index, "component height")?;
+            if actual_width != expected_width || actual_height != expected_height {
+                return Err(WaveletToPrecomputedError::ComponentGeometry {
+                    component: component_index,
+                    expected_width,
+                    expected_height,
+                    actual_width,
+                    actual_height,
+                });
+            }
+
+            components.push(PrecomputedHtj2k53Component {
+                x_rsiz,
+                y_rsiz,
+                dwt: component_to_j2k_dwt(component, component_index)?,
+            });
+        }
+
+        Ok(PrecomputedHtj2k53Image {
+            width: reference_width,
+            height: reference_height,
+            bit_depth,
+            signed,
+            components,
+        })
     }
 }
 
@@ -154,6 +248,119 @@ impl fmt::Display for WaveletValidationError {
 
 impl std::error::Error for WaveletValidationError {}
 
+/// Failure while adapting a validated wavelet image to the native precomputed
+/// HTJ2K encoder representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveletToPrecomputedError {
+    /// Wavelet descriptor validation failed.
+    Validation(WaveletValidationError),
+    /// Reference-grid dimensions cannot be zero.
+    InvalidReferenceDimensions { width: u32, height: u32 },
+    /// Component sampling factors exceed the native encoder's current SIZ
+    /// representation.
+    SamplingTooLarge {
+        component: usize,
+        x_rsiz: u16,
+        y_rsiz: u16,
+    },
+    /// Component dimensions do not match the provided reference grid and SIZ
+    /// sampling factors.
+    ComponentGeometry {
+        component: usize,
+        expected_width: u32,
+        expected_height: u32,
+        actual_width: u32,
+        actual_height: u32,
+    },
+    /// Components use different bit depths, but the native precomputed encoder
+    /// currently stores one precision for the image.
+    MixedBitDepth {
+        component: usize,
+        expected: u8,
+        actual: u8,
+    },
+    /// Components use mixed signedness, but the native precomputed encoder
+    /// currently stores one signedness flag for the image.
+    MixedSignedness {
+        component: usize,
+        expected: bool,
+        actual: bool,
+    },
+    /// A wavelet dimension exceeds the native encoder's current u32 geometry.
+    DimensionTooLarge {
+        component: usize,
+        field: &'static str,
+        value: usize,
+    },
+}
+
+impl fmt::Display for WaveletToPrecomputedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Validation(err) => write!(f, "{err}"),
+            Self::InvalidReferenceDimensions { width, height } => {
+                write!(f, "invalid reference-grid dimensions {width}x{height}")
+            }
+            Self::SamplingTooLarge {
+                component,
+                x_rsiz,
+                y_rsiz,
+            } => write!(
+                f,
+                "component {component} sampling XRsiz={x_rsiz}, YRsiz={y_rsiz} exceeds encoder range"
+            ),
+            Self::ComponentGeometry {
+                component,
+                expected_width,
+                expected_height,
+                actual_width,
+                actual_height,
+            } => write!(
+                f,
+                "component {component} is {actual_width}x{actual_height}, expected {expected_width}x{expected_height} from reference grid"
+            ),
+            Self::MixedBitDepth {
+                component,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "component {component} has bit depth {actual}, expected {expected}"
+            ),
+            Self::MixedSignedness {
+                component,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "component {component} signedness is {actual}, expected {expected}"
+            ),
+            Self::DimensionTooLarge {
+                component,
+                field,
+                value,
+            } => write!(
+                f,
+                "component {component} {field} value {value} exceeds encoder range"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WaveletToPrecomputedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Validation(err) => Some(err),
+            Self::InvalidReferenceDimensions { .. }
+            | Self::SamplingTooLarge { .. }
+            | Self::ComponentGeometry { .. }
+            | Self::MixedBitDepth { .. }
+            | Self::MixedSignedness { .. }
+            | Self::DimensionTooLarge { .. } => None,
+        }
+    }
+}
+
 fn validate_component<T>(
     component_index: usize,
     component: &WaveletComponent53<T>,
@@ -225,4 +432,62 @@ fn validate_band<T>(
     }
 
     Ok(())
+}
+
+fn component_to_j2k_dwt(
+    component: &WaveletComponent53<i32>,
+    component_index: usize,
+) -> Result<J2kForwardDwt53Output, WaveletToPrecomputedError> {
+    let mut current_width = component.width;
+    let mut current_height = component.height;
+    let mut levels = Vec::with_capacity(component.levels.len());
+
+    for level in &component.levels {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let high_width = current_width / 2;
+        let high_height = current_height / 2;
+
+        levels.push(J2kForwardDwt53Level {
+            hl: i32_to_f32(&level.hl.coefficients),
+            lh: i32_to_f32(&level.lh.coefficients),
+            hh: i32_to_f32(&level.hh.coefficients),
+            width: usize_to_u32(current_width, component_index, "level width")?,
+            height: usize_to_u32(current_height, component_index, "level height")?,
+            low_width: usize_to_u32(low_width, component_index, "low-pass width")?,
+            low_height: usize_to_u32(low_height, component_index, "low-pass height")?,
+            high_width: usize_to_u32(high_width, component_index, "high-pass width")?,
+            high_height: usize_to_u32(high_height, component_index, "high-pass height")?,
+        });
+
+        current_width = low_width;
+        current_height = low_height;
+    }
+    levels.reverse();
+
+    Ok(J2kForwardDwt53Output {
+        ll: i32_to_f32(&component.final_ll.coefficients),
+        ll_width: usize_to_u32(component.final_ll.width, component_index, "LL width")?,
+        ll_height: usize_to_u32(component.final_ll.height, component_index, "LL height")?,
+        levels,
+    })
+}
+
+fn i32_to_f32(coefficients: &[i32]) -> Vec<f32> {
+    coefficients
+        .iter()
+        .map(|&coefficient| coefficient as f32)
+        .collect()
+}
+
+fn usize_to_u32(
+    value: usize,
+    component: usize,
+    field: &'static str,
+) -> Result<u32, WaveletToPrecomputedError> {
+    u32::try_from(value).map_err(|_| WaveletToPrecomputedError::DimensionTooLarge {
+        component,
+        field,
+        value,
+    })
 }
