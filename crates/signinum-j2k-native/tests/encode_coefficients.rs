@@ -1,6 +1,8 @@
 use signinum_j2k_native::{
-    encode_precomputed_htj2k_53, DecodeSettings, EncodeOptions, Image, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    encode_precomputed_htj2k_53, encode_precomputed_htj2k_97, DecodeSettings, EncodeOptions, Image,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image,
 };
 
 #[test]
@@ -108,10 +110,66 @@ fn precomputed_encode_rejects_recursive_level_geometry_mismatch() {
     assert_eq!(err, "precomputed DWT recursive geometry mismatch");
 }
 
+#[test]
+fn precomputed_zero_grayscale_97_coefficients_decode_with_native_decoder() {
+    let image = PrecomputedHtj2k97Image {
+        width: 8,
+        height: 8,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k97Component {
+            x_rsiz: 1,
+            y_rsiz: 1,
+            dwt: zero_dwt97(8, 8),
+        }],
+    };
+    let bytes = encode_precomputed_htj2k_97(&image, &precomputed_lossy_options())
+        .expect("encode precomputed 9/7 HTJ2K coefficients");
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .expect("native parser accepts 9/7 codestream")
+        .decode_native()
+        .expect("native decoder accepts 9/7 codestream");
+
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 1);
+    assert!(decoded.data.iter().all(|&sample| sample == 128));
+}
+
+#[test]
+fn precomputed_97_encode_rejects_component_sampling_geometry_mismatch() {
+    let image = PrecomputedHtj2k97Image {
+        width: 16,
+        height: 16,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k97Component {
+            x_rsiz: 2,
+            y_rsiz: 2,
+            dwt: zero_dwt97(16, 16),
+        }],
+    };
+
+    let err = encode_precomputed_htj2k_97(&image, &precomputed_lossy_options())
+        .expect_err("component DWT geometry must match SIZ sampling");
+
+    assert_eq!(err, "precomputed DWT component dimensions mismatch");
+}
+
 fn precomputed_options() -> EncodeOptions {
     EncodeOptions {
         num_decomposition_levels: 1,
         reversible: true,
+        use_ht_block_coding: true,
+        use_mct: false,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
+    }
+}
+
+fn precomputed_lossy_options() -> EncodeOptions {
+    EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible: false,
         use_ht_block_coding: true,
         use_mct: false,
         validate_high_throughput_codestream: false,
@@ -130,6 +188,30 @@ fn zero_dwt53(width: u32, height: u32) -> J2kForwardDwt53Output {
         ll_width: low_width,
         ll_height: low_height,
         levels: vec![J2kForwardDwt53Level {
+            hl: vec![0.0; (high_width * low_height) as usize],
+            lh: vec![0.0; (low_width * high_height) as usize],
+            hh: vec![0.0; (high_width * high_height) as usize],
+            width,
+            height,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        }],
+    }
+}
+
+fn zero_dwt97(width: u32, height: u32) -> J2kForwardDwt97Output {
+    let low_width = width.div_ceil(2);
+    let low_height = height.div_ceil(2);
+    let high_width = width / 2;
+    let high_height = height / 2;
+
+    J2kForwardDwt97Output {
+        ll: vec![0.0; (low_width * low_height) as usize],
+        ll_width: low_width,
+        ll_height: low_height,
+        levels: vec![J2kForwardDwt97Level {
             hl: vec![0.0; (high_width * low_height) as usize],
             lh: vec![0.0; (low_width * high_height) as usize],
             hh: vec![0.0; (high_width * high_height) as usize],

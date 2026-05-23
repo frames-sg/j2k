@@ -23,10 +23,11 @@ use crate::math::{floor_f32, log2_f32};
 use crate::profile;
 use crate::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedJ2kCodeBlock, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardRctJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
-    J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardRctJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
+    J2kTier1CodeBlockEncodeJob,
 };
 use crate::{DecodeSettings, Image};
 
@@ -223,6 +224,32 @@ pub struct PrecomputedHtj2k53Image {
     pub components: Vec<PrecomputedHtj2k53Component>,
 }
 
+/// Precomputed irreversible 9/7 wavelet coefficients for one component.
+#[derive(Debug, Clone)]
+pub struct PrecomputedHtj2k97Component {
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+    /// Forward 9/7 DWT output, ordered as the encoder expects.
+    pub dwt: J2kForwardDwt97Output,
+}
+
+/// Precomputed irreversible 9/7 wavelet image.
+#[derive(Debug, Clone)]
+pub struct PrecomputedHtj2k97Image {
+    /// Reference-grid image width.
+    pub width: u32,
+    /// Reference-grid image height.
+    pub height: u32,
+    /// Component precision in bits.
+    pub bit_depth: u8,
+    /// Whether component samples are signed.
+    pub signed: bool,
+    /// Components at their native resolution.
+    pub components: Vec<PrecomputedHtj2k97Component>,
+}
+
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
 /// codestream.
 ///
@@ -293,6 +320,76 @@ pub fn encode_precomputed_htj2k_53(
     )
 }
 
+/// Encode precomputed irreversible 9/7 wavelet coefficients into an HTJ2K
+/// codestream.
+///
+/// This experimental entry point is the lossy counterpart of
+/// [`encode_precomputed_htj2k_53`]. It bypasses the encoder's forward 9/7 DWT
+/// stage by supplying precomputed floating-point DWT output through the
+/// internal stage hook. Coefficients are expected in the same sample domain as
+/// the native irreversible FDWT input: unsigned components are already level
+/// shifted by subtracting `2^(bit_depth - 1)`.
+pub fn encode_precomputed_htj2k_97(
+    image: &PrecomputedHtj2k97Image,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+    validate_precomputed_dwt97_geometry(image)?;
+
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = precomputed_97_level_count(&image.components)?;
+    let mut precomputed_options = options.clone();
+    precomputed_options.num_decomposition_levels = num_levels;
+    precomputed_options.reversible = false;
+    precomputed_options.use_ht_block_coding = true;
+    precomputed_options.use_mct = false;
+    precomputed_options.validate_high_throughput_codestream = false;
+    precomputed_options.component_sampling = Some(
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz))
+            .collect(),
+    );
+
+    let dummy_pixels =
+        zero_pixel_buffer(image.width, image.height, num_components, image.bit_depth)?;
+    let mut accelerator = PrecomputedDwt97Accelerator {
+        outputs: image
+            .components
+            .iter()
+            .map(|component| component.dwt.clone())
+            .collect(),
+    };
+
+    encode_with_accelerator(
+        &dummy_pixels,
+        image.width,
+        image.height,
+        num_components,
+        image.bit_depth,
+        image.signed,
+        &precomputed_options,
+        &mut accelerator,
+    )
+}
+
 fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<(), &'static str> {
     for component in &image.components {
         let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
@@ -303,8 +400,65 @@ fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<
     Ok(())
 }
 
+fn validate_precomputed_dwt97_geometry(
+    image: &PrecomputedHtj2k97Image,
+) -> Result<(), &'static str> {
+    for component in &image.components {
+        let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
+        let component_height = image.height.div_ceil(u32::from(component.y_rsiz));
+        validate_precomputed_component_dwt97(&component.dwt, component_width, component_height)?;
+    }
+
+    Ok(())
+}
+
 fn validate_precomputed_component_dwt(
     dwt: &J2kForwardDwt53Output,
+    component_width: u32,
+    component_height: u32,
+) -> Result<(), &'static str> {
+    if dwt.levels.is_empty() {
+        return Err("precomputed DWT must contain at least one decomposition level");
+    }
+    if let Some(highest_level) = dwt.levels.last() {
+        if highest_level.width != component_width || highest_level.height != component_height {
+            return Err("precomputed DWT component dimensions mismatch");
+        }
+    }
+
+    let mut expected_width = component_width;
+    let mut expected_height = component_height;
+    for level in dwt.levels.iter().rev() {
+        let low_width = expected_width.div_ceil(2);
+        let low_height = expected_height.div_ceil(2);
+        let high_width = expected_width / 2;
+        let high_height = expected_height / 2;
+
+        if level.width != expected_width
+            || level.height != expected_height
+            || level.low_width != low_width
+            || level.low_height != low_height
+            || level.high_width != high_width
+            || level.high_height != high_height
+        {
+            return Err("precomputed DWT recursive geometry mismatch");
+        }
+        validate_band_len(level.hl.len(), high_width, low_height)?;
+        validate_band_len(level.lh.len(), low_width, high_height)?;
+        validate_band_len(level.hh.len(), high_width, high_height)?;
+
+        expected_width = low_width;
+        expected_height = low_height;
+    }
+
+    if dwt.ll_width != expected_width || dwt.ll_height != expected_height {
+        return Err("precomputed DWT component dimensions mismatch");
+    }
+    validate_band_len(dwt.ll.len(), expected_width, expected_height)
+}
+
+fn validate_precomputed_component_dwt97(
+    dwt: &J2kForwardDwt97Output,
     component_width: u32,
     component_height: u32,
 ) -> Result<(), &'static str> {
@@ -364,6 +518,24 @@ fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result
     u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
 }
 
+fn precomputed_97_level_count(
+    components: &[PrecomputedHtj2k97Component],
+) -> Result<u8, &'static str> {
+    let first = components
+        .first()
+        .ok_or("unsupported component count")?
+        .dwt
+        .levels
+        .len();
+    if components
+        .iter()
+        .any(|component| component.dwt.levels.len() != first)
+    {
+        return Err("precomputed components must use the same decomposition level count");
+    }
+    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+}
+
 fn zero_pixel_buffer(
     width: u32,
     height: u32,
@@ -384,11 +556,32 @@ struct PrecomputedDwtAccelerator {
     outputs: Vec<J2kForwardDwt53Output>,
 }
 
+struct PrecomputedDwt97Accelerator {
+    outputs: Vec<J2kForwardDwt97Output>,
+}
+
 impl J2kEncodeStageAccelerator for PrecomputedDwtAccelerator {
     fn encode_forward_dwt53(
         &mut self,
         _job: J2kForwardDwt53Job<'_>,
     ) -> Result<Option<J2kForwardDwt53Output>, &'static str> {
+        if self.outputs.is_empty() {
+            return Err("precomputed DWT output exhausted");
+        }
+
+        Ok(Some(self.outputs.remove(0)))
+    }
+
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        true
+    }
+}
+
+impl J2kEncodeStageAccelerator for PrecomputedDwt97Accelerator {
+    fn encode_forward_dwt97(
+        &mut self,
+        _job: J2kForwardDwt97Job<'_>,
+    ) -> Result<Option<J2kForwardDwt97Output>, &'static str> {
         if self.outputs.is_empty() {
             return Err("precomputed DWT output exhausted");
         }
@@ -752,6 +945,13 @@ fn encode_forward_dwt(
         })? {
             return convert_forward_dwt53_output(output);
         }
+    } else if let Some(output) = accelerator.encode_forward_dwt97(J2kForwardDwt97Job {
+        samples: component,
+        width,
+        height,
+        num_levels,
+    })? {
+        return convert_forward_dwt97_output(output);
     }
 
     Ok(fdwt::forward_dwt(
@@ -784,7 +984,39 @@ fn convert_forward_dwt53_output(
     })
 }
 
+fn convert_forward_dwt97_output(
+    output: J2kForwardDwt97Output,
+) -> Result<DwtDecomposition, &'static str> {
+    validate_band_len(output.ll.len(), output.ll_width, output.ll_height)?;
+    let mut levels = Vec::with_capacity(output.levels.len());
+    for level in output.levels {
+        validate_dwt97_level(&level)?;
+        levels.push(fdwt::DwtLevel {
+            hl: level.hl,
+            lh: level.lh,
+            hh: level.hh,
+            low_width: level.low_width,
+            low_height: level.low_height,
+            high_width: level.high_width,
+            high_height: level.high_height,
+        });
+    }
+    Ok(DwtDecomposition {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels,
+    })
+}
+
 fn validate_dwt53_level(level: &J2kForwardDwt53Level) -> Result<(), &'static str> {
+    validate_band_len(level.hl.len(), level.high_width, level.low_height)?;
+    validate_band_len(level.lh.len(), level.low_width, level.high_height)?;
+    validate_band_len(level.hh.len(), level.high_width, level.high_height)?;
+    Ok(())
+}
+
+fn validate_dwt97_level(level: &J2kForwardDwt97Level) -> Result<(), &'static str> {
     validate_band_len(level.hl.len(), level.high_width, level.low_height)?;
     validate_band_len(level.lh.len(), level.low_width, level.high_height)?;
     validate_band_len(level.hh.len(), level.high_width, level.high_height)?;

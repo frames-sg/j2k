@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! HTJ2K-ready 5/3 wavelet band descriptors.
+//! HTJ2K-ready 5/3 and 9/7 wavelet band descriptors.
 
 use core::fmt;
 
 use signinum_j2k_native::{
-    J2kForwardDwt53Level, J2kForwardDwt53Output, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k53Image,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image,
 };
 
 /// JPEG 2000 SIZ component sampling factors.
@@ -65,6 +66,15 @@ pub struct WaveletImage53<T> {
     /// Components at their native resolutions.
     pub components: Vec<WaveletComponent53<T>>,
 }
+
+/// One row-major irreversible 9/7 wavelet band.
+pub type WaveletBand97<T> = WaveletBand53<T>;
+/// One irreversible 9/7 decomposition level's high-pass bands.
+pub type WaveletLevel97<T> = WaveletLevel53<T>;
+/// One component's irreversible 9/7 wavelet representation.
+pub type WaveletComponent97<T> = WaveletComponent53<T>;
+/// Multi-component irreversible 9/7 wavelet image.
+pub type WaveletImage97<T> = WaveletImage53<T>;
 
 impl<T> WaveletImage53<T> {
     /// Validate component metadata, recursive 5/3 geometry, and band lengths.
@@ -161,6 +171,95 @@ impl WaveletImage53<i32> {
         }
 
         Ok(PrecomputedHtj2k53Image {
+            width: reference_width,
+            height: reference_height,
+            bit_depth,
+            signed,
+            components,
+        })
+    }
+}
+
+impl WaveletImage97<f32> {
+    /// Convert validated floating-point 9/7 bands into the precomputed HTJ2K
+    /// encoder representation.
+    pub fn to_precomputed_htj2k_97(
+        &self,
+        reference_width: u32,
+        reference_height: u32,
+    ) -> Result<PrecomputedHtj2k97Image, WaveletToPrecomputedError> {
+        if reference_width == 0 || reference_height == 0 {
+            return Err(WaveletToPrecomputedError::InvalidReferenceDimensions {
+                width: reference_width,
+                height: reference_height,
+            });
+        }
+        self.validate()
+            .map_err(WaveletToPrecomputedError::Validation)?;
+
+        let first = self
+            .components
+            .first()
+            .ok_or(WaveletToPrecomputedError::Validation(
+                WaveletValidationError::NoComponents,
+            ))?;
+        let bit_depth = first.bit_depth;
+        let signed = first.is_signed;
+
+        let mut components = Vec::with_capacity(self.components.len());
+        for (component_index, component) in self.components.iter().enumerate() {
+            if component.bit_depth != bit_depth {
+                return Err(WaveletToPrecomputedError::MixedBitDepth {
+                    component: component_index,
+                    expected: bit_depth,
+                    actual: component.bit_depth,
+                });
+            }
+            if component.is_signed != signed {
+                return Err(WaveletToPrecomputedError::MixedSignedness {
+                    component: component_index,
+                    expected: signed,
+                    actual: component.is_signed,
+                });
+            }
+            let x_rsiz = u8::try_from(component.sampling.x_rsiz).map_err(|_| {
+                WaveletToPrecomputedError::SamplingTooLarge {
+                    component: component_index,
+                    x_rsiz: component.sampling.x_rsiz,
+                    y_rsiz: component.sampling.y_rsiz,
+                }
+            })?;
+            let y_rsiz = u8::try_from(component.sampling.y_rsiz).map_err(|_| {
+                WaveletToPrecomputedError::SamplingTooLarge {
+                    component: component_index,
+                    x_rsiz: component.sampling.x_rsiz,
+                    y_rsiz: component.sampling.y_rsiz,
+                }
+            })?;
+
+            let expected_width = reference_width.div_ceil(u32::from(x_rsiz));
+            let expected_height = reference_height.div_ceil(u32::from(y_rsiz));
+            let actual_width = usize_to_u32(component.width, component_index, "component width")?;
+            let actual_height =
+                usize_to_u32(component.height, component_index, "component height")?;
+            if actual_width != expected_width || actual_height != expected_height {
+                return Err(WaveletToPrecomputedError::ComponentGeometry {
+                    component: component_index,
+                    expected_width,
+                    expected_height,
+                    actual_width,
+                    actual_height,
+                });
+            }
+
+            components.push(PrecomputedHtj2k97Component {
+                x_rsiz,
+                y_rsiz,
+                dwt: component_to_j2k_dwt97(component, component_index)?,
+            });
+        }
+
+        Ok(PrecomputedHtj2k97Image {
             width: reference_width,
             height: reference_height,
             bit_depth,
@@ -467,6 +566,45 @@ fn component_to_j2k_dwt(
 
     Ok(J2kForwardDwt53Output {
         ll: i32_to_f32(&component.final_ll.coefficients),
+        ll_width: usize_to_u32(component.final_ll.width, component_index, "LL width")?,
+        ll_height: usize_to_u32(component.final_ll.height, component_index, "LL height")?,
+        levels,
+    })
+}
+
+fn component_to_j2k_dwt97(
+    component: &WaveletComponent97<f32>,
+    component_index: usize,
+) -> Result<J2kForwardDwt97Output, WaveletToPrecomputedError> {
+    let mut current_width = component.width;
+    let mut current_height = component.height;
+    let mut levels = Vec::with_capacity(component.levels.len());
+
+    for level in &component.levels {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let high_width = current_width / 2;
+        let high_height = current_height / 2;
+
+        levels.push(J2kForwardDwt97Level {
+            hl: level.hl.coefficients.clone(),
+            lh: level.lh.coefficients.clone(),
+            hh: level.hh.coefficients.clone(),
+            width: usize_to_u32(current_width, component_index, "level width")?,
+            height: usize_to_u32(current_height, component_index, "level height")?,
+            low_width: usize_to_u32(low_width, component_index, "low-pass width")?,
+            low_height: usize_to_u32(low_height, component_index, "low-pass height")?,
+            high_width: usize_to_u32(high_width, component_index, "high-pass width")?,
+            high_height: usize_to_u32(high_height, component_index, "high-pass height")?,
+        });
+
+        current_width = low_width;
+        current_height = low_height;
+    }
+    levels.reverse();
+
+    Ok(J2kForwardDwt97Output {
+        ll: component.final_ll.coefficients.clone(),
         ll_width: usize_to_u32(component.final_ll.width, component_index, "LL width")?,
         ll_height: usize_to_u32(component.final_ll.height, component_index, "LL height")?,
         levels,
