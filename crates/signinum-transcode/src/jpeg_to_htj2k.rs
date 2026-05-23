@@ -53,6 +53,8 @@ pub struct TranscodeReport {
     pub height: u32,
     /// Number of transformed components.
     pub component_count: usize,
+    /// Native transformed component geometry and SIZ sampling.
+    pub components: Vec<TranscodeComponentReport>,
     /// Name of the experimental path used.
     pub path: &'static str,
     /// Wall-clock extraction time in microseconds.
@@ -61,6 +63,25 @@ pub struct TranscodeReport {
     pub transform_us: u128,
     /// Wall-clock HTJ2K encode time in microseconds.
     pub encode_us: u128,
+}
+
+/// Per-component transcode geometry preserved in the generated codestream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscodeComponentReport {
+    /// Component index in JPEG SOF order.
+    pub component_index: usize,
+    /// Native component width in samples before HTJ2K SIZ expansion.
+    pub width: u32,
+    /// Native component height in samples before HTJ2K SIZ expansion.
+    pub height: u32,
+    /// Number of DCT blocks per component row, including padded edge blocks.
+    pub block_cols: u32,
+    /// Number of DCT block rows, including padded edge blocks.
+    pub block_rows: u32,
+    /// HTJ2K SIZ horizontal sampling factor.
+    pub x_rsiz: u8,
+    /// HTJ2K SIZ vertical sampling factor.
+    pub y_rsiz: u8,
 }
 
 /// Error returned by the experimental transcode path.
@@ -113,9 +134,9 @@ impl From<Dct53GridError> for JpegToHtj2kError {
 /// codestream using direct DCT-domain 5/3 wavelet coefficients.
 ///
 /// Current implementation scope is baseline JPEG with one or more components
-/// at full reference-grid resolution, and one reversible 5/3 decomposition
-/// level. Subsampled YCbCr builds on the same public extraction and
-/// precomputed-band encode contracts.
+/// at native JPEG component resolution, and one reversible 5/3 decomposition
+/// level. Component subsampling is preserved through SIZ `XRsiz`/`YRsiz`
+/// instead of chroma upsampling.
 pub fn jpeg_to_htj2k(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
@@ -129,21 +150,34 @@ pub fn jpeg_to_htj2k(
             "unsupported JPEG component count for jpeg_to_htj2k",
         ));
     }
-    if jpeg
+    let component_sampling =
+        component_sampling_for_jpeg(&jpeg.components, jpeg.width, jpeg.height)?;
+    let all_unit_sampled = component_sampling
+        .iter()
+        .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
+    let component_reports = jpeg
         .components
         .iter()
-        .any(|component| component.width != jpeg.width || component.height != jpeg.height)
-    {
-        return Err(JpegToHtj2kError::Unsupported(
-            "component subsampling is not implemented in jpeg_to_htj2k yet",
-        ));
-    }
+        .zip(component_sampling.iter().copied())
+        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
+            component_index: component.component_index,
+            width: component.width,
+            height: component.height,
+            block_cols: component.block_cols,
+            block_rows: component.block_rows,
+            x_rsiz,
+            y_rsiz,
+        })
+        .collect();
 
     let transform_start = Instant::now();
     let precomputed_components = jpeg
         .components
         .iter()
-        .map(component_to_precomputed_htj2k)
+        .zip(component_sampling.iter().copied())
+        .map(|(component, (x_rsiz, y_rsiz))| {
+            component_to_precomputed_htj2k(component, x_rsiz, y_rsiz)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let transform_us = transform_start.elapsed().as_micros();
 
@@ -166,7 +200,12 @@ pub fn jpeg_to_htj2k(
             width: jpeg.width,
             height: jpeg.height,
             component_count: jpeg.components.len(),
-            path: "full_resolution_components_float_direct_53",
+            components: component_reports,
+            path: if all_unit_sampled {
+                "full_resolution_components_float_direct_53"
+            } else {
+                "native_component_sampling_float_direct_53"
+            },
             extract_us,
             transform_us,
             encode_us,
@@ -176,6 +215,8 @@ pub fn jpeg_to_htj2k(
 
 fn component_to_precomputed_htj2k(
     component: &JpegDctComponent,
+    x_rsiz: u8,
+    y_rsiz: u8,
 ) -> Result<PrecomputedHtj2k53Component, JpegToHtj2kError> {
     let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
     let bands = dct8x8_blocks_to_dwt53_float_linear(
@@ -203,10 +244,55 @@ fn component_to_precomputed_htj2k(
     };
 
     Ok(PrecomputedHtj2k53Component {
-        x_rsiz: 1,
-        y_rsiz: 1,
+        x_rsiz,
+        y_rsiz,
         dwt,
     })
+}
+
+fn component_sampling_for_jpeg(
+    components: &[JpegDctComponent],
+    reference_width: u32,
+    reference_height: u32,
+) -> Result<Vec<(u8, u8)>, JpegToHtj2kError> {
+    let max_h = components
+        .iter()
+        .map(|component| component.h_samp)
+        .max()
+        .ok_or(JpegToHtj2kError::Unsupported("missing JPEG components"))?;
+    let max_v = components
+        .iter()
+        .map(|component| component.v_samp)
+        .max()
+        .ok_or(JpegToHtj2kError::Unsupported("missing JPEG components"))?;
+
+    components
+        .iter()
+        .map(|component| {
+            if component.h_samp == 0 || component.v_samp == 0 {
+                return Err(JpegToHtj2kError::Unsupported(
+                    "JPEG component sampling factors must be non-zero",
+                ));
+            }
+            if max_h % component.h_samp != 0 || max_v % component.v_samp != 0 {
+                return Err(JpegToHtj2kError::Unsupported(
+                    "fractional JPEG component sampling is not supported",
+                ));
+            }
+
+            let x_rsiz = max_h / component.h_samp;
+            let y_rsiz = max_v / component.v_samp;
+            let expected_width = reference_width.div_ceil(u32::from(x_rsiz));
+            let expected_height = reference_height.div_ceil(u32::from(y_rsiz));
+            if component.width != expected_width || component.height != expected_height {
+                return Err(JpegToHtj2kError::Unsupported(
+                    "JPEG component dimensions do not match derived SIZ sampling",
+                ));
+            }
+
+            Ok((x_rsiz, y_rsiz))
+        })
+        .collect()
 }
 
 fn dct_blocks_to_8x8_f64(blocks: &[[i16; 64]]) -> Vec<[[f64; 8]; 8]> {

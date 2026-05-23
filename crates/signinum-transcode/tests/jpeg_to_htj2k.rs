@@ -4,7 +4,7 @@ use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
-use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kError, JpegToHtj2kOptions};
+use signinum_transcode::{jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions};
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
@@ -72,18 +72,47 @@ fn ycbcr_444_jpeg_transcodes_to_decodable_htj2k_without_mct() {
 
     assert_eq!((encoded.report.width, encoded.report.height), (8, 8));
     assert_eq!(encoded.report.component_count, 3);
+    assert_report_sampling(&encoded, &[(8, 8, 1, 1), (8, 8, 1, 1), (8, 8, 1, 1)]);
     assert_eq!((decoded.width, decoded.height), (8, 8));
     assert_eq!(decoded.num_components, 3);
 }
 
 #[test]
-fn ycbcr_420_jpeg_is_explicitly_out_of_current_e2e_scope() {
+fn ycbcr_422_jpeg_transcodes_with_native_component_sampling() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg");
+
+    let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
+        .expect("transcode 4:2:2 YCbCr JPEG to HTJ2K");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated HTJ2K");
+
+    assert_eq!((encoded.report.width, encoded.report.height), (16, 8));
+    assert_eq!(encoded.report.component_count, 3);
+    assert_report_sampling(&encoded, &[(16, 8, 1, 1), (8, 8, 2, 1), (8, 8, 2, 1)]);
+    assert_eq!((decoded.width, decoded.height), (16, 8));
+    assert_eq!(decoded.num_components, 3);
+    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 1), (2, 1)]);
+}
+
+#[test]
+fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
 
-    let err = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
-        .expect_err("YCbCr subsampling expansion is not implemented yet");
+    let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
+        .expect("transcode 4:2:0 YCbCr JPEG to HTJ2K");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated HTJ2K");
 
-    assert!(matches!(err, JpegToHtj2kError::Unsupported(_)));
+    assert_eq!((encoded.report.width, encoded.report.height), (16, 16));
+    assert_eq!(encoded.report.component_count, 3);
+    assert_report_sampling(&encoded, &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)]);
+    assert_eq!((decoded.width, decoded.height), (16, 16));
+    assert_eq!(decoded.num_components, 3);
+    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
 }
 
 fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
@@ -94,4 +123,30 @@ fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+fn assert_component_sampling(codestream: &[u8], expected: &[(u8, u8)]) {
+    let siz = find_marker(codestream, 0x51).expect("SIZ marker");
+    let component_info = siz + 40;
+    for (component_index, &(x_rsiz, y_rsiz)) in expected.iter().enumerate() {
+        let offset = component_info + component_index * 3;
+        assert_eq!(codestream[offset + 1], x_rsiz);
+        assert_eq!(codestream[offset + 2], y_rsiz);
+    }
+}
+
+fn assert_report_sampling(encoded: &EncodedTranscode, expected: &[(u32, u32, u8, u8)]) {
+    assert_eq!(encoded.report.components.len(), expected.len());
+    for (component, &(width, height, x_rsiz, y_rsiz)) in
+        encoded.report.components.iter().zip(expected)
+    {
+        assert_eq!((component.width, component.height), (width, height));
+        assert_eq!((component.x_rsiz, component.y_rsiz), (x_rsiz, y_rsiz));
+    }
+}
+
+fn find_marker(codestream: &[u8], marker: u8) -> Option<usize> {
+    codestream
+        .windows(2)
+        .position(|window| window == [0xff, marker])
 }
