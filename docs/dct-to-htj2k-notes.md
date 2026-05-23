@@ -78,6 +78,12 @@ Initial 2026-05-23 tiny-fixture timing is effectively flat: stateless
 performance claim; it mainly verifies the benchmark surface and shows that DCT
 conversion scratch is not the dominant cost for an 8x8 tile.
 
+The direct 2D-grid projection benchmark now has a scratch-reuse comparison for
+cached 5/3 weight rows. On the 13x11 synthetic grid, stateless
+`direct_linear_13x11` measured 96.635-97.699 us, while
+`direct_linear_13x11_scratch_reuse` measured 94.369-94.766 us. This is a small
+scalar allocation/layout win, not a SIMD result.
+
 ## Open Issues
 
 - The production path still emits rounded float-direct coefficients. The

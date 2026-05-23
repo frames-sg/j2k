@@ -11,7 +11,8 @@ use signinum_transcode::dct53_1d::{
 };
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
-    dct8x8_to_dwt53_float_linear, idct8x8_then_dwt53_float,
+    dct8x8_blocks_to_dwt53_float_linear_with_scratch, dct8x8_to_dwt53_float_linear,
+    idct8x8_then_dwt53_float, Dct53GridScratch,
 };
 use signinum_transcode::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
@@ -62,6 +63,20 @@ fn bench_dct53_math(c: &mut Criterion) {
                 black_box(2),
                 black_box(13),
                 black_box(11),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    let mut grid_scratch = Dct53GridScratch::default();
+    two_dimensional_grid.bench_function("direct_linear_13x11_scratch_reuse", |b| {
+        b.iter(|| {
+            dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+                black_box(&grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+                black_box(&mut grid_scratch),
             )
             .expect("valid DCT grid");
         });
