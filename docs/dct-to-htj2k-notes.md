@@ -30,6 +30,9 @@ JPEG bytes
   validation classifications. Enabled validation metrics are classified as
   `Exact`, `OneLsbBounded` using the 99.9% exact-match / max-1-LSB threshold,
   or `OutsideThreshold`.
+- `signinum-j2k-native::encode_precomputed_htj2k_53` validates precomputed
+  5/3 band geometry against the component dimensions implied by SIZ
+  `XRsiz`/`YRsiz` before the accelerated DWT hook reaches packetization.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
   decoder acceptance, SIZ component sampling, multilevel output, optional
   integer-reference metrics, and external decoder acceptance when OpenJPEG or
