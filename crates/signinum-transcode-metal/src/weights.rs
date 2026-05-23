@@ -43,6 +43,68 @@ impl Dwt97WeightRows {
     }
 }
 
+/// Sparse one-dimensional 9/7 projection rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseDwt97WeightRows {
+    /// Low-pass sparse output rows.
+    pub low: Vec<SparseWeightRow>,
+    /// High-pass sparse output rows.
+    pub high: Vec<SparseWeightRow>,
+}
+
+impl SparseDwt97WeightRows {
+    /// Build sparse 9/7 projection rows for a one-dimensional sample extent.
+    #[must_use]
+    pub fn for_len(sample_len: usize) -> Self {
+        let dense = Dwt97WeightRows::for_len(sample_len);
+        Self {
+            low: sparse_rows_from_dense(&dense.low),
+            high: sparse_rows_from_dense(&dense.high),
+        }
+    }
+
+    /// Largest tap count across low-pass and high-pass rows.
+    #[must_use]
+    pub fn max_taps_per_row(&self) -> usize {
+        self.low
+            .iter()
+            .chain(self.high.iter())
+            .map(|row| row.taps.len())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Sparse row of sample-position weights.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseWeightRow {
+    /// Nonzero taps in sample-index order.
+    pub taps: Vec<SparseWeightTap>,
+}
+
+/// One nonzero sample-position weight.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SparseWeightTap {
+    /// Input sample index.
+    pub sample_idx: usize,
+    /// Weight applied to that sample.
+    pub weight: f32,
+}
+
+fn sparse_rows_from_dense(rows: &[Vec<f32>]) -> Vec<SparseWeightRow> {
+    rows.iter()
+        .map(|row| SparseWeightRow {
+            taps: row
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|&(_, weight)| weight.to_bits() != 0)
+                .map(|(sample_idx, weight)| SparseWeightTap { sample_idx, weight })
+                .collect(),
+        })
+        .collect()
+}
+
 fn linearized_97_from_sample_slice(samples: &[f64]) -> Dwt97OneDimensional {
     let mut lifted = samples.to_vec();
     forward_lift_97(&mut lifted);

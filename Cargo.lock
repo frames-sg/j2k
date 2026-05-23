@@ -1062,6 +1062,7 @@ dependencies = [
  "metal",
  "rayon",
  "signinum-j2k-native",
+ "signinum-jpeg",
  "signinum-transcode",
 ]
 
