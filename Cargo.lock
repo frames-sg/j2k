@@ -1055,6 +1055,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signinum-transcode-metal"
+version = "0.4.2"
+dependencies = [
+ "criterion",
+ "metal",
+ "rayon",
+ "signinum-transcode",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
