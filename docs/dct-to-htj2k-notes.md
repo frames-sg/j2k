@@ -70,10 +70,10 @@ candidate, while SoA remains a candidate for vectorized coefficient-lane work.
 
 `signinum_transcode::JpegToHtj2kTranscoder` is the stateful API for repeated tile
 work. For the float-linear path it reuses the DCT block conversion buffer and
-direct 2D projection weight-row scratch across calls while preserving the same
-output path as the stateless `jpeg_to_htj2k` convenience function. The benchmark
-suite includes `grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so
-future allocation/layout changes can be measured against the stateless path.
+direct 2D projection weight-row scratch. For the integer-direct path it reuses a
+block-local ISLOW sample cache and row scratch. The benchmark suite includes
+`grayscale_8x8_stateful_reuse` under the `jpeg_to_htj2k` group so future
+allocation/layout changes can be measured against the stateless path.
 
 Initial 2026-05-23 tiny-fixture timing is the same order of magnitude: stateless
 `grayscale_8x8` measured 92.394-93.799 us and stateful
@@ -89,15 +89,15 @@ scalar allocation/layout win, not a SIMD result.
 
 ## Integer-Direct Default Benchmark
 
-After switching the default production path to `IntegerDirect53`, the
-`jpeg_to_htj2k` Criterion group measured:
+After switching the default production path to `IntegerDirect53` and adding the
+block-local ISLOW sample cache, the `jpeg_to_htj2k` Criterion group measured:
 
-- `grayscale_8x8`: 62.877-63.362 us
-- `grayscale_8x8_stateful_reuse`: 61.564-62.220 us
-- `grayscale_13x11`: 98.036-98.905 us
-- `ycbcr_444_8x8`: 142.78-144.31 us
-- `ycbcr_422_16x8`: 164.29-166.29 us
-- `ycbcr_420_16x16`: 199.35-201.90 us
+- `grayscale_8x8`: 35.398-35.705 us
+- `grayscale_8x8_stateful_reuse`: 35.403-35.727 us
+- `grayscale_13x11`: 43.926-44.352 us
+- `ycbcr_444_8x8`: 54.558-60.897 us
+- `ycbcr_422_16x8`: 54.909-55.445 us
+- `ycbcr_420_16x16`: 54.971-55.504 us
 
 These are tiny conformance fixtures, not WSI-scale throughput claims. The
 integer-direct path is faster than the previous float-linear default here
@@ -107,10 +107,8 @@ integer 5/3 coefficients relative to the signinum ISLOW oracle.
 ## Open Issues
 
 - The integer-direct production path still uses scalar, on-demand ISLOW block
-  sample evaluation for exactness; it is correct-first rather than optimized.
-- `JpegToHtj2kTranscoder` scratch currently helps the float-linear projection
-  path more than the default integer-direct path; integer-direct row/block
-  caching is a follow-on optimization.
+  sample evaluation for exactness; block-local caching removes repeated block
+  decode work, but the path is still scalar and correct-first.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
 - Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain out

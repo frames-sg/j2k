@@ -29,9 +29,8 @@ floating-point linear path remains selectable for math-oracle validation.
 
 Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
 thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
-over the same scalar path. Current reusable scratch primarily benefits the
-float-linear validation path; integer-direct row/block caching remains a
-follow-on optimization.
+over the same scalar path. Reusable scratch covers the float-linear validation
+path and the default integer-direct block-local ISLOW sample cache.
 
 ## Promotion Gate
 
