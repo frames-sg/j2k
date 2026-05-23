@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+#[cfg(target_os = "macos")]
+use signinum_transcode::dct97_2d::{
+    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
+};
 use signinum_transcode_metal::weights::Dwt97WeightRows;
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
 use signinum_transcode_metal::MetalTranscodeError;
+#[cfg(target_os = "macos")]
+use signinum_transcode_metal::METAL_UNAVAILABLE;
 
 #[test]
 fn explicit_metal_reports_unavailable_on_non_macos() {
@@ -47,6 +53,49 @@ fn auto_metal_falls_back_for_tiny_jobs() {
     assert_eq!(accelerator.dwt97_dispatches(), 0);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
+    let blocks = structured_blocks(2, 2);
+    let mut scalar_scratch = Dct97GridScratch::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+        let actual = match accelerator.dct_grid_to_dwt97(DctGridToDwt97Job {
+            blocks: &blocks,
+            block_cols: 2,
+            block_rows: 2,
+            width,
+            height,
+        }) {
+            Ok(Some(output)) => output,
+            Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
+            Err(message) if message == METAL_UNAVAILABLE => {
+                eprintln!("skipping Metal coefficient test because no Metal device is available");
+                return;
+            }
+            Err(message) => panic!("explicit Metal accelerator failed: {message}"),
+        };
+        let expected = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+            &blocks,
+            2,
+            2,
+            width,
+            height,
+            &mut scalar_scratch,
+        )
+        .expect("scalar 9/7 projection accepts covered grid");
+
+        let max_diff = max_abs_diff(&actual, &expected);
+        assert!(
+            max_diff <= 2.0e-2,
+            "Metal 9/7 DCT projection diverged for {width}x{height}: {max_diff}"
+        );
+    }
+
+    assert_eq!(accelerator.dwt97_dispatches(), 3);
+}
+
 #[test]
 fn weight_rows_match_expected_geometry_for_supported_lengths() {
     for sample_len in [8_usize, 13, 16] {
@@ -83,4 +132,40 @@ fn f32_rows_to_bits(rows: &[Vec<f32>]) -> Vec<Vec<u32>> {
     rows.iter()
         .map(|row| row.iter().map(|value| value.to_bits()).collect())
         .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensional<f64>) -> f64 {
+    assert_eq!(actual.low_width, expected.low_width);
+    assert_eq!(actual.low_height, expected.low_height);
+    assert_eq!(actual.high_width, expected.high_width);
+    assert_eq!(actual.high_height, expected.high_height);
+
+    actual
+        .ll
+        .iter()
+        .zip(expected.ll.iter())
+        .chain(actual.hl.iter().zip(expected.hl.iter()))
+        .chain(actual.lh.iter().zip(expected.lh.iter()))
+        .chain(actual.hh.iter().zip(expected.hh.iter()))
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0, f64::max)
+}
+
+#[cfg(target_os = "macos")]
+fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
+    let mut blocks = Vec::with_capacity(block_cols * block_rows);
+    for block_y in 0..block_rows {
+        for block_x in 0..block_cols {
+            let mut block = [[0.0; 8]; 8];
+            block[0][0] = 384.0 + (block_x * 19 + block_y * 23) as f64;
+            block[0][1] = -17.0 + block_x as f64;
+            block[1][0] = 11.0 - block_y as f64;
+            block[2][3] = 7.0;
+            block[4][4] = -3.0;
+            block[7][7] = 2.0;
+            blocks.push(block);
+        }
+    }
+    blocks
 }
