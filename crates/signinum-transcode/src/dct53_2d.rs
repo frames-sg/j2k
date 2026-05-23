@@ -7,6 +7,7 @@
 //! reference path materializes samples to keep the oracle easy to audit.
 
 use core::f64::consts::PI;
+use core::fmt;
 
 /// One separable single-level 2D 5/3 transform result.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +49,60 @@ impl Dwt53TwoDimensional<f64> {
             .fold(0.0, f64::max)
     }
 }
+
+/// Error returned when a DCT block grid cannot cover the requested component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dct53GridError {
+    block_count: usize,
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+}
+
+impl Dct53GridError {
+    /// Number of supplied 8x8 DCT blocks.
+    #[must_use]
+    pub const fn block_count(self) -> usize {
+        self.block_count
+    }
+
+    /// Declared block columns.
+    #[must_use]
+    pub const fn block_cols(self) -> usize {
+        self.block_cols
+    }
+
+    /// Declared block rows.
+    #[must_use]
+    pub const fn block_rows(self) -> usize {
+        self.block_rows
+    }
+
+    /// Requested component width.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        self.width
+    }
+
+    /// Requested component height.
+    #[must_use]
+    pub const fn height(self) -> usize {
+        self.height
+    }
+}
+
+impl fmt::Display for Dct53GridError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "DCT grid has {} blocks for {}x{} grid covering requested {}x{} samples",
+            self.block_count, self.block_cols, self.block_rows, self.width, self.height
+        )
+    }
+}
+
+impl std::error::Error for Dct53GridError {}
 
 /// Map one 8x8 DCT block directly into a linearized one-level 2D 5/3 result.
 #[must_use]
@@ -94,6 +149,81 @@ pub fn dct8x8_to_dwt53_float_linear(block: [[f64; 8]; 8]) -> Dwt53TwoDimensional
     }
 }
 
+/// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
+/// 5/3 result for the logical component dimensions.
+///
+/// Padded JPEG edge samples outside `width x height` are ignored.
+pub fn dct8x8_blocks_to_dwt53_float_linear(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+
+    let low_width = low_len(width);
+    let low_height = low_len(height);
+    let high_width = high_len(width);
+    let high_height = high_len(height);
+    let x_weights = linearized_53_weight_rows(width);
+    let y_weights = linearized_53_weight_rows(height);
+
+    let mut ll = Vec::with_capacity(low_width * low_height);
+    let mut hl = Vec::with_capacity(high_width * low_height);
+    let mut lh = Vec::with_capacity(low_width * high_height);
+    let mut hh = Vec::with_capacity(high_width * high_height);
+
+    for y in 0..low_height {
+        for x in 0..low_width {
+            ll.push(project_dct_grid(
+                blocks,
+                block_cols,
+                &y_weights.low[y],
+                &x_weights.low[x],
+            ));
+        }
+        for x in 0..high_width {
+            hl.push(project_dct_grid(
+                blocks,
+                block_cols,
+                &y_weights.low[y],
+                &x_weights.high[x],
+            ));
+        }
+    }
+
+    for y in 0..high_height {
+        for x in 0..low_width {
+            lh.push(project_dct_grid(
+                blocks,
+                block_cols,
+                &y_weights.high[y],
+                &x_weights.low[x],
+            ));
+        }
+        for x in 0..high_width {
+            hh.push(project_dct_grid(
+                blocks,
+                block_cols,
+                &y_weights.high[y],
+                &x_weights.high[x],
+            ));
+        }
+    }
+
+    Ok(Dwt53TwoDimensional {
+        ll,
+        hl,
+        lh,
+        hh,
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+    })
+}
+
 /// Reference path for the 2D experiment:
 /// DCT coefficients -> float IDCT samples -> separable linearized 5/3.
 #[must_use]
@@ -106,6 +236,32 @@ pub fn idct8x8_then_dwt53_float(block: [[f64; 8]; 8]) -> Dwt53TwoDimensional<f64
     }
 
     linearized_53_2d_from_plane(&samples, 8, 8)
+}
+
+/// Reference path for a DCT block grid:
+/// DCT coefficients -> float IDCT samples -> separable linearized 5/3.
+pub fn dct8x8_blocks_then_dwt53_float(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+) -> Result<Dwt53TwoDimensional<f64>, Dct53GridError> {
+    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+
+    let mut samples = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let block_y = y / 8;
+        let local_y = y % 8;
+        for x in 0..width {
+            let block_x = x / 8;
+            let local_x = x % 8;
+            let block = &blocks[block_y * block_cols + block_x];
+            samples.push(idct8x8_sample(block, local_x, local_y));
+        }
+    }
+
+    Ok(linearized_53_2d_from_plane(&samples, width, height))
 }
 
 fn project_dct_block(
@@ -134,6 +290,42 @@ fn project_dct_block(
                 let y_basis = idct8_basis(sample_y, freq_y);
                 for (freq_x, coefficient) in coefficient_row.iter().copied().enumerate() {
                     output += sample_weight * y_basis * idct8_basis(sample_x, freq_x) * coefficient;
+                }
+            }
+        }
+    }
+
+    output
+}
+
+fn project_dct_grid(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    y_weights: &[f64],
+    x_weights: &[f64],
+) -> f64 {
+    let mut output = 0.0;
+
+    for (sample_y, &y_weight) in y_weights.iter().enumerate() {
+        if y_weight == 0.0 {
+            continue;
+        }
+        let block_y = sample_y / 8;
+        let local_y = sample_y % 8;
+
+        for (sample_x, &x_weight) in x_weights.iter().enumerate() {
+            if x_weight == 0.0 {
+                continue;
+            }
+            let block_x = sample_x / 8;
+            let local_x = sample_x % 8;
+            let block = &blocks[block_y * block_cols + block_x];
+            let sample_weight = y_weight * x_weight;
+
+            for (freq_y, coefficient_row) in block.iter().enumerate() {
+                let y_basis = idct8_basis(local_y, freq_y);
+                for (freq_x, coefficient) in coefficient_row.iter().copied().enumerate() {
+                    output += sample_weight * y_basis * idct8_basis(local_x, freq_x) * coefficient;
                 }
             }
         }
@@ -235,6 +427,26 @@ fn linearized_53_sample_weight(
     }
 }
 
+fn linearized_53_weight_rows(sample_len: usize) -> Dwt53WeightRows {
+    let output = linearized_53_from_sample_slice(&vec![0.0; sample_len]);
+    let mut low = vec![vec![0.0; sample_len]; output.low.len()];
+    let mut high = vec![vec![0.0; sample_len]; output.high.len()];
+
+    for sample_idx in 0..sample_len {
+        let mut basis = vec![0.0; sample_len];
+        basis[sample_idx] = 1.0;
+        let transformed = linearized_53_from_sample_slice(&basis);
+        for (row, &weight) in low.iter_mut().zip(transformed.low.iter()) {
+            row[sample_idx] = weight;
+        }
+        for (row, &weight) in high.iter_mut().zip(transformed.high.iter()) {
+            row[sample_idx] = weight;
+        }
+    }
+
+    Dwt53WeightRows { low, high }
+}
+
 fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
     let mut high = Vec::with_capacity(high_len(samples.len()));
     for odd_idx in (1..samples.len()).step_by(2) {
@@ -279,6 +491,39 @@ fn low_len(sample_len: usize) -> usize {
 
 fn high_len(sample_len: usize) -> usize {
     sample_len / 2
+}
+
+fn validate_grid(
+    block_count: usize,
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+) -> Result<(), Dct53GridError> {
+    let expected_blocks = block_cols.saturating_mul(block_rows);
+    let covered_width = block_cols.saturating_mul(8);
+    let covered_height = block_rows.saturating_mul(8);
+    if block_count != expected_blocks
+        || width == 0
+        || height == 0
+        || width > covered_width
+        || height > covered_height
+    {
+        return Err(Dct53GridError {
+            block_count,
+            block_cols,
+            block_rows,
+            width,
+            height,
+        });
+    }
+
+    Ok(())
+}
+
+struct Dwt53WeightRows {
+    low: Vec<Vec<f64>>,
+    high: Vec<Vec<f64>>,
 }
 
 struct Dwt53OneDimensional {
