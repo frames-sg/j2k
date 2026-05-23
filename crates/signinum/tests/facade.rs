@@ -8,14 +8,48 @@ use signinum::{
 };
 
 #[test]
-fn facade_default_features_enable_auto_device_adapters() {
+fn facade_default_features_are_cpu_portable() {
     let manifest = std::fs::read_to_string(env!("CARGO_MANIFEST_DIR").to_owned() + "/Cargo.toml")
         .expect("read facade manifest");
 
     assert!(
-        manifest.contains("default = [\"metal\"]"),
-        "signinum should compile the portable Metal adapter by default so Auto is not documented or packaged as CPU-only"
+        manifest.contains("default = []"),
+        "signinum facade defaults must be portable on Linux, macOS, and Windows; GPU adapters should be opt-in"
     );
+    assert!(
+        !manifest.contains("default = [\"metal\"]"),
+        "Metal must not be enabled by default for the facade"
+    );
+}
+
+#[test]
+fn facade_prelude_exports_common_user_types() {
+    use signinum::prelude::{
+        BackendRequest as PreludeBackendRequest, DeflateCodec as PreludeDeflateCodec,
+        J2kDecoder as PreludeJ2kDecoder, J2kLosslessEncodeOptions as PreludeJ2kOptions,
+        JpegDecoder as PreludeJpegDecoder, LzwCodec as PreludeLzwCodec,
+        PixelFormat as PreludePixelFormat, TileDecompress as PreludeTileDecompress,
+        UncompressedCodec as PreludeUncompressedCodec, ZstdCodec as PreludeZstdCodec,
+    };
+
+    fn assert_tile_decompress<T: PreludeTileDecompress>() {}
+
+    assert_eq!(
+        PreludeBackendRequest::default(),
+        PreludeBackendRequest::Auto
+    );
+    assert_eq!(PreludePixelFormat::Rgb8.bytes_per_pixel(), 3);
+    let _options = PreludeJ2kOptions::default();
+    let _ = std::any::type_name::<PreludeJpegDecoder>();
+    let _ = std::any::type_name::<PreludeJ2kDecoder>();
+    let _ = std::any::type_name::<PreludeDeflateCodec>();
+    let _ = std::any::type_name::<PreludeLzwCodec>();
+    let _ = std::any::type_name::<PreludeUncompressedCodec>();
+    let _ = std::any::type_name::<PreludeZstdCodec>();
+    assert_tile_decompress::<PreludeDeflateCodec>();
+    assert_tile_decompress::<PreludeLzwCodec>();
+    assert_tile_decompress::<PreludeUncompressedCodec>();
+    assert_tile_decompress::<PreludeZstdCodec>();
 }
 
 #[test]
