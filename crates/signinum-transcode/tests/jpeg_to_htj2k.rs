@@ -351,6 +351,35 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
     assert_eq!(smaller.codestream, stateless.codestream);
 }
 
+#[test]
+fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
+    let larger_jpeg =
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let smaller_jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::default();
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+
+    let larger = transcoder
+        .transcode(larger_jpeg, &options)
+        .expect("stateful integer-direct transcode accepts 4:2:0 JPEG");
+    let capacity_after_larger = transcoder.integer_idct_block_scratch_capacity();
+    assert!(capacity_after_larger >= 4);
+
+    let smaller = transcoder
+        .transcode(smaller_jpeg, &options)
+        .expect("stateful integer-direct transcode accepts grayscale JPEG");
+    let stateless = jpeg_to_htj2k(smaller_jpeg, &options)
+        .expect("stateless integer-direct transcode accepts grayscale JPEG");
+
+    assert_eq!(larger.report.component_count, 3);
+    assert_eq!(smaller.report.component_count, 1);
+    assert_eq!(
+        transcoder.integer_idct_block_scratch_capacity(),
+        capacity_after_larger
+    );
+    assert_eq!(smaller.codestream, stateless.codestream);
+}
+
 fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(width as usize * height as usize);
     for y in 0..height {

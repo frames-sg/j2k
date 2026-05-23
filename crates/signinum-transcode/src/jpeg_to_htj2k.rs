@@ -99,12 +99,23 @@ impl JpegToHtj2kTranscoder {
     pub fn dct_block_scratch_capacity(&self) -> usize {
         self.scratch.dct_blocks_f64.capacity()
     }
+
+    /// Current capacity of the reusable integer block-local IDCT sample cache.
+    ///
+    /// This cache stores level-shifted 8x8 block samples for the integer-direct
+    /// path. It is block-local scratch, not a full spatial image plane.
+    #[must_use]
+    pub fn integer_idct_block_scratch_capacity(&self) -> usize {
+        self.scratch.integer_idct_blocks.capacity()
+    }
 }
 
 #[derive(Debug, Default)]
 struct JpegToHtj2kScratch {
     dct_blocks_f64: Vec<[[f64; 8]; 8]>,
     dct53_grid: Dct53GridScratch,
+    integer_idct_blocks: Vec<Option<[i32; 64]>>,
+    integer_row: Vec<i32>,
 }
 
 /// Encoded transcode output and validation/report metadata.
@@ -424,7 +435,8 @@ fn component_to_precomputed_htj2k(
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let (dwt, actual_coefficients) = match options.coefficient_path {
         JpegToHtj2kCoefficientPath::IntegerDirect53 => {
-            let wavelet = integer_direct_wavelet_from_component(component, decomposition_levels)?;
+            let wavelet =
+                integer_direct_wavelet_from_component(component, decomposition_levels, scratch)?;
             (
                 j2k_dwt_from_integer_wavelet(&wavelet),
                 flatten_integer_wavelet(&wavelet),
@@ -632,11 +644,20 @@ fn rounded_wavelet_i32(wavelet: &ComponentWavelet) -> Result<Vec<i32>, JpegToHtj
 fn integer_direct_wavelet_from_component(
     component: &JpegDctComponent,
     decomposition_levels: u8,
+    scratch: &mut JpegToHtj2kScratch,
 ) -> Result<IntegerWavelet, JpegToHtj2kError> {
     validate_component_block_grid(component)?;
+    scratch.integer_idct_blocks.clear();
+    scratch
+        .integer_idct_blocks
+        .resize_with(component.dequantized_blocks.len(), || None);
 
     let (mut final_ll, mut final_ll_width, mut final_ll_height, first_level) =
-        integer_direct_first_level_from_component(component)?;
+        integer_direct_first_level_from_component(
+            component,
+            &mut scratch.integer_idct_blocks,
+            &mut scratch.integer_row,
+        )?;
     let mut levels = vec![first_level];
 
     let remaining_levels = usize::from(decomposition_levels.saturating_sub(1));
@@ -659,6 +680,8 @@ fn integer_direct_wavelet_from_component(
 
 fn integer_direct_first_level_from_component(
     component: &JpegDctComponent,
+    idct_blocks: &mut [Option<[i32; 64]>],
+    row: &mut Vec<i32>,
 ) -> Result<(Vec<i32>, usize, usize, IntegerWaveletLevel), JpegToHtj2kError> {
     let width = component.width as usize;
     let height = component.height as usize;
@@ -671,14 +694,23 @@ fn integer_direct_first_level_from_component(
     let mut hl = Vec::with_capacity(high_width * low_height);
     let mut lh = Vec::with_capacity(low_width * high_height);
     let mut hh = Vec::with_capacity(high_width * high_height);
-    let mut row = Vec::with_capacity(width);
+    row.clear();
+    if row.capacity() < width {
+        row.reserve(width - row.capacity());
+    }
 
     for output_y in 0..low_height {
         row.clear();
         for x in 0..width {
-            row.push(vertical_53_i32_at(component, x, output_y, true)?);
+            row.push(vertical_53_i32_at(
+                component,
+                idct_blocks,
+                x,
+                output_y,
+                true,
+            )?);
         }
-        reversible_lift_53_i32(&mut row);
+        reversible_lift_53_i32(row);
         ll.extend(row.iter().step_by(2).copied());
         hl.extend(row.iter().skip(1).step_by(2).copied());
     }
@@ -686,9 +718,15 @@ fn integer_direct_first_level_from_component(
     for output_y in 0..high_height {
         row.clear();
         for x in 0..width {
-            row.push(vertical_53_i32_at(component, x, output_y, false)?);
+            row.push(vertical_53_i32_at(
+                component,
+                idct_blocks,
+                x,
+                output_y,
+                false,
+            )?);
         }
-        reversible_lift_53_i32(&mut row);
+        reversible_lift_53_i32(row);
         lh.extend(row.iter().step_by(2).copied());
         hh.extend(row.iter().skip(1).step_by(2).copied());
     }
@@ -710,35 +748,37 @@ fn integer_direct_first_level_from_component(
 
 fn vertical_53_i32_at(
     component: &JpegDctComponent,
+    idct_blocks: &mut [Option<[i32; 64]>],
     x: usize,
     output_y: usize,
     low_pass: bool,
 ) -> Result<i32, JpegToHtj2kError> {
     if low_pass {
-        vertical_low_53_i32_at(component, x, output_y)
+        vertical_low_53_i32_at(component, idct_blocks, x, output_y)
     } else {
-        vertical_high_53_i32_at(component, x, output_y)
+        vertical_high_53_i32_at(component, idct_blocks, x, output_y)
     }
 }
 
 fn vertical_low_53_i32_at(
     component: &JpegDctComponent,
+    idct_blocks: &mut [Option<[i32; 64]>],
     x: usize,
     low_idx: usize,
 ) -> Result<i32, JpegToHtj2kError> {
     let height = component.height as usize;
     let even_idx = low_idx * 2;
-    let current = component_sample_i32(component, x, even_idx)?;
+    let current = component_sample_i32(component, idct_blocks, x, even_idx)?;
     if height < 2 {
         return Ok(current);
     }
 
     if height.is_multiple_of(2) {
-        let right = vertical_high_53_i32_at(component, x, low_idx)?;
+        let right = vertical_high_53_i32_at(component, idct_blocks, x, low_idx)?;
         if low_idx == 0 {
             return Ok(current + floor_div_i32(right + 1, 2));
         }
-        let left = vertical_high_53_i32_at(component, x, low_idx - 1)?;
+        let left = vertical_high_53_i32_at(component, idct_blocks, x, low_idx - 1)?;
         return Ok(current + floor_div_i32(left + right + 2, 4));
     }
 
@@ -747,12 +787,12 @@ fn vertical_low_53_i32_at(
         return Ok(current);
     }
     let left = if low_idx > 0 {
-        vertical_high_53_i32_at(component, x, low_idx - 1)?
+        vertical_high_53_i32_at(component, idct_blocks, x, low_idx - 1)?
     } else {
-        vertical_high_53_i32_at(component, x, 0)?
+        vertical_high_53_i32_at(component, idct_blocks, x, 0)?
     };
     let right = if low_idx < high_len {
-        vertical_high_53_i32_at(component, x, low_idx)?
+        vertical_high_53_i32_at(component, idct_blocks, x, low_idx)?
     } else {
         left
     };
@@ -761,13 +801,14 @@ fn vertical_low_53_i32_at(
 
 fn vertical_high_53_i32_at(
     component: &JpegDctComponent,
+    idct_blocks: &mut [Option<[i32; 64]>],
     x: usize,
     high_idx: usize,
 ) -> Result<i32, JpegToHtj2kError> {
     let height = component.height as usize;
     let odd_idx = high_idx * 2 + 1;
-    let current = component_sample_i32(component, x, odd_idx)?;
-    let left = component_sample_i32(component, x, odd_idx - 1)?;
+    let current = component_sample_i32(component, idct_blocks, x, odd_idx)?;
+    let left = component_sample_i32(component, idct_blocks, x, odd_idx - 1)?;
     if height.is_multiple_of(2) && odd_idx + 1 == height {
         return Ok(current - left);
     }
@@ -777,12 +818,13 @@ fn vertical_high_53_i32_at(
     } else {
         height - 1
     };
-    let right = component_sample_i32(component, x, right_idx)?;
+    let right = component_sample_i32(component, idct_blocks, x, right_idx)?;
     Ok(current - floor_div_i32(left + right, 2))
 }
 
 fn component_sample_i32(
     component: &JpegDctComponent,
+    idct_blocks: &mut [Option<[i32; 64]>],
     x: usize,
     y: usize,
 ) -> Result<i32, JpegToHtj2kError> {
@@ -794,15 +836,24 @@ fn component_sample_i32(
     let block_cols = component.block_cols as usize;
     let block_x = x / 8;
     let block_y = y / 8;
+    let block_idx = block_y * block_cols + block_x;
     let block = component
         .dequantized_blocks
-        .get(block_y * block_cols + block_x)
+        .get(block_idx)
         .ok_or(JpegToHtj2kError::Validation(
             "component block grid does not cover requested sample",
         ))?;
-    let block_samples = idct_islow_block(block);
+    let cached = idct_blocks
+        .get_mut(block_idx)
+        .ok_or(JpegToHtj2kError::Validation(
+            "integer IDCT cache does not cover requested block",
+        ))?;
+    let block_samples = cached.get_or_insert_with(|| {
+        let decoded = idct_islow_block(block);
+        decoded.map(|sample| i32::from(sample) - 128)
+    });
     let local_idx = (y % 8) * 8 + (x % 8);
-    Ok(i32::from(block_samples[local_idx]) - 128)
+    Ok(block_samples[local_idx])
 }
 
 fn integer_reference_coefficients(
