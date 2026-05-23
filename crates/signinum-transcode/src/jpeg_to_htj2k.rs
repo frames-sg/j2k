@@ -9,7 +9,7 @@ use signinum_j2k_native::{
     encode_precomputed_htj2k_53, EncodeOptions, J2kForwardDwt53Level, J2kForwardDwt53Output,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
 };
-use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
+use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions, JpegDctComponent};
 
 use crate::dct53_2d::{dct8x8_blocks_to_dwt53_float_linear, Dct53GridError};
 
@@ -112,9 +112,10 @@ impl From<Dct53GridError> for JpegToHtj2kError {
 /// Transcode a constrained baseline grayscale JPEG tile into an HTJ2K
 /// codestream using direct DCT-domain 5/3 wavelet coefficients.
 ///
-/// Current implementation scope is grayscale baseline JPEG, no component
-/// subsampling, and one reversible 5/3 decomposition level. YCbCr sampling
-/// builds on the same public extraction and precomputed-band encode contracts.
+/// Current implementation scope is baseline JPEG with one or more components
+/// at full reference-grid resolution, and one reversible 5/3 decomposition
+/// level. Subsampled YCbCr builds on the same public extraction and
+/// precomputed-band encode contracts.
 pub fn jpeg_to_htj2k(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
@@ -123,19 +124,59 @@ pub fn jpeg_to_htj2k(
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
     let extract_us = extract_start.elapsed().as_micros();
 
-    if jpeg.components.len() != 1 {
+    if jpeg.components.is_empty() || jpeg.components.len() > 4 {
         return Err(JpegToHtj2kError::Unsupported(
-            "only grayscale single-component JPEG is implemented",
+            "unsupported JPEG component count for jpeg_to_htj2k",
         ));
     }
-    let component = &jpeg.components[0];
-    if component.h_samp != 1 || component.v_samp != 1 {
+    if jpeg
+        .components
+        .iter()
+        .any(|component| component.width != jpeg.width || component.height != jpeg.height)
+    {
         return Err(JpegToHtj2kError::Unsupported(
             "component subsampling is not implemented in jpeg_to_htj2k yet",
         ));
     }
 
     let transform_start = Instant::now();
+    let precomputed_components = jpeg
+        .components
+        .iter()
+        .map(component_to_precomputed_htj2k)
+        .collect::<Result<Vec<_>, _>>()?;
+    let transform_us = transform_start.elapsed().as_micros();
+
+    let precomputed = PrecomputedHtj2k53Image {
+        width: jpeg.width,
+        height: jpeg.height,
+        bit_depth: 8,
+        signed: false,
+        components: precomputed_components,
+    };
+
+    let encode_start = Instant::now();
+    let codestream = encode_precomputed_htj2k_53(&precomputed, &options.encode_options)
+        .map_err(JpegToHtj2kError::Encode)?;
+    let encode_us = encode_start.elapsed().as_micros();
+
+    Ok(EncodedTranscode {
+        codestream,
+        report: TranscodeReport {
+            width: jpeg.width,
+            height: jpeg.height,
+            component_count: jpeg.components.len(),
+            path: "full_resolution_components_float_direct_53",
+            extract_us,
+            transform_us,
+            encode_us,
+        },
+    })
+}
+
+fn component_to_precomputed_htj2k(
+    component: &JpegDctComponent,
+) -> Result<PrecomputedHtj2k53Component, JpegToHtj2kError> {
     let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
     let bands = dct8x8_blocks_to_dwt53_float_linear(
         &blocks,
@@ -160,36 +201,11 @@ pub fn jpeg_to_htj2k(
             high_height: bands.high_height as u32,
         }],
     };
-    let transform_us = transform_start.elapsed().as_micros();
 
-    let precomputed = PrecomputedHtj2k53Image {
-        width: jpeg.width,
-        height: jpeg.height,
-        bit_depth: 8,
-        signed: false,
-        components: vec![PrecomputedHtj2k53Component {
-            x_rsiz: 1,
-            y_rsiz: 1,
-            dwt,
-        }],
-    };
-
-    let encode_start = Instant::now();
-    let codestream = encode_precomputed_htj2k_53(&precomputed, &options.encode_options)
-        .map_err(JpegToHtj2kError::Encode)?;
-    let encode_us = encode_start.elapsed().as_micros();
-
-    Ok(EncodedTranscode {
-        codestream,
-        report: TranscodeReport {
-            width: jpeg.width,
-            height: jpeg.height,
-            component_count: 1,
-            path: "grayscale_float_direct_53",
-            extract_us,
-            transform_us,
-            encode_us,
-        },
+    Ok(PrecomputedHtj2k53Component {
+        x_rsiz: 1,
+        y_rsiz: 1,
+        dwt,
     })
 }
 
