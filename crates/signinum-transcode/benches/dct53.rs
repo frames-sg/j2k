@@ -118,8 +118,9 @@ fn bench_jpeg_paths(c: &mut Criterion) {
     jpeg_extract.finish();
 
     let jpeg_gray = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg_444 = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg");
     let transcode_options = JpegToHtj2kOptions::default();
-    let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k_grayscale");
+    let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k");
     jpeg_to_htj2k_group.bench_function("grayscale_8x8", |b| {
         b.iter(|| {
             jpeg_to_htj2k(black_box(jpeg_gray), black_box(&transcode_options))
@@ -134,6 +135,12 @@ fn bench_jpeg_paths(c: &mut Criterion) {
                 black_box(&transcode_options),
             )
             .expect("transcode multi-block grayscale JPEG to HTJ2K");
+        });
+    });
+    jpeg_to_htj2k_group.bench_function("ycbcr_444_8x8", |b| {
+        b.iter(|| {
+            jpeg_to_htj2k(black_box(jpeg_444), black_box(&transcode_options))
+                .expect("transcode 4:4:4 YCbCr JPEG to HTJ2K");
         });
     });
     jpeg_to_htj2k_group.finish();
