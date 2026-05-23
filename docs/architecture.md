@@ -46,6 +46,7 @@ backend APIs are still hardening.
 | `signinum-j2k-metal` | adapter | Apple Metal device-output adapter for `signinum-j2k`. Same shape as the JPEG adapter. |
 | `signinum-jpeg-cuda` | adapter | CUDA-facing API adapter for JPEG. `Auto`/`Cpu` stay host-backed; explicit full-frame RGB8 CUDA requests use nvJPEG when `cuda-runtime`, a CUDA driver, and `libnvjpeg` are available, with CPU decode plus CUDA upload fallback for unsupported shapes. |
 | `signinum-j2k-cuda` | adapter | CUDA-facing API adapter for J2K. Explicit CUDA requests upload CPU-decoded output into CUDA device memory when `cuda-runtime` and a CUDA driver are available. |
+| `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Starts with synthetic DCT-to-5/3 proofs before depending on codec crates. APIs in this crate are not stable until validation coverage and codestream integration land. |
 | `signinum` | facade | Stable public import surface over `core`, the CPU codecs, tile decompression, and optional Metal/CUDA adapters behind facade features. |
 | `signinum-cli` | binary | `signinum inspect <file>` entry point. Header parsing only, no decode. |
 
@@ -65,7 +66,7 @@ points outward is changing the architecture and should stop and update this
 document first.
 
 ```
-foundation / helper crates  →  codec engines  →  codecs  →  adapters  →  facade / binary
+foundation / helper crates  →  codec engines  →  codecs  →  adapters / transcode  →  facade / binary
 ```
 
 | Layer | Members | May depend on |
@@ -75,6 +76,7 @@ foundation / helper crates  →  codec engines  →  codecs  →  adapters  → 
 | codec engines | `signinum-j2k-native` | helper crates. Internal only. Not re-exported. |
 | codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | foundation, codec engines, helper crates. Must not depend on each other. Must not depend on adapters or `cli`. |
 | adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | foundation, helper crates, exactly one matching codec, optional engine for the matching codec. Adapters in different format families must not depend on each other. |
+| experimental transcode | `signinum-transcode` | foundation and codec crates once integration begins. It must not create codec-to-codec dependencies. |
 | facade | `signinum` | foundation, codecs, tilecodec, optional adapters behind feature gates. |
 | binary | `signinum-cli` | codecs. Must not depend on adapters (kept host-neutral). |
 | dev-only | `signinum-j2k-compare` | foundation and the codec under test. Used as a reference comparator in tests/benches; never a runtime dependency. |
@@ -121,6 +123,8 @@ signinum-j2k-native   -> signinum-profile
 signinum-j2k          -> signinum-j2k-native, signinum-core
 signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-profile, signinum-core
 signinum-j2k-cuda     -> signinum-j2k, signinum-j2k-native, signinum-cuda-runtime, signinum-profile, signinum-core
+
+signinum-transcode    (experimental coefficient-domain math, no workspace dependencies yet)
 
 signinum              -> signinum-core, signinum-jpeg, signinum-j2k, signinum-tilecodec, signinum-jpeg-metal, signinum-j2k-metal, signinum-jpeg-cuda, signinum-j2k-cuda
 signinum-cli          -> signinum-jpeg, signinum-j2k
@@ -322,6 +326,7 @@ signinum deliberately externalizes anything that resembles a runtime.
 | New JPEG decode shape, marker, or CPU optimization | `signinum-jpeg` |
 | New JPEG GPU shape | `signinum-jpeg-metal` (or `-cuda`) |
 | New diagnostic encode/transcode path | Prefer passthrough in the caller/container layer; otherwise `signinum-j2k-native`, surfaced through `signinum-j2k` |
+| New coefficient-domain JPEG→HTJ2K experiment | `signinum-transcode` until validated and promoted |
 | New J2K codestream feature, ROI/scaled support | `signinum-j2k-native`, surfaced through `signinum-j2k` |
 | New tile decompression codec (e.g. LZ4) | `signinum-tilecodec` |
 | New CLI subcommand | `signinum-cli` |
@@ -365,6 +370,9 @@ provisional and check the most recent commits before relying on it.
   upgrade a batch to Metal vs. stay on CPU.
 - Keeping the public WSI decode API guide aligned with the core trait surface.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.
+- Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode`, starting
+  with synthetic 1D DCT-to-5/3 validation before real JPEG and codestream
+  integration.
 
 ## Stability posture
 
