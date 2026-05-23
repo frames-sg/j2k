@@ -277,3 +277,13 @@ pub use jpeg::{
     JpegView,
 };
 pub use tilecodec::{DeflateCodec, LzwCodec, TileCodecError, UncompressedCodec, ZstdCodec};
+
+pub mod prelude {
+    //! Common imports for applications using the `signinum` facade.
+
+    pub use crate::{
+        BackendRequest, DeflateCodec, Downscale, EncodeBackendPreference, J2kDecoder,
+        J2kLosslessEncodeOptions, J2kLosslessSamples, JpegDecoder, JpegView, LzwCodec, PixelFormat,
+        TileDecompress, UncompressedCodec, ZstdCodec,
+    };
+}

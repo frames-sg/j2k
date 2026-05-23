@@ -2,19 +2,25 @@
 
 Rust codec primitives for pathology and whole-slide imaging workloads.
 
-`signinum` is for compressed tile payloads: JPEG, JPEG 2000 / HTJ2K, and
-container tile compression such as Deflate, Zstd, LZW, and uncompressed tiles.
+`signinum` is a codec workspace for compressed tile payloads: JPEG, JPEG 2000 /
+HTJ2K, and container tile compression such as Deflate, Zstd, LZW, and
+uncompressed tiles. The public facade re-exports the JPEG, JPEG 2000 / HTJ2K,
+tilecodec, and shared core contracts from focused crates in this repository.
+
 It is not a whole-slide container reader, pyramid manager, cache, or DICOM
 writer. Use [`statumen`](https://github.com/frames-sg/statumen) for slide
 container parsing and [`wsi-dicom`](https://github.com/frames-sg/wsi-dicom)
 for DICOM VL Whole Slide Microscopy export.
 
-The current public-source target is the `signinum` facade release.
-Runtime backend selection defaults to `Auto`: CPU decode is always available,
-and compiled Metal or CUDA adapters are used only for supported workloads. CUDA
-adapters expose CUDA device memory through `cuda-runtime` when a CUDA driver is
-available. JPEG full-frame RGB8 CUDA requests can use nvJPEG;
-NVIDIA performance claims require self-hosted GPU benchmark evidence.
+CPU decode is always available and is the default facade build. Metal and CUDA
+adapters are opt-in features used only for supported workloads. CUDA adapters
+expose CUDA device memory through `cuda-runtime` when a CUDA driver is
+available. JPEG full-frame RGB8 CUDA requests can use nvJPEG; NVIDIA performance
+claims require self-hosted GPU benchmark evidence.
+
+The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto`:
+CPU decode remains the portable fallback, and device adapters are additive for
+supported compiled workloads.
 
 ## Which crate should I use?
 
@@ -44,11 +50,11 @@ The facade exposes:
 - shared `signinum-core` contracts at the crate root and under
   `signinum::core`
 
-The default facade build includes portable CPU codecs and the Metal adapter.
-Use `--no-default-features` when you want only the CPU-portable facade, or
-`--features cuda` / `--features gpu` when the facade should expose CUDA adapter
-modules. CUDA runtime allocation, copies, kernels, and nvJPEG loading are
-enabled on the adapter crates with their `cuda-runtime` feature.
+The default facade build includes portable CPU codecs only. Use
+`--features metal` for Apple Metal adapters, `--features cuda` for CUDA
+adapters, or `--features gpu` for both. CUDA runtime allocation, copies,
+kernels, and nvJPEG loading are enabled on the adapter crates with their
+`cuda-runtime` feature.
 
 ## Quick start
 

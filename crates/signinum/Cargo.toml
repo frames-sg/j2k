@@ -16,7 +16,7 @@ name = "signinum"
 path = "src/lib.rs"
 
 [features]
-default = ["metal"]
+default = []
 gpu = ["metal", "cuda"]
 metal = ["dep:signinum-jpeg-metal", "dep:signinum-j2k-metal"]
 cuda = ["dep:signinum-jpeg-cuda", "dep:signinum-j2k-cuda"]
