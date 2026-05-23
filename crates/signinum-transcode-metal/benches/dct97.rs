@@ -552,6 +552,23 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
             });
         });
 
+        group.bench_with_input(
+            BenchmarkId::new(spec.name, "metal_auto"),
+            &jpeg,
+            |b, jpeg| {
+                let mut transcoder = JpegToHtj2kTranscoder::default();
+                let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
+                let options = JpegToHtj2kOptions::lossless_53();
+                b.iter(|| {
+                    black_box(
+                        transcoder
+                            .transcode_with_accelerator(black_box(jpeg), &options, &mut accelerator)
+                            .expect("auto Metal JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
+                    );
+                });
+            },
+        );
+
         if metal_available() {
             group.bench_with_input(
                 BenchmarkId::new(spec.name, "metal_explicit"),

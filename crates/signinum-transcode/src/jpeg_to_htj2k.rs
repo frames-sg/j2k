@@ -131,9 +131,9 @@ impl JpegToHtj2kTranscoder {
 
     /// Transcode with an optional stage accelerator.
     ///
-    /// Accelerators may handle the direct float DCT-grid projection stages and
-    /// return `None` for scalar fallback. Integer-direct 5/3 remains scalar in
-    /// this experimental API.
+    /// Accelerators may handle direct DCT-grid projection stages and return
+    /// `None` for scalar fallback. Integer-direct 5/3 is offered in
+    /// same-geometry batches before falling back to per-component work.
     pub fn transcode_with_accelerator<A: DctToWaveletStageAccelerator>(
         &mut self,
         bytes: &[u8],
@@ -566,6 +566,20 @@ fn transcode_component_batch(
         ));
     }
 
+    if matches!(
+        options.coefficient_path,
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+    ) {
+        return transcode_integer_component_batch(
+            components,
+            component_sampling,
+            decomposition_levels,
+            options,
+            scratch,
+            accelerator,
+        );
+    }
+
     let mut precomputed_53 = Vec::with_capacity(components.len());
     let mut precomputed_97 = Vec::with_capacity(components.len());
     let mut float_validation_actual = Vec::new();
@@ -627,6 +641,176 @@ fn transcode_component_batch(
         precomputed_components,
         float_reference_metrics,
         integer_reference_metrics,
+    })
+}
+
+fn transcode_integer_component_batch(
+    components: &[JpegDctComponent],
+    component_sampling: &[(u8, u8)],
+    decomposition_levels: u8,
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
+) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
+    let mut precomputed_53: Vec<Option<PrecomputedHtj2k53Component>> =
+        (0..components.len()).map(|_| None).collect();
+    let mut float_validation_actual = Vec::new();
+    let mut float_validation_expected = Vec::new();
+    let mut integer_validation_actual = Vec::new();
+    let mut integer_validation_expected = Vec::new();
+
+    for group in same_geometry_component_groups(components) {
+        let group_wavelets = integer_wavelets_for_component_group(
+            &group,
+            components,
+            decomposition_levels,
+            scratch,
+            accelerator,
+        )?;
+        for (component_index, wavelet) in group.into_iter().zip(group_wavelets) {
+            let component = &components[component_index];
+            let (x_rsiz, y_rsiz) = component_sampling[component_index];
+            let actual_coefficients = flatten_integer_wavelet(&wavelet);
+            precomputed_53[component_index] = Some(PrecomputedHtj2k53Component {
+                x_rsiz,
+                y_rsiz,
+                dwt: j2k_dwt_from_integer_wavelet(&wavelet),
+            });
+
+            if options.validate_against_float_reference {
+                float_validation_actual.extend(actual_coefficients.clone());
+                float_validation_expected.extend(float_reference_coefficients(
+                    component,
+                    decomposition_levels,
+                    scratch,
+                )?);
+            }
+            if options.validate_against_integer_reference {
+                integer_validation_actual.extend(actual_coefficients);
+                integer_validation_expected.extend(integer_reference_coefficients(
+                    component,
+                    decomposition_levels,
+                )?);
+            }
+        }
+    }
+
+    let float_reference_metrics = if options.validate_against_float_reference {
+        Some(error_metrics_i32(
+            &float_validation_actual,
+            &float_validation_expected,
+        )?)
+    } else {
+        None
+    };
+    let integer_reference_metrics = if options.validate_against_integer_reference {
+        Some(error_metrics_i32(
+            &integer_validation_actual,
+            &integer_validation_expected,
+        )?)
+    } else {
+        None
+    };
+    let precomputed_components = precomputed_53
+        .into_iter()
+        .map(|component| {
+            component.ok_or(JpegToHtj2kError::Validation(
+                "integer transcode did not produce all components",
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ComponentTranscodeBatch {
+        precomputed_components: PrecomputedComponentBatch::Dwt53(precomputed_components),
+        float_reference_metrics,
+        integer_reference_metrics,
+    })
+}
+
+fn integer_wavelets_for_component_group(
+    group: &[usize],
+    components: &[JpegDctComponent],
+    decomposition_levels: u8,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
+) -> Result<Vec<IntegerWavelet>, JpegToHtj2kError> {
+    let jobs = group
+        .iter()
+        .map(|&component_index| integer_dct_job_for_component(&components[component_index]))
+        .collect::<Result<Vec<_>, _>>()?;
+    let accelerated_first_levels = accelerator
+        .dct_grid_to_reversible_dwt53_batch(&jobs)
+        .map_err(JpegToHtj2kError::Accelerator)?;
+
+    if let Some(first_levels) = accelerated_first_levels {
+        if first_levels.len() != group.len() {
+            return Err(JpegToHtj2kError::Validation(
+                "reversible 5/3 batch accelerator returned wrong component count",
+            ));
+        }
+        return Ok(first_levels
+            .into_iter()
+            .map(|first_level| integer_wavelet_from_first_level(first_level, decomposition_levels))
+            .collect());
+    }
+
+    group
+        .iter()
+        .map(|&component_index| {
+            integer_direct_wavelet_from_component(
+                &components[component_index],
+                decomposition_levels,
+                scratch,
+                accelerator,
+            )
+        })
+        .collect()
+}
+
+fn same_geometry_component_groups(components: &[JpegDctComponent]) -> Vec<Vec<usize>> {
+    let mut assigned = vec![false; components.len()];
+    let mut groups = Vec::new();
+
+    for component_index in 0..components.len() {
+        if assigned[component_index] {
+            continue;
+        }
+        assigned[component_index] = true;
+        let mut group = vec![component_index];
+        for candidate_index in component_index + 1..components.len() {
+            if !assigned[candidate_index]
+                && same_component_geometry(
+                    &components[component_index],
+                    &components[candidate_index],
+                )
+            {
+                assigned[candidate_index] = true;
+                group.push(candidate_index);
+            }
+        }
+        groups.push(group);
+    }
+
+    groups
+}
+
+fn same_component_geometry(left: &JpegDctComponent, right: &JpegDctComponent) -> bool {
+    left.width == right.width
+        && left.height == right.height
+        && left.block_cols == right.block_cols
+        && left.block_rows == right.block_rows
+}
+
+fn integer_dct_job_for_component(
+    component: &JpegDctComponent,
+) -> Result<DctGridToReversibleDwt53Job<'_>, JpegToHtj2kError> {
+    validate_component_block_grid(component)?;
+    Ok(DctGridToReversibleDwt53Job {
+        dequantized_blocks: &component.dequantized_blocks,
+        block_cols: component.block_cols as usize,
+        block_rows: component.block_rows as usize,
+        width: component.width as usize,
+        height: component.height as usize,
     })
 }
 
@@ -1044,31 +1228,58 @@ fn integer_direct_wavelet_from_component(
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<IntegerWavelet, JpegToHtj2kError> {
-    validate_component_block_grid(component)?;
-    let job = DctGridToReversibleDwt53Job {
-        dequantized_blocks: &component.dequantized_blocks,
-        block_cols: component.block_cols as usize,
-        block_rows: component.block_rows as usize,
-        width: component.width as usize,
-        height: component.height as usize,
-    };
+    let job = integer_dct_job_for_component(component)?;
     let accelerated_first_level = accelerator
         .dct_grid_to_reversible_dwt53(job)
         .map_err(JpegToHtj2kError::Accelerator)?;
-    let (mut final_ll, mut final_ll_width, mut final_ll_height, first_level) =
-        if let Some(first_level) = accelerated_first_level {
-            integer_wavelet_first_level_from_accelerated(first_level)
-        } else {
-            scratch.integer_idct_blocks.clear();
-            scratch
-                .integer_idct_blocks
-                .resize_with(component.dequantized_blocks.len(), || None);
-            integer_direct_first_level_from_component(
-                component,
-                &mut scratch.integer_idct_blocks,
-                &mut scratch.integer_row,
-            )?
-        };
+    if let Some(first_level) = accelerated_first_level {
+        return Ok(integer_wavelet_from_first_level(
+            first_level,
+            decomposition_levels,
+        ));
+    }
+
+    scratch.integer_idct_blocks.clear();
+    scratch
+        .integer_idct_blocks
+        .resize_with(component.dequantized_blocks.len(), || None);
+    let (final_ll, final_ll_width, final_ll_height, first_level) =
+        integer_direct_first_level_from_component(
+            component,
+            &mut scratch.integer_idct_blocks,
+            &mut scratch.integer_row,
+        )?;
+    Ok(integer_wavelet_from_first_parts(
+        final_ll,
+        final_ll_width,
+        final_ll_height,
+        first_level,
+        decomposition_levels,
+    ))
+}
+
+fn integer_wavelet_from_first_level(
+    first_level: ReversibleDwt53FirstLevel,
+    decomposition_levels: u8,
+) -> IntegerWavelet {
+    let (final_ll, final_ll_width, final_ll_height, first_level) =
+        integer_wavelet_first_level_from_accelerated(first_level);
+    integer_wavelet_from_first_parts(
+        final_ll,
+        final_ll_width,
+        final_ll_height,
+        first_level,
+        decomposition_levels,
+    )
+}
+
+fn integer_wavelet_from_first_parts(
+    mut final_ll: Vec<i32>,
+    mut final_ll_width: usize,
+    mut final_ll_height: usize,
+    first_level: IntegerWaveletLevel,
+    decomposition_levels: u8,
+) -> IntegerWavelet {
     let mut levels = vec![first_level];
 
     let remaining_levels = usize::from(decomposition_levels.saturating_sub(1));
@@ -1081,12 +1292,12 @@ fn integer_direct_wavelet_from_component(
         levels.extend(tail.levels);
     }
 
-    Ok(IntegerWavelet {
+    IntegerWavelet {
         final_ll,
         final_ll_width,
         final_ll_height,
         levels,
-    })
+    }
 }
 
 fn integer_wavelet_first_level_from_accelerated(

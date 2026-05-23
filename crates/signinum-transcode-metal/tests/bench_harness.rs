@@ -10,6 +10,7 @@ fn dct97_benchmark_groups_are_stable() {
         "reversible_dct53_metal_projection",
         "reversible_dct53_batch_metal_projection",
         "jpeg_to_htj2k_wsi_integer_53",
+        "metal_auto",
         "rayon_224x224",
         "rayon_512x512",
         "rayon_1024x1024",

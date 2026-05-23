@@ -390,8 +390,10 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_grayscale_
             accelerated.report.integer_reference_classification,
             Some(TranscodeValidationClassification::Exact)
         );
-        assert_eq!(accelerator.reversible_dwt53_attempts(), 1);
-        assert_eq!(accelerator.reversible_dwt53_dispatches(), 1);
+        assert_eq!(accelerator.reversible_dwt53_attempts(), 0);
+        assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
+        assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
+        assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 1);
     }
 }
 
@@ -415,8 +417,10 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420(
         accelerated.report.integer_reference_classification,
         Some(TranscodeValidationClassification::Exact)
     );
-    assert_eq!(accelerator.reversible_dwt53_attempts(), 3);
-    assert_eq!(accelerator.reversible_dwt53_dispatches(), 3);
+    assert_eq!(accelerator.reversible_dwt53_attempts(), 0);
+    assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
+    assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 2);
+    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 2);
     assert_report_sampling(&accelerated, &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)]);
     assert_component_sampling(&accelerated.codestream, &[(1, 1), (2, 2), (2, 2)]);
 }
@@ -567,7 +571,68 @@ fn integer_direct_transcode_path_uses_reversible_acceleration_hook_when_availabl
         .transcode_with_accelerator(jpeg, &JpegToHtj2kOptions::default(), &mut accelerator)
         .expect("accelerated integer-direct transcode succeeds");
 
-    assert_eq!(accelerator.reversible_dwt53_calls, 1);
+    assert_eq!(accelerator.reversible_dwt53_calls, 0);
+    assert_eq!(accelerator.reversible_dwt53_batch_calls, 1);
+    assert_eq!(accelerator.reversible_dwt53_batch_sizes, vec![1]);
+}
+
+#[test]
+fn integer_direct_transcode_batches_same_geometry_components_when_available() {
+    for fixture in [
+        BatchFixture {
+            name: "grayscale",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            expected_batch_sizes: &[1],
+        },
+        BatchFixture {
+            name: "ycbcr_444",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            expected_batch_sizes: &[3],
+        },
+        BatchFixture {
+            name: "ycbcr_422",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            expected_batch_sizes: &[1, 2],
+        },
+        BatchFixture {
+            name: "ycbcr_420",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            expected_batch_sizes: &[1, 2],
+        },
+    ] {
+        let options = JpegToHtj2kOptions {
+            validate_against_integer_reference: true,
+            ..JpegToHtj2kOptions::default()
+        };
+        let scalar =
+            jpeg_to_htj2k(fixture.jpeg, &options).expect("scalar integer-direct transcode");
+        let mut transcoder = JpegToHtj2kTranscoder::default();
+        let mut accelerator = CountingAccelerator::default();
+
+        let accelerated = transcoder
+            .transcode_with_accelerator(fixture.jpeg, &options, &mut accelerator)
+            .expect("batched integer-direct transcode succeeds");
+
+        assert_eq!(
+            accelerated.codestream, scalar.codestream,
+            "batched IntegerDirect53 must match scalar oracle for {}",
+            fixture.name
+        );
+        assert_eq!(
+            accelerated.report.integer_reference_classification,
+            Some(TranscodeValidationClassification::Exact)
+        );
+        assert_eq!(
+            accelerator.reversible_dwt53_calls, 0,
+            "batch-capable accelerator should not need single-job fallback for {}",
+            fixture.name
+        );
+        assert_eq!(
+            accelerator.reversible_dwt53_batch_sizes, fixture.expected_batch_sizes,
+            "unexpected same-geometry batch grouping for {}",
+            fixture.name
+        );
+    }
 }
 
 #[test]
@@ -602,6 +667,8 @@ fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
 #[derive(Default)]
 struct CountingAccelerator {
     reversible_dwt53_calls: usize,
+    reversible_dwt53_batch_calls: usize,
+    reversible_dwt53_batch_sizes: Vec<usize>,
     dwt53_calls: usize,
     dwt97_calls: usize,
     dwt53_scratch: Dct53GridScratch,
@@ -619,6 +686,24 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
                 .dct_grid_to_reversible_dwt53(job)?
                 .expect("rayon accelerator handles test job"),
         ))
+    }
+
+    fn dct_grid_to_reversible_dwt53_batch(
+        &mut self,
+        jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        self.reversible_dwt53_batch_calls += 1;
+        self.reversible_dwt53_batch_sizes.push(jobs.len());
+        let mut output = Vec::with_capacity(jobs.len());
+        let mut rayon = RayonReversibleDwt53Accelerator::default();
+        for job in jobs {
+            output.push(
+                rayon
+                    .dct_grid_to_reversible_dwt53(*job)?
+                    .expect("rayon accelerator handles batched test job"),
+            );
+        }
+        Ok(Some(output))
     }
 
     fn dct_grid_to_dwt53(
@@ -654,6 +739,12 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         .map_err(|_| "test DCT 9/7 grid failed")?;
         Ok(Some(dwt))
     }
+}
+
+struct BatchFixture {
+    name: &'static str,
+    jpeg: &'static [u8],
+    expected_batch_sizes: &'static [usize],
 }
 
 fn encoded_gray_jpeg(width: u32, height: u32) -> Vec<u8> {
