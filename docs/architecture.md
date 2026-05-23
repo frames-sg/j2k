@@ -370,9 +370,12 @@ provisional and check the most recent commits before relying on it.
   upgrade a batch to Metal vs. stay on CPU.
 - Keeping the public WSI decode API guide aligned with the core trait surface.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.
-- Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode`, starting
-  with synthetic 1D DCT-to-5/3 validation before real JPEG and codestream
-  integration.
+- Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode`. The
+  crate remains experimental until its promotion gate is satisfied: synthetic
+  1D/2D tests, real JPEG grayscale and YCbCr sampling tests, native and
+  available external HTJ2K decoder acceptance, documented error histograms,
+  loud unsupported-mode failures, and no direct dependency between
+  `signinum-jpeg` and `signinum-j2k-native`.
 
 ## Stability posture
 
