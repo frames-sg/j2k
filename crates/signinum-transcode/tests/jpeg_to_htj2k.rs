@@ -5,6 +5,12 @@ use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use signinum_transcode::{jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions};
+use std::{
+    env, fs,
+    path::PathBuf,
+    process::{Command, Output},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
@@ -42,6 +48,31 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
     assert_eq!(metrics.total, 64);
     assert_eq!(metrics.exact_matches, 64);
     assert_eq!(metrics.max_abs_error, 0);
+}
+
+#[test]
+fn generated_htj2k_is_accepted_by_available_external_decoder() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
+        .expect("transcode grayscale JPEG to HTJ2K");
+    let decoders = available_external_decoders();
+    if decoders.is_empty() {
+        eprintln!("skipping external HTJ2K decoder check: no supported decoder executable found");
+        return;
+    }
+
+    let mut failures = Vec::new();
+    for decoder in decoders {
+        match run_external_decoder(decoder, &encoded.codestream) {
+            Ok(()) => return,
+            Err(err) => failures.push(format!("{decoder:?}: {err}")),
+        }
+    }
+
+    panic!(
+        "generated HTJ2K codestream was rejected by all available external decoders:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -186,6 +217,87 @@ fn assert_report_sampling(encoded: &EncodedTranscode, expected: &[(u32, u32, u8,
         assert_eq!((component.width, component.height), (width, height));
         assert_eq!((component.x_rsiz, component.y_rsiz), (x_rsiz, y_rsiz));
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExternalDecoder {
+    Grok,
+    OpenJpeg,
+}
+
+fn available_external_decoders() -> Vec<ExternalDecoder> {
+    let mut decoders = Vec::new();
+    if Command::new("grk_decompress").arg("-h").output().is_ok() {
+        decoders.push(ExternalDecoder::Grok);
+    }
+    if Command::new("opj_decompress").arg("-h").output().is_ok() {
+        decoders.push(ExternalDecoder::OpenJpeg);
+    }
+    decoders
+}
+
+fn run_external_decoder(decoder: ExternalDecoder, codestream: &[u8]) -> Result<(), String> {
+    let ExternalDecodeFiles {
+        input_path,
+        output_path,
+    } = write_external_decode_input(codestream)?;
+    let output = match decoder {
+        ExternalDecoder::Grok => Command::new("grk_decompress")
+            .arg("-i")
+            .arg(&input_path)
+            .arg("-o")
+            .arg(&output_path)
+            .arg("-O")
+            .arg("PNM")
+            .output(),
+        ExternalDecoder::OpenJpeg => Command::new("opj_decompress")
+            .arg("-quiet")
+            .arg("-i")
+            .arg(&input_path)
+            .arg("-o")
+            .arg(&output_path)
+            .output(),
+    };
+    let output = output.map_err(|err| err.to_string());
+    let _ = fs::remove_file(&input_path);
+    let _ = fs::remove_file(&output_path);
+
+    let output = output?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format_command_output(&output))
+    }
+}
+
+struct ExternalDecodeFiles {
+    input_path: PathBuf,
+    output_path: PathBuf,
+}
+
+fn write_external_decode_input(codestream: &[u8]) -> Result<ExternalDecodeFiles, String> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_nanos();
+    let stem = format!("signinum-transcode-{}-{unique}", std::process::id());
+    let input_path = env::temp_dir().join(format!("{stem}.j2k"));
+    let output_path = env::temp_dir().join(format!("{stem}.pgm"));
+    fs::write(&input_path, codestream).map_err(|err| err.to_string())?;
+
+    Ok(ExternalDecodeFiles {
+        input_path,
+        output_path,
+    })
+}
+
+fn format_command_output(output: &Output) -> String {
+    format!(
+        "status: {}; stdout: {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn find_marker(codestream: &[u8], marker: u8) -> Option<usize> {
