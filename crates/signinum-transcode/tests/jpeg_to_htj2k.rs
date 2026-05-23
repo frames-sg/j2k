@@ -58,6 +58,82 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 }
 
 #[test]
+fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
+    encode_options.reversible = false;
+    let options = JpegToHtj2kOptions {
+        encode_options,
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG to lossy 9/7 HTJ2K");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated 9/7 HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated 9/7 HTJ2K");
+    let metrics = encoded
+        .report
+        .float_reference_metrics
+        .as_ref()
+        .expect("float reference metrics are reported");
+
+    assert_eq!(
+        encoded.report.path,
+        "full_resolution_components_float_direct_97"
+    );
+    assert_eq!(
+        encoded.report.coefficient_path,
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97
+    );
+    assert_eq!(encoded.report.decomposition_levels, 1);
+    assert_eq!(metrics.total, 64);
+    assert_eq!(metrics.exact_matches, 64);
+    assert_eq!(metrics.max_abs_error, 0);
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 1);
+}
+
+#[test]
+fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let mut encode_options = JpegToHtj2kOptions::default().encode_options;
+    encode_options.reversible = false;
+    let options = JpegToHtj2kOptions {
+        encode_options,
+        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded = jpeg_to_htj2k(jpeg, &options).expect("transcode 4:2:0 JPEG to lossy 9/7 HTJ2K");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated 9/7 HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated 9/7 HTJ2K");
+    let metrics = encoded
+        .report
+        .float_reference_metrics
+        .as_ref()
+        .expect("float reference metrics are reported");
+
+    assert_eq!(
+        encoded.report.path,
+        "native_component_sampling_float_direct_97"
+    );
+    assert_eq!(metrics.total, 384);
+    assert_eq!(metrics.exact_matches, 384);
+    assert_eq!(metrics.max_abs_error, 0);
+    assert_report_sampling(&encoded, &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)]);
+    assert_eq!((decoded.width, decoded.height), (16, 16));
+    assert_eq!(decoded.num_components, 3);
+    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
+}
+
+#[test]
 fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {

@@ -17,7 +17,13 @@ use signinum_transcode::dct53_2d::{
 use signinum_transcode::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
-use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use signinum_transcode::dct97_2d::{
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_with_scratch,
+    Dct97GridScratch,
+};
+use signinum_transcode::{
+    jpeg_to_htj2k, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+};
 
 fn bench_dct53_math(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
@@ -95,6 +101,8 @@ fn bench_dct53_math(c: &mut Criterion) {
     });
     two_dimensional_grid.finish();
 
+    bench_dct97_grid(c, &grid_blocks);
+
     let mut multilevel = c.benchmark_group("dct53_multilevel_scalar");
     multilevel.bench_function("direct_level1_then_ll_recursion", |b| {
         b.iter(|| {
@@ -109,6 +117,37 @@ fn bench_dct53_math(c: &mut Criterion) {
         });
     });
     multilevel.finish();
+}
+
+fn bench_dct97_grid(c: &mut Criterion, grid_blocks: &[[[f64; 8]; 8]]) {
+    let mut two_dimensional_grid_97 = c.benchmark_group("dct97_2d_grid_scalar");
+    let mut grid_97_scratch = Dct97GridScratch::default();
+    two_dimensional_grid_97.bench_function("direct_linear_13x11_scratch_reuse", |b| {
+        b.iter(|| {
+            dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+                black_box(grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+                black_box(&mut grid_97_scratch),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    two_dimensional_grid_97.bench_function("idct_then_dwt_reference_13x11", |b| {
+        b.iter(|| {
+            dct8x8_blocks_then_dwt97_float(
+                black_box(grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    two_dimensional_grid_97.finish();
 }
 
 fn bench_layout_candidates(c: &mut Criterion) {
@@ -162,6 +201,9 @@ fn bench_jpeg_paths(c: &mut Criterion) {
     let jpeg_420 =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
     let transcode_options = JpegToHtj2kOptions::default();
+    let mut transcode_97_options = JpegToHtj2kOptions::default();
+    transcode_97_options.encode_options.reversible = false;
+    transcode_97_options.coefficient_path = JpegToHtj2kCoefficientPath::FloatDirectLinear97;
     let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k");
     jpeg_to_htj2k_group.bench_function("grayscale_8x8", |b| {
         b.iter(|| {
@@ -203,6 +245,18 @@ fn bench_jpeg_paths(c: &mut Criterion) {
         b.iter(|| {
             jpeg_to_htj2k(black_box(jpeg_420), black_box(&transcode_options))
                 .expect("transcode 4:2:0 YCbCr JPEG to HTJ2K");
+        });
+    });
+    jpeg_to_htj2k_group.bench_function("grayscale_8x8_float_direct_97", |b| {
+        b.iter(|| {
+            jpeg_to_htj2k(black_box(jpeg_gray), black_box(&transcode_97_options))
+                .expect("transcode grayscale JPEG to 9/7 HTJ2K");
+        });
+    });
+    jpeg_to_htj2k_group.bench_function("ycbcr_420_16x16_float_direct_97", |b| {
+        b.iter(|| {
+            jpeg_to_htj2k(black_box(jpeg_420), black_box(&transcode_97_options))
+                .expect("transcode 4:2:0 YCbCr JPEG to 9/7 HTJ2K");
         });
     });
     jpeg_to_htj2k_group.finish();

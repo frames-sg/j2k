@@ -9,6 +9,7 @@ pub mod corpus_validation;
 pub mod dct53_1d;
 pub mod dct53_2d;
 pub mod dct53_multilevel;
+pub mod dct97_2d;
 pub mod htj2k_wavelet;
 mod jpeg_to_htj2k;
 pub mod metrics;

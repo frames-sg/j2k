@@ -7,7 +7,7 @@ the JPEG and J2K crates:
 ```text
 JPEG bytes
   -> signinum-jpeg quantized/dequantized DCT extraction
-  -> signinum-transcode DCT-domain 5/3 coefficient mapping
+  -> signinum-transcode DCT-domain 5/3 or 9/7 coefficient mapping
   -> signinum-j2k-native precomputed-band HTJ2K encode
 ```
 
@@ -23,6 +23,10 @@ JPEG bytes
 - The default production path is `IntegerDirect53`: the first 5/3 level is
   computed from JPEG DCT blocks without materializing a full spatial image
   plane, then later levels recurse over LL.
+- `FloatDirectLinear97` is an opt-in irreversible path: the first 9/7 level is
+  computed directly from JPEG DCT blocks using cached linearized lifting
+  weights, later levels recurse over LL, and the result encodes through
+  `encode_precomputed_htj2k_97`.
 - Progressive JPEG inputs use the existing progressive scan accumulator to
   expose final quantized/dequantized DCT blocks to the same transcode path as
   baseline JPEG. No progressive IDCT, RGB conversion, or chroma upsample is
@@ -44,9 +48,9 @@ JPEG bytes
   reference-grid/SIZ sampling checks. This gives the standalone wavelet-band
   descriptor a direct, tested route into the encoder while keeping the adapter
   outside both codec crates.
-- The native encoder now has an irreversible 9/7 precomputed-band entry point,
-  and `signinum-transcode::htj2k_wavelet::WaveletImage97<f32>` converts into
-  that representation with the same geometry and SIZ sampling validation.
+- The native encoder has an irreversible 9/7 precomputed-band entry point, and
+  `signinum-transcode::htj2k_wavelet::WaveletImage97<f32>` converts into that
+  representation with the same geometry and SIZ sampling validation.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
   decoder acceptance, SIZ component sampling, multilevel output, optional
   integer-reference metrics, and external decoder acceptance when OpenJPEG or
@@ -142,6 +146,20 @@ previous run. This reporting slice did not touch extraction code; end-to-end
 tiny-fixture transcode timings stayed within noise except for the 4:4:4 and
 4:2:2 fixtures, which were also within Criterion's noise threshold.
 
+## Float-Direct 9/7 Benchmark Baseline
+
+The first irreversible 9/7 scalar benchmark run after adding
+`FloatDirectLinear97` measured:
+
+- `dct97_2d_grid_scalar/direct_linear_13x11_scratch_reuse`: 272.90-274.15 us
+- `dct97_2d_grid_scalar/idct_then_dwt_reference_13x11`: 8.7117-8.8085 us
+- `jpeg_to_htj2k/grayscale_8x8_float_direct_97`: 137.47-138.80 us
+- `jpeg_to_htj2k/ycbcr_420_16x16_float_direct_97`: 878.51-882.35 us
+
+This is a correctness-first scalar baseline, not an optimization result. The
+direct matrix projection is intentionally expensive before SIMD/GPU work because
+it expands cached lifting weights over every DCT basis contribution.
+
 ## Open Issues
 
 - The integer-direct production path still uses scalar, on-demand ISLOW block
@@ -153,5 +171,5 @@ tiny-fixture transcode timings stayed within noise except for the 4:4:4 and
   one representation.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
-- JPEG-to-9/7 coefficient generation, RGB conversion, and chroma upsample remain
-  out of scope for this experimental path.
+- RGB conversion and chroma upsample remain out of scope for this experimental
+  path.
