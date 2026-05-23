@@ -13,9 +13,11 @@ use signinum_transcode::dct97_2d::{
 use signinum_transcode::{JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
-const WSI_DIMS: [usize; 3] = [512, 1024, 2048];
+const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 
-const DIRECT_BENCH_MARKERS: [&str; 6] = [
+const DIRECT_BENCH_MARKERS: [&str; 8] = [
+    "scalar_224x224",
+    "metal_explicit_224x224",
     "scalar_512x512",
     "metal_explicit_512x512",
     "scalar_1024x1024",
@@ -24,7 +26,37 @@ const DIRECT_BENCH_MARKERS: [&str; 6] = [
     "metal_explicit_2048x2048",
 ];
 
-const WSI_FIXTURES: [WsiFixtureSpec; 9] = [
+const WSI_FIXTURES: [WsiFixtureSpec; 12] = [
+    WsiFixtureSpec {
+        name: "p3_like_ybr444_224",
+        dim: 224,
+        subsampling: JpegSubsampling::Ybr444,
+        generator: rgb_p3_like_pattern,
+    },
+    WsiFixtureSpec {
+        name: "p3_like_ybr444_512",
+        dim: 512,
+        subsampling: JpegSubsampling::Ybr444,
+        generator: rgb_p3_like_pattern,
+    },
+    WsiFixtureSpec {
+        name: "p3_like_ybr444_1024",
+        dim: 1024,
+        subsampling: JpegSubsampling::Ybr444,
+        generator: rgb_p3_like_pattern,
+    },
+    WsiFixtureSpec {
+        name: "p3_like_ybr444_2048",
+        dim: 2048,
+        subsampling: JpegSubsampling::Ybr444,
+        generator: rgb_p3_like_pattern,
+    },
+    WsiFixtureSpec {
+        name: "srgb_ybr420_224",
+        dim: 224,
+        subsampling: JpegSubsampling::Ybr420,
+        generator: rgb_srgb_pattern,
+    },
     WsiFixtureSpec {
         name: "srgb_ybr420_512",
         dim: 512,
@@ -44,22 +76,10 @@ const WSI_FIXTURES: [WsiFixtureSpec; 9] = [
         generator: rgb_srgb_pattern,
     },
     WsiFixtureSpec {
-        name: "p3_like_ybr444_512",
-        dim: 512,
-        subsampling: JpegSubsampling::Ybr444,
-        generator: rgb_p3_like_pattern,
-    },
-    WsiFixtureSpec {
-        name: "p3_like_ybr444_1024",
-        dim: 1024,
-        subsampling: JpegSubsampling::Ybr444,
-        generator: rgb_p3_like_pattern,
-    },
-    WsiFixtureSpec {
-        name: "p3_like_ybr444_2048",
-        dim: 2048,
-        subsampling: JpegSubsampling::Ybr444,
-        generator: rgb_p3_like_pattern,
+        name: "ycbcr_like_ybr420_224",
+        dim: 224,
+        subsampling: JpegSubsampling::Ybr420,
+        generator: rgb_ycbcr_like_pattern,
     },
     WsiFixtureSpec {
         name: "ycbcr_like_ybr420_512",
