@@ -4,6 +4,7 @@ use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
+use signinum_jpeg::{JpegError, SofKind};
 use signinum_transcode::{jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kOptions};
 use std::{
     env, fs,
@@ -11,6 +12,9 @@ use std::{
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[path = "../../signinum-jpeg/tests/fixtures/mod.rs"]
+mod jpeg_fixtures;
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
@@ -119,6 +123,21 @@ fn generated_htj2k_is_accepted_by_available_external_decoder() {
         "generated HTJ2K codestream was rejected by all available external decoders:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn progressive_jpeg_fails_loudly_at_transcode_entry_point() {
+    let jpeg = jpeg_fixtures::progressive_8x8_jpeg();
+
+    let err = jpeg_to_htj2k(&jpeg, &JpegToHtj2kOptions::default())
+        .expect_err("progressive JPEG is out of scope for DCT transcode");
+
+    assert!(matches!(
+        err,
+        signinum_transcode::JpegToHtj2kError::Jpeg(JpegError::NotImplemented {
+            sof: SofKind::Progressive8
+        })
+    ));
 }
 
 #[test]
