@@ -65,6 +65,8 @@ pub struct MetalDctToWaveletStageAccelerator {
     min_auto_reversible_samples: usize,
     reversible_dwt53_attempts: usize,
     reversible_dwt53_dispatches: usize,
+    reversible_dwt53_batch_attempts: usize,
+    reversible_dwt53_batch_dispatches: usize,
     dwt53_attempts: usize,
     dwt53_dispatches: usize,
     dwt97_attempts: usize,
@@ -88,6 +90,8 @@ impl MetalDctToWaveletStageAccelerator {
             min_auto_reversible_samples: 0,
             reversible_dwt53_attempts: 0,
             reversible_dwt53_dispatches: 0,
+            reversible_dwt53_batch_attempts: 0,
+            reversible_dwt53_batch_dispatches: 0,
             dwt53_attempts: 0,
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
@@ -105,6 +109,8 @@ impl MetalDctToWaveletStageAccelerator {
             min_auto_reversible_samples: DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES,
             reversible_dwt53_attempts: 0,
             reversible_dwt53_dispatches: 0,
+            reversible_dwt53_batch_attempts: 0,
+            reversible_dwt53_batch_dispatches: 0,
             dwt53_attempts: 0,
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
@@ -122,6 +128,18 @@ impl MetalDctToWaveletStageAccelerator {
     #[must_use]
     pub const fn reversible_dwt53_dispatches(&self) -> usize {
         self.reversible_dwt53_dispatches
+    }
+
+    /// Number of reversible integer 5/3 batches offered to this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_attempts(&self) -> usize {
+        self.reversible_dwt53_batch_attempts
+    }
+
+    /// Number of reversible integer 5/3 batches handled by Metal.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_dispatches(&self) -> usize {
+        self.reversible_dwt53_batch_dispatches
     }
 
     /// Number of 5/3 projection jobs offered to this accelerator.
@@ -146,6 +164,55 @@ impl MetalDctToWaveletStageAccelerator {
     #[must_use]
     pub const fn dwt97_dispatches(&self) -> usize {
         self.dwt97_dispatches
+    }
+
+    /// Dispatch a same-geometry batch of reversible integer 5/3 DCT-grid
+    /// projection jobs. This is an experimental Metal-specific extension used
+    /// for WSI tile-component queues; scalar/Rayon remains the portable oracle.
+    pub fn dct_grid_to_reversible_dwt53_batch(
+        &mut self,
+        jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        self.reversible_dwt53_batch_attempts =
+            self.reversible_dwt53_batch_attempts.saturating_add(1);
+
+        if jobs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        let total_samples = jobs.iter().fold(0usize, |total, job| {
+            total.saturating_add(job.width.saturating_mul(job.height))
+        });
+        if self.mode == MetalDispatchMode::Auto && total_samples < self.min_auto_reversible_samples
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = jobs;
+            match self.mode {
+                MetalDispatchMode::Explicit => {
+                    Err(MetalTranscodeError::MetalUnavailable.as_static_str())
+                }
+                MetalDispatchMode::Auto => Ok(None),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match metal::dispatch_dct_grid_to_reversible_dwt53_batch(jobs) {
+                Ok(output) => {
+                    self.reversible_dwt53_batch_dispatches =
+                        self.reversible_dwt53_batch_dispatches.saturating_add(1);
+                    Ok(Some(output))
+                }
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
+            }
+        }
     }
 }
 

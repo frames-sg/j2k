@@ -98,6 +98,26 @@ fn auto_metal_reversible_53_falls_back_for_tiny_jobs() {
     assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
 }
 
+#[test]
+fn auto_metal_reversible_53_batch_falls_back_for_tiny_jobs() {
+    let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
+    let blocks = vec![[0i16; 64]];
+    let jobs = [DctGridToReversibleDwt53Job {
+        dequantized_blocks: &blocks,
+        block_cols: 1,
+        block_rows: 1,
+        width: 8,
+        height: 8,
+    }];
+    let output = accelerator
+        .dct_grid_to_reversible_dwt53_batch(&jobs)
+        .expect("auto accelerator can decline tiny reversible 5/3 batch");
+
+    assert!(output.is_none());
+    assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
+    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 0);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
@@ -178,6 +198,59 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
     }
 
     assert_eq!(accelerator.reversible_dwt53_dispatches(), 3);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
+    let batch_blocks = [
+        structured_i16_blocks_with_offset(2, 2, 0),
+        structured_i16_blocks_with_offset(2, 2, 31),
+        structured_i16_blocks_with_offset(2, 2, -27),
+        structured_i16_blocks_with_offset(2, 2, 59),
+    ];
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+        let jobs: Vec<_> = batch_blocks
+            .iter()
+            .map(|blocks| DctGridToReversibleDwt53Job {
+                dequantized_blocks: blocks,
+                block_cols: 2,
+                block_rows: 2,
+                width,
+                height,
+            })
+            .collect();
+        let actual = match accelerator.dct_grid_to_reversible_dwt53_batch(&jobs) {
+            Ok(Some(output)) => output,
+            Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
+            Err(message) if message == METAL_UNAVAILABLE => {
+                eprintln!(
+                    "skipping Metal reversible 5/3 batch test because no Metal device is available"
+                );
+                return;
+            }
+            Err(message) => {
+                panic!("explicit Metal reversible 5/3 batch accelerator failed: {message}");
+            }
+        };
+
+        assert_eq!(actual.len(), jobs.len());
+        for (idx, (actual, job)) in actual.iter().zip(jobs.iter()).enumerate() {
+            let mut expected_accelerator = RayonReversibleDwt53Accelerator::default();
+            let expected = expected_accelerator
+                .dct_grid_to_reversible_dwt53(*job)
+                .expect("rayon reversible 5/3 accepts covered grid")
+                .expect("rayon handles reversible 5/3 job");
+            assert_eq!(
+                actual, &expected,
+                "reversible 5/3 batch mismatch for item {idx} at {width}x{height}"
+            );
+        }
+    }
+
+    assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 3);
 }
 
 #[test]
@@ -301,15 +374,24 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
 
 #[cfg(target_os = "macos")]
 fn structured_i16_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
+    structured_i16_blocks_with_offset(block_cols, block_rows, 0)
+}
+
+#[cfg(target_os = "macos")]
+fn structured_i16_blocks_with_offset(
+    block_cols: usize,
+    block_rows: usize,
+    base_offset: i16,
+) -> Vec<[i16; 64]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
         for block_x in 0..block_cols {
             let mut block = [0i16; 64];
-            let dc_offset =
+            let block_offset =
                 i16::try_from(block_x * 19 + block_y * 23).expect("fixture offset fits i16");
             let x_offset = i16::try_from(block_x).expect("fixture x offset fits i16");
             let y_offset = i16::try_from(block_y).expect("fixture y offset fits i16");
-            block[0] = 384 + dc_offset;
+            block[0] = 384 + base_offset + block_offset;
             block[1] = -17 + x_offset;
             block[8] = 11 - y_offset;
             block[19] = 7;
