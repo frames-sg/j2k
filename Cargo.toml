@@ -14,6 +14,7 @@ members = [
     "crates/signinum-jpeg-cuda",
     "crates/signinum-jpeg-metal",
     "crates/signinum-transcode",
+    "crates/signinum-transcode-metal",
     "crates/signinum-test-support",
     "crates/signinum-tilecodec",
     "crates/signinum-cli",
