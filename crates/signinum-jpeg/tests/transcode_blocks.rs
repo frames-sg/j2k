@@ -2,8 +2,9 @@
 
 mod fixtures;
 
-use signinum_jpeg::transcode::{extract_dct_blocks, idct_islow_block, DctExtractOptions};
-use signinum_jpeg::{JpegError, SofKind};
+use signinum_jpeg::transcode::{
+    extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctCodingMode,
+};
 
 #[test]
 fn extracts_grayscale_dct_blocks() {
@@ -121,19 +122,21 @@ fn extracts_restart_coded_ycbcr_420_blocks_and_restart_metadata() {
 }
 
 #[test]
-fn rejects_progressive_jpeg_for_dct_extraction() {
-    let err = extract_dct_blocks(
+fn extracts_progressive_ycbcr_420_dct_blocks_at_native_component_resolution() {
+    let image = extract_dct_blocks(
         &fixtures::progressive_8x8_jpeg(),
         DctExtractOptions::default(),
     )
-    .expect_err("progressive is out of scope");
+    .expect("extract progressive 4:2:0 DCT blocks");
 
-    assert!(matches!(
-        err,
-        JpegError::NotImplemented {
-            sof: SofKind::Progressive8
-        }
-    ));
+    assert_eq!((image.width, image.height), (8, 8));
+    assert_eq!(image.coding_mode, JpegDctCodingMode::Progressive);
+    assert_eq!(image.scan_count, 10);
+    assert_eq!(image.components.len(), 3);
+    assert_component(&image.components[0], (8, 8), (2, 2), (2, 2), 4);
+    assert_component(&image.components[1], (4, 4), (1, 1), (1, 1), 1);
+    assert_component(&image.components[2], (4, 4), (1, 1), (1, 1), 1);
+    assert!(image.restart_index.is_none());
 }
 
 #[test]

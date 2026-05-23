@@ -23,6 +23,10 @@ JPEG bytes
 - The default production path is `IntegerDirect53`: the first 5/3 level is
   computed from JPEG DCT blocks without materializing a full spatial image
   plane, then later levels recurse over LL.
+- Progressive JPEG inputs use the existing progressive scan accumulator to
+  expose final quantized/dequantized DCT blocks to the same transcode path as
+  baseline JPEG. No progressive IDCT, RGB conversion, or chroma upsample is
+  performed before HTJ2K wavelet generation.
 - The corpus report aggregates integer-reference coefficient metrics:
   sample count, exact-match count, maximum absolute error, and absolute-error
   histogram buckets. Aggregate and per-fixture reports now also carry the same
@@ -146,5 +150,5 @@ tiny-fixture transcode timings stayed within noise except for the 4:4:4 and
   one representation.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
-- Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain out
-  of scope for this experimental path.
+- 9/7 lossy, RGB conversion, and chroma upsample remain out of scope for this
+  experimental path.

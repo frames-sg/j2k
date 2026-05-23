@@ -8,8 +8,8 @@ codec crates.
 
 ## Current Scope
 
-The experimental path currently targets baseline sequential JPEG DCT blocks and
-reversible 5/3 HTJ2K output:
+The experimental path currently targets baseline sequential and progressive
+JPEG DCT blocks and reversible 5/3 HTJ2K output:
 
 ```text
 JPEG bytes
@@ -19,7 +19,8 @@ JPEG bytes
 ```
 
 It preserves native component sampling for grayscale, 4:4:4, 4:2:2, and 4:2:0
-inputs. Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain
+inputs. Progressive JPEG coefficients are accumulated from all scans before
+the DCT-to-wavelet stage. 9/7 lossy, RGB conversion, and chroma upsample remain
 out of scope.
 
 `JpegToHtj2kCoefficientPath::IntegerDirect53` is the default production path. It

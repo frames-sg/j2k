@@ -55,6 +55,11 @@ pub(crate) struct PreparedProgressivePlan {
     pub(crate) scratch_bytes: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ProgressiveDctBlocks {
+    pub(crate) quantized: Vec<Vec<[i32; 64]>>,
+}
+
 #[derive(Debug)]
 struct ComponentImage {
     plane: Vec<u8>,
@@ -67,13 +72,22 @@ pub(crate) fn decode_progressive<W: OutputWriter>(
     bytes: &[u8],
     writer: &mut W,
 ) -> Result<Vec<Warning>, JpegError> {
+    let dct_blocks = decode_progressive_dct_blocks(plan, bytes)?;
+    let coeffs = dct_blocks.quantized;
+    let images = render_component_images(plan, backend, &coeffs);
+    emit_component_images(plan, &images, writer)?;
+    Ok(Vec::new())
+}
+
+pub(crate) fn decode_progressive_dct_blocks(
+    plan: &PreparedProgressivePlan,
+    bytes: &[u8],
+) -> Result<ProgressiveDctBlocks, JpegError> {
     let mut coeffs = allocate_coefficients(plan)?;
     for scan in &plan.scans {
         decode_progressive_scan(plan, scan, bytes, &mut coeffs)?;
     }
-    let images = render_component_images(plan, backend, &coeffs);
-    emit_component_images(plan, &images, writer)?;
-    Ok(Vec::new())
+    Ok(ProgressiveDctBlocks { quantized: coeffs })
 }
 
 fn allocate_coefficients(plan: &PreparedProgressivePlan) -> Result<Vec<Vec<[i32; 64]>>, JpegError> {
