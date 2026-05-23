@@ -6,6 +6,9 @@
 //! projection used by `signinum-transcode`'s lossy HTJ2K path. CPU scalar code
 //! remains the oracle and fallback.
 
+#[cfg(target_os = "macos")]
+mod metal;
+
 #[doc(hidden)]
 pub mod weights;
 
@@ -17,7 +20,6 @@ use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 /// Stable message returned when Metal is unavailable.
 pub const METAL_UNAVAILABLE: &str = "Metal is unavailable on this host";
 
-const METAL_DCT97_NOT_IMPLEMENTED: &str = "Metal DCT 9/7 projection is not implemented";
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 65_536;
 
 /// Error returned by the Metal transcode accelerator.
@@ -133,12 +135,15 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
 
         #[cfg(target_os = "macos")]
         {
-            let _ = job;
-            match self.mode {
-                MetalDispatchMode::Explicit => {
-                    Err(MetalTranscodeError::Kernel(METAL_DCT97_NOT_IMPLEMENTED).as_static_str())
+            match metal::dispatch_dct_grid_to_dwt97(job) {
+                Ok(output) => {
+                    self.dwt97_dispatches = self.dwt97_dispatches.saturating_add(1);
+                    Ok(Some(output))
                 }
-                MetalDispatchMode::Auto => Ok(None),
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
             }
         }
     }
