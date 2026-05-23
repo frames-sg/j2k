@@ -20,8 +20,9 @@ JPEG bytes
 
 It preserves native component sampling for grayscale, 4:4:4, 4:2:2, and 4:2:0
 inputs. Progressive JPEG coefficients are accumulated from all scans before
-the DCT-to-wavelet stage. 9/7 lossy, RGB conversion, and chroma upsample remain
-out of scope.
+the DCT-to-wavelet stage. The crate also has a validated 9/7 wavelet descriptor
+bridge to the native precomputed lossy HTJ2K encoder. JPEG-to-9/7 coefficient
+generation, RGB conversion, and chroma upsample remain out of scope.
 
 `JpegToHtj2kCoefficientPath::IntegerDirect53` is the default production path. It
 computes the first reversible 5/3 level from DCT blocks without a full spatial

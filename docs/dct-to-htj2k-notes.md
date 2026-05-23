@@ -44,6 +44,9 @@ JPEG bytes
   reference-grid/SIZ sampling checks. This gives the standalone wavelet-band
   descriptor a direct, tested route into the encoder while keeping the adapter
   outside both codec crates.
+- The native encoder now has an irreversible 9/7 precomputed-band entry point,
+  and `signinum-transcode::htj2k_wavelet::WaveletImage97<f32>` converts into
+  that representation with the same geometry and SIZ sampling validation.
 - `cargo test -p signinum-transcode --test jpeg_to_htj2k` verifies native
   decoder acceptance, SIZ component sampling, multilevel output, optional
   integer-reference metrics, and external decoder acceptance when OpenJPEG or
@@ -150,5 +153,5 @@ tiny-fixture transcode timings stayed within noise except for the 4:4:4 and
   one representation.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
-- 9/7 lossy, RGB conversion, and chroma upsample remain out of scope for this
-  experimental path.
+- JPEG-to-9/7 coefficient generation, RGB conversion, and chroma upsample remain
+  out of scope for this experimental path.

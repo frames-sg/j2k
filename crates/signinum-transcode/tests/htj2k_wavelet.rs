@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_j2k_native::{encode_precomputed_htj2k_53, DecodeSettings, EncodeOptions, Image};
+use signinum_j2k_native::{
+    encode_precomputed_htj2k_53, encode_precomputed_htj2k_97, DecodeSettings, EncodeOptions, Image,
+};
 use signinum_transcode::htj2k_wavelet::{
-    ComponentSampling, WaveletBand53, WaveletComponent53, WaveletImage53, WaveletLevel53,
-    WaveletToPrecomputedError,
+    ComponentSampling, WaveletBand53, WaveletBand97, WaveletComponent53, WaveletComponent97,
+    WaveletImage53, WaveletImage97, WaveletLevel53, WaveletLevel97, WaveletToPrecomputedError,
 };
 
 #[test]
@@ -152,11 +154,45 @@ fn wavelet_image_precomputed_conversion_rejects_reference_grid_mismatch() {
     ));
 }
 
+#[test]
+fn wavelet_image_97_converts_to_encodable_precomputed_htj2k_image() {
+    let image = WaveletImage97 {
+        components: vec![component97(8, 8, 1, 1)],
+    };
+
+    let precomputed = image
+        .to_precomputed_htj2k_97(8, 8)
+        .expect("convert 9/7 wavelet image to precomputed HTJ2K");
+
+    assert_eq!((precomputed.width, precomputed.height), (8, 8));
+    assert_eq!(precomputed.bit_depth, 8);
+    assert!(!precomputed.signed);
+    assert_eq!(precomputed.components.len(), 1);
+
+    let bytes = encode_precomputed_htj2k_97(&precomputed, &precomputed_lossy_options())
+        .expect("converted 9/7 wavelet image encodes as HTJ2K");
+    let decoded = Image::new(&bytes, &DecodeSettings::default())
+        .expect("native parser accepts converted 9/7 HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts converted 9/7 HTJ2K");
+
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 1);
+}
+
 fn band(width: usize, height: usize) -> WaveletBand53<i32> {
     WaveletBand53 {
         width,
         height,
         coefficients: vec![0; width * height],
+    }
+}
+
+fn band97(width: usize, height: usize) -> WaveletBand97<f32> {
+    WaveletBand97 {
+        width,
+        height,
+        coefficients: vec![0.0; width * height],
     }
 }
 
@@ -176,10 +212,37 @@ fn component(width: usize, height: usize, x_rsiz: u16, y_rsiz: u16) -> WaveletCo
     }
 }
 
+fn component97(width: usize, height: usize, x_rsiz: u16, y_rsiz: u16) -> WaveletComponent97<f32> {
+    WaveletComponent97 {
+        width,
+        height,
+        bit_depth: 8,
+        is_signed: false,
+        sampling: ComponentSampling { x_rsiz, y_rsiz },
+        final_ll: band97(width.div_ceil(2), height.div_ceil(2)),
+        levels: vec![WaveletLevel97 {
+            hl: band97(width / 2, height.div_ceil(2)),
+            lh: band97(width.div_ceil(2), height / 2),
+            hh: band97(width / 2, height / 2),
+        }],
+    }
+}
+
 fn precomputed_options() -> EncodeOptions {
     EncodeOptions {
         num_decomposition_levels: 1,
         reversible: true,
+        use_ht_block_coding: true,
+        use_mct: false,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
+    }
+}
+
+fn precomputed_lossy_options() -> EncodeOptions {
+    EncodeOptions {
+        num_decomposition_levels: 1,
+        reversible: false,
         use_ht_block_coding: true,
         use_mct: false,
         validate_high_throughput_codestream: false,
