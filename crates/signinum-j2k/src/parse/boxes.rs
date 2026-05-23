@@ -109,10 +109,13 @@ pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
     }
     let codestream = codestream.ok_or(J2kError::MissingRequiredBox { box_type: "jp2c" })?;
     let parsed = parse_codestream(codestream)?;
+    let info = parsed.clone().into_info(colorspace);
+    let components = parsed.siz.component_info.clone();
     Ok(ParsedImageInfo {
-        info: parsed.into_info(colorspace),
+        info,
         transfer_syntax: parsed.transfer_syntax(),
         payload_kind: CompressedPayloadKind::Jp2File,
+        components,
     })
 }
 

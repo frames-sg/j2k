@@ -263,6 +263,20 @@ pub fn encode_precomputed_htj2k_53(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
 ) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_htj2k_53_with_mct(image, options, false)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
+/// codestream while controlling the output COD multi-component transform flag.
+///
+/// This is intended for coefficient-domain JPEG 2000 family recoding, where
+/// source codestream components may already be reversible-color-transformed.
+#[doc(hidden)]
+pub fn encode_precomputed_htj2k_53_with_mct(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+) -> Result<Vec<u8>, &'static str> {
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
@@ -288,7 +302,7 @@ pub fn encode_precomputed_htj2k_53(
     precomputed_options.num_decomposition_levels = num_levels;
     precomputed_options.reversible = true;
     precomputed_options.use_ht_block_coding = true;
-    precomputed_options.use_mct = false;
+    precomputed_options.use_mct = use_mct;
     precomputed_options.validate_high_throughput_codestream = false;
     precomputed_options.component_sampling = Some(
         image

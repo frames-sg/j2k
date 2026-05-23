@@ -18,6 +18,7 @@ mod mct;
 pub(crate) mod packet_encode;
 mod progression;
 pub(crate) mod quantize;
+pub(crate) mod recode;
 mod rect;
 mod roi;
 mod segment;
@@ -38,6 +39,7 @@ pub(crate) use codestream::Header;
 pub(crate) use decode::should_decode_classic_sub_band_in_parallel;
 pub(crate) use decode::{build_direct_color_plan, build_direct_grayscale_plan, decode};
 pub use decode::{CpuDecodeParallelism, DecoderContext};
+pub use recode::Reversible53CoefficientImage;
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,

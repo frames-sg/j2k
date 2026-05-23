@@ -20,10 +20,13 @@ pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError
     }
     if codestream::looks_like_codestream(input) {
         let parsed = parse_codestream(input)?;
+        let info = parsed.clone().into_info(None);
+        let components = parsed.siz.component_info.clone();
         return Ok(ParsedImageInfo {
-            info: parsed.into_info(None),
+            info,
             transfer_syntax: parsed.transfer_syntax(),
             payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
+            components,
         });
     }
     Err(J2kError::Unsupported(Unsupported {
@@ -36,6 +39,15 @@ pub(crate) struct ParsedImageInfo {
     pub(crate) info: Info,
     pub(crate) transfer_syntax: CompressedTransferSyntax,
     pub(crate) payload_kind: CompressedPayloadKind,
+    pub(crate) components: Vec<ParsedComponentInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedComponentInfo {
+    pub(crate) bit_depth: u8,
+    pub(crate) signed: bool,
+    pub(crate) x_rsiz: u8,
+    pub(crate) y_rsiz: u8,
 }
 
 fn infer_colorspace(components: u8, has_mct: bool, reversible: bool) -> Colorspace {
@@ -48,12 +60,13 @@ fn infer_colorspace(components: u8, has_mct: bool, reversible: bool) -> Colorspa
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ParsedSiz {
     dimensions: (u32, u32),
     components: u8,
     bit_depth: u8,
     tile_layout: TileLayout,
+    component_info: Vec<ParsedComponentInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]

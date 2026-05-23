@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{ParsedCod, ParsedSiz};
+use super::{ParsedCod, ParsedComponentInfo, ParsedSiz};
 use crate::J2kError;
 use signinum_core::{InputError, TileLayout};
 
@@ -12,7 +12,7 @@ const MARKER_SOT: u8 = 0x90;
 const MARKER_SOD: u8 = 0x93;
 const MARKER_EOC: u8 = 0xD9;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct CodestreamInfo {
     pub(crate) siz: ParsedSiz,
     pub(crate) cod: ParsedCod,
@@ -189,9 +189,17 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kError> {
     let tiles_x = (x_size - tile_x_origin).div_ceil(tile_width);
     let tiles_y = (y_size - tile_y_origin).div_ceil(tile_height);
     let mut bit_depth = 0u8;
+    let mut component_info = Vec::with_capacity(usize::from(component_count));
     for idx in 0..usize::from(component_count) {
         let ssiz = payload[36 + idx * 3];
-        bit_depth = bit_depth.max((ssiz & 0x7F) + 1);
+        let precision = (ssiz & 0x7F) + 1;
+        bit_depth = bit_depth.max(precision);
+        component_info.push(ParsedComponentInfo {
+            bit_depth: precision,
+            signed: ssiz & 0x80 != 0,
+            x_rsiz: payload[36 + idx * 3 + 1],
+            y_rsiz: payload[36 + idx * 3 + 2],
+        });
     }
 
     Ok(ParsedSiz {
@@ -204,6 +212,7 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kError> {
             tiles_x,
             tiles_y,
         },
+        component_info,
     })
 }
 
