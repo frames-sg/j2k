@@ -66,6 +66,48 @@ fn precomputed_encode_writes_component_sampling_in_siz() {
     assert_eq!(bytes[component_info + 8], 2);
 }
 
+#[test]
+fn precomputed_encode_rejects_component_sampling_geometry_mismatch() {
+    let image = PrecomputedHtj2k53Image {
+        width: 16,
+        height: 16,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k53Component {
+            x_rsiz: 2,
+            y_rsiz: 2,
+            dwt: zero_dwt53(16, 16),
+        }],
+    };
+
+    let err = encode_precomputed_htj2k_53(&image, &precomputed_options())
+        .expect_err("component DWT geometry must match SIZ sampling");
+
+    assert_eq!(err, "precomputed DWT component dimensions mismatch");
+}
+
+#[test]
+fn precomputed_encode_rejects_recursive_level_geometry_mismatch() {
+    let mut dwt = zero_dwt53(8, 8);
+    dwt.levels[0].low_width = 3;
+    let image = PrecomputedHtj2k53Image {
+        width: 8,
+        height: 8,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k53Component {
+            x_rsiz: 1,
+            y_rsiz: 1,
+            dwt,
+        }],
+    };
+
+    let err = encode_precomputed_htj2k_53(&image, &precomputed_options())
+        .expect_err("level geometry must match recursive 5/3 expectations");
+
+    assert_eq!(err, "precomputed DWT recursive geometry mismatch");
+}
+
 fn precomputed_options() -> EncodeOptions {
     EncodeOptions {
         num_decomposition_levels: 1,

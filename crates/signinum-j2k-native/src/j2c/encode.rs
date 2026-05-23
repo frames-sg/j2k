@@ -252,6 +252,7 @@ pub fn encode_precomputed_htj2k_53(
     {
         return Err("component sampling factors must be non-zero");
     }
+    validate_precomputed_dwt_geometry(image)?;
 
     let num_components =
         u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
@@ -290,6 +291,61 @@ pub fn encode_precomputed_htj2k_53(
         &precomputed_options,
         &mut accelerator,
     )
+}
+
+fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<(), &'static str> {
+    for component in &image.components {
+        let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
+        let component_height = image.height.div_ceil(u32::from(component.y_rsiz));
+        validate_precomputed_component_dwt(&component.dwt, component_width, component_height)?;
+    }
+
+    Ok(())
+}
+
+fn validate_precomputed_component_dwt(
+    dwt: &J2kForwardDwt53Output,
+    component_width: u32,
+    component_height: u32,
+) -> Result<(), &'static str> {
+    if dwt.levels.is_empty() {
+        return Err("precomputed DWT must contain at least one decomposition level");
+    }
+    if let Some(highest_level) = dwt.levels.last() {
+        if highest_level.width != component_width || highest_level.height != component_height {
+            return Err("precomputed DWT component dimensions mismatch");
+        }
+    }
+
+    let mut expected_width = component_width;
+    let mut expected_height = component_height;
+    for level in dwt.levels.iter().rev() {
+        let low_width = expected_width.div_ceil(2);
+        let low_height = expected_height.div_ceil(2);
+        let high_width = expected_width / 2;
+        let high_height = expected_height / 2;
+
+        if level.width != expected_width
+            || level.height != expected_height
+            || level.low_width != low_width
+            || level.low_height != low_height
+            || level.high_width != high_width
+            || level.high_height != high_height
+        {
+            return Err("precomputed DWT recursive geometry mismatch");
+        }
+        validate_band_len(level.hl.len(), high_width, low_height)?;
+        validate_band_len(level.lh.len(), low_width, high_height)?;
+        validate_band_len(level.hh.len(), high_width, high_height)?;
+
+        expected_width = low_width;
+        expected_height = low_height;
+    }
+
+    if dwt.ll_width != expected_width || dwt.ll_height != expected_height {
+        return Err("precomputed DWT component dimensions mismatch");
+    }
+    validate_band_len(dwt.ll.len(), expected_width, expected_height)
 }
 
 fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result<u8, &'static str> {
