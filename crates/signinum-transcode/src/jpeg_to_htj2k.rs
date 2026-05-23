@@ -17,7 +17,7 @@ use signinum_jpeg::transcode::{
 
 use crate::accelerator::{
     CpuOnlyDctToWaveletStageAccelerator, DctGridToDwt53Job, DctGridToDwt97Job,
-    DctToWaveletStageAccelerator,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, ReversibleDwt53FirstLevel,
 };
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
@@ -641,8 +641,12 @@ fn component_to_precomputed_htj2k(
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let (dwt, actual_coefficients) = match options.coefficient_path {
         JpegToHtj2kCoefficientPath::IntegerDirect53 => {
-            let wavelet =
-                integer_direct_wavelet_from_component(component, decomposition_levels, scratch)?;
+            let wavelet = integer_direct_wavelet_from_component(
+                component,
+                decomposition_levels,
+                scratch,
+                accelerator,
+            )?;
             (
                 PrecomputedComponent::Dwt53(PrecomputedHtj2k53Component {
                     x_rsiz,
@@ -1038,19 +1042,33 @@ fn integer_direct_wavelet_from_component(
     component: &JpegDctComponent,
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
 ) -> Result<IntegerWavelet, JpegToHtj2kError> {
     validate_component_block_grid(component)?;
-    scratch.integer_idct_blocks.clear();
-    scratch
-        .integer_idct_blocks
-        .resize_with(component.dequantized_blocks.len(), || None);
-
+    let job = DctGridToReversibleDwt53Job {
+        dequantized_blocks: &component.dequantized_blocks,
+        block_cols: component.block_cols as usize,
+        block_rows: component.block_rows as usize,
+        width: component.width as usize,
+        height: component.height as usize,
+    };
+    let accelerated_first_level = accelerator
+        .dct_grid_to_reversible_dwt53(job)
+        .map_err(JpegToHtj2kError::Accelerator)?;
     let (mut final_ll, mut final_ll_width, mut final_ll_height, first_level) =
-        integer_direct_first_level_from_component(
-            component,
-            &mut scratch.integer_idct_blocks,
-            &mut scratch.integer_row,
-        )?;
+        if let Some(first_level) = accelerated_first_level {
+            integer_wavelet_first_level_from_accelerated(first_level)
+        } else {
+            scratch.integer_idct_blocks.clear();
+            scratch
+                .integer_idct_blocks
+                .resize_with(component.dequantized_blocks.len(), || None);
+            integer_direct_first_level_from_component(
+                component,
+                &mut scratch.integer_idct_blocks,
+                &mut scratch.integer_row,
+            )?
+        };
     let mut levels = vec![first_level];
 
     let remaining_levels = usize::from(decomposition_levels.saturating_sub(1));
@@ -1069,6 +1087,28 @@ fn integer_direct_wavelet_from_component(
         final_ll_height,
         levels,
     })
+}
+
+fn integer_wavelet_first_level_from_accelerated(
+    first_level: ReversibleDwt53FirstLevel,
+) -> (Vec<i32>, usize, usize, IntegerWaveletLevel) {
+    let level = IntegerWaveletLevel {
+        width: first_level.low_width + first_level.high_width,
+        height: first_level.low_height + first_level.high_height,
+        low_width: first_level.low_width,
+        low_height: first_level.low_height,
+        high_width: first_level.high_width,
+        high_height: first_level.high_height,
+        hl: first_level.hl,
+        lh: first_level.lh,
+        hh: first_level.hh,
+    };
+    (
+        first_level.ll,
+        first_level.low_width,
+        first_level.low_height,
+        level,
+    )
 }
 
 fn integer_direct_first_level_from_component(

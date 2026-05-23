@@ -7,7 +7,8 @@ use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use signinum_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctToWaveletStageAccelerator,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
+    DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
 };
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch,
@@ -28,6 +29,17 @@ const DIRECT_BENCH_MARKERS: [&str; 8] = [
     "scalar_1024x1024",
     "metal_explicit_1024x1024",
     "scalar_2048x2048",
+    "metal_explicit_2048x2048",
+];
+
+const REVERSIBLE_BENCH_MARKERS: [&str; 8] = [
+    "rayon_224x224",
+    "metal_explicit_224x224",
+    "rayon_512x512",
+    "metal_explicit_512x512",
+    "rayon_1024x1024",
+    "metal_explicit_1024x1024",
+    "rayon_2048x2048",
     "metal_explicit_2048x2048",
 ];
 
@@ -234,6 +246,65 @@ fn bench_dct53_projection(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_reversible_dct53_projection(c: &mut Criterion) {
+    black_box(REVERSIBLE_BENCH_MARKERS);
+    let mut group = c.benchmark_group("reversible_dct53_metal_projection");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for dim in WSI_DIMS {
+        let block_cols = dim / 8;
+        let block_rows = dim / 8;
+        let blocks = structured_i16_blocks(block_cols, block_rows);
+        let job = DctGridToReversibleDwt53Job {
+            dequantized_blocks: &blocks,
+            block_cols,
+            block_rows,
+            width: dim,
+            height: dim,
+        };
+        group.throughput(Throughput::Elements((dim * dim) as u64));
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("rayon_{dim}x{dim}")),
+            &job,
+            |b, job| {
+                let mut accelerator = RayonReversibleDwt53Accelerator::default();
+                b.iter(|| {
+                    black_box(
+                        accelerator
+                            .dct_grid_to_reversible_dwt53(black_box(*job))
+                            .expect("rayon reversible 5/3 projection succeeds")
+                            .expect("rayon handles benchmark job"),
+                    );
+                });
+            },
+        );
+
+        if explicit_metal_accepts_reversible_53(job) {
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("metal_explicit_{dim}x{dim}")),
+                &job,
+                |b, job| {
+                    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                    b.iter(|| {
+                        black_box(
+                            accelerator
+                                .dct_grid_to_reversible_dwt53(black_box(*job))
+                                .expect("explicit Metal reversible 5/3 projection succeeds")
+                                .expect("explicit Metal handles benchmark job"),
+                        );
+                    });
+                },
+            );
+        } else {
+            eprintln!("skipping metal_explicit_{dim}x{dim} benchmark: {METAL_UNAVAILABLE}");
+        }
+    }
+
+    group.finish();
+}
+
 fn bench_jpeg_to_htj2k_wsi(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_97");
     group.sample_size(10);
@@ -346,6 +417,72 @@ fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_integer_53");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for spec in WSI_FIXTURES {
+        let jpeg = encoded_fixture(spec);
+        group.throughput(Throughput::Bytes(jpeg.len() as u64));
+
+        group.bench_with_input(BenchmarkId::new(spec.name, "scalar"), &jpeg, |b, jpeg| {
+            let mut transcoder = JpegToHtj2kTranscoder::default();
+            let options = JpegToHtj2kOptions::lossless_53();
+            b.iter(|| {
+                black_box(
+                    transcoder
+                        .transcode(black_box(jpeg), &options)
+                        .expect("scalar JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
+                );
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new(spec.name, "rayon"), &jpeg, |b, jpeg| {
+            let mut transcoder = JpegToHtj2kTranscoder::default();
+            let mut accelerator = RayonReversibleDwt53Accelerator::default();
+            let options = JpegToHtj2kOptions::lossless_53();
+            b.iter(|| {
+                black_box(
+                    transcoder
+                        .transcode_with_accelerator(black_box(jpeg), &options, &mut accelerator)
+                        .expect("rayon JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
+                );
+            });
+        });
+
+        if metal_available() {
+            group.bench_with_input(
+                BenchmarkId::new(spec.name, "metal_explicit"),
+                &jpeg,
+                |b, jpeg| {
+                    let mut transcoder = JpegToHtj2kTranscoder::default();
+                    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                    let options = JpegToHtj2kOptions::lossless_53();
+                    b.iter(|| {
+                        black_box(
+                            transcoder
+                                .transcode_with_accelerator(
+                                    black_box(jpeg),
+                                    &options,
+                                    &mut accelerator,
+                                )
+                                .expect("Metal JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
+                        );
+                    });
+                },
+            );
+        } else {
+            eprintln!(
+                "skipping {}/metal_explicit benchmark: {METAL_UNAVAILABLE}",
+                spec.name
+            );
+        }
+    }
+
+    group.finish();
+}
+
 #[derive(Clone, Copy)]
 struct WsiFixtureSpec {
     name: &'static str,
@@ -441,6 +578,11 @@ fn explicit_metal_accepts_53(job: DctGridToDwt53Job<'_>) -> bool {
     matches!(accelerator.dct_grid_to_dwt53(job), Ok(Some(_)))
 }
 
+fn explicit_metal_accepts_reversible_53(job: DctGridToReversibleDwt53Job<'_>) -> bool {
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    matches!(accelerator.dct_grid_to_reversible_dwt53(job), Ok(Some(_)))
+}
+
 fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
     let mut blocks = Vec::with_capacity(block_cols * block_rows);
     for block_y in 0..block_rows {
@@ -458,13 +600,44 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
     blocks
 }
 
+fn structured_i16_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
+    let mut blocks = Vec::with_capacity(block_cols * block_rows);
+    for block_y in 0..block_rows {
+        for block_x in 0..block_cols {
+            let mut block = [0i16; 64];
+            let dc_offset =
+                i16::try_from(block_x * 19 + block_y * 23).expect("fixture offset fits i16");
+            let x_offset = i16::try_from(block_x).expect("fixture x offset fits i16");
+            let y_offset = i16::try_from(block_y).expect("fixture y offset fits i16");
+            block[0] = 384 + dc_offset;
+            block[1] = -17 + x_offset;
+            block[8] = 11 - y_offset;
+            block[19] = 7;
+            block[36] = -3;
+            block[63] = 2;
+            blocks.push(block);
+        }
+    }
+    blocks
+}
+
 criterion_group!(dct53_metal_projection, bench_dct53_projection);
 criterion_group!(dct97_metal_projection, bench_dct97_projection);
 criterion_group!(jpeg_to_htj2k_wsi_53, bench_jpeg_to_htj2k_wsi_53);
+criterion_group!(
+    reversible_dct53_metal_projection,
+    bench_reversible_dct53_projection
+);
+criterion_group!(
+    jpeg_to_htj2k_wsi_integer_53,
+    bench_jpeg_to_htj2k_wsi_integer_53
+);
 criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
 criterion_main!(
     dct53_metal_projection,
     dct97_metal_projection,
+    reversible_dct53_metal_projection,
     jpeg_to_htj2k_wsi_53,
+    jpeg_to_htj2k_wsi_integer_53,
     jpeg_to_htj2k_wsi_97
 );

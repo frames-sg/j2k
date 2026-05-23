@@ -11,7 +11,10 @@ use metal::{
     Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
     MTLResourceOptions, MTLSize,
 };
-use signinum_transcode::accelerator::{DctGridToDwt53Job, DctGridToDwt97Job};
+use signinum_transcode::accelerator::{
+    idct_blocks_to_signed_samples_rayon, DctGridToDwt53Job, DctGridToDwt97Job,
+    DctGridToReversibleDwt53Job, ReversibleDwt53FirstLevel,
+};
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
@@ -20,6 +23,8 @@ use crate::MetalTranscodeError;
 
 const SHADER_SOURCE: &str = include_str!("dct97.metal");
 const METAL_DCT_KERNEL_FAILED: &str = "Metal DCT wavelet projection failed";
+const METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID: &str =
+    "Metal reversible DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT53_UNSUPPORTED_GRID: &str = "Metal DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT97_UNSUPPORTED_GRID: &str = "Metal DCT 9/7 job has unsupported grid geometry";
 
@@ -29,6 +34,7 @@ struct MetalRuntime {
     device: Device,
     queue: CommandQueue,
     dct_project_band: ComputePipelineState,
+    reversible53_project_band: ComputePipelineState,
     idct_basis: Buffer,
 }
 
@@ -40,6 +46,18 @@ struct DctProjectionParams {
     block_cols: u32,
     band_width: u32,
     band_height: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Reversible53ProjectionParams {
+    width: u32,
+    height: u32,
+    block_cols: u32,
+    band_width: u32,
+    band_height: u32,
+    vertical_low: u32,
+    horizontal_low: u32,
 }
 
 #[repr(C)]
@@ -74,6 +92,12 @@ impl MetalRuntime {
         let dct_project_band = device
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
+        let reversible_function = library
+            .get_function("reversible53_project_band", None)
+            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
+        let reversible53_project_band = device
+            .new_compute_pipeline_state_with_function(&reversible_function)
+            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
         let queue = device.new_command_queue();
         let idct_basis_data = idct8_basis_table();
         let idct_basis = device.new_buffer_with_data(
@@ -86,9 +110,33 @@ impl MetalRuntime {
             device,
             queue,
             dct_project_band,
+            reversible53_project_band,
             idct_basis,
         })
     }
+}
+
+pub(crate) fn dispatch_dct_grid_to_reversible_dwt53(
+    job: DctGridToReversibleDwt53Job<'_>,
+) -> Result<ReversibleDwt53FirstLevel, MetalTranscodeError> {
+    validate_grid(
+        job.dequantized_blocks.len(),
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+        METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
+    )?;
+    let block_samples = idct_blocks_to_signed_samples_rayon(job.dequantized_blocks);
+    with_runtime(|runtime| {
+        dispatch_reversible_dwt53_with_runtime(
+            runtime,
+            &block_samples,
+            job.block_cols,
+            job.width,
+            job.height,
+        )
+    })
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt53(
@@ -103,6 +151,103 @@ pub(crate) fn dispatch_dct_grid_to_dwt53(
         METAL_DCT53_UNSUPPORTED_GRID,
     )?;
     with_runtime(|runtime| dispatch_dct_grid_to_dwt53_with_runtime(runtime, job))
+}
+
+#[allow(clippy::similar_names)]
+fn dispatch_reversible_dwt53_with_runtime(
+    runtime: &MetalRuntime,
+    block_samples: &[[i32; 64]],
+    block_cols: usize,
+    width: usize,
+    height: usize,
+) -> Result<ReversibleDwt53FirstLevel, MetalTranscodeError> {
+    let width_u32 = u32_param(width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let height_u32 = u32_param(height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let block_cols_u32 = u32_param(block_cols, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?;
+    let low_width = width.div_ceil(2);
+    let high_width = width / 2;
+    let low_height = height.div_ceil(2);
+    let high_height = height / 2;
+    let blocks = buffer_with_slice(&runtime.device, block_samples);
+
+    let ll_buffer = output_i32_buffer(&runtime.device, low_width * low_height);
+    let hl_buffer = output_i32_buffer(&runtime.device, high_width * low_height);
+    let lh_buffer = output_i32_buffer(&runtime.device, low_width * high_height);
+    let hh_buffer = output_i32_buffer(&runtime.device, high_width * high_height);
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    command_buffer.set_label("signinum-transcode-metal reversible dct53 projection");
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.set_compute_pipeline_state(&runtime.reversible53_project_band);
+    encoder.set_buffer(0, Some(&blocks), 0);
+
+    dispatch_reversible_band(
+        encoder,
+        &ll_buffer,
+        ReversibleBandGeometry {
+            width: width_u32,
+            height: height_u32,
+            block_cols: block_cols_u32,
+            band_width: u32_param(low_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            band_height: u32_param(low_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            vertical_low: true,
+            horizontal_low: true,
+        },
+    );
+    dispatch_reversible_band(
+        encoder,
+        &hl_buffer,
+        ReversibleBandGeometry {
+            width: width_u32,
+            height: height_u32,
+            block_cols: block_cols_u32,
+            band_width: u32_param(high_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            band_height: u32_param(low_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            vertical_low: true,
+            horizontal_low: false,
+        },
+    );
+    dispatch_reversible_band(
+        encoder,
+        &lh_buffer,
+        ReversibleBandGeometry {
+            width: width_u32,
+            height: height_u32,
+            block_cols: block_cols_u32,
+            band_width: u32_param(low_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            band_height: u32_param(high_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            vertical_low: false,
+            horizontal_low: true,
+        },
+    );
+    dispatch_reversible_band(
+        encoder,
+        &hh_buffer,
+        ReversibleBandGeometry {
+            width: width_u32,
+            height: height_u32,
+            block_cols: block_cols_u32,
+            band_width: u32_param(high_width, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            band_height: u32_param(high_height, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID)?,
+            vertical_low: false,
+            horizontal_low: false,
+        },
+    );
+
+    encoder.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    Ok(ReversibleDwt53FirstLevel {
+        ll: read_i32_buffer(&ll_buffer, low_width * low_height),
+        hl: read_i32_buffer(&hl_buffer, high_width * low_height),
+        lh: read_i32_buffer(&lh_buffer, low_width * high_height),
+        hh: read_i32_buffer(&hh_buffer, high_width * high_height),
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+    })
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt97(
@@ -340,6 +485,55 @@ struct BandGeometry {
     band_height: u32,
 }
 
+#[derive(Clone, Copy)]
+struct ReversibleBandGeometry {
+    width: u32,
+    height: u32,
+    block_cols: u32,
+    band_width: u32,
+    band_height: u32,
+    vertical_low: bool,
+    horizontal_low: bool,
+}
+
+fn dispatch_reversible_band(
+    encoder: &ComputeCommandEncoderRef,
+    output: &Buffer,
+    geometry: ReversibleBandGeometry,
+) {
+    if geometry.band_width == 0 || geometry.band_height == 0 {
+        return;
+    }
+
+    let params = Reversible53ProjectionParams {
+        width: geometry.width,
+        height: geometry.height,
+        block_cols: geometry.block_cols,
+        band_width: geometry.band_width,
+        band_height: geometry.band_height,
+        vertical_low: u32::from(geometry.vertical_low),
+        horizontal_low: u32::from(geometry.horizontal_low),
+    };
+    encoder.set_buffer(1, Some(output), 0);
+    encoder.set_bytes(
+        2,
+        size_of::<Reversible53ProjectionParams>() as u64,
+        (&raw const params).cast(),
+    );
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(geometry.band_width),
+            height: u64::from(geometry.band_height),
+            depth: 1,
+        },
+        MTLSize {
+            width: 16,
+            height: 8,
+            depth: 1,
+        },
+    );
+}
+
 fn dispatch_band(
     encoder: &ComputeCommandEncoderRef,
     x_weights: (&Buffer, &Buffer),
@@ -467,6 +661,13 @@ fn output_buffer(device: &Device, value_count: usize) -> Buffer {
     )
 }
 
+fn output_i32_buffer(device: &Device, value_count: usize) -> Buffer {
+    device.new_buffer(
+        (value_count * size_of::<i32>()).max(1) as u64,
+        MTLResourceOptions::StorageModeShared,
+    )
+}
+
 fn read_f32_buffer(buffer: &Buffer, value_count: usize) -> Vec<f64> {
     if value_count == 0 {
         return Vec::new();
@@ -474,6 +675,15 @@ fn read_f32_buffer(buffer: &Buffer, value_count: usize) -> Vec<f64> {
     let values =
         unsafe { core::slice::from_raw_parts(buffer.contents().cast::<f32>(), value_count) };
     values.iter().map(|&value| f64::from(value)).collect()
+}
+
+fn read_i32_buffer(buffer: &Buffer, value_count: usize) -> Vec<i32> {
+    if value_count == 0 {
+        return Vec::new();
+    }
+    let values =
+        unsafe { core::slice::from_raw_parts(buffer.contents().cast::<i32>(), value_count) };
+    values.to_vec()
 }
 
 fn idct8_basis_table() -> [f32; 64] {

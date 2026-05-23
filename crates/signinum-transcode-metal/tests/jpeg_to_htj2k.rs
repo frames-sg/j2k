@@ -113,6 +113,63 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
 }
 
 #[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_and_native_sampling() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let options = JpegToHtj2kOptions {
+        validate_against_integer_reference: true,
+        ..JpegToHtj2kOptions::lossless_53()
+    };
+    let mut scalar_transcoder = JpegToHtj2kTranscoder::default();
+    let scalar = scalar_transcoder
+        .transcode(jpeg, &options)
+        .expect("scalar IntegerDirect53 transcode succeeds");
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    let encoded = match transcoder.transcode_with_accelerator(jpeg, &options, &mut accelerator) {
+        Ok(encoded) => encoded,
+        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+            eprintln!(
+                "skipping Metal reversible transcode integration test because no Metal device is available"
+            );
+            return;
+        }
+        Err(error) => panic!("explicit Metal reversible 5/3 transcode failed: {error}"),
+    };
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated Metal reversible 5/3 HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated Metal reversible 5/3 HTJ2K");
+    let metrics = encoded
+        .report
+        .integer_reference_metrics
+        .as_ref()
+        .expect("integer reference metrics are reported");
+
+    assert_eq!(encoded.codestream, scalar.codestream);
+    assert_eq!(
+        encoded.report.coefficient_path,
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+    );
+    assert_eq!(
+        encoded.report.path,
+        "native_component_sampling_integer_direct_53"
+    );
+    assert_eq!(metrics.total, 384);
+    assert_eq!(metrics.max_abs_error, 0);
+    assert_eq!(accelerator.reversible_dwt53_attempts(), 3);
+    assert_eq!(accelerator.reversible_dwt53_dispatches(), 3);
+    assert_eq!((decoded.width, decoded.height), (16, 16));
+    assert_eq!(decoded.num_components, 3);
+    assert_report_sampling(
+        &encoded.report.components,
+        &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
+    );
+    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
+}
+
+#[cfg(target_os = "macos")]
 fn assert_report_sampling(
     components: &[signinum_transcode::TranscodeComponentReport],
     expected: &[(u32, u32, u8, u8)],
