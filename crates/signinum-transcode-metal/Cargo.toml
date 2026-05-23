@@ -25,6 +25,10 @@ rayon = "1"
 criterion = { workspace = true }
 signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.2" }
 
+[[bench]]
+name = "dct97"
+harness = false
+
 [lints.rust]
 unsafe_code = "allow"
 unsafe_op_in_unsafe_fn = "deny"
