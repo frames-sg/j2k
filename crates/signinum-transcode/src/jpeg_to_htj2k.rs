@@ -9,7 +9,9 @@ use signinum_j2k_native::{
     encode_precomputed_htj2k_53, EncodeOptions, J2kForwardDwt53Level, J2kForwardDwt53Output,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
 };
-use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions, JpegDctComponent};
+use signinum_jpeg::transcode::{
+    extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent,
+};
 
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear,
@@ -26,6 +28,11 @@ pub struct JpegToHtj2kOptions {
     /// coefficient differences. This is intended for validation and tests, not
     /// the production direct path.
     pub validate_against_float_reference: bool,
+    /// Materialize signinum-jpeg scalar ISLOW samples and report reversible
+    /// integer 5/3 coefficient differences against the rounded direct path.
+    /// This is intended for validation and tests, not the production direct
+    /// path.
+    pub validate_against_integer_reference: bool,
 }
 
 impl Default for JpegToHtj2kOptions {
@@ -40,6 +47,7 @@ impl Default for JpegToHtj2kOptions {
                 ..EncodeOptions::default()
             },
             validate_against_float_reference: false,
+            validate_against_integer_reference: false,
         }
     }
 }
@@ -89,6 +97,9 @@ pub struct TranscodeReport {
     /// Rounded coefficient metrics against the optional float IDCT-then-DWT
     /// oracle.
     pub float_reference_metrics: Option<TranscodeValidationMetrics>,
+    /// Rounded direct coefficients compared with signinum-jpeg scalar
+    /// ISLOW-IDCT-then-reversible-5/3 coefficients.
+    pub integer_reference_metrics: Option<TranscodeValidationMetrics>,
     /// Number of reversible 5/3 decomposition levels encoded.
     pub decomposition_levels: u8,
     /// Name of the experimental path used.
@@ -205,32 +216,12 @@ pub fn jpeg_to_htj2k(
         .collect();
 
     let transform_start = Instant::now();
-    let mut precomputed_components = Vec::with_capacity(jpeg.components.len());
-    let mut validation_actual = Vec::new();
-    let mut validation_expected = Vec::new();
-    for (component, (x_rsiz, y_rsiz)) in jpeg
-        .components
-        .iter()
-        .zip(component_sampling.iter().copied())
-    {
-        let component_result = component_to_precomputed_htj2k(
-            component,
-            x_rsiz,
-            y_rsiz,
-            decomposition_levels,
-            options.validate_against_float_reference,
-        )?;
-        precomputed_components.push(component_result.precomputed);
-        if let Some((actual, expected)) = component_result.validation_coefficients {
-            validation_actual.extend(actual);
-            validation_expected.extend(expected);
-        }
-    }
-    let float_reference_metrics = if options.validate_against_float_reference {
-        Some(error_metrics_i32(&validation_actual, &validation_expected)?)
-    } else {
-        None
-    };
+    let component_batch = transcode_component_batch(
+        &jpeg.components,
+        &component_sampling,
+        decomposition_levels,
+        options,
+    )?;
     let transform_us = transform_start.elapsed().as_micros();
 
     let precomputed = PrecomputedHtj2k53Image {
@@ -238,7 +229,7 @@ pub fn jpeg_to_htj2k(
         height: jpeg.height,
         bit_depth: 8,
         signed: false,
-        components: precomputed_components,
+        components: component_batch.precomputed_components,
     };
 
     let encode_start = Instant::now();
@@ -253,7 +244,8 @@ pub fn jpeg_to_htj2k(
             height: jpeg.height,
             component_count: jpeg.components.len(),
             components: component_reports,
-            float_reference_metrics,
+            float_reference_metrics: component_batch.float_reference_metrics,
+            integer_reference_metrics: component_batch.integer_reference_metrics,
             decomposition_levels,
             path: if all_unit_sampled {
                 "full_resolution_components_float_direct_53"
@@ -267,9 +259,16 @@ pub fn jpeg_to_htj2k(
     })
 }
 
+struct ComponentTranscodeBatch {
+    precomputed_components: Vec<PrecomputedHtj2k53Component>,
+    float_reference_metrics: Option<TranscodeValidationMetrics>,
+    integer_reference_metrics: Option<TranscodeValidationMetrics>,
+}
+
 struct ComponentTranscodeResult {
     precomputed: PrecomputedHtj2k53Component,
-    validation_coefficients: Option<(Vec<i32>, Vec<i32>)>,
+    float_validation_coefficients: Option<(Vec<i32>, Vec<i32>)>,
+    integer_validation_coefficients: Option<(Vec<i32>, Vec<i32>)>,
 }
 
 struct ComponentWavelet {
@@ -279,12 +278,80 @@ struct ComponentWavelet {
     levels: Vec<Dwt53TwoDimensional<f64>>,
 }
 
+struct IntegerWaveletLevel {
+    hl: Vec<i32>,
+    lh: Vec<i32>,
+    hh: Vec<i32>,
+}
+
+struct IntegerWavelet {
+    final_ll: Vec<i32>,
+    levels: Vec<IntegerWaveletLevel>,
+}
+
+fn transcode_component_batch(
+    components: &[JpegDctComponent],
+    component_sampling: &[(u8, u8)],
+    decomposition_levels: u8,
+    options: &JpegToHtj2kOptions,
+) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
+    let mut precomputed_components = Vec::with_capacity(components.len());
+    let mut float_validation_actual = Vec::new();
+    let mut float_validation_expected = Vec::new();
+    let mut integer_validation_actual = Vec::new();
+    let mut integer_validation_expected = Vec::new();
+
+    for (component, (x_rsiz, y_rsiz)) in components.iter().zip(component_sampling.iter().copied()) {
+        let component_result = component_to_precomputed_htj2k(
+            component,
+            x_rsiz,
+            y_rsiz,
+            decomposition_levels,
+            options.validate_against_float_reference,
+            options.validate_against_integer_reference,
+        )?;
+        precomputed_components.push(component_result.precomputed);
+        if let Some((actual, expected)) = component_result.float_validation_coefficients {
+            float_validation_actual.extend(actual);
+            float_validation_expected.extend(expected);
+        }
+        if let Some((actual, expected)) = component_result.integer_validation_coefficients {
+            integer_validation_actual.extend(actual);
+            integer_validation_expected.extend(expected);
+        }
+    }
+
+    let float_reference_metrics = if options.validate_against_float_reference {
+        Some(error_metrics_i32(
+            &float_validation_actual,
+            &float_validation_expected,
+        )?)
+    } else {
+        None
+    };
+    let integer_reference_metrics = if options.validate_against_integer_reference {
+        Some(error_metrics_i32(
+            &integer_validation_actual,
+            &integer_validation_expected,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(ComponentTranscodeBatch {
+        precomputed_components,
+        float_reference_metrics,
+        integer_reference_metrics,
+    })
+}
+
 fn component_to_precomputed_htj2k(
     component: &JpegDctComponent,
     x_rsiz: u8,
     y_rsiz: u8,
     decomposition_levels: u8,
     validate_against_float_reference: bool,
+    validate_against_integer_reference: bool,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
     let bands = dct8x8_blocks_to_dwt53_float_linear(
@@ -295,7 +362,7 @@ fn component_to_precomputed_htj2k(
         component.height as usize,
     )?;
     let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
-    let validation_coefficients = if validate_against_float_reference {
+    let float_validation_coefficients = if validate_against_float_reference {
         let first_reference_level = dct8x8_blocks_then_dwt53_float(
             &blocks,
             component.block_cols as usize,
@@ -312,6 +379,12 @@ fn component_to_precomputed_htj2k(
     } else {
         None
     };
+    let integer_validation_coefficients = if validate_against_integer_reference {
+        let expected = integer_reference_coefficients(component, decomposition_levels)?;
+        Some((rounded_wavelet_i32(&wavelet)?, expected))
+    } else {
+        None
+    };
     let dwt = j2k_dwt_from_wavelet(
         &wavelet,
         component.width as usize,
@@ -324,7 +397,8 @@ fn component_to_precomputed_htj2k(
             y_rsiz,
             dwt,
         },
-        validation_coefficients,
+        float_validation_coefficients,
+        integer_validation_coefficients,
     })
 }
 
@@ -403,6 +477,191 @@ fn rounded_wavelet_i32(wavelet: &ComponentWavelet) -> Result<Vec<i32>, JpegToHtj
         append_rounded_i32(&level.hh, &mut output)?;
     }
     Ok(output)
+}
+
+fn integer_reference_coefficients(
+    component: &JpegDctComponent,
+    decomposition_levels: u8,
+) -> Result<Vec<i32>, JpegToHtj2kError> {
+    let samples = idct_component_samples_i32(component)?;
+    let wavelet = reversible_dwt53_i32(
+        samples,
+        component.width as usize,
+        component.height as usize,
+        usize::from(decomposition_levels),
+    );
+    Ok(flatten_integer_wavelet(&wavelet))
+}
+
+fn idct_component_samples_i32(component: &JpegDctComponent) -> Result<Vec<i32>, JpegToHtj2kError> {
+    let width = component.width as usize;
+    let height = component.height as usize;
+    let block_cols = component.block_cols as usize;
+    let block_rows = component.block_rows as usize;
+    let expected_blocks =
+        block_cols
+            .checked_mul(block_rows)
+            .ok_or(JpegToHtj2kError::Validation(
+                "component block grid overflow",
+            ))?;
+    if component.dequantized_blocks.len() != expected_blocks {
+        return Err(JpegToHtj2kError::Validation(
+            "component block count does not match block grid",
+        ));
+    }
+
+    let mut samples = vec![0; width * height];
+    for block_y in 0..block_rows {
+        for block_x in 0..block_cols {
+            let block = &component.dequantized_blocks[block_y * block_cols + block_x];
+            let block_samples = idct_islow_block(block);
+            for local_y in 0..8 {
+                let y = block_y * 8 + local_y;
+                if y >= height {
+                    continue;
+                }
+                for local_x in 0..8 {
+                    let x = block_x * 8 + local_x;
+                    if x >= width {
+                        continue;
+                    }
+                    samples[y * width + x] = i32::from(block_samples[local_y * 8 + local_x]) - 128;
+                }
+            }
+        }
+    }
+
+    Ok(samples)
+}
+
+fn reversible_dwt53_i32(
+    mut buffer: Vec<i32>,
+    width: usize,
+    height: usize,
+    decomposition_levels: usize,
+) -> IntegerWavelet {
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut levels = Vec::with_capacity(decomposition_levels);
+
+    for _ in 0..decomposition_levels {
+        for x in 0..current_width {
+            let mut column = Vec::with_capacity(current_height);
+            for y in 0..current_height {
+                column.push(buffer[y * width + x]);
+            }
+            reversible_lift_53_i32(&mut column);
+            let low_len = current_height.div_ceil(2);
+            for (idx, value) in column.iter().step_by(2).copied().enumerate() {
+                buffer[idx * width + x] = value;
+            }
+            for (idx, value) in column.iter().skip(1).step_by(2).copied().enumerate() {
+                buffer[(low_len + idx) * width + x] = value;
+            }
+        }
+
+        for y in 0..current_height {
+            let row_start = y * width;
+            let mut row = buffer[row_start..row_start + current_width].to_vec();
+            reversible_lift_53_i32(&mut row);
+            let low_len = current_width.div_ceil(2);
+            for (idx, value) in row.iter().step_by(2).copied().enumerate() {
+                buffer[row_start + idx] = value;
+            }
+            for (idx, value) in row.iter().skip(1).step_by(2).copied().enumerate() {
+                buffer[row_start + low_len + idx] = value;
+            }
+        }
+
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let high_width = current_width / 2;
+        let high_height = current_height / 2;
+        let mut hl = Vec::with_capacity(high_width * low_height);
+        let mut lh = Vec::with_capacity(low_width * high_height);
+        let mut hh = Vec::with_capacity(high_width * high_height);
+
+        for y in 0..low_height {
+            for x in 0..high_width {
+                hl.push(buffer[y * width + low_width + x]);
+            }
+        }
+        for y in 0..high_height {
+            for x in 0..low_width {
+                lh.push(buffer[(low_height + y) * width + x]);
+            }
+        }
+        for y in 0..high_height {
+            for x in 0..high_width {
+                hh.push(buffer[(low_height + y) * width + low_width + x]);
+            }
+        }
+
+        levels.push(IntegerWaveletLevel { hl, lh, hh });
+        current_width = low_width;
+        current_height = low_height;
+    }
+
+    let mut final_ll = Vec::with_capacity(current_width * current_height);
+    for y in 0..current_height {
+        for x in 0..current_width {
+            final_ll.push(buffer[y * width + x]);
+        }
+    }
+
+    IntegerWavelet { final_ll, levels }
+}
+
+fn reversible_lift_53_i32(values: &mut [i32]) {
+    let n = values.len();
+    if n < 2 {
+        return;
+    }
+
+    if n.is_multiple_of(2) {
+        for i in (1..n - 1).step_by(2) {
+            values[i] -= floor_div_i32(values[i - 1] + values[i + 1], 2);
+        }
+        values[n - 1] -= values[n - 2];
+
+        values[0] += floor_div_i32(values[1] + 1, 2);
+        for i in (2..n).step_by(2) {
+            values[i] += floor_div_i32(values[i - 1] + values[i + 1] + 2, 4);
+        }
+        return;
+    }
+
+    let last_even = n - 1;
+    for i in (1..n).step_by(2) {
+        let right = values.get(i + 1).copied().unwrap_or(values[last_even]);
+        values[i] -= floor_div_i32(values[i - 1] + right, 2);
+    }
+    for i in (0..n).step_by(2) {
+        let left = if i > 0 { values[i - 1] } else { values[1] };
+        let right = values.get(i + 1).copied().unwrap_or(left);
+        values[i] += floor_div_i32(left + right + 2, 4);
+    }
+}
+
+fn floor_div_i32(numerator: i32, denominator: i32) -> i32 {
+    numerator.div_euclid(denominator)
+}
+
+fn flatten_integer_wavelet(wavelet: &IntegerWavelet) -> Vec<i32> {
+    let coefficient_count = wavelet.final_ll.len()
+        + wavelet
+            .levels
+            .iter()
+            .map(|level| level.hl.len() + level.lh.len() + level.hh.len())
+            .sum::<usize>();
+    let mut output = Vec::with_capacity(coefficient_count);
+    output.extend_from_slice(&wavelet.final_ll);
+    for level in wavelet.levels.iter().rev() {
+        output.extend_from_slice(&level.hl);
+        output.extend_from_slice(&level.lh);
+        output.extend_from_slice(&level.hh);
+    }
+    output
 }
 
 fn append_rounded_i32(values: &[f64], output: &mut Vec<i32>) -> Result<(), JpegToHtj2kError> {
