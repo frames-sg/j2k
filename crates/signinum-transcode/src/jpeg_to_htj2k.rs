@@ -11,13 +11,21 @@ use signinum_j2k_native::{
 };
 use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions, JpegDctComponent};
 
-use crate::dct53_2d::{dct8x8_blocks_to_dwt53_float_linear, Dct53GridError};
+use crate::dct53_2d::{
+    dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear, Dct53GridError,
+    Dwt53TwoDimensional,
+};
+use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
 pub struct JpegToHtj2kOptions {
     /// Native HTJ2K encode options used after wavelet bands are produced.
     pub encode_options: EncodeOptions,
+    /// Materialize the float IDCT-then-DWT oracle and report rounded
+    /// coefficient differences. This is intended for validation and tests, not
+    /// the production direct path.
+    pub validate_against_float_reference: bool,
 }
 
 impl Default for JpegToHtj2kOptions {
@@ -31,6 +39,7 @@ impl Default for JpegToHtj2kOptions {
                 validate_high_throughput_codestream: false,
                 ..EncodeOptions::default()
             },
+            validate_against_float_reference: false,
         }
     }
 }
@@ -42,27 +51,6 @@ pub struct EncodedTranscode {
     pub codestream: Vec<u8>,
     /// Summary of the experimental path used.
     pub report: TranscodeReport,
-}
-
-/// Transcode summary for validation and benchmarking.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TranscodeReport {
-    /// Source reference-grid width.
-    pub width: u32,
-    /// Source reference-grid height.
-    pub height: u32,
-    /// Number of transformed components.
-    pub component_count: usize,
-    /// Native transformed component geometry and SIZ sampling.
-    pub components: Vec<TranscodeComponentReport>,
-    /// Name of the experimental path used.
-    pub path: &'static str,
-    /// Wall-clock extraction time in microseconds.
-    pub extract_us: u128,
-    /// Wall-clock DCT-to-wavelet time in microseconds.
-    pub transform_us: u128,
-    /// Wall-clock HTJ2K encode time in microseconds.
-    pub encode_us: u128,
 }
 
 /// Per-component transcode geometry preserved in the generated codestream.
@@ -84,6 +72,33 @@ pub struct TranscodeComponentReport {
     pub y_rsiz: u8,
 }
 
+/// Error metrics from an optional validation oracle.
+pub type TranscodeValidationMetrics = ErrorMetrics;
+
+/// Transcode summary for validation and benchmarking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscodeReport {
+    /// Source reference-grid width.
+    pub width: u32,
+    /// Source reference-grid height.
+    pub height: u32,
+    /// Number of transformed components.
+    pub component_count: usize,
+    /// Native transformed component geometry and SIZ sampling.
+    pub components: Vec<TranscodeComponentReport>,
+    /// Rounded coefficient metrics against the optional float IDCT-then-DWT
+    /// oracle.
+    pub float_reference_metrics: Option<TranscodeValidationMetrics>,
+    /// Name of the experimental path used.
+    pub path: &'static str,
+    /// Wall-clock extraction time in microseconds.
+    pub extract_us: u128,
+    /// Wall-clock DCT-to-wavelet time in microseconds.
+    pub transform_us: u128,
+    /// Wall-clock HTJ2K encode time in microseconds.
+    pub encode_us: u128,
+}
+
 /// Error returned by the experimental transcode path.
 #[derive(Debug)]
 pub enum JpegToHtj2kError {
@@ -93,6 +108,10 @@ pub enum JpegToHtj2kError {
     Unsupported(&'static str),
     /// DCT block grid metadata did not cover the component dimensions.
     Grid(Dct53GridError),
+    /// Validation metric inputs were inconsistent.
+    Metrics(MetricsLengthError),
+    /// Validation encountered an out-of-range or non-finite coefficient.
+    Validation(&'static str),
     /// Native HTJ2K encode failed.
     Encode(&'static str),
 }
@@ -103,6 +122,8 @@ impl fmt::Display for JpegToHtj2kError {
             Self::Jpeg(err) => write!(f, "JPEG extraction failed: {err}"),
             Self::Unsupported(reason) => write!(f, "unsupported transcode input: {reason}"),
             Self::Grid(err) => write!(f, "DCT grid transform failed: {err}"),
+            Self::Metrics(err) => write!(f, "validation metrics failed: {err}"),
+            Self::Validation(reason) => write!(f, "validation failed: {reason}"),
             Self::Encode(reason) => write!(f, "HTJ2K encode failed: {reason}"),
         }
     }
@@ -113,7 +134,8 @@ impl std::error::Error for JpegToHtj2kError {
         match self {
             Self::Jpeg(err) => Some(err),
             Self::Grid(err) => Some(err),
-            Self::Unsupported(_) | Self::Encode(_) => None,
+            Self::Metrics(err) => Some(err),
+            Self::Unsupported(_) | Self::Validation(_) | Self::Encode(_) => None,
         }
     }
 }
@@ -127,6 +149,12 @@ impl From<signinum_jpeg::JpegError> for JpegToHtj2kError {
 impl From<Dct53GridError> for JpegToHtj2kError {
     fn from(value: Dct53GridError) -> Self {
         Self::Grid(value)
+    }
+}
+
+impl From<MetricsLengthError> for JpegToHtj2kError {
+    fn from(value: MetricsLengthError) -> Self {
+        Self::Metrics(value)
     }
 }
 
@@ -171,14 +199,31 @@ pub fn jpeg_to_htj2k(
         .collect();
 
     let transform_start = Instant::now();
-    let precomputed_components = jpeg
+    let mut precomputed_components = Vec::with_capacity(jpeg.components.len());
+    let mut validation_actual = Vec::new();
+    let mut validation_expected = Vec::new();
+    for (component, (x_rsiz, y_rsiz)) in jpeg
         .components
         .iter()
         .zip(component_sampling.iter().copied())
-        .map(|(component, (x_rsiz, y_rsiz))| {
-            component_to_precomputed_htj2k(component, x_rsiz, y_rsiz)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    {
+        let component_result = component_to_precomputed_htj2k(
+            component,
+            x_rsiz,
+            y_rsiz,
+            options.validate_against_float_reference,
+        )?;
+        precomputed_components.push(component_result.precomputed);
+        if let Some((actual, expected)) = component_result.validation_coefficients {
+            validation_actual.extend(actual);
+            validation_expected.extend(expected);
+        }
+    }
+    let float_reference_metrics = if options.validate_against_float_reference {
+        Some(error_metrics_i32(&validation_actual, &validation_expected)?)
+    } else {
+        None
+    };
     let transform_us = transform_start.elapsed().as_micros();
 
     let precomputed = PrecomputedHtj2k53Image {
@@ -201,6 +246,7 @@ pub fn jpeg_to_htj2k(
             height: jpeg.height,
             component_count: jpeg.components.len(),
             components: component_reports,
+            float_reference_metrics,
             path: if all_unit_sampled {
                 "full_resolution_components_float_direct_53"
             } else {
@@ -213,11 +259,17 @@ pub fn jpeg_to_htj2k(
     })
 }
 
+struct ComponentTranscodeResult {
+    precomputed: PrecomputedHtj2k53Component,
+    validation_coefficients: Option<(Vec<i32>, Vec<i32>)>,
+}
+
 fn component_to_precomputed_htj2k(
     component: &JpegDctComponent,
     x_rsiz: u8,
     y_rsiz: u8,
-) -> Result<PrecomputedHtj2k53Component, JpegToHtj2kError> {
+    validate_against_float_reference: bool,
+) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let blocks = dct_blocks_to_8x8_f64(&component.dequantized_blocks);
     let bands = dct8x8_blocks_to_dwt53_float_linear(
         &blocks,
@@ -226,6 +278,18 @@ fn component_to_precomputed_htj2k(
         component.width as usize,
         component.height as usize,
     )?;
+    let validation_coefficients = if validate_against_float_reference {
+        let reference = dct8x8_blocks_then_dwt53_float(
+            &blocks,
+            component.block_cols as usize,
+            component.block_rows as usize,
+            component.width as usize,
+            component.height as usize,
+        )?;
+        Some((rounded_bands_i32(&bands)?, rounded_bands_i32(&reference)?))
+    } else {
+        None
+    };
     let dwt = J2kForwardDwt53Output {
         ll: bands.ll.iter().map(|&value| value as f32).collect(),
         ll_width: bands.low_width as u32,
@@ -243,11 +307,46 @@ fn component_to_precomputed_htj2k(
         }],
     };
 
-    Ok(PrecomputedHtj2k53Component {
-        x_rsiz,
-        y_rsiz,
-        dwt,
+    Ok(ComponentTranscodeResult {
+        precomputed: PrecomputedHtj2k53Component {
+            x_rsiz,
+            y_rsiz,
+            dwt,
+        },
+        validation_coefficients,
     })
+}
+
+fn rounded_bands_i32(bands: &Dwt53TwoDimensional<f64>) -> Result<Vec<i32>, JpegToHtj2kError> {
+    let mut output =
+        Vec::with_capacity(bands.ll.len() + bands.hl.len() + bands.lh.len() + bands.hh.len());
+    append_rounded_i32(&bands.ll, &mut output)?;
+    append_rounded_i32(&bands.hl, &mut output)?;
+    append_rounded_i32(&bands.lh, &mut output)?;
+    append_rounded_i32(&bands.hh, &mut output)?;
+    Ok(output)
+}
+
+fn append_rounded_i32(values: &[f64], output: &mut Vec<i32>) -> Result<(), JpegToHtj2kError> {
+    for &value in values {
+        output.push(round_f64_to_i32(value)?);
+    }
+    Ok(())
+}
+
+fn round_f64_to_i32(value: f64) -> Result<i32, JpegToHtj2kError> {
+    let rounded = value.round();
+    if !rounded.is_finite() {
+        return Err(JpegToHtj2kError::Validation(
+            "float reference coefficient is not finite",
+        ));
+    }
+    if rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+        return Err(JpegToHtj2kError::Validation(
+            "float reference coefficient exceeds i32 range",
+        ));
+    }
+    Ok(rounded as i32)
 }
 
 fn component_sampling_for_jpeg(

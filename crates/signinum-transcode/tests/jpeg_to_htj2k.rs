@@ -24,6 +24,27 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
 }
 
 #[test]
+fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions {
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with validation enabled");
+    let metrics = encoded
+        .report
+        .float_reference_metrics
+        .as_ref()
+        .expect("float reference metrics are reported");
+
+    assert_eq!(metrics.total, 64);
+    assert_eq!(metrics.exact_matches, 64);
+    assert_eq!(metrics.max_abs_error, 0);
+}
+
+#[test]
 fn grayscale_multiblock_jpeg_transcodes_to_decodable_htj2k() {
     let width = 13;
     let height = 11;
@@ -110,9 +131,31 @@ fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
     assert_eq!((encoded.report.width, encoded.report.height), (16, 16));
     assert_eq!(encoded.report.component_count, 3);
     assert_report_sampling(&encoded, &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)]);
+    assert!(encoded.report.float_reference_metrics.is_none());
     assert_eq!((decoded.width, decoded.height), (16, 16));
     assert_eq!(decoded.num_components, 3);
     assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
+}
+
+#[test]
+fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let options = JpegToHtj2kOptions {
+        validate_against_float_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("transcode 4:2:0 JPEG with validation enabled");
+    let metrics = encoded
+        .report
+        .float_reference_metrics
+        .as_ref()
+        .expect("float reference metrics are reported");
+
+    assert_eq!(metrics.total, 384);
+    assert_eq!(metrics.exact_matches, 384);
+    assert_eq!(metrics.max_abs_error, 0);
 }
 
 fn patterned_gray(width: u32, height: u32) -> Vec<u8> {
