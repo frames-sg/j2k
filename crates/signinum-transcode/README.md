@@ -13,7 +13,7 @@ reversible 5/3 HTJ2K output:
 
 ```text
 JPEG bytes
-  -> parsed headers and entropy-decoded dequantized DCT blocks
+  -> parsed headers and entropy-decoded quantized/dequantized DCT blocks
   -> direct DCT-domain 5/3 wavelet coefficients
   -> signinum-j2k-native precomputed-band HTJ2K encode
 ```

@@ -19,6 +19,45 @@ fn extracts_grayscale_dct_blocks() {
 }
 
 #[test]
+fn exposes_quantized_and_dequantized_natural_order_blocks() {
+    let image = extract_dct_blocks(
+        &fixtures::baseline_444_8x8_jpeg(),
+        DctExtractOptions::default(),
+    )
+    .expect("extract 4:4:4 DCT blocks");
+    let component = &image.components[0];
+
+    assert_eq!(
+        component.quantized_blocks.len(),
+        component.dequantized_blocks.len()
+    );
+    assert!(component
+        .quantized_blocks
+        .iter()
+        .any(|block| block.iter().any(|&coefficient| coefficient != 0)));
+    assert_ne!(
+        component.quantized_blocks[0],
+        component.dequantized_blocks[0]
+    );
+
+    for (quantized, dequantized) in component
+        .quantized_blocks
+        .iter()
+        .zip(component.dequantized_blocks.iter())
+    {
+        for (zigzag_idx, &natural_idx) in JPEG_ZIGZAG.iter().enumerate() {
+            let expected =
+                i32::from(quantized[natural_idx]) * i32::from(component.quant_table[zigzag_idx]);
+            assert_eq!(
+                i32::from(dequantized[natural_idx]),
+                expected,
+                "dequantized coefficient at natural index {natural_idx}"
+            );
+        }
+    }
+}
+
+#[test]
 fn extracts_ycbcr_444_dct_blocks() {
     let image = extract_dct_blocks(
         &fixtures::baseline_444_8x8_jpeg(),
@@ -130,8 +169,19 @@ fn assert_component(
         "block grid"
     );
     assert_eq!(component.dequantized_blocks.len(), block_count);
+    assert_eq!(component.quantized_blocks.len(), block_count);
     assert!(component
         .dequantized_blocks
         .iter()
         .any(|block| block.iter().any(|&coefficient| coefficient != 0)));
+    assert!(component
+        .quantized_blocks
+        .iter()
+        .any(|block| block.iter().any(|&coefficient| coefficient != 0)));
 }
+
+const JPEG_ZIGZAG: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];

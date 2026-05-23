@@ -10,8 +10,9 @@ use crate::color::upsample::{
     upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
 };
 use crate::entropy::block::{
-    decode_block_for_1x1_idct, decode_block_for_reduced_idct, decode_block_with_activity,
-    skip_block, BlockActivity, CoefficientBlock, ReducedIdctCoefficients,
+    decode_block_for_1x1_idct, decode_block_for_reduced_idct,
+    decode_block_quantized_and_dequantized_with_activity, decode_block_with_activity, skip_block,
+    BlockActivity, CoefficientBlock, ReducedIdctCoefficients,
 };
 use crate::entropy::huffman::HuffmanTable;
 use crate::error::{HuffmanFailure, JpegError, Warning};
@@ -1006,7 +1007,7 @@ fn skip_mcu(
 pub(crate) fn decode_scan_dct_blocks(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
-) -> Result<Vec<Vec<[i16; 64]>>, JpegError> {
+) -> Result<DecodedDctBlocks, JpegError> {
     let max_h = u32::from(plan.sampling.max_h);
     let max_v = u32::from(plan.sampling.max_v);
     let mcu_width_px = 8 * max_h;
@@ -1022,7 +1023,12 @@ pub(crate) fn decode_scan_dct_blocks(
         block_rows_by_component[component.output_index] = mcu_rows * u32::from(component.v);
     }
 
-    let mut component_blocks = block_cols_by_component
+    let mut quantized_blocks = block_cols_by_component
+        .iter()
+        .zip(block_rows_by_component.iter())
+        .map(|(&cols, &rows)| vec![[0_i16; 64]; (cols * rows) as usize])
+        .collect::<Vec<_>>();
+    let mut dequantized_blocks = block_cols_by_component
         .iter()
         .zip(block_rows_by_component.iter())
         .map(|(&cols, &rows)| vec![[0_i16; 64]; (cols * rows) as usize])
@@ -1030,7 +1036,8 @@ pub(crate) fn decode_scan_dct_blocks(
 
     let mut br = BitReader::new(scan_bytes);
     let mut prev_dc = vec![0_i32; component_count];
-    let mut coeff = CoefficientBlock::default();
+    let mut quantized_coeff = CoefficientBlock::default();
+    let mut dequantized_coeff = CoefficientBlock::default();
     let restart = plan.restart_interval.unwrap_or(0);
     let mut mcus_since_restart = 0_u32;
     let mut expected_rst = 0_u8;
@@ -1064,18 +1071,21 @@ pub(crate) fn decode_scan_dct_blocks(
                 let block_cols = block_cols_by_component[plane_idx];
                 for vy in 0..u32::from(component.v) {
                     for vx in 0..u32::from(component.h) {
-                        decode_block_with_activity(
+                        decode_block_quantized_and_dequantized_with_activity(
                             &mut br,
                             &component.dc_table,
                             &component.ac_table,
                             &mut prev_dc[plane_idx],
                             &component.quant,
-                            &mut coeff,
+                            &mut quantized_coeff,
+                            &mut dequantized_coeff,
                         )?;
                         let block_x = mcu_x * u32::from(component.h) + vx;
                         let block_y = mcu_y * u32::from(component.v) + vy;
                         let block_idx = (block_y * block_cols + block_x) as usize;
-                        component_blocks[plane_idx][block_idx] = *coeff.coefficients();
+                        quantized_blocks[plane_idx][block_idx] = *quantized_coeff.coefficients();
+                        dequantized_blocks[plane_idx][block_idx] =
+                            *dequantized_coeff.coefficients();
                     }
                 }
             }
@@ -1085,7 +1095,16 @@ pub(crate) fn decode_scan_dct_blocks(
     }
 
     finish_scan(&mut br, true)?;
-    Ok(component_blocks)
+    Ok(DecodedDctBlocks {
+        quantized: quantized_blocks,
+        dequantized: dequantized_blocks,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedDctBlocks {
+    pub(crate) quantized: Vec<Vec<[i16; 64]>>,
+    pub(crate) dequantized: Vec<Vec<[i16; 64]>>,
 }
 
 #[allow(clippy::too_many_arguments)]

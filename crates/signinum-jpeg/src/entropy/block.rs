@@ -195,6 +195,55 @@ pub(crate) fn decode_block_with_activity(
 }
 
 #[inline(always)]
+pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
+    br: &mut BitReader<'_>,
+    dc_table: &HuffmanTable,
+    ac_table: &HuffmanTable,
+    prev_dc: &mut i32,
+    quant: &[u16; 64],
+    quantized_block: &mut CoefficientBlock,
+    dequantized_block: &mut CoefficientBlock,
+) -> Result<BlockActivity, JpegError> {
+    quantized_block.clear_touched();
+    dequantized_block.clear_touched();
+
+    // DC.
+    let diff = dc_table.decode_fast_dc(br)?;
+    *prev_dc = prev_dc.wrapping_add(diff);
+    quantized_block.store(0, clamp_i16(*prev_dc));
+    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    dequantized_block.store(0, clamp_i16(dc_dequant));
+
+    // AC.
+    let mut k: usize = 1;
+    let mut activity = BlockActivity::DcOnly;
+    while k < 64 {
+        match ac_table.decode_fast_ac(br)? {
+            AcDecoded::Eob => break,
+            AcDecoded::Zrl => {
+                k += 16;
+            }
+            AcDecoded::Value { run, value } => {
+                k += run;
+                if k >= 64 {
+                    return Err(JpegError::HuffmanDecode {
+                        mcu: 0,
+                        reason: HuffmanFailure::InvalidSymbol,
+                    });
+                }
+                let natural_idx = ZIGZAG[k] as usize;
+                quantized_block.store(natural_idx, clamp_i16(value));
+                let dequant = value.wrapping_mul(quant[k] as i32);
+                dequantized_block.store(natural_idx, clamp_i16(dequant));
+                activity = extend_activity(activity, natural_idx);
+                k += 1;
+            }
+        }
+    }
+    Ok(activity)
+}
+
+#[inline(always)]
 #[cfg(test)]
 pub(crate) fn decode_block_with_dc_status(
     br: &mut BitReader<'_>,
