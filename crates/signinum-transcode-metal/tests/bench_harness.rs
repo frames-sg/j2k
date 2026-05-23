@@ -7,6 +7,12 @@ fn dct97_benchmark_groups_are_stable() {
     for expected in [
         "dct53_metal_projection",
         "jpeg_to_htj2k_wsi_53",
+        "reversible_dct53_metal_projection",
+        "jpeg_to_htj2k_wsi_integer_53",
+        "rayon_224x224",
+        "rayon_512x512",
+        "rayon_1024x1024",
+        "rayon_2048x2048",
         "dct97_metal_projection",
         "scalar_224x224",
         "metal_explicit_224x224",

@@ -15,7 +15,8 @@ pub mod weights;
 use core::fmt;
 
 use signinum_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctToWaveletStageAccelerator,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
+    DctToWaveletStageAccelerator, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -24,6 +25,7 @@ use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 pub const METAL_UNAVAILABLE: &str = "Metal is unavailable on this host";
 
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 65_536;
+const DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES: usize = usize::MAX;
 
 /// Error returned by the Metal transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,9 @@ impl std::error::Error for MetalTranscodeError {}
 pub struct MetalDctToWaveletStageAccelerator {
     mode: MetalDispatchMode,
     min_auto_samples: usize,
+    min_auto_reversible_samples: usize,
+    reversible_dwt53_attempts: usize,
+    reversible_dwt53_dispatches: usize,
     dwt53_attempts: usize,
     dwt53_dispatches: usize,
     dwt97_attempts: usize,
@@ -80,6 +85,9 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Explicit,
             min_auto_samples: 0,
+            min_auto_reversible_samples: 0,
+            reversible_dwt53_attempts: 0,
+            reversible_dwt53_dispatches: 0,
             dwt53_attempts: 0,
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
@@ -94,11 +102,26 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Auto,
             min_auto_samples: DEFAULT_AUTO_MIN_SAMPLES,
+            min_auto_reversible_samples: DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES,
+            reversible_dwt53_attempts: 0,
+            reversible_dwt53_dispatches: 0,
             dwt53_attempts: 0,
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
             dwt97_dispatches: 0,
         }
+    }
+
+    /// Number of reversible integer 5/3 jobs offered to this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_attempts(&self) -> usize {
+        self.reversible_dwt53_attempts
+    }
+
+    /// Number of reversible integer 5/3 jobs handled by Metal.
+    #[must_use]
+    pub const fn reversible_dwt53_dispatches(&self) -> usize {
+        self.reversible_dwt53_dispatches
     }
 
     /// Number of 5/3 projection jobs offered to this accelerator.
@@ -133,13 +156,54 @@ impl Default for MetalDctToWaveletStageAccelerator {
 }
 
 impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
+    fn dct_grid_to_reversible_dwt53(
+        &mut self,
+        job: DctGridToReversibleDwt53Job<'_>,
+    ) -> Result<Option<ReversibleDwt53FirstLevel>, &'static str> {
+        self.reversible_dwt53_attempts = self.reversible_dwt53_attempts.saturating_add(1);
+
+        if self.mode == MetalDispatchMode::Auto
+            && job.width.saturating_mul(job.height) < self.min_auto_reversible_samples
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            match self.mode {
+                MetalDispatchMode::Explicit => {
+                    Err(MetalTranscodeError::MetalUnavailable.as_static_str())
+                }
+                MetalDispatchMode::Auto => Ok(None),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match metal::dispatch_dct_grid_to_reversible_dwt53(job) {
+                Ok(output) => {
+                    self.reversible_dwt53_dispatches =
+                        self.reversible_dwt53_dispatches.saturating_add(1);
+                    Ok(Some(output))
+                }
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
+            }
+        }
+    }
+
     fn dct_grid_to_dwt53(
         &mut self,
         job: DctGridToDwt53Job<'_>,
     ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
         self.dwt53_attempts = self.dwt53_attempts.saturating_add(1);
 
-        if self.mode == MetalDispatchMode::Auto && job.width * job.height < self.min_auto_samples {
+        if self.mode == MetalDispatchMode::Auto
+            && job.width.saturating_mul(job.height) < self.min_auto_samples
+        {
             return Ok(None);
         }
 
@@ -175,7 +239,9 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
     ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
         self.dwt97_attempts = self.dwt97_attempts.saturating_add(1);
 
-        if self.mode == MetalDispatchMode::Auto && job.width * job.height < self.min_auto_samples {
+        if self.mode == MetalDispatchMode::Auto
+            && job.width.saturating_mul(job.height) < self.min_auto_samples
+        {
             return Ok(None);
         }
 

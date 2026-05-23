@@ -1050,6 +1050,7 @@ version = "0.4.2"
 dependencies = [
  "criterion",
  "proptest",
+ "rayon",
  "signinum-j2k-native",
  "signinum-jpeg",
 ]
