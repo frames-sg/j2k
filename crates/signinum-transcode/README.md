@@ -32,6 +32,10 @@ thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
 over the same scalar path. Reusable scratch covers the float-linear validation
 path and the default integer-direct block-local ISLOW sample cache.
 
+`TranscodeReport` includes the typed coefficient path and optional validation
+classifications. When an oracle is enabled, metrics are classified as exact,
+one-LSB-bounded at the 99.9% exact-match threshold, or outside threshold.
+
 ## Promotion Gate
 
 Do not expose this crate as a stable conversion API until all of the following

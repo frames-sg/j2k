@@ -149,6 +149,34 @@ pub struct TranscodeComponentReport {
 /// Error metrics from an optional validation oracle.
 pub type TranscodeValidationMetrics = ErrorMetrics;
 
+/// Classification for optional coefficient-validation metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscodeValidationClassification {
+    /// All compared coefficients match the selected oracle exactly.
+    Exact,
+    /// Coefficients satisfy the experimental one-LSB-bounded threshold:
+    /// maximum absolute error is at most one LSB and at least 99.9% of
+    /// coefficients match exactly.
+    OneLsbBounded,
+    /// Coefficients do not satisfy the exact or one-LSB-bounded thresholds.
+    OutsideThreshold,
+}
+
+impl TranscodeValidationClassification {
+    /// Classify validation metrics using the experimental acceptance
+    /// thresholds documented for this coefficient-domain path.
+    #[must_use]
+    pub fn classify_metrics(metrics: &TranscodeValidationMetrics) -> Self {
+        if metrics.exact_matches == metrics.total && metrics.max_abs_error == 0 {
+            Self::Exact
+        } else if metrics.is_one_lsb_bounded(0.999) {
+            Self::OneLsbBounded
+        } else {
+            Self::OutsideThreshold
+        }
+    }
+}
+
 /// Transcode summary for validation and benchmarking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscodeReport {
@@ -163,11 +191,17 @@ pub struct TranscodeReport {
     /// Rounded coefficient metrics against the optional float IDCT-then-DWT
     /// oracle.
     pub float_reference_metrics: Option<TranscodeValidationMetrics>,
+    /// Threshold classification for `float_reference_metrics`.
+    pub float_reference_classification: Option<TranscodeValidationClassification>,
     /// Rounded direct coefficients compared with signinum-jpeg scalar
     /// ISLOW-IDCT-then-reversible-5/3 coefficients.
     pub integer_reference_metrics: Option<TranscodeValidationMetrics>,
+    /// Threshold classification for `integer_reference_metrics`.
+    pub integer_reference_classification: Option<TranscodeValidationClassification>,
     /// Number of reversible 5/3 decomposition levels encoded.
     pub decomposition_levels: u8,
+    /// Coefficient path used to generate the HTJ2K bands.
+    pub coefficient_path: JpegToHtj2kCoefficientPath,
     /// Name of the experimental path used.
     pub path: &'static str,
     /// Wall-clock extraction time in microseconds.
@@ -319,9 +353,18 @@ fn jpeg_to_htj2k_with_scratch(
             height: jpeg.height,
             component_count: jpeg.components.len(),
             components: component_reports,
+            float_reference_classification: component_batch
+                .float_reference_metrics
+                .as_ref()
+                .map(TranscodeValidationClassification::classify_metrics),
             float_reference_metrics: component_batch.float_reference_metrics,
+            integer_reference_classification: component_batch
+                .integer_reference_metrics
+                .as_ref()
+                .map(TranscodeValidationClassification::classify_metrics),
             integer_reference_metrics: component_batch.integer_reference_metrics,
             decomposition_levels,
+            coefficient_path: options.coefficient_path,
             path: transcode_path_name(all_unit_sampled, options.coefficient_path),
             extract_us,
             transform_us,

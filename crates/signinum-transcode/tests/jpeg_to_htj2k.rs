@@ -7,7 +7,7 @@ use signinum_jpeg::{
 use signinum_jpeg::{JpegError, SofKind};
 use signinum_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
-    JpegToHtj2kTranscoder,
+    JpegToHtj2kTranscoder, TranscodeValidationClassification,
 };
 use std::{
     env, fs,
@@ -77,6 +77,15 @@ fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
     assert_eq!(metrics.total, 64);
     assert_eq!(metrics.exact_matches, metrics.total);
     assert_eq!(metrics.max_abs_error, 0);
+    assert_eq!(
+        encoded.report.coefficient_path,
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+    );
+    assert_eq!(
+        encoded.report.integer_reference_classification,
+        Some(TranscodeValidationClassification::Exact)
+    );
+    assert_eq!(encoded.report.float_reference_classification, None);
 }
 
 #[test]
