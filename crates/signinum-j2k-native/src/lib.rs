@@ -133,11 +133,12 @@ pub use error::{
     ValidationError,
 };
 pub use j2c::encode::{
-    encode, encode_htj2k, encode_precomputed_htj2k_53, encode_precomputed_htj2k_97,
-    encode_with_accelerator, EncodeOptions, EncodeProgressionOrder, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k53Image, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
+    encode, encode_htj2k, encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_mct,
+    encode_precomputed_htj2k_97, encode_with_accelerator, EncodeOptions, EncodeProgressionOrder,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image,
 };
-pub use j2c::{CpuDecodeParallelism, DecoderContext};
+pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 
 mod j2c;
 mod jp2;
@@ -1825,6 +1826,31 @@ impl<'a> Image<'a> {
     pub fn decode_native(&self) -> Result<RawBitmap> {
         let mut decoder_context = DecoderContext::default();
         self.decode_native_with_context(&mut decoder_context)
+    }
+
+    /// Extract reversible 5/3 wavelet coefficients for coefficient-domain
+    /// classic JPEG 2000 to HTJ2K recoding.
+    ///
+    /// This decodes classic Tier-1 code-blocks into dequantized reversible
+    /// wavelet coefficients, but does not run inverse DWT or color conversion.
+    #[doc(hidden)]
+    pub fn decode_reversible_53_coefficients(&self) -> Result<Reversible53CoefficientImage> {
+        let mut decoder_context = DecoderContext::default();
+        self.decode_reversible_53_coefficients_with_context(&mut decoder_context)
+    }
+
+    /// Extract reversible 5/3 wavelet coefficients using a caller-provided
+    /// decoder context.
+    #[doc(hidden)]
+    pub fn decode_reversible_53_coefficients_with_context(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<Reversible53CoefficientImage> {
+        j2c::recode::extract_reversible_53_coefficients(
+            self.codestream,
+            &self.header,
+            decoder_context,
+        )
     }
 
     /// Decode a region of the image at native bit depth.

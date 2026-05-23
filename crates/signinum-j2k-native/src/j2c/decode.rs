@@ -758,7 +758,7 @@ pub enum CpuDecodeParallelism {
 /// A decoder context for decoding JPEG2000 images.
 pub struct DecoderContext<'a> {
     pub(crate) tile_decode_context: TileDecodeContext,
-    storage: DecompositionStorage<'a>,
+    pub(crate) storage: DecompositionStorage<'a>,
     cpu_decode_parallelism: CpuDecodeParallelism,
 }
 
@@ -1013,7 +1013,7 @@ pub(crate) struct DecompositionStorage<'a> {
 }
 
 impl DecompositionStorage<'_> {
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.segments.clear();
         self.layers.clear();
         self.code_blocks.clear();
@@ -1078,7 +1078,7 @@ impl TileDecodeContext {
     }
 }
 
-fn decode_component_tile_bit_planes<'a>(
+pub(crate) fn decode_component_tile_bit_planes<'a>(
     tile: &Tile<'a>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,

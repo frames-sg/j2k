@@ -8,6 +8,7 @@ mod backend;
 mod batch;
 mod decode;
 mod encode;
+mod recode;
 
 pub mod context;
 pub use context::J2kContext;
@@ -37,6 +38,11 @@ pub use encode::{
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference, EncodedJ2k,
     J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
     J2kProgressionOrder, ReversibleTransform,
+};
+
+pub use recode::{
+    recode_j2k_to_htj2k_lossless, J2kToHtj2kMode, J2kToHtj2kOptions, J2kToHtj2kReport,
+    ReencodedHtj2k,
 };
 
 #[doc(hidden)]

@@ -2,10 +2,11 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use signinum_j2k::{
-    decode_tiles_region_scaled_into, encode_j2k_lossless, CpuDecodeParallelism, DecoderContext,
-    Downscale, EncodeBackendPreference, ImageDecodeRows, J2kBlockCodingMode, J2kCodec, J2kContext,
-    J2kDecoder, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool,
-    PixelFormat, Rect, RowSink, TileBatchDecode, TileBatchOptions, TileRegionScaledDecodeJob,
+    decode_tiles_region_scaled_into, encode_j2k_lossless, recode_j2k_to_htj2k_lossless,
+    CpuDecodeParallelism, DecoderContext, Downscale, EncodeBackendPreference, ImageDecodeRows,
+    J2kBlockCodingMode, J2kCodec, J2kContext, J2kDecoder, J2kEncodeValidation,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool, J2kToHtj2kOptions, PixelFormat,
+    Rect, RowSink, TileBatchDecode, TileBatchOptions, TileRegionScaledDecodeJob,
 };
 use signinum_test_support::{patterned_gray8, patterned_rgb8};
 
@@ -27,6 +28,13 @@ fn ht_encode_options() -> J2kLosslessEncodeOptions {
     J2kLosslessEncodeOptions {
         block_coding_mode: J2kBlockCodingMode::HighThroughput,
         ..bench_encode_options()
+    }
+}
+
+fn recode_options() -> J2kToHtj2kOptions {
+    J2kToHtj2kOptions {
+        validation: J2kEncodeValidation::External,
+        ..J2kToHtj2kOptions::default()
     }
 }
 
@@ -223,6 +231,31 @@ fn bench_decode(c: &mut Criterion) {
                 .decode_into(&mut ht_out, ht_stride, PixelFormat::Gray8)
                 .expect("decode full htj2k gray8");
             black_box(&ht_out);
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_recode(c: &mut Criterion) {
+    let classic = encode_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
+    let htj2k = encode_ht_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
+    let options = recode_options();
+    let mut group = c.benchmark_group("j2k_public_recode");
+
+    group.bench_function("classic_rgb8_512_to_htj2k_53_coefficients", |b| {
+        b.iter(|| {
+            let recoded = recode_j2k_to_htj2k_lossless(black_box(classic.as_slice()), options)
+                .expect("coefficient-domain recode");
+            black_box(recoded.bytes.len());
+        });
+    });
+
+    group.bench_function("raw_htj2k_rgb8_512_passthrough", |b| {
+        b.iter(|| {
+            let recoded = recode_j2k_to_htj2k_lossless(black_box(htj2k.as_slice()), options)
+                .expect("HTJ2K passthrough");
+            black_box(recoded.bytes.len());
         });
     });
 
@@ -768,6 +801,7 @@ criterion_group!(
     bench_lossless_encode,
     bench_inspect,
     bench_decode,
+    bench_recode,
     bench_region_scaled,
     bench_rows,
     bench_tile_batch,
