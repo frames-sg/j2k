@@ -16,12 +16,16 @@ use signinum_transcode::dct53_2d::{
 use signinum_transcode::dct97_2d::{
     dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch,
 };
-use signinum_transcode::{JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use signinum_transcode::{
+    EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
+    JpegToHtj2kTranscoder,
+};
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];
 const MAX_REVERSIBLE_BATCH_SAMPLES: usize = 512 * 512 * 512;
+const WSI_TILE_BATCH_SIZES: [usize; 3] = [128, 256, 512];
 
 const DIRECT_BENCH_MARKERS: [&str; 8] = [
     "scalar_224x224",
@@ -57,6 +61,52 @@ const REVERSIBLE_BATCH_BENCH_MARKERS: [&str; 11] = [
     "rayon_512x512_batch_512",
     "rayon_1024x1024_batch_128",
     "rayon_2048x2048_batch_32",
+];
+
+const WSI_TILE_BATCH_BENCH_MARKERS: &[&str] = &[
+    "jpeg_to_htj2k_wsi_integer_53_tile_batch",
+    "rayon_batch",
+    "metal_auto_batch",
+    "metal_explicit_batch",
+    "batch_128",
+    "batch_256",
+    "batch_512",
+    "p3_like_ybr444_224_batch_128",
+    "p3_like_ybr444_224_batch_256",
+    "p3_like_ybr444_224_batch_512",
+    "p3_like_ybr444_512_batch_128",
+    "p3_like_ybr444_512_batch_256",
+    "p3_like_ybr444_512_batch_512",
+    "p3_like_ybr444_1024_batch_128",
+    "p3_like_ybr444_1024_batch_256",
+    "p3_like_ybr444_1024_batch_512",
+    "p3_like_ybr444_2048_batch_128",
+    "p3_like_ybr444_2048_batch_256",
+    "p3_like_ybr444_2048_batch_512",
+    "srgb_ybr420_224_batch_128",
+    "srgb_ybr420_224_batch_256",
+    "srgb_ybr420_224_batch_512",
+    "srgb_ybr420_512_batch_128",
+    "srgb_ybr420_512_batch_256",
+    "srgb_ybr420_512_batch_512",
+    "srgb_ybr420_1024_batch_128",
+    "srgb_ybr420_1024_batch_256",
+    "srgb_ybr420_1024_batch_512",
+    "srgb_ybr420_2048_batch_128",
+    "srgb_ybr420_2048_batch_256",
+    "srgb_ybr420_2048_batch_512",
+    "ycbcr_like_ybr420_224_batch_128",
+    "ycbcr_like_ybr420_224_batch_256",
+    "ycbcr_like_ybr420_224_batch_512",
+    "ycbcr_like_ybr420_512_batch_128",
+    "ycbcr_like_ybr420_512_batch_256",
+    "ycbcr_like_ybr420_512_batch_512",
+    "ycbcr_like_ybr420_1024_batch_128",
+    "ycbcr_like_ybr420_1024_batch_256",
+    "ycbcr_like_ybr420_1024_batch_512",
+    "ycbcr_like_ybr420_2048_batch_128",
+    "ycbcr_like_ybr420_2048_batch_256",
+    "ycbcr_like_ybr420_2048_batch_512",
 ];
 
 const WSI_FIXTURES: [WsiFixtureSpec; 12] = [
@@ -601,6 +651,99 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
+    black_box(WSI_TILE_BATCH_BENCH_MARKERS);
+    let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_integer_53_tile_batch");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    for spec in WSI_FIXTURES {
+        let jpeg = encoded_fixture(spec);
+        let options = JpegToHtj2kOptions::lossless_53();
+
+        for batch_size in WSI_TILE_BATCH_SIZES {
+            let inputs = tile_batch_inputs(&jpeg, batch_size);
+            let benchmark_name = format!("{}_batch_{}", spec.name, batch_size);
+            group.throughput(Throughput::Bytes(
+                u64::try_from(jpeg.len().saturating_mul(batch_size))
+                    .expect("benchmark input byte count fits u64"),
+            ));
+
+            group.bench_with_input(
+                BenchmarkId::new(benchmark_name.as_str(), "rayon_batch"),
+                &inputs,
+                |b, inputs| {
+                    let mut transcoder = JpegToHtj2kTranscoder::default();
+                    let mut accelerator = RayonReversibleDwt53Accelerator::default();
+                    b.iter(|| {
+                        black_box(expect_successful_batch(
+                            transcoder
+                                .transcode_batch_with_accelerator(
+                                    black_box(inputs),
+                                    &options,
+                                    &mut accelerator,
+                                )
+                                .expect("rayon JPEG tile batch transcode succeeds"),
+                            "rayon JPEG tile batch transcode",
+                        ));
+                    });
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(benchmark_name.as_str(), "metal_auto_batch"),
+                &inputs,
+                |b, inputs| {
+                    let mut transcoder = JpegToHtj2kTranscoder::default();
+                    let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
+                    b.iter(|| {
+                        black_box(expect_successful_batch(
+                            transcoder
+                                .transcode_batch_with_accelerator(
+                                    black_box(inputs),
+                                    &options,
+                                    &mut accelerator,
+                                )
+                                .expect("auto Metal JPEG tile batch transcode succeeds"),
+                            "auto Metal JPEG tile batch transcode",
+                        ));
+                    });
+                },
+            );
+
+            if metal_available() {
+                group.bench_with_input(
+                    BenchmarkId::new(benchmark_name.as_str(), "metal_explicit_batch"),
+                    &inputs,
+                    |b, inputs| {
+                        let mut transcoder = JpegToHtj2kTranscoder::default();
+                        let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+                        b.iter(|| {
+                            black_box(expect_successful_batch(
+                                transcoder
+                                    .transcode_batch_with_accelerator(
+                                        black_box(inputs),
+                                        &options,
+                                        &mut accelerator,
+                                    )
+                                    .expect("explicit Metal JPEG tile batch transcode succeeds"),
+                                "explicit Metal JPEG tile batch transcode",
+                            ));
+                        });
+                    },
+                );
+            } else {
+                eprintln!(
+                    "skipping {benchmark_name}/metal_explicit_batch benchmark: \
+                     {METAL_UNAVAILABLE}"
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
 #[derive(Clone, Copy)]
 struct WsiFixtureSpec {
     name: &'static str,
@@ -626,6 +769,26 @@ fn encoded_fixture(spec: WsiFixtureSpec) -> Vec<u8> {
     )
     .expect("encode benchmark JPEG fixture")
     .data
+}
+
+fn tile_batch_inputs(jpeg: &[u8], batch_size: usize) -> Vec<JpegTileBatchInput<'_>> {
+    vec![JpegTileBatchInput { bytes: jpeg }; batch_size]
+}
+
+fn expect_successful_batch(
+    batch: EncodedTranscodeBatch,
+    context: &'static str,
+) -> EncodedTranscodeBatch {
+    assert_eq!(
+        batch.report.failed_tiles, 0,
+        "{context} produced {} failed tiles",
+        batch.report.failed_tiles
+    );
+    assert_eq!(
+        batch.report.successful_tiles, batch.report.tile_count,
+        "{context} produced an incomplete successful tile count"
+    );
+    batch
 }
 
 fn metal_available() -> bool {
@@ -770,6 +933,10 @@ criterion_group!(
     jpeg_to_htj2k_wsi_integer_53,
     bench_jpeg_to_htj2k_wsi_integer_53
 );
+criterion_group!(
+    jpeg_to_htj2k_wsi_integer_53_tile_batch,
+    bench_jpeg_to_htj2k_wsi_integer_53_tile_batch
+);
 criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
 criterion_main!(
     dct53_metal_projection,
@@ -778,5 +945,6 @@ criterion_main!(
     reversible_dct53_batch_metal_projection,
     jpeg_to_htj2k_wsi_53,
     jpeg_to_htj2k_wsi_integer_53,
+    jpeg_to_htj2k_wsi_integer_53_tile_batch,
     jpeg_to_htj2k_wsi_97
 );
