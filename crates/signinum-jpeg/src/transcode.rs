@@ -83,6 +83,17 @@ pub fn extract_dct_blocks(
     })
 }
 
+/// Run the scalar ISLOW IDCT oracle on one dequantized natural-order DCT block.
+///
+/// The output matches signinum-jpeg's scalar decode semantics for one component
+/// block, including JPEG's unsigned sample level shift and clamping.
+#[must_use]
+pub fn idct_islow_block(block: &[i16; 64]) -> [u8; 64] {
+    let mut output = [0; 64];
+    crate::idct::idct_islow(block, &mut output);
+    output
+}
+
 fn build_components(
     decoder: &Decoder<'_>,
     decoded_blocks: Vec<Vec<[i16; 64]>>,

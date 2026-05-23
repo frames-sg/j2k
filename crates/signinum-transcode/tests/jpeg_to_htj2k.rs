@@ -51,6 +51,26 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 }
 
 #[test]
+fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions {
+        validate_against_integer_reference: true,
+        ..JpegToHtj2kOptions::default()
+    };
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with integer validation");
+    let metrics = encoded
+        .report
+        .integer_reference_metrics
+        .as_ref()
+        .expect("integer reference metrics are reported");
+
+    assert_eq!(metrics.total, 64);
+    assert!(metrics.max_abs_error <= 2);
+}
+
+#[test]
 fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let mut options = JpegToHtj2kOptions::default();

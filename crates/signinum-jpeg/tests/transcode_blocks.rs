@@ -2,7 +2,7 @@
 
 mod fixtures;
 
-use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
+use signinum_jpeg::transcode::{extract_dct_blocks, idct_islow_block, DctExtractOptions};
 use signinum_jpeg::{JpegError, SofKind};
 
 #[test]
@@ -95,6 +95,20 @@ fn rejects_progressive_jpeg_for_dct_extraction() {
             sof: SofKind::Progressive8
         }
     ));
+}
+
+#[test]
+fn exposes_scalar_islow_block_idct_for_transcode_oracles() {
+    let image = extract_dct_blocks(
+        &fixtures::grayscale_8x8_jpeg(),
+        DctExtractOptions::default(),
+    )
+    .expect("extract grayscale DCT blocks");
+
+    let samples = idct_islow_block(&image.components[0].dequantized_blocks[0]);
+
+    assert_eq!(samples.len(), 64);
+    assert!(samples.iter().any(|&sample| sample != 128));
 }
 
 fn assert_component(
