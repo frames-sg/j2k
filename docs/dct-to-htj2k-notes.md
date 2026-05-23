@@ -6,7 +6,7 @@ the JPEG and J2K crates:
 
 ```text
 JPEG bytes
-  -> signinum-jpeg DCT extraction
+  -> signinum-jpeg quantized/dequantized DCT extraction
   -> signinum-transcode DCT-domain 5/3 coefficient mapping
   -> signinum-j2k-native precomputed-band HTJ2K encode
 ```
@@ -15,6 +15,11 @@ JPEG bytes
 
 - `cargo test -p signinum-transcode --test corpus_validation` runs committed
   grayscale, 4:4:4, 4:2:2, and 4:2:0 JPEG fixtures through `jpeg_to_htj2k`.
+- `signinum-jpeg::transcode::extract_dct_blocks` now exposes both quantized and
+  dequantized natural-order DCT blocks at the JPEG boundary. The production
+  HTJ2K path still consumes dequantized blocks for the current reversible 5/3
+  mapping, while quantized blocks remain available for later pure
+  coefficient-domain experiments.
 - The default production path is `IntegerDirect53`: the first 5/3 level is
   computed from JPEG DCT blocks without materializing a full spatial image
   plane, then later levels recurse over LL.
@@ -90,25 +95,41 @@ scalar allocation/layout win, not a SIMD result.
 ## Integer-Direct Default Benchmark
 
 After switching the default production path to `IntegerDirect53` and adding the
-block-local ISLOW sample cache, the `jpeg_to_htj2k` Criterion group measured:
+block-local ISLOW sample cache, then exposing true quantized blocks at the JPEG
+extraction boundary, the `jpeg_to_htj2k` Criterion group measured:
 
-- `grayscale_8x8`: 35.398-35.705 us
-- `grayscale_8x8_stateful_reuse`: 35.403-35.727 us
-- `grayscale_13x11`: 43.926-44.352 us
-- `ycbcr_444_8x8`: 54.558-60.897 us
-- `ycbcr_422_16x8`: 54.909-55.445 us
-- `ycbcr_420_16x16`: 54.971-55.504 us
+- `grayscale_8x8`: 35.902-36.370 us
+- `grayscale_8x8_stateful_reuse`: 35.435-35.750 us
+- `grayscale_13x11`: 44.338-44.686 us
+- `ycbcr_444_8x8`: 52.328-52.820 us
+- `ycbcr_422_16x8`: 54.665-55.208 us
+- `ycbcr_420_16x16`: 55.841-56.550 us
 
 These are tiny conformance fixtures, not WSI-scale throughput claims. The
 integer-direct path is faster than the previous float-linear default here
 because it avoids the expensive scalar matrix projection while producing exact
 integer 5/3 coefficients relative to the signinum ISLOW oracle.
 
+The same run measured JPEG DCT extraction with quantized+dequantized block
+capture enabled:
+
+- `jpeg_dct_extract/baseline_420_16x16`: 1.2814-1.2900 us
+- `jpeg_dct_extract/baseline_420_restart_32x16`: 1.5135-1.5185 us
+
+Criterion reported a low-teens regression for the extraction-only fixtures
+because the scan pass now stores both quantized and dequantized coefficient
+blocks. End-to-end tiny-fixture transcode timings stayed within noise except
+for the 4:4:4 fixture, which improved on this run.
+
 ## Open Issues
 
 - The integer-direct production path still uses scalar, on-demand ISLOW block
   sample evaluation for exactness; block-local caching removes repeated block
   decode work, but the path is still scalar and correct-first.
+- JPEG extraction now retains both quantized and dequantized DCT blocks. That is
+  the correct boundary for later pure coefficient-domain experiments, but it
+  adds extraction-only work until an option or downstream consumer can avoid
+  one representation.
 - No SIMD optimization claims are made yet. The scalar Criterion groups are the
   baseline for later work.
 - Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain out

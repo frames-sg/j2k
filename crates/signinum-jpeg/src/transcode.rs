@@ -3,7 +3,7 @@
 //! Experimental JPEG coefficient extraction for transcode pipelines.
 
 use crate::decoder::Decoder;
-use crate::entropy::sequential::decode_scan_dct_blocks;
+use crate::entropy::sequential::{decode_scan_dct_blocks, DecodedDctBlocks};
 use crate::error::{JpegError, MarkerKind};
 use crate::info::{ColorSpace, RestartIndex, SofKind};
 use alloc::vec::Vec;
@@ -28,7 +28,7 @@ pub struct JpegDctImage {
     pub restart_index: Option<RestartIndex>,
 }
 
-/// One JPEG component's dequantized natural-order DCT blocks.
+/// One JPEG component's natural-order DCT blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegDctComponent {
     /// Component index in SOF declaration order.
@@ -47,11 +47,14 @@ pub struct JpegDctComponent {
     pub block_rows: u32,
     /// Quantization table used by this component, in JPEG zigzag table order.
     pub quant_table: [u16; 64],
+    /// Quantized DCT blocks in natural row-major coefficient order.
+    pub quantized_blocks: Vec<[i16; 64]>,
     /// Dequantized DCT blocks in natural row-major coefficient order.
     pub dequantized_blocks: Vec<[i16; 64]>,
 }
 
-/// Extract dequantized natural-order DCT blocks from a baseline sequential JPEG.
+/// Extract quantized and dequantized natural-order DCT blocks from a baseline
+/// sequential JPEG.
 ///
 /// The returned data remains in JPEG component space. No IDCT, chroma upsample,
 /// RGB conversion, or color transform is performed.
@@ -96,7 +99,7 @@ pub fn idct_islow_block(block: &[i16; 64]) -> [u8; 64] {
 
 fn build_components(
     decoder: &Decoder<'_>,
-    decoded_blocks: Vec<Vec<[i16; 64]>>,
+    decoded_blocks: DecodedDctBlocks,
 ) -> Result<Vec<JpegDctComponent>, JpegError> {
     let dimensions = decoder.info().dimensions;
     let sampling = decoder.info().sampling;
@@ -117,13 +120,20 @@ fn build_components(
                 expected: sampling.len() as u8,
                 found: decoder.plan.components.len() as u8,
             })?;
-        let dequantized_blocks =
-            decoded_blocks
-                .get(component_index)
-                .cloned()
-                .ok_or(JpegError::MissingMarker {
-                    marker: MarkerKind::Sos,
-                })?;
+        let quantized_blocks = decoded_blocks
+            .quantized
+            .get(component_index)
+            .cloned()
+            .ok_or(JpegError::MissingMarker {
+                marker: MarkerKind::Sos,
+            })?;
+        let dequantized_blocks = decoded_blocks
+            .dequantized
+            .get(component_index)
+            .cloned()
+            .ok_or(JpegError::MissingMarker {
+                marker: MarkerKind::Sos,
+            })?;
 
         components.push(JpegDctComponent {
             component_index,
@@ -140,6 +150,7 @@ fn build_components(
             block_cols: mcu_cols * u32::from(h_samp),
             block_rows: mcu_rows * u32::from(v_samp),
             quant_table: *plan_component.quant.as_ref(),
+            quantized_blocks,
             dequantized_blocks,
         });
     }
