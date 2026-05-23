@@ -51,6 +51,32 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 }
 
 #[test]
+fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let mut options = JpegToHtj2kOptions::default();
+    options.encode_options.num_decomposition_levels = 2;
+    options.validate_against_float_reference = true;
+
+    let encoded =
+        jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with two DWT levels");
+    let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+        .expect("native parser accepts generated HTJ2K")
+        .decode_native()
+        .expect("native decoder accepts generated HTJ2K");
+    let metrics = encoded
+        .report
+        .float_reference_metrics
+        .as_ref()
+        .expect("float reference metrics are reported");
+
+    assert_eq!(encoded.report.decomposition_levels, 2);
+    assert_eq!((decoded.width, decoded.height), (8, 8));
+    assert_eq!(decoded.num_components, 1);
+    assert_eq!(metrics.total, 64);
+    assert_eq!(metrics.exact_matches, 64);
+}
+
+#[test]
 fn generated_htj2k_is_accepted_by_available_external_decoder() {
     let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
