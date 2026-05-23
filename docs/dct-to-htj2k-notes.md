@@ -25,7 +25,9 @@ JPEG bytes
   plane, then later levels recurse over LL.
 - The corpus report aggregates integer-reference coefficient metrics:
   sample count, exact-match count, maximum absolute error, and absolute-error
-  histogram buckets.
+  histogram buckets. Aggregate and per-fixture reports now also carry the same
+  `Exact` / `OneLsbBounded` / `OutsideThreshold` classification used by
+  individual transcodes.
 - `TranscodeReport` now carries the typed coefficient path plus optional
   validation classifications. Enabled validation metrics are classified as
   `Exact`, `OneLsbBounded` using the 99.9% exact-match / max-1-LSB threshold,
@@ -108,14 +110,14 @@ scalar allocation/layout win, not a SIMD result.
 
 After switching the default production path to `IntegerDirect53` and adding the
 block-local ISLOW sample cache, then exposing true quantized blocks at the JPEG
-extraction boundary, the `jpeg_to_htj2k` Criterion group measured:
+extraction boundary, the latest `release-bench` verification run measured:
 
-- `grayscale_8x8`: 35.902-36.370 us
-- `grayscale_8x8_stateful_reuse`: 35.435-35.750 us
-- `grayscale_13x11`: 44.338-44.686 us
-- `ycbcr_444_8x8`: 52.328-52.820 us
-- `ycbcr_422_16x8`: 54.665-55.208 us
-- `ycbcr_420_16x16`: 55.841-56.550 us
+- `grayscale_8x8`: 35.459-35.769 us
+- `grayscale_8x8_stateful_reuse`: 35.455-35.806 us
+- `grayscale_13x11`: 43.879-44.429 us
+- `ycbcr_444_8x8`: 52.989-53.536 us
+- `ycbcr_422_16x8`: 55.017-55.837 us
+- `ycbcr_420_16x16`: 55.887-56.554 us
 
 These are tiny conformance fixtures, not WSI-scale throughput claims. The
 integer-direct path is faster than the previous float-linear default here
@@ -125,13 +127,13 @@ integer 5/3 coefficients relative to the signinum ISLOW oracle.
 The same run measured JPEG DCT extraction with quantized+dequantized block
 capture enabled:
 
-- `jpeg_dct_extract/baseline_420_16x16`: 1.2814-1.2900 us
-- `jpeg_dct_extract/baseline_420_restart_32x16`: 1.5135-1.5185 us
+- `jpeg_dct_extract/baseline_420_16x16`: 1.3235-1.3358 us
+- `jpeg_dct_extract/baseline_420_restart_32x16`: 1.5814-1.5933 us
 
-Criterion reported a low-teens regression for the extraction-only fixtures
-because the scan pass now stores both quantized and dequantized coefficient
-blocks. End-to-end tiny-fixture transcode timings stayed within noise except
-for the 4:4:4 fixture, which improved on this run.
+Criterion reported small extraction-only fixture regressions against the
+previous run. This reporting slice did not touch extraction code; end-to-end
+tiny-fixture transcode timings stayed within noise except for the 4:4:4 and
+4:2:2 fixtures, which were also within Criterion's noise threshold.
 
 ## Open Issues
 

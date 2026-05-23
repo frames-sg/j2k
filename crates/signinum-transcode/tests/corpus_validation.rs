@@ -4,6 +4,7 @@ use signinum_transcode::corpus_validation::{
     load_external_wsi_fixtures, validate_transcode_corpus, CorpusFixture, CorpusValidationError,
     CorpusValidationOptions,
 };
+use signinum_transcode::TranscodeValidationClassification;
 use std::{fs, path::PathBuf};
 
 #[test]
@@ -18,9 +19,17 @@ fn committed_conformance_fixtures_produce_error_report() {
     assert_eq!(report.exact_match_count, report.sample_count);
     assert_eq!(report.max_abs_error, 0);
     assert_eq!(
+        report.classification,
+        TranscodeValidationClassification::Exact
+    );
+    assert_eq!(
         report.histogram_buckets.get(&0).copied(),
         Some(report.sample_count)
     );
+    assert!(report
+        .fixtures
+        .iter()
+        .all(|fixture| fixture.classification == TranscodeValidationClassification::Exact));
 }
 
 #[test]

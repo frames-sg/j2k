@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{jpeg_to_htj2k, JpegToHtj2kError, JpegToHtj2kOptions};
+use crate::{
+    jpeg_to_htj2k, JpegToHtj2kError, JpegToHtj2kOptions, TranscodeValidationClassification,
+};
 
 /// External WSI JPEG roots, separated using the platform path separator.
 pub const TRANSCODE_WSI_ROOT_ENV: &str = "SIGNINUM_TRANSCODE_WSI_ROOT";
@@ -113,6 +115,8 @@ pub struct CorpusValidationReport {
     pub exact_match_count: usize,
     /// Maximum absolute rounded-coefficient error.
     pub max_abs_error: i64,
+    /// Threshold classification for the aggregate corpus metrics.
+    pub classification: TranscodeValidationClassification,
     /// Absolute-error histogram keyed by LSB distance.
     pub histogram_buckets: BTreeMap<i64, usize>,
     /// Per-fixture summaries.
@@ -134,6 +138,8 @@ pub struct CorpusFixtureReport {
     pub exact_match_count: usize,
     /// Maximum absolute rounded-coefficient error.
     pub max_abs_error: i64,
+    /// Threshold classification for this fixture's integer-reference metrics.
+    pub classification: TranscodeValidationClassification,
 }
 
 /// Corpus validation failure.
@@ -216,6 +222,7 @@ pub fn validate_transcode_corpus(
         sample_count: 0,
         exact_match_count: 0,
         max_abs_error: 0,
+        classification: TranscodeValidationClassification::Exact,
         histogram_buckets: BTreeMap::new(),
         fixtures: Vec::with_capacity(fixtures.len()),
     };
@@ -231,6 +238,7 @@ pub fn validate_transcode_corpus(
         }
         report.fixtures.push(validated.report);
     }
+    report.classification = classify_corpus_report(&report);
 
     Ok(report)
 }
@@ -268,9 +276,26 @@ fn validate_fixture(
             sample_count: metrics.total,
             exact_match_count: metrics.exact_matches,
             max_abs_error: metrics.max_abs_error,
+            classification: TranscodeValidationClassification::classify_metrics(metrics),
         },
         histogram_buckets: metrics.absolute_error_histogram.clone(),
     })
+}
+
+fn classify_corpus_report(report: &CorpusValidationReport) -> TranscodeValidationClassification {
+    if report.sample_count == 0 {
+        return TranscodeValidationClassification::Exact;
+    }
+    if report.exact_match_count == report.sample_count && report.max_abs_error == 0 {
+        TranscodeValidationClassification::Exact
+    } else {
+        let exact_match_rate = report.exact_match_count as f64 / report.sample_count as f64;
+        if report.max_abs_error <= 1 && exact_match_rate >= 0.999 {
+            TranscodeValidationClassification::OneLsbBounded
+        } else {
+            TranscodeValidationClassification::OutsideThreshold
+        }
+    }
 }
 
 /// Load optional external WSI JPEG fixtures from `options.external_wsi_roots`.
