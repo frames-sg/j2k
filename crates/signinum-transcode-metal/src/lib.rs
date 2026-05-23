@@ -26,6 +26,8 @@ pub const METAL_UNAVAILABLE: &str = "Metal is unavailable on this host";
 
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 65_536;
 const DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES: usize = usize::MAX;
+const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
+const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
 
 /// Error returned by the Metal transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,8 @@ pub struct MetalDctToWaveletStageAccelerator {
     mode: MetalDispatchMode,
     min_auto_samples: usize,
     min_auto_reversible_samples: usize,
+    min_auto_reversible_batch_jobs: usize,
+    min_auto_reversible_batch_samples: usize,
     reversible_dwt53_attempts: usize,
     reversible_dwt53_dispatches: usize,
     reversible_dwt53_batch_attempts: usize,
@@ -88,6 +92,8 @@ impl MetalDctToWaveletStageAccelerator {
             mode: MetalDispatchMode::Explicit,
             min_auto_samples: 0,
             min_auto_reversible_samples: 0,
+            min_auto_reversible_batch_jobs: 0,
+            min_auto_reversible_batch_samples: 0,
             reversible_dwt53_attempts: 0,
             reversible_dwt53_dispatches: 0,
             reversible_dwt53_batch_attempts: 0,
@@ -107,6 +113,8 @@ impl MetalDctToWaveletStageAccelerator {
             mode: MetalDispatchMode::Auto,
             min_auto_samples: DEFAULT_AUTO_MIN_SAMPLES,
             min_auto_reversible_samples: DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES,
+            min_auto_reversible_batch_jobs: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS,
+            min_auto_reversible_batch_samples: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES,
             reversible_dwt53_attempts: 0,
             reversible_dwt53_dispatches: 0,
             reversible_dwt53_batch_attempts: 0,
@@ -173,6 +181,13 @@ impl MetalDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridToReversibleDwt53Job<'_>],
     ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        self.dispatch_reversible_dwt53_batch(jobs)
+    }
+
+    fn dispatch_reversible_dwt53_batch(
+        &mut self,
+        jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
         self.reversible_dwt53_batch_attempts =
             self.reversible_dwt53_batch_attempts.saturating_add(1);
 
@@ -183,7 +198,9 @@ impl MetalDctToWaveletStageAccelerator {
         let total_samples = jobs.iter().fold(0usize, |total, job| {
             total.saturating_add(job.width.saturating_mul(job.height))
         });
-        if self.mode == MetalDispatchMode::Auto && total_samples < self.min_auto_reversible_samples
+        if self.mode == MetalDispatchMode::Auto
+            && (jobs.len() < self.min_auto_reversible_batch_jobs
+                || total_samples < self.min_auto_reversible_batch_samples)
         {
             return Ok(None);
         }
@@ -260,6 +277,13 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
                 Err(error) => Err(error.as_static_str()),
             }
         }
+    }
+
+    fn dct_grid_to_reversible_dwt53_batch(
+        &mut self,
+        jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        self.dispatch_reversible_dwt53_batch(jobs)
     }
 
     fn dct_grid_to_dwt53(

@@ -114,8 +114,60 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
 
 #[cfg(target_os = "macos")]
 #[test]
-fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_and_native_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
+    assert_explicit_metal_integer53_matches_scalar(
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+        "full_resolution_components_integer_direct_53",
+        &[(8, 8, 1, 1)],
+        &[(1, 1)],
+        1,
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
+    assert_explicit_metal_integer53_matches_scalar(
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+        "full_resolution_components_integer_direct_53",
+        &[(8, 8, 1, 1), (8, 8, 1, 1), (8, 8, 1, 1)],
+        &[(1, 1), (1, 1), (1, 1)],
+        1,
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
+    assert_explicit_metal_integer53_matches_scalar(
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+        "native_component_sampling_integer_direct_53",
+        &[(16, 8, 1, 1), (8, 8, 2, 1), (8, 8, 2, 1)],
+        &[(1, 1), (2, 1), (2, 1)],
+        2,
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
+    assert_explicit_metal_integer53_matches_scalar(
+        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+        "native_component_sampling_integer_direct_53",
+        &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
+        &[(1, 1), (2, 2), (2, 2)],
+        2,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn assert_explicit_metal_integer53_matches_scalar(
+    jpeg: &[u8],
+    expected_path: &str,
+    expected_report_sampling: &[(u32, u32, u8, u8)],
+    expected_codestream_sampling: &[(u8, u8)],
+    expected_batch_dispatches: usize,
+) {
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::lossless_53()
@@ -152,21 +204,26 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_and_nati
         encoded.report.coefficient_path,
         JpegToHtj2kCoefficientPath::IntegerDirect53
     );
-    assert_eq!(
-        encoded.report.path,
-        "native_component_sampling_integer_direct_53"
-    );
-    assert_eq!(metrics.total, 384);
+    assert_eq!(encoded.report.path, expected_path);
     assert_eq!(metrics.max_abs_error, 0);
-    assert_eq!(accelerator.reversible_dwt53_attempts(), 3);
-    assert_eq!(accelerator.reversible_dwt53_dispatches(), 3);
-    assert_eq!((decoded.width, decoded.height), (16, 16));
-    assert_eq!(decoded.num_components, 3);
-    assert_report_sampling(
-        &encoded.report.components,
-        &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
+    assert_eq!(metrics.exact_matches, metrics.total);
+    assert_eq!(accelerator.reversible_dwt53_attempts(), 0);
+    assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
+    assert_eq!(
+        accelerator.reversible_dwt53_batch_attempts(),
+        expected_batch_dispatches
     );
-    assert_component_sampling(&encoded.codestream, &[(1, 1), (2, 2), (2, 2)]);
+    assert_eq!(
+        accelerator.reversible_dwt53_batch_dispatches(),
+        expected_batch_dispatches
+    );
+    assert_eq!(
+        (decoded.width, decoded.height),
+        (encoded.report.width, encoded.report.height)
+    );
+    assert_eq!(decoded.num_components, expected_report_sampling.len() as u8);
+    assert_report_sampling(&encoded.report.components, expected_report_sampling);
+    assert_component_sampling(&encoded.codestream, expected_codestream_sampling);
 }
 
 #[cfg(target_os = "macos")]

@@ -95,6 +95,18 @@ pub trait DctToWaveletStageAccelerator {
         Ok(None)
     }
 
+    /// Optionally compute a same-geometry batch of direct DCT-grid to
+    /// one-level reversible integer 5/3 projections.
+    ///
+    /// Backends should return outputs in the same order as `jobs`. Return
+    /// `Ok(None)` to use the scalar per-component fallback.
+    fn dct_grid_to_reversible_dwt53_batch(
+        &mut self,
+        _jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        Ok(None)
+    }
+
     /// Optionally compute the direct DCT-grid to one-level 5/3 projection.
     ///
     /// Return `Ok(Some(output))` when the backend handled the job. Return
@@ -133,6 +145,8 @@ impl DctToWaveletStageAccelerator for CpuOnlyDctToWaveletStageAccelerator {}
 pub struct RayonReversibleDwt53Accelerator {
     attempts: usize,
     dispatches: usize,
+    batch_attempts: usize,
+    batch_dispatches: usize,
 }
 
 impl RayonReversibleDwt53Accelerator {
@@ -147,6 +161,18 @@ impl RayonReversibleDwt53Accelerator {
     pub const fn reversible_dwt53_dispatches(&self) -> usize {
         self.dispatches
     }
+
+    /// Number of reversible 5/3 batches offered to this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_attempts(&self) -> usize {
+        self.batch_attempts
+    }
+
+    /// Number of reversible 5/3 batches handled by this accelerator.
+    #[must_use]
+    pub const fn reversible_dwt53_batch_dispatches(&self) -> usize {
+        self.batch_dispatches
+    }
 }
 
 impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
@@ -157,6 +183,19 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
         self.attempts = self.attempts.saturating_add(1);
         let output = reversible_dwt53_first_level_rayon(job)?;
         self.dispatches = self.dispatches.saturating_add(1);
+        Ok(Some(output))
+    }
+
+    fn dct_grid_to_reversible_dwt53_batch(
+        &mut self,
+        jobs: &[DctGridToReversibleDwt53Job<'_>],
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+        self.batch_attempts = self.batch_attempts.saturating_add(1);
+        let mut output = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            output.push(reversible_dwt53_first_level_rayon(*job)?);
+        }
+        self.batch_dispatches = self.batch_dispatches.saturating_add(1);
         Ok(Some(output))
     }
 }
