@@ -9,25 +9,28 @@ codec crates.
 ## Current Scope
 
 The experimental path currently targets baseline sequential and progressive
-JPEG DCT blocks and reversible 5/3 HTJ2K output:
+JPEG DCT blocks, reversible 5/3 HTJ2K output, and an opt-in irreversible 9/7
+float-linear path:
 
 ```text
 JPEG bytes
   -> parsed headers and entropy-decoded quantized/dequantized DCT blocks
-  -> direct DCT-domain 5/3 wavelet coefficients
+  -> direct DCT-domain 5/3 or 9/7 wavelet coefficients
   -> signinum-j2k-native precomputed-band HTJ2K encode
 ```
 
 It preserves native component sampling for grayscale, 4:4:4, 4:2:2, and 4:2:0
 inputs. Progressive JPEG coefficients are accumulated from all scans before
-the DCT-to-wavelet stage. The crate also has a validated 9/7 wavelet descriptor
-bridge to the native precomputed lossy HTJ2K encoder. JPEG-to-9/7 coefficient
-generation, RGB conversion, and chroma upsample remain out of scope.
+the DCT-to-wavelet stage. `FloatDirectLinear97` computes the first
+irreversible 9/7 level directly from DCT blocks, recurses conventionally over
+LL for additional levels, and encodes through the native precomputed lossy
+HTJ2K boundary. RGB conversion and chroma upsample remain out of scope.
 
 `JpegToHtj2kCoefficientPath::IntegerDirect53` is the default production path. It
 computes the first reversible 5/3 level from DCT blocks without a full spatial
 image plane, then recurses conventionally over LL for additional levels. The
-floating-point linear path remains selectable for math-oracle validation.
+floating-point 5/3 and 9/7 paths remain selectable for math-oracle validation
+and lossy experiments.
 
 Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
 thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
@@ -38,10 +41,10 @@ path and the default integer-direct block-local ISLOW sample cache.
 classifications. When an oracle is enabled, metrics are classified as exact,
 one-LSB-bounded at the 99.9% exact-match threshold, or outside threshold.
 
-`htj2k_wavelet::WaveletImage53<i32>` can be validated and converted into
-`signinum-j2k-native`'s precomputed HTJ2K representation, including SIZ
-sampling checks against the caller-provided reference grid. This keeps the
-cross-codec adapter in `signinum-transcode`.
+`htj2k_wavelet::WaveletImage53<i32>` and `WaveletImage97<f32>` can be validated
+and converted into `signinum-j2k-native`'s precomputed HTJ2K representations,
+including SIZ sampling checks against the caller-provided reference grid. This
+keeps the cross-codec adapter in `signinum-transcode`.
 
 ## Promotion Gate
 
