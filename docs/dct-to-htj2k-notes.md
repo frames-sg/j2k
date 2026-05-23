@@ -44,12 +44,31 @@ Environment variables:
 - `SIGNINUM_TRANSCODE_WSI_MAX_PAYLOAD_BYTES`: skip external JPEGs above this
   byte size. Default: `67108864`.
 
+## Scalar Layout Baseline
+
+The first optimization-track benchmark records layout conversion cost before any
+SIMD backend is chosen:
+
+```bash
+cargo bench --profile release-bench -p signinum-transcode --bench dct53 dct53_layout_candidates
+```
+
+Run on 2026-05-23 against 64 synthetic natural-order DCT blocks:
+
+- `row_window_packed_f64`: 793.96-797.79 ns
+- `aos_8x8_f64`: 973.37-985.08 ns
+- `soa_coefficient_major_f64`: 1.1081-1.1131 us
+
+These numbers only measure scalar packing cost. They are not a final SIMD layout
+decision; row-window packing is currently the cheapest scalar conversion
+candidate, while SoA remains a candidate for vectorized coefficient-lane work.
+
 ## Open Issues
 
 - The production path still emits rounded float-direct coefficients. The
   integer-reference path is a validation oracle, not yet a replacement
   production transform.
-- No SIMD/layout optimization claims are made yet. The scalar Criterion groups
-  are the baseline for later work.
+- No SIMD optimization claims are made yet. The scalar Criterion groups are the
+  baseline for later work.
 - Progressive JPEG, 9/7 lossy, RGB conversion, and chroma upsample remain out
   of scope for this experimental path.

@@ -96,6 +96,30 @@ fn bench_dct53_math(c: &mut Criterion) {
     multilevel.finish();
 }
 
+fn bench_layout_candidates(c: &mut Criterion) {
+    let block_cols = 8;
+    let block_rows = 8;
+    let blocks = synthetic_natural_i16_blocks(block_cols * block_rows);
+
+    let mut layout = c.benchmark_group("dct53_layout_candidates");
+    layout.bench_function("aos_8x8_f64", |b| {
+        b.iter(|| pack_aos_8x8_f64(black_box(&blocks)));
+    });
+    layout.bench_function("row_window_packed_f64", |b| {
+        b.iter(|| {
+            pack_row_window_packed_f64(
+                black_box(&blocks),
+                black_box(block_cols),
+                black_box(block_rows),
+            );
+        });
+    });
+    layout.bench_function("soa_coefficient_major_f64", |b| {
+        b.iter(|| pack_soa_coefficient_major_f64(black_box(&blocks)));
+    });
+    layout.finish();
+}
+
 fn bench_jpeg_paths(c: &mut Criterion) {
     let jpeg_420 =
         include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
@@ -163,6 +187,7 @@ fn bench_jpeg_paths(c: &mut Criterion) {
 
 fn bench_dct53(c: &mut Criterion) {
     bench_dct53_math(c);
+    bench_layout_candidates(c);
     bench_jpeg_paths(c);
 }
 
@@ -203,6 +228,68 @@ fn synthetic_8x8_grid_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64;
         }
     }
     blocks
+}
+
+fn synthetic_natural_i16_blocks(block_count: usize) -> Vec<[i16; 64]> {
+    let mut state = 0x91af_b33d_u32;
+    (0..block_count)
+        .map(|_| {
+            let mut block = [0; 64];
+            for coefficient in &mut block {
+                state = state.wrapping_mul(22_695_477).wrapping_add(1);
+                let bounded = u16::try_from((state >> 8) % 2049).expect("modulo result fits u16");
+                let signed = i32::from(bounded) - 1024;
+                *coefficient = i16::try_from(signed).expect("bounded coefficient fits i16");
+            }
+            block
+        })
+        .collect()
+}
+
+fn pack_aos_8x8_f64(blocks: &[[i16; 64]]) -> Vec<[[f64; 8]; 8]> {
+    blocks
+        .iter()
+        .map(|block| {
+            let mut output = [[0.0; 8]; 8];
+            for (idx, &coefficient) in block.iter().enumerate() {
+                output[idx / 8][idx % 8] = f64::from(coefficient);
+            }
+            output
+        })
+        .collect()
+}
+
+fn pack_row_window_packed_f64(
+    blocks: &[[i16; 64]],
+    block_cols: usize,
+    block_rows: usize,
+) -> Vec<f64> {
+    assert_eq!(blocks.len(), block_cols * block_rows);
+
+    let mut output = Vec::with_capacity(blocks.len() * 64);
+    for block_y in 0..block_rows {
+        let row_start = block_y * block_cols;
+        let row_blocks = &blocks[row_start..row_start + block_cols];
+        for coefficient_y in 0..8 {
+            for block in row_blocks {
+                let coefficient_row = &block[coefficient_y * 8..coefficient_y * 8 + 8];
+                output.extend(
+                    coefficient_row
+                        .iter()
+                        .map(|&coefficient| f64::from(coefficient)),
+                );
+            }
+        }
+    }
+    output
+}
+
+fn pack_soa_coefficient_major_f64(blocks: &[[i16; 64]]) -> Vec<f64> {
+    let mut output = Vec::with_capacity(blocks.len() * 64);
+    for coefficient_idx in 0..64 {
+        output.extend(blocks.iter().map(|block| f64::from(block[coefficient_idx])));
+    }
+    output
 }
 
 fn grayscale_jpeg(width: u32, height: u32) -> Vec<u8> {
