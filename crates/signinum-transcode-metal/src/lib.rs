@@ -6,6 +6,9 @@
 //! projection used by `signinum-transcode`'s lossy HTJ2K path. CPU scalar code
 //! remains the oracle and fallback.
 
+#[doc(hidden)]
+pub mod weights;
+
 use core::fmt;
 
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
