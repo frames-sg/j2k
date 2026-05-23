@@ -36,6 +36,11 @@ path and the default integer-direct block-local ISLOW sample cache.
 classifications. When an oracle is enabled, metrics are classified as exact,
 one-LSB-bounded at the 99.9% exact-match threshold, or outside threshold.
 
+`htj2k_wavelet::WaveletImage53<i32>` can be validated and converted into
+`signinum-j2k-native`'s precomputed HTJ2K representation, including SIZ
+sampling checks against the caller-provided reference grid. This keeps the
+cross-codec adapter in `signinum-transcode`.
+
 ## Promotion Gate
 
 Do not expose this crate as a stable conversion API until all of the following
