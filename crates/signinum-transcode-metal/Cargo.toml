@@ -23,6 +23,7 @@ rayon = "1"
 
 [dev-dependencies]
 criterion = { workspace = true }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.2" }
 
 [lints.rust]
 unsafe_code = "allow"

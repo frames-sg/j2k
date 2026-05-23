@@ -1061,6 +1061,7 @@ dependencies = [
  "criterion",
  "metal",
  "rayon",
+ "signinum-j2k-native",
  "signinum-transcode",
 ]
 
