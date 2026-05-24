@@ -1,11 +1,22 @@
 # signinum
 
-Rust codec primitives for pathology and whole-slide imaging workloads.
+[![Crates.io](https://img.shields.io/crates/v/signinum.svg)](https://crates.io/crates/signinum)
+[![docs.rs](https://docs.rs/signinum/badge.svg)](https://docs.rs/signinum)
+[![CI](https://github.com/frames-sg/signinum/actions/workflows/ci.yml/badge.svg)](https://github.com/frames-sg/signinum/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue.svg)](Cargo.toml)
+[![License](https://img.shields.io/crates/l/signinum.svg)](https://crates.io/crates/signinum)
 
-`signinum` is a codec workspace for compressed tile payloads: JPEG, JPEG 2000 /
-HTJ2K, and container tile compression such as Deflate, Zstd, LZW, and
-uncompressed tiles. The public facade re-exports the JPEG, JPEG 2000 / HTJ2K,
-tilecodec, and shared core contracts from focused crates in this repository.
+`signinum` provides Rust codec primitives for pathology and whole-slide imaging
+workloads, centered on a pure-Rust JPEG 2000 / HTJ2K codec implementation: a
+part of the imaging codec ecosystem that has historically required C or C++
+library bindings.
+
+The workspace covers compressed tile payloads: JPEG, JPEG 2000 / HTJ2K,
+container tile compression such as Deflate, Zstd, LZW, and uncompressed tiles,
+plus experimental coefficient-domain JPEG DCT to HTJ2K transcoding through the
+in-repo `signinum-transcode` crate. The public facade re-exports the stable
+JPEG, JPEG 2000 / HTJ2K, tilecodec, and shared core contracts from focused
+crates in this repository.
 
 It is not a whole-slide container reader, pyramid manager, cache, or DICOM
 writer. Use [`statumen`](https://github.com/frames-sg/statumen) for slide
@@ -18,9 +29,21 @@ expose CUDA device memory through `cuda-runtime` when a CUDA driver is
 available. JPEG full-frame RGB8 CUDA requests can use nvJPEG; NVIDIA performance
 claims require self-hosted GPU benchmark evidence.
 
-The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto`:
-CPU decode remains the portable fallback, and device adapters are additive for
-supported compiled workloads.
+The current public-source target is the `signinum` facade release. Runtime
+backend selection defaults to `Auto`: CPU decode remains the portable fallback,
+and device adapters are additive for supported compiled workloads.
+
+## Why It Exists
+
+- Pure-Rust JPEG 2000 / HTJ2K inspect, decode, and lossless encode for WSI
+  pipelines that should not have to bind to C codec libraries.
+- WSI-oriented JPEG tile decode, ROI/scaled decode, batch decode, and
+  passthrough inspection.
+- TIFF/DICOM-style compressed tile decompression primitives for container
+  readers that bring their own I/O, cache, and pyramid policy.
+- Experimental coefficient-domain JPEG DCT to HTJ2K transcoding in
+  `signinum-transcode`, including native JPEG component sampling and optional
+  hybrid Metal acceleration in `signinum-transcode-metal`.
 
 ## Which crate should I use?
 
@@ -147,6 +170,32 @@ Inspect from the command line:
 cargo install signinum-cli
 signinum inspect tile.jp2
 ```
+
+## Coefficient-Domain JPEG To HTJ2K
+
+`signinum-transcode` lives in this repository. It is the experimental
+application layer enabled by the codec stack:
+
+```text
+JPEG bytes
+  -> entropy-decoded DCT coefficients
+  -> direct DCT-grid to 5/3 or 9/7 wavelet coefficients
+  -> precomputed-band HTJ2K encode
+  -> HTJ2K codestream
+```
+
+The goal is to avoid the conventional JPEG full decode, RGB conversion, chroma
+upsample, and pixel-domain re-encode path when migrating JPEG WSI tiles to
+HTJ2K. The current exact path is reversible `IntegerDirect53` relative to
+signinum's JPEG integer decode plus reversible 5/3 oracle. The opt-in 9/7 path
+is irreversible and uses scalar/Rayon fallback or hybrid Metal acceleration for
+the direct DCT-grid to wavelet projection stage.
+
+The crate is intentionally experimental and not part of the stable facade
+surface yet. See
+[`crates/signinum-transcode/README.md`](crates/signinum-transcode/README.md)
+and [`docs/dct-to-htj2k-notes.md`](docs/dct-to-htj2k-notes.md) for the
+current validation gates, benchmark evidence, and open work.
 
 ## Supported workflows
 
