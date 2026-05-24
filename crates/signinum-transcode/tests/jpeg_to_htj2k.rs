@@ -546,19 +546,48 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         ..JpegToHtj2kOptions::default()
     };
-    transcoder
+    let encoded_53 = transcoder
         .transcode_with_accelerator(jpeg, &options_53, &mut accelerator)
         .expect("accelerated 5/3 float transcode succeeds");
+    assert_eq!(encoded_53.report.timings.component_count, 1);
+    assert_eq!(encoded_53.report.timings.accelerator_attempts, 1);
+    assert_eq!(encoded_53.report.timings.accelerator_dispatches, 1);
+    assert_eq!(encoded_53.report.timings.cpu_fallback_jobs, 0);
 
     let options_97 = JpegToHtj2kOptions {
         ..JpegToHtj2kOptions::lossy_97()
     };
-    transcoder
+    let encoded_97 = transcoder
         .transcode_with_accelerator(jpeg, &options_97, &mut accelerator)
         .expect("accelerated 9/7 float transcode succeeds");
+    assert_eq!(encoded_97.report.timings.component_count, 1);
+    assert_eq!(encoded_97.report.timings.accelerator_attempts, 1);
+    assert_eq!(encoded_97.report.timings.accelerator_dispatches, 1);
+    assert_eq!(encoded_97.report.timings.cpu_fallback_jobs, 0);
 
     assert_eq!(accelerator.dwt53_calls, 1);
     assert_eq!(accelerator.dwt97_calls, 1);
+}
+
+#[test]
+fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+
+    let encoded = transcoder
+        .transcode(jpeg, &JpegToHtj2kOptions::lossy_97())
+        .expect("CPU-only 9/7 transcode succeeds");
+    let timings = encoded.report.timings;
+
+    assert_eq!(timings.jpeg_dct_extract_us, encoded.report.extract_us);
+    assert_eq!(timings.dct_to_wavelet_total_us, encoded.report.transform_us);
+    assert_eq!(timings.htj2k_encode_us, encoded.report.encode_us);
+    assert_eq!(timings.component_count, 1);
+    assert_eq!(timings.accelerator_attempts, 1);
+    assert_eq!(timings.accelerator_jobs, 1);
+    assert_eq!(timings.accelerator_dispatches, 0);
+    assert_eq!(timings.accelerator_dispatched_jobs, 0);
+    assert_eq!(timings.cpu_fallback_jobs, 1);
 }
 
 #[test]
@@ -567,13 +596,18 @@ fn integer_direct_transcode_path_uses_reversible_acceleration_hook_when_availabl
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
-    transcoder
+    let encoded = transcoder
         .transcode_with_accelerator(jpeg, &JpegToHtj2kOptions::default(), &mut accelerator)
         .expect("accelerated integer-direct transcode succeeds");
 
     assert_eq!(accelerator.reversible_dwt53_calls, 0);
     assert_eq!(accelerator.reversible_dwt53_batch_calls, 1);
     assert_eq!(accelerator.reversible_dwt53_batch_sizes, vec![1]);
+    assert_eq!(encoded.report.timings.batch_count, 1);
+    assert_eq!(encoded.report.timings.batch_jobs, 1);
+    assert_eq!(encoded.report.timings.accelerator_attempts, 1);
+    assert_eq!(encoded.report.timings.accelerator_dispatches, 1);
+    assert_eq!(encoded.report.timings.cpu_fallback_jobs, 0);
 }
 
 #[test]
@@ -688,6 +722,18 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
             fixture.name
         );
         assert_eq!(accelerator.reversible_dwt53_calls, 0);
+        assert_eq!(
+            batch.report.timings.batch_jobs,
+            fixture.expected_batch_sizes.iter().sum::<usize>(),
+            "batch report should count accelerated component jobs for {}",
+            fixture.name
+        );
+        assert_eq!(
+            batch.report.timings.accelerator_dispatches,
+            fixture.expected_batch_sizes.len(),
+            "batch report should count accelerator batch dispatches for {}",
+            fixture.name
+        );
         for tile in batch.tiles {
             let tile = tile.expect("valid tile transcodes");
             assert_eq!(
@@ -699,6 +745,12 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
                 tile.report.integer_reference_classification,
                 Some(TranscodeValidationClassification::Exact)
             );
+            assert_eq!(
+                tile.report.timings.batch_jobs, 0,
+                "tile report must not duplicate shared batch timing context for {}",
+                fixture.name
+            );
+            assert_eq!(tile.report.transform_us, 0);
         }
     }
 }

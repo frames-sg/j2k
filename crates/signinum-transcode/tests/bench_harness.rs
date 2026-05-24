@@ -11,6 +11,7 @@ fn dct53_benchmark_group_names_are_stable() {
         "dct53_2d_grid_scalar",
         "dct97_2d_grid_scalar",
         "direct_linear_13x11_scratch_reuse",
+        "direct_linear_13x11_rayon_scratch_reuse",
         "dct53_multilevel_scalar",
         "dct53_layout_candidates",
         "jpeg_dct_extract",

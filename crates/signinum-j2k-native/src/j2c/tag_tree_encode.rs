@@ -93,14 +93,18 @@ impl TagTreeEncoder {
             // Parent's value is the minimum of all its children
             let child_x_start = cx * 2;
             let child_y_start = cy * 2;
-            let child_x_end = ((cx + 1) * 2).min(if level == 1 { self.width } else { cw * 2 });
-            let child_y_end = ((cy + 1) * 2).min(if level == 1 { self.height } else { ch * 2 });
-
             let prev_w = if level == 1 {
                 self.width
             } else {
                 (self.width + (1 << (level - 1)) - 1) >> (level - 1)
             };
+            let prev_h = if level == 1 {
+                self.height
+            } else {
+                (self.height + (1 << (level - 1)) - 1) >> (level - 1)
+            };
+            let child_x_end = ((cx + 1) * 2).min(prev_w);
+            let child_y_end = ((cy + 1) * 2).min(prev_h);
 
             let mut min_val = u32::MAX;
             for ccy in child_y_start..child_y_end {
@@ -196,6 +200,22 @@ mod tests {
         assert_eq!(tree.num_levels, 3);
         // 16 + 4 + 1 = 21 nodes
         assert_eq!(tree.nodes.len(), 21);
+    }
+
+    #[test]
+    fn one_row_odd_width_tree_sets_all_leaf_values() {
+        let mut tree = TagTreeEncoder::new(31, 1);
+        for x in 0..31 {
+            tree.set_value(x, 0, x);
+        }
+    }
+
+    #[test]
+    fn one_column_odd_height_tree_sets_all_leaf_values() {
+        let mut tree = TagTreeEncoder::new(1, 31);
+        for y in 0..31 {
+            tree.set_value(0, y, y);
+        }
     }
 
     #[test]

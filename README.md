@@ -34,13 +34,14 @@ supported compiled workloads.
 | CLI header inspection | `signinum-cli` | `cargo install signinum-cli` |
 | Apple Metal device-output surfaces | `signinum-jpeg-metal`, `signinum-j2k-metal`, or the facade `metal` feature | `cargo add signinum-jpeg-metal` |
 | CUDA device-memory output | `signinum-jpeg-cuda`, `signinum-j2k-cuda`, plus the adapter `cuda-runtime` feature | `cargo add signinum-jpeg-cuda --features cuda-runtime` or `cargo add signinum-j2k-cuda --features cuda-runtime` |
-| Experimental JPEG DCT to HTJ2K coefficient transcode | `signinum-transcode` | workspace-only until the promotion gate is met |
+| Experimental JPEG DCT to HTJ2K coefficient transcode | `signinum-transcode` | `cargo add signinum-transcode` |
+| Hybrid Metal acceleration for JPEG DCT to HTJ2K transcode | `signinum-transcode-metal` | `cargo add signinum-transcode-metal` |
 
 Most application code should start with the facade:
 
 ```toml
 [dependencies]
-signinum = "0.4.2"
+signinum = "0.4.3"
 ```
 
 The facade exposes:
@@ -168,10 +169,16 @@ signinum inspect tile.jp2
 - lossless JPEG 2000 / HTJ2K encode for new diagnostic codestreams
 - parity and benchmark coverage against Grok and OpenJPEG where available
 
-`signinum-transcode` is an experimental workspace crate for coefficient-domain
-JPEG DCT to HTJ2K 5/3 wavelet work. It is not part of the stable facade surface.
-The promotion gate is documented in
+`signinum-transcode` is an experimental crate for coefficient-domain JPEG DCT to
+HTJ2K work. It supports the exact reversible `IntegerDirect53` path, optional
+9/7 lossy experiments, native JPEG component sampling, per-tile batch
+transcode, and timing/counter reports for WSI ingest instrumentation. It is not
+part of the stable facade surface. The promotion gate is documented in
 [`crates/signinum-transcode/README.md`](crates/signinum-transcode/README.md).
+`signinum-transcode-metal` is the optional macOS hybrid accelerator for that
+path: JPEG parsing, entropy decode, dequantization, scheduling, and HTJ2K
+assembly stay on CPU/Rayon while supported DCT-grid to wavelet stages can run on
+Metal.
 
 `signinum-tilecodec` provides tile decompression primitives:
 

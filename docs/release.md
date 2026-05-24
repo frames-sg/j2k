@@ -75,14 +75,19 @@ by `.github/workflows/publish.yml`:
 5. `signinum-jpeg`
 6. `signinum-tilecodec`
 7. `signinum-j2k`
-8. `signinum-jpeg-metal`
-9. `signinum-j2k-metal`
-10. `signinum-jpeg-cuda`
-11. `signinum-j2k-cuda`
-12. `signinum-cli`
-13. `signinum`
+8. `signinum-transcode`
+9. `signinum-jpeg-metal`
+10. `signinum-j2k-metal`
+11. `signinum-transcode-metal`
+12. `signinum-jpeg-cuda`
+13. `signinum-j2k-cuda`
+14. `signinum-cli`
+15. `signinum`
 
 Every package in this list must have a fresh manifest version before a
 metadata-refresh release, because crates.io package metadata is immutable after
-publication. `signinum-j2k-compare` remains `publish = false`; it is a local
-parity oracle helper, not a released runtime dependency.
+publication. `signinum-transcode` and `signinum-transcode-metal` remain
+experimental API crates even when published; downstream applications should pin
+minor versions and treat their reports and accelerator heuristics as evolving
+surfaces. `signinum-j2k-compare` remains `publish = false`; it is a local parity
+oracle helper, not a released runtime dependency.

@@ -26,7 +26,9 @@ JPEG bytes
 - `FloatDirectLinear97` is an opt-in irreversible path: the first 9/7 level is
   computed directly from JPEG DCT blocks using cached linearized lifting
   weights, later levels recurse over LL, and the result encodes through
-  `encode_precomputed_htj2k_97`.
+  `encode_precomputed_htj2k_97`. CPU fallback now uses Rayon over independent
+  output coefficients while preserving the scalar per-coefficient accumulation
+  order.
 - Progressive JPEG inputs use the existing progressive scan accumulator to
   expose final quantized/dequantized DCT blocks to the same transcode path as
   baseline JPEG. No progressive IDCT, RGB conversion, or chroma upsample is
@@ -40,6 +42,17 @@ JPEG bytes
   validation classifications. Enabled validation metrics are classified as
   `Exact`, `OneLsbBounded` using the 99.9% exact-match / max-1-LSB threshold,
   or `OutsideThreshold`.
+- `TranscodeReport::timings` and `BatchTranscodeReport::timings` carry
+  stage-level microsecond counters for JPEG DCT extraction, DCT-to-wavelet
+  transform, accelerator hook time, scalar fallback time, DWT decomposition,
+  HTJ2K encode, and converter-facing DICOM spool/final-write slots. The DICOM
+  fields are intentionally zero inside this crate and are available for
+  container/converter layers such as `wsi-dicom` to aggregate with the codec
+  timings.
+- `JpegToHtj2kTranscoder::transcode_batch_with_accelerator` is the preferred
+  WSI-tile queue API. It keeps tile-local failures in the returned batch,
+  groups same-geometry integer-direct components across tiles, and records
+  accelerator/fallback job counts in the batch timing report.
 - `signinum-j2k-native::encode_precomputed_htj2k_53` validates precomputed
   5/3 band geometry against the component dimensions implied by SIZ
   `XRsiz`/`YRsiz` before the accelerated DWT hook reaches packetization.
@@ -108,6 +121,11 @@ allocation/layout changes can be measured against the stateless path.
 for future SIMD/GPU backends to replace the direct 5/3 or 9/7 DCT-grid
 projection stages; the default backend returns `None` and uses the scalar
 fallback.
+`signinum-transcode-metal` implements the current optional Metal backend. It is
+hybrid by design: JPEG parse/entropy/dequantization, grouping, Rayon fallback,
+and HTJ2K encode remain CPU work, while supported DCT-grid to wavelet projection
+jobs can run on Metal. The reversible integer 5/3 Metal path is tested against
+the scalar/Rayon integer oracle for exact output.
 `JpegToHtj2kOptions::lossless_53()` and `JpegToHtj2kOptions::lossy_97()` are the
 safe constructors for the two currently supported codec modes. The transcode
 entry point rejects contradictory reversible/irreversible settings rather than
@@ -168,16 +186,27 @@ This is a correctness-first scalar baseline, not an optimization result. The
 direct matrix projection is intentionally expensive before SIMD/GPU work because
 it expands cached lifting weights over every DCT basis contribution.
 
+After adding the Rayon 9/7 CPU fallback, the focused 13x11 direct-grid
+benchmark measured:
+
+- `dct97_2d_grid_scalar/direct_linear_13x11_scratch_reuse`: 291.06-292.08 us
+- `dct97_2d_grid_scalar/direct_linear_13x11_rayon_scratch_reuse`: 188.68-190.41 us
+
+This small fixture only proves the fallback no longer serializes the direct
+9/7 projection. WSI-scale routing decisions still require the larger tile-batch
+matrix.
+
 ## Open Issues
 
-- The integer-direct production path still uses scalar, on-demand ISLOW block
-  sample evaluation for exactness; block-local caching removes repeated block
-  decode work, but the path is still scalar and correct-first.
 - JPEG extraction now retains both quantized and dequantized DCT blocks. That is
   the correct boundary for later pure coefficient-domain experiments, but it
   adds extraction-only work until an option or downstream consumer can avoid
   one representation.
-- No SIMD optimization claims are made yet. The scalar Criterion groups and
-  acceleration hook are the baseline for later work.
+- The current Metal/Rayon acceleration is stage-local. End-to-end WSI
+  throughput still depends heavily on JPEG entropy decode, exact IDCT semantics,
+  HTJ2K block coding, codestream assembly, and converter I/O.
+- The full 224/512/1024/2048 by batch-size WSI Criterion matrix has not been
+  completed after the latest timing-report changes, so `Auto` thresholds remain
+  conservative and evidence-limited.
 - RGB conversion and chroma upsample remain out of scope for this experimental
   path.

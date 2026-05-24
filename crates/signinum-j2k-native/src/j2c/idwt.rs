@@ -834,6 +834,11 @@ fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
     );
 }
 
+#[cfg(test)]
+pub(crate) fn test_irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize) {
+    irreversible_filter_97i(scanline, width, x0);
+}
+
 #[inline(always)]
 fn filter_step_horizontal(
     scanline: &mut [f32],

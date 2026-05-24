@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_transcode::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_with_scratch,
-    Dct97GridScratch, Dwt97TwoDimensional,
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
+    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 
 #[test]
@@ -26,6 +26,39 @@ fn dct8x8_grid_to_2d_97_matches_reference_for_structured_cases() {
         assert!(
             max_abs_diff(&direct, &reference) < 1.0e-9,
             "direct 9/7 DCT projection diverged for {width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn dct8x8_grid_to_2d_97_rayon_matches_scalar_for_structured_cases() {
+    let blocks = structured_blocks(32, 32);
+    let mut scalar_scratch = Dct97GridScratch::default();
+    let mut rayon_scratch = Dct97GridScratch::default();
+
+    for (width, height) in [(8, 8), (13, 11), (16, 16), (224, 224), (255, 241)] {
+        let scalar = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+            &blocks,
+            32,
+            32,
+            width,
+            height,
+            &mut scalar_scratch,
+        )
+        .expect("scalar 9/7 DCT projection accepts covered grid");
+        let rayon = dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
+            &blocks,
+            32,
+            32,
+            width,
+            height,
+            &mut rayon_scratch,
+        )
+        .expect("rayon 9/7 DCT projection accepts covered grid");
+
+        assert!(
+            max_abs_diff(&rayon, &scalar) < 1.0e-12,
+            "rayon 9/7 DCT projection diverged from scalar for {width}x{height}"
         );
     }
 }

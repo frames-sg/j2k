@@ -84,9 +84,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/publish-crate.sh signinum-j2k
 
-  publish-signinum-jpeg-metal:
+  publish-signinum-transcode:
     needs:
       - publish-signinum-j2k
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/publish-crate.sh signinum-transcode
+
+  publish-signinum-jpeg-metal:
+    needs:
+      - publish-signinum-transcode
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,10 +111,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/publish-crate.sh signinum-j2k-metal
 
+  publish-signinum-transcode-metal:
+    needs:
+      - publish-signinum-transcode
+      - publish-signinum-j2k-metal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/publish-crate.sh signinum-transcode-metal
+
   publish-signinum-jpeg-cuda:
     needs:
       - publish-signinum-cuda-runtime
-      - publish-signinum-j2k-metal
+      - publish-signinum-transcode-metal
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -133,8 +152,10 @@ jobs:
   publish-signinum:
     needs:
       - publish-signinum-tilecodec
+      - publish-signinum-transcode
       - publish-signinum-jpeg-metal
       - publish-signinum-j2k-metal
+      - publish-signinum-transcode-metal
       - publish-signinum-jpeg-cuda
       - publish-signinum-j2k-cuda
       - publish-signinum-cli

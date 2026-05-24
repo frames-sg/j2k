@@ -242,52 +242,62 @@ fn forward_lift_53_even(data: &mut [f32]) {
 /// the reverse of the inverse DWT in idwt.rs.
 ///
 /// Forward lifting steps:
-///   1. s(n) += α * (d(n-1) + d(n))     (predict high from low neighbors)
-///   2. d(n) += β * (s(n) + s(n+1))     (update low from high neighbors)
-///   3. s(n) += γ * (d(n-1) + d(n))     (second predict)
-///   4. d(n) += δ * (s(n) + s(n+1))     (second update)
-///   5. s(n) *= κ                         (scale low-pass)
-///   6. d(n) *= 1/κ                       (scale high-pass)
+///   1. d(n) += α * (s(n) + s(n+1))     (predict high from low neighbors)
+///   2. s(n) += β * (d(n-1) + d(n))     (update low from high neighbors)
+///   3. d(n) += γ * (s(n) + s(n+1))     (second predict)
+///   4. s(n) += δ * (d(n-1) + d(n))     (second update)
+///   5. s(n) *= 1/κ                       (scale low-pass)
+///   6. d(n) *= κ                         (scale high-pass)
 fn forward_lift_97(data: &mut [f32]) {
     let n = data.len();
     if n < 2 {
         return;
     }
 
-    // Step 1: α lifting on even (low-pass) samples
-    for i in (0..n).step_by(2) {
-        let left = if i > 0 { data[i - 1] } else { data[1] };
-        let right = if i + 1 < n { data[i + 1] } else { left };
+    let last_even = if n.is_multiple_of(2) { n - 2 } else { n - 1 };
+
+    // Step 1: α predict on odd (high-pass) samples
+    for i in (1..n).step_by(2) {
+        let left = data[i - 1];
+        let right = if i + 1 < n {
+            data[i + 1]
+        } else {
+            data[last_even]
+        };
         data[i] += ALPHA * (left + right);
     }
 
-    // Step 2: β lifting on odd (high-pass) samples
-    for i in (1..n).step_by(2) {
-        let left = data[i - 1];
-        let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
-        data[i] += BETA * (left + right);
-    }
-
-    // Step 3: γ lifting on even samples
+    // Step 2: β update on even (low-pass) samples
     for i in (0..n).step_by(2) {
         let left = if i > 0 { data[i - 1] } else { data[1] };
         let right = if i + 1 < n { data[i + 1] } else { left };
+        data[i] += BETA * (left + right);
+    }
+
+    // Step 3: γ predict on odd samples
+    for i in (1..n).step_by(2) {
+        let left = data[i - 1];
+        let right = if i + 1 < n {
+            data[i + 1]
+        } else {
+            data[last_even]
+        };
         data[i] += GAMMA * (left + right);
     }
 
-    // Step 4: δ lifting on odd samples
-    for i in (1..n).step_by(2) {
-        let left = data[i - 1];
-        let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
+    // Step 4: δ update on even samples
+    for i in (0..n).step_by(2) {
+        let left = if i > 0 { data[i - 1] } else { data[1] };
+        let right = if i + 1 < n { data[i + 1] } else { left };
         data[i] += DELTA * (left + right);
     }
 
     // Step 5 & 6: Scale
     for i in (0..n).step_by(2) {
-        data[i] *= KAPPA;
+        data[i] *= INV_KAPPA;
     }
     for i in (1..n).step_by(2) {
-        data[i] *= INV_KAPPA;
+        data[i] *= KAPPA;
     }
 }
 
@@ -327,11 +337,36 @@ mod tests {
 
     #[test]
     fn test_forward_97_round_trip() {
-        let original = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0];
-        let mut data = original.clone();
-        forward_lift_97(&mut data);
-        inverse_lift_97(&mut data);
-        assert!(approx_eq_slice(&data, &original, 0.01));
+        for len in [2usize, 3, 8, 9, 64, 65] {
+            let original: Vec<f32> = (0..len)
+                .map(|idx| ((idx * 37 + idx / 3) & 0xff) as f32 - 128.0)
+                .collect();
+            let mut data = original.clone();
+
+            forward_lift_97(&mut data);
+            crate::j2c::idwt::test_irreversible_filter_97i(&mut data, len, 0);
+
+            assert!(
+                approx_eq_slice(&data, &original, 0.01),
+                "len={len} data={data:?} original={original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_lift_97_places_constant_signal_in_low_pass() {
+        for len in [2usize, 3, 8, 9, 64, 65] {
+            let mut data = vec![50.0; len];
+
+            forward_lift_97(&mut data);
+
+            for &low in data.iter().step_by(2) {
+                assert!((low - 50.0).abs() < 0.001, "len={len} data={data:?}");
+            }
+            for &high in data.iter().skip(1).step_by(2) {
+                assert!(high.abs() < 0.001, "len={len} data={data:?}");
+            }
+        }
     }
 
     #[test]
@@ -410,41 +445,6 @@ mod tests {
             let left = if i > 0 { data[i - 1] } else { data[1] };
             let right = if i + 1 < n { data[i + 1] } else { left };
             data[i] += ((left + right) * 0.25 + 0.5).floor();
-        }
-    }
-
-    fn inverse_lift_97(data: &mut [f32]) {
-        let n = data.len();
-        if n < 2 {
-            return;
-        }
-        // Undo scale
-        for i in (0..n).step_by(2) {
-            data[i] *= 1.0 / KAPPA;
-        }
-        for i in (1..n).step_by(2) {
-            data[i] *= KAPPA;
-        }
-        // Undo δ, γ, β, α in reverse order
-        for i in (1..n).step_by(2) {
-            let left = data[i - 1];
-            let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
-            data[i] -= DELTA * (left + right);
-        }
-        for i in (0..n).step_by(2) {
-            let left = if i > 0 { data[i - 1] } else { data[1] };
-            let right = if i + 1 < n { data[i + 1] } else { left };
-            data[i] -= GAMMA * (left + right);
-        }
-        for i in (1..n).step_by(2) {
-            let left = data[i - 1];
-            let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
-            data[i] -= BETA * (left + right);
-        }
-        for i in (0..n).step_by(2) {
-            let left = if i > 0 { data[i - 1] } else { data[1] };
-            let right = if i + 1 < n { data[i + 1] } else { left };
-            data[i] -= ALPHA * (left + right);
         }
     }
 }
