@@ -213,28 +213,44 @@ fn forward_lift_97(data: &mut [f64]) {
         return;
     }
 
-    for sample_idx in (0..sample_count).step_by(2) {
-        let left = if sample_idx > 0 {
-            data[sample_idx - 1]
-        } else {
-            data[1]
-        };
+    let last_even = if sample_count.is_multiple_of(2) {
+        sample_count - 2
+    } else {
+        sample_count - 1
+    };
+
+    for sample_idx in (1..sample_count).step_by(2) {
+        let left = data[sample_idx - 1];
         let right = if sample_idx + 1 < sample_count {
             data[sample_idx + 1]
         } else {
-            left
+            data[last_even]
         };
         data[sample_idx] += ALPHA * (left + right);
     }
 
+    for sample_idx in (0..sample_count).step_by(2) {
+        let left = if sample_idx > 0 {
+            data[sample_idx - 1]
+        } else {
+            data[1]
+        };
+        let right = if sample_idx + 1 < sample_count {
+            data[sample_idx + 1]
+        } else {
+            left
+        };
+        data[sample_idx] += BETA * (left + right);
+    }
+
     for sample_idx in (1..sample_count).step_by(2) {
         let left = data[sample_idx - 1];
         let right = if sample_idx + 1 < sample_count {
             data[sample_idx + 1]
         } else {
-            data[sample_idx - 1]
+            data[last_even]
         };
-        data[sample_idx] += BETA * (left + right);
+        data[sample_idx] += GAMMA * (left + right);
     }
 
     for sample_idx in (0..sample_count).step_by(2) {
@@ -247,25 +263,15 @@ fn forward_lift_97(data: &mut [f64]) {
             data[sample_idx + 1]
         } else {
             left
-        };
-        data[sample_idx] += GAMMA * (left + right);
-    }
-
-    for sample_idx in (1..sample_count).step_by(2) {
-        let left = data[sample_idx - 1];
-        let right = if sample_idx + 1 < sample_count {
-            data[sample_idx + 1]
-        } else {
-            data[sample_idx - 1]
         };
         data[sample_idx] += DELTA * (left + right);
     }
 
     for sample_idx in (0..sample_count).step_by(2) {
-        data[sample_idx] *= KAPPA;
+        data[sample_idx] *= INV_KAPPA;
     }
     for sample_idx in (1..sample_count).step_by(2) {
-        data[sample_idx] *= INV_KAPPA;
+        data[sample_idx] *= KAPPA;
     }
 }
 

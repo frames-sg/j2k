@@ -7,7 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::math::{floor_f32, floor_f64, log2_f64, powi_f64, round_f32, round_f64};
+use crate::math::{floor_f32, round_f32};
 
 /// Quantization parameters for a single subband.
 #[derive(Debug, Clone, Copy)]
@@ -17,9 +17,10 @@ pub(crate) struct QuantStepSize {
 }
 
 impl QuantStepSize {
-    /// Compute the actual step size Δ = 2^(exp - guard_bits) × (1 + mantissa/2048).
-    fn delta(&self, guard_bits: u8) -> f32 {
-        let rb = self.exponent as i32 - guard_bits as i32;
+    /// Compute the JPEG 2000 irreversible step size:
+    /// Δ = 2^(R_b - exponent) × (1 + mantissa/2048).
+    fn delta(&self, range_bits: u8) -> f32 {
+        let rb = range_bits as i32 - self.exponent as i32;
         let base = if rb >= 0 {
             (1u32 << rb) as f32
         } else {
@@ -71,98 +72,24 @@ pub(crate) fn compute_step_sizes(
             });
         }
     } else {
-        // For irreversible 9-7: compute step sizes from norm gains
-        // Base step size for the image
-        let base_step = 1.0 / (1u32 << bit_depth) as f32;
+        // Quality-first irreversible 9-7 default. Use one exponent for all
+        // subbands and let R_b = bit_depth + log_gain make LL finest and HH
+        // coarsest under the decoder's QCD formula.
+        let step = QuantStepSize {
+            exponent: bit_depth as u16 + guard_bits as u16,
+            mantissa: 0,
+        };
 
-        // DWT 9-7 analysis gain norms (squared), per Table E.1
-        // These are the L2 norms of the analysis basis functions.
-        let ll_gain = 1.0f64;
-        let hl_gains: Vec<f64> = (0..num_decompositions)
-            .map(|l| dwt97_subband_gain(l, false, true))
-            .collect();
-        let lh_gains: Vec<f64> = (0..num_decompositions)
-            .map(|l| dwt97_subband_gain(l, true, false))
-            .collect();
-        let hh_gains: Vec<f64> = (0..num_decompositions)
-            .map(|l| dwt97_subband_gain(l, true, true))
-            .collect();
+        step_sizes.push(step);
 
-        // LL subband
-        step_sizes.push(step_from_gain(
-            base_step as f64 / ll_gain,
-            guard_bits,
-            bit_depth,
-        ));
-
-        for level in 0..num_decompositions as usize {
-            step_sizes.push(step_from_gain(
-                base_step as f64 / hl_gains[level],
-                guard_bits,
-                bit_depth,
-            ));
-            step_sizes.push(step_from_gain(
-                base_step as f64 / lh_gains[level],
-                guard_bits,
-                bit_depth,
-            ));
-            step_sizes.push(step_from_gain(
-                base_step as f64 / hh_gains[level],
-                guard_bits,
-                bit_depth,
-            ));
+        for _ in 0..num_decompositions {
+            step_sizes.push(step);
+            step_sizes.push(step);
+            step_sizes.push(step);
         }
     }
 
     step_sizes
-}
-
-/// Approximate DWT 9-7 subband gain for a given decomposition level.
-fn dwt97_subband_gain(level: u8, high_row: bool, high_col: bool) -> f64 {
-    // Approximate gains based on analysis filter norms
-    // Low-pass analysis gain ≈ 1.0 per level (normalized)
-    // High-pass analysis gain increases with level
-    let low = 1.0f64;
-    let high = 2.0f64;
-
-    let row_gain = if high_row {
-        high * (1u64 << level) as f64
-    } else {
-        low
-    };
-    let col_gain = if high_col {
-        high * (1u64 << level) as f64
-    } else {
-        low
-    };
-
-    row_gain * col_gain
-}
-
-fn step_from_gain(step: f64, guard_bits: u8, bit_depth: u8) -> QuantStepSize {
-    if step <= 0.0 {
-        return QuantStepSize {
-            exponent: guard_bits as u16 + bit_depth as u16,
-            mantissa: 0,
-        };
-    }
-
-    let log2_step = log2_f64(step);
-    let exponent = -(floor_f64(log2_step) as i32) + guard_bits as i32;
-    let exponent = exponent.clamp(0, 31) as u16;
-
-    // mantissa = (step / 2^(-exponent+guard_bits) - 1) * 2048
-    let reconstructed_base = powi_f64(2.0, -(exponent as i32) + guard_bits as i32);
-    let mantissa = if reconstructed_base > 0.0 {
-        round_f64((step / reconstructed_base - 1.0) * 2048.0) as u16
-    } else {
-        0
-    };
-
-    QuantStepSize {
-        exponent,
-        mantissa: mantissa.min(2047),
-    }
 }
 
 /// Quantize wavelet coefficients for a single subband.
@@ -174,14 +101,14 @@ fn step_from_gain(step: f64, guard_bits: u8, bit_depth: u8) -> QuantStepSize {
 pub(crate) fn quantize_subband(
     coefficients: &[f32],
     step_size: &QuantStepSize,
-    guard_bits: u8,
+    range_bits: u8,
     reversible: bool,
 ) -> Vec<i32> {
     if reversible {
         // No quantization: round to nearest integer
         coefficients.iter().map(|&c| round_f32(c) as i32).collect()
     } else {
-        let delta = step_size.delta(guard_bits);
+        let delta = step_size.delta(range_bits);
         if delta <= 0.0 {
             return vec![0i32; coefficients.len()];
         }
@@ -218,13 +145,13 @@ mod tests {
     fn test_lossy_quantize() {
         let coeffs = vec![10.0, -5.0, 0.3, -0.1];
         let step = QuantStepSize {
-            exponent: 1,
+            exponent: 8,
             mantissa: 0,
         };
-        let delta = step.delta(1);
+        let delta = step.delta(8);
         assert!((delta - 1.0).abs() < 0.01);
 
-        let result = quantize_subband(&coeffs, &step, 1, false);
+        let result = quantize_subband(&coeffs, &step, 8, false);
         assert_eq!(result[0], 10);
         assert_eq!(result[1], -5);
         assert_eq!(result[2], 0); // Below deadzone
@@ -246,5 +173,45 @@ mod tests {
     fn test_compute_step_sizes_irreversible() {
         let steps = compute_step_sizes(8, 3, false, 1);
         assert_eq!(steps.len(), 10);
+    }
+
+    #[test]
+    fn irreversible_steps_match_decoder_qcd_contract() {
+        let steps = compute_step_sizes(8, 1, false, 2);
+        let exponents: Vec<u16> = steps.iter().map(|step| step.exponent).collect();
+        let mantissas: Vec<u16> = steps.iter().map(|step| step.mantissa).collect();
+        assert_eq!(exponents, vec![10, 10, 10, 10]);
+        assert_eq!(mantissas, vec![0, 0, 0, 0]);
+
+        let deltas: Vec<f32> = [8u8, 9, 9, 10]
+            .iter()
+            .zip(&steps)
+            .map(|(&range_bits, step)| step.delta(range_bits))
+            .collect();
+        assert!((deltas[0] - 0.25).abs() < 0.001);
+        assert!((deltas[1] - 0.5).abs() < 0.001);
+        assert!((deltas[2] - 0.5).abs() < 0.001);
+        assert!((deltas[3] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn saturated_irreversible_coefficients_fit_declared_bitplanes() {
+        let guard_bits = 2;
+        let steps = compute_step_sizes(8, 1, false, guard_bits);
+        let range_bits = [8u8, 9, 9, 10];
+
+        for (&range_bits, step) in range_bits.iter().zip(&steps) {
+            let quantized = quantize_subband(&[-128.0, 127.0], step, range_bits, false);
+            let total_bitplanes = guard_bits as u16 + step.exponent - 1;
+            let max_abs = quantized
+                .iter()
+                .map(|coefficient| coefficient.unsigned_abs())
+                .max()
+                .unwrap();
+            assert!(
+                max_abs < (1u32 << total_bitplanes),
+                "range_bits={range_bits} step={step:?} quantized={quantized:?} total_bitplanes={total_bitplanes}"
+            );
+        }
     }
 }

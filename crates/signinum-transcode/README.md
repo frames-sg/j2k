@@ -30,15 +30,22 @@ HTJ2K boundary. RGB conversion and chroma upsample remain out of scope.
 computes the first reversible 5/3 level from DCT blocks without a full spatial
 image plane, then recurses conventionally over LL for additional levels. The
 floating-point 5/3 and 9/7 paths remain selectable for math-oracle validation
-and lossy experiments.
+and lossy experiments. The 9/7 CPU fallback uses Rayon over independent output
+coefficients; Metal remains an optional accelerator for supported macOS jobs.
 
 Use `JpegToHtj2kTranscoder` when repeatedly transcoding tiles from a worker
 thread. The `jpeg_to_htj2k` function remains a stateless convenience wrapper
 over the same scalar path. Reusable scratch covers the float-linear validation
 path and the default integer-direct block-local ISLOW sample cache.
 `JpegToHtj2kTranscoder::transcode_with_accelerator` accepts an optional
-`DctToWaveletStageAccelerator` for future SIMD/GPU backends; the default
-accelerator always falls back to the scalar oracle.
+`DctToWaveletStageAccelerator` for SIMD/GPU backends; the default accelerator
+always falls back to the scalar oracle.
+
+For WSI ingest queues, prefer `JpegToHtj2kTranscoder::transcode_batch` or
+`transcode_batch_with_accelerator`. Batch transcode preserves per-tile failures
+in `EncodedTranscodeBatch::tiles` so callers can continue past isolated bad
+tiles, and the integer-direct path groups same-geometry tile components before
+offering them to the reversible 5/3 batch accelerator.
 Use `JpegToHtj2kOptions::lossless_53()` and `JpegToHtj2kOptions::lossy_97()`
 instead of manually combining coefficient paths with reversible/irreversible
 encoder settings. Contradictory options fail before JPEG parsing.
@@ -46,6 +53,10 @@ encoder settings. Contradictory options fail before JPEG parsing.
 `TranscodeReport` includes the typed coefficient path and optional validation
 classifications. When an oracle is enabled, metrics are classified as exact,
 one-LSB-bounded at the 99.9% exact-match threshold, or outside threshold.
+`TranscodeReport::timings` and `BatchTranscodeReport::timings` expose
+stage-level wall-clock timings and accelerator/fallback counters. These fields
+are intended for converter instrumentation; they are not a hardware-performance
+contract.
 
 `htj2k_wavelet::WaveletImage53<i32>` and `WaveletImage97<f32>` can be validated
 and converted into `signinum-j2k-native`'s precomputed HTJ2K representations,

@@ -18,8 +18,8 @@ use signinum_transcode::dct53_multilevel::{
     dct8x8_to_dwt53_multilevel_float_linear, idct8x8_then_dwt53_multilevel_float,
 };
 use signinum_transcode::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_with_scratch,
-    Dct97GridScratch,
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
+    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch,
 };
 use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 
@@ -123,6 +123,19 @@ fn bench_dct97_grid(c: &mut Criterion, grid_blocks: &[[[f64; 8]; 8]]) {
     two_dimensional_grid_97.bench_function("direct_linear_13x11_scratch_reuse", |b| {
         b.iter(|| {
             dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+                black_box(grid_blocks),
+                black_box(2),
+                black_box(2),
+                black_box(13),
+                black_box(11),
+                black_box(&mut grid_97_scratch),
+            )
+            .expect("valid DCT grid");
+        });
+    });
+    two_dimensional_grid_97.bench_function("direct_linear_13x11_rayon_scratch_reuse", |b| {
+        b.iter(|| {
+            dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
                 black_box(grid_blocks),
                 black_box(2),
                 black_box(2),

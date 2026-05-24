@@ -9,6 +9,8 @@
 use core::f64::consts::PI;
 use core::fmt;
 
+use rayon::prelude::*;
+
 const ALPHA: f64 = -1.586_134_342_059_924;
 const BETA: f64 = -0.052_980_118_572_961;
 const GAMMA: f64 = 0.882_911_075_530_934;
@@ -184,6 +186,77 @@ pub fn dct8x8_blocks_to_dwt97_float_linear_with_scratch(
     })
 }
 
+/// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
+/// 9/7 result using caller-owned scratch and Rayon over output coefficients.
+///
+/// Each coefficient is computed with the same per-coefficient accumulation
+/// order as [`dct8x8_blocks_to_dwt97_float_linear_with_scratch`], so this
+/// function is deterministic relative to the scalar path while parallelizing
+/// independent output coefficients.
+pub fn dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+    scratch: &mut Dct97GridScratch,
+) -> Result<Dwt97TwoDimensional<f64>, Dct97GridError> {
+    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+
+    let low_width = low_len(width);
+    let low_height = low_len(height);
+    let high_width = high_len(width);
+    let high_height = high_len(height);
+    scratch.x_weights.ensure_sample_len(width);
+    scratch.y_weights.ensure_sample_len(height);
+    let x_weights = &scratch.x_weights;
+    let y_weights = &scratch.y_weights;
+
+    let ll = project_band_rayon(
+        blocks,
+        block_cols,
+        &y_weights.low,
+        &x_weights.low,
+        low_width,
+        low_height,
+    );
+    let hl = project_band_rayon(
+        blocks,
+        block_cols,
+        &y_weights.low,
+        &x_weights.high,
+        high_width,
+        low_height,
+    );
+    let lh = project_band_rayon(
+        blocks,
+        block_cols,
+        &y_weights.high,
+        &x_weights.low,
+        low_width,
+        high_height,
+    );
+    let hh = project_band_rayon(
+        blocks,
+        block_cols,
+        &y_weights.high,
+        &x_weights.high,
+        high_width,
+        high_height,
+    );
+
+    Ok(Dwt97TwoDimensional {
+        ll,
+        hl,
+        lh,
+        hh,
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+    })
+}
+
 /// Reference path for a DCT block grid:
 /// DCT coefficients -> float IDCT samples -> separable linearized 9/7.
 pub fn dct8x8_blocks_then_dwt97_float(
@@ -300,6 +373,24 @@ fn project_dct_grid(
     output
 }
 
+fn project_band_rayon(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    y_rows: &[SparseWeightRow],
+    x_rows: &[SparseWeightRow],
+    width: usize,
+    height: usize,
+) -> Vec<f64> {
+    (0..width.saturating_mul(height))
+        .into_par_iter()
+        .map(|idx| {
+            let y = idx / width;
+            let x = idx % width;
+            project_dct_grid(blocks, block_cols, &y_rows[y].taps, &x_rows[x].taps)
+        })
+        .collect()
+}
+
 fn idct8x8_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
     let mut sample = 0.0;
     for (freq_y, row) in block.iter().enumerate() {
@@ -327,35 +418,45 @@ fn forward_lift_97(data: &mut [f64]) {
         return;
     }
 
-    for i in (0..n).step_by(2) {
-        let left = if i > 0 { data[i - 1] } else { data[1] };
-        let right = if i + 1 < n { data[i + 1] } else { left };
+    let last_even = if n.is_multiple_of(2) { n - 2 } else { n - 1 };
+
+    for i in (1..n).step_by(2) {
+        let left = data[i - 1];
+        let right = if i + 1 < n {
+            data[i + 1]
+        } else {
+            data[last_even]
+        };
         data[i] += ALPHA * (left + right);
     }
 
+    for i in (0..n).step_by(2) {
+        let left = if i > 0 { data[i - 1] } else { data[1] };
+        let right = if i + 1 < n { data[i + 1] } else { left };
+        data[i] += BETA * (left + right);
+    }
+
     for i in (1..n).step_by(2) {
         let left = data[i - 1];
-        let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
-        data[i] += BETA * (left + right);
+        let right = if i + 1 < n {
+            data[i + 1]
+        } else {
+            data[last_even]
+        };
+        data[i] += GAMMA * (left + right);
     }
 
     for i in (0..n).step_by(2) {
         let left = if i > 0 { data[i - 1] } else { data[1] };
         let right = if i + 1 < n { data[i + 1] } else { left };
-        data[i] += GAMMA * (left + right);
-    }
-
-    for i in (1..n).step_by(2) {
-        let left = data[i - 1];
-        let right = if i + 1 < n { data[i + 1] } else { data[i - 1] };
         data[i] += DELTA * (left + right);
     }
 
     for i in (0..n).step_by(2) {
-        data[i] *= KAPPA;
+        data[i] *= INV_KAPPA;
     }
     for i in (1..n).step_by(2) {
-        data[i] *= INV_KAPPA;
+        data[i] *= KAPPA;
     }
 }
 
@@ -493,4 +594,44 @@ struct SparseWeightTap {
 struct Dwt97OneDimensional {
     low: Vec<f64>,
     high: Vec<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_all_close(values: &[f64], expected: f64, epsilon: f64) {
+        for &value in values {
+            assert!(
+                (value - expected).abs() < epsilon,
+                "value={value} expected={expected} values={values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn linearized_97_from_constant_signal_places_dc_in_low_pass() {
+        for len in [2usize, 3, 8, 9, 64, 65] {
+            let samples = vec![50.0; len];
+
+            let transformed = linearized_97_from_sample_slice(&samples);
+
+            assert_all_close(&transformed.low, 50.0, 0.001);
+            assert_all_close(&transformed.high, 0.0, 0.001);
+        }
+    }
+
+    #[test]
+    fn linearized_97_2d_from_constant_plane_places_dc_in_ll() {
+        for (width, height) in [(8usize, 8usize), (9, 7)] {
+            let samples = vec![50.0; width * height];
+
+            let transformed = linearized_97_2d_from_plane(&samples, width, height);
+
+            assert_all_close(&transformed.ll, 50.0, 0.001);
+            assert_all_close(&transformed.hl, 0.0, 0.001);
+            assert_all_close(&transformed.lh, 0.0, 0.001);
+            assert_all_close(&transformed.hh, 0.0, 0.001);
+        }
+    }
 }

@@ -24,7 +24,7 @@ use crate::dct53_2d::{
     linearized_53_2d_from_plane, Dct53GridError, Dct53GridScratch, Dwt53TwoDimensional,
 };
 use crate::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_with_scratch,
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
     linearized_97_2d_from_plane, Dct97GridError, Dct97GridScratch, Dwt97TwoDimensional,
 };
 use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
@@ -240,8 +240,120 @@ pub struct BatchTranscodeReport {
     pub transform_us: u128,
     /// Batch HTJ2K encode time in microseconds.
     pub encode_us: u128,
+    /// Detailed stage timings for the batch. Batch-accelerated 5/3 transform
+    /// timings stay here instead of being copied into every tile report.
+    pub timings: TranscodeTimingReport,
     /// Coefficient path used by the batch.
     pub coefficient_path: JpegToHtj2kCoefficientPath,
+}
+
+/// Detailed timing and dispatch counters for JPEG-to-HTJ2K transcode.
+///
+/// Durations are wall-clock microseconds measured around the current Rust API
+/// boundaries. Accelerator time includes backend submission and wait overhead
+/// visible to this crate; backend-specific hardware counters are not exposed
+/// here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TranscodeTimingReport {
+    /// Raw compressed-tile probe/read time before JPEG DCT extraction.
+    pub source_raw_probe_us: u128,
+    /// Source region decode time for strip/retile workflows.
+    pub read_region_decode_us: u128,
+    /// Region compose/pad time for generated regular tiles.
+    pub compose_pad_us: u128,
+    /// JPEG encode time when the workflow generates regular JPEG tiles.
+    pub generated_jpeg_encode_us: u128,
+    /// JPEG DCT extraction time in microseconds.
+    pub jpeg_dct_extract_us: u128,
+    /// Time spent repacking integer DCT coefficients into float block grids.
+    pub jpeg_dct_repack_us: u128,
+    /// Total wall time spent producing DWT bands from JPEG DCT coefficients.
+    pub dct_to_wavelet_total_us: u128,
+    /// Wall time spent inside accelerator hook calls.
+    pub dct_to_wavelet_accelerator_us: u128,
+    /// Wall time spent in scalar CPU fallback transforms.
+    pub dct_to_wavelet_cpu_fallback_us: u128,
+    /// Time spent decomposing first-level DWT output into requested levels.
+    pub dwt_decompose_us: u128,
+    /// HTJ2K encode time in microseconds.
+    pub htj2k_encode_us: u128,
+    /// Time spent writing compressed frames to a DICOM `PixelData` spool.
+    pub dicom_spool_write_us: u128,
+    /// Time spent writing final DICOM instances.
+    pub dicom_final_write_us: u128,
+    /// Number of source tiles represented by this timing report.
+    pub tile_count: usize,
+    /// Number of components transformed into wavelet bands.
+    pub component_count: usize,
+    /// Number of same-geometry transform batches offered to the accelerator.
+    pub batch_count: usize,
+    /// Number of component jobs in same-geometry transform batches.
+    pub batch_jobs: usize,
+    /// Number of accelerator hook calls.
+    pub accelerator_attempts: usize,
+    /// Number of component jobs offered through accelerator hook calls.
+    pub accelerator_jobs: usize,
+    /// Number of accelerator hook calls that returned an accelerated result.
+    pub accelerator_dispatches: usize,
+    /// Number of component jobs completed by accelerated results.
+    pub accelerator_dispatched_jobs: usize,
+    /// Number of component jobs completed by scalar CPU fallback transforms.
+    pub cpu_fallback_jobs: usize,
+}
+
+impl TranscodeTimingReport {
+    fn add_assign(&mut self, other: Self) {
+        self.source_raw_probe_us = self
+            .source_raw_probe_us
+            .saturating_add(other.source_raw_probe_us);
+        self.read_region_decode_us = self
+            .read_region_decode_us
+            .saturating_add(other.read_region_decode_us);
+        self.compose_pad_us = self.compose_pad_us.saturating_add(other.compose_pad_us);
+        self.generated_jpeg_encode_us = self
+            .generated_jpeg_encode_us
+            .saturating_add(other.generated_jpeg_encode_us);
+        self.jpeg_dct_extract_us = self
+            .jpeg_dct_extract_us
+            .saturating_add(other.jpeg_dct_extract_us);
+        self.jpeg_dct_repack_us = self
+            .jpeg_dct_repack_us
+            .saturating_add(other.jpeg_dct_repack_us);
+        self.dct_to_wavelet_total_us = self
+            .dct_to_wavelet_total_us
+            .saturating_add(other.dct_to_wavelet_total_us);
+        self.dct_to_wavelet_accelerator_us = self
+            .dct_to_wavelet_accelerator_us
+            .saturating_add(other.dct_to_wavelet_accelerator_us);
+        self.dct_to_wavelet_cpu_fallback_us = self
+            .dct_to_wavelet_cpu_fallback_us
+            .saturating_add(other.dct_to_wavelet_cpu_fallback_us);
+        self.dwt_decompose_us = self.dwt_decompose_us.saturating_add(other.dwt_decompose_us);
+        self.htj2k_encode_us = self.htj2k_encode_us.saturating_add(other.htj2k_encode_us);
+        self.dicom_spool_write_us = self
+            .dicom_spool_write_us
+            .saturating_add(other.dicom_spool_write_us);
+        self.dicom_final_write_us = self
+            .dicom_final_write_us
+            .saturating_add(other.dicom_final_write_us);
+        self.tile_count = self.tile_count.saturating_add(other.tile_count);
+        self.component_count = self.component_count.saturating_add(other.component_count);
+        self.batch_count = self.batch_count.saturating_add(other.batch_count);
+        self.batch_jobs = self.batch_jobs.saturating_add(other.batch_jobs);
+        self.accelerator_attempts = self
+            .accelerator_attempts
+            .saturating_add(other.accelerator_attempts);
+        self.accelerator_jobs = self.accelerator_jobs.saturating_add(other.accelerator_jobs);
+        self.accelerator_dispatches = self
+            .accelerator_dispatches
+            .saturating_add(other.accelerator_dispatches);
+        self.accelerator_dispatched_jobs = self
+            .accelerator_dispatched_jobs
+            .saturating_add(other.accelerator_dispatched_jobs);
+        self.cpu_fallback_jobs = self
+            .cpu_fallback_jobs
+            .saturating_add(other.cpu_fallback_jobs);
+    }
 }
 
 /// Per-component transcode geometry preserved in the generated codestream.
@@ -327,6 +439,8 @@ pub struct TranscodeReport {
     pub transform_us: u128,
     /// Wall-clock HTJ2K encode time in microseconds.
     pub encode_us: u128,
+    /// Detailed stage timings and accelerator/fallback counters.
+    pub timings: TranscodeTimingReport,
 }
 
 /// Error returned by the experimental transcode path.
@@ -457,21 +571,26 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
     let extract_us = extract_start.elapsed().as_micros();
 
     let transform_start = Instant::now();
-    let (reversible_dwt53_batches, reversible_dwt53_batch_jobs) =
-        transform_integer_batch_tiles(&mut prepared_tiles, options, scratch, accelerator)?;
+    let mut timings = TranscodeTimingReport::default();
+    let (reversible_dwt53_batches, reversible_dwt53_batch_jobs) = transform_integer_batch_tiles(
+        &mut prepared_tiles,
+        options,
+        scratch,
+        accelerator,
+        &mut timings,
+    )?;
     let transform_us = transform_start.elapsed().as_micros();
+    timings.jpeg_dct_extract_us = extract_us;
+    timings.dct_to_wavelet_total_us = transform_us;
+    timings.tile_count = prepared_tiles.len();
 
     let encode_start = Instant::now();
     for prepared in prepared_tiles {
         let tile_index = prepared.tile_index;
-        tile_results[tile_index] = Some(encode_integer_batch_tile(
-            prepared,
-            options,
-            extract_us,
-            transform_us,
-        ));
+        tile_results[tile_index] = Some(encode_integer_batch_tile(prepared, options));
     }
     let encode_us = encode_start.elapsed().as_micros();
+    timings.htj2k_encode_us = encode_us;
 
     let output_tiles = tile_results
         .into_iter()
@@ -493,6 +612,7 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
             extract_us,
             transform_us,
             encode_us,
+            timings,
             coefficient_path: options.coefficient_path,
         },
     ))
@@ -509,22 +629,40 @@ fn transcode_tile_batch_individually<A: DctToWaveletStageAccelerator>(
         .iter()
         .map(|tile| jpeg_to_htj2k_with_scratch(tile.bytes, options, scratch, accelerator))
         .collect::<Vec<_>>();
+    let mut timings = aggregate_tile_timings(&output_tiles);
+    timings.tile_count = output_tiles.iter().filter(|tile| tile.is_ok()).count();
     let elapsed_us = start.elapsed().as_micros();
+    if timings.dct_to_wavelet_total_us == 0 {
+        timings.dct_to_wavelet_total_us = elapsed_us
+            .saturating_sub(timings.jpeg_dct_extract_us)
+            .saturating_sub(timings.htj2k_encode_us);
+    }
     batch_output(
         output_tiles,
         BatchTranscodeReport {
             tile_count: tiles.len(),
             successful_tiles: 0,
             failed_tiles: 0,
-            transformed_components: 0,
+            transformed_components: timings.component_count,
             reversible_dwt53_batches: 0,
             reversible_dwt53_batch_jobs: 0,
-            extract_us: elapsed_us,
-            transform_us: 0,
-            encode_us: 0,
+            extract_us: timings.jpeg_dct_extract_us,
+            transform_us: timings.dct_to_wavelet_total_us,
+            encode_us: timings.htj2k_encode_us,
+            timings,
             coefficient_path: options.coefficient_path,
         },
     )
+}
+
+fn aggregate_tile_timings(
+    tiles: &[Result<EncodedTranscode, JpegToHtj2kError>],
+) -> TranscodeTimingReport {
+    let mut timings = TranscodeTimingReport::default();
+    for tile in tiles.iter().filter_map(|tile| tile.as_ref().ok()) {
+        timings.add_assign(tile.report.timings);
+    }
+    timings
 }
 
 fn batch_output(
@@ -548,6 +686,7 @@ struct IntegerBatchTile {
     float_validation_expected: Vec<i32>,
     integer_validation_actual: Vec<i32>,
     integer_validation_expected: Vec<i32>,
+    timings: TranscodeTimingReport,
 }
 
 #[derive(Clone, Copy)]
@@ -561,7 +700,13 @@ fn prepare_integer_batch_tile(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
 ) -> Result<IntegerBatchTile, JpegToHtj2kError> {
+    let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
+    let timings = TranscodeTimingReport {
+        jpeg_dct_extract_us: extract_start.elapsed().as_micros(),
+        tile_count: 1,
+        ..TranscodeTimingReport::default()
+    };
     if jpeg.components.is_empty() || jpeg.components.len() > 4 {
         return Err(JpegToHtj2kError::Unsupported(
             "unsupported JPEG component count for jpeg_to_htj2k",
@@ -604,6 +749,7 @@ fn prepare_integer_batch_tile(
         float_validation_expected: Vec::new(),
         integer_validation_actual: Vec::new(),
         integer_validation_expected: Vec::new(),
+        timings,
     })
 }
 
@@ -612,6 +758,7 @@ fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut A,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<(usize, usize), JpegToHtj2kError> {
     let groups = batch_component_groups(tiles);
     let mut batch_count = 0usize;
@@ -620,7 +767,8 @@ fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
     for group in groups {
         batch_count = batch_count.saturating_add(1);
         job_count = job_count.saturating_add(group.len());
-        let wavelets = integer_wavelets_for_batch_group(&group, tiles, scratch, accelerator)?;
+        let wavelets =
+            integer_wavelets_for_batch_group(&group, tiles, scratch, accelerator, timings)?;
         for (component_ref, wavelet) in group.into_iter().zip(wavelets) {
             store_integer_batch_wavelet(component_ref, &wavelet, tiles, options, scratch)?;
         }
@@ -680,6 +828,7 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
     tiles: &[IntegerBatchTile],
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut A,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<Vec<IntegerWavelet>, JpegToHtj2kError> {
     let jobs = group
         .iter()
@@ -689,9 +838,17 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    timings.batch_count = timings.batch_count.saturating_add(1);
+    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    let accelerator_start = Instant::now();
     let accelerated = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
         .map_err(JpegToHtj2kError::Accelerator)?;
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
 
     if let Some(first_levels) = accelerated {
         if first_levels.len() != group.len() {
@@ -699,7 +856,13 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
                 "reversible 5/3 batch accelerator returned wrong component count",
             ));
         }
-        return Ok(first_levels
+        timings.component_count = timings.component_count.saturating_add(group.len());
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings
+            .accelerator_dispatched_jobs
+            .saturating_add(group.len());
+        let decompose_start = Instant::now();
+        let wavelets = first_levels
             .into_iter()
             .zip(group.iter().copied())
             .map(|(first_level, component_ref)| {
@@ -708,7 +871,11 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
                     tiles[component_ref.tile_index].decomposition_levels,
                 )
             })
-            .collect());
+            .collect();
+        timings.dwt_decompose_us = timings
+            .dwt_decompose_us
+            .saturating_add(decompose_start.elapsed().as_micros());
+        return Ok(wavelets);
     }
 
     group
@@ -719,6 +886,7 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
                 tiles[component_ref.tile_index].decomposition_levels,
                 scratch,
                 accelerator,
+                timings,
             )
         })
         .collect()
@@ -767,9 +935,8 @@ fn store_integer_batch_wavelet(
 fn encode_integer_batch_tile(
     tile: IntegerBatchTile,
     options: &JpegToHtj2kOptions,
-    extract_us: u128,
-    transform_us: u128,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    let mut timings = tile.timings;
     let components = tile
         .precomputed_components
         .into_iter()
@@ -790,6 +957,7 @@ fn encode_integer_batch_tile(
     let codestream = encode_precomputed_htj2k_53(&precomputed, &options.encode_options)
         .map_err(JpegToHtj2kError::Encode)?;
     let encode_us = encode_start.elapsed().as_micros();
+    timings.htj2k_encode_us = encode_us;
     let integer_reference_metrics = if options.validate_against_integer_reference {
         Some(error_metrics_i32(
             &tile.integer_validation_actual,
@@ -825,13 +993,15 @@ fn encode_integer_batch_tile(
             decomposition_levels: tile.decomposition_levels,
             coefficient_path: options.coefficient_path,
             path: transcode_path_name(tile.all_unit_sampled, options.coefficient_path),
-            extract_us,
-            transform_us,
+            extract_us: timings.jpeg_dct_extract_us,
+            transform_us: 0,
             encode_us,
+            timings,
         },
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
     bytes: &[u8],
     options: &JpegToHtj2kOptions,
@@ -839,10 +1009,15 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
     accelerator: &mut A,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
     validate_transcode_options(options)?;
+    let mut timings = TranscodeTimingReport {
+        tile_count: 1,
+        ..TranscodeTimingReport::default()
+    };
 
     let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
     let extract_us = extract_start.elapsed().as_micros();
+    timings.jpeg_dct_extract_us = extract_us;
 
     if jpeg.components.is_empty() || jpeg.components.len() > 4 {
         return Err(JpegToHtj2kError::Unsupported(
@@ -881,8 +1056,10 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
         options,
         scratch,
         accelerator,
+        &mut timings,
     )?;
     let transform_us = transform_start.elapsed().as_micros();
+    timings.dct_to_wavelet_total_us = transform_us;
 
     let encode_start = Instant::now();
     let codestream = match component_batch.precomputed_components {
@@ -910,6 +1087,7 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
         }
     };
     let encode_us = encode_start.elapsed().as_micros();
+    timings.htj2k_encode_us = encode_us;
 
     Ok(EncodedTranscode {
         codestream,
@@ -934,6 +1112,7 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
             extract_us,
             transform_us,
             encode_us,
+            timings,
         },
     })
 }
@@ -1034,6 +1213,7 @@ fn transcode_component_batch(
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
     if matches!(
         options.coefficient_path,
@@ -1056,6 +1236,7 @@ fn transcode_component_batch(
             options,
             scratch,
             accelerator,
+            timings,
         );
     }
 
@@ -1075,6 +1256,7 @@ fn transcode_component_batch(
             options,
             scratch,
             accelerator,
+            timings,
         )?;
         match component_result.precomputed {
             PrecomputedComponent::Dwt53(precomputed) => precomputed_53.push(precomputed),
@@ -1130,6 +1312,7 @@ fn transcode_integer_component_batch(
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentTranscodeBatch, JpegToHtj2kError> {
     let mut precomputed_53: Vec<Option<PrecomputedHtj2k53Component>> =
         (0..components.len()).map(|_| None).collect();
@@ -1145,6 +1328,7 @@ fn transcode_integer_component_batch(
             decomposition_levels,
             scratch,
             accelerator,
+            timings,
         )?;
         for (component_index, wavelet) in group.into_iter().zip(group_wavelets) {
             let component = &components[component_index];
@@ -1212,14 +1396,23 @@ fn integer_wavelets_for_component_group(
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<Vec<IntegerWavelet>, JpegToHtj2kError> {
     let jobs = group
         .iter()
         .map(|&component_index| integer_dct_job_for_component(&components[component_index]))
         .collect::<Result<Vec<_>, _>>()?;
+    timings.batch_count = timings.batch_count.saturating_add(1);
+    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    let accelerator_start = Instant::now();
     let accelerated_first_levels = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
         .map_err(JpegToHtj2kError::Accelerator)?;
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
 
     if let Some(first_levels) = accelerated_first_levels {
         if first_levels.len() != group.len() {
@@ -1227,10 +1420,20 @@ fn integer_wavelets_for_component_group(
                 "reversible 5/3 batch accelerator returned wrong component count",
             ));
         }
-        return Ok(first_levels
+        timings.component_count = timings.component_count.saturating_add(group.len());
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings
+            .accelerator_dispatched_jobs
+            .saturating_add(group.len());
+        let decompose_start = Instant::now();
+        let wavelets = first_levels
             .into_iter()
             .map(|first_level| integer_wavelet_from_first_level(first_level, decomposition_levels))
-            .collect());
+            .collect();
+        timings.dwt_decompose_us = timings
+            .dwt_decompose_us
+            .saturating_add(decompose_start.elapsed().as_micros());
+        return Ok(wavelets);
     }
 
     group
@@ -1241,6 +1444,7 @@ fn integer_wavelets_for_component_group(
                 decomposition_levels,
                 scratch,
                 accelerator,
+                timings,
             )
         })
         .collect()
@@ -1293,6 +1497,7 @@ fn integer_dct_job_for_component(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn component_to_precomputed_htj2k(
     component: &JpegDctComponent,
     x_rsiz: u8,
@@ -1301,6 +1506,7 @@ fn component_to_precomputed_htj2k(
     options: &JpegToHtj2kOptions,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentTranscodeResult, JpegToHtj2kError> {
     let (dwt, actual_coefficients) = match options.coefficient_path {
         JpegToHtj2kCoefficientPath::IntegerDirect53 => {
@@ -1309,6 +1515,7 @@ fn component_to_precomputed_htj2k(
                 decomposition_levels,
                 scratch,
                 accelerator,
+                timings,
             )?;
             (
                 PrecomputedComponent::Dwt53(PrecomputedHtj2k53Component {
@@ -1325,6 +1532,7 @@ fn component_to_precomputed_htj2k(
                 decomposition_levels,
                 scratch,
                 accelerator,
+                timings,
             )?;
             (
                 PrecomputedComponent::Dwt53(PrecomputedHtj2k53Component {
@@ -1345,6 +1553,7 @@ fn component_to_precomputed_htj2k(
                 decomposition_levels,
                 scratch,
                 accelerator,
+                timings,
             )?;
             (
                 PrecomputedComponent::Dwt97(PrecomputedHtj2k97Component {
@@ -1419,8 +1628,14 @@ fn float_direct_wavelet_from_component(
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentWavelet, JpegToHtj2kError> {
+    timings.component_count = timings.component_count.saturating_add(1);
+    let repack_start = Instant::now();
     dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
+    timings.jpeg_dct_repack_us = timings
+        .jpeg_dct_repack_us
+        .saturating_add(repack_start.elapsed().as_micros());
     let blocks = &scratch.dct_blocks_f64;
     let job = DctGridToDwt53Job {
         blocks,
@@ -1429,24 +1644,41 @@ fn float_direct_wavelet_from_component(
         width: component.width as usize,
         height: component.height as usize,
     };
-    let bands = match accelerator
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    let accelerator_start = Instant::now();
+    let accelerated = accelerator
         .dct_grid_to_dwt53(job)
-        .map_err(JpegToHtj2kError::Accelerator)?
-    {
-        Some(bands) => bands,
-        None => dct8x8_blocks_to_dwt53_float_linear_with_scratch(
+        .map_err(JpegToHtj2kError::Accelerator)?;
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
+    let bands = if let Some(bands) = accelerated {
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        bands
+    } else {
+        timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+        let fallback_start = Instant::now();
+        let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
             blocks,
             component.block_cols as usize,
             component.block_rows as usize,
             component.width as usize,
             component.height as usize,
             &mut scratch.dct53_grid,
-        )?,
+        )?;
+        timings.dct_to_wavelet_cpu_fallback_us = timings
+            .dct_to_wavelet_cpu_fallback_us
+            .saturating_add(fallback_start.elapsed().as_micros());
+        bands
     };
-    Ok(decompose_from_first_level(
-        bands,
-        usize::from(decomposition_levels),
-    ))
+    let decompose_start = Instant::now();
+    let wavelet = decompose_from_first_level(bands, usize::from(decomposition_levels));
+    timings.dwt_decompose_us = timings
+        .dwt_decompose_us
+        .saturating_add(decompose_start.elapsed().as_micros());
+    Ok(wavelet)
 }
 
 fn float_direct_97_wavelet_from_component(
@@ -1454,8 +1686,14 @@ fn float_direct_97_wavelet_from_component(
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<ComponentWavelet97, JpegToHtj2kError> {
+    timings.component_count = timings.component_count.saturating_add(1);
+    let repack_start = Instant::now();
     dct_blocks_to_8x8_f64_into(&component.dequantized_blocks, &mut scratch.dct_blocks_f64);
+    timings.jpeg_dct_repack_us = timings
+        .jpeg_dct_repack_us
+        .saturating_add(repack_start.elapsed().as_micros());
     let blocks = &scratch.dct_blocks_f64;
     let job = DctGridToDwt97Job {
         blocks,
@@ -1464,24 +1702,41 @@ fn float_direct_97_wavelet_from_component(
         width: component.width as usize,
         height: component.height as usize,
     };
-    let bands = match accelerator
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    let accelerator_start = Instant::now();
+    let accelerated = accelerator
         .dct_grid_to_dwt97(job)
-        .map_err(JpegToHtj2kError::Accelerator)?
-    {
-        Some(bands) => bands,
-        None => dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+        .map_err(JpegToHtj2kError::Accelerator)?;
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
+    let bands = if let Some(bands) = accelerated {
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        bands
+    } else {
+        timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+        let fallback_start = Instant::now();
+        let bands = dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
             blocks,
             component.block_cols as usize,
             component.block_rows as usize,
             component.width as usize,
             component.height as usize,
             &mut scratch.dct97_grid,
-        )?,
+        )?;
+        timings.dct_to_wavelet_cpu_fallback_us = timings
+            .dct_to_wavelet_cpu_fallback_us
+            .saturating_add(fallback_start.elapsed().as_micros());
+        bands
     };
-    Ok(decompose_97_from_first_level(
-        bands,
-        usize::from(decomposition_levels),
-    ))
+    let decompose_start = Instant::now();
+    let wavelet = decompose_97_from_first_level(bands, usize::from(decomposition_levels));
+    timings.dwt_decompose_us = timings
+        .dwt_decompose_us
+        .saturating_add(decompose_start.elapsed().as_micros());
+    Ok(wavelet)
 }
 
 fn float_reference_coefficients(
@@ -1706,35 +1961,57 @@ fn integer_direct_wavelet_from_component(
     decomposition_levels: u8,
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
 ) -> Result<IntegerWavelet, JpegToHtj2kError> {
     let job = integer_dct_job_for_component(component)?;
+    timings.component_count = timings.component_count.saturating_add(1);
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    let accelerator_start = Instant::now();
     let accelerated_first_level = accelerator
         .dct_grid_to_reversible_dwt53(job)
         .map_err(JpegToHtj2kError::Accelerator)?;
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
     if let Some(first_level) = accelerated_first_level {
-        return Ok(integer_wavelet_from_first_level(
-            first_level,
-            decomposition_levels,
-        ));
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        let decompose_start = Instant::now();
+        let wavelet = integer_wavelet_from_first_level(first_level, decomposition_levels);
+        timings.dwt_decompose_us = timings
+            .dwt_decompose_us
+            .saturating_add(decompose_start.elapsed().as_micros());
+        return Ok(wavelet);
     }
 
     scratch.integer_idct_blocks.clear();
     scratch
         .integer_idct_blocks
         .resize_with(component.dequantized_blocks.len(), || None);
+    timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+    let fallback_start = Instant::now();
     let (final_ll, final_ll_width, final_ll_height, first_level) =
         integer_direct_first_level_from_component(
             component,
             &mut scratch.integer_idct_blocks,
             &mut scratch.integer_row,
         )?;
-    Ok(integer_wavelet_from_first_parts(
+    timings.dct_to_wavelet_cpu_fallback_us = timings
+        .dct_to_wavelet_cpu_fallback_us
+        .saturating_add(fallback_start.elapsed().as_micros());
+    let decompose_start = Instant::now();
+    let wavelet = integer_wavelet_from_first_parts(
         final_ll,
         final_ll_width,
         final_ll_height,
         first_level,
         decomposition_levels,
-    ))
+    );
+    timings.dwt_decompose_us = timings
+        .dwt_decompose_us
+        .saturating_add(decompose_start.elapsed().as_micros());
+    Ok(wavelet)
 }
 
 fn integer_wavelet_from_first_level(

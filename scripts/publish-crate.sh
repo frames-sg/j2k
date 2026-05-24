@@ -11,8 +11,10 @@ has_unpublished_workspace_dependency() {
       signinum-jpeg | \
       signinum-tilecodec | \
       signinum-j2k | \
+      signinum-transcode | \
       signinum-jpeg-metal | \
       signinum-j2k-metal | \
+      signinum-transcode-metal | \
       signinum-jpeg-cuda | \
       signinum-j2k-cuda | \
       signinum-cli | \

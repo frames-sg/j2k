@@ -784,6 +784,7 @@ fn encode_impl(
             decomp.ll_width,
             decomp.ll_height,
             &step_sizes[0],
+            bit_depth,
             guard_bits,
             options.reversible,
             block_coding_mode,
@@ -805,6 +806,7 @@ fn encode_impl(
                 level.high_width,
                 level.low_height,
                 &step_sizes[step_base],
+                bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
@@ -819,6 +821,7 @@ fn encode_impl(
                 level.low_width,
                 level.high_height,
                 &step_sizes[step_base + 1],
+                bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
@@ -833,6 +836,7 @@ fn encode_impl(
                 level.high_width,
                 level.high_height,
                 &step_sizes[step_base + 2],
+                bit_depth,
                 guard_bits,
                 options.reversible,
                 block_coding_mode,
@@ -1246,6 +1250,7 @@ fn prepare_subband(
     width: u32,
     height: u32,
     step_size: &QuantStepSize,
+    bit_depth: u8,
     guard_bits: u8,
     reversible: bool,
     block_coding_mode: BlockCodingMode,
@@ -1265,7 +1270,8 @@ fn prepare_subband(
     }
 
     // Quantize
-    let quantized = quantize::quantize_subband(coefficients, step_size, guard_bits, reversible);
+    let range_bits = subband_range_bits(bit_depth, sub_band_type);
+    let quantized = quantize::quantize_subband(coefficients, step_size, range_bits, reversible);
     debug_assert!(step_size.exponent <= u16::from(u8::MAX));
     let total_bitplanes = guard_bits
         .saturating_add(step_size.exponent as u8)
@@ -1310,6 +1316,16 @@ fn prepare_subband(
         total_bitplanes,
         block_coding_mode,
     })
+}
+
+fn subband_range_bits(bit_depth: u8, sub_band_type: SubBandType) -> u8 {
+    let log_gain = match sub_band_type {
+        SubBandType::LowLow => 0,
+        SubBandType::LowHigh | SubBandType::HighLow => 1,
+        SubBandType::HighHigh => 2,
+    };
+
+    bit_depth.saturating_add(log_gain)
 }
 
 fn encode_prepared_resolution_packets(
@@ -2104,6 +2120,82 @@ mod tests {
         pixels
     }
 
+    fn lossy_htj2k_roundtrip_u8(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        num_decomposition_levels: u8,
+    ) -> (Vec<u8>, usize) {
+        let codestream = encode_htj2k(
+            pixels,
+            width,
+            height,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                num_decomposition_levels,
+                reversible: false,
+                guard_bits: 2,
+                ..Default::default()
+            },
+        )
+        .expect("lossy HT encode");
+
+        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
+
+        let image = Image::new(
+            &codestream,
+            &DecodeSettings {
+                resolve_palette_indices: true,
+                strict: true,
+                target_resolution: None,
+            },
+        )
+        .expect("parse lossy HT codestream");
+        let decoded = image.decode_native().expect("decode lossy HT codestream");
+
+        assert_eq!(decoded.width, width);
+        assert_eq!(decoded.height, height);
+        assert_eq!(decoded.bit_depth, 8);
+
+        (decoded.data, codestream.len())
+    }
+
+    fn max_abs_error(expected: &[u8], actual: &[u8]) -> u8 {
+        expected
+            .iter()
+            .zip(actual)
+            .map(|(&expected, &actual)| expected.abs_diff(actual))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn psnr_db(expected: &[u8], actual: &[u8]) -> f64 {
+        let mse = expected
+            .iter()
+            .zip(actual)
+            .map(|(&expected, &actual)| {
+                let diff = f64::from(expected) - f64::from(actual);
+                diff * diff
+            })
+            .sum::<f64>()
+            / expected.len() as f64;
+
+        if mse == 0.0 {
+            f64::INFINITY
+        } else {
+            20.0 * 255.0f64.log10() - 10.0 * mse.log10()
+        }
+    }
+
+    fn assert_not_flat_128(decoded: &[u8]) {
+        assert!(
+            decoded.iter().any(|&sample| sample != 128),
+            "lossy decode collapsed to flat 128"
+        );
+    }
+
     #[test]
     fn test_encode_high_throughput_zero_image_roundtrip() {
         let width = 4u32;
@@ -2270,39 +2362,34 @@ mod tests {
     fn test_encode_high_throughput_lossy_large_gradient_is_parseable() {
         let pixels = gradient_u8(128, 128);
 
-        let codestream = encode_htj2k(
-            &pixels,
-            128,
-            128,
-            1,
-            8,
-            false,
-            &EncodeOptions {
-                num_decomposition_levels: 5,
-                reversible: false,
-                guard_bits: 2,
-                ..Default::default()
-            },
-        )
-        .expect("lossy HT encode");
+        let (decoded, codestream_len) = lossy_htj2k_roundtrip_u8(&pixels, 128, 128, 5);
 
-        assert!(codestream.windows(2).any(|window| window == [0xFF, 0x50]));
-        assert!(!codestream.is_empty());
+        assert!(codestream_len > 110);
+        assert_not_flat_128(&decoded);
+        assert!(
+            psnr_db(&pixels, &decoded) >= 30.0,
+            "psnr={} max_abs={}",
+            psnr_db(&pixels, &decoded),
+            max_abs_error(&pixels, &decoded)
+        );
+    }
 
-        let image = Image::new(
-            &codestream,
-            &DecodeSettings {
-                resolve_palette_indices: true,
-                strict: true,
-                target_resolution: None,
-            },
-        )
-        .expect("parse lossy HT codestream");
-        let decoded = image.decode_native().expect("decode lossy HT codestream");
+    #[test]
+    fn test_encode_high_throughput_lossy_constant_extremes_are_not_midgray() {
+        for sample in [0u8, 255] {
+            let pixels = vec![sample; 64 * 64];
+            let (decoded, codestream_len) = lossy_htj2k_roundtrip_u8(&pixels, 64, 64, 4);
 
-        assert_eq!(decoded.width, 128);
-        assert_eq!(decoded.height, 128);
-        assert_eq!(decoded.bit_depth, 8);
+            assert!(codestream_len > 110);
+            assert_not_flat_128(&decoded);
+            assert!(
+                max_abs_error(&pixels, &decoded) <= 2,
+                "sample={sample} max_abs={} decoded_min={} decoded_max={}",
+                max_abs_error(&pixels, &decoded),
+                decoded.iter().min().unwrap(),
+                decoded.iter().max().unwrap()
+            );
+        }
     }
 
     #[test]
