@@ -126,6 +126,12 @@ hybrid by design: JPEG parse/entropy/dequantization, grouping, Rayon fallback,
 and HTJ2K encode remain CPU work, while supported DCT-grid to wavelet projection
 jobs can run on Metal. The reversible integer 5/3 Metal path is tested against
 the scalar/Rayon integer oracle for exact output.
+`MetalDctToWaveletStageAccelerator::for_auto()` keeps reversible 5/3 fallback
+inside the hybrid accelerator by using CPU/Rayon when Metal thresholds are not
+met, instead of dropping back to the scalar integer transcode path. Its default
+9/7 Metal threshold is 224x224 samples after direct projection benchmarking
+showed 224x224 explicit Metal at 1.6634-1.8825 ms versus scalar at
+143.25-144.81 ms on the local Apple Silicon test host.
 `JpegToHtj2kOptions::lossless_53()` and `JpegToHtj2kOptions::lossy_97()` are the
 safe constructors for the two currently supported codec modes. The transcode
 entry point rejects contradictory reversible/irreversible settings rather than
@@ -206,7 +212,8 @@ matrix.
   throughput still depends heavily on JPEG entropy decode, exact IDCT semantics,
   HTJ2K block coding, codestream assembly, and converter I/O.
 - The full 224/512/1024/2048 by batch-size WSI Criterion matrix has not been
-  completed after the latest timing-report changes, so `Auto` thresholds remain
-  conservative and evidence-limited.
+  completed after the latest timing-report changes. The first 9/7 `Auto`
+  threshold is now evidence-backed at 224x224, while reversible 5/3 batch
+  thresholds still need a broader WSI corpus run.
 - RGB conversion and chroma upsample remain out of scope for this experimental
   path.

@@ -80,7 +80,7 @@ fn auto_metal_53_falls_back_for_tiny_jobs() {
 }
 
 #[test]
-fn auto_metal_reversible_53_falls_back_for_tiny_jobs() {
+fn auto_metal_reversible_53_uses_rayon_for_tiny_jobs() {
     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
     let blocks = vec![[0i16; 64]];
     let output = accelerator
@@ -91,15 +91,15 @@ fn auto_metal_reversible_53_falls_back_for_tiny_jobs() {
             width: 8,
             height: 8,
         })
-        .expect("auto accelerator can decline tiny reversible 5/3 job");
+        .expect("auto accelerator can use CPU/Rayon fallback for tiny reversible 5/3 job");
 
-    assert!(output.is_none());
+    assert!(output.is_some());
     assert_eq!(accelerator.reversible_dwt53_attempts(), 1);
     assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
 }
 
 #[test]
-fn auto_metal_reversible_53_batch_falls_back_for_tiny_jobs() {
+fn auto_metal_reversible_53_batch_uses_rayon_for_tiny_jobs() {
     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
     let blocks = vec![[0i16; 64]];
     let jobs = [DctGridToReversibleDwt53Job {
@@ -111,9 +111,9 @@ fn auto_metal_reversible_53_batch_falls_back_for_tiny_jobs() {
     }];
     let output = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
-        .expect("auto accelerator can decline tiny reversible 5/3 batch");
+        .expect("auto accelerator can use CPU/Rayon fallback for tiny reversible 5/3 batch");
 
-    assert!(output.is_none());
+    assert!(output.is_some());
     assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
     assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 0);
 }

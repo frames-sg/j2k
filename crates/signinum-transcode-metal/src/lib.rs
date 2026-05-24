@@ -15,6 +15,7 @@ pub mod weights;
 use core::fmt;
 
 use signinum_transcode::accelerator::{
+    idct_blocks_to_signed_samples_rayon, reversible_dwt53_first_level_from_block_samples,
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
     DctToWaveletStageAccelerator, ReversibleDwt53FirstLevel,
 };
@@ -24,7 +25,7 @@ use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 /// Stable message returned when Metal is unavailable.
 pub const METAL_UNAVAILABLE: &str = "Metal is unavailable on this host";
 
-const DEFAULT_AUTO_MIN_SAMPLES: usize = 65_536;
+const DEFAULT_AUTO_MIN_SAMPLES: usize = 224 * 224;
 const DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES: usize = usize::MAX;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
@@ -126,6 +127,35 @@ impl MetalDctToWaveletStageAccelerator {
         }
     }
 
+    /// Override the minimum component sample count used before Auto mode
+    /// dispatches non-reversible 5/3 and 9/7 projection jobs to Metal.
+    #[must_use]
+    pub const fn with_auto_min_samples(mut self, min_samples: usize) -> Self {
+        self.min_auto_samples = min_samples;
+        self
+    }
+
+    /// Override the minimum component sample count used before Auto mode
+    /// dispatches single reversible 5/3 jobs to Metal.
+    #[must_use]
+    pub const fn with_auto_reversible_min_samples(mut self, min_samples: usize) -> Self {
+        self.min_auto_reversible_samples = min_samples;
+        self
+    }
+
+    /// Override the reversible 5/3 batch thresholds used before Auto mode
+    /// dispatches a same-geometry batch to Metal.
+    #[must_use]
+    pub const fn with_auto_reversible_batch_thresholds(
+        mut self,
+        min_jobs: usize,
+        min_samples: usize,
+    ) -> Self {
+        self.min_auto_reversible_batch_jobs = min_jobs;
+        self.min_auto_reversible_batch_samples = min_samples;
+        self
+    }
+
     /// Number of reversible integer 5/3 jobs offered to this accelerator.
     #[must_use]
     pub const fn reversible_dwt53_attempts(&self) -> usize {
@@ -202,17 +232,16 @@ impl MetalDctToWaveletStageAccelerator {
             && (jobs.len() < self.min_auto_reversible_batch_jobs
                 || total_samples < self.min_auto_reversible_batch_samples)
         {
-            return Ok(None);
+            return rayon_reversible_dwt53_batch(jobs).map(Some);
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = jobs;
             match self.mode {
                 MetalDispatchMode::Explicit => {
                     Err(MetalTranscodeError::MetalUnavailable.as_static_str())
                 }
-                MetalDispatchMode::Auto => Ok(None),
+                MetalDispatchMode::Auto => rayon_reversible_dwt53_batch(jobs).map(Some),
             }
         }
 
@@ -226,7 +255,9 @@ impl MetalDctToWaveletStageAccelerator {
                 }
                 Err(
                     MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
-                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                ) if self.mode == MetalDispatchMode::Auto => {
+                    rayon_reversible_dwt53_batch(jobs).map(Some)
+                }
                 Err(error) => Err(error.as_static_str()),
             }
         }
@@ -249,17 +280,16 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
         if self.mode == MetalDispatchMode::Auto
             && job.width.saturating_mul(job.height) < self.min_auto_reversible_samples
         {
-            return Ok(None);
+            return rayon_reversible_dwt53(job).map(Some);
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = job;
             match self.mode {
                 MetalDispatchMode::Explicit => {
                     Err(MetalTranscodeError::MetalUnavailable.as_static_str())
                 }
-                MetalDispatchMode::Auto => Ok(None),
+                MetalDispatchMode::Auto => rayon_reversible_dwt53(job).map(Some),
             }
         }
 
@@ -273,7 +303,7 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
                 }
                 Err(
                     MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
-                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                ) if self.mode == MetalDispatchMode::Auto => rayon_reversible_dwt53(job).map(Some),
                 Err(error) => Err(error.as_static_str()),
             }
         }
@@ -361,4 +391,25 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
             }
         }
     }
+}
+
+fn rayon_reversible_dwt53(
+    job: DctGridToReversibleDwt53Job<'_>,
+) -> Result<ReversibleDwt53FirstLevel, &'static str> {
+    let block_samples = idct_blocks_to_signed_samples_rayon(job.dequantized_blocks);
+    reversible_dwt53_first_level_from_block_samples(
+        &block_samples,
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+    )
+}
+
+fn rayon_reversible_dwt53_batch(
+    jobs: &[DctGridToReversibleDwt53Job<'_>],
+) -> Result<Vec<ReversibleDwt53FirstLevel>, &'static str> {
+    jobs.iter()
+        .map(|job| rayon_reversible_dwt53(*job))
+        .collect()
 }
