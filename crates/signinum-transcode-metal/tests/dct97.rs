@@ -55,6 +55,32 @@ fn auto_metal_falls_back_for_tiny_jobs() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_metal_dispatches_97_for_224_square_jobs() {
+    let blocks = structured_blocks(28, 28);
+    let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
+
+    match accelerator.dct_grid_to_dwt97(DctGridToDwt97Job {
+        blocks: &blocks,
+        block_cols: 28,
+        block_rows: 28,
+        width: 224,
+        height: 224,
+    }) {
+        Ok(Some(_)) => {}
+        Ok(None) => panic!("auto Metal should dispatch measured 224x224 9/7 jobs"),
+        Err(message) if message == METAL_UNAVAILABLE => {
+            eprintln!("skipping Metal auto threshold test because no Metal device is available");
+            return;
+        }
+        Err(message) => panic!("auto Metal 9/7 accelerator failed: {message}"),
+    }
+
+    assert_eq!(accelerator.dwt97_attempts(), 1);
+    assert_eq!(accelerator.dwt97_dispatches(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
     let blocks = structured_blocks(2, 2);
     let mut scalar_scratch = Dct97GridScratch::default();

@@ -7,10 +7,11 @@ dequantization, and HTJ2K assembly stay outside this crate; this crate only
 implements transform-stage acceleration hooks.
 
 `MetalDctToWaveletStageAccelerator::for_auto()` is the normal hybrid entry
-point. It may return `None` for small or unsupported jobs so
-`signinum-transcode` can use its scalar/Rayon fallback. `new_explicit()` is
-strict and returns an error when Metal is unavailable or the requested job shape
-is unsupported.
+point. It sends measured 9/7 jobs at 224x224 and above to Metal by default, and
+keeps reversible 5/3 work on CPU/Rayon when Metal is not worthwhile or
+available. `new_explicit()` is strict and returns an error when Metal is
+unavailable or the requested job shape is unsupported. The Auto thresholds are
+builder-configurable for WSI corpus tuning.
 
 Current accelerated stages:
 
@@ -21,5 +22,5 @@ Current accelerated stages:
 
 The reversible integer 5/3 path remains bit-identical to the scalar
 `signinum-transcode` oracle in the test coverage. JPEG entropy decode,
-dequantization, tile grouping, and HTJ2K packet/codestream writing remain CPU
-work.
+dequantization, exact IDCT, tile grouping, Rayon fallback, and HTJ2K
+packet/codestream writing remain CPU work.
