@@ -80,8 +80,30 @@ pub struct DctGridToDwt97Job<'a> {
     pub height: usize,
 }
 
+/// Backend-specific timing breakdown for a same-geometry 9/7 batch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Dwt97BatchStageTimings {
+    /// Host packing, buffer allocation, and upload time in microseconds.
+    pub pack_upload_us: u128,
+    /// Time spent in the IDCT plus horizontal 9/7 row-lift stage.
+    pub idct_row_lift_us: u128,
+    /// Time spent in the vertical 9/7 column-lift stage.
+    pub column_lift_us: u128,
+    /// Time spent reading and unpacking Metal band buffers into host outputs.
+    pub readback_us: u128,
+}
+
 /// Optional backend for SIMD, GPU, or other accelerated transform stages.
 pub trait DctToWaveletStageAccelerator {
+    /// Whether this accelerator wants same-geometry 9/7 batch jobs offered.
+    ///
+    /// The default is false so CPU-only fallback paths do not pay the memory
+    /// cost of materializing batch-owned float DCT blocks before immediately
+    /// falling back.
+    fn supports_dwt97_batch(&self) -> bool {
+        false
+    }
+
     /// Optionally compute the direct DCT-grid to one-level reversible integer
     /// 5/3 projection.
     ///
@@ -127,6 +149,23 @@ pub trait DctToWaveletStageAccelerator {
         _job: DctGridToDwt97Job<'_>,
     ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
         Ok(None)
+    }
+
+    /// Optionally compute a same-geometry batch of direct DCT-grid to
+    /// one-level 9/7 projections.
+    ///
+    /// Backends should return outputs in the same order as `jobs`. Return
+    /// `Ok(None)` to use the scalar per-component fallback.
+    fn dct_grid_to_dwt97_batch(
+        &mut self,
+        _jobs: &[DctGridToDwt97Job<'_>],
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Return backend stage timings for the most recent 9/7 batch dispatch.
+    fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
+        None
     }
 }
 
