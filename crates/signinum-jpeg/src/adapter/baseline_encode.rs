@@ -164,6 +164,40 @@ pub fn assemble_jpeg_baseline_frame(
     Ok(EncodedJpeg { data: out, backend })
 }
 
+pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
+    entropy: &[u8],
+    width: u32,
+    height: u32,
+    sampling: JpegBaselineSampling,
+    q_luma: &[u8; 64],
+    q_chroma: Option<&[u8; 64]>,
+    backend: JpegBackend,
+) -> Result<EncodedJpeg, JpegEncodeError> {
+    validate_jpeg_baseline_dimensions(width, height)?;
+
+    let mut out = Vec::with_capacity(768usize.saturating_add(entropy.len()));
+    write_marker(&mut out, 0xD8);
+    write_dqt(&mut out, 0, q_luma)?;
+    if sampling.components == 3 {
+        let q_chroma = q_chroma.ok_or_else(|| {
+            JpegEncodeError::Internal("three-component DCT JPEG requires chroma quant table".into())
+        })?;
+        write_dqt(&mut out, 1, q_chroma)?;
+    }
+    write_sof0(&mut out, width, height, sampling)?;
+    write_dht(&mut out, 0, 0, &STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES)?;
+    write_dht(&mut out, 1, 0, &STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES)?;
+    if sampling.components == 3 {
+        write_dht(&mut out, 0, 1, &STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES)?;
+        write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
+    }
+    write_sos(&mut out, sampling.components)?;
+    out.extend_from_slice(entropy);
+    write_marker(&mut out, 0xD9);
+
+    Ok(EncodedJpeg { data: out, backend })
+}
+
 pub const JPEG_BASELINE_ZIGZAG: [u8; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,

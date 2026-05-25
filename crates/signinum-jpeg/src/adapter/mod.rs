@@ -12,6 +12,7 @@ pub mod metal_fast420;
 use crate::Decoder;
 
 pub use crate::internal::checkpoint::DeviceCheckpoint;
+pub(crate) use baseline_encode::assemble_jpeg_baseline_frame_with_quant_tables;
 pub use baseline_encode::{
     assemble_jpeg_baseline_frame, baseline_encode_tables, jpeg_baseline_entropy_capacity_bytes,
     jpeg_baseline_sampling_for, validate_jpeg_baseline_dimensions,
