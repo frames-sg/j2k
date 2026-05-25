@@ -9,6 +9,10 @@
 use crate::dct53_2d::Dwt53TwoDimensional;
 use crate::dct97_2d::Dwt97TwoDimensional;
 use rayon::prelude::*;
+pub use signinum_j2k_native::{
+    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+};
 use signinum_jpeg::transcode::idct_islow_block;
 
 const REVERSIBLE_DWT53_UNSUPPORTED_GRID: &str =
@@ -65,7 +69,7 @@ pub struct DctGridToDwt53Job<'a> {
     pub height: usize,
 }
 
-/// Direct DCT-grid to one-level 9/7 projection job.
+/// Direct DCT-grid to one-level 9/7 transform job.
 #[derive(Debug, Clone, Copy)]
 pub struct DctGridToDwt97Job<'a> {
     /// Natural-order, dequantized 8x8 DCT blocks.
@@ -80,6 +84,41 @@ pub struct DctGridToDwt97Job<'a> {
     pub height: usize,
 }
 
+/// Direct DCT-grid to prequantized one-level 9/7 HTJ2K code-block job.
+#[derive(Debug, Clone, Copy)]
+pub struct DctGridToHtj2k97CodeBlockJob<'a> {
+    /// Natural-order, dequantized 8x8 DCT blocks.
+    pub blocks: &'a [[[f64; 8]; 8]],
+    /// Number of DCT block columns in `blocks`.
+    pub block_cols: usize,
+    /// Number of DCT block rows in `blocks`.
+    pub block_rows: usize,
+    /// Logical component width in samples.
+    pub width: usize,
+    /// Logical component height in samples.
+    pub height: usize,
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+}
+
+/// Encode parameters needed to quantize 9/7 output directly into HTJ2K
+/// code-block coefficient layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Htj2k97CodeBlockOptions {
+    /// Component precision in bits.
+    pub bit_depth: u8,
+    /// JPEG 2000 guard bits used for QCD and code-block bitplane counts.
+    pub guard_bits: u8,
+    /// Code-block width exponent minus two.
+    pub code_block_width_exp: u8,
+    /// Code-block height exponent minus two.
+    pub code_block_height_exp: u8,
+    /// Multiplier applied to irreversible 9/7 scalar quantization step sizes.
+    pub irreversible_quantization_scale: f32,
+}
+
 /// Backend-specific timing breakdown for a same-geometry 9/7 batch.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Dwt97BatchStageTimings {
@@ -89,6 +128,8 @@ pub struct Dwt97BatchStageTimings {
     pub idct_row_lift_us: u128,
     /// Time spent in the vertical 9/7 column-lift stage.
     pub column_lift_us: u128,
+    /// Time spent quantizing 9/7 bands into HTJ2K code-block layout.
+    pub quantize_codeblock_us: u128,
     /// Time spent reading and unpacking Metal band buffers into host outputs.
     pub readback_us: u128,
 }
@@ -101,6 +142,12 @@ pub trait DctToWaveletStageAccelerator {
     /// cost of materializing batch-owned float DCT blocks before immediately
     /// falling back.
     fn supports_dwt97_batch(&self) -> bool {
+        false
+    }
+
+    /// Whether this accelerator wants same-geometry 9/7 batches offered as
+    /// prequantized HTJ2K code-block jobs before the float-band hook.
+    fn supports_htj2k97_codeblock_batch(&self) -> bool {
         false
     }
 
@@ -140,7 +187,7 @@ pub trait DctToWaveletStageAccelerator {
         Ok(None)
     }
 
-    /// Optionally compute the direct DCT-grid to one-level 9/7 projection.
+    /// Optionally compute the direct DCT-grid to one-level 9/7 transform.
     ///
     /// Return `Ok(Some(output))` when the backend handled the job. Return
     /// `Ok(None)` to use the scalar fallback.
@@ -152,7 +199,7 @@ pub trait DctToWaveletStageAccelerator {
     }
 
     /// Optionally compute a same-geometry batch of direct DCT-grid to
-    /// one-level 9/7 projections.
+    /// one-level 9/7 transforms.
     ///
     /// Backends should return outputs in the same order as `jobs`. Return
     /// `Ok(None)` to use the scalar per-component fallback.
@@ -160,6 +207,19 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _jobs: &[DctGridToDwt97Job<'_>],
     ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute same-geometry DCT-grid 9/7 jobs directly into
+    /// prequantized HTJ2K code-block components.
+    ///
+    /// Backends should return one component per input job in the same order as
+    /// `jobs`. Return `Ok(None)` to use the float-band path.
+    fn dct_grid_to_htj2k97_codeblock_batch(
+        &mut self,
+        _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
         Ok(None)
     }
 

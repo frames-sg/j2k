@@ -13,9 +13,7 @@ use signinum_transcode::accelerator::{
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch,
 };
-use signinum_transcode::dct97_2d::{
-    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch,
-};
+use signinum_transcode::dct97_2d::{dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch};
 use signinum_transcode::{
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder,
@@ -28,13 +26,13 @@ const MAX_REVERSIBLE_BATCH_SAMPLES: usize = 512 * 512 * 512;
 const WSI_TILE_BATCH_SIZES: [usize; 3] = [128, 256, 512];
 
 const DIRECT_BENCH_MARKERS: [&str; 8] = [
-    "scalar_224x224",
+    "cpu_idct_dwt_224x224",
     "metal_explicit_224x224",
-    "scalar_512x512",
+    "cpu_idct_dwt_512x512",
     "metal_explicit_512x512",
-    "scalar_1024x1024",
+    "cpu_idct_dwt_1024x1024",
     "metal_explicit_1024x1024",
-    "scalar_2048x2048",
+    "cpu_idct_dwt_2048x2048",
     "metal_explicit_2048x2048",
 ];
 
@@ -184,9 +182,9 @@ const WSI_FIXTURES: [WsiFixtureSpec; 12] = [
     },
 ];
 
-fn bench_dct97_projection(c: &mut Criterion) {
+fn bench_dct97_idct_dwt(c: &mut Criterion) {
     black_box(DIRECT_BENCH_MARKERS);
-    let mut group = c.benchmark_group("dct97_metal_projection");
+    let mut group = c.benchmark_group("dct97_metal_idct_dwt");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
 
@@ -204,13 +202,13 @@ fn bench_dct97_projection(c: &mut Criterion) {
         group.throughput(Throughput::Elements((dim * dim) as u64));
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("scalar_{dim}x{dim}")),
+            BenchmarkId::from_parameter(format!("cpu_idct_dwt_{dim}x{dim}")),
             &job,
             |b, job| {
                 let mut scratch = Dct97GridScratch::default();
                 b.iter(|| {
                     black_box(
-                        dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+                        dct8x8_blocks_then_dwt97_float_with_scratch(
                             black_box(job.blocks),
                             job.block_cols,
                             job.block_rows,
@@ -218,7 +216,7 @@ fn bench_dct97_projection(c: &mut Criterion) {
                             job.height,
                             &mut scratch,
                         )
-                        .expect("scalar 9/7 projection accepts fixture grid"),
+                        .expect("CPU 9/7 IDCT-DWT accepts fixture grid"),
                     );
                 });
             },
@@ -234,7 +232,7 @@ fn bench_dct97_projection(c: &mut Criterion) {
                         black_box(
                             accelerator
                                 .dct_grid_to_dwt97(black_box(*job))
-                                .expect("explicit Metal 9/7 projection succeeds")
+                                .expect("explicit Metal 9/7 transform succeeds")
                                 .expect("explicit Metal handles benchmark job"),
                         );
                     });
@@ -919,7 +917,7 @@ fn structured_i16_blocks_with_offset(
 }
 
 criterion_group!(dct53_metal_projection, bench_dct53_projection);
-criterion_group!(dct97_metal_projection, bench_dct97_projection);
+criterion_group!(dct97_metal_idct_dwt, bench_dct97_idct_dwt);
 criterion_group!(jpeg_to_htj2k_wsi_53, bench_jpeg_to_htj2k_wsi_53);
 criterion_group!(
     reversible_dct53_metal_projection,
@@ -940,7 +938,7 @@ criterion_group!(
 criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
 criterion_main!(
     dct53_metal_projection,
-    dct97_metal_projection,
+    dct97_metal_idct_dwt,
     reversible_dct53_metal_projection,
     reversible_dct53_batch_metal_projection,
     jpeg_to_htj2k_wsi_53,

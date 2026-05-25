@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_j2k_native::{DecodeSettings, Image};
+use signinum_j2k_native::{
+    DecodeSettings, EncodedHtJ2kCodeBlock, Image, J2kEncodeStageAccelerator,
+    J2kHtCodeBlockEncodeJob,
+};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use signinum_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
-    DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator, ReversibleDwt53FirstLevel,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
+    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, RayonReversibleDwt53Accelerator,
+    ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
 };
 use signinum_transcode::dct97_2d::{
-    dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
+    dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 use signinum_transcode::{
     jpeg_to_htj2k, EncodedTranscode, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
     JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeValidationClassification,
+    JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 use std::{
     env, fs,
@@ -120,6 +127,14 @@ fn option_constructors_select_consistent_default_codec_modes() {
     );
     assert!(!lossy.encode_options.reversible);
     assert!(!lossy.encode_options.use_mct);
+    assert_eq!(
+        lossy
+            .encode_options
+            .irreversible_quantization_scale
+            .to_bits(),
+        JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE.to_bits()
+    );
+    assert!(lossy.encode_options.irreversible_quantization_scale > 1.0);
 }
 
 #[test]
@@ -835,6 +850,79 @@ fn float97_batch_transcode_groups_components_across_tiles() {
 }
 
 #[test]
+fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossy_97();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = Prequantized97Accelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+        .expect("prequantized 9/7 batch transcode accepts valid options");
+
+    assert_eq!(batch.tiles.len(), inputs.len());
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(accelerator.prequantized_batch_sizes, vec![4]);
+    assert_eq!(accelerator.dwt97_batch_calls, 0);
+    assert_eq!(batch.report.timings.accelerator_dispatches, 1);
+    assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 4);
+    for tile in batch.tiles {
+        let tile = tile.expect("valid prequantized tile transcodes");
+        assert!(tile.codestream.starts_with(&[0xFF, 0x4F]));
+    }
+}
+
+#[test]
+fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossless_53();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut transform_accelerator = RayonReversibleDwt53Accelerator::default();
+    let mut encode_accelerator = CountingHtEncodeAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerators(
+            &inputs,
+            &options,
+            &mut transform_accelerator,
+            &mut encode_accelerator,
+        )
+        .expect("5/3 batch transcode accepts separate encode accelerator");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(encode_accelerator.batches, inputs.len());
+    assert!(encode_accelerator.jobs > 0);
+    assert_eq!(encode_accelerator.single_blocks, encode_accelerator.jobs);
+}
+
+#[test]
+fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossy_97();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut transform_accelerator = Prequantized97Accelerator::default();
+    let mut encode_accelerator = CountingHtEncodeAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerators(
+            &inputs,
+            &options,
+            &mut transform_accelerator,
+            &mut encode_accelerator,
+        )
+        .expect("9/7 batch transcode accepts separate encode accelerator");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(transform_accelerator.prequantized_batch_sizes, vec![4]);
+    assert_eq!(encode_accelerator.batches, inputs.len());
+    assert!(encode_accelerator.jobs > 0);
+    assert_eq!(encode_accelerator.single_blocks, encode_accelerator.jobs);
+}
+
+#[test]
 fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
     let good = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let inputs = [
@@ -959,7 +1047,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         job: DctGridToDwt97Job<'_>,
     ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
         self.dwt97_calls += 1;
-        let dwt = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+        let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
             job.blocks,
             job.block_cols,
             job.block_rows,
@@ -980,7 +1068,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         let mut output = Vec::with_capacity(jobs.len());
         for job in jobs {
             output.push(
-                dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+                dct8x8_blocks_then_dwt97_float_with_scratch(
                     job.blocks,
                     job.block_cols,
                     job.block_rows,
@@ -999,6 +1087,176 @@ struct BatchFixture {
     name: &'static str,
     jpeg: &'static [u8],
     expected_batch_sizes: &'static [usize],
+}
+
+#[derive(Default)]
+struct Prequantized97Accelerator {
+    prequantized_batch_sizes: Vec<usize>,
+    dwt97_batch_calls: usize,
+}
+
+#[derive(Default)]
+struct CountingHtEncodeAccelerator {
+    batches: usize,
+    jobs: usize,
+    single_blocks: usize,
+}
+
+impl J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[J2kHtCodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        self.batches += 1;
+        self.jobs += jobs.len();
+        Ok(None)
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        _job: J2kHtCodeBlockEncodeJob<'_>,
+    ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        self.single_blocks += 1;
+        Ok(None)
+    }
+}
+
+impl DctToWaveletStageAccelerator for Prequantized97Accelerator {
+    fn supports_htj2k97_codeblock_batch(&self) -> bool {
+        true
+    }
+
+    fn dct_grid_to_htj2k97_codeblock_batch(
+        &mut self,
+        jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+        self.prequantized_batch_sizes.push(jobs.len());
+        Ok(Some(
+            jobs.iter()
+                .map(|job| zero_prequantized_component(job, options))
+                .collect(),
+        ))
+    }
+
+    fn dct_grid_to_dwt97_batch(
+        &mut self,
+        _jobs: &[DctGridToDwt97Job<'_>],
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+        self.dwt97_batch_calls += 1;
+        Ok(None)
+    }
+}
+
+fn zero_prequantized_component(
+    job: &DctGridToHtj2k97CodeBlockJob<'_>,
+    options: Htj2k97CodeBlockOptions,
+) -> PrequantizedHtj2k97Component {
+    let low_width = job.width.div_ceil(2);
+    let low_height = job.height.div_ceil(2);
+    let high_width = job.width / 2;
+    let high_height = job.height / 2;
+    PrequantizedHtj2k97Component {
+        x_rsiz: job.x_rsiz,
+        y_rsiz: job.y_rsiz,
+        resolutions: vec![
+            PrequantizedHtj2k97Resolution {
+                subbands: vec![zero_prequantized_subband(
+                    low_width,
+                    low_height,
+                    J2kSubBandType::LowLow,
+                    zero_prequantized_total_bitplanes(options),
+                    options,
+                )],
+            },
+            PrequantizedHtj2k97Resolution {
+                subbands: vec![
+                    zero_prequantized_subband(
+                        high_width,
+                        low_height,
+                        J2kSubBandType::HighLow,
+                        zero_prequantized_total_bitplanes(options),
+                        options,
+                    ),
+                    zero_prequantized_subband(
+                        low_width,
+                        high_height,
+                        J2kSubBandType::LowHigh,
+                        zero_prequantized_total_bitplanes(options),
+                        options,
+                    ),
+                    zero_prequantized_subband(
+                        high_width,
+                        high_height,
+                        J2kSubBandType::HighHigh,
+                        zero_prequantized_total_bitplanes(options),
+                        options,
+                    ),
+                ],
+            },
+        ],
+    }
+}
+
+fn zero_prequantized_total_bitplanes(options: Htj2k97CodeBlockOptions) -> u8 {
+    let base_delta = pow2i_f32_for_test(-i32::from(options.guard_bits))
+        * options.irreversible_quantization_scale;
+    let floor_log2 = base_delta.log2().floor() as i32;
+    let mut exponent = i32::from(options.bit_depth) - floor_log2;
+    let normalized = base_delta / pow2i_f32_for_test(floor_log2);
+    let mantissa = ((normalized - 1.0) * 2048.0).round() as i32;
+
+    if mantissa >= 2048 {
+        exponent -= 1;
+    }
+
+    options
+        .guard_bits
+        .saturating_add(u8::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u8"))
+        .saturating_sub(1)
+}
+
+fn pow2i_f32_for_test(exp: i32) -> f32 {
+    if exp >= 0 {
+        (1u32 << exp.cast_unsigned()) as f32
+    } else {
+        1.0 / (1u32 << (-exp).cast_unsigned()) as f32
+    }
+}
+
+fn zero_prequantized_subband(
+    width: usize,
+    height: usize,
+    sub_band_type: J2kSubBandType,
+    total_bitplanes: u8,
+    options: Htj2k97CodeBlockOptions,
+) -> PrequantizedHtj2k97Subband {
+    let cb_width = 1usize << (options.code_block_width_exp + 2);
+    let cb_height = 1usize << (options.code_block_height_exp + 2);
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let block_width = (width - x0).min(cb_width);
+            let block_height = (height - y0).min(cb_height);
+            code_blocks.push(PrequantizedHtj2k97CodeBlock {
+                coefficients: vec![0; block_width * block_height],
+                width: block_width as u32,
+                height: block_height as u32,
+            });
+        }
+    }
+
+    PrequantizedHtj2k97Subband {
+        sub_band_type,
+        num_cbs_x: num_cbs_x as u32,
+        num_cbs_y: num_cbs_y as u32,
+        total_bitplanes,
+        code_blocks,
+    }
 }
 
 fn encoded_gray_jpeg(width: u32, height: u32) -> Vec<u8> {

@@ -16,8 +16,9 @@ use core::fmt;
 
 use signinum_transcode::accelerator::{
     idct_blocks_to_signed_samples_rayon, reversible_dwt53_first_level_from_block_samples,
-    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
-    DctToWaveletStageAccelerator, Dwt97BatchStageTimings, ReversibleDwt53FirstLevel,
+    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
+    Htj2k97CodeBlockOptions, PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -83,6 +84,8 @@ pub struct MetalDctToWaveletStageAccelerator {
     dwt97_dispatches: usize,
     dwt97_batch_attempts: usize,
     dwt97_batch_dispatches: usize,
+    htj2k97_codeblock_batch_attempts: usize,
+    htj2k97_codeblock_batch_dispatches: usize,
     last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
     min_auto_dwt97_batch_jobs: usize,
     min_auto_dwt97_batch_samples: usize,
@@ -116,6 +119,8 @@ impl MetalDctToWaveletStageAccelerator {
             dwt97_dispatches: 0,
             dwt97_batch_attempts: 0,
             dwt97_batch_dispatches: 0,
+            htj2k97_codeblock_batch_attempts: 0,
+            htj2k97_codeblock_batch_dispatches: 0,
             last_dwt97_batch_stage_timings: None,
             min_auto_dwt97_batch_jobs: 0,
             min_auto_dwt97_batch_samples: 0,
@@ -143,6 +148,8 @@ impl MetalDctToWaveletStageAccelerator {
             dwt97_dispatches: 0,
             dwt97_batch_attempts: 0,
             dwt97_batch_dispatches: 0,
+            htj2k97_codeblock_batch_attempts: 0,
+            htj2k97_codeblock_batch_dispatches: 0,
             last_dwt97_batch_stage_timings: None,
             min_auto_dwt97_batch_jobs: DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS,
             min_auto_dwt97_batch_samples: DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES,
@@ -159,7 +166,7 @@ impl MetalDctToWaveletStageAccelerator {
     }
 
     /// Override the minimum component sample count used before Auto mode
-    /// dispatches 9/7 projection jobs to Metal.
+    /// dispatches 9/7 transform jobs to Metal.
     #[must_use]
     pub const fn with_auto_dwt97_min_samples(mut self, min_samples: usize) -> Self {
         self.min_auto_dwt97_samples = min_samples;
@@ -236,28 +243,40 @@ impl MetalDctToWaveletStageAccelerator {
         self.dwt53_dispatches
     }
 
-    /// Number of 9/7 projection jobs offered to this accelerator.
+    /// Number of 9/7 transform jobs offered to this accelerator.
     #[must_use]
     pub const fn dwt97_attempts(&self) -> usize {
         self.dwt97_attempts
     }
 
-    /// Number of 9/7 projection jobs handled by Metal.
+    /// Number of 9/7 transform jobs handled by Metal.
     #[must_use]
     pub const fn dwt97_dispatches(&self) -> usize {
         self.dwt97_dispatches
     }
 
-    /// Number of 9/7 projection batches offered to this accelerator.
+    /// Number of 9/7 transform batches offered to this accelerator.
     #[must_use]
     pub const fn dwt97_batch_attempts(&self) -> usize {
         self.dwt97_batch_attempts
     }
 
-    /// Number of 9/7 projection batches handled by Metal.
+    /// Number of 9/7 transform batches handled by Metal.
     #[must_use]
     pub const fn dwt97_batch_dispatches(&self) -> usize {
         self.dwt97_batch_dispatches
+    }
+
+    /// Number of 9/7 code-block-ready batches offered to this accelerator.
+    #[must_use]
+    pub const fn htj2k97_codeblock_batch_attempts(&self) -> usize {
+        self.htj2k97_codeblock_batch_attempts
+    }
+
+    /// Number of 9/7 code-block-ready batches handled by Metal.
+    #[must_use]
+    pub const fn htj2k97_codeblock_batch_dispatches(&self) -> usize {
+        self.htj2k97_codeblock_batch_dispatches
     }
 
     /// Backend stage timings for the most recent 9/7 batch dispatch.
@@ -334,6 +353,10 @@ impl Default for MetalDctToWaveletStageAccelerator {
 
 impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
     fn supports_dwt97_batch(&self) -> bool {
+        true
+    }
+
+    fn supports_htj2k97_codeblock_batch(&self) -> bool {
         true
     }
 
@@ -503,6 +526,67 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
             match metal::dispatch_dct_grid_to_dwt97_batch(jobs) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
+            }
+        }
+    }
+
+    fn dct_grid_to_htj2k97_codeblock_batch(
+        &mut self,
+        jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.htj2k97_codeblock_batch_attempts =
+            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.last_dwt97_batch_stage_timings = None;
+
+        if jobs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        let total_samples = jobs.iter().fold(0usize, |total, job| {
+            total.saturating_add(job.width.saturating_mul(job.height))
+        });
+        if self.mode == MetalDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || total_samples < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+        if self.mode == MetalDispatchMode::Auto
+            && jobs.iter().any(|job| {
+                job.width > MAX_AUTO_DWT97_STAGED_BATCH_AXIS
+                    || job.height > MAX_AUTO_DWT97_STAGED_BATCH_AXIS
+            })
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (jobs, options);
+            match self.mode {
+                MetalDispatchMode::Explicit => {
+                    Err(MetalTranscodeError::MetalUnavailable.as_static_str())
+                }
+                MetalDispatchMode::Auto => Ok(None),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match metal::dispatch_dct_grid_to_htj2k97_codeblock_batch(jobs, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.htj2k97_codeblock_batch_dispatches =
+                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }

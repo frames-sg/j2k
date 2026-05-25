@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Constrained 2D DCT to irreversible 9/7 wavelet experiments.
+//! Constrained 2D DCT to irreversible 9/7 wavelet transforms.
 //!
-//! The direct float path projects an 8x8 DCT block grid into one separable
-//! single-level 9/7 result without storing the spatial component plane. The
-//! reference path materializes samples only for validation.
+//! The production float path performs a separable 8x8 IDCT into a reusable
+//! spatial plane, then applies the separable single-level 9/7 transform.
 
 use core::f64::consts::PI;
 use core::fmt;
@@ -95,11 +94,9 @@ impl fmt::Display for Dct97GridError {
 
 impl std::error::Error for Dct97GridError {}
 
-/// Scratch storage for repeated DCT-grid to 9/7 projection calls.
+/// Scratch storage for repeated DCT-grid to 9/7 transform calls.
 #[derive(Debug, Default)]
 pub struct Dct97GridScratch {
-    x_weights: Dwt97WeightRows,
-    y_weights: Dwt97WeightRows,
     spatial_samples: Vec<f64>,
     plane: Dwt97PlaneScratch,
 }
@@ -112,167 +109,12 @@ struct Dwt97PlaneScratch {
 }
 
 impl Dct97GridScratch {
-    /// Aggregate capacity of cached weight rows.
-    #[must_use]
-    pub fn weight_row_capacity(&self) -> usize {
-        self.x_weights.weight_capacity() + self.y_weights.weight_capacity()
-    }
-
     /// Capacity of the reusable spatial-sample buffer used by the IDCT-then
     /// 9/7 path.
     #[must_use]
     pub fn spatial_sample_capacity(&self) -> usize {
         self.spatial_samples.capacity()
     }
-}
-
-/// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
-/// 9/7 result for the logical component dimensions.
-///
-/// Padded JPEG edge samples outside `width x height` are ignored.
-pub fn dct8x8_blocks_to_dwt97_float_linear_with_scratch(
-    blocks: &[[[f64; 8]; 8]],
-    block_cols: usize,
-    block_rows: usize,
-    width: usize,
-    height: usize,
-    scratch: &mut Dct97GridScratch,
-) -> Result<Dwt97TwoDimensional<f64>, Dct97GridError> {
-    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
-
-    let low_width = low_len(width);
-    let low_height = low_len(height);
-    let high_width = high_len(width);
-    let high_height = high_len(height);
-    scratch.x_weights.ensure_sample_len(width);
-    scratch.y_weights.ensure_sample_len(height);
-    let x_weights = &scratch.x_weights;
-    let y_weights = &scratch.y_weights;
-
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
-
-    for y in 0..low_height {
-        for x in 0..low_width {
-            ll.push(project_dct_grid(
-                blocks,
-                block_cols,
-                &y_weights.low[y].taps,
-                &x_weights.low[x].taps,
-            ));
-        }
-        for x in 0..high_width {
-            hl.push(project_dct_grid(
-                blocks,
-                block_cols,
-                &y_weights.low[y].taps,
-                &x_weights.high[x].taps,
-            ));
-        }
-    }
-
-    for y in 0..high_height {
-        for x in 0..low_width {
-            lh.push(project_dct_grid(
-                blocks,
-                block_cols,
-                &y_weights.high[y].taps,
-                &x_weights.low[x].taps,
-            ));
-        }
-        for x in 0..high_width {
-            hh.push(project_dct_grid(
-                blocks,
-                block_cols,
-                &y_weights.high[y].taps,
-                &x_weights.high[x].taps,
-            ));
-        }
-    }
-
-    Ok(Dwt97TwoDimensional {
-        ll,
-        hl,
-        lh,
-        hh,
-        low_width,
-        low_height,
-        high_width,
-        high_height,
-    })
-}
-
-/// Map an adjacent 8x8 DCT block grid directly into a linearized one-level 2D
-/// 9/7 result using caller-owned scratch and Rayon over output coefficients.
-///
-/// Each coefficient is computed with the same per-coefficient accumulation
-/// order as [`dct8x8_blocks_to_dwt97_float_linear_with_scratch`], so this
-/// function is deterministic relative to the scalar path while parallelizing
-/// independent output coefficients.
-pub fn dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
-    blocks: &[[[f64; 8]; 8]],
-    block_cols: usize,
-    block_rows: usize,
-    width: usize,
-    height: usize,
-    scratch: &mut Dct97GridScratch,
-) -> Result<Dwt97TwoDimensional<f64>, Dct97GridError> {
-    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
-
-    let low_width = low_len(width);
-    let low_height = low_len(height);
-    let high_width = high_len(width);
-    let high_height = high_len(height);
-    scratch.x_weights.ensure_sample_len(width);
-    scratch.y_weights.ensure_sample_len(height);
-    let x_weights = &scratch.x_weights;
-    let y_weights = &scratch.y_weights;
-
-    let ll = project_band_rayon(
-        blocks,
-        block_cols,
-        &y_weights.low,
-        &x_weights.low,
-        low_width,
-        low_height,
-    );
-    let hl = project_band_rayon(
-        blocks,
-        block_cols,
-        &y_weights.low,
-        &x_weights.high,
-        high_width,
-        low_height,
-    );
-    let lh = project_band_rayon(
-        blocks,
-        block_cols,
-        &y_weights.high,
-        &x_weights.low,
-        low_width,
-        high_height,
-    );
-    let hh = project_band_rayon(
-        blocks,
-        block_cols,
-        &y_weights.high,
-        &x_weights.high,
-        high_width,
-        high_height,
-    );
-
-    Ok(Dwt97TwoDimensional {
-        ll,
-        hl,
-        lh,
-        hh,
-        low_width,
-        low_height,
-        high_width,
-        high_height,
-    })
 }
 
 /// Reference path for a DCT block grid:
@@ -423,62 +265,6 @@ fn linearized_97_2d_from_plane_with_plane_scratch(
     }
 }
 
-fn project_dct_grid(
-    blocks: &[[[f64; 8]; 8]],
-    block_cols: usize,
-    y_weights: &[SparseWeightTap],
-    x_weights: &[SparseWeightTap],
-) -> f64 {
-    let mut output = 0.0;
-
-    for &SparseWeightTap {
-        sample_idx: sample_y,
-        weight: y_weight,
-    } in y_weights
-    {
-        let block_y = sample_y / 8;
-        let local_y = sample_y % 8;
-
-        for &SparseWeightTap {
-            sample_idx: sample_x,
-            weight: x_weight,
-        } in x_weights
-        {
-            let block_x = sample_x / 8;
-            let local_x = sample_x % 8;
-            let block = &blocks[block_y * block_cols + block_x];
-            let sample_weight = y_weight * x_weight;
-
-            for (freq_y, coefficient_row) in block.iter().enumerate() {
-                let y_basis = idct8_basis(local_y, freq_y);
-                for (freq_x, coefficient) in coefficient_row.iter().copied().enumerate() {
-                    output += sample_weight * y_basis * idct8_basis(local_x, freq_x) * coefficient;
-                }
-            }
-        }
-    }
-
-    output
-}
-
-fn project_band_rayon(
-    blocks: &[[[f64; 8]; 8]],
-    block_cols: usize,
-    y_rows: &[SparseWeightRow],
-    x_rows: &[SparseWeightRow],
-    width: usize,
-    height: usize,
-) -> Vec<f64> {
-    (0..width.saturating_mul(height))
-        .into_par_iter()
-        .map(|idx| {
-            let y = idx / width;
-            let x = idx % width;
-            project_dct_grid(blocks, block_cols, &y_rows[y].taps, &x_rows[x].taps)
-        })
-        .collect()
-}
-
 fn idct8x8_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
     let mut sample = 0.0;
     for (freq_y, row) in block.iter().enumerate() {
@@ -581,6 +367,7 @@ fn idct8x8_block_row_to_samples(
     }
 }
 
+#[cfg(test)]
 fn linearized_97_from_sample_slice(samples: &[f64]) -> Dwt97OneDimensional {
     let mut lifted = samples.to_vec();
     forward_lift_97(&mut lifted);
@@ -751,75 +538,7 @@ fn validate_grid(
     Ok(())
 }
 
-#[derive(Debug, Default)]
-struct Dwt97WeightRows {
-    sample_len: Option<usize>,
-    low: Vec<SparseWeightRow>,
-    high: Vec<SparseWeightRow>,
-}
-
-impl Dwt97WeightRows {
-    fn ensure_sample_len(&mut self, sample_len: usize) {
-        if self.sample_len == Some(sample_len) {
-            return;
-        }
-
-        resize_weight_rows(&mut self.low, low_len(sample_len));
-        resize_weight_rows(&mut self.high, high_len(sample_len));
-
-        for sample_idx in 0..sample_len {
-            let mut basis = vec![0.0; sample_len];
-            basis[sample_idx] = 1.0;
-            let transformed = linearized_97_from_sample_slice(&basis);
-            for (row, &weight) in self.low.iter_mut().zip(transformed.low.iter()) {
-                if weight != 0.0 {
-                    row.taps.push(SparseWeightTap { sample_idx, weight });
-                }
-            }
-            for (row, &weight) in self.high.iter_mut().zip(transformed.high.iter()) {
-                if weight != 0.0 {
-                    row.taps.push(SparseWeightTap { sample_idx, weight });
-                }
-            }
-        }
-
-        self.sample_len = Some(sample_len);
-    }
-
-    fn weight_capacity(&self) -> usize {
-        self.low
-            .iter()
-            .map(|row| row.taps.capacity())
-            .sum::<usize>()
-            + self
-                .high
-                .iter()
-                .map(|row| row.taps.capacity())
-                .sum::<usize>()
-    }
-}
-
-fn resize_weight_rows(rows: &mut Vec<SparseWeightRow>, row_count: usize) {
-    if rows.len() < row_count {
-        rows.resize_with(row_count, SparseWeightRow::default);
-    }
-    for row in rows.iter_mut().take(row_count) {
-        row.taps.clear();
-    }
-    rows.truncate(row_count);
-}
-
-#[derive(Debug, Default)]
-struct SparseWeightRow {
-    taps: Vec<SparseWeightTap>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SparseWeightTap {
-    sample_idx: usize,
-    weight: f64,
-}
-
+#[cfg(test)]
 struct Dwt97OneDimensional {
     low: Vec<f64>,
     high: Vec<f64>,

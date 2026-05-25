@@ -116,6 +116,14 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    pub fn for_ht_code_block_encode() -> Self {
+        Self {
+            dispatch_stages: MetalEncodeDispatchStages::HT_CODE_BLOCK,
+            parallel_cpu_code_block_fallback: true,
+            ..Self::default()
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn for_host_output(options: J2kLosslessEncodeOptions) -> Self {
         if options.backend == EncodeBackendPreference::Auto {

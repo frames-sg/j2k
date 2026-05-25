@@ -22,4 +22,5 @@ pub use jpeg_to_htj2k::{
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
     JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeComponentReport, TranscodeReport,
     TranscodeTimingReport, TranscodeValidationClassification, TranscodeValidationMetrics,
+    JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
