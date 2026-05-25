@@ -102,7 +102,7 @@ pub enum JpegEncodeError {
     Internal(String),
 }
 
-struct BitWriter {
+pub(crate) struct BitWriter {
     bytes: Vec<u8>,
     current: u8,
     used: u8,
@@ -118,7 +118,7 @@ struct JpegEncodeProfile {
 }
 
 impl BitWriter {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             bytes: Vec::new(),
             current: 0,
@@ -157,7 +157,7 @@ impl BitWriter {
         self.bytes.push(0xD0 + (rst & 0x07));
     }
 
-    fn into_bytes(mut self) -> Vec<u8> {
+    pub(crate) fn into_bytes(mut self) -> Vec<u8> {
         self.align_with_ones();
         self.bytes
     }
@@ -662,7 +662,7 @@ fn fdct_quantize(block: &[u8; 64], quant: &[u8; 64], cosine: &[[f64; 8]; 8]) -> 
     coeffs
 }
 
-fn encode_block(
+pub(crate) fn encode_block(
     coeffs: &[i32; 64],
     prev_dc: &mut i32,
     dc_table: &JpegBaselineHuffmanTable,
