@@ -8,6 +8,7 @@
 
 use core::f64::consts::PI;
 use core::fmt;
+use std::sync::LazyLock;
 
 use rayon::prelude::*;
 
@@ -17,6 +18,7 @@ const GAMMA: f64 = 0.882_911_075_530_934;
 const DELTA: f64 = 0.443_506_852_043_971;
 const KAPPA: f64 = 1.230_174_104_914_001;
 const INV_KAPPA: f64 = 1.0 / KAPPA;
+const PARALLEL_IDCT_MIN_SAMPLES: usize = 64 * 64;
 
 /// One separable single-level 2D 9/7 transform result.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +100,15 @@ impl std::error::Error for Dct97GridError {}
 pub struct Dct97GridScratch {
     x_weights: Dwt97WeightRows,
     y_weights: Dwt97WeightRows,
+    spatial_samples: Vec<f64>,
+    plane: Dwt97PlaneScratch,
+}
+
+#[derive(Debug, Default)]
+struct Dwt97PlaneScratch {
+    row_low: Vec<f64>,
+    row_high: Vec<f64>,
+    lift_workspace: Vec<f64>,
 }
 
 impl Dct97GridScratch {
@@ -105,6 +116,13 @@ impl Dct97GridScratch {
     #[must_use]
     pub fn weight_row_capacity(&self) -> usize {
         self.x_weights.weight_capacity() + self.y_weights.weight_capacity()
+    }
+
+    /// Capacity of the reusable spatial-sample buffer used by the IDCT-then
+    /// 9/7 path.
+    #[must_use]
+    pub fn spatial_sample_capacity(&self) -> usize {
+        self.spatial_samples.capacity()
     }
 }
 
@@ -283,10 +301,60 @@ pub fn dct8x8_blocks_then_dwt97_float(
     Ok(linearized_97_2d_from_plane(&samples, width, height))
 }
 
+/// Reference 9/7 path with caller-owned spatial-sample scratch:
+/// DCT coefficients -> float IDCT samples -> separable linearized 9/7.
+pub fn dct8x8_blocks_then_dwt97_float_with_scratch(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+    scratch: &mut Dct97GridScratch,
+) -> Result<Dwt97TwoDimensional<f64>, Dct97GridError> {
+    validate_grid(blocks.len(), block_cols, block_rows, width, height)?;
+
+    let sample_count = width.saturating_mul(height);
+    scratch.spatial_samples.clear();
+    scratch.spatial_samples.resize(sample_count, 0.0);
+    idct8x8_blocks_to_samples(
+        blocks,
+        block_cols,
+        width,
+        height,
+        &mut scratch.spatial_samples,
+    );
+
+    Ok(linearized_97_2d_from_plane_with_plane_scratch(
+        &scratch.spatial_samples,
+        width,
+        height,
+        &mut scratch.plane,
+    ))
+}
+
 pub(crate) fn linearized_97_2d_from_plane(
     samples: &[f64],
     width: usize,
     height: usize,
+) -> Dwt97TwoDimensional<f64> {
+    let mut scratch = Dct97GridScratch::default();
+    linearized_97_2d_from_plane_with_scratch(samples, width, height, &mut scratch)
+}
+
+pub(crate) fn linearized_97_2d_from_plane_with_scratch(
+    samples: &[f64],
+    width: usize,
+    height: usize,
+    scratch: &mut Dct97GridScratch,
+) -> Dwt97TwoDimensional<f64> {
+    linearized_97_2d_from_plane_with_plane_scratch(samples, width, height, &mut scratch.plane)
+}
+
+fn linearized_97_2d_from_plane_with_plane_scratch(
+    samples: &[f64],
+    width: usize,
+    height: usize,
+    scratch: &mut Dwt97PlaneScratch,
 ) -> Dwt97TwoDimensional<f64> {
     debug_assert_eq!(samples.len(), width * height);
 
@@ -295,39 +363,59 @@ pub(crate) fn linearized_97_2d_from_plane(
     let high_width = high_len(width);
     let high_height = high_len(height);
 
-    let mut row_low = Vec::with_capacity(height * low_width);
-    let mut row_high = Vec::with_capacity(height * high_width);
+    scratch.row_low.clear();
+    scratch.row_low.resize(height * low_width, 0.0);
+    scratch.row_high.clear();
+    scratch.row_high.resize(height * high_width, 0.0);
+
     for y in 0..height {
         let start = y * width;
         let row = &samples[start..start + width];
-        let transformed = linearized_97_from_sample_slice(row);
-        row_low.extend(transformed.low);
-        row_high.extend(transformed.high);
+        let low_start = y * low_width;
+        let high_start = y * high_width;
+        linearized_97_split_contiguous_into(
+            row,
+            &mut scratch.row_low[low_start..low_start + low_width],
+            &mut scratch.row_high[high_start..high_start + high_width],
+            &mut scratch.lift_workspace,
+        );
     }
 
-    let mut ll = Vec::with_capacity(low_width * low_height);
-    let mut lh = Vec::with_capacity(low_width * high_height);
+    let mut ll = vec![0.0; low_width * low_height];
+    let mut lh = vec![0.0; low_width * high_height];
     for x in 0..low_width {
-        let column = column_from_rows(&row_low, low_width, x, height);
-        let transformed = linearized_97_from_sample_slice(&column);
-        ll.extend(transformed.low);
-        lh.extend(transformed.high);
+        linearized_97_split_strided_into(
+            &scratch.row_low,
+            low_width,
+            x,
+            height,
+            &mut ll,
+            &mut lh,
+            low_width,
+            &mut scratch.lift_workspace,
+        );
     }
 
-    let mut hl = Vec::with_capacity(high_width * low_height);
-    let mut hh = Vec::with_capacity(high_width * high_height);
+    let mut hl = vec![0.0; high_width * low_height];
+    let mut hh = vec![0.0; high_width * high_height];
     for x in 0..high_width {
-        let column = column_from_rows(&row_high, high_width, x, height);
-        let transformed = linearized_97_from_sample_slice(&column);
-        hl.extend(transformed.low);
-        hh.extend(transformed.high);
+        linearized_97_split_strided_into(
+            &scratch.row_high,
+            high_width,
+            x,
+            height,
+            &mut hl,
+            &mut hh,
+            high_width,
+            &mut scratch.lift_workspace,
+        );
     }
 
     Dwt97TwoDimensional {
-        ll: transpose_band(&ll, low_height, low_width),
-        hl: transpose_band(&hl, low_height, high_width),
-        lh: transpose_band(&lh, high_height, low_width),
-        hh: transpose_band(&hh, high_height, high_width),
+        ll,
+        hl,
+        lh,
+        hh,
         low_width,
         low_height,
         high_width,
@@ -402,6 +490,97 @@ fn idct8x8_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
     sample
 }
 
+fn idct8x8_blocks_to_samples(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    width: usize,
+    height: usize,
+    samples: &mut [f64],
+) {
+    debug_assert_eq!(samples.len(), width * height);
+    let basis = idct8_basis_table();
+    let active_block_cols = width.div_ceil(8);
+    let active_block_rows = height.div_ceil(8);
+
+    if width * height >= PARALLEL_IDCT_MIN_SAMPLES {
+        samples
+            .par_chunks_mut(width * 8)
+            .enumerate()
+            .take(active_block_rows)
+            .for_each(|(block_y, sample_rows)| {
+                idct8x8_block_row_to_samples(
+                    blocks,
+                    block_cols,
+                    width,
+                    height,
+                    basis,
+                    active_block_cols,
+                    block_y,
+                    sample_rows,
+                );
+            });
+    } else {
+        for block_y in 0..active_block_rows {
+            let block_sample_y = block_y * 8;
+            let output_rows = (height - block_sample_y).min(8);
+            let row_start = block_sample_y * width;
+            let row_end = row_start + output_rows * width;
+            idct8x8_block_row_to_samples(
+                blocks,
+                block_cols,
+                width,
+                height,
+                basis,
+                active_block_cols,
+                block_y,
+                &mut samples[row_start..row_end],
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn idct8x8_block_row_to_samples(
+    blocks: &[[[f64; 8]; 8]],
+    block_cols: usize,
+    width: usize,
+    height: usize,
+    basis: &[[f64; 8]; 8],
+    active_block_cols: usize,
+    block_y: usize,
+    sample_rows: &mut [f64],
+) {
+    let block_sample_y = block_y * 8;
+    let output_rows = (height - block_sample_y).min(8);
+    for block_x in 0..active_block_cols {
+        let block_sample_x = block_x * 8;
+        let output_cols = (width - block_sample_x).min(8);
+        let block = &blocks[block_y * block_cols + block_x];
+        let mut vertical = [[0.0; 8]; 8];
+
+        for local_y in 0..8 {
+            for freq_x in 0..8 {
+                let mut sum = 0.0;
+                for freq_y in 0..8 {
+                    sum += basis[local_y][freq_y] * block[freq_y][freq_x];
+                }
+                vertical[local_y][freq_x] = sum;
+            }
+        }
+
+        for (local_y, vertical_row) in vertical.iter().enumerate().take(output_rows) {
+            let row_offset = local_y * width + block_sample_x;
+            for local_x in 0..output_cols {
+                let mut sample = 0.0;
+                for freq_x in 0..8 {
+                    sample += vertical_row[freq_x] * basis[local_x][freq_x];
+                }
+                sample_rows[row_offset + local_x] = sample;
+            }
+        }
+    }
+}
+
 fn linearized_97_from_sample_slice(samples: &[f64]) -> Dwt97OneDimensional {
     let mut lifted = samples.to_vec();
     forward_lift_97(&mut lifted);
@@ -460,24 +639,74 @@ fn forward_lift_97(data: &mut [f64]) {
     }
 }
 
-fn column_from_rows(rows: &[f64], stride: usize, x: usize, height: usize) -> Vec<f64> {
-    (0..height).map(|y| rows[y * stride + x]).collect()
+fn linearized_97_split_contiguous_into(
+    samples: &[f64],
+    low: &mut [f64],
+    high: &mut [f64],
+    workspace: &mut Vec<f64>,
+) {
+    debug_assert_eq!(low.len(), low_len(samples.len()));
+    debug_assert_eq!(high.len(), high_len(samples.len()));
+
+    workspace.clear();
+    workspace.extend_from_slice(samples);
+    forward_lift_97(workspace);
+
+    for (target, value) in low.iter_mut().zip(workspace.iter().step_by(2)) {
+        *target = *value;
+    }
+    for (target, value) in high.iter_mut().zip(workspace.iter().skip(1).step_by(2)) {
+        *target = *value;
+    }
 }
 
-fn transpose_band(column_major: &[f64], height: usize, width: usize) -> Vec<f64> {
-    let mut row_major = Vec::with_capacity(width * height);
-    for y in 0..height {
-        for x in 0..width {
-            row_major.push(column_major[x * height + y]);
-        }
+#[allow(clippy::too_many_arguments)]
+fn linearized_97_split_strided_into(
+    samples: &[f64],
+    stride: usize,
+    x: usize,
+    height: usize,
+    low: &mut [f64],
+    high: &mut [f64],
+    band_width: usize,
+    workspace: &mut Vec<f64>,
+) {
+    debug_assert_eq!(low.len(), band_width * low_len(height));
+    debug_assert_eq!(high.len(), band_width * high_len(height));
+
+    workspace.clear();
+    workspace.extend((0..height).map(|y| samples[y * stride + x]));
+    forward_lift_97(workspace);
+
+    for (low_y, value) in workspace.iter().step_by(2).enumerate() {
+        low[low_y * band_width + x] = *value;
     }
-    row_major
+    for (high_y, value) in workspace.iter().skip(1).step_by(2).enumerate() {
+        high[high_y * band_width + x] = *value;
+    }
 }
 
 fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
     debug_assert!(sample_idx < 8);
     debug_assert!(freq < 8);
 
+    idct8_basis_table()[sample_idx][freq]
+}
+
+fn idct8_basis_table() -> &'static [[f64; 8]; 8] {
+    static BASIS: LazyLock<[[f64; 8]; 8]> = LazyLock::new(|| {
+        let mut basis = [[0.0; 8]; 8];
+        for (sample_idx, row) in basis.iter_mut().enumerate() {
+            for (freq, value) in row.iter_mut().enumerate() {
+                *value = idct8_basis_uncached(sample_idx, freq);
+            }
+        }
+        basis
+    });
+    &BASIS
+}
+
+fn idct8_basis_uncached(sample_idx: usize, freq: usize) -> f64 {
     let scale = if freq == 0 {
         (1.0_f64 / 8.0).sqrt()
     } else {

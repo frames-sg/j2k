@@ -55,28 +55,25 @@ fn auto_metal_falls_back_for_tiny_jobs() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn auto_metal_dispatches_97_for_224_square_jobs() {
-    let blocks = structured_blocks(28, 28);
+fn auto_metal_uses_cpu_for_97_jobs_by_default() {
+    let blocks = structured_blocks(64, 64);
     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
 
     match accelerator.dct_grid_to_dwt97(DctGridToDwt97Job {
         blocks: &blocks,
-        block_cols: 28,
-        block_rows: 28,
-        width: 224,
-        height: 224,
+        block_cols: 64,
+        block_rows: 64,
+        width: 512,
+        height: 512,
     }) {
-        Ok(Some(_)) => {}
-        Ok(None) => panic!("auto Metal should dispatch measured 224x224 9/7 jobs"),
-        Err(message) if message == METAL_UNAVAILABLE => {
-            eprintln!("skipping Metal auto threshold test because no Metal device is available");
-            return;
-        }
+        Ok(None) => {}
+        Ok(Some(_)) => panic!("auto Metal should leave 9/7 jobs on the optimized CPU path"),
+        Err(message) if message == METAL_UNAVAILABLE => {}
         Err(message) => panic!("auto Metal 9/7 accelerator failed: {message}"),
     }
 
     assert_eq!(accelerator.dwt97_attempts(), 1);
-    assert_eq!(accelerator.dwt97_dispatches(), 1);
+    assert_eq!(accelerator.dwt97_dispatches(), 0);
 }
 
 #[cfg(target_os = "macos")]
@@ -120,6 +117,100 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
     }
 
     assert_eq!(accelerator.dwt97_dispatches(), 3);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
+    let first = structured_blocks(2, 2);
+    let second = structured_blocks_with_offset(2, 2, 97.0);
+    let jobs = [
+        DctGridToDwt97Job {
+            blocks: &first,
+            block_cols: 2,
+            block_rows: 2,
+            width: 13,
+            height: 11,
+        },
+        DctGridToDwt97Job {
+            blocks: &second,
+            block_cols: 2,
+            block_rows: 2,
+            width: 13,
+            height: 11,
+        },
+    ];
+    let mut scalar_scratch = Dct97GridScratch::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    let actual = match accelerator.dct_grid_to_dwt97_batch(&jobs) {
+        Ok(Some(output)) => output,
+        Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
+        Err(message) if message == METAL_UNAVAILABLE => {
+            eprintln!("skipping Metal batch coefficient test because no Metal device is available");
+            return;
+        }
+        Err(message) => panic!("explicit Metal batch accelerator failed: {message}"),
+    };
+
+    assert_eq!(actual.len(), jobs.len());
+    for (actual, job) in actual.iter().zip(jobs.iter()) {
+        let expected = dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+            job.blocks,
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+            &mut scalar_scratch,
+        )
+        .expect("scalar 9/7 projection accepts covered grid");
+
+        let max_diff = max_abs_diff(actual, &expected);
+        assert!(
+            max_diff <= 2.0e-2,
+            "Metal 9/7 batch projection diverged: {max_diff}"
+        );
+    }
+
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
+    let batch_blocks = [
+        structured_blocks_with_offset(4, 4, 0.0),
+        structured_blocks_with_offset(4, 4, 3.0),
+    ];
+    let jobs: Vec<_> = batch_blocks
+        .iter()
+        .map(|blocks| DctGridToDwt97Job {
+            blocks,
+            block_cols: 4,
+            block_rows: 4,
+            width: 29,
+            height: 31,
+        })
+        .collect();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    match accelerator.dct_grid_to_dwt97_batch(&jobs) {
+        Ok(Some(_)) => {}
+        Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
+        Err(message) if message == METAL_UNAVAILABLE => {
+            eprintln!("skipping Metal batch timing test because no Metal device is available");
+            return;
+        }
+        Err(message) => panic!("explicit Metal batch accelerator failed: {message}"),
+    }
+
+    let timings = accelerator
+        .last_dwt97_batch_stage_timings()
+        .expect("Metal 9/7 batch records backend stage timings");
+    assert!(timings.pack_upload_us > 0);
+    assert!(timings.idct_row_lift_us > 0);
+    assert!(timings.column_lift_us > 0);
+    assert!(timings.readback_us > 0);
 }
 
 #[test]
@@ -224,6 +315,20 @@ fn structured_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]>
             block[7][7] = 2.0;
             blocks.push(block);
         }
+    }
+    blocks
+}
+
+#[cfg(target_os = "macos")]
+fn structured_blocks_with_offset(
+    block_cols: usize,
+    block_rows: usize,
+    offset: f64,
+) -> Vec<[[f64; 8]; 8]> {
+    let mut blocks = structured_blocks(block_cols, block_rows);
+    for block in &mut blocks {
+        block[0][0] += offset;
+        block[3][2] -= offset / 7.0;
     }
     blocks
 }

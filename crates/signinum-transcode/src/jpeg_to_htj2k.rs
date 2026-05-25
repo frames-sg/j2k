@@ -17,15 +17,17 @@ use signinum_jpeg::transcode::{
 
 use crate::accelerator::{
     CpuOnlyDctToWaveletStageAccelerator, DctGridToDwt53Job, DctGridToDwt97Job,
-    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, ReversibleDwt53FirstLevel,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
+    ReversibleDwt53FirstLevel,
 };
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
     linearized_53_2d_from_plane, Dct53GridError, Dct53GridScratch, Dwt53TwoDimensional,
 };
 use crate::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
-    linearized_97_2d_from_plane, Dct97GridError, Dct97GridScratch, Dwt97TwoDimensional,
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch,
+    linearized_97_2d_from_plane_with_scratch, Dct97GridError, Dct97GridScratch,
+    Dwt97TwoDimensional,
 };
 use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 
@@ -275,6 +277,14 @@ pub struct TranscodeTimingReport {
     pub dct_to_wavelet_cpu_fallback_us: u128,
     /// Time spent decomposing first-level DWT output into requested levels.
     pub dwt_decompose_us: u128,
+    /// Backend 9/7 batch host pack/upload time in microseconds.
+    pub dwt97_batch_pack_upload_us: u128,
+    /// Backend 9/7 batch IDCT plus horizontal row-lift time in microseconds.
+    pub dwt97_batch_idct_row_lift_us: u128,
+    /// Backend 9/7 batch vertical column-lift time in microseconds.
+    pub dwt97_batch_column_lift_us: u128,
+    /// Backend 9/7 batch output readback/unpack time in microseconds.
+    pub dwt97_batch_readback_us: u128,
     /// HTJ2K encode time in microseconds.
     pub htj2k_encode_us: u128,
     /// Time spent writing compressed frames to a DICOM `PixelData` spool.
@@ -329,6 +339,18 @@ impl TranscodeTimingReport {
             .dct_to_wavelet_cpu_fallback_us
             .saturating_add(other.dct_to_wavelet_cpu_fallback_us);
         self.dwt_decompose_us = self.dwt_decompose_us.saturating_add(other.dwt_decompose_us);
+        self.dwt97_batch_pack_upload_us = self
+            .dwt97_batch_pack_upload_us
+            .saturating_add(other.dwt97_batch_pack_upload_us);
+        self.dwt97_batch_idct_row_lift_us = self
+            .dwt97_batch_idct_row_lift_us
+            .saturating_add(other.dwt97_batch_idct_row_lift_us);
+        self.dwt97_batch_column_lift_us = self
+            .dwt97_batch_column_lift_us
+            .saturating_add(other.dwt97_batch_column_lift_us);
+        self.dwt97_batch_readback_us = self
+            .dwt97_batch_readback_us
+            .saturating_add(other.dwt97_batch_readback_us);
         self.htj2k_encode_us = self.htj2k_encode_us.saturating_add(other.htj2k_encode_us);
         self.dicom_spool_write_us = self
             .dicom_spool_write_us
@@ -546,16 +568,25 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
     accelerator: &mut A,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
     validate_transcode_options(options)?;
-    if !matches!(
-        options.coefficient_path,
-        JpegToHtj2kCoefficientPath::IntegerDirect53
-    ) {
-        return Ok(transcode_tile_batch_individually(
-            tiles,
-            options,
-            scratch,
-            accelerator,
-        ));
+    match options.coefficient_path {
+        JpegToHtj2kCoefficientPath::IntegerDirect53 => {}
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97 if accelerator.supports_dwt97_batch() => {
+            return jpeg_float97_tile_batch_to_htj2k_with_scratch(
+                tiles,
+                options,
+                scratch,
+                accelerator,
+            );
+        }
+        JpegToHtj2kCoefficientPath::FloatDirectLinear53
+        | JpegToHtj2kCoefficientPath::FloatDirectLinear97 => {
+            return Ok(transcode_tile_batch_individually(
+                tiles,
+                options,
+                scratch,
+                accelerator,
+            ));
+        }
     }
 
     let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
@@ -609,6 +640,72 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
             transformed_components: reversible_dwt53_batch_jobs,
             reversible_dwt53_batches,
             reversible_dwt53_batch_jobs,
+            extract_us,
+            transform_us,
+            encode_us,
+            timings,
+            coefficient_path: options.coefficient_path,
+        },
+    ))
+}
+
+fn jpeg_float97_tile_batch_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator>(
+    tiles: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+    let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
+        (0..tiles.len()).map(|_| None).collect();
+    let mut prepared_tiles = Vec::new();
+    let extract_start = Instant::now();
+    for (tile_index, tile) in tiles.iter().enumerate() {
+        match prepare_float97_batch_tile(tile_index, tile.bytes, options) {
+            Ok(prepared) => prepared_tiles.push(prepared),
+            Err(error) => tile_results[tile_index] = Some(Err(error)),
+        }
+    }
+    let extract_us = extract_start.elapsed().as_micros();
+
+    let transform_start = Instant::now();
+    let mut timings = TranscodeTimingReport::default();
+    let (_dwt97_batches, dwt97_batch_jobs) = transform_float97_batch_tiles(
+        &mut prepared_tiles,
+        options,
+        scratch,
+        accelerator,
+        &mut timings,
+    )?;
+    let transform_us = transform_start.elapsed().as_micros();
+    timings.jpeg_dct_extract_us = extract_us;
+    timings.dct_to_wavelet_total_us = transform_us;
+    timings.tile_count = prepared_tiles.len();
+
+    let encode_start = Instant::now();
+    for prepared in prepared_tiles {
+        let tile_index = prepared.tile_index;
+        tile_results[tile_index] = Some(encode_float97_batch_tile(prepared, options));
+    }
+    let encode_us = encode_start.elapsed().as_micros();
+    timings.htj2k_encode_us = encode_us;
+
+    let output_tiles = tile_results
+        .into_iter()
+        .map(|tile| {
+            tile.unwrap_or(Err(JpegToHtj2kError::Validation(
+                "9/7 batch transcode did not produce a tile result",
+            )))
+        })
+        .collect::<Vec<_>>();
+    Ok(batch_output(
+        output_tiles,
+        BatchTranscodeReport {
+            tile_count: tiles.len(),
+            successful_tiles: 0,
+            failed_tiles: 0,
+            transformed_components: dwt97_batch_jobs,
+            reversible_dwt53_batches: 0,
+            reversible_dwt53_batch_jobs: 0,
             extract_us,
             transform_us,
             encode_us,
@@ -689,6 +786,19 @@ struct IntegerBatchTile {
     timings: TranscodeTimingReport,
 }
 
+struct Float97BatchTile {
+    tile_index: usize,
+    jpeg: JpegDctImage,
+    component_sampling: Vec<(u8, u8)>,
+    decomposition_levels: u8,
+    all_unit_sampled: bool,
+    component_reports: Vec<TranscodeComponentReport>,
+    precomputed_components: Vec<Option<PrecomputedHtj2k97Component>>,
+    float_validation_actual: Vec<i32>,
+    float_validation_expected: Vec<i32>,
+    timings: TranscodeTimingReport,
+}
+
 #[derive(Clone, Copy)]
 struct BatchComponentRef {
     tile_index: usize,
@@ -753,6 +863,62 @@ fn prepare_integer_batch_tile(
     })
 }
 
+fn prepare_float97_batch_tile(
+    tile_index: usize,
+    bytes: &[u8],
+    options: &JpegToHtj2kOptions,
+) -> Result<Float97BatchTile, JpegToHtj2kError> {
+    let extract_start = Instant::now();
+    let jpeg = extract_dct_blocks(bytes, DctExtractOptions::default())?;
+    let timings = TranscodeTimingReport {
+        jpeg_dct_extract_us: extract_start.elapsed().as_micros(),
+        tile_count: 1,
+        ..TranscodeTimingReport::default()
+    };
+    if jpeg.components.is_empty() || jpeg.components.len() > 4 {
+        return Err(JpegToHtj2kError::Unsupported(
+            "unsupported JPEG component count for jpeg_to_htj2k",
+        ));
+    }
+    let component_sampling =
+        component_sampling_for_jpeg(&jpeg.components, jpeg.width, jpeg.height)?;
+    let decomposition_levels = decomposition_levels_for_components(
+        &jpeg.components,
+        options.encode_options.num_decomposition_levels,
+    )?;
+    let all_unit_sampled = component_sampling
+        .iter()
+        .all(|&(x_rsiz, y_rsiz)| x_rsiz == 1 && y_rsiz == 1);
+    let component_reports = jpeg
+        .components
+        .iter()
+        .zip(component_sampling.iter().copied())
+        .map(|(component, (x_rsiz, y_rsiz))| TranscodeComponentReport {
+            component_index: component.component_index,
+            width: component.width,
+            height: component.height,
+            block_cols: component.block_cols,
+            block_rows: component.block_rows,
+            x_rsiz,
+            y_rsiz,
+        })
+        .collect::<Vec<_>>();
+    let precomputed_components = (0..jpeg.components.len()).map(|_| None).collect();
+
+    Ok(Float97BatchTile {
+        tile_index,
+        jpeg,
+        component_sampling,
+        decomposition_levels,
+        all_unit_sampled,
+        component_reports,
+        precomputed_components,
+        float_validation_actual: Vec::new(),
+        float_validation_expected: Vec::new(),
+        timings,
+    })
+}
+
 fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
     tiles: &mut [IntegerBatchTile],
     options: &JpegToHtj2kOptions,
@@ -771,6 +937,30 @@ fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
             integer_wavelets_for_batch_group(&group, tiles, scratch, accelerator, timings)?;
         for (component_ref, wavelet) in group.into_iter().zip(wavelets) {
             store_integer_batch_wavelet(component_ref, &wavelet, tiles, options, scratch)?;
+        }
+    }
+
+    Ok((batch_count, job_count))
+}
+
+fn transform_float97_batch_tiles<A: DctToWaveletStageAccelerator>(
+    tiles: &mut [Float97BatchTile],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+    timings: &mut TranscodeTimingReport,
+) -> Result<(usize, usize), JpegToHtj2kError> {
+    let groups = float97_batch_component_groups(tiles);
+    let mut batch_count = 0usize;
+    let mut job_count = 0usize;
+
+    for group in groups {
+        batch_count = batch_count.saturating_add(1);
+        job_count = job_count.saturating_add(group.len());
+        let wavelets =
+            float97_wavelets_for_batch_group(&group, tiles, scratch, accelerator, timings)?;
+        for (component_ref, wavelet) in group.into_iter().zip(wavelets) {
+            store_float97_batch_wavelet(component_ref, &wavelet, tiles, options, scratch)?;
         }
     }
 
@@ -806,10 +996,55 @@ fn batch_component_groups(tiles: &[IntegerBatchTile]) -> Vec<Vec<BatchComponentR
     groups
 }
 
+fn float97_batch_component_groups(tiles: &[Float97BatchTile]) -> Vec<Vec<BatchComponentRef>> {
+    let mut groups: Vec<Vec<BatchComponentRef>> = Vec::new();
+
+    for (tile_index, tile) in tiles.iter().enumerate() {
+        for component_index in 0..tile.jpeg.components.len() {
+            let component_ref = BatchComponentRef {
+                tile_index,
+                component_index,
+            };
+            if let Some(group) = groups.iter_mut().find(|group| {
+                let first = group[0];
+                same_float97_batch_component_key(
+                    &tiles[first.tile_index],
+                    first.component_index,
+                    tile,
+                    component_index,
+                )
+            }) {
+                group.push(component_ref);
+            } else {
+                groups.push(vec![component_ref]);
+            }
+        }
+    }
+
+    groups
+}
+
 fn same_batch_component_key(
     left_tile: &IntegerBatchTile,
     left_component_index: usize,
     right_tile: &IntegerBatchTile,
+    right_component_index: usize,
+) -> bool {
+    let left = &left_tile.jpeg.components[left_component_index];
+    let right = &right_tile.jpeg.components[right_component_index];
+    left.component_index == right.component_index
+        && left.width == right.width
+        && left.height == right.height
+        && left.block_cols == right.block_cols
+        && left.block_rows == right.block_rows
+        && left_tile.component_sampling[left_component_index]
+            == right_tile.component_sampling[right_component_index]
+}
+
+fn same_float97_batch_component_key(
+    left_tile: &Float97BatchTile,
+    left_component_index: usize,
+    right_tile: &Float97BatchTile,
     right_component_index: usize,
 ) -> bool {
     let left = &left_tile.jpeg.components[left_component_index];
@@ -892,6 +1127,117 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
         .collect()
 }
 
+fn float97_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
+    group: &[BatchComponentRef],
+    tiles: &[Float97BatchTile],
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut A,
+    timings: &mut TranscodeTimingReport,
+) -> Result<Vec<ComponentWavelet97>, JpegToHtj2kError> {
+    let repack_start = Instant::now();
+    let block_storage = group
+        .iter()
+        .map(|component_ref| {
+            dct_blocks_to_8x8_f64(
+                &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index]
+                    .dequantized_blocks,
+            )
+        })
+        .collect::<Vec<_>>();
+    timings.jpeg_dct_repack_us = timings
+        .jpeg_dct_repack_us
+        .saturating_add(repack_start.elapsed().as_micros());
+
+    let jobs = group
+        .iter()
+        .zip(block_storage.iter())
+        .map(|(component_ref, blocks)| {
+            let component =
+                &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index];
+            validate_component_block_grid(component)?;
+            Ok(DctGridToDwt97Job {
+                blocks,
+                block_cols: component.block_cols as usize,
+                block_rows: component.block_rows as usize,
+                width: component.width as usize,
+                height: component.height as usize,
+            })
+        })
+        .collect::<Result<Vec<_>, JpegToHtj2kError>>()?;
+
+    timings.batch_count = timings.batch_count.saturating_add(1);
+    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    let accelerator_start = Instant::now();
+    let accelerated_first_levels = accelerator
+        .dct_grid_to_dwt97_batch(&jobs)
+        .map_err(JpegToHtj2kError::Accelerator)?;
+    if let Some(stage_timings) = accelerator.last_dwt97_batch_stage_timings() {
+        add_dwt97_batch_stage_timings(timings, stage_timings);
+    }
+    timings.dct_to_wavelet_accelerator_us = timings
+        .dct_to_wavelet_accelerator_us
+        .saturating_add(accelerator_start.elapsed().as_micros());
+
+    if let Some(first_levels) = accelerated_first_levels {
+        if first_levels.len() != group.len() {
+            return Err(JpegToHtj2kError::Validation(
+                "9/7 batch accelerator returned wrong component count",
+            ));
+        }
+        timings.component_count = timings.component_count.saturating_add(group.len());
+        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+        timings.accelerator_dispatched_jobs = timings
+            .accelerator_dispatched_jobs
+            .saturating_add(group.len());
+        let decompose_start = Instant::now();
+        let mut wavelets = Vec::with_capacity(first_levels.len());
+        for (first_level, component_ref) in first_levels.into_iter().zip(group.iter().copied()) {
+            wavelets.push(decompose_97_from_first_level_with_scratch(
+                first_level,
+                usize::from(tiles[component_ref.tile_index].decomposition_levels),
+                &mut scratch.dct97_grid,
+            ));
+        }
+        timings.dwt_decompose_us = timings
+            .dwt_decompose_us
+            .saturating_add(decompose_start.elapsed().as_micros());
+        return Ok(wavelets);
+    }
+
+    group
+        .iter()
+        .map(|component_ref| {
+            float_direct_97_wavelet_from_component(
+                &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index],
+                tiles[component_ref.tile_index].decomposition_levels,
+                scratch,
+                accelerator,
+                timings,
+            )
+        })
+        .collect()
+}
+
+fn add_dwt97_batch_stage_timings(
+    timings: &mut TranscodeTimingReport,
+    stage_timings: Dwt97BatchStageTimings,
+) {
+    timings.dwt97_batch_pack_upload_us = timings
+        .dwt97_batch_pack_upload_us
+        .saturating_add(stage_timings.pack_upload_us);
+    timings.dwt97_batch_idct_row_lift_us = timings
+        .dwt97_batch_idct_row_lift_us
+        .saturating_add(stage_timings.idct_row_lift_us);
+    timings.dwt97_batch_column_lift_us = timings
+        .dwt97_batch_column_lift_us
+        .saturating_add(stage_timings.column_lift_us);
+    timings.dwt97_batch_readback_us = timings
+        .dwt97_batch_readback_us
+        .saturating_add(stage_timings.readback_us);
+}
+
 fn store_integer_batch_wavelet(
     component_ref: BatchComponentRef,
     wavelet: &IntegerWavelet,
@@ -926,6 +1272,42 @@ fn store_integer_batch_wavelet(
             .extend(integer_reference_coefficients(
                 component,
                 tile.decomposition_levels,
+            )?);
+    }
+
+    Ok(())
+}
+
+fn store_float97_batch_wavelet(
+    component_ref: BatchComponentRef,
+    wavelet: &ComponentWavelet97,
+    tiles: &mut [Float97BatchTile],
+    options: &JpegToHtj2kOptions,
+    scratch: &mut JpegToHtj2kScratch,
+) -> Result<(), JpegToHtj2kError> {
+    let tile = &mut tiles[component_ref.tile_index];
+    let component = &tile.jpeg.components[component_ref.component_index];
+    let (x_rsiz, y_rsiz) = tile.component_sampling[component_ref.component_index];
+    let actual_coefficients = rounded_wavelet97_i32(wavelet)?;
+    tile.precomputed_components[component_ref.component_index] =
+        Some(PrecomputedHtj2k97Component {
+            x_rsiz,
+            y_rsiz,
+            dwt: j2k_dwt97_from_wavelet(
+                wavelet,
+                component.width as usize,
+                component.height as usize,
+            ),
+        });
+
+    if options.validate_against_float_reference {
+        tile.float_validation_actual
+            .extend(actual_coefficients.clone());
+        tile.float_validation_expected
+            .extend(float97_reference_coefficients(
+                component,
+                tile.decomposition_levels,
+                scratch,
             )?);
     }
 
@@ -990,6 +1372,65 @@ fn encode_integer_batch_tile(
                 .as_ref()
                 .map(TranscodeValidationClassification::classify_metrics),
             integer_reference_metrics,
+            decomposition_levels: tile.decomposition_levels,
+            coefficient_path: options.coefficient_path,
+            path: transcode_path_name(tile.all_unit_sampled, options.coefficient_path),
+            extract_us: timings.jpeg_dct_extract_us,
+            transform_us: 0,
+            encode_us,
+            timings,
+        },
+    })
+}
+
+fn encode_float97_batch_tile(
+    tile: Float97BatchTile,
+    options: &JpegToHtj2kOptions,
+) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    let mut timings = tile.timings;
+    let components = tile
+        .precomputed_components
+        .into_iter()
+        .map(|component| {
+            component.ok_or(JpegToHtj2kError::Validation(
+                "9/7 batch transcode did not produce all components",
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let encode_start = Instant::now();
+    let precomputed = PrecomputedHtj2k97Image {
+        width: tile.jpeg.width,
+        height: tile.jpeg.height,
+        bit_depth: 8,
+        signed: false,
+        components,
+    };
+    let codestream = encode_precomputed_htj2k_97(&precomputed, &options.encode_options)
+        .map_err(JpegToHtj2kError::Encode)?;
+    let encode_us = encode_start.elapsed().as_micros();
+    timings.htj2k_encode_us = encode_us;
+    let float_reference_metrics = if options.validate_against_float_reference {
+        Some(error_metrics_i32(
+            &tile.float_validation_actual,
+            &tile.float_validation_expected,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(EncodedTranscode {
+        codestream,
+        report: TranscodeReport {
+            width: tile.jpeg.width,
+            height: tile.jpeg.height,
+            component_count: tile.jpeg.components.len(),
+            components: tile.component_reports,
+            float_reference_classification: float_reference_metrics
+                .as_ref()
+                .map(TranscodeValidationClassification::classify_metrics),
+            float_reference_metrics,
+            integer_reference_classification: None,
+            integer_reference_metrics: None,
             decomposition_levels: tile.decomposition_levels,
             coefficient_path: options.coefficient_path,
             path: transcode_path_name(tile.all_unit_sampled, options.coefficient_path),
@@ -1718,7 +2159,7 @@ fn float_direct_97_wavelet_from_component(
     } else {
         timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
         let fallback_start = Instant::now();
-        let bands = dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch(
+        let bands = dct8x8_blocks_then_dwt97_float_with_scratch(
             blocks,
             component.block_cols as usize,
             component.block_rows as usize,
@@ -1732,7 +2173,11 @@ fn float_direct_97_wavelet_from_component(
         bands
     };
     let decompose_start = Instant::now();
-    let wavelet = decompose_97_from_first_level(bands, usize::from(decomposition_levels));
+    let wavelet = decompose_97_from_first_level_with_scratch(
+        bands,
+        usize::from(decomposition_levels),
+        &mut scratch.dct97_grid,
+    );
     timings.dwt_decompose_us = timings
         .dwt_decompose_us
         .saturating_add(decompose_start.elapsed().as_micros());
@@ -1807,6 +2252,15 @@ fn decompose_97_from_first_level(
     first_level: Dwt97TwoDimensional<f64>,
     decomposition_levels: usize,
 ) -> ComponentWavelet97 {
+    let mut scratch = Dct97GridScratch::default();
+    decompose_97_from_first_level_with_scratch(first_level, decomposition_levels, &mut scratch)
+}
+
+fn decompose_97_from_first_level_with_scratch(
+    first_level: Dwt97TwoDimensional<f64>,
+    decomposition_levels: usize,
+    scratch: &mut Dct97GridScratch,
+) -> ComponentWavelet97 {
     let mut wavelet = ComponentWavelet97 {
         final_ll: first_level.ll.clone(),
         final_ll_width: first_level.low_width,
@@ -1815,10 +2269,11 @@ fn decompose_97_from_first_level(
     };
 
     while wavelet.levels.len() < decomposition_levels {
-        let next = linearized_97_2d_from_plane(
+        let next = linearized_97_2d_from_plane_with_scratch(
             &wavelet.final_ll,
             wavelet.final_ll_width,
             wavelet.final_ll_height,
+            scratch,
         );
         wavelet.final_ll.clone_from(&next.ll);
         wavelet.final_ll_width = next.low_width;
@@ -2575,4 +3030,10 @@ fn dct_blocks_to_8x8_f64_into(blocks: &[[i16; 64]], output: &mut Vec<[[f64; 8]; 
         }
         output.push(converted);
     }
+}
+
+fn dct_blocks_to_8x8_f64(blocks: &[[i16; 64]]) -> Vec<[[f64; 8]; 8]> {
+    let mut output = Vec::with_capacity(blocks.len());
+    dct_blocks_to_8x8_f64_into(blocks, &mut output);
+    output
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_transcode::dct97_2d::{
-    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
+    dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch,
+    dct8x8_blocks_to_dwt97_float_linear_rayon_with_scratch,
     dct8x8_blocks_to_dwt97_float_linear_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 
@@ -61,6 +62,36 @@ fn dct8x8_grid_to_2d_97_rayon_matches_scalar_for_structured_cases() {
             "rayon 9/7 DCT projection diverged from scalar for {width}x{height}"
         );
     }
+}
+
+#[test]
+fn dct8x8_grid_to_2d_97_idct_scratch_path_matches_reference_and_reuses_storage() {
+    let large_blocks = structured_blocks(32, 32);
+    let small_blocks = structured_blocks(2, 2);
+    let mut scratch = Dct97GridScratch::default();
+
+    let large =
+        dct8x8_blocks_then_dwt97_float_with_scratch(&large_blocks, 32, 32, 255, 241, &mut scratch)
+            .expect("scratch 9/7 IDCT path accepts covered large grid");
+    let expected_large = dct8x8_blocks_then_dwt97_float(&large_blocks, 32, 32, 255, 241)
+        .expect("reference 9/7 IDCT path accepts covered large grid");
+    let capacity_after_large = scratch.spatial_sample_capacity();
+
+    let small =
+        dct8x8_blocks_then_dwt97_float_with_scratch(&small_blocks, 2, 2, 13, 11, &mut scratch)
+            .expect("scratch 9/7 IDCT path accepts covered small grid");
+    let expected_small = dct8x8_blocks_then_dwt97_float(&small_blocks, 2, 2, 13, 11)
+        .expect("reference 9/7 IDCT path accepts covered small grid");
+
+    assert!(
+        max_abs_diff(&large, &expected_large) < 1.0e-9,
+        "scratch 9/7 IDCT path diverged for large grid"
+    );
+    assert!(
+        max_abs_diff(&small, &expected_small) < 1.0e-9,
+        "scratch 9/7 IDCT path diverged for small grid"
+    );
+    assert_eq!(scratch.spatial_sample_capacity(), capacity_after_large);
 }
 
 fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensional<f64>) -> f64 {

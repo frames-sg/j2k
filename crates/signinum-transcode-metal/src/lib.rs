@@ -17,7 +17,7 @@ use core::fmt;
 use signinum_transcode::accelerator::{
     idct_blocks_to_signed_samples_rayon, reversible_dwt53_first_level_from_block_samples,
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToReversibleDwt53Job,
-    DctToWaveletStageAccelerator, ReversibleDwt53FirstLevel,
+    DctToWaveletStageAccelerator, Dwt97BatchStageTimings, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -26,9 +26,13 @@ use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 pub const METAL_UNAVAILABLE: &str = "Metal is unavailable on this host";
 
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 224 * 224;
+const DEFAULT_AUTO_DWT97_MIN_SAMPLES: usize = usize::MAX;
 const DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES: usize = usize::MAX;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
+const DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS: usize = 32;
+const DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
+const MAX_AUTO_DWT97_STAGED_BATCH_AXIS: usize = 1024;
 
 /// Error returned by the Metal transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,7 @@ impl std::error::Error for MetalTranscodeError {}
 pub struct MetalDctToWaveletStageAccelerator {
     mode: MetalDispatchMode,
     min_auto_samples: usize,
+    min_auto_dwt97_samples: usize,
     min_auto_reversible_samples: usize,
     min_auto_reversible_batch_jobs: usize,
     min_auto_reversible_batch_samples: usize,
@@ -76,6 +81,11 @@ pub struct MetalDctToWaveletStageAccelerator {
     dwt53_dispatches: usize,
     dwt97_attempts: usize,
     dwt97_dispatches: usize,
+    dwt97_batch_attempts: usize,
+    dwt97_batch_dispatches: usize,
+    last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
+    min_auto_dwt97_batch_jobs: usize,
+    min_auto_dwt97_batch_samples: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +102,7 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Explicit,
             min_auto_samples: 0,
+            min_auto_dwt97_samples: 0,
             min_auto_reversible_samples: 0,
             min_auto_reversible_batch_jobs: 0,
             min_auto_reversible_batch_samples: 0,
@@ -103,6 +114,11 @@ impl MetalDctToWaveletStageAccelerator {
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
             dwt97_dispatches: 0,
+            dwt97_batch_attempts: 0,
+            dwt97_batch_dispatches: 0,
+            last_dwt97_batch_stage_timings: None,
+            min_auto_dwt97_batch_jobs: 0,
+            min_auto_dwt97_batch_samples: 0,
         }
     }
 
@@ -113,6 +129,7 @@ impl MetalDctToWaveletStageAccelerator {
         Self {
             mode: MetalDispatchMode::Auto,
             min_auto_samples: DEFAULT_AUTO_MIN_SAMPLES,
+            min_auto_dwt97_samples: DEFAULT_AUTO_DWT97_MIN_SAMPLES,
             min_auto_reversible_samples: DEFAULT_AUTO_REVERSIBLE_MIN_SAMPLES,
             min_auto_reversible_batch_jobs: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS,
             min_auto_reversible_batch_samples: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES,
@@ -124,14 +141,41 @@ impl MetalDctToWaveletStageAccelerator {
             dwt53_dispatches: 0,
             dwt97_attempts: 0,
             dwt97_dispatches: 0,
+            dwt97_batch_attempts: 0,
+            dwt97_batch_dispatches: 0,
+            last_dwt97_batch_stage_timings: None,
+            min_auto_dwt97_batch_jobs: DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS,
+            min_auto_dwt97_batch_samples: DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES,
         }
     }
 
     /// Override the minimum component sample count used before Auto mode
-    /// dispatches non-reversible 5/3 and 9/7 projection jobs to Metal.
+    /// dispatches non-reversible projection jobs to Metal.
     #[must_use]
     pub const fn with_auto_min_samples(mut self, min_samples: usize) -> Self {
         self.min_auto_samples = min_samples;
+        self.min_auto_dwt97_samples = min_samples;
+        self
+    }
+
+    /// Override the minimum component sample count used before Auto mode
+    /// dispatches 9/7 projection jobs to Metal.
+    #[must_use]
+    pub const fn with_auto_dwt97_min_samples(mut self, min_samples: usize) -> Self {
+        self.min_auto_dwt97_samples = min_samples;
+        self
+    }
+
+    /// Override the 9/7 batch thresholds used before Auto mode dispatches a
+    /// same-geometry batch to Metal.
+    #[must_use]
+    pub const fn with_auto_dwt97_batch_thresholds(
+        mut self,
+        min_jobs: usize,
+        min_samples: usize,
+    ) -> Self {
+        self.min_auto_dwt97_batch_jobs = min_jobs;
+        self.min_auto_dwt97_batch_samples = min_samples;
         self
     }
 
@@ -204,6 +248,24 @@ impl MetalDctToWaveletStageAccelerator {
         self.dwt97_dispatches
     }
 
+    /// Number of 9/7 projection batches offered to this accelerator.
+    #[must_use]
+    pub const fn dwt97_batch_attempts(&self) -> usize {
+        self.dwt97_batch_attempts
+    }
+
+    /// Number of 9/7 projection batches handled by Metal.
+    #[must_use]
+    pub const fn dwt97_batch_dispatches(&self) -> usize {
+        self.dwt97_batch_dispatches
+    }
+
+    /// Backend stage timings for the most recent 9/7 batch dispatch.
+    #[must_use]
+    pub const fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
+        self.last_dwt97_batch_stage_timings
+    }
+
     /// Dispatch a same-geometry batch of reversible integer 5/3 DCT-grid
     /// projection jobs. This is an experimental Metal-specific extension used
     /// for WSI tile-component queues; scalar/Rayon remains the portable oracle.
@@ -271,6 +333,10 @@ impl Default for MetalDctToWaveletStageAccelerator {
 }
 
 impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
+    fn supports_dwt97_batch(&self) -> bool {
+        true
+    }
+
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
@@ -361,7 +427,7 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
         self.dwt97_attempts = self.dwt97_attempts.saturating_add(1);
 
         if self.mode == MetalDispatchMode::Auto
-            && job.width.saturating_mul(job.height) < self.min_auto_samples
+            && job.width.saturating_mul(job.height) < self.min_auto_dwt97_samples
         {
             return Ok(None);
         }
@@ -390,6 +456,66 @@ impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
                 Err(error) => Err(error.as_static_str()),
             }
         }
+    }
+
+    fn dct_grid_to_dwt97_batch(
+        &mut self,
+        jobs: &[DctGridToDwt97Job<'_>],
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.last_dwt97_batch_stage_timings = None;
+
+        if jobs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        let total_samples = jobs.iter().fold(0usize, |total, job| {
+            total.saturating_add(job.width.saturating_mul(job.height))
+        });
+        if self.mode == MetalDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || total_samples < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+        if self.mode == MetalDispatchMode::Auto
+            && jobs.iter().any(|job| {
+                job.width > MAX_AUTO_DWT97_STAGED_BATCH_AXIS
+                    || job.height > MAX_AUTO_DWT97_STAGED_BATCH_AXIS
+            })
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = jobs;
+            match self.mode {
+                MetalDispatchMode::Explicit => {
+                    Err(MetalTranscodeError::MetalUnavailable.as_static_str())
+                }
+                MetalDispatchMode::Auto => Ok(None),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            match metal::dispatch_dct_grid_to_dwt97_batch(jobs) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(
+                    MetalTranscodeError::MetalUnavailable | MetalTranscodeError::UnsupportedJob(_),
+                ) if self.mode == MetalDispatchMode::Auto => Ok(None),
+                Err(error) => Err(error.as_static_str()),
+            }
+        }
+    }
+
+    fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
+        self.last_dwt97_batch_stage_timings
     }
 }
 

@@ -756,6 +756,85 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
 }
 
 #[test]
+fn float97_batch_transcode_groups_components_across_tiles() {
+    for fixture in [
+        BatchFixture {
+            name: "grayscale",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            expected_batch_sizes: &[4],
+        },
+        BatchFixture {
+            name: "ycbcr_444",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+        BatchFixture {
+            name: "ycbcr_422",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+        BatchFixture {
+            name: "ycbcr_420",
+            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            expected_batch_sizes: &[4, 4, 4],
+        },
+    ] {
+        let options = JpegToHtj2kOptions::lossy_97();
+        let inputs = vec![
+            JpegTileBatchInput {
+                bytes: fixture.jpeg
+            };
+            4
+        ];
+        let expected =
+            jpeg_to_htj2k(fixture.jpeg, &options).expect("scalar 9/7 transcode succeeds");
+        let mut transcoder = JpegToHtj2kTranscoder::default();
+        let mut accelerator = CountingAccelerator::default();
+
+        let batch = transcoder
+            .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+            .expect("batched 9/7 transcode accepts valid options");
+
+        assert_eq!(batch.tiles.len(), inputs.len());
+        assert_eq!(batch.report.tile_count, inputs.len());
+        assert_eq!(batch.report.successful_tiles, inputs.len());
+        assert_eq!(batch.report.failed_tiles, 0);
+        assert_eq!(
+            accelerator.dwt97_batch_sizes, fixture.expected_batch_sizes,
+            "unexpected cross-tile 9/7 component grouping for {}",
+            fixture.name
+        );
+        assert_eq!(accelerator.dwt97_calls, 0);
+        assert_eq!(
+            batch.report.timings.batch_jobs,
+            fixture.expected_batch_sizes.iter().sum::<usize>(),
+            "batch report should count 9/7 component jobs for {}",
+            fixture.name
+        );
+        assert_eq!(
+            batch.report.timings.accelerator_dispatches,
+            fixture.expected_batch_sizes.len(),
+            "batch report should count 9/7 accelerator batch dispatches for {}",
+            fixture.name
+        );
+        for tile in batch.tiles {
+            let tile = tile.expect("valid 9/7 tile transcodes");
+            assert_eq!(
+                tile.codestream, expected.codestream,
+                "batch 9/7 tile must match scalar output for {}",
+                fixture.name
+            );
+            assert_eq!(
+                tile.report.timings.batch_jobs, 0,
+                "tile report must not duplicate shared 9/7 batch timing context for {}",
+                fixture.name
+            );
+            assert_eq!(tile.report.transform_us, 0);
+        }
+    }
+}
+
+#[test]
 fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
     let good = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
     let inputs = [
@@ -817,11 +896,17 @@ struct CountingAccelerator {
     reversible_dwt53_batch_sizes: Vec<usize>,
     dwt53_calls: usize,
     dwt97_calls: usize,
+    dwt97_batch_calls: usize,
+    dwt97_batch_sizes: Vec<usize>,
     dwt53_scratch: Dct53GridScratch,
     dwt97_scratch: Dct97GridScratch,
 }
 
 impl DctToWaveletStageAccelerator for CountingAccelerator {
+    fn supports_dwt97_batch(&self) -> bool {
+        true
+    }
+
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
@@ -884,6 +969,29 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
         )
         .map_err(|_| "test DCT 9/7 grid failed")?;
         Ok(Some(dwt))
+    }
+
+    fn dct_grid_to_dwt97_batch(
+        &mut self,
+        jobs: &[DctGridToDwt97Job<'_>],
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+        self.dwt97_batch_calls += 1;
+        self.dwt97_batch_sizes.push(jobs.len());
+        let mut output = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            output.push(
+                dct8x8_blocks_to_dwt97_float_linear_with_scratch(
+                    job.blocks,
+                    job.block_cols,
+                    job.block_rows,
+                    job.width,
+                    job.height,
+                    &mut self.dwt97_scratch,
+                )
+                .map_err(|_| "test batched DCT 9/7 grid failed")?,
+            );
+        }
+        Ok(Some(output))
     }
 }
 
