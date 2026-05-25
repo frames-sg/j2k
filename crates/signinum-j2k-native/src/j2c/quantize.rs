@@ -7,7 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::math::{floor_f32, round_f32};
+use crate::math::{floor_f32, log2_f32, pow2i, round_f32};
 
 /// Quantization parameters for a single subband.
 #[derive(Debug, Clone, Copy)]
@@ -21,12 +21,27 @@ impl QuantStepSize {
     /// Δ = 2^(R_b - exponent) × (1 + mantissa/2048).
     fn delta(&self, range_bits: u8) -> f32 {
         let rb = range_bits as i32 - self.exponent as i32;
-        let base = if rb >= 0 {
-            (1u32 << rb) as f32
-        } else {
-            1.0 / (1u32 << (-rb)) as f32
-        };
+        let base = pow2i(rb);
         base * (1.0 + self.mantissa as f32 / 2048.0)
+    }
+
+    fn from_delta(range_bits: u8, delta: f32) -> Self {
+        debug_assert!(delta.is_finite() && delta > 0.0);
+
+        let floor_log2 = floor_f32(log2_f32(delta)) as i32;
+        let mut exponent = i32::from(range_bits) - floor_log2;
+        let normalized = delta / pow2i(floor_log2);
+        let mut mantissa = round_f32((normalized - 1.0) * 2048.0) as i32;
+
+        if mantissa >= 2048 {
+            exponent -= 1;
+            mantissa = 0;
+        }
+
+        Self {
+            exponent: u16::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u16"),
+            mantissa: u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
+        }
     }
 }
 
@@ -34,11 +49,32 @@ impl QuantStepSize {
 ///
 /// The step sizes are derived from the DWT 9-7 subband gain norms (Table E.1 in T.800).
 /// For lossless mode, step sizes are not used (exponents store bit depth info only).
+#[cfg(test)]
 pub(crate) fn compute_step_sizes(
     bit_depth: u8,
     num_decompositions: u8,
     reversible: bool,
     guard_bits: u8,
+) -> Vec<QuantStepSize> {
+    compute_step_sizes_with_irreversible_scale(
+        bit_depth,
+        num_decompositions,
+        reversible,
+        guard_bits,
+        1.0,
+    )
+}
+
+/// Compute quantization step sizes with an irreversible 9-7 scale multiplier.
+///
+/// A scale of 1.0 preserves the quality-first default. Larger scales coarsen
+/// the irreversible quantizer while keeping the same subband gain relationship.
+pub(crate) fn compute_step_sizes_with_irreversible_scale(
+    bit_depth: u8,
+    num_decompositions: u8,
+    reversible: bool,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
 ) -> Vec<QuantStepSize> {
     let mut step_sizes = Vec::new();
 
@@ -72,13 +108,21 @@ pub(crate) fn compute_step_sizes(
             });
         }
     } else {
-        // Quality-first irreversible 9-7 default. Use one exponent for all
+        // Quality-first irreversible 9-7 default. Use one exponent/mantissa for all
         // subbands and let R_b = bit_depth + log_gain make LL finest and HH
         // coarsest under the decoder's QCD formula.
-        let step = QuantStepSize {
+        let base_step = QuantStepSize {
             exponent: bit_depth as u16 + guard_bits as u16,
             mantissa: 0,
         };
+        let scale = if irreversible_quantization_scale.is_finite()
+            && irreversible_quantization_scale > 0.0
+        {
+            irreversible_quantization_scale
+        } else {
+            1.0
+        };
+        let step = QuantStepSize::from_delta(bit_depth, base_step.delta(bit_depth) * scale);
 
         step_sizes.push(step);
 
@@ -192,6 +236,44 @@ mod tests {
         assert!((deltas[1] - 0.5).abs() < 0.001);
         assert!((deltas[2] - 0.5).abs() < 0.001);
         assert!((deltas[3] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn irreversible_quantization_scale_coarsens_qcd_deltas() {
+        let steps = compute_step_sizes_with_irreversible_scale(8, 1, false, 2, 4.0);
+        let exponents: Vec<u16> = steps.iter().map(|step| step.exponent).collect();
+        let mantissas: Vec<u16> = steps.iter().map(|step| step.mantissa).collect();
+        assert_eq!(exponents, vec![8, 8, 8, 8]);
+        assert_eq!(mantissas, vec![0, 0, 0, 0]);
+
+        let deltas: Vec<f32> = [8u8, 9, 9, 10]
+            .iter()
+            .zip(&steps)
+            .map(|(&range_bits, step)| step.delta(range_bits))
+            .collect();
+        assert!((deltas[0] - 1.0).abs() < 0.001);
+        assert!((deltas[1] - 2.0).abs() < 0.001);
+        assert!((deltas[2] - 2.0).abs() < 0.001);
+        assert!((deltas[3] - 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn irreversible_quantization_scale_uses_mantissa_for_fractional_steps() {
+        let steps = compute_step_sizes_with_irreversible_scale(8, 1, false, 2, 5.0);
+        let exponents: Vec<u16> = steps.iter().map(|step| step.exponent).collect();
+        let mantissas: Vec<u16> = steps.iter().map(|step| step.mantissa).collect();
+        assert_eq!(exponents, vec![8, 8, 8, 8]);
+        assert_eq!(mantissas, vec![512, 512, 512, 512]);
+
+        let deltas: Vec<f32> = [8u8, 9, 9, 10]
+            .iter()
+            .zip(&steps)
+            .map(|(&range_bits, step)| step.delta(range_bits))
+            .collect();
+        assert!((deltas[0] - 1.25).abs() < 0.001);
+        assert!((deltas[1] - 2.5).abs() < 0.001);
+        assert!((deltas[2] - 2.5).abs() < 0.001);
+        assert!((deltas[3] - 5.0).abs() < 0.001);
     }
 
     #[test]

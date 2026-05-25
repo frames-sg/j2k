@@ -45,6 +45,15 @@ struct Dct97ColumnLiftParams {
     uint hh_stride;
 };
 
+struct Dct97QuantizeCodeblocksParams {
+    uint band_width;
+    uint band_height;
+    uint output_stride;
+    uint code_block_width;
+    uint code_block_height;
+    float inv_delta;
+};
+
 struct Reversible53ProjectionParams {
     uint width;
     uint height;
@@ -264,6 +273,40 @@ kernel void dct97_column_lift_batch(
             }
         }
     }
+}
+
+kernel void dct97_quantize_codeblocks_batch(
+    device const float *band [[buffer(0)]],
+    device int *output [[buffer(1)]],
+    constant Dct97QuantizeCodeblocksParams &params [[buffer(2)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    const uint x = gid.x;
+    const uint y = gid.y;
+    const uint item_idx = gid.z;
+    if (x >= params.band_width || y >= params.band_height) {
+        return;
+    }
+
+    const float value =
+        band[item_idx * params.band_width * params.band_height + y * params.band_width + x];
+    const int sign = value < 0.0f ? -1 : 1;
+    const int magnitude = int(floor(fabs(value) * params.inv_delta));
+
+    const uint cbx = x / params.code_block_width;
+    const uint cby = y / params.code_block_height;
+    const uint local_x = x - cbx * params.code_block_width;
+    const uint local_y = y - cby * params.code_block_height;
+    const uint block_x0 = cbx * params.code_block_width;
+    const uint block_y0 = cby * params.code_block_height;
+    const uint block_width = min(params.code_block_width, params.band_width - block_x0);
+    const uint block_height = min(params.code_block_height, params.band_height - block_y0);
+    const uint item_base = item_idx * params.output_stride;
+    const uint codeblock_row_base = cby * params.code_block_height * params.band_width;
+    const uint codeblock_base = codeblock_row_base + cbx * params.code_block_width * block_height;
+    const uint block_offset = local_y * block_width + local_x;
+
+    output[item_base + codeblock_base + block_offset] = sign * magnitude;
 }
 
 kernel void dct97_project_band(

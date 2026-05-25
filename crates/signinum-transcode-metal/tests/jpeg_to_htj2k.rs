@@ -243,6 +243,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
     assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
     assert!(batch.report.timings.dwt97_batch_idct_row_lift_us > 0);
     assert!(batch.report.timings.dwt97_batch_column_lift_us > 0);
+    assert_eq!(batch.report.timings.dwt97_batch_quantize_codeblock_us, 0);
     assert!(batch.report.timings.dwt97_batch_readback_us > 0);
     assert_eq!(accelerator.dwt97_attempts(), 0);
     assert_eq!(accelerator.dwt97_batch_attempts(), 3);
@@ -265,6 +266,66 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
                 .max_abs_error,
             0
         );
+        assert_component_sampling(&tile.codestream, &[(1, 1), (2, 2), (2, 2)]);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
+    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let options = JpegToHtj2kOptions::lossy_97();
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    let batch = match transcoder.transcode_batch_with_accelerator(
+        &inputs,
+        &options,
+        &mut accelerator,
+    ) {
+        Ok(batch) => batch,
+        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+            eprintln!("skipping Metal 9/7 code-block batch transcode integration test because no Metal device is available");
+            return;
+        }
+        Err(error) => panic!("explicit Metal 9/7 code-block batch transcode failed: {error}"),
+    };
+
+    assert_eq!(batch.report.tile_count, inputs.len());
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(batch.report.failed_tiles, 0);
+    assert_eq!(batch.report.timings.batch_jobs, 12);
+    assert_eq!(batch.report.timings.accelerator_dispatches, 3);
+    assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 12);
+    assert_eq!(batch.report.timings.cpu_fallback_jobs, 0);
+    assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
+    assert!(batch.report.timings.dwt97_batch_idct_row_lift_us > 0);
+    assert!(batch.report.timings.dwt97_batch_column_lift_us > 0);
+    assert!(batch.report.timings.dwt97_batch_quantize_codeblock_us > 0);
+    assert!(batch.report.timings.dwt97_batch_readback_us > 0);
+    assert_eq!(accelerator.dwt97_attempts(), 0);
+    assert_eq!(accelerator.dwt97_batch_attempts(), 3);
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 3);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 3);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 3);
+    for tile in batch.tiles {
+        let tile = tile.expect("valid 9/7 code-block tile transcodes");
+        let decoded = Image::new(&tile.codestream, &DecodeSettings::default())
+            .expect("native parser accepts generated Metal code-block 9/7 HTJ2K")
+            .decode_native()
+            .expect("native decoder accepts generated Metal code-block 9/7 HTJ2K");
+        assert_eq!((decoded.width, decoded.height), (16, 16));
+        assert_eq!(decoded.num_components, 3);
+        assert_eq!(
+            tile.report.coefficient_path,
+            JpegToHtj2kCoefficientPath::FloatDirectLinear97
+        );
+        assert_eq!(
+            tile.report.path,
+            "native_component_sampling_float_direct_97"
+        );
+        assert!(tile.report.float_reference_metrics.is_none());
         assert_component_sampling(&tile.codestream, &[(1, 1), (2, 2), (2, 2)]);
     }
 }

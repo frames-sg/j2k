@@ -133,10 +133,15 @@ pub use error::{
     ValidationError,
 };
 pub use j2c::encode::{
-    encode, encode_htj2k, encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_mct,
-    encode_precomputed_htj2k_97, encode_with_accelerator, EncodeOptions, EncodeProgressionOrder,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image,
+    encode, encode_htj2k, encode_precomputed_htj2k_53,
+    encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_53_with_mct,
+    encode_precomputed_htj2k_53_with_mct_and_accelerator, encode_precomputed_htj2k_97,
+    encode_precomputed_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
+    encode_prequantized_htj2k_97_with_accelerator, encode_with_accelerator, EncodeOptions,
+    EncodeProgressionOrder, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PrequantizedHtj2k97CodeBlock,
+    PrequantizedHtj2k97Component, PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 

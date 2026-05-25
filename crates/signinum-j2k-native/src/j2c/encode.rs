@@ -22,12 +22,12 @@ use super::quantize::{self, QuantStepSize};
 use crate::math::{floor_f32, log2_f32};
 use crate::profile;
 use crate::{
-    CpuOnlyJ2kEncodeStageAccelerator, EncodedJ2kCodeBlock, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
-    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardRctJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
-    J2kTier1CodeBlockEncodeJob,
+    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
+    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output,
+    J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardRctJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kSubBandType, J2kTier1CodeBlockEncodeJob,
 };
 use crate::{DecodeSettings, Image};
 
@@ -56,6 +56,11 @@ pub struct EncodeOptions {
     pub use_mct: bool,
     /// Decode and verify HTJ2K codestreams inside the native encoder.
     pub validate_high_throughput_codestream: bool,
+    /// Multiplier applied to irreversible 9/7 scalar quantization step sizes.
+    ///
+    /// `1.0` preserves the near-lossless default step sizes. Larger values
+    /// produce smaller codestreams by coarsening quantization.
+    pub irreversible_quantization_scale: f32,
     /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
     ///
     /// `None` means every component is stored at the reference-grid
@@ -77,6 +82,7 @@ impl Default for EncodeOptions {
             write_tlm: false,
             use_mct: true,
             validate_high_throughput_codestream: true,
+            irreversible_quantization_scale: 1.0,
             component_sampling: None,
         }
     }
@@ -250,6 +256,70 @@ pub struct PrecomputedHtj2k97Image {
     pub components: Vec<PrecomputedHtj2k97Component>,
 }
 
+/// Prequantized irreversible 9/7 HTJ2K code-block image.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrequantizedHtj2k97Image {
+    /// Reference-grid image width.
+    pub width: u32,
+    /// Reference-grid image height.
+    pub height: u32,
+    /// Component precision in bits.
+    pub bit_depth: u8,
+    /// Whether component samples are signed.
+    pub signed: bool,
+    /// Components at their native resolution.
+    pub components: Vec<PrequantizedHtj2k97Component>,
+}
+
+/// Prequantized irreversible 9/7 HTJ2K component.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrequantizedHtj2k97Component {
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+    /// Resolution packets for this component, ordered from lowest to highest.
+    pub resolutions: Vec<PrequantizedHtj2k97Resolution>,
+}
+
+/// One component resolution's prequantized HTJ2K subbands.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrequantizedHtj2k97Resolution {
+    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
+    pub subbands: Vec<PrequantizedHtj2k97Subband>,
+}
+
+/// One prequantized HTJ2K subband split into code-blocks.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrequantizedHtj2k97Subband {
+    /// Subband kind.
+    pub sub_band_type: J2kSubBandType,
+    /// Number of code-blocks in the x direction.
+    pub num_cbs_x: u32,
+    /// Number of code-blocks in the y direction.
+    pub num_cbs_y: u32,
+    /// Total bitplanes declared for every code-block in this subband.
+    pub total_bitplanes: u8,
+    /// Code-block coefficients in row-major code-block order.
+    pub code_blocks: Vec<PrequantizedHtj2k97CodeBlock>,
+}
+
+/// One prequantized HTJ2K code-block.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrequantizedHtj2k97CodeBlock {
+    /// Quantized coefficients in row-major order.
+    pub coefficients: Vec<i32>,
+    /// Code-block width in coefficients.
+    pub width: u32,
+    /// Code-block height in coefficients.
+    pub height: u32,
+}
+
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
 /// codestream.
 ///
@@ -263,7 +333,19 @@ pub fn encode_precomputed_htj2k_53(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
 ) -> Result<Vec<u8>, &'static str> {
-    encode_precomputed_htj2k_53_with_mct(image, options, false)
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_precomputed_htj2k_53_with_mct_and_accelerator(image, options, false, &mut accelerator)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
+/// codestream using optional block encode and packetization hooks.
+#[doc(hidden)]
+pub fn encode_precomputed_htj2k_53_with_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    encode_precomputed_htj2k_53_with_mct_and_accelerator(image, options, false, accelerator)
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
@@ -276,6 +358,20 @@ pub fn encode_precomputed_htj2k_53_with_mct(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
     use_mct: bool,
+) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_precomputed_htj2k_53_with_mct_and_accelerator(image, options, use_mct, &mut accelerator)
+}
+
+/// Encode precomputed reversible 5/3 wavelet coefficients while controlling
+/// the output COD multi-component transform flag and using optional encode
+/// stage hooks.
+#[doc(hidden)]
+pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
+    image: &PrecomputedHtj2k53Image,
+    options: &EncodeOptions,
+    use_mct: bool,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, &'static str> {
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
@@ -314,12 +410,13 @@ pub fn encode_precomputed_htj2k_53_with_mct(
 
     let dummy_pixels =
         zero_pixel_buffer(image.width, image.height, num_components, image.bit_depth)?;
-    let mut accelerator = PrecomputedDwtAccelerator {
+    let mut precomputed_accelerator = PrecomputedDwtAccelerator {
         outputs: image
             .components
             .iter()
             .map(|component| component.dwt.clone())
             .collect(),
+        encode_accelerator: accelerator,
     };
 
     encode_with_accelerator(
@@ -330,7 +427,7 @@ pub fn encode_precomputed_htj2k_53_with_mct(
         image.bit_depth,
         image.signed,
         &precomputed_options,
-        &mut accelerator,
+        &mut precomputed_accelerator,
     )
 }
 
@@ -347,6 +444,18 @@ pub fn encode_precomputed_htj2k_97(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
 ) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_precomputed_htj2k_97_with_accelerator(image, options, &mut accelerator)
+}
+
+/// Encode precomputed irreversible 9/7 wavelet coefficients into an HTJ2K
+/// codestream using optional block encode and packetization hooks.
+#[doc(hidden)]
+pub fn encode_precomputed_htj2k_97_with_accelerator(
+    image: &PrecomputedHtj2k97Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
     if image.width == 0 || image.height == 0 {
         return Err("invalid dimensions");
     }
@@ -356,6 +465,7 @@ pub fn encode_precomputed_htj2k_97(
     if image.bit_depth == 0 || image.bit_depth > 16 {
         return Err("unsupported bit depth");
     }
+    validate_irreversible_quantization_scale(options.irreversible_quantization_scale)?;
     if image
         .components
         .iter()
@@ -384,12 +494,13 @@ pub fn encode_precomputed_htj2k_97(
 
     let dummy_pixels =
         zero_pixel_buffer(image.width, image.height, num_components, image.bit_depth)?;
-    let mut accelerator = PrecomputedDwt97Accelerator {
+    let mut precomputed_accelerator = PrecomputedDwt97Accelerator {
         outputs: image
             .components
             .iter()
             .map(|component| component.dwt.clone())
             .collect(),
+        encode_accelerator: accelerator,
     };
 
     encode_with_accelerator(
@@ -400,8 +511,134 @@ pub fn encode_precomputed_htj2k_97(
         image.bit_depth,
         image.signed,
         &precomputed_options,
-        &mut accelerator,
+        &mut precomputed_accelerator,
     )
+}
+
+/// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
+/// codestream.
+#[doc(hidden)]
+pub fn encode_prequantized_htj2k_97(
+    image: &PrequantizedHtj2k97Image,
+    options: &EncodeOptions,
+) -> Result<Vec<u8>, &'static str> {
+    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+    encode_prequantized_htj2k_97_with_accelerator(image, options, &mut accelerator)
+}
+
+/// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
+/// codestream using optional block encode and packetization hooks.
+#[doc(hidden)]
+pub fn encode_prequantized_htj2k_97_with_accelerator(
+    image: &PrequantizedHtj2k97Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    validate_irreversible_quantization_scale(options.irreversible_quantization_scale)?;
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = prequantized_97_level_count(&image.components)?;
+    let guard_bits = options.guard_bits.max(2);
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_scale(
+        image.bit_depth,
+        num_levels,
+        false,
+        guard_bits,
+        options.irreversible_quantization_scale,
+    );
+    validate_prequantized_htj2k97_image(image, guard_bits, &step_sizes)?;
+
+    let mut prequantized_options = options.clone();
+    prequantized_options.num_decomposition_levels = num_levels;
+    prequantized_options.reversible = false;
+    prequantized_options.use_ht_block_coding = true;
+    prequantized_options.use_mct = false;
+    prequantized_options.validate_high_throughput_codestream = false;
+    prequantized_options.component_sampling = Some(
+        image
+            .components
+            .iter()
+            .map(|component| (component.x_rsiz, component.y_rsiz))
+            .collect(),
+    );
+
+    let component_resolution_packets = image
+        .components
+        .iter()
+        .map(prepared_resolution_packets_from_prequantized_component)
+        .collect::<Result<Vec<_>, _>>()?;
+    let prepared_resolution_packets =
+        ordered_prepared_resolution_packets(component_resolution_packets, &prequantized_options)?;
+    let mut resolution_packets =
+        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
+    let packet_descriptors =
+        packet_descriptors_for_order(resolution_packets.len(), 1, num_components)?;
+    let packetization_job = J2kPacketizationEncodeJob {
+        resolution_count: resolution_packets.len() as u32,
+        num_layers: 1,
+        num_components,
+        code_block_count: count_code_blocks(&resolution_packets)?,
+        progression_order: public_packetization_progression_order(
+            prequantized_options.progression_order,
+        ),
+        packet_descriptors: &packet_descriptors,
+        resolutions: &packetization_resolutions,
+    };
+    let tile_data = accelerator
+        .encode_packetization(packetization_job)?
+        .unwrap_or_else(|| {
+            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
+        });
+
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+    let params = EncodeParams {
+        width: image.width,
+        height: image.height,
+        num_components,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        num_decomposition_levels: num_levels,
+        reversible: false,
+        code_block_width_exp: prequantized_options.code_block_width_exp,
+        code_block_height_exp: prequantized_options.code_block_height_exp,
+        num_layers: 1,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        progression_order: prequantized_options.progression_order,
+        write_tlm: prequantized_options.write_tlm,
+        component_sampling: prequantized_options
+            .component_sampling
+            .clone()
+            .ok_or("component sampling missing")?,
+    };
+
+    Ok(codestream_write::write_codestream(
+        &params,
+        &tile_data,
+        &quant_params,
+    ))
 }
 
 fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<(), &'static str> {
@@ -550,6 +787,148 @@ fn precomputed_97_level_count(
     u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
 }
 
+fn prequantized_97_level_count(
+    components: &[PrequantizedHtj2k97Component],
+) -> Result<u8, &'static str> {
+    let first = components
+        .first()
+        .ok_or("unsupported component count")?
+        .resolutions
+        .len()
+        .checked_sub(1)
+        .ok_or("prequantized components must contain at least one decomposition level")?;
+    if components
+        .iter()
+        .any(|component| component.resolutions.len() != first + 1)
+    {
+        return Err("prequantized components must use the same decomposition level count");
+    }
+    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+}
+
+fn validate_prequantized_htj2k97_image(
+    image: &PrequantizedHtj2k97Image,
+    guard_bits: u8,
+    step_sizes: &[QuantStepSize],
+) -> Result<(), &'static str> {
+    for component in &image.components {
+        if component.resolutions.is_empty() {
+            return Err("prequantized components must contain at least one resolution");
+        }
+        validate_prequantized_resolution(
+            &component.resolutions[0],
+            &[J2kSubBandType::LowLow],
+            guard_bits,
+            &step_sizes[0..1],
+        )?;
+        for (level_index, resolution) in component.resolutions.iter().enumerate().skip(1) {
+            let step_base = 1 + (level_index - 1) * 3;
+            validate_prequantized_resolution(
+                resolution,
+                &[
+                    J2kSubBandType::HighLow,
+                    J2kSubBandType::LowHigh,
+                    J2kSubBandType::HighHigh,
+                ],
+                guard_bits,
+                &step_sizes[step_base..step_base + 3],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_prequantized_resolution(
+    resolution: &PrequantizedHtj2k97Resolution,
+    expected_subbands: &[J2kSubBandType],
+    guard_bits: u8,
+    step_sizes: &[QuantStepSize],
+) -> Result<(), &'static str> {
+    if resolution.subbands.len() != expected_subbands.len() {
+        return Err("prequantized resolution subband count mismatch");
+    }
+    for ((subband, expected_subband), step_size) in resolution
+        .subbands
+        .iter()
+        .zip(expected_subbands)
+        .zip(step_sizes)
+    {
+        if subband.sub_band_type != *expected_subband {
+            return Err("prequantized resolution subband order mismatch");
+        }
+        let expected_blocks = subband
+            .num_cbs_x
+            .checked_mul(subband.num_cbs_y)
+            .ok_or("prequantized code-block count overflow")?;
+        if expected_blocks == 0 {
+            if subband.total_bitplanes != 0 || !subband.code_blocks.is_empty() {
+                return Err("empty prequantized subbands must not contain code-block data");
+            }
+            continue;
+        }
+        debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+        let expected_total_bitplanes = guard_bits
+            .saturating_add(step_size.exponent as u8)
+            .saturating_sub(1);
+        if subband.total_bitplanes != expected_total_bitplanes {
+            return Err("prequantized subband bitplane count mismatch");
+        }
+        if usize::try_from(expected_blocks).map_err(|_| "prequantized code-block count overflow")?
+            != subband.code_blocks.len()
+        {
+            return Err("prequantized code-block count mismatch");
+        }
+        for block in &subband.code_blocks {
+            if block.width == 0 || block.height == 0 {
+                return Err("prequantized code-block dimensions must be non-zero");
+            }
+            validate_band_len(block.coefficients.len(), block.width, block.height)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn prepared_resolution_packets_from_prequantized_component(
+    component: &PrequantizedHtj2k97Component,
+) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    component
+        .resolutions
+        .iter()
+        .map(|resolution| {
+            Ok(PreparedResolutionPacket {
+                subbands: resolution
+                    .subbands
+                    .iter()
+                    .map(prepared_subband_from_prequantized)
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect()
+}
+
+fn prepared_subband_from_prequantized(
+    subband: &PrequantizedHtj2k97Subband,
+) -> Result<PreparedEncodeSubband, &'static str> {
+    Ok(PreparedEncodeSubband {
+        code_blocks: subband
+            .code_blocks
+            .iter()
+            .map(|block| PreparedEncodeCodeBlock {
+                coefficients: block.coefficients.clone(),
+                width: block.width,
+                height: block.height,
+            })
+            .collect(),
+        num_cbs_x: subband.num_cbs_x,
+        num_cbs_y: subband.num_cbs_y,
+        sub_band_type: internal_sub_band_type(subband.sub_band_type),
+        total_bitplanes: subband.total_bitplanes,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+    })
+}
+
 fn zero_pixel_buffer(
     width: u32,
     height: u32,
@@ -566,15 +945,21 @@ fn zero_pixel_buffer(
     Ok(vec![0; len])
 }
 
-struct PrecomputedDwtAccelerator {
+struct PrecomputedDwtAccelerator<'a, A: J2kEncodeStageAccelerator> {
     outputs: Vec<J2kForwardDwt53Output>,
+    encode_accelerator: &'a mut A,
 }
 
-struct PrecomputedDwt97Accelerator {
+struct PrecomputedDwt97Accelerator<'a, A: J2kEncodeStageAccelerator> {
     outputs: Vec<J2kForwardDwt97Output>,
+    encode_accelerator: &'a mut A,
 }
 
-impl J2kEncodeStageAccelerator for PrecomputedDwtAccelerator {
+impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator for PrecomputedDwtAccelerator<'_, A> {
+    fn dispatch_report(&self) -> crate::J2kEncodeDispatchReport {
+        self.encode_accelerator.dispatch_report()
+    }
+
     fn encode_forward_dwt53(
         &mut self,
         _job: J2kForwardDwt53Job<'_>,
@@ -586,12 +971,54 @@ impl J2kEncodeStageAccelerator for PrecomputedDwtAccelerator {
         Ok(Some(self.outputs.remove(0)))
     }
 
+    fn encode_tier1_code_block(
+        &mut self,
+        job: J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        self.encode_accelerator.encode_tier1_code_block(job)
+    }
+
+    fn encode_tier1_code_blocks(
+        &mut self,
+        jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+        self.encode_accelerator.encode_tier1_code_blocks(jobs)
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: crate::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        self.encode_accelerator.encode_ht_code_block(job)
+    }
+
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        self.encode_accelerator.encode_ht_code_blocks(jobs)
+    }
+
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
-        true
+        self.encode_accelerator
+            .prefer_parallel_cpu_code_block_fallback()
+    }
+
+    fn encode_packetization(
+        &mut self,
+        job: J2kPacketizationEncodeJob<'_>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        self.encode_accelerator.encode_packetization(job)
     }
 }
 
-impl J2kEncodeStageAccelerator for PrecomputedDwt97Accelerator {
+impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator
+    for PrecomputedDwt97Accelerator<'_, A>
+{
+    fn dispatch_report(&self) -> crate::J2kEncodeDispatchReport {
+        self.encode_accelerator.dispatch_report()
+    }
+
     fn encode_forward_dwt97(
         &mut self,
         _job: J2kForwardDwt97Job<'_>,
@@ -603,8 +1030,44 @@ impl J2kEncodeStageAccelerator for PrecomputedDwt97Accelerator {
         Ok(Some(self.outputs.remove(0)))
     }
 
+    fn encode_tier1_code_block(
+        &mut self,
+        job: J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        self.encode_accelerator.encode_tier1_code_block(job)
+    }
+
+    fn encode_tier1_code_blocks(
+        &mut self,
+        jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+        self.encode_accelerator.encode_tier1_code_blocks(jobs)
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: crate::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        self.encode_accelerator.encode_ht_code_block(job)
+    }
+
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        self.encode_accelerator.encode_ht_code_blocks(jobs)
+    }
+
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
-        true
+        self.encode_accelerator
+            .prefer_parallel_cpu_code_block_fallback()
+    }
+
+    fn encode_packetization(
+        &mut self,
+        job: J2kPacketizationEncodeJob<'_>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        self.encode_accelerator.encode_packetization(job)
     }
 }
 
@@ -613,6 +1076,14 @@ fn block_coding_mode(options: &EncodeOptions) -> BlockCodingMode {
         BlockCodingMode::HighThroughput
     } else {
         BlockCodingMode::Classic
+    }
+}
+
+fn validate_irreversible_quantization_scale(scale: f32) -> Result<(), &'static str> {
+    if scale.is_finite() && scale > 0.0 {
+        Ok(())
+    } else {
+        Err("irreversible quantization scale must be finite and greater than zero")
     }
 }
 
@@ -700,6 +1171,9 @@ fn encode_impl(
     if bit_depth == 0 || bit_depth > 16 {
         return Err("unsupported bit depth");
     }
+    if !options.reversible {
+        validate_irreversible_quantization_scale(options.irreversible_quantization_scale)?;
+    }
 
     let num_pixels = (width * height) as usize;
     let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
@@ -764,8 +1238,13 @@ fn encode_impl(
         options.guard_bits.max(2)
     };
 
-    let step_sizes =
-        quantize::compute_step_sizes(bit_depth, num_levels, options.reversible, guard_bits);
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_scale(
+        bit_depth,
+        num_levels,
+        options.reversible,
+        guard_bits,
+        options.irreversible_quantization_scale,
+    );
 
     // Step 5: Quantize and encode code-blocks for each component
     let cb_width = 1u32 << (options.code_block_width_exp + 2);
@@ -1987,6 +2466,130 @@ mod tests {
     }
 
     #[test]
+    fn precomputed_htj2k53_offers_ht_code_blocks_to_encode_accelerator() {
+        let image = sample_precomputed_htj2k53_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: true,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CountingHtEncodeAccelerator::default();
+
+        let encoded =
+            encode_precomputed_htj2k_53_with_accelerator(&image, &options, &mut accelerator)
+                .expect("precomputed 5/3 encode accepts encode accelerator");
+
+        assert!(encoded.starts_with(&[0xff, 0x4f]));
+        assert_eq!(accelerator.forward_dwt53, 0);
+        assert_eq!(accelerator.forward_dwt97, 0);
+        assert_eq!(accelerator.ht_batches, 1);
+        assert!(accelerator.ht_jobs > 0);
+        assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+    }
+
+    #[test]
+    fn precomputed_htj2k97_offers_ht_code_blocks_to_encode_accelerator() {
+        let image = sample_precomputed_htj2k97_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CountingHtEncodeAccelerator::default();
+
+        let encoded =
+            encode_precomputed_htj2k_97_with_accelerator(&image, &options, &mut accelerator)
+                .expect("precomputed 9/7 encode accepts encode accelerator");
+
+        assert!(encoded.starts_with(&[0xff, 0x4f]));
+        assert_eq!(accelerator.forward_dwt53, 0);
+        assert_eq!(accelerator.forward_dwt97, 0);
+        assert_eq!(accelerator.ht_batches, 1);
+        assert!(accelerator.ht_jobs > 0);
+        assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+    }
+
+    #[test]
+    fn prequantized_htj2k97_offers_ht_code_blocks_to_encode_accelerator() {
+        let image = sample_precomputed_htj2k97_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let prequantized = prequantized_htj2k97_image_from_precomputed_for_test(&image, &options)
+            .expect("test prequantized image");
+        let mut accelerator = CountingHtEncodeAccelerator::default();
+
+        let encoded = encode_prequantized_htj2k_97_with_accelerator(
+            &prequantized,
+            &options,
+            &mut accelerator,
+        )
+        .expect("prequantized 9/7 encode accepts encode accelerator");
+
+        assert!(encoded.starts_with(&[0xff, 0x4f]));
+        assert_eq!(accelerator.forward_dwt53, 0);
+        assert_eq!(accelerator.forward_dwt97, 0);
+        assert_eq!(accelerator.ht_batches, 1);
+        assert!(accelerator.ht_jobs > 0);
+        assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+    }
+
+    #[derive(Default)]
+    struct CountingHtEncodeAccelerator {
+        forward_dwt53: usize,
+        forward_dwt97: usize,
+        ht_batches: usize,
+        ht_jobs: usize,
+        ht_single_blocks: usize,
+    }
+
+    impl crate::J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
+        fn encode_forward_dwt53(
+            &mut self,
+            _job: crate::J2kForwardDwt53Job<'_>,
+        ) -> core::result::Result<Option<crate::J2kForwardDwt53Output>, &'static str> {
+            self.forward_dwt53 += 1;
+            Ok(None)
+        }
+
+        fn encode_forward_dwt97(
+            &mut self,
+            _job: crate::J2kForwardDwt97Job<'_>,
+        ) -> core::result::Result<Option<crate::J2kForwardDwt97Output>, &'static str> {
+            self.forward_dwt97 += 1;
+            Ok(None)
+        }
+
+        fn encode_ht_code_blocks(
+            &mut self,
+            jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+        ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str> {
+            self.ht_batches += 1;
+            self.ht_jobs += jobs.len();
+            Ok(None)
+        }
+
+        fn encode_ht_code_block(
+            &mut self,
+            _job: crate::J2kHtCodeBlockEncodeJob<'_>,
+        ) -> core::result::Result<Option<crate::EncodedHtJ2kCodeBlock>, &'static str> {
+            self.ht_single_blocks += 1;
+            Ok(None)
+        }
+    }
+
+    #[test]
     fn ht_cpu_parallel_fallback_threshold_matches_parallel_output() {
         assert_eq!(HT_CPU_PARALLEL_FALLBACK_MIN_JOBS, 4);
 
@@ -2063,6 +2666,300 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn prequantized_htj2k97_matches_precomputed_dwt97_codestream() {
+        let image = sample_precomputed_htj2k97_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+
+        let precomputed =
+            encode_precomputed_htj2k_97(&image, &options).expect("precomputed DWT encode");
+        let prequantized = prequantized_htj2k97_image_from_precomputed_for_test(&image, &options)
+            .expect("test prequantized image");
+        let direct =
+            encode_prequantized_htj2k_97(&prequantized, &options).expect("prequantized encode");
+
+        assert_eq!(direct, precomputed);
+    }
+
+    #[test]
+    fn prequantized_htj2k97_accepts_empty_high_subbands() {
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let image = PrequantizedHtj2k97Image {
+            width: 1,
+            height: 1,
+            bit_depth: 8,
+            signed: false,
+            components: vec![PrequantizedHtj2k97Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                resolutions: vec![
+                    PrequantizedHtj2k97Resolution {
+                        subbands: vec![PrequantizedHtj2k97Subband {
+                            sub_band_type: J2kSubBandType::LowLow,
+                            num_cbs_x: 1,
+                            num_cbs_y: 1,
+                            total_bitplanes: 11,
+                            code_blocks: vec![PrequantizedHtj2k97CodeBlock {
+                                coefficients: vec![0],
+                                width: 1,
+                                height: 1,
+                            }],
+                        }],
+                    },
+                    PrequantizedHtj2k97Resolution {
+                        subbands: vec![
+                            empty_prequantized_subband(J2kSubBandType::HighLow),
+                            empty_prequantized_subband(J2kSubBandType::LowHigh),
+                            empty_prequantized_subband(J2kSubBandType::HighHigh),
+                        ],
+                    },
+                ],
+            }],
+        };
+
+        let encoded =
+            encode_prequantized_htj2k_97(&image, &options).expect("empty high subbands encode");
+
+        assert!(encoded.starts_with(&[0xff, 0x4f]));
+    }
+
+    fn empty_prequantized_subband(sub_band_type: J2kSubBandType) -> PrequantizedHtj2k97Subband {
+        PrequantizedHtj2k97Subband {
+            sub_band_type,
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+            total_bitplanes: 0,
+            code_blocks: Vec::new(),
+        }
+    }
+
+    fn sample_precomputed_htj2k97_image() -> PrecomputedHtj2k97Image {
+        let width = 17u32;
+        let height = 13u32;
+        let low_width = width.div_ceil(2);
+        let low_height = height.div_ceil(2);
+        let high_width = width / 2;
+        let high_height = height / 2;
+
+        PrecomputedHtj2k97Image {
+            width,
+            height,
+            bit_depth: 8,
+            signed: false,
+            components: vec![PrecomputedHtj2k97Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: J2kForwardDwt97Output {
+                    ll: sample_f32_coefficients(low_width * low_height, 0.25),
+                    ll_width: low_width,
+                    ll_height: low_height,
+                    levels: vec![J2kForwardDwt97Level {
+                        hl: sample_f32_coefficients(high_width * low_height, -0.75),
+                        lh: sample_f32_coefficients(low_width * high_height, 1.25),
+                        hh: sample_f32_coefficients(high_width * high_height, -1.5),
+                        width,
+                        height,
+                        low_width,
+                        low_height,
+                        high_width,
+                        high_height,
+                    }],
+                },
+            }],
+        }
+    }
+
+    fn sample_precomputed_htj2k53_image() -> PrecomputedHtj2k53Image {
+        let width = 17u32;
+        let height = 13u32;
+        let low_width = width.div_ceil(2);
+        let low_height = height.div_ceil(2);
+        let high_width = width / 2;
+        let high_height = height / 2;
+
+        PrecomputedHtj2k53Image {
+            width,
+            height,
+            bit_depth: 8,
+            signed: false,
+            components: vec![PrecomputedHtj2k53Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: J2kForwardDwt53Output {
+                    ll: sample_f32_coefficients(low_width * low_height, 0.0),
+                    ll_width: low_width,
+                    ll_height: low_height,
+                    levels: vec![J2kForwardDwt53Level {
+                        hl: sample_f32_coefficients(high_width * low_height, -2.0),
+                        lh: sample_f32_coefficients(low_width * high_height, 2.0),
+                        hh: sample_f32_coefficients(high_width * high_height, -4.0),
+                        width,
+                        height,
+                        low_width,
+                        low_height,
+                        high_width,
+                        high_height,
+                    }],
+                },
+            }],
+        }
+    }
+
+    fn sample_f32_coefficients(len: u32, offset: f32) -> Vec<f32> {
+        (0..len)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.5 + offset)
+            .collect()
+    }
+
+    fn prequantized_htj2k97_image_from_precomputed_for_test(
+        image: &PrecomputedHtj2k97Image,
+        options: &EncodeOptions,
+    ) -> Result<PrequantizedHtj2k97Image, &'static str> {
+        let guard_bits = options.guard_bits.max(2);
+        let step_sizes = quantize::compute_step_sizes_with_irreversible_scale(
+            image.bit_depth,
+            1,
+            false,
+            guard_bits,
+            options.irreversible_quantization_scale,
+        );
+        let cb_width = 1u32 << (options.code_block_width_exp + 2);
+        let cb_height = 1u32 << (options.code_block_height_exp + 2);
+
+        let components = image
+            .components
+            .iter()
+            .map(|component| {
+                let mut resolutions = Vec::with_capacity(component.dwt.levels.len() + 1);
+                resolutions.push(PrequantizedHtj2k97Resolution {
+                    subbands: vec![prequantized_subband_for_test(
+                        &component.dwt.ll,
+                        component.dwt.ll_width,
+                        component.dwt.ll_height,
+                        SubBandType::LowLow,
+                        &step_sizes[0],
+                        image.bit_depth,
+                        guard_bits,
+                        cb_width,
+                        cb_height,
+                    )?],
+                });
+
+                for (level_index, level) in component.dwt.levels.iter().enumerate() {
+                    let step_base = 1 + level_index * 3;
+                    resolutions.push(PrequantizedHtj2k97Resolution {
+                        subbands: vec![
+                            prequantized_subband_for_test(
+                                &level.hl,
+                                level.high_width,
+                                level.low_height,
+                                SubBandType::HighLow,
+                                &step_sizes[step_base],
+                                image.bit_depth,
+                                guard_bits,
+                                cb_width,
+                                cb_height,
+                            )?,
+                            prequantized_subband_for_test(
+                                &level.lh,
+                                level.low_width,
+                                level.high_height,
+                                SubBandType::LowHigh,
+                                &step_sizes[step_base + 1],
+                                image.bit_depth,
+                                guard_bits,
+                                cb_width,
+                                cb_height,
+                            )?,
+                            prequantized_subband_for_test(
+                                &level.hh,
+                                level.high_width,
+                                level.high_height,
+                                SubBandType::HighHigh,
+                                &step_sizes[step_base + 2],
+                                image.bit_depth,
+                                guard_bits,
+                                cb_width,
+                                cb_height,
+                            )?,
+                        ],
+                    });
+                }
+
+                Ok(PrequantizedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    resolutions,
+                })
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
+
+        Ok(PrequantizedHtj2k97Image {
+            width: image.width,
+            height: image.height,
+            bit_depth: image.bit_depth,
+            signed: image.signed,
+            components,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prequantized_subband_for_test(
+        coefficients: &[f32],
+        width: u32,
+        height: u32,
+        sub_band_type: SubBandType,
+        step_size: &QuantStepSize,
+        bit_depth: u8,
+        guard_bits: u8,
+        cb_width: u32,
+        cb_height: u32,
+    ) -> Result<PrequantizedHtj2k97Subband, &'static str> {
+        let prepared = prepare_subband(
+            coefficients,
+            width,
+            height,
+            step_size,
+            bit_depth,
+            guard_bits,
+            false,
+            BlockCodingMode::HighThroughput,
+            cb_width,
+            cb_height,
+            sub_band_type,
+        )?;
+
+        Ok(PrequantizedHtj2k97Subband {
+            sub_band_type: public_sub_band_type(sub_band_type),
+            num_cbs_x: prepared.num_cbs_x,
+            num_cbs_y: prepared.num_cbs_y,
+            total_bitplanes: prepared.total_bitplanes,
+            code_blocks: prepared
+                .code_blocks
+                .into_iter()
+                .map(|block| PrequantizedHtj2k97CodeBlock {
+                    coefficients: block.coefficients,
+                    width: block.width,
+                    height: block.height,
+                })
+                .collect(),
+        })
     }
 
     fn assert_htj2k_lossless_roundtrip(
