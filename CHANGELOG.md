@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-05-26
+
+### Added
+
+- Added adoption-facing support matrix docs, facade-first examples, and a
+  transcode example for new users.
+- Added stable library semver CI and docs.rs metadata for publishable crates.
+- Added J2K benchmark-publication signoff gates for OpenJPEG and Grok
+  comparator runs.
+
+### Changed
+
+- Lowered the workspace MSRV to Rust 1.88 after auditing Rust 1.85, 1.88,
+  1.90, 1.92, 1.93, and 1.94.
+- Tightened J2K compare benchmarks to print comparator availability, version,
+  and path; align batch worker counts; and include explicit signinum serial
+  rows.
+
 ## [0.4.3] - 2026-05-25
 
 ### Fixed
