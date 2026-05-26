@@ -89,13 +89,17 @@ impl CpuFeatures {
 
 #[cfg(target_arch = "x86_64")]
 fn detect_x86_sse41() -> bool {
-    let features = core::arch::x86_64::__cpuid(1);
+    // SAFETY: CPUID is available on all x86_64 targets; leaf 1 is the
+    // standard feature-information leaf.
+    let features = unsafe { core::arch::x86_64::__cpuid(1) };
     (features.ecx & (1 << 19)) != 0
 }
 
 #[cfg(target_arch = "x86_64")]
 fn detect_x86_avx2() -> bool {
-    let leaf1 = core::arch::x86_64::__cpuid(1);
+    // SAFETY: CPUID is available on all x86_64 targets; leaf 1 is the
+    // standard feature-information leaf.
+    let leaf1 = unsafe { core::arch::x86_64::__cpuid(1) };
     let osxsave = (leaf1.ecx & (1 << 27)) != 0;
     let avx = (leaf1.ecx & (1 << 28)) != 0;
     if !(osxsave && avx) {
@@ -110,7 +114,16 @@ fn detect_x86_avx2() -> bool {
         return false;
     }
 
-    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    // SAFETY: CPUID is available on all x86_64 targets; leaf 0 reports the
+    // highest supported basic leaf before we query leaf 7 for AVX2.
+    let max_leaf = unsafe { core::arch::x86_64::__cpuid(0).eax };
+    if max_leaf < 7 {
+        return false;
+    }
+
+    // SAFETY: The leaf 0 check above confirms that leaf 7 subleaf 0 is
+    // supported before reading extended feature bits.
+    let leaf7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
     (leaf7.ebx & (1 << 5)) != 0
 }
 
