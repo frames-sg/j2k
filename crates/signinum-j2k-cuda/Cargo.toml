@@ -1,7 +1,7 @@
 [package]
 name = "signinum-j2k-cuda"
 description = "CUDA device-output adapter for signinum-j2k"
-version = "0.4.3"
+version = "0.4.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,16 +23,16 @@ default = []
 cuda-runtime = ["dep:signinum-cuda-runtime"]
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.3" }
-signinum-cuda-runtime = { path = "../signinum-cuda-runtime", version = "=0.4.3", optional = true }
-signinum-j2k = { path = "../signinum-j2k", version = "=0.4.3" }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.3" }
-signinum-profile = { path = "../signinum-profile", version = "=0.4.3" }
+signinum-core = { path = "../signinum-core", version = "=0.4.4" }
+signinum-cuda-runtime = { path = "../signinum-cuda-runtime", version = "=0.4.4", optional = true }
+signinum-j2k = { path = "../signinum-j2k", version = "=0.4.4" }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
+signinum-profile = { path = "../signinum-profile", version = "=0.4.4" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.3" }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 
 [[bench]]
 name = "encode_stages"

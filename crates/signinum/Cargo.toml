@@ -1,7 +1,7 @@
 [package]
 name = "signinum"
 description = "Facade crate for signinum pathology image codecs"
-version = "0.4.3"
+version = "0.4.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,19 +26,19 @@ metal = ["dep:signinum-jpeg-metal", "dep:signinum-j2k-metal"]
 cuda = ["dep:signinum-jpeg-cuda", "dep:signinum-j2k-cuda"]
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.3" }
-signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.3" }
-signinum-j2k = { path = "../signinum-j2k", version = "=0.4.3" }
-signinum-tilecodec = { path = "../signinum-tilecodec", version = "=0.4.3" }
-signinum-jpeg-metal = { path = "../signinum-jpeg-metal", version = "=0.4.3", optional = true }
-signinum-j2k-metal = { path = "../signinum-j2k-metal", version = "=0.4.3", optional = true }
-signinum-jpeg-cuda = { path = "../signinum-jpeg-cuda", version = "=0.4.3", optional = true }
-signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.3", optional = true }
+signinum-core = { path = "../signinum-core", version = "=0.4.4" }
+signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
+signinum-j2k = { path = "../signinum-j2k", version = "=0.4.4" }
+signinum-tilecodec = { path = "../signinum-tilecodec", version = "=0.4.4" }
+signinum-jpeg-metal = { path = "../signinum-jpeg-metal", version = "=0.4.4", optional = true }
+signinum-j2k-metal = { path = "../signinum-j2k-metal", version = "=0.4.4", optional = true }
+signinum-jpeg-cuda = { path = "../signinum-jpeg-cuda", version = "=0.4.4", optional = true }
+signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.4", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
 flate2 = { workspace = true }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.3" }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 signinum-test-support = { path = "../signinum-test-support" }
 
 [[bench]]
