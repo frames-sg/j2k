@@ -8,6 +8,14 @@ pub fn is_available() -> bool {
     cfg!(have_grok)
 }
 
+pub fn version() -> &'static str {
+    option_env!("SIGNINUM_GROK_VERSION").unwrap_or("unavailable")
+}
+
+pub fn library_path() -> &'static str {
+    option_env!("SIGNINUM_GROK_LIB_DIR").unwrap_or("unavailable")
+}
+
 pub fn decode_rgb(bytes: &[u8]) -> Result<Vec<u8>, String> {
     decode(bytes, 3, None, None)
 }

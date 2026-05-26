@@ -1121,7 +1121,7 @@ fn decode_cleanup_symbols(
         uvlc_entry >>= 3;
         let mut len = uvlc_entry & 0xF;
         let tmp = vlc_val & ((1_u32 << len) - 1);
-        vlc_val = vlc.advance(len);
+        let _ = vlc.advance(len);
         uvlc_entry >>= 4;
         len = uvlc_entry & 0x7;
         uvlc_entry >>= 3;
@@ -1186,7 +1186,7 @@ fn decode_cleanup_symbols(
             uvlc_entry >>= 3;
             let mut len = uvlc_entry & 0xF;
             let tmp = vlc_val & ((1_u32 << len) - 1);
-            vlc_val = vlc.advance(len);
+            let _ = vlc.advance(len);
             uvlc_entry >>= 4;
             len = uvlc_entry & 0x7;
             uvlc_entry >>= 3;

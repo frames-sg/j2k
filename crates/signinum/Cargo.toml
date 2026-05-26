@@ -11,6 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
 [lib]
 name = "signinum"
 path = "src/lib.rs"
@@ -33,6 +37,7 @@ signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.3", optiona
 
 [dev-dependencies]
 criterion = { workspace = true }
+flate2 = { workspace = true }
 signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.3" }
 signinum-test-support = { path = "../signinum-test-support" }
 

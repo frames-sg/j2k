@@ -18,6 +18,8 @@ design notes that an agent can reach without leaving the repo.
 - [`docs/bench.md`](bench.md) — benchmark methodology and comparator policy.
 - [`docs/parity.md`](parity.md) — parity expectations against reference decoders.
 - [`docs/release.md`](release.md) — release staging notes.
+- [`docs/support-matrix.md`](support-matrix.md) — stable surfaces, backend limits,
+  MSRV, and benchmark-publication gates.
 - [`docs/wsi-decode-api.md`](wsi-decode-api.md) — public WSI decode API guide.
 - [`docs/wsi-dicom-passthrough.md`](wsi-dicom-passthrough.md) — passthrough-first
   policy for WSI/DICOM conversion layers built on these codec primitives.
@@ -28,7 +30,7 @@ design notes that an agent can reach without leaving the repo.
 
 The workspace is a single Cargo workspace defined in [`Cargo.toml`](../Cargo.toml).
 All crates live under `crates/` and share `edition = 2021` and
-`rust-version = 1.94`. Stable facade and codec crates use 1.x versions;
+`rust-version = 1.88`. Stable facade and codec crates use 1.x versions;
 implementation and adapter crates stay on explicit pre-1.0 versions where their
 backend APIs are still hardening.
 
@@ -341,7 +343,7 @@ between codec crates.
 
 ## Build and platform
 
-- Rust edition `2021`, MSRV `1.94`, pinned by [`rust-toolchain.toml`](../rust-toolchain.toml).
+- Rust edition `2021`, MSRV `1.88`, pinned by [`rust-toolchain.toml`](../rust-toolchain.toml).
 - Supported decode hosts: `x86_64` and `aarch64` only. Other targets fail
   to build by design.
 - Metal adapters compile and run on Apple Silicon macOS. On other hosts the

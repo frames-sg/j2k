@@ -13,7 +13,13 @@ fn main() {
     if let Some(config) = grok_config() {
         let staged_lib_dir = stage_grok_runtime(&config.lib_dir)
             .unwrap_or_else(|err| panic!("failed to stage Grok runtime libraries: {err}"));
+        let grok_version = grok_version(&config);
         println!("cargo:rustc-cfg=have_grok");
+        println!("cargo:rustc-env=SIGNINUM_GROK_VERSION={grok_version}");
+        println!(
+            "cargo:rustc-env=SIGNINUM_GROK_LIB_DIR={}",
+            config.lib_dir.display()
+        );
         println!(
             "cargo:rustc-link-search=native={}",
             staged_lib_dir.display()
@@ -182,4 +188,47 @@ fn has_grok_artifacts(lib_dir: &Path, source_include: &Path, build_include: &Pat
     ]
     .into_iter()
     .any(|path| path.exists())
+}
+
+fn grok_version(config: &GrokConfig) -> String {
+    pkg_config_modversion("libgrokj2k")
+        .or_else(|| source_tree_version(config))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn pkg_config_modversion(package: &str) -> Option<String> {
+    let output = Command::new("pkg-config")
+        .args(["--modversion", package])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn source_tree_version(config: &GrokConfig) -> Option<String> {
+    let source_root = config.source_include.parent()?.parent()?.parent()?;
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(source_root)
+        .args(["describe", "--tags", "--always", "--dirty"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }

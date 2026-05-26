@@ -31,6 +31,25 @@ jobs:
         with: { components: clippy }
       - run: cargo xtask clippy
 
+  semver:
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - signinum
+          - signinum-core
+          - signinum-jpeg
+          - signinum-j2k
+          - signinum-tilecodec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: ${{ matrix.package }}
+          release-type: patch
+
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -51,11 +70,11 @@ jobs:
         include:
           - { os: ubuntu-latest,      rust: stable, arch: x86_64 }
           - { os: ubuntu-latest,      rust: beta,   arch: x86_64 }
-          - { os: ubuntu-latest,      rust: "1.94", arch: x86_64 }
+          - { os: ubuntu-latest,      rust: "1.88", arch: x86_64 }
           - { os: ubuntu-24.04-arm,   rust: stable, arch: aarch64 }
-          - { os: ubuntu-24.04-arm,   rust: "1.94", arch: aarch64 }
+          - { os: ubuntu-24.04-arm,   rust: "1.88", arch: aarch64 }
           - { os: macos-latest,       rust: stable, arch: aarch64 }
-          - { os: macos-latest,       rust: "1.94", arch: aarch64 }
+          - { os: macos-latest,       rust: "1.88", arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

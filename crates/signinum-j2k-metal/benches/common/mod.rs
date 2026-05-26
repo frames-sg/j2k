@@ -3,10 +3,10 @@
 #![allow(dead_code)]
 
 use criterion::black_box;
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use signinum_core::{
-    BackendRequest, DeviceSubmission, ImageDecodeDevice, TileBatchDecodeDevice,
-    TileBatchDecodeSubmit,
+    tile_batch_worker_count, BackendRequest, DeviceSubmission, ImageDecodeDevice,
+    TileBatchDecodeDevice, TileBatchDecodeSubmit,
 };
 use signinum_j2k::{
     decode_tiles_into, decode_tiles_region_scaled_into, CompressedTransferSyntax,
@@ -24,8 +24,9 @@ use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
 use std::{
     collections::BTreeSet,
     env, fs,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub(crate) enum DecodeMode {
 #[derive(Clone, Debug)]
 pub(crate) struct BenchInput {
     pub name: &'static str,
+    pub input_source: &'static str,
     pub bytes: Vec<u8>,
     pub dimensions: (u32, u32),
     pub mode: DecodeMode,
@@ -62,10 +64,92 @@ enum ExternalCodecFamily {
 const AUTO_REPEATED_GRAYSCALE_MIN_DIM: u32 = 512;
 const AUTO_REPEATED_GRAYSCALE_MIN_COUNT: usize = 16;
 const EXTERNAL_WSI_TILE_DIR_ENV: &str = "SIGNINUM_J2K_METAL_WSI_TILE_DIR";
+const J2K_COMPARE_THREADS_ENV: &str = "SIGNINUM_J2K_COMPARE_THREADS";
 const J2K_TILE_BATCH_SIZES_ENV: &str = "SIGNINUM_J2K_TILE_BATCH_SIZES";
 const J2K_REGION_EDGES_ENV: &str = "SIGNINUM_J2K_REGION_EDGES";
 const DEFAULT_J2K_TILE_BATCH_SIZES: &[usize] = &[16, 32, 64, 128];
 const DEFAULT_J2K_REGION_EDGES: &[u32] = &[256];
+
+pub(crate) fn print_comparator_run_context(inputs: &[BenchInput]) {
+    let input_sources = inputs
+        .iter()
+        .map(|input| format!("{}={}", input.name, input.input_source))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let compare_threads = j2k_compare_workers().map_or_else(
+        || "available_parallelism".to_string(),
+        |workers| workers.get().to_string(),
+    );
+
+    eprintln!(
+        "J2K comparator context: OpenJPEG available={} version={} path={}; Grok available={} version={} path={}; {J2K_COMPARE_THREADS_ENV}={compare_threads}; input source: {input_sources}",
+        openjpeg::is_available(),
+        openjpeg::version(),
+        openjpeg::library_path(),
+        grok::is_available(),
+        grok::version(),
+        grok::library_path(),
+    );
+}
+
+pub(crate) fn j2k_compare_workers() -> Option<NonZeroUsize> {
+    let raw = env::var(J2K_COMPARE_THREADS_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let workers = trimmed
+        .parse::<usize>()
+        .unwrap_or_else(|error| panic!("invalid {J2K_COMPARE_THREADS_ENV} value `{raw}`: {error}"));
+    Some(NonZeroUsize::new(workers).unwrap_or_else(|| {
+        panic!("{J2K_COMPARE_THREADS_ENV} must be greater than zero, got `{raw}`")
+    }))
+}
+
+fn j2k_compare_worker_count(job_count: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(NonZeroUsize::get)
+        .unwrap_or(1);
+    tile_batch_worker_count(
+        job_count,
+        TileBatchOptions {
+            workers: j2k_compare_workers(),
+        },
+        available,
+    )
+}
+
+fn run_compare_batch<T, F>(job_count: usize, f: F) -> Result<Vec<T>, String>
+where
+    T: Send,
+    F: Fn(usize) -> Result<T, String> + Send + Sync,
+{
+    let _worker_count = j2k_compare_worker_count(job_count);
+    j2k_compare_pool().install(|| (0..job_count).into_par_iter().map(f).collect())
+}
+
+fn j2k_compare_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(j2k_compare_pool_thread_count())
+            .build()
+            .expect("build J2K comparator worker pool")
+    })
+}
+
+fn j2k_compare_pool_thread_count() -> usize {
+    j2k_compare_workers()
+        .map_or_else(
+            || {
+                std::thread::available_parallelism()
+                    .map(NonZeroUsize::get)
+                    .unwrap_or(1)
+            },
+            NonZeroUsize::get,
+        )
+        .max(1)
+}
 
 pub(crate) fn j2k_tile_batch_sizes() -> Vec<usize> {
     env::var(J2K_TILE_BATCH_SIZES_ENV)
@@ -113,6 +197,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
     let mut inputs = vec![
         BenchInput {
             name: "j2k_gray_1024",
+            input_source: "signinum-generated",
             bytes: classic_bench_bytes(
                 "j2k_gray_1024",
                 &signinum_test_support::gradient_u8(1024, 1024, 1),
@@ -126,6 +211,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
         },
         BenchInput {
             name: "j2k_gray_512",
+            input_source: "signinum-generated",
             bytes: classic_bench_bytes(
                 "j2k_gray_512",
                 &signinum_test_support::gradient_u8(512, 512, 1),
@@ -139,6 +225,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
         },
         BenchInput {
             name: "j2k_rgb_1024",
+            input_source: "signinum-generated",
             bytes: classic_bench_bytes(
                 "j2k_rgb_1024",
                 &signinum_test_support::gradient_u8(1024, 1024, 3),
@@ -152,6 +239,7 @@ pub(crate) fn bench_inputs() -> Vec<BenchInput> {
         },
         BenchInput {
             name: "j2k_rgb_256",
+            input_source: "signinum-generated",
             bytes: classic_bench_bytes(
                 "j2k_rgb_256",
                 &signinum_test_support::gradient_u8(256, 256, 3),
@@ -446,6 +534,7 @@ fn ht_bench_inputs() -> Vec<BenchInput> {
         match try_encode_ht(&pixels, width, height, components as u8, 8) {
             Ok(codestream) => inputs.push(BenchInput {
                 name,
+                input_source: "signinum-generated",
                 bytes: wrap_codestream_jp2(&codestream, width, height, components, 8, colorspace),
                 dimensions: (width, height),
                 mode,
@@ -557,6 +646,20 @@ pub(crate) fn signinum_decode_region(bytes: &[u8], mode: DecodeMode, edge: u32) 
     black_box(out);
 }
 
+pub(crate) fn signinum_decode_region_serial(bytes: &[u8], mode: DecodeMode, edge: u32) {
+    let mut decoder = J2kDecoder::new(bytes).expect("signinum decoder");
+    decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let roi = centered_roi(decoder.info().dimensions, edge);
+    let fmt = mode_format(mode);
+    let stride = roi.w as usize * fmt.bytes_per_pixel();
+    let mut pool = J2kScratchPool::new();
+    let mut out = vec![0_u8; stride * roi.h as usize];
+    decoder
+        .decode_region_into(&mut pool, &mut out, stride, fmt, roi)
+        .expect("signinum serial region decode");
+    black_box(out);
+}
+
 pub(crate) fn signinum_decode_scaled(bytes: &[u8], mode: DecodeMode, scale: Downscale) {
     let mut decoder = J2kDecoder::new(bytes).expect("signinum decoder");
     let dims = scaled_dims(decoder.info().dimensions, scale);
@@ -567,6 +670,20 @@ pub(crate) fn signinum_decode_scaled(bytes: &[u8], mode: DecodeMode, scale: Down
     decoder
         .decode_scaled_into(&mut pool, &mut out, stride, fmt, scale)
         .expect("signinum scaled decode");
+    black_box(out);
+}
+
+pub(crate) fn signinum_decode_scaled_serial(bytes: &[u8], mode: DecodeMode, scale: Downscale) {
+    let mut decoder = J2kDecoder::new(bytes).expect("signinum decoder");
+    decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let dims = scaled_dims(decoder.info().dimensions, scale);
+    let fmt = mode_format(mode);
+    let stride = dims.0 as usize * fmt.bytes_per_pixel();
+    let mut pool = J2kScratchPool::new();
+    let mut out = vec![0_u8; stride * dims.1 as usize];
+    decoder
+        .decode_scaled_into(&mut pool, &mut out, stride, fmt, scale)
+        .expect("signinum serial scaled decode");
     black_box(out);
 }
 
@@ -589,10 +706,31 @@ pub(crate) fn signinum_decode_region_scaled(
     black_box(out);
 }
 
+pub(crate) fn signinum_decode_region_scaled_serial(
+    bytes: &[u8],
+    mode: DecodeMode,
+    edge: u32,
+    scale: Downscale,
+) {
+    let mut decoder = J2kDecoder::new(bytes).expect("signinum decoder");
+    decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let roi = centered_roi(decoder.info().dimensions, edge);
+    let scaled = roi.scaled_covering(scale);
+    let fmt = mode_format(mode);
+    let stride = scaled.w as usize * fmt.bytes_per_pixel();
+    let mut pool = J2kScratchPool::new();
+    let mut out = vec![0_u8; stride * scaled.h as usize];
+    decoder
+        .decode_region_scaled_into(&mut pool, &mut out, stride, fmt, roi, scale)
+        .expect("signinum serial region scaled decode");
+    black_box(out);
+}
+
 pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
     let decoder = J2kDecoder::new(bytes).expect("signinum decoder");
     let dims = decoder.info().dimensions;
     let (fmt, stride) = mode_geometry(mode, dims);
+    let workers = j2k_compare_workers();
     let mut outputs = (0..count)
         .map(|_| vec![0_u8; stride * dims.1 as usize])
         .collect::<Vec<_>>();
@@ -605,23 +743,30 @@ pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: 
                 stride,
             })
             .collect::<Vec<_>>();
-        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).expect("tile decode")
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions { workers }).expect("tile decode")
     };
     black_box((outputs, outcomes));
 }
 
 pub(crate) fn openjpeg_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
-    let outputs = (0..count)
-        .into_par_iter()
-        .map(|_| match mode {
-            DecodeMode::Gray8 => openjpeg::decode_gray(bytes),
-            DecodeMode::Rgb8 => openjpeg::decode_rgb(bytes),
-            DecodeMode::Gray16 => {
-                Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .expect("OpenJPEG tile batch decode");
+    let outputs = run_compare_batch(count, |_| match mode {
+        DecodeMode::Gray8 => openjpeg::decode_gray(bytes),
+        DecodeMode::Rgb8 => openjpeg::decode_rgb(bytes),
+        DecodeMode::Gray16 => {
+            Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+        }
+    })
+    .expect("OpenJPEG tile batch decode");
+    black_box(outputs);
+}
+
+pub(crate) fn grok_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: usize) {
+    let outputs = run_compare_batch(count, |_| match mode {
+        DecodeMode::Gray8 => grok::decode_gray(bytes),
+        DecodeMode::Rgb8 => grok::decode_rgb(bytes),
+        DecodeMode::Gray16 => Err("grok: Gray16 benchmark output is not implemented".to_string()),
+    })
+    .expect("Grok tile batch decode");
     black_box(outputs);
 }
 
@@ -637,6 +782,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
     let scaled = roi.scaled_covering(scale);
     let fmt = mode_format(mode);
     let stride = scaled.w as usize * fmt.bytes_per_pixel();
+    let workers = j2k_compare_workers();
     let mut outputs = (0..count)
         .map(|_| vec![0_u8; stride * scaled.h as usize])
         .collect::<Vec<_>>();
@@ -651,7 +797,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
             .expect("tile region scaled decode")
     };
     black_box((outputs, outcomes));
@@ -719,6 +865,7 @@ pub(crate) fn signinum_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: Deco
     let decoder = J2kDecoder::new(first).expect("signinum decoder");
     let dims = decoder.info().dimensions;
     let (fmt, stride) = mode_geometry(mode, dims);
+    let workers = j2k_compare_workers();
     let mut outputs = inputs
         .iter()
         .map(|_| vec![0_u8; stride * dims.1 as usize])
@@ -733,23 +880,70 @@ pub(crate) fn signinum_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: Deco
                 stride,
             })
             .collect::<Vec<_>>();
-        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::default()).expect("tile decode")
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions { workers }).expect("tile decode")
     };
     black_box((outputs, outcomes));
 }
 
 pub(crate) fn openjpeg_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: DecodeMode) {
-    let outputs = inputs
-        .par_iter()
-        .map(|bytes| match mode {
-            DecodeMode::Gray8 => openjpeg::decode_gray(bytes),
-            DecodeMode::Rgb8 => openjpeg::decode_rgb(bytes),
-            DecodeMode::Gray16 => {
-                Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .expect("OpenJPEG distinct tile batch decode");
+    let outputs = run_compare_batch(inputs.len(), |index| match mode {
+        DecodeMode::Gray8 => openjpeg::decode_gray(&inputs[index]),
+        DecodeMode::Rgb8 => openjpeg::decode_rgb(&inputs[index]),
+        DecodeMode::Gray16 => {
+            Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+        }
+    })
+    .expect("OpenJPEG distinct tile batch decode");
+    black_box(outputs);
+}
+
+pub(crate) fn grok_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: DecodeMode) {
+    let outputs = run_compare_batch(inputs.len(), |index| match mode {
+        DecodeMode::Gray8 => grok::decode_gray(&inputs[index]),
+        DecodeMode::Rgb8 => grok::decode_rgb(&inputs[index]),
+        DecodeMode::Gray16 => Err("grok: Gray16 benchmark output is not implemented".to_string()),
+    })
+    .expect("Grok distinct tile batch decode");
+    black_box(outputs);
+}
+
+pub(crate) fn openjpeg_decode_tile_batch_region_scaled(
+    bytes: &[u8],
+    mode: DecodeMode,
+    dimensions: (u32, u32),
+    edge: u32,
+    scale: Downscale,
+    count: usize,
+) {
+    let roi = centered_roi(dimensions, edge);
+    let reduce = downscale_reduction_factor(scale);
+    let outputs = run_compare_batch(count, |_| match mode {
+        DecodeMode::Gray8 => openjpeg::decode_gray_region_scaled(bytes, roi, reduce),
+        DecodeMode::Rgb8 => openjpeg::decode_rgb_region_scaled(bytes, roi, reduce),
+        DecodeMode::Gray16 => {
+            Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+        }
+    })
+    .expect("OpenJPEG tile batch region scaled decode");
+    black_box(outputs);
+}
+
+pub(crate) fn grok_decode_tile_batch_region_scaled(
+    bytes: &[u8],
+    mode: DecodeMode,
+    dimensions: (u32, u32),
+    edge: u32,
+    scale: Downscale,
+    count: usize,
+) {
+    let roi = centered_roi(dimensions, edge);
+    let reduce = downscale_reduction_factor(scale);
+    let outputs = run_compare_batch(count, |_| match mode {
+        DecodeMode::Gray8 => grok::decode_gray_region_scaled(bytes, roi, reduce),
+        DecodeMode::Rgb8 => grok::decode_rgb_region_scaled(bytes, roi, reduce),
+        DecodeMode::Gray16 => Err("grok: Gray16 benchmark output is not implemented".to_string()),
+    })
+    .expect("Grok tile batch region scaled decode");
     black_box(outputs);
 }
 
@@ -767,6 +961,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(
     let scaled = roi.scaled_covering(scale);
     let fmt = mode_format(mode);
     let stride = scaled.w as usize * fmt.bytes_per_pixel();
+    let workers = j2k_compare_workers();
     let mut outputs = inputs
         .iter()
         .map(|_| vec![0_u8; stride * scaled.h as usize])
@@ -783,7 +978,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
             .expect("tile region scaled decode")
     };
     black_box((outputs, outcomes));
@@ -802,6 +997,7 @@ pub(crate) fn signinum_decode_external_tile_batch_region_scaled(
 
     let fmt = mode_format(batch.mode);
     let (rois, stride, height) = external_batch_output_geometry(batch, count, edge, scale, fmt);
+    let workers = j2k_compare_workers();
     let mut outputs = (0..count)
         .map(|_| vec![0_u8; stride * height as usize])
         .collect::<Vec<_>>();
@@ -820,7 +1016,7 @@ pub(crate) fn signinum_decode_external_tile_batch_region_scaled(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
             .expect("external tile region scaled decode")
     };
     black_box((outputs, outcomes));
@@ -840,20 +1036,18 @@ pub(crate) fn openjpeg_decode_external_tile_batch_region_scaled(
     let reduce = downscale_reduction_factor(scale);
     let (rois, _, _) =
         external_batch_output_geometry(batch, count, edge, scale, mode_format(batch.mode));
-    let outputs = batch
-        .inputs
-        .par_iter()
-        .zip(rois.par_iter())
-        .take(count)
-        .map(|(bytes, roi)| match batch.mode {
-            DecodeMode::Gray8 => openjpeg::decode_gray_region_scaled(bytes, *roi, reduce),
-            DecodeMode::Rgb8 => openjpeg::decode_rgb_region_scaled(bytes, *roi, reduce),
-            DecodeMode::Gray16 => {
-                Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .expect("OpenJPEG external tile region scaled decode");
+    let outputs = run_compare_batch(count, |index| match batch.mode {
+        DecodeMode::Gray8 => {
+            openjpeg::decode_gray_region_scaled(&batch.inputs[index], rois[index], reduce)
+        }
+        DecodeMode::Rgb8 => {
+            openjpeg::decode_rgb_region_scaled(&batch.inputs[index], rois[index], reduce)
+        }
+        DecodeMode::Gray16 => {
+            Err("openjpeg: Gray16 benchmark output is not implemented".to_string())
+        }
+    })
+    .expect("OpenJPEG external tile region scaled decode");
     black_box(outputs);
 }
 
@@ -871,20 +1065,16 @@ pub(crate) fn grok_decode_external_tile_batch_region_scaled(
     let reduce = downscale_reduction_factor(scale);
     let (rois, _, _) =
         external_batch_output_geometry(batch, count, edge, scale, mode_format(batch.mode));
-    let outputs = batch
-        .inputs
-        .par_iter()
-        .zip(rois.par_iter())
-        .take(count)
-        .map(|(bytes, roi)| match batch.mode {
-            DecodeMode::Gray8 => grok::decode_gray_region_scaled(bytes, *roi, reduce),
-            DecodeMode::Rgb8 => grok::decode_rgb_region_scaled(bytes, *roi, reduce),
-            DecodeMode::Gray16 => {
-                Err("grok: Gray16 benchmark output is not implemented".to_string())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Grok external tile region scaled decode");
+    let outputs = run_compare_batch(count, |index| match batch.mode {
+        DecodeMode::Gray8 => {
+            grok::decode_gray_region_scaled(&batch.inputs[index], rois[index], reduce)
+        }
+        DecodeMode::Rgb8 => {
+            grok::decode_rgb_region_scaled(&batch.inputs[index], rois[index], reduce)
+        }
+        DecodeMode::Gray16 => Err("grok: Gray16 benchmark output is not implemented".to_string()),
+    })
+    .expect("Grok external tile region scaled decode");
     black_box(outputs);
 }
 

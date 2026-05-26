@@ -8,6 +8,10 @@ license.workspace      = true
 repository.workspace = true
 readme               = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
 [[bin]]
 name = "signinum"
 path = "src/main.rs"

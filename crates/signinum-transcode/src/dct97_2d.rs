@@ -344,11 +344,11 @@ fn idct8x8_block_row_to_samples(
         let block = &blocks[block_y * block_cols + block_x];
         let mut vertical = [[0.0; 8]; 8];
 
-        for local_y in 0..8 {
+        for (local_y, basis_row) in basis.iter().enumerate() {
             for freq_x in 0..8 {
                 let mut sum = 0.0;
-                for freq_y in 0..8 {
-                    sum += basis[local_y][freq_y] * block[freq_y][freq_x];
+                for (freq_y, block_row) in block.iter().enumerate() {
+                    sum += basis_row[freq_y] * block_row[freq_x];
                 }
                 vertical[local_y][freq_x] = sum;
             }
@@ -358,8 +358,8 @@ fn idct8x8_block_row_to_samples(
             let row_offset = local_y * width + block_sample_x;
             for local_x in 0..output_cols {
                 let mut sample = 0.0;
-                for freq_x in 0..8 {
-                    sample += vertical_row[freq_x] * basis[local_x][freq_x];
+                for (freq_x, vertical_value) in vertical_row.iter().enumerate() {
+                    sample += *vertical_value * basis[local_x][freq_x];
                 }
                 sample_rows[row_offset + local_x] = sample;
             }

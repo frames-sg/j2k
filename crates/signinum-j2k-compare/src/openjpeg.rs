@@ -6,14 +6,32 @@ use openjpeg_sys::{
     opj_set_decode_area, opj_set_decoded_resolution_factor, opj_set_default_decoder_parameters,
     opj_setup_decoder, opj_stream_create, opj_stream_destroy, opj_stream_set_read_function,
     opj_stream_set_seek_function, opj_stream_set_skip_function, opj_stream_set_user_data,
-    opj_stream_set_user_data_length, opj_stream_t, OPJ_BOOL, OPJ_CODEC_FORMAT, OPJ_FALSE,
-    OPJ_OFF_T, OPJ_SIZE_T, OPJ_STREAM_READ, OPJ_TRUE,
+    opj_stream_set_user_data_length, opj_stream_t, opj_version, OPJ_BOOL, OPJ_CODEC_FORMAT,
+    OPJ_FALSE, OPJ_OFF_T, OPJ_SIZE_T, OPJ_STREAM_READ, OPJ_TRUE,
 };
 use signinum_core::Rect;
-use std::{ffi::c_void, ptr, slice};
+use std::{
+    ffi::{c_void, CStr},
+    ptr, slice,
+};
 
 pub fn is_available() -> bool {
     true
+}
+
+pub fn version() -> String {
+    unsafe {
+        let ptr = opj_version();
+        if ptr.is_null() {
+            "unknown".to_string()
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+pub fn library_path() -> &'static str {
+    "openjpeg-sys vendored openjp2"
 }
 
 pub fn decode_rgb(bytes: &[u8]) -> Result<Vec<u8>, String> {
