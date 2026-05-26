@@ -467,14 +467,16 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
 fn crates_io_publish_policy_is_explicit() {
     let root = repo_root();
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+    let changelog = fs::read_to_string(root.join("CHANGELOG.md")).expect("read changelog");
     let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
     let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
     let publish_workflow = fs::read_to_string(root.join(".github/workflows/publish.yml"))
         .expect("read publish workflow");
+    let version = workspace_package_version(&workspace);
 
     assert!(
-        workspace.contains("version      = \"0.4.2\""),
-        "workspace package version must match the current staged release version"
+        changelog.contains(&format!("## [{version}]")),
+        "CHANGELOG.md must contain a section for the current staged release version {version}"
     );
 
     for package in [
@@ -539,6 +541,17 @@ fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {
         .find("];")
         .unwrap_or_else(|| panic!("unterminated const {name}"));
     &rest[..end]
+}
+
+fn workspace_package_version(workspace_manifest: &str) -> &str {
+    workspace_manifest
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("version")
+                .and_then(|rest| rest.split('"').nth(1))
+        })
+        .expect("workspace package version")
 }
 
 #[test]

@@ -32,12 +32,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[path = "../../signinum-jpeg/tests/fixtures/mod.rs"]
+#[path = "fixtures/mod.rs"]
 mod jpeg_fixtures;
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode grayscale JPEG to HTJ2K");
@@ -54,7 +54,7 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
 
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -76,7 +76,7 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -139,7 +139,7 @@ fn option_constructors_select_consistent_default_codec_modes() {
 
 #[test]
 fn transcode_rejects_inconsistent_codec_mode_options() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
         ..JpegToHtj2kOptions::default()
@@ -156,7 +156,7 @@ fn transcode_rejects_inconsistent_codec_mode_options() {
 
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -188,7 +188,7 @@ fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() 
 
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -218,7 +218,7 @@ fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
 
 #[test]
 fn default_transcode_uses_integer_direct_coefficients() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -243,7 +243,7 @@ fn default_transcode_uses_integer_direct_coefficients() {
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
     let options = JpegToHtj2kOptions {
@@ -274,7 +274,7 @@ fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
 
 #[test]
 fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
     let options = JpegToHtj2kOptions {
@@ -303,7 +303,7 @@ fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels
 
 #[test]
 fn generated_htj2k_is_accepted_by_available_external_decoder() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode grayscale JPEG to HTJ2K");
     let decoders = available_external_decoders();
@@ -414,7 +414,7 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_grayscale_
 
 #[test]
 fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -442,7 +442,7 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420(
 
 #[test]
 fn ycbcr_444_jpeg_transcodes_to_decodable_htj2k_without_mct() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:4:4 YCbCr JPEG to HTJ2K");
@@ -460,7 +460,7 @@ fn ycbcr_444_jpeg_transcodes_to_decodable_htj2k_without_mct() {
 
 #[test]
 fn ycbcr_422_jpeg_transcodes_with_native_component_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:2:2 YCbCr JPEG to HTJ2K");
@@ -479,7 +479,7 @@ fn ycbcr_422_jpeg_transcodes_with_native_component_sampling() {
 
 #[test]
 fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:2:0 YCbCr JPEG to HTJ2K");
@@ -499,7 +499,7 @@ fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
 
 #[test]
 fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -521,9 +521,8 @@ fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
 
 #[test]
 fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
-    let larger_jpeg =
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
-    let smaller_jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let larger_jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let smaller_jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         ..JpegToHtj2kOptions::default()
@@ -553,7 +552,7 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
 
 #[test]
 fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
@@ -586,7 +585,7 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
 
 #[test]
 fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut transcoder = JpegToHtj2kTranscoder::default();
 
     let encoded = transcoder
@@ -607,7 +606,7 @@ fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
 
 #[test]
 fn integer_direct_transcode_path_uses_reversible_acceleration_hook_when_available() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
@@ -630,22 +629,22 @@ fn integer_direct_transcode_batches_same_geometry_components_when_available() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
             expected_batch_sizes: &[1],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
             expected_batch_sizes: &[3],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
             expected_batch_sizes: &[1, 2],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
             expected_batch_sizes: &[1, 2],
         },
     ] {
@@ -689,22 +688,22 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
             expected_batch_sizes: &[4],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
     ] {
@@ -775,22 +774,22 @@ fn float97_batch_transcode_groups_components_across_tiles() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
             expected_batch_sizes: &[4],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
             expected_batch_sizes: &[4, 4, 4],
         },
     ] {
@@ -851,7 +850,7 @@ fn float97_batch_transcode_groups_components_across_tiles() {
 
 #[test]
 fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -875,7 +874,7 @@ fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
 
 #[test]
 fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::lossless_53();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -899,7 +898,7 @@ fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
 
 #[test]
 fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -924,7 +923,7 @@ fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator()
 
 #[test]
 fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
-    let good = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let good = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let inputs = [
         JpegTileBatchInput { bytes: good },
         JpegTileBatchInput {
@@ -950,9 +949,8 @@ fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
 
 #[test]
 fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
-    let larger_jpeg =
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
-    let smaller_jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
+    let larger_jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let smaller_jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::default();
     let mut transcoder = JpegToHtj2kTranscoder::default();
 

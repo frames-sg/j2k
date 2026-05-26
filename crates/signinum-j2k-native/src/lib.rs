@@ -3250,6 +3250,43 @@ mod tests {
     }
 
     #[test]
+    fn htj2k_97_auto_and_serial_cpu_parallelism_match_pixels() {
+        let width = 128_u32;
+        let height = 128_u32;
+        let pixels = (0..width * height)
+            .map(|idx| ((idx * 17 + idx / width * 31) & 0xff) as u8)
+            .collect::<Vec<_>>();
+        let bytes = encode_htj2k(
+            &pixels,
+            width,
+            height,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: false,
+                guard_bits: 2,
+                num_decomposition_levels: 5,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode HTJ2K 9/7");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut auto_context = DecoderContext::default();
+        let mut serial_context = DecoderContext::default();
+        serial_context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+
+        let auto = image
+            .decode_with_context(&mut auto_context)
+            .expect("auto decode");
+        let serial = image
+            .decode_with_context(&mut serial_context)
+            .expect("serial decode");
+
+        assert_eq!(auto.data, serial.data);
+    }
+
+    #[test]
     fn serial_cpu_parallelism_disables_classic_sub_band_parallel_branch() {
         assert!(!j2c::should_decode_classic_sub_band_in_parallel(
             CpuDecodeParallelism::Serial,

@@ -1,7 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use signinum_j2k_native::{
     encode_htj2k, execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into,
-    DecodeSettings, DecoderContext, EncodeOptions, Image, J2kDirectCpuScratch, J2kRect,
+    CpuDecodeParallelism, DecodeSettings, DecoderContext, EncodeOptions, Image,
+    J2kDirectCpuScratch, J2kRect,
 };
 
 const TILE_SIDE: u32 = 512;
@@ -18,6 +19,27 @@ fn patterned_rgb8(width: u32, height: u32) -> Vec<u8> {
     pixels
 }
 
+fn patterned_gray8(width: u32, height: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            pixels.push(((x * 17 + y * 31) & 0xff) as u8);
+        }
+    }
+    pixels
+}
+
+fn htj2k_gray_codestream(width: u32, height: u32, reversible: bool) -> Vec<u8> {
+    let pixels = patterned_gray8(width, height);
+    let options = EncodeOptions {
+        reversible,
+        guard_bits: if reversible { 1 } else { 2 },
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    encode_htj2k(&pixels, width, height, 1, 8, false, &options).expect("encode HTJ2K gray")
+}
+
 fn htj2k_rgb_codestream(width: u32, height: u32) -> Vec<u8> {
     let pixels = patterned_rgb8(width, height);
     let options = EncodeOptions {
@@ -26,6 +48,17 @@ fn htj2k_rgb_codestream(width: u32, height: u32) -> Vec<u8> {
         ..EncodeOptions::default()
     };
     encode_htj2k(&pixels, width, height, 3, 8, false, &options).expect("encode HTJ2K RGB")
+}
+
+fn htj2k_rgb97_codestream(width: u32, height: u32) -> Vec<u8> {
+    let pixels = patterned_rgb8(width, height);
+    let options = EncodeOptions {
+        reversible: false,
+        guard_bits: 2,
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    encode_htj2k(&pixels, width, height, 3, 8, false, &options).expect("encode HTJ2K 9/7 RGB")
 }
 
 fn direct_roi_plan(bytes: &[u8]) -> (signinum_j2k_native::J2kDirectColorPlan, J2kRect) {
@@ -56,6 +89,71 @@ fn direct_roi_plan(bytes: &[u8]) -> (signinum_j2k_native::J2kDirectColorPlan, J2
         )
         .expect("direct RGB region plan");
     (plan, output_region)
+}
+
+fn bench_direct_color_plan_97(c: &mut Criterion) {
+    let codestream = htj2k_rgb97_codestream(TILE_SIDE, TILE_SIDE);
+    let (plan, output_region) = direct_roi_plan(&codestream);
+    let rgb_stride = output_region.width() as usize * 3;
+    let rgb_len = rgb_stride * output_region.height() as usize;
+
+    let mut group = c.benchmark_group("j2k_native_direct_cpu_color_plan");
+    group.bench_function("htj2k_rgb8_97_roi256_q4_reuse_scratch", |b| {
+        let mut scratch = J2kDirectCpuScratch::new();
+        let mut out = vec![0_u8; rgb_len];
+        b.iter(|| {
+            execute_direct_color_plan_rgb8_into(
+                black_box(&plan),
+                output_region,
+                &mut scratch,
+                &mut out,
+                rgb_stride,
+            )
+            .expect("execute RGB direct 9/7 plan");
+            black_box(&out);
+        });
+    });
+    group.finish();
+}
+
+fn bench_full_decode(c: &mut Criterion) {
+    let gray_codestream = htj2k_gray_codestream(TILE_SIDE, TILE_SIDE, false);
+    let gray_image =
+        Image::new(&gray_codestream, &DecodeSettings::default()).expect("HTJ2K 9/7 gray image");
+    let rgb_codestream = htj2k_rgb97_codestream(TILE_SIDE, TILE_SIDE);
+    let rgb_image =
+        Image::new(&rgb_codestream, &DecodeSettings::default()).expect("HTJ2K 9/7 RGB image");
+
+    let mut group = c.benchmark_group("j2k_native_full_decode");
+    group.bench_function("htj2k_gray8_512x512_97_reuse_context", |b| {
+        let mut context = DecoderContext::default();
+        b.iter(|| {
+            let decoded = gray_image
+                .decode_with_context(&mut context)
+                .expect("decode HTJ2K 9/7 gray");
+            black_box(decoded.data.len());
+        });
+    });
+    group.bench_function("htj2k_rgb8_512x512_97_reuse_context", |b| {
+        let mut context = DecoderContext::default();
+        b.iter(|| {
+            let decoded = rgb_image
+                .decode_with_context(&mut context)
+                .expect("decode HTJ2K 9/7 RGB");
+            black_box(decoded.data.len());
+        });
+    });
+    group.bench_function("htj2k_rgb8_512x512_97_serial_context", |b| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        b.iter(|| {
+            let decoded = rgb_image
+                .decode_with_context(&mut context)
+                .expect("decode HTJ2K 9/7 RGB");
+            black_box(decoded.data.len());
+        });
+    });
+    group.finish();
 }
 
 fn bench_direct_color_plan(c: &mut Criterion) {
@@ -115,5 +213,10 @@ fn bench_direct_color_plan(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_direct_color_plan);
+criterion_group!(
+    benches,
+    bench_full_decode,
+    bench_direct_color_plan,
+    bench_direct_color_plan_97
+);
 criterion_main!(benches);

@@ -172,10 +172,8 @@ fn bench_layout_candidates(c: &mut Criterion) {
 }
 
 fn bench_jpeg_paths(c: &mut Criterion) {
-    let jpeg_420 =
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
-    let jpeg_restart =
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_restart_32x16.jpg");
+    let jpeg_420 = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg_restart = include_bytes!("../fixtures/conformance/baseline_420_restart_32x16.jpg");
 
     let mut jpeg_extract = c.benchmark_group("jpeg_dct_extract");
     jpeg_extract.bench_function("baseline_420_16x16", |b| {
@@ -192,11 +190,10 @@ fn bench_jpeg_paths(c: &mut Criterion) {
     });
     jpeg_extract.finish();
 
-    let jpeg_gray = include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg");
-    let jpeg_444 = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg");
-    let jpeg_422 = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg");
-    let jpeg_420 =
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg_gray = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg_444 = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
+    let jpeg_422 = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
+    let jpeg_420 = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let transcode_options = JpegToHtj2kOptions::default();
     let transcode_97_options = JpegToHtj2kOptions::lossy_97();
     let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k");
