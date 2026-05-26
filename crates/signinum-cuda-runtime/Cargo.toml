@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
 [lib]
 name = "signinum_cuda_runtime"
 path = "src/lib.rs"

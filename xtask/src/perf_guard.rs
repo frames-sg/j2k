@@ -982,9 +982,9 @@ mod tests {
         assert!(outcomes[0].threshold_exceeded);
         assert!(outcomes[0].regressed);
         for outcome in &outcomes[1..] {
-            assert!(!outcome.enforced, "{:?}", outcome);
-            assert!(outcome.threshold_exceeded, "{:?}", outcome);
-            assert!(!outcome.regressed, "{:?}", outcome);
+            assert!(!outcome.enforced, "{outcome:?}");
+            assert!(outcome.threshold_exceeded, "{outcome:?}");
+            assert!(!outcome.regressed, "{outcome:?}");
         }
     }
 

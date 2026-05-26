@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/signinum.svg)](https://crates.io/crates/signinum)
 [![docs.rs](https://docs.rs/signinum/badge.svg)](https://docs.rs/signinum)
 [![CI](https://github.com/frames-sg/signinum/actions/workflows/ci.yml/badge.svg)](https://github.com/frames-sg/signinum/actions/workflows/ci.yml)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue.svg)](Cargo.toml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](Cargo.toml)
 [![License](https://img.shields.io/crates/l/signinum.svg)](https://crates.io/crates/signinum)
 
 `signinum` provides Rust codec primitives for pathology and whole-slide imaging
@@ -334,6 +334,7 @@ collected on self-hosted runners with the target device stack installed.
 ## Project docs
 
 - [docs/architecture.md](docs/architecture.md) - workspace map and dependency rules
+- [docs/support-matrix.md](docs/support-matrix.md) - stable surfaces, backend limits, MSRV, and benchmark-publication gates
 - [docs/wsi-decode-api.md](docs/wsi-decode-api.md) - public WSI decode API guide
 - [docs/wsi-dicom-passthrough.md](docs/wsi-dicom-passthrough.md) - passthrough-first conversion policy
 - [docs/bench.md](docs/bench.md) - benchmark methodology
@@ -343,14 +344,17 @@ collected on self-hosted runners with the target device stack installed.
 
 Runnable crate examples are available under:
 
+- `crates/signinum/examples/inspect_and_decode.rs`
+- `crates/signinum/examples/tile_decompress.rs`
 - `crates/signinum-jpeg/examples`
 - `crates/signinum-j2k/examples`
 - `crates/signinum-tilecodec/examples`
+- `crates/signinum-transcode/examples/jpeg_to_htj2k.rs`
 
 ## Platform and MSRV
 
 - Rust edition: 2021
-- MSRV: Rust 1.94, pinned by [rust-toolchain.toml](rust-toolchain.toml)
+- MSRV: Rust 1.88, pinned by [rust-toolchain.toml](rust-toolchain.toml)
 - Decode hosts: native `x86_64` and `aarch64`
 - Metal: Apple Silicon macOS for resident Metal device surfaces
 - CUDA: hosts with a CUDA driver when CUDA adapters are built with

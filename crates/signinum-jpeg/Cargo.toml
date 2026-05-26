@@ -9,6 +9,10 @@ repository.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 readme                 = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
 build                  = "build.rs"
 
 [lib]

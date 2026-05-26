@@ -877,6 +877,7 @@ name = "signinum"
 version = "0.4.3"
 dependencies = [
  "criterion",
+ "flate2",
  "signinum-core",
  "signinum-j2k",
  "signinum-j2k-cuda",

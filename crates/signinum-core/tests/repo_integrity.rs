@@ -277,6 +277,42 @@ fn ci_workflow_keeps_docs_and_benchmark_compile_gates() {
 }
 
 #[test]
+fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let semver_job = workflow_job(&workflow, "semver");
+
+    assert!(
+        semver_job.contains("obi1kenobi/cargo-semver-checks-action@v2"),
+        "CI semver job must use cargo-semver-checks action v2"
+    );
+    assert!(
+        semver_job.contains("release-type: patch"),
+        "CI semver job must check patch-release compatibility for the 0.4.x line"
+    );
+
+    for package in [
+        "signinum",
+        "signinum-core",
+        "signinum-jpeg",
+        "signinum-j2k",
+        "signinum-tilecodec",
+    ] {
+        assert!(
+            semver_job.contains(package),
+            "CI semver job must cover stable library crate `{package}`"
+        );
+    }
+
+    for package in ["signinum-cli", "signinum-transcode", "signinum-j2k-metal"] {
+        assert!(
+            !semver_job.contains(package),
+            "CI semver job must not gate experimental or CLI crate `{package}`"
+        );
+    }
+}
+
+#[test]
 fn xtask_test_does_not_run_benchmarks_as_tests() {
     let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
     let test_section = xtask
@@ -710,20 +746,7 @@ fn public_repo_excludes_agent_private_artifacts() {
 fn published_crates_have_crates_io_landing_readmes() {
     let root = repo_root();
 
-    for crate_dir in [
-        "crates/signinum-core",
-        "crates/signinum-cuda-runtime",
-        "crates/signinum-profile",
-        "crates/signinum-j2k-native",
-        "crates/signinum-tilecodec",
-        "crates/signinum-jpeg",
-        "crates/signinum-j2k",
-        "crates/signinum-jpeg-metal",
-        "crates/signinum-jpeg-cuda",
-        "crates/signinum-j2k-metal",
-        "crates/signinum-j2k-cuda",
-        "crates/signinum-cli",
-    ] {
+    for crate_dir in publishable_crate_dirs() {
         let manifest_path = root.join(crate_dir).join("Cargo.toml");
         let manifest = fs::read_to_string(&manifest_path)
             .unwrap_or_else(|err| panic!("read {}: {err}", manifest_path.display()));
@@ -746,6 +769,179 @@ fn published_crates_have_crates_io_landing_readmes() {
                 .display()
         );
     }
+}
+
+#[test]
+fn publishable_crates_configure_docs_rs_metadata() {
+    let root = repo_root();
+
+    for crate_dir in publishable_crate_dirs() {
+        let manifest_path = root.join(crate_dir).join("Cargo.toml");
+        let manifest = fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", manifest_path.display()));
+
+        assert!(
+            manifest.contains("[package.metadata.docs.rs]"),
+            "{} must configure docs.rs metadata",
+            manifest_path
+                .strip_prefix(root)
+                .unwrap_or(&manifest_path)
+                .display()
+        );
+        assert!(
+            manifest.contains("all-features = true"),
+            "{} must build docs.rs with all features enabled",
+            manifest_path
+                .strip_prefix(root)
+                .unwrap_or(&manifest_path)
+                .display()
+        );
+        assert!(
+            manifest.contains("targets = []"),
+            "{} must keep docs.rs targets explicit",
+            manifest_path
+                .strip_prefix(root)
+                .unwrap_or(&manifest_path)
+                .display()
+        );
+    }
+}
+
+#[test]
+fn support_matrix_is_linked_and_covers_adoption_surfaces() {
+    let root = repo_root();
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    let architecture =
+        fs::read_to_string(root.join("docs/architecture.md")).expect("read architecture docs");
+    let matrix_path = root.join("docs/support-matrix.md");
+    let matrix = fs::read_to_string(&matrix_path).expect("read support matrix");
+
+    for source in [
+        ("README", readme.as_str()),
+        ("architecture docs", architecture.as_str()),
+    ] {
+        assert!(
+            source.1.contains("docs/support-matrix.md"),
+            "{} must link the support matrix",
+            source.0
+        );
+    }
+
+    for required in [
+        "Stable APIs",
+        "Experimental APIs",
+        "Backend support",
+        "Security and fuzzing",
+        "Benchmark publication",
+        "MSRV",
+        "OpenJPEG",
+        "Grok",
+    ] {
+        assert!(
+            matrix.contains(required),
+            "{} must cover `{required}`",
+            matrix_path
+                .strip_prefix(root)
+                .unwrap_or(&matrix_path)
+                .display()
+        );
+    }
+}
+
+#[test]
+fn facade_and_transcode_examples_are_publicly_linked() {
+    let root = repo_root();
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+
+    for example in [
+        "crates/signinum/examples/inspect_and_decode.rs",
+        "crates/signinum/examples/tile_decompress.rs",
+        "crates/signinum-transcode/examples/jpeg_to_htj2k.rs",
+    ] {
+        assert!(
+            root.join(example).exists(),
+            "expected runnable example `{example}`"
+        );
+        assert!(readme.contains(example), "README must link `{example}`");
+    }
+}
+
+#[test]
+fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
+    let root = repo_root();
+    let bench_docs = fs::read_to_string(root.join("docs/bench.md")).expect("read bench docs");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+
+    for required in [
+        "published benchmark",
+        "SIGNINUM_J2K_COMPARE_THREADS",
+        "SIGNINUM_REQUIRE_OPENJPEG=1",
+        "SIGNINUM_REQUIRE_GROK=1",
+        "comparator availability",
+        "comparator version",
+        "input source",
+        "signinum-generated",
+    ] {
+        assert!(
+            bench_docs.contains(required),
+            "bench docs must contain `{required}`"
+        );
+    }
+
+    assert!(
+        xtask.contains("\"j2k-bench-signoff\""),
+        "xtask must expose a no-silent-skip J2K benchmark signoff task"
+    );
+}
+
+#[test]
+fn j2k_compare_bench_exposes_fair_comparator_controls() {
+    let root = repo_root();
+    let compare_bench =
+        fs::read_to_string(root.join("crates/signinum-j2k-metal/benches/compare.rs"))
+            .expect("read J2K compare benchmark");
+    let compare_common =
+        fs::read_to_string(root.join("crates/signinum-j2k-metal/benches/common/mod.rs"))
+            .expect("read J2K compare benchmark helpers");
+    let openjpeg = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/openjpeg.rs"))
+        .expect("read OpenJPEG comparator");
+    let grok = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/grok.rs"))
+        .expect("read Grok comparator");
+
+    for required in [
+        "print_comparator_run_context",
+        "signinum_decode_serial",
+        "signinum_decode_region_serial",
+        "signinum_decode_scaled_serial",
+        "signinum_decode_region_scaled_serial",
+        "openjpeg_decode_external_tile_batch_region_scaled",
+        "grok_decode_external_tile_batch_region_scaled",
+    ] {
+        assert!(
+            compare_bench.contains(required),
+            "J2K compare bench must contain `{required}`"
+        );
+    }
+
+    for required in [
+        "SIGNINUM_J2K_COMPARE_THREADS",
+        "j2k_compare_workers",
+        "TileBatchOptions { workers",
+    ] {
+        assert!(
+            compare_common.contains(required),
+            "J2K compare helpers must contain `{required}`"
+        );
+    }
+
+    assert!(
+        openjpeg.contains("pub fn version"),
+        "OpenJPEG comparator must expose version metadata"
+    );
+    assert!(
+        grok.contains("pub fn version") && grok.contains("pub fn library_path"),
+        "Grok comparator must expose version and path metadata"
+    );
 }
 
 #[test]
@@ -900,6 +1096,26 @@ fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
         search_start = candidate + 1;
     }
     &rest[..end]
+}
+
+fn publishable_crate_dirs() -> &'static [&'static str] {
+    &[
+        "crates/signinum-core",
+        "crates/signinum-cuda-runtime",
+        "crates/signinum-profile",
+        "crates/signinum-j2k-native",
+        "crates/signinum-jpeg",
+        "crates/signinum-tilecodec",
+        "crates/signinum-j2k",
+        "crates/signinum-transcode",
+        "crates/signinum-jpeg-metal",
+        "crates/signinum-j2k-metal",
+        "crates/signinum-transcode-metal",
+        "crates/signinum-jpeg-cuda",
+        "crates/signinum-j2k-cuda",
+        "crates/signinum-cli",
+        "crates/signinum",
+    ]
 }
 
 fn cargo_metadata_workspace_edges(root: &Path) -> BTreeSet<(String, String)> {

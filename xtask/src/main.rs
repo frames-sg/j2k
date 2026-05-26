@@ -72,6 +72,7 @@ fn run() -> Result<(), String> {
         "doc" | "docs" => doc(),
         "typos" => typos(),
         "bench-build" => bench_build(),
+        "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
         "deny" => deny(),
@@ -252,6 +253,34 @@ fn bench_build() -> Result<(), String> {
     ])
 }
 
+fn j2k_bench_signoff() -> Result<(), String> {
+    run_cargo_with_env(
+        &[
+            "test",
+            "-p",
+            "signinum-j2k-compare",
+            "--test",
+            "in_process_parity",
+        ],
+        &[
+            ("SIGNINUM_REQUIRE_OPENJPEG", "1"),
+            ("SIGNINUM_REQUIRE_GROK", "1"),
+        ],
+    )?;
+    run_cargo_with_env(
+        &["test", "-p", "signinum-j2k", "--test", "openjpeg_parity"],
+        &[("SIGNINUM_REQUIRE_OPENJPEG", "1")],
+    )?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-metal",
+        "--bench",
+        "compare",
+        "--no-run",
+    ])
+}
+
 fn fuzz_build() -> Result<(), String> {
     run_cargo(&[
         "check",
@@ -406,11 +435,11 @@ fn run_program(program: OsString, args: &[&str], envs: &[(&str, &str)]) -> Resul
     }
     let status = command
         .status()
-        .map_err(|err| format!("failed to start `{}`: {err}", display))?;
+        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`{}` exited with {status}", display))
+        Err(format!("`{display}` exited with {status}"))
     }
 }
 
@@ -431,6 +460,7 @@ fn print_help() {
            doc           build workspace docs with warnings denied\n\
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
+           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
            j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\
            deny          run cargo-deny\n\

@@ -753,7 +753,7 @@ mod tests {
         let mut bytes = minimal_baseline_jpeg();
         // Insert a second SOF0 before SOS. Find SOS offset and splice.
         let sos_pos = bytes.windows(2).position(|w| w == [0xFF, 0xDA]).unwrap();
-        let second_sof = vec![
+        let second_sof = [
             0xFF,
             0xC0,
             0x00,
@@ -825,7 +825,7 @@ mod tests {
         let first_sos_pos = bytes.windows(2).position(|w| w == [0xFF, 0xDA]).unwrap();
         bytes[first_sos_pos + 12] = 0;
         let eoi_pos = bytes.windows(2).rposition(|w| w == [0xFF, 0xD9]).unwrap();
-        let second_scan = vec![
+        let second_scan = [
             0xFF, 0xDA, 0x00, 12, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 0, 0x10, 0x00,
         ];
         bytes.splice(eoi_pos..eoi_pos, second_scan.iter().copied());

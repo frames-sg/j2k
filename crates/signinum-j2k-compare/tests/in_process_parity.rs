@@ -40,6 +40,33 @@ fn openjpeg_in_process_region_matches_signinum_rgb_fixture() {
 }
 
 #[test]
+fn openjpeg_in_process_scaled_matches_signinum_rgb_fixture() {
+    let Some(input) = bench_fixture_rgb() else {
+        return;
+    };
+    let ours = signinum_rgb_scaled_q4(&input);
+    let theirs = signinum_j2k_compare::openjpeg::decode_rgb_scaled(&input, 2).expect("openjpeg");
+    assert_eq!(ours, theirs);
+}
+
+#[test]
+fn openjpeg_in_process_region_scaled_matches_signinum_rgb_fixture() {
+    let Some(input) = bench_fixture_rgb() else {
+        return;
+    };
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 64,
+        h: 64,
+    };
+    let ours = signinum_rgb_region_scaled_q4(&input, roi);
+    let theirs =
+        signinum_j2k_compare::openjpeg::decode_rgb_region_scaled(&input, roi, 2).expect("openjpeg");
+    assert_eq!(ours, theirs);
+}
+
+#[test]
 fn grok_in_process_matches_signinum_rgb_fixture() {
     if !signinum_j2k_compare::grok::is_available() {
         assert!(
@@ -57,6 +84,29 @@ fn grok_in_process_matches_signinum_rgb_fixture() {
 }
 
 #[test]
+fn grok_in_process_region_matches_signinum_rgb_fixture() {
+    if !signinum_j2k_compare::grok::is_available() {
+        assert!(
+            !require_grok(),
+            "SIGNINUM_REQUIRE_GROK is set but in-process Grok is unavailable"
+        );
+        return;
+    }
+    let Some(input) = bench_fixture_rgb() else {
+        return;
+    };
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 64,
+        h: 64,
+    };
+    let ours = signinum_rgb_region(&input, roi);
+    let theirs = signinum_j2k_compare::grok::decode_rgb_region(&input, roi).expect("grok");
+    assert_eq!(ours, theirs);
+}
+
+#[test]
 fn grok_in_process_scaled_matches_signinum_rgb_fixture() {
     if !signinum_j2k_compare::grok::is_available() {
         assert!(
@@ -70,6 +120,30 @@ fn grok_in_process_scaled_matches_signinum_rgb_fixture() {
     };
     let ours = signinum_rgb_scaled_q4(&input);
     let theirs = signinum_j2k_compare::grok::decode_rgb_scaled(&input, 2).expect("grok");
+    assert_eq!(ours, theirs);
+}
+
+#[test]
+fn grok_in_process_region_scaled_matches_signinum_rgb_fixture() {
+    if !signinum_j2k_compare::grok::is_available() {
+        assert!(
+            !require_grok(),
+            "SIGNINUM_REQUIRE_GROK is set but in-process Grok is unavailable"
+        );
+        return;
+    }
+    let Some(input) = bench_fixture_rgb() else {
+        return;
+    };
+    let roi = Rect {
+        x: 16,
+        y: 24,
+        w: 64,
+        h: 64,
+    };
+    let ours = signinum_rgb_region_scaled_q4(&input, roi);
+    let theirs =
+        signinum_j2k_compare::grok::decode_rgb_region_scaled(&input, roi, 2).expect("grok");
     assert_eq!(ours, theirs);
 }
 
@@ -117,6 +191,23 @@ fn signinum_rgb_scaled_q4(bytes: &[u8]) -> Vec<u8> {
             Downscale::Quarter,
         )
         .expect("scaled decode");
+    out
+}
+
+fn signinum_rgb_region_scaled_q4(bytes: &[u8], roi: Rect) -> Vec<u8> {
+    let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let mut out = vec![0_u8; scaled.w as usize * scaled.h as usize * 3];
+    decoder
+        .decode_region_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut out,
+            scaled.w as usize * 3,
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Quarter,
+        )
+        .expect("region scaled decode");
     out
 }
 
