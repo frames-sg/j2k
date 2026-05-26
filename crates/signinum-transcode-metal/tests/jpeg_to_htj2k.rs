@@ -12,7 +12,7 @@ use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILA
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -64,7 +64,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -118,7 +118,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
 #[test]
 fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+        include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1)],
         &[(1, 1)],
@@ -130,7 +130,7 @@ fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+        include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1), (8, 8, 1, 1), (8, 8, 1, 1)],
         &[(1, 1), (1, 1), (1, 1)],
@@ -142,7 +142,7 @@ fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+        include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
         "native_component_sampling_integer_direct_53",
         &[(16, 8, 1, 1), (8, 8, 2, 1), (8, 8, 2, 1)],
         &[(1, 1), (2, 1), (2, 1)],
@@ -154,7 +154,7 @@ fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"),
+        include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
         "native_component_sampling_integer_direct_53",
         &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
         &[(1, 1), (2, 2), (2, 2)],
@@ -165,7 +165,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
@@ -211,7 +211,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
@@ -273,7 +273,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
-    let jpeg = include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let options = JpegToHtj2kOptions::lossy_97();
     let mut transcoder = JpegToHtj2kTranscoder::default();

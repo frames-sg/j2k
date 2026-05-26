@@ -1,4 +1,5 @@
 target/
+docs/superpowers/
 **/*.rs.bk
 Cargo.lock.bak
 .vscode/

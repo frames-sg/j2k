@@ -29,6 +29,8 @@ use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::math::SimdBuffer;
 use crate::profile;
 use crate::reader::BitReader;
+#[cfg(feature = "parallel")]
+use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
 use crate::{
     decode_j2k_code_block_scalar, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
     HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob,
@@ -1179,6 +1181,7 @@ fn decode_sub_band_bitplanes(
             storage,
             header,
             ht_decoder,
+            cpu_decode_parallelism,
             num_bitplanes,
             dequantization_step,
             profile_enabled,
@@ -1380,6 +1383,15 @@ struct DecodedClassicBlock {
     coefficients: Vec<f32>,
 }
 
+#[cfg(feature = "parallel")]
+struct DecodedHtBlock {
+    output_x: u32,
+    output_y: u32,
+    width: u32,
+    height: u32,
+    coefficients: Vec<f32>,
+}
+
 fn count_classic_code_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
@@ -1454,7 +1466,93 @@ fn collect_pending_classic_blocks(
     Ok(pending_blocks)
 }
 
+fn count_ht_code_blocks(
+    sub_band_idx: usize,
+    sub_band: &SubBand,
+    storage: &DecompositionStorage<'_>,
+) -> usize {
+    sub_band
+        .precincts
+        .clone()
+        .map(|idx| &storage.precincts[idx])
+        .map(|precinct| {
+            precinct
+                .code_blocks
+                .clone()
+                .filter(|idx| {
+                    let code_block = &storage.code_blocks[*idx];
+                    code_block_required_by_index(storage, sub_band_idx, code_block)
+                        && code_block.number_of_coding_passes > 0
+                })
+                .count()
+        })
+        .sum()
+}
+
+#[cfg(feature = "parallel")]
+fn collect_pending_ht_blocks(
+    sub_band_idx: usize,
+    sub_band: &SubBand,
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+    num_bitplanes: u8,
+) -> Result<Vec<PendingHtBlock>> {
+    let mut pending_blocks =
+        Vec::with_capacity(count_ht_code_blocks(sub_band_idx, sub_band, storage));
+    for precinct in sub_band
+        .precincts
+        .clone()
+        .map(|idx| &storage.precincts[idx])
+    {
+        for code_block in precinct
+            .code_blocks
+            .clone()
+            .map(|idx| &storage.code_blocks[idx])
+        {
+            if !code_block_required_by_index(storage, sub_band_idx, code_block) {
+                continue;
+            }
+            let actual_bitplanes = if header.strict {
+                num_bitplanes
+                    .checked_sub(code_block.missing_bit_planes)
+                    .ok_or(DecodingError::InvalidBitplaneCount)?
+            } else {
+                num_bitplanes.saturating_sub(code_block.missing_bit_planes)
+            };
+            let max_coding_passes = if actual_bitplanes == 0 {
+                0
+            } else {
+                1 + 3 * (actual_bitplanes - 1)
+            };
+            if code_block.number_of_coding_passes > max_coding_passes && header.strict {
+                bail!(DecodingError::TooManyCodingPasses);
+            }
+            if code_block.number_of_coding_passes == 0 || actual_bitplanes == 0 {
+                continue;
+            }
+
+            pending_blocks.push(PendingHtBlock {
+                combined: ht_block_decode::collect_code_block_data(code_block, storage)?,
+                output_x: code_block.rect.x0 - sub_band.rect.x0,
+                output_y: code_block.rect.y0 - sub_band.rect.y0,
+                width: code_block.rect.width(),
+                height: code_block.rect.height(),
+                missing_bit_planes: code_block.missing_bit_planes,
+                number_of_coding_passes: code_block.number_of_coding_passes,
+            });
+        }
+    }
+    Ok(pending_blocks)
+}
+
 pub(crate) fn should_decode_classic_sub_band_in_parallel(
+    parallelism: CpuDecodeParallelism,
+    code_block_count: usize,
+) -> bool {
+    cfg!(feature = "parallel") && parallelism == CpuDecodeParallelism::Auto && code_block_count >= 4
+}
+
+pub(crate) fn should_decode_ht_sub_band_in_parallel(
     parallelism: CpuDecodeParallelism,
     code_block_count: usize,
 ) -> bool {
@@ -1551,6 +1649,97 @@ fn copy_decoded_classic_blocks_to_sub_band(
     Ok(())
 }
 
+#[cfg(feature = "parallel")]
+fn decode_ht_sub_band_blocks_parallel(
+    pending_blocks: &[PendingHtBlock],
+    strict: bool,
+    num_bitplanes: u8,
+    stripe_causal: bool,
+    dequantization_step: f32,
+) -> Result<Vec<DecodedHtBlock>> {
+    use rayon::prelude::*;
+
+    pending_blocks
+        .par_iter()
+        .map(|pending| {
+            let output_stride = pending.width as usize;
+            let output_len = output_stride
+                .checked_mul(pending.height as usize)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let mut coefficients = vec![0.0; output_len];
+            let mut workspace = HtCodeBlockDecodeWorkspace::default();
+            decode_ht_code_block_scalar_with_workspace(
+                HtCodeBlockDecodeJob {
+                    data: &pending.combined.data,
+                    cleanup_length: pending.combined.cleanup_length,
+                    refinement_length: pending.combined.refinement_length,
+                    width: pending.width,
+                    height: pending.height,
+                    output_stride,
+                    missing_bit_planes: pending.missing_bit_planes,
+                    number_of_coding_passes: pending.number_of_coding_passes,
+                    num_bitplanes,
+                    stripe_causal,
+                    strict,
+                    dequantization_step,
+                },
+                &mut coefficients,
+                &mut workspace,
+            )?;
+            Ok(DecodedHtBlock {
+                output_x: pending.output_x,
+                output_y: pending.output_y,
+                width: pending.width,
+                height: pending.height,
+                coefficients,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[cfg(feature = "parallel")]
+fn copy_decoded_ht_blocks_to_sub_band(
+    decoded_blocks: &[DecodedHtBlock],
+    sub_band: &SubBand,
+    storage: &mut DecompositionStorage<'_>,
+) -> Result<()> {
+    let sub_band_width = sub_band.rect.width() as usize;
+    let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
+    for block in decoded_blocks {
+        if block
+            .output_x
+            .checked_add(block.width)
+            .is_none_or(|x1| x1 > sub_band.rect.width())
+            || block
+                .output_y
+                .checked_add(block.height)
+                .is_none_or(|y1| y1 > sub_band.rect.height())
+        {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
+        let block_width = block.width as usize;
+        for row in 0..block.height as usize {
+            let dst_start = (block.output_y as usize + row)
+                .checked_mul(sub_band_width)
+                .and_then(|offset| offset.checked_add(block.output_x as usize))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let dst_end = dst_start
+                .checked_add(block_width)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let src_start = row
+                .checked_mul(block_width)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let src_end = src_start
+                .checked_add(block_width)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            base_store[dst_start..dst_end].copy_from_slice(&block.coefficients[src_start..src_end]);
+        }
+    }
+    Ok(())
+}
+
 fn decode_sub_band_ht_blocks(
     sub_band_idx: usize,
     sub_band: &SubBand,
@@ -1559,6 +1748,7 @@ fn decode_sub_band_ht_blocks(
     storage: &mut DecompositionStorage<'_>,
     header: &Header<'_>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    cpu_decode_parallelism: CpuDecodeParallelism,
     num_bitplanes: u8,
     dequantization_step: f32,
     profile_enabled: bool,
@@ -1666,6 +1856,27 @@ fn decode_sub_band_ht_blocks(
         }
 
         return Ok(());
+    }
+
+    let code_block_count = count_ht_code_blocks(sub_band_idx, sub_band, storage);
+    if !profile_enabled
+        && should_decode_ht_sub_band_in_parallel(cpu_decode_parallelism, code_block_count)
+    {
+        #[cfg(feature = "parallel")]
+        {
+            let pending_blocks =
+                collect_pending_ht_blocks(sub_band_idx, sub_band, storage, header, num_bitplanes)?;
+            let decoded_blocks = decode_ht_sub_band_blocks_parallel(
+                &pending_blocks,
+                header.strict,
+                num_bitplanes,
+                stripe_causal,
+                dequantization_step,
+            )?;
+            tile_ctx.debug_counters.decoded_code_blocks += decoded_blocks.len();
+            copy_decoded_ht_blocks_to_sub_band(&decoded_blocks, sub_band, storage)?;
+            return Ok(());
+        }
     }
 
     for precinct in sub_band
@@ -2163,5 +2374,21 @@ mod tests {
         .expect_err("non-contiguous segment indices must fail");
 
         assert_eq!(error, DecodingError::CodeBlockDecodeFailure.into());
+    }
+
+    #[test]
+    fn auto_cpu_parallelism_enables_ht_sub_band_parallel_branch() {
+        assert!(super::should_decode_ht_sub_band_in_parallel(
+            super::CpuDecodeParallelism::Auto,
+            16
+        ));
+    }
+
+    #[test]
+    fn serial_cpu_parallelism_disables_ht_sub_band_parallel_branch() {
+        assert!(!super::should_decode_ht_sub_band_in_parallel(
+            super::CpuDecodeParallelism::Serial,
+            16
+        ));
     }
 }

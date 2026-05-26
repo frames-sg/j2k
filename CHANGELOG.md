@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-05-25
+
+### Fixed
+
+- Refreshed release-gate metadata and package-integrity checks for the current
+  facade release staging version.
+- Kept transcode test and benchmark fixtures inside their crate packages so
+  packaged tests and benches remain runnable outside the workspace checkout.
+
 ## [0.4.2] - 2026-05-15
 
 ### Changed

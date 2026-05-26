@@ -11,6 +11,7 @@ readme               = "README.md"
 [[bin]]
 name = "signinum"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 signinum-j2k  = { path = "../signinum-j2k", version = "=0.4.3" }

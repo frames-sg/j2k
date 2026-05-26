@@ -77,21 +77,19 @@ fn conformance_fixtures() -> Vec<CorpusFixture<'static>> {
     vec![
         CorpusFixture {
             name: "grayscale_8x8",
-            bytes: include_bytes!("../../signinum-jpeg/fixtures/conformance/grayscale_8x8.jpg"),
+            bytes: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
         },
         CorpusFixture {
             name: "baseline_444_8x8",
-            bytes: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg"),
+            bytes: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
         },
         CorpusFixture {
             name: "baseline_422_16x8",
-            bytes: include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg"),
+            bytes: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
         },
         CorpusFixture {
             name: "baseline_420_16x16",
-            bytes: include_bytes!(
-                "../../signinum-jpeg/fixtures/conformance/baseline_420_16x16.jpg"
-            ),
+            bytes: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
         },
     ]
 }

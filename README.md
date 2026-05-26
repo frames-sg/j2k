@@ -29,9 +29,7 @@ expose CUDA device memory through `cuda-runtime` when a CUDA driver is
 available. JPEG full-frame RGB8 CUDA requests can use nvJPEG; NVIDIA performance
 claims require self-hosted GPU benchmark evidence.
 
-The current public-source target is the `signinum` facade release. Runtime
-backend selection defaults to `Auto`: CPU decode remains the portable fallback,
-and device adapters are additive for supported compiled workloads.
+The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto`: CPU decode remains the portable fallback, and device adapters are additive for supported compiled workloads.
 
 ## Why It Exists
 
