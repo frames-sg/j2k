@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
+#[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::{
-    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator,
-    Htj2k97CodeBlockOptions, J2kSubBandType, PrequantizedHtj2k97CodeBlock,
-    PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, J2kSubBandType,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband,
 };
 #[cfg(target_os = "macos")]
 use signinum_transcode::dct97_2d::{
