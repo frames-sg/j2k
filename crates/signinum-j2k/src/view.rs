@@ -7,8 +7,7 @@ use crate::{
     context::J2kContext,
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        decode_region_scaled_from_info, decode_scaled_from_info, validate_buffer, validate_region,
-        validate_supported_format, J2kDecodeOutcome,
+        validate_buffer, validate_region, validate_supported_format, J2kDecodeOutcome,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
@@ -207,10 +206,10 @@ impl<'a> J2kDecoder<'a> {
             ));
         };
         decode_image_into_with_native_context(image, native_context, out, stride, fmt)?;
-        Ok(signinum_core::DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: Vec::new(),
-        })
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(self.info.dimensions),
+            Vec::new(),
+        ))
     }
 
     /// Decode a source-coordinate region into `out`.
@@ -250,10 +249,7 @@ impl<'a> J2kDecoder<'a> {
             ));
         };
         decode_image_region_into_with_native_context(image, native_context, out, stride, fmt, roi)?;
-        Ok(signinum_core::DecodeOutcome {
-            decoded: roi,
-            warnings: Vec::new(),
-        })
+        Ok(signinum_core::DecodeOutcome::new(roi, Vec::new()))
     }
 
     /// Decode the full image at a reduced resolution.
@@ -275,17 +271,31 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        decode_scaled_from_info(
-            self.bytes,
-            self.info.dimensions,
-            pool,
-            out,
-            stride,
-            fmt,
-            scale,
-        )
+        validate_supported_format(fmt)?;
+        let settings = DecodeSettings {
+            target_resolution: Some(self.scaled_target_dims(scale)),
+            ..DecodeSettings::default()
+        };
+        let image = backend_image(self.bytes, settings)?;
+        let image_dims = (image.width(), image.height());
+        validate_buffer(image_dims, out.len(), stride, fmt)?;
+        let mut native_context = self.scaled_decode_native_context();
+        decode_image_into_with_native_context(&image, &mut native_context, out, stride, fmt)?;
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(image_dims),
+            Vec::new(),
+        ))
     }
 
+    /// Decode a source-coordinate region at a reduced resolution.
+    ///
+    /// `roi` is expressed in full-resolution source pixels. The decoded output
+    /// covers `roi.scaled_covering(scale)` in reduced-resolution coordinates.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the region is out of bounds, the scale or
+    /// pixel format is unsupported, the output buffer is too small, or decode
+    /// fails.
     pub fn decode_region_scaled_into(
         &mut self,
         pool: &mut J2kScratchPool,
@@ -298,16 +308,27 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_region_into(pool, out, stride, fmt, roi);
         }
-        decode_region_scaled_from_info(
-            self.bytes,
-            self.info.dimensions,
-            pool,
+        validate_supported_format(fmt)?;
+        validate_region(roi, self.info.dimensions)?;
+        let scaled_roi = roi.scaled_covering(scale);
+        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
+        let settings = DecodeSettings {
+            target_resolution: Some(self.scaled_target_dims(scale)),
+            ..DecodeSettings::default()
+        };
+        let image = backend_image(self.bytes, settings)?;
+        let image_dims = (image.width(), image.height());
+        validate_region(scaled_roi, image_dims)?;
+        let mut native_context = self.scaled_decode_native_context();
+        decode_image_region_into_with_native_context(
+            &image,
+            &mut native_context,
             out,
             stride,
             fmt,
-            roi,
-            scale,
-        )
+            scaled_roi,
+        )?;
+        Ok(signinum_core::DecodeOutcome::new(scaled_roi, Vec::new()))
     }
 
     fn ensure_image(&mut self) -> Result<(), J2kError> {
@@ -324,6 +345,19 @@ impl<'a> J2kDecoder<'a> {
         self.image
             .as_ref()
             .ok_or_else(|| J2kError::Backend("internal image cache missing".to_string()))
+    }
+
+    fn scaled_target_dims(&self, scale: Downscale) -> (u32, u32) {
+        (
+            self.info.dimensions.0.div_ceil(scale.denominator()),
+            self.info.dimensions.1.div_ceil(scale.denominator()),
+        )
+    }
+
+    fn scaled_decode_native_context(&self) -> signinum_j2k_native::DecoderContext<'a> {
+        let mut native_context = signinum_j2k_native::DecoderContext::default();
+        native_context.set_cpu_decode_parallelism(self.native_context.cpu_decode_parallelism());
+        native_context
     }
 }
 
@@ -426,10 +460,10 @@ impl<'a> ImageDecodeRows<'a, u8> for J2kDecoder<'a> {
             let row = &full[start..start + row_bytes];
             sink.write_row(y, row).map_err(DecodeRowsError::Sink)?;
         }
-        Ok(signinum_core::DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: Vec::new(),
-        })
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(self.info.dimensions),
+            Vec::new(),
+        ))
     }
 }
 
@@ -461,10 +495,10 @@ impl<'a> ImageDecodeRows<'a, u16> for J2kDecoder<'a> {
             }
             sink.write_row(y, row).map_err(DecodeRowsError::Sink)?;
         }
-        Ok(signinum_core::DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: Vec::new(),
-        })
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(self.info.dimensions),
+            Vec::new(),
+        ))
     }
 }
 
@@ -606,4 +640,38 @@ fn should_retry_with_backend(error: &J2kError) -> bool {
             ..
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use signinum_j2k_native::CpuDecodeParallelism;
+
+    #[test]
+    fn scaled_decode_native_context_preserves_configured_parallelism() {
+        let mut decoder = J2kDecoder {
+            bytes: &[],
+            info: Info {
+                dimensions: (1, 1),
+                components: 1,
+                colorspace: signinum_core::Colorspace::SGray,
+                bit_depth: 8,
+                tile_layout: None,
+                coded_unit_layout: None,
+                restart_interval: None,
+                resolution_levels: 1,
+            },
+            image: None,
+            native_context: signinum_j2k_native::DecoderContext::default(),
+            passthrough: None,
+        };
+        decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+
+        let native_context = decoder.scaled_decode_native_context();
+
+        assert_eq!(
+            native_context.cpu_decode_parallelism(),
+            CpuDecodeParallelism::Serial
+        );
+    }
 }

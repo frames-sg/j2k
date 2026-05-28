@@ -4,6 +4,7 @@ use core::fmt;
 
 /// The main error type for JPEG 2000 decoding operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Errors related to JP2 file format and box parsing.
     Format(FormatError),
@@ -21,6 +22,7 @@ pub enum DecodeError {
 
 /// Errors related to JP2 file format and box parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FormatError {
     /// Invalid JP2 signature.
     InvalidSignature,
@@ -36,6 +38,7 @@ pub enum FormatError {
 
 /// Errors related to codestream markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MarkerError {
     /// Invalid marker encountered.
     Invalid,
@@ -51,6 +54,7 @@ pub enum MarkerError {
 
 /// Errors related to tile processing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TileError {
     /// Invalid image tile was encountered.
     Invalid,
@@ -64,6 +68,7 @@ pub enum TileError {
 
 /// Errors related to image dimensions and validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// Invalid image dimensions.
     InvalidDimensions,
@@ -73,6 +78,8 @@ pub enum ValidationError {
     TooManyChannels,
     /// Invalid component metadata.
     InvalidComponentMetadata,
+    /// Invalid JP2 channel definition metadata.
+    InvalidChannelDefinition,
     /// Invalid progression order.
     InvalidProgressionOrder,
     /// Invalid transformation type.
@@ -91,6 +98,7 @@ pub enum ValidationError {
 
 /// Errors related to decoding operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodingError {
     /// An error occurred while decoding a code-block.
     CodeBlockDecodeFailure,
@@ -112,6 +120,7 @@ pub enum DecodingError {
 
 /// Errors related to color space and component handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorError {
     /// Multi-component transform failed.
     Mct,
@@ -183,6 +192,7 @@ impl fmt::Display for ValidationError {
             Self::ImageTooLarge => write!(f, "image is too large"),
             Self::TooManyChannels => write!(f, "image has too many channels"),
             Self::InvalidComponentMetadata => write!(f, "invalid component metadata"),
+            Self::InvalidChannelDefinition => write!(f, "invalid channel definition"),
             Self::InvalidProgressionOrder => write!(f, "invalid progression order"),
             Self::InvalidTransformation => write!(f, "invalid transformation type"),
             Self::InvalidQuantizationStyle => write!(f, "invalid quantization style"),

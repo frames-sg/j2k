@@ -21,6 +21,7 @@ path = "src/lib.rs"
 [features]
 default = []
 cuda-runtime = ["dep:signinum-cuda-runtime"]
+cuda-profiling = ["cuda-runtime", "signinum-cuda-runtime/cuda-profiling"]
 
 [dependencies]
 signinum-core = { path = "../signinum-core", version = "=0.4.4" }
@@ -37,6 +38,15 @@ signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 [[bench]]
 name = "encode_stages"
 harness = false
+
+[[bench]]
+name = "htj2k_decode"
+harness = false
+
+[[bench]]
+name = "htj2k_encode"
+harness = false
+required-features = ["cuda-runtime"]
 
 [lints.rust]
 unsafe_code = "allow"

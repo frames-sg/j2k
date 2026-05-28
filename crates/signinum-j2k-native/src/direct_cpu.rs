@@ -10,8 +10,7 @@ use crate::{
     J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, J2kWaveletTransform,
 };
 
-/// Hidden reusable scratch for executing direct J2K RGB plans on the CPU.
-#[doc(hidden)]
+/// Adapter reusable scratch for executing direct J2K RGB plans on the CPU.
 #[derive(Debug, Default)]
 pub struct J2kDirectCpuScratch {
     component_band_sets: Vec<DirectComponentBandScratch>,
@@ -155,8 +154,7 @@ struct DirectComponentPlane {
     samples: Vec<f32>,
 }
 
-/// Execute a hidden direct RGB plan on the CPU and write an RGB8 output region.
-#[doc(hidden)]
+/// Execute a adapter direct RGB plan on the CPU and write an RGB8 output region.
 pub fn execute_direct_color_plan_rgb8_into(
     plan: &J2kDirectColorPlan,
     output_region: J2kRect,
@@ -174,8 +172,7 @@ pub fn execute_direct_color_plan_rgb8_into(
     )
 }
 
-/// Execute a hidden direct RGB plan on the CPU and write an RGBA8 output region.
-#[doc(hidden)]
+/// Execute a adapter direct RGB plan on the CPU and write an RGBA8 output region.
 pub fn execute_direct_color_plan_rgba8_into(
     plan: &J2kDirectColorPlan,
     output_region: J2kRect,

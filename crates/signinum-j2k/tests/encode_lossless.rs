@@ -7,9 +7,10 @@ use signinum_j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,
     j2k_lossless_decomposition_levels_for_options,
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference,
-    EncodedHtJ2kCodeBlock, J2kBlockCodingMode, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kEncodeValidation, J2kHtCodeBlockEncodeJob, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    J2kPacketizationEncodeJob, J2kProgressionOrder, ReversibleTransform,
+    EncodedHtJ2kCodeBlock, J2kBlockCodingMode, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, J2kEncodeValidation, J2kHtCodeBlockEncodeJob,
+    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kPacketizationEncodeJob, J2kProgressionOrder,
+    J2kQuantizeSubbandJob, ReversibleTransform,
 };
 use signinum_j2k_native::{DecodeSettings, Image};
 
@@ -18,6 +19,59 @@ fn decode_native(codestream: &[u8]) -> signinum_j2k_native::RawBitmap {
         .expect("encoded codestream should parse")
         .decode_native()
         .expect("encoded codestream should decode")
+}
+
+fn cpu_options() -> J2kLosslessEncodeOptions {
+    J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly)
+}
+
+fn prefer_device_options() -> J2kLosslessEncodeOptions {
+    J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::PreferDevice)
+}
+
+fn require_device_options() -> J2kLosslessEncodeOptions {
+    J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::RequireDevice)
+}
+
+fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32>> {
+    let num_components = usize::from(job.num_components);
+    let bytes_per_sample = if job.bit_depth <= 8 { 1 } else { 2 };
+    assert_eq!(
+        job.pixels.len(),
+        job.num_pixels * num_components * bytes_per_sample
+    );
+
+    let unsigned_offset = if job.signed {
+        0
+    } else {
+        1_i32 << u32::from(job.bit_depth.saturating_sub(1))
+    };
+    let mut components = vec![vec![0.0; job.num_pixels]; num_components];
+    for pixel_idx in 0..job.num_pixels {
+        for (component_idx, component) in components.iter_mut().enumerate() {
+            let sample_idx = pixel_idx * num_components + component_idx;
+            let sample = if job.bit_depth <= 8 {
+                let byte = job.pixels[sample_idx];
+                if job.signed {
+                    i16::from(byte as i8)
+                } else {
+                    i16::try_from(i32::from(byte) - unsigned_offset)
+                        .expect("level-shifted 8-bit sample fits in i16")
+                }
+            } else {
+                let byte_idx = sample_idx * 2;
+                let bytes = [job.pixels[byte_idx], job.pixels[byte_idx + 1]];
+                if job.signed {
+                    i16::from_le_bytes(bytes)
+                } else {
+                    i16::try_from(i32::from(u16::from_le_bytes(bytes)) - unsigned_offset)
+                        .expect("level-shifted 16-bit sample fits in i16")
+                }
+            };
+            component[pixel_idx] = f32::from(sample);
+        }
+    }
+    components
 }
 
 #[test]
@@ -39,11 +93,7 @@ fn lossless_encode_can_skip_facade_cpu_validation_for_external_validation() {
 
     let encoded = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &cpu_options().with_validation(J2kEncodeValidation::External),
     )
     .expect("lossless encode without facade CPU validation");
 
@@ -58,11 +108,7 @@ fn cpu_htj2k_lossless_round_trips_gray8() {
 
     let encoded = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &cpu_options().with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
     )
     .expect("HTJ2K lossless encode");
 
@@ -83,12 +129,9 @@ fn cpu_htj2k_rpcl_writes_cod_rpcl_and_tlm() {
 
     let encoded = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            progression: J2kProgressionOrder::Rpcl,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &cpu_options()
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_progression(J2kProgressionOrder::Rpcl),
     )
     .expect("HTJ2K RPCL lossless encode");
 
@@ -140,11 +183,9 @@ fn max_decomposition_level_option_caps_rpcl_without_forcing_small_tiles() {
     assert_eq!(
         j2k_lossless_decomposition_levels_for_options(
             large,
-            J2kLosslessEncodeOptions {
-                progression: J2kProgressionOrder::Rpcl,
-                max_decomposition_levels: Some(1),
-                ..J2kLosslessEncodeOptions::default()
-            }
+            J2kLosslessEncodeOptions::default()
+                .with_progression(J2kProgressionOrder::Rpcl)
+                .with_max_decomposition_levels(Some(1))
         ),
         1
     );
@@ -155,11 +196,9 @@ fn max_decomposition_level_option_caps_rpcl_without_forcing_small_tiles() {
     assert_eq!(
         j2k_lossless_decomposition_levels_for_options(
             small,
-            J2kLosslessEncodeOptions {
-                progression: J2kProgressionOrder::Rpcl,
-                max_decomposition_levels: Some(1),
-                ..J2kLosslessEncodeOptions::default()
-            }
+            J2kLosslessEncodeOptions::default()
+                .with_progression(J2kProgressionOrder::Rpcl)
+                .with_max_decomposition_levels(Some(1))
         ),
         0
     );
@@ -170,14 +209,7 @@ fn cpu_lossless_round_trips_gray8() {
     let pixels: Vec<u8> = (0..35).map(|v| (v * 7) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 7, 5, 1, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("lossless encode");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
     assert_eq!(encoded.width, 7);
@@ -199,14 +231,7 @@ fn cpu_classic_lossless_cod_marker_length_reaches_next_marker() {
     let pixels = vec![127u8; 64 * 64 * 3];
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let cod_offset = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
     let qcd_offset = marker_offset(&encoded.codestream, 0x5C).expect("QCD marker");
@@ -255,14 +280,7 @@ fn cpu_lossless_round_trips_rgb8_high_variance_512() {
     }
     let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -273,14 +291,7 @@ fn cpu_lossless_round_trips_rgb8_constant_gray_512() {
     let pixels = vec![243u8; 512 * 512 * 3];
     let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -299,14 +310,7 @@ fn cpu_lossless_round_trips_rgb8_low_variance_slide_like_512() {
     }
     let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -327,14 +331,7 @@ fn cpu_lossless_round_trips_rgb8_variable_chroma_512() {
     }
     let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -389,14 +386,7 @@ fn cpu_lossless_round_trips_rgb8_seed_130_64() {
     }
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -412,14 +402,7 @@ fn cpu_lossless_round_trips_gray8_seed_104_64() {
     }
     let samples = J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("cpu lossless encode");
+    let encoded = encode_j2k_lossless(samples, &cpu_options()).expect("cpu lossless encode");
 
     let decoded = decode_native(&encoded.codestream);
     assert_eq!(decoded.data, pixels);
@@ -430,14 +413,8 @@ fn prefer_device_falls_back_to_validated_cpu_until_device_encode_is_complete() {
     let pixels: Vec<u8> = (0..27).map(|v| (v * 3) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 3, 3, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .expect("prefer-device lossless encode");
+    let encoded = encode_j2k_lossless(samples, &prefer_device_options())
+        .expect("prefer-device lossless encode");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
     let decoded = decode_native(&encoded.codestream);
@@ -449,14 +426,7 @@ fn require_device_errors_clearly_when_encode_backend_is_unavailable() {
     let pixels = vec![0u8; 4 * 4];
     let samples = J2kLosslessSamples::new(&pixels, 4, 4, 1, 8, false).unwrap();
 
-    let err = encode_j2k_lossless(
-        samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
-    )
-    .unwrap_err();
+    let err = encode_j2k_lossless(samples, &require_device_options()).unwrap_err();
 
     assert!(err.is_unsupported());
     assert!(err.to_string().contains("device"));
@@ -476,10 +446,7 @@ fn accelerator_facade_prefer_device_falls_back_when_no_stage_dispatches() {
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &prefer_device_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -502,10 +469,7 @@ fn accelerator_facade_require_device_errors_when_no_stage_dispatches() {
 
     let err = encode_j2k_lossless_with_accelerator(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &require_device_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -545,10 +509,7 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
 
     let err = encode_j2k_lossless_with_accelerator(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &require_device_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -562,24 +523,49 @@ fn accelerator_facade_require_device_errors_when_any_required_stage_is_missing()
 fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispatch() {
     #[derive(Default)]
     struct FullClassicAccelerator {
-        tier1_code_block_dispatches: usize,
-        packetization_dispatches: usize,
+        deinterleave: usize,
+        quantize_subband: usize,
+        tier1_code_block: usize,
+        packetization: usize,
     }
 
     impl J2kEncodeStageAccelerator for FullClassicAccelerator {
         fn dispatch_report(&self) -> J2kEncodeDispatchReport {
             J2kEncodeDispatchReport {
-                tier1_code_block: self.tier1_code_block_dispatches,
-                packetization: self.packetization_dispatches,
+                deinterleave: self.deinterleave,
+                quantize_subband: self.quantize_subband,
+                tier1_code_block: self.tier1_code_block,
+                packetization: self.packetization,
                 ..J2kEncodeDispatchReport::default()
             }
+        }
+
+        fn encode_deinterleave(
+            &mut self,
+            job: J2kDeinterleaveToF32Job<'_>,
+        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+            self.deinterleave = self.deinterleave.saturating_add(1);
+            Ok(Some(deinterleave_to_f32_for_test(job)))
+        }
+
+        fn encode_quantize_subband(
+            &mut self,
+            job: J2kQuantizeSubbandJob<'_>,
+        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+            self.quantize_subband = self.quantize_subband.saturating_add(1);
+            Ok(Some(
+                job.coefficients
+                    .iter()
+                    .map(|sample| sample.round() as i32)
+                    .collect(),
+            ))
         }
 
         fn encode_tier1_code_block(
             &mut self,
             job: signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>,
         ) -> core::result::Result<Option<signinum_j2k::EncodedJ2kCodeBlock>, &'static str> {
-            self.tier1_code_block_dispatches = self.tier1_code_block_dispatches.saturating_add(1);
+            self.tier1_code_block = self.tier1_code_block.saturating_add(1);
             signinum_j2k_native::encode_j2k_code_block_scalar_with_style(
                 job.coefficients,
                 job.width,
@@ -595,7 +581,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
         ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
-            self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
+            self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
     }
@@ -606,10 +592,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &prefer_device_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -623,44 +606,63 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
 fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
     #[derive(Default)]
     struct FullHtAccelerator {
-        ht_code_block_dispatches: usize,
-        packetization_dispatches: usize,
+        deinterleave: usize,
+        quantize_subband: usize,
+        ht_code_block: usize,
+        packetization: usize,
     }
 
     impl J2kEncodeStageAccelerator for FullHtAccelerator {
         fn dispatch_report(&self) -> J2kEncodeDispatchReport {
             J2kEncodeDispatchReport {
-                ht_code_block: self.ht_code_block_dispatches,
-                packetization: self.packetization_dispatches,
+                deinterleave: self.deinterleave,
+                quantize_subband: self.quantize_subband,
+                ht_code_block: self.ht_code_block,
+                packetization: self.packetization,
                 ..J2kEncodeDispatchReport::default()
             }
+        }
+
+        fn encode_deinterleave(
+            &mut self,
+            job: J2kDeinterleaveToF32Job<'_>,
+        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+            self.deinterleave = self.deinterleave.saturating_add(1);
+            Ok(Some(deinterleave_to_f32_for_test(job)))
+        }
+
+        fn encode_quantize_subband(
+            &mut self,
+            job: J2kQuantizeSubbandJob<'_>,
+        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+            self.quantize_subband = self.quantize_subband.saturating_add(1);
+            Ok(Some(
+                job.coefficients
+                    .iter()
+                    .map(|sample| sample.round() as i32)
+                    .collect(),
+            ))
         }
 
         fn encode_ht_code_block(
             &mut self,
             job: J2kHtCodeBlockEncodeJob<'_>,
         ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
-            self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
+            self.ht_code_block = self.ht_code_block.saturating_add(1);
             signinum_j2k_native::encode_ht_code_block_scalar(
                 job.coefficients,
                 job.width,
                 job.height,
                 job.total_bitplanes,
             )
-            .map(|encoded| {
-                Some(EncodedHtJ2kCodeBlock {
-                    data: encoded.data,
-                    num_coding_passes: encoded.num_coding_passes,
-                    num_zero_bitplanes: encoded.num_zero_bitplanes,
-                })
-            })
+            .map(Some)
         }
 
         fn encode_packetization(
             &mut self,
             _job: J2kPacketizationEncodeJob<'_>,
         ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
-            self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
+            self.packetization = self.packetization.saturating_add(1);
             Ok(None)
         }
     }
@@ -671,11 +673,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &require_device_options().with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
         BackendKind::Metal,
         &mut accelerator,
     )

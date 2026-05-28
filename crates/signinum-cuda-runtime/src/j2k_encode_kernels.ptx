@@ -2,6 +2,18 @@
 .target sm_52
 .address_size 64
 
+.visible .entry signinum_j2k_deinterleave_to_f32(
+    .param .u64 pixels,
+    .param .u64 components,
+    .param .u64 num_pixels,
+    .param .u32 num_components,
+    .param .u32 bit_depth,
+    .param .u32 is_signed
+)
+{
+    ret;
+}
+
 .visible .entry signinum_j2k_forward_rct(
     .param .u64 plane0,
     .param .u64 plane1,
@@ -51,6 +63,16 @@
     st.global.f32 [%rd9], %f10;
 
 RCT_DONE:
+    ret;
+}
+
+.visible .entry signinum_j2k_forward_ict(
+    .param .u64 plane0,
+    .param .u64 plane1,
+    .param .u64 plane2,
+    .param .u64 len
+)
+{
     ret;
 }
 
@@ -422,5 +444,59 @@ VDWT_BOTTOM_PREDICT_READY:
     st.global.f32 [%rd35], %f32;
 
 VDWT_DONE:
+    ret;
+}
+
+.visible .entry signinum_j2k_forward_dwt97_horizontal(
+    .param .u64 src,
+    .param .u64 dst,
+    .param .u32 full_width,
+    .param .u32 current_width,
+    .param .u32 current_height,
+    .param .u32 low_width
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_forward_dwt97_vertical(
+    .param .u64 src,
+    .param .u64 dst,
+    .param .u32 full_width,
+    .param .u32 current_width,
+    .param .u32 current_height,
+    .param .u32 low_height
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_quantize_subband(
+    .param .u64 samples,
+    .param .u64 coefficients,
+    .param .u64 len,
+    .param .u32 step_exponent,
+    .param .u32 step_mantissa,
+    .param .u32 range_bits,
+    .param .u32 reversible
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_quantize_subband_strided(
+    .param .u64 samples,
+    .param .u64 coefficients,
+    .param .u32 x0,
+    .param .u32 y0,
+    .param .u32 width,
+    .param .u32 height,
+    .param .u32 stride,
+    .param .u32 step_exponent,
+    .param .u32 step_mantissa,
+    .param .u32 range_bits,
+    .param .u32 reversible
+)
+{
     ret;
 }

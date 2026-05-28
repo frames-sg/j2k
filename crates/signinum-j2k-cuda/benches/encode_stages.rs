@@ -2,7 +2,9 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use signinum_j2k_cuda::CudaEncodeStageAccelerator;
-use signinum_j2k_native::{J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob};
+use signinum_j2k_native::{
+    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kQuantizeSubbandJob,
+};
 
 const BENCH_DIMS: &[u32] = &[512, 1024, 2048];
 
@@ -67,6 +69,35 @@ fn bench_encode_stages(c: &mut Criterion) {
         }
     }
     dwt.finish();
+
+    let mut quantize = c.benchmark_group("j2k_cuda_quantize_subband");
+    for &dim in BENCH_DIMS {
+        let samples = generate_gray_plane(dim, dim);
+        quantize.bench_with_input(BenchmarkId::new("cpu", dim), &samples, |b, samples| {
+            b.iter(|| cpu_quantize_reversible(samples));
+        });
+
+        if cuda_available {
+            quantize.bench_with_input(BenchmarkId::new("cuda", dim), &samples, |b, samples| {
+                let mut accelerator = CudaEncodeStageAccelerator::default();
+                b.iter(|| {
+                    let output = accelerator
+                        .encode_quantize_subband(J2kQuantizeSubbandJob {
+                            coefficients: samples,
+                            step_exponent: 8,
+                            step_mantissa: 0,
+                            range_bits: 8,
+                            reversible: true,
+                        })
+                        .expect("CUDA quantize subband")
+                        .expect("CUDA quantize subband dispatch");
+                    assert_eq!(output.len(), samples.len());
+                    output
+                });
+            });
+        }
+    }
+    quantize.finish();
 }
 
 fn cuda_encode_available() -> bool {
@@ -192,6 +223,11 @@ fn cpu_forward_dwt53(samples: &[f32], width: u32, height: u32, num_levels: u8) -
     }
 
     buffer
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn cpu_quantize_reversible(samples: &[f32]) -> Vec<i32> {
+    samples.iter().map(|sample| sample.round() as i32).collect()
 }
 
 fn forward_lift_53(data: &mut [f32]) {

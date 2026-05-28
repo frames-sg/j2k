@@ -1,0 +1,48 @@
+.version 7.0
+.target sm_52
+.address_size 64
+
+.visible .entry signinum_htj2k_encode_codeblock(
+    .param .u64 coefficients,
+    .param .u64 out,
+    .param .u64 params,
+    .param .u64 vlc_table0,
+    .param .u64 vlc_table1,
+    .param .u64 uvlc_table,
+    .param .u64 status
+)
+{
+    ret;
+}
+
+.visible .entry signinum_htj2k_encode_codeblocks(
+    .param .u64 coefficients,
+    .param .u64 out,
+    .param .u64 jobs,
+    .param .u64 vlc_table0,
+    .param .u64 vlc_table1,
+    .param .u64 uvlc_table,
+    .param .u64 statuses,
+    .param .u64 job_count
+)
+{
+    ret;
+}
+
+.visible .entry signinum_htj2k_packetize_cleanup(
+    .param .u64 payload,
+    .param .u64 payload_len,
+    .param .u64 packets,
+    .param .u64 subbands,
+    .param .u64 blocks,
+    .param .u64 tag_states,
+    .param .u64 tag_nodes,
+    .param .u64 tag_state_count,
+    .param .u64 tag_node_count,
+    .param .u64 out,
+    .param .u64 statuses,
+    .param .u64 packet_count
+)
+{
+    ret;
+}

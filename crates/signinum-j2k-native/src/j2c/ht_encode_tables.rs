@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 #[repr(C)]
-/// Hidden HTJ2K UVLC encoder table row for backend experimentation.
+/// Adapter HTJ2K UVLC encoder table row for backend experimentation.
 #[derive(Clone, Copy, Debug)]
 pub struct HtUvlcTableEntry {
     /// Prefix code bits.
