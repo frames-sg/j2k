@@ -185,10 +185,7 @@ fn classic_lossless_encode_decodes_with_openjpeg() {
 
     let encoded = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            ..J2kLosslessEncodeOptions::default()
-        },
+        &J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly),
     )
     .expect("signinum encode");
 

@@ -26,6 +26,26 @@ fn encode_codestream(
     .expect("encode")
 }
 
+fn encode_codestream_with_levels(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    components: u8,
+    bit_depth: u8,
+    reversible: bool,
+    levels: u8,
+) -> Vec<u8> {
+    let options = EncodeOptions {
+        reversible,
+        num_decomposition_levels: levels,
+        ..EncodeOptions::default()
+    };
+    encode(
+        pixels, width, height, components, bit_depth, false, &options,
+    )
+    .expect("encode")
+}
+
 fn encode_ht_codestream(
     pixels: &[u8],
     width: u32,
@@ -368,6 +388,97 @@ fn decode_scaled_into_matches_backend_target_resolution_decode() {
         .expect("scaled decode");
     assert_eq!(outcome.decoded, Rect::full((2, 2)));
     assert_eq!(out, expected.as_slice());
+}
+
+#[test]
+fn reused_decoder_scaled_decodes_match_fresh_decodes_across_scales() {
+    let pixels: Vec<u8> = (0..16 * 16 * 3)
+        .map(|index| ((index * 13 + 17) & 0xFF) as u8)
+        .collect();
+    let codestream = encode_codestream_with_levels(&pixels, 16, 16, 3, 8, true, 2);
+    let mut reused = J2kDecoder::new(&codestream).expect("reused decoder");
+    let mut reused_pool = signinum_j2k::J2kScratchPool::new();
+
+    for scale in [Downscale::Half, Downscale::Quarter, Downscale::Half] {
+        let dims = (
+            16_u32.div_ceil(scale.denominator()),
+            16_u32.div_ceil(scale.denominator()),
+        );
+        let stride = dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut expected = vec![0_u8; stride * dims.1 as usize];
+        let mut fresh = J2kDecoder::new(&codestream).expect("fresh decoder");
+        fresh
+            .decode_scaled_into(
+                &mut signinum_j2k::J2kScratchPool::new(),
+                &mut expected,
+                stride,
+                PixelFormat::Rgb8,
+                scale,
+            )
+            .expect("fresh scaled decode");
+
+        let mut actual = vec![0_u8; stride * dims.1 as usize];
+        let outcome = reused
+            .decode_scaled_into(
+                &mut reused_pool,
+                &mut actual,
+                stride,
+                PixelFormat::Rgb8,
+                scale,
+            )
+            .expect("reused scaled decode");
+
+        assert_eq!(outcome.decoded, Rect::full(dims));
+        assert_eq!(actual, expected, "scale {scale:?}");
+    }
+}
+
+#[test]
+fn reused_decoder_region_scaled_decodes_match_fresh_decodes_across_scales() {
+    let pixels: Vec<u8> = (0..16 * 16 * 3)
+        .map(|index| ((index * 11 + 29) & 0xFF) as u8)
+        .collect();
+    let codestream = encode_codestream_with_levels(&pixels, 16, 16, 3, 8, true, 2);
+    let roi = Rect {
+        x: 3,
+        y: 2,
+        w: 9,
+        h: 10,
+    };
+    let mut reused = J2kDecoder::new(&codestream).expect("reused decoder");
+    let mut reused_pool = signinum_j2k::J2kScratchPool::new();
+
+    for scale in [Downscale::Quarter, Downscale::Half, Downscale::Quarter] {
+        let scaled_roi = roi.scaled_covering(scale);
+        let stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut expected = vec![0_u8; stride * scaled_roi.h as usize];
+        let mut fresh = J2kDecoder::new(&codestream).expect("fresh decoder");
+        fresh
+            .decode_region_scaled_into(
+                &mut signinum_j2k::J2kScratchPool::new(),
+                &mut expected,
+                stride,
+                PixelFormat::Rgb8,
+                roi,
+                scale,
+            )
+            .expect("fresh region scaled decode");
+
+        let mut actual = vec![0_u8; stride * scaled_roi.h as usize];
+        let outcome = reused
+            .decode_region_scaled_into(
+                &mut reused_pool,
+                &mut actual,
+                stride,
+                PixelFormat::Rgb8,
+                roi,
+                scale,
+            )
+            .expect("reused region scaled decode");
+
+        assert_eq!(outcome.decoded, scaled_roi);
+        assert_eq!(actual, expected, "scale {scale:?}");
+    }
 }
 
 #[test]

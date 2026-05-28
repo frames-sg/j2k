@@ -6,6 +6,12 @@ pub struct CacheStats {
     pub misses: u64,
 }
 
+impl CacheStats {
+    pub const fn new(hits: u64, misses: u64) -> Self {
+        Self { hits, misses }
+    }
+}
+
 pub trait CodecContext: Default + Send {
     fn clear(&mut self);
 

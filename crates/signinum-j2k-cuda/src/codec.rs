@@ -13,8 +13,9 @@ use signinum_j2k::{
 };
 
 use crate::runtime::{validate_surface_request, wrap_surface};
-use crate::{CudaSession, Error, Surface};
+use crate::{CudaSession, Error, J2kDecoder, Surface};
 
+/// Marker type implementing tile-batch CUDA surface decode traits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Codec;
 
@@ -34,6 +35,10 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if matches!(backend, BackendRequest::Cuda) {
+            let mut decoder = J2kDecoder::new(input)?;
+            return decoder.decode_to_device_with_session(fmt, session);
+        }
         let dims = CpuDecoder::inspect(input)?.dimensions;
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
@@ -51,6 +56,10 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if matches!(backend, BackendRequest::Cuda) {
+            let mut decoder = J2kDecoder::new(input)?;
+            return decoder.decode_region_to_device_with_session(fmt, roi, session);
+        }
         let dims = DeviceDecodePlan::for_image(
             CpuDecoder::inspect(input)?.dimensions,
             DeviceDecodeRequest::Region { roi },
@@ -72,6 +81,10 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if matches!(backend, BackendRequest::Cuda) {
+            let mut decoder = J2kDecoder::new(input)?;
+            return decoder.decode_scaled_to_device_with_session(fmt, scale, session);
+        }
         let dims = DeviceDecodePlan::for_image(
             CpuDecoder::inspect(input)?.dimensions,
             DeviceDecodeRequest::Scaled { scale },
@@ -95,6 +108,10 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if matches!(backend, BackendRequest::Cuda) {
+            let mut decoder = J2kDecoder::new(input)?;
+            return decoder.decode_region_scaled_to_device_with_session(fmt, roi, scale, session);
+        }
         let dims = DeviceDecodePlan::for_image(
             CpuDecoder::inspect(input)?.dimensions,
             DeviceDecodeRequest::RegionScaled { roi, scale },

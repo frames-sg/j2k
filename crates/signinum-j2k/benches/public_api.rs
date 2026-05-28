@@ -17,42 +17,53 @@ const CPU_MATRIX_SIDE: u32 = 512;
 const BATCH_SIZE: usize = 16;
 
 fn bench_encode_options() -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        backend: EncodeBackendPreference::CpuOnly,
-        validation: J2kEncodeValidation::External,
-        ..J2kLosslessEncodeOptions::default()
-    }
+    let mut options = J2kLosslessEncodeOptions::default();
+    options.backend = EncodeBackendPreference::CpuOnly;
+    options.validation = J2kEncodeValidation::External;
+    options
 }
 
 fn ht_encode_options() -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        block_coding_mode: J2kBlockCodingMode::HighThroughput,
-        ..bench_encode_options()
-    }
+    let mut options = bench_encode_options();
+    options.block_coding_mode = J2kBlockCodingMode::HighThroughput;
+    options
 }
 
 fn recode_options() -> J2kToHtj2kOptions {
-    J2kToHtj2kOptions {
-        validation: J2kEncodeValidation::External,
-        ..J2kToHtj2kOptions::default()
-    }
+    let mut options = J2kToHtj2kOptions::default();
+    options.validation = J2kEncodeValidation::External;
+    options
 }
 
 fn cpu_matrix_encode_options(
     block_coding_mode: J2kBlockCodingMode,
     validation: J2kEncodeValidation,
 ) -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        backend: EncodeBackendPreference::CpuOnly,
-        validation,
-        block_coding_mode,
-        ..J2kLosslessEncodeOptions::default()
-    }
+    let mut options = J2kLosslessEncodeOptions::default();
+    options.backend = EncodeBackendPreference::CpuOnly;
+    options.validation = validation;
+    options.block_coding_mode = block_coding_mode;
+    options
 }
 
 fn encode_gray8_codestream(width: u32, height: u32) -> Vec<u8> {
     let pixels = patterned_gray8(width, height);
     encode_gray8_codestream_from_pixels(width, height, &pixels, bench_encode_options())
+}
+
+fn encode_gray16_codestream(width: u32, height: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 2);
+    for y in 0..height {
+        for x in 0..width {
+            let sample = ((x * 257 + y * 911) & 0xffff) as u16;
+            pixels.extend_from_slice(&sample.to_le_bytes());
+        }
+    }
+    let samples = J2kLosslessSamples::new(&pixels, width, height, 1, 16, false)
+        .expect("valid gray16 samples");
+    encode_j2k_lossless(samples, &bench_encode_options())
+        .expect("encode gray16 codestream")
+        .codestream
 }
 
 fn encode_ht_gray8_codestream(width: u32, height: u32) -> Vec<u8> {
@@ -114,6 +125,16 @@ fn encode_gray8_codestream_from_pixels(
 fn encode_rgb8_codestream(width: u32, height: u32) -> Vec<u8> {
     let pixels = patterned_rgb8(width, height);
     encode_rgb8_codestream_from_pixels(width, height, &pixels, bench_encode_options())
+}
+
+fn encode_rgb8_codestream_with_levels(width: u32, height: u32, levels: u8) -> Vec<u8> {
+    let pixels = patterned_rgb8(width, height);
+    encode_rgb8_codestream_from_pixels(
+        width,
+        height,
+        &pixels,
+        bench_encode_options().with_max_decomposition_levels(Some(levels)),
+    )
 }
 
 fn encode_rgb8_codestream_from_pixels(
@@ -263,7 +284,7 @@ fn bench_recode(c: &mut Criterion) {
 }
 
 fn bench_region_scaled(c: &mut Criterion) {
-    let codestream = encode_rgb8_codestream(TILE_SIDE, TILE_SIDE);
+    let codestream = encode_rgb8_codestream_with_levels(TILE_SIDE, TILE_SIDE, 2);
     let roi = Rect {
         x: 32,
         y: 32,
@@ -296,8 +317,149 @@ fn bench_region_scaled(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_scaled_reuse(c: &mut Criterion) {
+    let codestream = encode_rgb8_codestream_with_levels(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE, 2);
+    let scale = Downscale::Quarter;
+    let out_side = CPU_MATRIX_SIDE.div_ceil(scale.denominator());
+    let stride = out_side as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut setup_out = vec![0u8; stride * out_side as usize];
+    let mut reused_out = vec![0u8; stride * out_side as usize];
+    let mut reused_decoder = J2kDecoder::new(codestream.as_slice()).expect("reused scaled decoder");
+    let mut reused_pool = J2kScratchPool::new();
+
+    let mut group = c.benchmark_group("j2k_public_decode_scaled_reuse");
+    group.bench_function("rgb8_512_q4_setup_inclusive", |b| {
+        b.iter(|| {
+            let mut decoder =
+                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+            let mut pool = J2kScratchPool::new();
+            decoder
+                .decode_scaled_into(&mut pool, &mut setup_out, stride, PixelFormat::Rgb8, scale)
+                .expect("setup-inclusive scaled decode");
+            black_box(&setup_out);
+        });
+    });
+    group.bench_function("rgb8_512_q4_decoder_setup_excluded", |b| {
+        b.iter(|| {
+            reused_decoder
+                .decode_scaled_into(
+                    &mut reused_pool,
+                    &mut reused_out,
+                    stride,
+                    PixelFormat::Rgb8,
+                    scale,
+                )
+                .expect("reused scaled decode");
+            black_box(&reused_out);
+        });
+    });
+    group.finish();
+}
+
+fn bench_region_scaled_reuse(c: &mut Criterion) {
+    let codestream = encode_rgb8_codestream_with_levels(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE, 2);
+    let roi = Rect {
+        x: 128,
+        y: 128,
+        w: 256,
+        h: 256,
+    };
+    let scale = Downscale::Quarter;
+    let scaled = roi.scaled_covering(scale);
+    let stride = scaled.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut setup_out = vec![0u8; stride * scaled.h as usize];
+    let mut reused_out = vec![0u8; stride * scaled.h as usize];
+    let mut reused_decoder =
+        J2kDecoder::new(codestream.as_slice()).expect("reused region-scaled decoder");
+    let mut reused_pool = J2kScratchPool::new();
+
+    let mut group = c.benchmark_group("j2k_public_decode_region_scaled_reuse");
+    group.bench_function("rgb8_512_roi256_q4_setup_inclusive", |b| {
+        b.iter(|| {
+            let mut decoder =
+                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+            let mut pool = J2kScratchPool::new();
+            decoder
+                .decode_region_scaled_into(
+                    &mut pool,
+                    &mut setup_out,
+                    stride,
+                    PixelFormat::Rgb8,
+                    roi,
+                    scale,
+                )
+                .expect("setup-inclusive region scaled decode");
+            black_box(&setup_out);
+        });
+    });
+    group.bench_function("rgb8_512_roi256_q4_decoder_setup_excluded", |b| {
+        b.iter(|| {
+            reused_decoder
+                .decode_region_scaled_into(
+                    &mut reused_pool,
+                    &mut reused_out,
+                    stride,
+                    PixelFormat::Rgb8,
+                    roi,
+                    scale,
+                )
+                .expect("reused region scaled decode");
+            black_box(&reused_out);
+        });
+    });
+    group.finish();
+}
+
+fn bench_mixed_scale_reuse(c: &mut Criterion) {
+    let codestream = encode_rgb8_codestream_with_levels(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE, 2);
+    let mut decoder = J2kDecoder::new(codestream.as_slice()).expect("mixed-scale decoder");
+    let mut pool = J2kScratchPool::new();
+    let half_side = CPU_MATRIX_SIDE.div_ceil(Downscale::Half.denominator());
+    let half_stride = half_side as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut half_out = vec![0u8; half_stride * half_side as usize];
+    let quarter_side = CPU_MATRIX_SIDE.div_ceil(Downscale::Quarter.denominator());
+    let quarter_stride = quarter_side as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut quarter_out = vec![0u8; quarter_stride * quarter_side as usize];
+
+    let mut group = c.benchmark_group("j2k_public_decode_mixed_scale_reuse");
+    group.bench_function("rgb8_512_q4_q2_q4_single_decoder", |b| {
+        b.iter(|| {
+            decoder
+                .decode_scaled_into(
+                    &mut pool,
+                    &mut quarter_out,
+                    quarter_stride,
+                    PixelFormat::Rgb8,
+                    Downscale::Quarter,
+                )
+                .expect("quarter decode");
+            decoder
+                .decode_scaled_into(
+                    &mut pool,
+                    &mut half_out,
+                    half_stride,
+                    PixelFormat::Rgb8,
+                    Downscale::Half,
+                )
+                .expect("half decode");
+            decoder
+                .decode_scaled_into(
+                    &mut pool,
+                    &mut quarter_out,
+                    quarter_stride,
+                    PixelFormat::Rgb8,
+                    Downscale::Quarter,
+                )
+                .expect("quarter decode after half");
+            black_box((&quarter_out, &half_out));
+        });
+    });
+    group.finish();
+}
+
 fn bench_rows(c: &mut Criterion) {
     let codestream = encode_gray8_codestream(TILE_SIDE, TILE_SIDE);
+    let gray16_codestream = encode_gray16_codestream(TILE_SIDE, TILE_SIDE);
     let mut group = c.benchmark_group("j2k_public_decode_rows");
     group.bench_function("gray8_rows_128x128", |b| {
         b.iter(|| {
@@ -305,6 +467,24 @@ fn bench_rows(c: &mut Criterion) {
                 J2kDecoder::new(black_box(codestream.as_slice())).expect("gray8 decoder");
             let mut sink = VecRowSink::new(TILE_SIDE, TILE_SIDE);
             decoder.decode_rows(&mut sink).expect("decode gray8 rows");
+            black_box(sink.rows);
+        });
+    });
+    group.bench_function("gray8_rows_128x128_reused_decoder", |b| {
+        let mut decoder = J2kDecoder::new(codestream.as_slice()).expect("gray8 reused decoder");
+        b.iter(|| {
+            let mut sink = VecRowSink::new(TILE_SIDE, TILE_SIDE);
+            decoder.decode_rows(&mut sink).expect("decode gray8 rows");
+            black_box(sink.rows);
+        });
+    });
+    group.bench_function("gray16_rows_128x128_reused_decoder", |b| {
+        let mut decoder =
+            J2kDecoder::new(gray16_codestream.as_slice()).expect("gray16 reused decoder");
+        b.iter(|| {
+            let mut sink = VecRowSinkU16::new(TILE_SIDE, TILE_SIDE);
+            <J2kDecoder<'_> as ImageDecodeRows<'_, u16>>::decode_rows(&mut decoder, &mut sink)
+                .expect("decode gray16 rows");
             black_box(sink.rows);
         });
     });
@@ -803,6 +983,9 @@ criterion_group!(
     bench_decode,
     bench_recode,
     bench_region_scaled,
+    bench_scaled_reuse,
+    bench_region_scaled_reuse,
+    bench_mixed_scale_reuse,
     bench_rows,
     bench_tile_batch,
     bench_tile_batch_region_scaled_rgb,
@@ -830,6 +1013,31 @@ impl RowSink<u8> for VecRowSink {
     type Error = std::convert::Infallible;
 
     fn write_row(&mut self, y: u32, row: &[u8]) -> Result<(), Self::Error> {
+        let start = y as usize * self.width;
+        let end = start + row.len();
+        self.rows[start..end].copy_from_slice(row);
+        Ok(())
+    }
+}
+
+struct VecRowSinkU16 {
+    rows: Vec<u16>,
+    width: usize,
+}
+
+impl VecRowSinkU16 {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            rows: vec![0; width as usize * height as usize],
+            width: width as usize,
+        }
+    }
+}
+
+impl RowSink<u16> for VecRowSinkU16 {
+    type Error = std::convert::Infallible;
+
+    fn write_row(&mut self, y: u32, row: &[u16]) -> Result<(), Self::Error> {
         let start = y as usize * self.width;
         let end = start + row.len();
         self.rows[start..end].copy_from_slice(row);

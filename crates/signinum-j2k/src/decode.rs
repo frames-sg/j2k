@@ -1,123 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::backend::{ColorSpace, DecodeSettings, DecodedComponents, Image, RawBitmap};
-use crate::{backend, J2kError, J2kScratchPool};
-use alloc::{string::ToString, vec::Vec};
+use crate::backend::{ColorSpace, DecodedComponents, Image, RawBitmap};
+use crate::J2kError;
+use alloc::string::ToString;
 use core::convert::Infallible;
 use signinum_core::{
-    validate_strided_output_buffer, DecodeOutcome, Downscale, PixelFormat, Rect, Unsupported,
+    validate_strided_output_buffer, DecodeOutcome, PixelFormat, Rect, Unsupported,
 };
 pub(crate) type J2kDecodeOutcome = DecodeOutcome<Infallible>;
-
-pub(crate) fn decode_scaled_from_info(
-    bytes: &[u8],
-    full_dims: (u32, u32),
-    pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    scale: Downscale,
-) -> Result<J2kDecodeOutcome, J2kError> {
-    validate_supported_format(fmt)?;
-    let target_dims = (
-        full_dims.0.div_ceil(scale.denominator()),
-        full_dims.1.div_ceil(scale.denominator()),
-    );
-    let settings = DecodeSettings {
-        target_resolution: Some(target_dims),
-        ..DecodeSettings::default()
-    };
-    let _ = pool;
-    let _ = full_dims;
-    decode_with_settings(bytes, settings, out, stride, fmt)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_region_scaled_from_info(
-    bytes: &[u8],
-    full_dims: (u32, u32),
-    pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    roi: Rect,
-    scale: Downscale,
-) -> Result<J2kDecodeOutcome, J2kError> {
-    validate_supported_format(fmt)?;
-    validate_region(roi, full_dims)?;
-    if scale == Downscale::None {
-        return decode_region(bytes, pool, out, stride, fmt, roi);
-    }
-
-    let target_dims = (
-        full_dims.0.div_ceil(scale.denominator()),
-        full_dims.1.div_ceil(scale.denominator()),
-    );
-    let scaled_roi = roi.scaled_covering(scale);
-    validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-    let settings = DecodeSettings {
-        target_resolution: Some(target_dims),
-        ..DecodeSettings::default()
-    };
-    let image = backend::image(bytes, settings)?;
-    let image_dims = (image.width(), image.height());
-    validate_region(scaled_roi, image_dims)?;
-    decode_image_region_into(&image, out, stride, fmt, scaled_roi)?;
-
-    Ok(DecodeOutcome {
-        decoded: scaled_roi,
-        warnings: Vec::new(),
-    })
-}
-
-pub(crate) fn decode_region(
-    bytes: &[u8],
-    _pool: &mut J2kScratchPool,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    roi: Rect,
-) -> Result<J2kDecodeOutcome, J2kError> {
-    validate_supported_format(fmt)?;
-    let image = backend::image(bytes, DecodeSettings::default())?;
-    let dims = (image.width(), image.height());
-    validate_region(roi, dims)?;
-    validate_buffer((roi.w, roi.h), out.len(), stride, fmt)?;
-    decode_image_region_into(&image, out, stride, fmt, roi)?;
-
-    Ok(DecodeOutcome {
-        decoded: roi,
-        warnings: Vec::new(),
-    })
-}
-
-pub(crate) fn decode_with_settings(
-    bytes: &[u8],
-    settings: DecodeSettings,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-) -> Result<J2kDecodeOutcome, J2kError> {
-    validate_supported_format(fmt)?;
-    let image = backend::image(bytes, settings)?;
-    let dims = (image.width(), image.height());
-    validate_buffer(dims, out.len(), stride, fmt)?;
-    decode_image_into(&image, out, stride, fmt)?;
-    Ok(DecodeOutcome {
-        decoded: Rect::full(dims),
-        warnings: Vec::new(),
-    })
-}
-
-fn decode_image_into(
-    image: &Image<'_>,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-) -> Result<(), J2kError> {
-    let mut native_context = signinum_j2k_native::DecoderContext::default();
-    decode_image_into_with_native_context(image, &mut native_context, out, stride, fmt)
-}
 
 pub(crate) fn decode_image_into_with_native_context<'a>(
     image: &Image<'a>,
@@ -183,17 +73,6 @@ fn can_decode_u8_directly(
         (ColorSpace::Gray, false, PixelFormat::Gray8) => stride == width,
         _ => false,
     }
-}
-
-fn decode_image_region_into(
-    image: &Image<'_>,
-    out: &mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    roi: Rect,
-) -> Result<(), J2kError> {
-    let mut native_context = signinum_j2k_native::DecoderContext::default();
-    decode_image_region_into_with_native_context(image, &mut native_context, out, stride, fmt, roi)
 }
 
 pub(crate) fn decode_image_region_into_with_native_context<'a>(

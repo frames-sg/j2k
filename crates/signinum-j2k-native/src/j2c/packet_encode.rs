@@ -160,10 +160,6 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                     encode_length(data_len, &mut cb.l_block, num_bits, &mut header_writer);
                 }
                 BlockCodingMode::HighThroughput => {
-                    debug_assert!(
-                        cb.num_coding_passes <= 1,
-                        "current HT packet writer only supports cleanup-only contributions"
-                    );
                     let num_bits = bits_for_ht_cleanup_length(cb.l_block, cb.num_coding_passes);
                     encode_num_ht_coding_passes(cb.num_coding_passes, &mut header_writer);
                     encode_length(data_len, &mut cb.l_block, num_bits, &mut header_writer);
@@ -404,10 +400,6 @@ fn form_packet_with_state(
                     );
                 }
                 BlockCodingMode::HighThroughput => {
-                    debug_assert!(
-                        packet_block.num_coding_passes <= 1,
-                        "current HT packet writer only supports cleanup-only contributions"
-                    );
                     let num_bits = bits_for_ht_cleanup_length(
                         state_block.l_block,
                         packet_block.num_coding_passes,
@@ -572,6 +564,10 @@ mod tests {
 
     fn decode_num_ht_coding_passes_for_test(data: &[u8]) -> Option<u8> {
         let mut reader = BitReader::new(data);
+        decode_num_ht_coding_passes_from_reader_for_test(&mut reader)
+    }
+
+    fn decode_num_ht_coding_passes_from_reader_for_test(reader: &mut BitReader<'_>) -> Option<u8> {
         let mut num_passes = 1u32;
 
         if reader.read_bits_with_stuffing(1)? == 1 {
@@ -915,6 +911,60 @@ mod tests {
 
         let packet = form_packet(&mut resolution);
         assert!(packet.len() >= 3);
+    }
+
+    #[test]
+    fn ht_packet_header_round_trips_refinement_pass_count_and_length() {
+        let payload = vec![0x12, 0x34, 0x56, 0x78, 0x9a];
+        let mut resolution = ResolutionPacket {
+            subbands: vec![SubbandPrecinct {
+                code_blocks: vec![CodeBlockPacketData {
+                    data: payload.clone(),
+                    num_coding_passes: 3,
+                    num_zero_bitplanes: 2,
+                    previously_included: false,
+                    l_block: 3,
+                    block_coding_mode: BlockCodingMode::HighThroughput,
+                }],
+                num_cbs_x: 1,
+                num_cbs_y: 1,
+            }],
+        };
+
+        let packet = form_packet(&mut resolution);
+        let header_len = packet.len() - payload.len();
+        let mut reader = BitReader::new(&packet[..header_len]);
+        assert_eq!(reader.read_bits_with_stuffing(1), Some(1));
+
+        let mut inclusion_nodes = Vec::<TagNode>::new();
+        let mut inclusion_tree = TagTree::new(1, 1, &mut inclusion_nodes);
+        assert_eq!(
+            inclusion_tree.read(0, 0, &mut reader, 1, &mut inclusion_nodes),
+            Some(0)
+        );
+
+        let mut zbp_nodes = Vec::<TagNode>::new();
+        let mut zbp_tree = TagTree::new(1, 1, &mut zbp_nodes);
+        assert_eq!(
+            zbp_tree.read(0, 0, &mut reader, u32::MAX, &mut zbp_nodes),
+            Some(2)
+        );
+
+        let passes = decode_num_ht_coding_passes_from_reader_for_test(&mut reader)
+            .expect("HT coding pass count");
+        assert_eq!(passes, 3);
+
+        let mut l_block = 3u32;
+        let mut length_bits = bits_for_ht_cleanup_length(l_block, passes);
+        while reader.read_bits_with_stuffing(1).expect("lblock increment") == 1 {
+            l_block += 1;
+            length_bits += 1;
+        }
+        assert_eq!(
+            reader.read_bits_with_stuffing(length_bits as u8),
+            Some(payload.len() as u32)
+        );
+        assert_eq!(&packet[header_len..], payload.as_slice());
     }
 
     fn single_block_packet(data: Vec<u8>, previously_included: bool) -> ResolutionPacket {

@@ -5,7 +5,10 @@ use signinum_core::{BackendKind, BackendRequest, PixelFormat};
 use signinum_cuda_runtime::CudaError;
 
 use crate::surface::Storage;
-use crate::{profile, CudaSession, CudaSurfaceStats, Error, Surface};
+use crate::{profile, CudaSession, CudaSurfaceStats, Error, Surface, SurfaceResidency};
+
+const CPU_STAGED_CUDA_REQUIRES_EXPLICIT_API: &str =
+    "CPU-staged CUDA upload requires the explicit CPU-staged API; BackendRequest::Cuda only accepts resident CUDA HTJ2K decode";
 
 pub(crate) fn wrap_surface(
     bytes: Vec<u8>,
@@ -39,6 +42,7 @@ pub(crate) fn wrap_surface(
             }
             Ok(Surface {
                 backend: BackendKind::Cpu,
+                residency: SurfaceResidency::Host,
                 dimensions,
                 fmt,
                 pitch_bytes,
@@ -46,9 +50,24 @@ pub(crate) fn wrap_surface(
                 storage: Storage::Host(bytes),
             })
         }
-        BackendRequest::Cuda => wrap_cuda_surface(&bytes, dimensions, fmt, pitch_bytes, session),
+        BackendRequest::Cuda => {
+            let _ = (bytes, session);
+            Err(Error::UnsupportedCudaRequest {
+                reason: CPU_STAGED_CUDA_REQUIRES_EXPLICIT_API,
+            })
+        }
         BackendRequest::Metal => Err(Error::UnsupportedBackend { request: backend }),
     }
+}
+
+pub(crate) fn wrap_cpu_staged_cuda_surface(
+    bytes: &[u8],
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+    session: &mut CudaSession,
+) -> Result<Surface, Error> {
+    let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
+    wrap_cuda_surface(bytes, dimensions, fmt, pitch_bytes, session)
 }
 
 pub(crate) fn validate_surface_request(backend: BackendRequest) -> Result<(), Error> {
@@ -91,11 +110,14 @@ fn wrap_cuda_surface(
     }
     Ok(Surface {
         backend: BackendKind::Cuda,
+        residency: SurfaceResidency::CpuStagedCudaUpload,
         dimensions,
         fmt,
         pitch_bytes,
         stats: CudaSurfaceStats {
-            kernel_dispatches: stats.kernel_dispatches(),
+            total: stats.kernel_dispatches(),
+            copy: stats.copy_kernel_dispatches(),
+            decode: stats.decode_kernel_dispatches(),
         },
         storage: Storage::Cuda(buffer),
     })

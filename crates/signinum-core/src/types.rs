@@ -108,3 +108,9 @@ pub struct DecodeOutcome<W> {
     pub decoded: Rect,
     pub warnings: Vec<W>,
 }
+
+impl<W> DecodeOutcome<W> {
+    pub fn new(decoded: Rect, warnings: Vec<W>) -> Self {
+        Self { decoded, warnings }
+    }
+}

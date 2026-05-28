@@ -1,0 +1,147 @@
+.version 7.0
+.target sm_52
+.address_size 64
+
+.visible .entry signinum_htj2k_decode_codeblocks(
+    .param .u64 coded_data,
+    .param .u64 decoded_data,
+    .param .u64 jobs,
+    .param .u64 vlc_table0,
+    .param .u64 vlc_table1,
+    .param .u64 uvlc_table0,
+    .param .u64 uvlc_table1,
+    .param .u64 status
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_dequantize_htj2k_codeblocks(
+    .param .u64 decoded_data,
+    .param .u64 jobs
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_inverse_dwt_single(
+    .param .u64 ll,
+    .param .u64 hl,
+    .param .u64 lh,
+    .param .u64 hh,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_interleave(
+    .param .u64 ll,
+    .param .u64 hl,
+    .param .u64 lh,
+    .param .u64 hh,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_horizontal(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_horizontal_53(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_horizontal_97(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_vertical(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_vertical_53(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_idwt_vertical_97(
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_store_gray8(
+    .param .u64 input,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_store_gray16(
+    .param .u64 input,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_inverse_mct(
+    .param .u64 plane0,
+    .param .u64 plane1,
+    .param .u64 plane2,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_store_rgb8(
+    .param .u64 plane0,
+    .param .u64 plane1,
+    .param .u64 plane2,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}
+
+.visible .entry signinum_j2k_store_rgb16(
+    .param .u64 plane0,
+    .param .u64 plane1,
+    .param .u64 plane2,
+    .param .u64 output,
+    .param .u64 job
+)
+{
+    ret;
+}

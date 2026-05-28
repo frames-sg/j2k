@@ -17,11 +17,9 @@ fn decode_native(codestream: &[u8]) -> signinum_j2k_native::RawBitmap {
 }
 
 fn lossless_options(block_coding_mode: J2kBlockCodingMode) -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        block_coding_mode,
-        validation: J2kEncodeValidation::External,
-        ..J2kLosslessEncodeOptions::default()
-    }
+    J2kLosslessEncodeOptions::default()
+        .with_block_coding_mode(block_coding_mode)
+        .with_validation(J2kEncodeValidation::External)
 }
 
 fn native_encode_options(reversible: bool, use_mct: bool) -> EncodeOptions {
@@ -77,10 +75,8 @@ fn classic_lossless_53_rgb_recode_to_htj2k_decodes_pixel_exact() {
         J2kLosslessSamples::new(&pixels, width, height, 3, 8, false).expect("valid RGB samples");
     let classic = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            reversible_transform: ReversibleTransform::Rct53,
-            ..lossless_options(J2kBlockCodingMode::Classic)
-        },
+        &lossless_options(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::Rct53),
     )
     .expect("classic lossless encode")
     .codestream;
@@ -136,10 +132,8 @@ fn jp2_wrapped_classic_lossless_53_recode_emits_raw_htj2k_codestream() {
         J2kLosslessSamples::new(&pixels, width, height, 3, 8, false).expect("valid RGB samples");
     let classic = encode_j2k_lossless(
         samples,
-        &J2kLosslessEncodeOptions {
-            reversible_transform: ReversibleTransform::Rct53,
-            ..lossless_options(J2kBlockCodingMode::Classic)
-        },
+        &lossless_options(J2kBlockCodingMode::Classic)
+            .with_reversible_transform(ReversibleTransform::Rct53),
     )
     .expect("classic lossless encode")
     .codestream;

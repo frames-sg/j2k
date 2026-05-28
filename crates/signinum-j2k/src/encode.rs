@@ -68,15 +68,21 @@ pub enum J2kEncodeValidation {
 
 /// Options controlling JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct J2kLosslessEncodeOptions {
+    /// Backend preference for encode stages.
     pub backend: EncodeBackendPreference,
+    /// Code-block coding mode for the codestream.
     pub block_coding_mode: J2kBlockCodingMode,
+    /// Packet progression order.
     pub progression: J2kProgressionOrder,
     /// Optional explicit lossless decomposition level request.
     ///
     /// Requests are clamped to the geometry-safe maximum for the tile.
     pub max_decomposition_levels: Option<u8>,
+    /// Reversible transform profile.
     pub reversible_transform: ReversibleTransform,
+    /// Validation policy applied before returning encoded bytes.
     pub validation: J2kEncodeValidation,
 }
 
@@ -93,14 +99,89 @@ impl Default for J2kLosslessEncodeOptions {
     }
 }
 
+impl J2kLosslessEncodeOptions {
+    /// Create JPEG 2000 lossless encode options.
+    pub const fn new(
+        backend: EncodeBackendPreference,
+        block_coding_mode: J2kBlockCodingMode,
+        progression: J2kProgressionOrder,
+        max_decomposition_levels: Option<u8>,
+        reversible_transform: ReversibleTransform,
+        validation: J2kEncodeValidation,
+    ) -> Self {
+        Self {
+            backend,
+            block_coding_mode,
+            progression,
+            max_decomposition_levels,
+            reversible_transform,
+            validation,
+        }
+    }
+
+    /// Return options with a different backend preference.
+    #[must_use]
+    pub const fn with_backend(mut self, backend: EncodeBackendPreference) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Return options with a different code-block coding mode.
+    #[must_use]
+    pub const fn with_block_coding_mode(mut self, block_coding_mode: J2kBlockCodingMode) -> Self {
+        self.block_coding_mode = block_coding_mode;
+        self
+    }
+
+    /// Return options with a different packet progression order.
+    #[must_use]
+    pub const fn with_progression(mut self, progression: J2kProgressionOrder) -> Self {
+        self.progression = progression;
+        self
+    }
+
+    /// Return options with a different maximum decomposition-level request.
+    #[must_use]
+    pub const fn with_max_decomposition_levels(
+        mut self,
+        max_decomposition_levels: Option<u8>,
+    ) -> Self {
+        self.max_decomposition_levels = max_decomposition_levels;
+        self
+    }
+
+    /// Return options with a different reversible transform.
+    #[must_use]
+    pub const fn with_reversible_transform(
+        mut self,
+        reversible_transform: ReversibleTransform,
+    ) -> Self {
+        self.reversible_transform = reversible_transform;
+        self
+    }
+
+    /// Return options with a different validation policy.
+    #[must_use]
+    pub const fn with_validation(mut self, validation: J2kEncodeValidation) -> Self {
+        self.validation = validation;
+        self
+    }
+}
+
 /// Borrowed interleaved samples and image geometry for lossless encoding.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kLosslessSamples<'a> {
+    /// Interleaved sample bytes.
     pub data: &'a [u8],
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Component count. The stable facade accepts 1 or 3.
     pub components: u8,
+    /// Significant bits per component sample.
     pub bit_depth: u8,
+    /// Whether component samples are signed.
     pub signed: bool,
 }
 
@@ -153,12 +234,19 @@ impl<'a> J2kLosslessSamples<'a> {
 /// Encoded JPEG 2000 lossless codestream and encode metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedJ2k {
+    /// Raw JPEG 2000 codestream bytes.
     pub codestream: Vec<u8>,
+    /// Backend that satisfied the encode contract.
     pub backend: BackendKind,
+    /// Encoded image width in pixels.
     pub width: u32,
+    /// Encoded image height in pixels.
     pub height: u32,
+    /// Encoded component count.
     pub components: u8,
+    /// Encoded significant bits per sample.
     pub bit_depth: u8,
+    /// Whether encoded samples are signed.
     pub signed: bool,
 }
 
@@ -198,7 +286,7 @@ pub fn encode_j2k_lossless_with_accelerator(
     }
 
     let before = accelerator.dispatch_report();
-    let required_stages = required_encode_stages(samples, *options);
+    let required_stages = required_encode_stages(samples, *options, accelerated_backend);
     let codestream = encode_with_native_accelerator(samples, *options, accelerator)?;
     let dispatch = accelerator.dispatch_report().saturating_delta(before);
     validate_lossless_roundtrip(samples, &codestream, options.validation)?;
@@ -378,11 +466,13 @@ struct RequiredEncodeStages {
 }
 
 impl RequiredEncodeStages {
-    const FORWARD_RCT: u8 = 1 << 0;
-    const FORWARD_DWT53: u8 = 1 << 1;
-    const TIER1_CODE_BLOCK: u8 = 1 << 2;
-    const HT_CODE_BLOCK: u8 = 1 << 3;
-    const PACKETIZATION: u8 = 1 << 4;
+    const DEINTERLEAVE: u8 = 1 << 0;
+    const FORWARD_RCT: u8 = 1 << 1;
+    const FORWARD_DWT53: u8 = 1 << 2;
+    const TIER1_CODE_BLOCK: u8 = 1 << 3;
+    const HT_CODE_BLOCK: u8 = 1 << 4;
+    const PACKETIZATION: u8 = 1 << 5;
+    const QUANTIZE_SUBBAND: u8 = 1 << 6;
 
     fn satisfied_by(self, dispatch: J2kEncodeDispatchReport) -> bool {
         self.missing_stage(dispatch).is_none()
@@ -390,6 +480,9 @@ impl RequiredEncodeStages {
 
     fn missing_message(self, dispatch: J2kEncodeDispatchReport) -> &'static str {
         match self.missing_stage(dispatch) {
+            Some("deinterleave") => {
+                "requested JPEG 2000 lossless device encode backend did not dispatch deinterleave"
+            }
             Some("forward_rct") => {
                 "requested JPEG 2000 lossless device encode backend did not dispatch forward_rct"
             }
@@ -402,6 +495,9 @@ impl RequiredEncodeStages {
             Some("ht_code_block") => {
                 "requested JPEG 2000 lossless device encode backend did not dispatch ht_code_block"
             }
+            Some("quantize_subband") => {
+                "requested JPEG 2000 lossless device encode backend did not dispatch quantize_subband"
+            }
             Some("packetization") => {
                 "requested JPEG 2000 lossless device encode backend did not dispatch packetization"
             }
@@ -410,6 +506,9 @@ impl RequiredEncodeStages {
     }
 
     fn missing_stage(self, dispatch: J2kEncodeDispatchReport) -> Option<&'static str> {
+        if self.contains(Self::DEINTERLEAVE) && dispatch.deinterleave == 0 {
+            return Some("deinterleave");
+        }
         if self.contains(Self::FORWARD_RCT) && dispatch.forward_rct == 0 {
             return Some("forward_rct");
         }
@@ -421,6 +520,9 @@ impl RequiredEncodeStages {
         }
         if self.contains(Self::HT_CODE_BLOCK) && dispatch.ht_code_block == 0 {
             return Some("ht_code_block");
+        }
+        if self.contains(Self::QUANTIZE_SUBBAND) && dispatch.quantize_subband == 0 {
+            return Some("quantize_subband");
         }
         if self.contains(Self::PACKETIZATION) && dispatch.packetization == 0 {
             return Some("packetization");
@@ -436,11 +538,15 @@ impl RequiredEncodeStages {
 fn required_encode_stages(
     samples: J2kLosslessSamples<'_>,
     options: J2kLosslessEncodeOptions,
+    accelerated_backend: BackendKind,
 ) -> RequiredEncodeStages {
     let decomposition_levels = j2k_lossless_decomposition_levels_for_options(samples, options);
     let high_throughput = options.block_coding_mode == J2kBlockCodingMode::HighThroughput;
 
     let mut bits = RequiredEncodeStages::PACKETIZATION;
+    if accelerated_backend == BackendKind::Cuda {
+        bits |= RequiredEncodeStages::DEINTERLEAVE | RequiredEncodeStages::QUANTIZE_SUBBAND;
+    }
     if samples.components >= 3 && options.reversible_transform == ReversibleTransform::Rct53 {
         bits |= RequiredEncodeStages::FORWARD_RCT;
     }

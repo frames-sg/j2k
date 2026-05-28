@@ -2,6 +2,8 @@
 
 //! JPEG 2000 inspect support for signinum.
 
+#![deny(missing_docs)]
+
 extern crate alloc;
 
 mod backend;
@@ -10,17 +12,22 @@ mod decode;
 mod encode;
 mod recode;
 
+/// Reusable JPEG 2000 decode context.
 pub mod context;
 pub use context::J2kContext;
 
+/// JPEG 2000 error type.
 pub mod error;
 pub use error::J2kError;
 
+/// Caller-owned JPEG 2000 scratch pool.
 pub mod scratch;
 pub use scratch::J2kScratchPool;
 
+/// Adapter-facing planning APIs shared with GPU crates.
 pub mod adapter;
 
+/// Borrowed view and decoder entry points.
 pub mod view;
 pub use view::{J2kCodec, J2kDecoder, J2kView};
 
@@ -45,13 +52,13 @@ pub use recode::{
     ReencodedHtj2k,
 };
 
-#[doc(hidden)]
 pub use signinum_j2k_native::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
-    J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output,
+    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder,
+    J2kPacketizationResolution, J2kPacketizationSubband, J2kQuantizeSubbandJob,
+    J2kTier1CodeBlockEncodeJob,
 };
 
 pub use signinum_core::{
