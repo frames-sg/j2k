@@ -62,11 +62,11 @@ fn fixture_ht_rgb8_irreversible_97() -> Vec<u8> {
 }
 
 fn fixture_openhtj2k_refinement_odd() -> &'static [u8] {
-    include_bytes!("../../signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
+    include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
 }
 
 fn fixture_openhtj2k_refinement_odd_pixels() -> &'static [u8] {
-    include_bytes!("../../signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.gray")
+    include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.gray")
 }
 
 #[derive(Clone, Copy, Debug)]

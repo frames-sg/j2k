@@ -38,7 +38,7 @@ fn ht_gray8_fixture() -> Vec<u8> {
 
 #[cfg(feature = "cuda-runtime")]
 fn openhtj2k_refinement_fixture() -> &'static [u8] {
-    include_bytes!("../../signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
+    include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
 }
 
 #[cfg(feature = "cuda-runtime")]
