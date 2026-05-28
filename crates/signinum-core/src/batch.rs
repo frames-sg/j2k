@@ -10,6 +10,12 @@ pub struct TileBatchOptions {
     pub workers: Option<NonZeroUsize>,
 }
 
+impl TileBatchOptions {
+    pub const fn new(workers: Option<NonZeroUsize>) -> Self {
+        Self { workers }
+    }
+}
+
 /// Indexed result produced by one tile-batch worker.
 pub type IndexedBatchResult<T, E> = (usize, Result<T, E>);
 
