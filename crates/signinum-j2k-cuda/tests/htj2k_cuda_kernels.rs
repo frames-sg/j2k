@@ -298,6 +298,8 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
 
     assert_eq!(encoded.execution().kernel_dispatches(), 1);
     assert_eq!(encoded.data(), expected.data);
+    assert_eq!(encoded.cleanup_length(), expected.cleanup_length);
+    assert_eq!(encoded.refinement_length(), expected.refinement_length);
     assert_eq!(encoded.num_coding_passes(), expected.num_coding_passes);
     assert_eq!(encoded.num_zero_bitplanes(), expected.num_zero_bitplanes);
 }
@@ -357,6 +359,14 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
     assert_eq!(encoded.code_blocks().len(), 2);
     assert_eq!(encoded.code_blocks()[0].data(), expected0.data);
     assert_eq!(
+        encoded.code_blocks()[0].cleanup_length(),
+        expected0.cleanup_length
+    );
+    assert_eq!(
+        encoded.code_blocks()[0].refinement_length(),
+        expected0.refinement_length
+    );
+    assert_eq!(
         encoded.code_blocks()[0].num_coding_passes(),
         expected0.num_coding_passes
     );
@@ -365,6 +375,14 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
         expected0.num_zero_bitplanes
     );
     assert_eq!(encoded.code_blocks()[1].data(), expected1.data);
+    assert_eq!(
+        encoded.code_blocks()[1].cleanup_length(),
+        expected1.cleanup_length
+    );
+    assert_eq!(
+        encoded.code_blocks()[1].refinement_length(),
+        expected1.refinement_length
+    );
     assert_eq!(
         encoded.code_blocks()[1].num_coding_passes(),
         expected1.num_coding_passes
