@@ -28,6 +28,12 @@ static constexpr uint J2K_HT_VLC_SIZE = 3072u - J2K_HT_MEL_SIZE;
 static constexpr uint J2K_HT_MS_SIZE = ((16384u * 16u) + 14u) / 15u;
 static constexpr uint J2K_HT_MEL_OFFSET = J2K_HT_MS_SIZE;
 static constexpr uint J2K_HT_VLC_OFFSET = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
+static constexpr uint J2K_HT_SIGPROP_SCRATCH = 513u;
+
+static constexpr uint J2K_HT_SIGPROP_SPREAD_MASKS[16] = {
+    0x33u, 0x76u, 0xECu, 0xC8u, 0x330u, 0x760u, 0xEC0u, 0xC80u,
+    0x3300u, 0x7600u, 0xEC00u, 0xC800u, 0x33000u, 0x76000u, 0xEC000u, 0xC8000u,
+};
 
 struct J2kHtEncodeParams {
     uint width;
@@ -72,6 +78,15 @@ struct J2kHtMagSgnEncoder {
     uint max_bits;
     uint used_bits;
     uint tmp;
+    uint failed;
+};
+
+struct J2kHtSigPropWriter {
+    uint pos;
+    uint used_bits;
+    uint previous_was_ff;
+    uint capacity;
+    uchar tmp;
     uint failed;
 };
 
@@ -131,6 +146,258 @@ __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total
     const uint magnitude = (coefficient < 0 ? uint(-coefficient) : uint(coefficient))
         << (31u - total_bitplanes);
     return sign | magnitude;
+}
+
+__device__ inline void j2k_ht_sigprop_writer_init(J2kHtSigPropWriter &writer, uint capacity) {
+    writer.pos = 0u;
+    writer.used_bits = 0u;
+    writer.previous_was_ff = 0u;
+    writer.capacity = capacity;
+    writer.tmp = uchar(0u);
+    writer.failed = 0u;
+}
+
+__device__ inline void j2k_ht_sigprop_write_bit(
+    J2kHtSigPropWriter &writer,
+    uchar *out,
+    uint bit
+) {
+    const uint max_bits = writer.previous_was_ff != 0u ? 7u : 8u;
+    writer.tmp = uchar(uint(writer.tmp) | ((bit & 1u) << writer.used_bits));
+    writer.used_bits += 1u;
+    if (writer.used_bits < max_bits) {
+        return;
+    }
+
+    if (writer.pos >= writer.capacity) {
+        writer.failed = 1u;
+        return;
+    }
+    if (out != 0) {
+        out[writer.pos] = writer.tmp;
+    }
+    writer.previous_was_ff = writer.tmp == uchar(0xFFu) ? 1u : 0u;
+    writer.tmp = uchar(0u);
+    writer.used_bits = 0u;
+    writer.pos += 1u;
+}
+
+__device__ inline void j2k_ht_sigprop_finish(J2kHtSigPropWriter &writer, uchar *out) {
+    if (writer.used_bits == 0u) {
+        return;
+    }
+    if (writer.pos >= writer.capacity) {
+        writer.failed = 1u;
+        return;
+    }
+    if (out != 0) {
+        out[writer.pos] = writer.tmp;
+    }
+    writer.pos += 1u;
+    writer.tmp = uchar(0u);
+    writer.used_bits = 0u;
+}
+
+__device__ inline uint j2k_ht_sigprop_cleanup_sig16(
+    const int *coefficients,
+    uint coefficient_stride,
+    uint width,
+    uint height,
+    uint x_base,
+    uint y_base
+) {
+    uint mask = 0u;
+    for (uint col = 0u; col < 4u; ++col) {
+        const uint x = x_base + col;
+        if (x >= width) {
+            continue;
+        }
+        for (uint row = 0u; row < 4u; ++row) {
+            const uint y = y_base + row;
+            if (y >= height) {
+                continue;
+            }
+            const uint magnitude =
+                j2k_classic_magnitude(coefficients[y * coefficient_stride + x]);
+            if (magnitude >= 5u && (magnitude & 1u) != 0u) {
+                mask |= 1u << (col * 4u + row);
+            }
+        }
+    }
+    return mask;
+}
+
+__device__ inline uint j2k_ht_sigprop_target_sig16(
+    const int *coefficients,
+    uint coefficient_stride,
+    uint width,
+    uint height,
+    uint x_base,
+    uint y_base
+) {
+    uint mask = 0u;
+    for (uint col = 0u; col < 4u; ++col) {
+        const uint x = x_base + col;
+        if (x >= width) {
+            continue;
+        }
+        for (uint row = 0u; row < 4u; ++row) {
+            const uint y = y_base + row;
+            if (y >= height) {
+                continue;
+            }
+            const uint magnitude =
+                j2k_classic_magnitude(coefficients[y * coefficient_stride + x]);
+            if (magnitude == 3u) {
+                mask |= 1u << (col * 4u + row);
+            }
+        }
+    }
+    return mask;
+}
+
+__device__ inline uint j2k_ht_sigprop_coefficient_sign(
+    const int *coefficients,
+    uint coefficient_stride,
+    uint x_base,
+    uint y_base,
+    uint bit
+) {
+    const uint col = bit >> 2u;
+    const uint row = bit & 3u;
+    return coefficients[(y_base + row) * coefficient_stride + x_base + col] < 0 ? 1u : 0u;
+}
+
+__device__ inline uint j2k_ht_write_sigprop_segment(
+    const int *coefficients,
+    uint coefficient_stride,
+    uint width,
+    uint height,
+    uchar *out,
+    uint capacity,
+    uint *bytes_written
+) {
+    const uint group_count = (width + 3u) >> 2u;
+    if (group_count + 8u > J2K_HT_SIGPROP_SCRATCH) {
+        return 0u;
+    }
+
+    ushort prev_row_sig[J2K_HT_SIGPROP_SCRATCH];
+    for (uint idx = 0u; idx < J2K_HT_SIGPROP_SCRATCH; ++idx) {
+        prev_row_sig[idx] = ushort(0u);
+    }
+
+    J2kHtSigPropWriter writer;
+    j2k_ht_sigprop_writer_init(writer, capacity);
+
+    for (uint y = 0u; y < height; y += 4u) {
+        uint pattern = 0xFFFFu;
+        if (height - y < 4u) {
+            pattern = 0x7777u;
+            if (height - y < 3u) {
+                pattern = 0x3333u;
+                if (height - y < 2u) {
+                    pattern = 0x1111u;
+                }
+            }
+        }
+
+        uint prev = 0u;
+        for (uint x = 0u; x < width; x += 4u) {
+            uint col_pattern = pattern;
+            const int overhang = int(x + 4u) - int(width);
+            if (overhang > 0) {
+                col_pattern >>= uint(overhang * 4);
+            }
+
+            const uint idx = x >> 2u;
+            const uint ps = uint(prev_row_sig[idx]) | (uint(prev_row_sig[idx + 1u]) << 16u);
+            const uint ns =
+                j2k_ht_sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x, y + 4u)
+                | (j2k_ht_sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x + 4u, y + 4u) << 16u);
+            uint u = (ps & 0x88888888u) >> 3u;
+            u |= (ns & 0x11111111u) << 3u;
+
+            const uint cs =
+                j2k_ht_sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x, y)
+                | (j2k_ht_sigprop_cleanup_sig16(coefficients, coefficient_stride, width, height, x + 4u, y) << 16u);
+            uint mbr = cs;
+            mbr |= (cs & 0x77777777u) << 1u;
+            mbr |= (cs & 0xEEEEEEEEu) >> 1u;
+            mbr |= u;
+            const uint t_mbr = mbr;
+            mbr |= t_mbr << 4u;
+            mbr |= t_mbr >> 4u;
+            mbr |= prev >> 12u;
+            mbr &= col_pattern;
+            mbr &= ~cs;
+
+            uint new_sig = 0u;
+            const uint target_sig =
+                j2k_ht_sigprop_target_sig16(coefficients, coefficient_stride, width, height, x, y)
+                & col_pattern;
+            if (mbr != 0u) {
+                uint candidates = mbr;
+                uint processed = 0u;
+                const uint inv_sig = ~cs & col_pattern;
+
+                while (candidates != 0u) {
+                    const uint bit = uint(__ffs(int(candidates)) - 1);
+                    const uint sample_mask = 1u << bit;
+                    candidates &= ~sample_mask;
+                    processed |= sample_mask;
+
+                    const uint desired = (target_sig & sample_mask) != 0u ? 1u : 0u;
+                    j2k_ht_sigprop_write_bit(writer, out, desired);
+                    if (writer.failed != 0u) {
+                        return 0u;
+                    }
+                    if (desired != 0u) {
+                        new_sig |= sample_mask;
+                        candidates |= J2K_HT_SIGPROP_SPREAD_MASKS[bit] & inv_sig & ~processed;
+                    }
+                }
+
+                if (new_sig != 0u) {
+                    uint sign_bits = new_sig;
+                    while (sign_bits != 0u) {
+                        const uint bit = uint(__ffs(int(sign_bits)) - 1);
+                        const uint sample_mask = 1u << bit;
+                        sign_bits &= ~sample_mask;
+                        j2k_ht_sigprop_write_bit(
+                            writer,
+                            out,
+                            j2k_ht_sigprop_coefficient_sign(coefficients, coefficient_stride, x, y, bit)
+                        );
+                        if (writer.failed != 0u) {
+                            return 0u;
+                        }
+                    }
+                }
+            }
+
+            if ((target_sig & ~new_sig) != 0u) {
+                return 0u;
+            }
+
+            const uint combined_sig = new_sig | cs;
+            prev_row_sig[idx] = ushort(combined_sig & 0xFFFFu);
+            prev_row_sig[idx + 1u] = ushort((combined_sig >> 16u) & 0xFFFFu);
+
+            const uint t = combined_sig;
+            uint next_prev = combined_sig;
+            next_prev |= (t & 0x7777u) << 1u;
+            next_prev |= (t & 0xEEEEu) >> 1u;
+            prev = (next_prev | u) & 0xF000u;
+        }
+    }
+
+    j2k_ht_sigprop_finish(writer, out);
+    if (writer.failed != 0u) {
+        return 0u;
+    }
+    bytes_written[0] = writer.pos;
+    return 1u;
 }
 
 __device__ inline uint j2k_ht_write_magref_segment(
@@ -870,7 +1137,8 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
             j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
             return;
         }
-        const uint min_exact_magnitude = params.target_coding_passes == 2u ? 3u : 5u;
+    }
+    if (params.target_coding_passes == 2u) {
         for (uint y = 0u; y < params.height; ++y) {
             for (uint x = 0u; x < params.width; ++x) {
                 const uint magnitude =
@@ -878,8 +1146,22 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
                 if (magnitude == 0u) {
                     continue;
                 }
+                if (magnitude < 3u || (magnitude & 1u) == 0u) {
+                    j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+                    return;
+                }
+            }
+        }
+    } else if (params.target_coding_passes == 3u) {
+        for (uint y = 0u; y < params.height; ++y) {
+            for (uint x = 0u; x < params.width; ++x) {
+                const uint magnitude =
+                    j2k_classic_magnitude(coefficients[y * params.coefficient_stride + x]);
+                if (magnitude == 0u || magnitude == 3u) {
+                    continue;
+                }
                 significant_count += 1u;
-                if (magnitude < min_exact_magnitude || (magnitude & 1u) == 0u) {
+                if (magnitude < 5u || (magnitude & 1u) == 0u) {
                     j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
                     return;
                 }
@@ -1011,7 +1293,20 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         refinement_len = 1u;
     } else if (params.target_coding_passes == 3u) {
         const uint sample_count = params.width * params.height;
-        sigprop_len = (sample_count + 7u) >> 3u;
+        uint actual_sigprop_len = 0u;
+        if (j2k_ht_write_sigprop_segment(
+                coefficients,
+                params.coefficient_stride,
+                params.width,
+                params.height,
+                0,
+                0xFFFFFFFFu,
+                &actual_sigprop_len
+            ) == 0u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+            return;
+        }
+        sigprop_len = max((sample_count + 7u) >> 3u, actual_sigprop_len);
         magref_len = (significant_count + 6u) / 7u;
         refinement_len = sigprop_len + magref_len;
     }
@@ -1038,6 +1333,21 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         if (refinement_len != 0u) {
             for (uint idx = 0u; idx < refinement_len; ++idx) {
                 out[cleanup_len + idx] = uchar(0u);
+            }
+        }
+        if (params.target_coding_passes == 3u) {
+            uint actual_sigprop_len = 0u;
+            if (j2k_ht_write_sigprop_segment(
+                    coefficients,
+                    params.coefficient_stride,
+                    params.width,
+                    params.height,
+                    out + cleanup_len,
+                    sigprop_len,
+                    &actual_sigprop_len
+                ) == 0u) {
+                j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+                return;
             }
         }
         if (params.target_coding_passes == 3u
