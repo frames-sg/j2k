@@ -108,18 +108,18 @@ __device__ inline void j2k_set_ht_encode_status_with_segments(
     uint data_len,
     uint passes,
     uint zbp,
-    uint ms_len,
-    uint mel_len,
-    uint vlc_len
+    uint cleanup_len,
+    uint refinement_len,
+    uint reserved
 ) {
     status->code = code;
     status->detail = detail;
     status->data_len = data_len;
     status->num_coding_passes = passes;
     status->num_zero_bitplanes = zbp;
-    status->reserved0 = ms_len;
-    status->reserved1 = mel_len;
-    status->reserved2 = vlc_len;
+    status->reserved0 = cleanup_len;
+    status->reserved1 = refinement_len;
+    status->reserved2 = reserved;
 }
 
 __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total_bitplanes) {
@@ -922,9 +922,9 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         total_len,
         1u,
         missing_msbs,
-        ms_len,
-        mel_len,
-        vlc_len
+        total_len,
+        0u,
+        0u
     );
 }
 

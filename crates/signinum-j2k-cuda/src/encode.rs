@@ -2760,12 +2760,10 @@ fn ht_subband_code_block_count(
 fn encoded_ht_code_block_from_cuda(
     encoded: &signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock,
 ) -> EncodedHtJ2kCodeBlock {
-    let cleanup_length =
-        u32::try_from(encoded.data().len()).expect("CUDA HTJ2K encode output length fits u32");
     EncodedHtJ2kCodeBlock {
         data: encoded.data().to_vec(),
-        cleanup_length,
-        refinement_length: 0,
+        cleanup_length: encoded.cleanup_length(),
+        refinement_length: encoded.refinement_length(),
         num_coding_passes: encoded.num_coding_passes(),
         num_zero_bitplanes: encoded.num_zero_bitplanes(),
     }
@@ -4318,6 +4316,8 @@ mod tests {
             .zip(staged_encoded.code_blocks())
         {
             assert_eq!(resident.data(), staged.data());
+            assert_eq!(resident.cleanup_length(), staged.cleanup_length());
+            assert_eq!(resident.refinement_length(), staged.refinement_length());
             assert_eq!(resident.num_coding_passes(), staged.num_coding_passes());
             assert_eq!(resident.num_zero_bitplanes(), staged.num_zero_bitplanes());
         }

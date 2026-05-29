@@ -761,6 +761,24 @@ impl CudaHtj2kEncodedCodeBlock {
         &self.data
     }
 
+    /// HTJ2K cleanup segment length in bytes.
+    pub fn cleanup_length(&self) -> u32 {
+        if self.status.number_of_coding_passes <= 1 {
+            self.status.data_len
+        } else {
+            self.status.reserved0
+        }
+    }
+
+    /// HTJ2K refinement segment length in bytes.
+    pub fn refinement_length(&self) -> u32 {
+        if self.status.number_of_coding_passes <= 1 {
+            0
+        } else {
+            self.status.reserved1
+        }
+    }
+
     /// Number of coding passes in the encoded payload.
     pub fn num_coding_passes(&self) -> u8 {
         u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX)
@@ -5833,6 +5851,28 @@ mod tests {
     }
 
     #[test]
+    fn htj2k_encoded_codeblock_reports_segment_lengths_from_status() {
+        let encoded = super::CudaHtj2kEncodedCodeBlock {
+            data: vec![0u8; 10],
+            status: super::CudaHtj2kEncodeStatus {
+                code: super::HTJ2K_STATUS_OK,
+                detail: 0,
+                data_len: 10,
+                number_of_coding_passes: 3,
+                missing_bit_planes: 4,
+                reserved0: 7,
+                reserved1: 3,
+                reserved2: 0,
+            },
+            execution: super::CudaExecutionStats::default(),
+            stage_timings: super::CudaHtj2kEncodeStageTimings::default(),
+        };
+
+        assert_eq!(encoded.cleanup_length(), 7);
+        assert_eq!(encoded.refinement_length(), 3);
+    }
+
+    #[test]
     fn htj2k_encode_resources_feed_resident_region_encode_when_required() {
         if !cuda_runtime_required() {
             return;
@@ -5897,6 +5937,11 @@ mod tests {
 
         assert_eq!(encoded.execution().kernel_dispatches(), 1);
         assert_eq!(encoded.num_coding_passes(), 1);
+        assert_eq!(
+            encoded.cleanup_length(),
+            u32::try_from(encoded.data().len()).expect("test payload length fits u32")
+        );
+        assert_eq!(encoded.refinement_length(), 0);
     }
 
     #[test]
