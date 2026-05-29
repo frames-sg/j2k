@@ -74,9 +74,14 @@ struct J2kHtMagSgnEncoder {
     uint failed;
 };
 
-static constexpr uint J2K_HT_MEL_EXP[13] = {
-    0u, 0u, 0u, 1u, 1u, 1u, 2u, 2u, 2u, 3u, 3u, 4u, 5u
-};
+__device__ inline uint j2k_ht_mel_exp(uint k) {
+    return k < 3u ? 0u
+        : k < 6u ? 1u
+        : k < 9u ? 2u
+        : k < 11u ? 3u
+        : k == 11u ? 4u
+        : 5u;
+}
 
 __device__ inline void j2k_set_ht_encode_status(
     J2kHtEncodeStatus *status,
@@ -176,18 +181,18 @@ __device__ inline void j2k_ht_mel_encode(J2kHtMelEncoder &mel, uchar *out, bool 
             j2k_ht_mel_emit_bit(mel, out, true);
             mel.run = 0u;
             mel.k = min(mel.k + 1u, 12u);
-            mel.threshold = 1u << J2K_HT_MEL_EXP[mel.k];
+            mel.threshold = 1u << j2k_ht_mel_exp(mel.k);
         }
     } else {
         j2k_ht_mel_emit_bit(mel, out, false);
-        uint t = J2K_HT_MEL_EXP[mel.k];
+        uint t = j2k_ht_mel_exp(mel.k);
         while (t > 0u) {
             t -= 1u;
             j2k_ht_mel_emit_bit(mel, out, ((mel.run >> t) & 1u) != 0u);
         }
         mel.run = 0u;
         mel.k = mel.k == 0u ? 0u : mel.k - 1u;
-        mel.threshold = 1u << J2K_HT_MEL_EXP[mel.k];
+        mel.threshold = 1u << j2k_ht_mel_exp(mel.k);
     }
 }
 
