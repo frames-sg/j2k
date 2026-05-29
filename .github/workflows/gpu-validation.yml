@@ -87,6 +87,7 @@ jobs:
       SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
       SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
       SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
+      RUST_TEST_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
