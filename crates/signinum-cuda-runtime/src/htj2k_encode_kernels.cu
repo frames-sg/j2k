@@ -5,7 +5,10 @@
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
-typedef unsigned long long ulong;
+// Use `u64`, not `ulong`: Linux system headers declare `ulong` as
+// `unsigned long`, which collides with a `unsigned long long` typedef of the
+// same name and breaks the strict nvcc --ptx build.
+typedef unsigned long long u64;
 
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -1067,7 +1070,7 @@ extern "C" __global__ void signinum_htj2k_encode_codeblocks(
     unsigned long long job_count
 ) {
     const uint job_idx = blockIdx.x;
-    if (ulong(job_idx) >= job_count) {
+    if (u64(job_idx) >= job_count) {
         return;
     }
 
@@ -1385,8 +1388,8 @@ __device__ inline void j2k_packet_build_tag_trees(
     const J2kHtPacketBlock *blocks,
     const J2kHtPacketSubbandTagState *tag_states,
     const J2kHtPacketTagNodeState *tag_nodes,
-    ulong tag_state_count,
-    ulong tag_node_count,
+    u64 tag_state_count,
+    u64 tag_node_count,
     uint subband_meta_idx
 ) {
     if (j2k_packet_tag_tree_init(inclusion_tree, subband.num_cbs_x, subband.num_cbs_y) == 0u
@@ -1413,7 +1416,7 @@ __device__ inline void j2k_packet_build_tag_trees(
     if (tag_state_count == 0u) {
         return;
     }
-    if (ulong(subband_meta_idx) >= tag_state_count) {
+    if (u64(subband_meta_idx) >= tag_state_count) {
         inclusion_tree.failed = 1u;
         zbp_tree.failed = 1u;
         return;
@@ -1424,10 +1427,10 @@ __device__ inline void j2k_packet_build_tag_trees(
         zbp_tree.failed = 1u;
         return;
     }
-    const ulong inclusion_end = ulong(state.inclusion_node_start) + ulong(state.node_count);
-    const ulong zbp_end = ulong(state.zero_bitplane_node_start) + ulong(state.node_count);
-    if (inclusion_end < ulong(state.inclusion_node_start)
-        || zbp_end < ulong(state.zero_bitplane_node_start)
+    const u64 inclusion_end = u64(state.inclusion_node_start) + u64(state.node_count);
+    const u64 zbp_end = u64(state.zero_bitplane_node_start) + u64(state.node_count);
+    if (inclusion_end < u64(state.inclusion_node_start)
+        || zbp_end < u64(state.zero_bitplane_node_start)
         || inclusion_end > tag_node_count
         || zbp_end > tag_node_count) {
         inclusion_tree.failed = 1u;
@@ -1543,7 +1546,7 @@ __device__ inline J2kPacketHeaderResult j2k_packet_build_header_serial(
                 );
             }
             if (block.data_offset + block.data_len < block.data_offset
-                || ulong(block.data_offset) + ulong(block.data_len) > payload_len) {
+                || u64(block.data_offset) + u64(block.data_len) > payload_len) {
                 return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2u, 0u, 0u, 0u);
             }
         }
