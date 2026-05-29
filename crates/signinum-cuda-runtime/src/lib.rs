@@ -682,9 +682,9 @@ pub struct CudaHtj2kEncodeCodeBlockJob {
     pub height: u32,
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
-    /// Requested HT coding passes. `1` emits the cleanup pass; `>1` is reserved
-    /// for refinement-capable kernels and is rejected instead of silently
-    /// falling back to cleanup-only output.
+    /// Requested HT coding passes. `1` emits cleanup-only output; `2` emits a
+    /// zero `SigProp` segment for exactly representable blocks; `3` emits zero
+    /// `SigProp` bits plus `MagRef` bits for exactly representable blocks.
     pub target_coding_passes: u8,
 }
 
@@ -701,9 +701,9 @@ pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     pub height: u32,
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
-    /// Requested HT coding passes. `1` emits the cleanup pass; `>1` is reserved
-    /// for refinement-capable kernels and is rejected instead of silently
-    /// falling back to cleanup-only output.
+    /// Requested HT coding passes. `1` emits cleanup-only output; `2` emits a
+    /// zero `SigProp` segment for exactly representable blocks; `3` emits zero
+    /// `SigProp` bits plus `MagRef` bits for exactly representable blocks.
     pub target_coding_passes: u8,
 }
 
@@ -5928,7 +5928,7 @@ mod tests {
     }
 
     #[test]
-    fn htj2k_encode_rejects_requested_refinement_passes_when_required() {
+    fn htj2k_encode_rejects_unsupported_refinement_pass_count_when_required() {
         if !cuda_runtime_required() {
             return;
         }
@@ -5940,7 +5940,7 @@ mod tests {
             width: 2,
             height: 2,
             total_bitplanes: 3,
-            target_coding_passes: 3,
+            target_coding_passes: 4,
         }];
 
         let error = context
@@ -5953,9 +5953,7 @@ mod tests {
                     uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
                 },
             )
-            .expect_err(
-                "multi-pass HTJ2K encode is explicit unsupported until refinement kernels exist",
-            );
+            .expect_err("unsupported HTJ2K encode pass count is explicit");
 
         match error {
             CudaError::KernelStatus {
@@ -5998,6 +5996,48 @@ mod tests {
                 },
             )
             .expect_err("target-2 zero SigProp cannot silently drop low coefficient bits");
+
+        match error {
+            CudaError::KernelStatus {
+                kernel,
+                code,
+                detail,
+            } => {
+                assert_eq!(kernel, "signinum_htj2k_encode_codeblocks");
+                assert_eq!(code, super::HTJ2K_STATUS_UNSUPPORTED);
+                assert_eq!(detail, 6);
+            }
+            other => panic!("unexpected CUDA encode error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn htj2k_encode_rejects_target_three_sigprop_required_coefficients_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let coefficients = [0, 3, -5, 7];
+        let jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 2,
+            total_bitplanes: 4,
+            target_coding_passes: 3,
+        }];
+
+        let error = context
+            .encode_htj2k_codeblocks(
+                &coefficients,
+                &jobs,
+                CudaHtj2kEncodeTables {
+                    vlc_table0: &[0u16; 2048],
+                    vlc_table1: &[0u16; 2048],
+                    uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
+                },
+            )
+            .expect_err("target-3 encode cannot silently omit required SigProp work");
 
         match error {
             CudaError::KernelStatus {

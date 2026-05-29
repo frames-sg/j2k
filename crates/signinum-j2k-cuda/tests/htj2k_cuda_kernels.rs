@@ -376,6 +376,76 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    let coefficients = [5, -7, 9, -11];
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let uvlc_table = uvlc_encode_table_bytes();
+    let encoded = context
+        .encode_htj2k_codeblocks(
+            &coefficients,
+            &[CudaHtj2kEncodeCodeBlockJob {
+                coefficient_offset: 0,
+                width: 2,
+                height: 2,
+                total_bitplanes: 4,
+                target_coding_passes: 3,
+            }],
+            CudaHtj2kEncodeTables {
+                vlc_table0: ht_vlc_encode_table0(),
+                vlc_table1: ht_vlc_encode_table1(),
+                uvlc_table: &uvlc_table,
+            },
+        )
+        .expect("CUDA three-pass HT encode");
+    let block = encoded
+        .code_blocks()
+        .first()
+        .expect("one encoded code block");
+
+    assert_eq!(block.num_coding_passes(), 3);
+    assert_eq!(block.num_zero_bitplanes(), 1);
+    assert_eq!(block.refinement_length(), 2);
+    assert_eq!(
+        block.cleanup_length() + block.refinement_length(),
+        u32::try_from(block.data().len()).expect("test payload length fits u32")
+    );
+
+    let mut decoded = vec![0.0f32; coefficients.len()];
+    decode_ht_code_block_scalar(
+        HtCodeBlockDecodeJob {
+            data: block.data(),
+            cleanup_length: block.cleanup_length(),
+            refinement_length: block.refinement_length(),
+            width: 2,
+            height: 2,
+            output_stride: 2,
+            missing_bit_planes: block.num_zero_bitplanes(),
+            number_of_coding_passes: block.num_coding_passes(),
+            num_bitplanes: 4,
+            stripe_causal: false,
+            strict: true,
+            dequantization_step: 1.0,
+        },
+        &mut decoded,
+    )
+    .expect("three-pass HT block decodes");
+
+    assert_eq!(
+        decoded,
+        coefficients
+            .iter()
+            .map(|value| f32::from(i16::try_from(*value).expect("test coefficient fits i16")))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
 fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required() {
     if !runtime_required() {
         return;

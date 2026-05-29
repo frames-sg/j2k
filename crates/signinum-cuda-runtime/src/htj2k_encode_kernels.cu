@@ -133,6 +133,73 @@ __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total
     return sign | magnitude;
 }
 
+__device__ inline uint j2k_ht_write_magref_segment(
+    const int *coefficients,
+    uint coefficient_stride,
+    uint width,
+    uint height,
+    uchar *out,
+    uint magref_len,
+    uint expected_bits
+) {
+    if (magref_len == 0u) {
+        return expected_bits == 0u;
+    }
+
+    for (uint idx = 0u; idx < magref_len; ++idx) {
+        out[idx] = uchar(0u);
+    }
+
+    uint bit_idx = 0u;
+    for (uint y = 0u; y < height; y += 4u) {
+        for (uint x_base = 0u; x_base < width; x_base += 8u) {
+            for (uint col = 0u; col < 8u; ++col) {
+                const uint x = x_base + col;
+                if (x >= width) {
+                    continue;
+                }
+                for (uint row = 0u; row < 4u; ++row) {
+                    const uint yy = y + row;
+                    if (yy >= height) {
+                        continue;
+                    }
+
+                    const uint magnitude =
+                        j2k_classic_magnitude(coefficients[yy * coefficient_stride + x]);
+                    if (magnitude == 0u) {
+                        continue;
+                    }
+
+                    const uint byte_from_end = bit_idx >> 3u;
+                    if (byte_from_end >= magref_len) {
+                        return 0u;
+                    }
+                    const uint out_idx = magref_len - 1u - byte_from_end;
+                    out[out_idx] = uchar(uint(out[out_idx]) | (((magnitude >> 1u) & 1u) << (bit_idx & 7u)));
+                    bit_idx += 1u;
+                }
+            }
+        }
+    }
+
+    if (bit_idx != expected_bits) {
+        return 0u;
+    }
+
+    for (uint idx = 0u; idx < magref_len; ++idx) {
+        if (out[idx] > uchar(0x8Fu)) {
+            return 0u;
+        }
+    }
+
+    const uchar first_magref_byte = out[magref_len - 1u];
+    if ((first_magref_byte & uchar(0x7Fu)) == uchar(0x7Fu)) {
+        return 0u;
+    }
+
+    return 1u;
+}
+
 __device__ inline void j2k_ht_mel_init(J2kHtMelEncoder &mel) {
     mel.pos = 0u;
     mel.remaining_bits = 8u;
@@ -771,7 +838,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
         return;
     }
-    if (params.target_coding_passes > 2u) {
+    if (params.target_coding_passes > 3u) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
         return;
     }
@@ -787,16 +854,22 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         return;
     }
 
+    uint significant_count = 0u;
     if (params.target_coding_passes > 1u) {
-        if (params.total_bitplanes < 2u) {
+        if (params.total_bitplanes < params.target_coding_passes) {
             j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
             return;
         }
+        const uint min_exact_magnitude = params.target_coding_passes == 2u ? 3u : 5u;
         for (uint y = 0u; y < params.height; ++y) {
             for (uint x = 0u; x < params.width; ++x) {
                 const uint magnitude =
                     j2k_classic_magnitude(coefficients[y * params.coefficient_stride + x]);
-                if (magnitude == 1u || (magnitude > 1u && (magnitude & 1u) == 0u)) {
+                if (magnitude == 0u) {
+                    continue;
+                }
+                significant_count += 1u;
+                if (magnitude < min_exact_magnitude || (magnitude & 1u) == 0u) {
                     j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
                     return;
                 }
@@ -804,7 +877,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         }
     }
 
-    const uint pass_span = params.target_coding_passes > 1u ? 2u : 1u;
+    const uint pass_span = params.target_coding_passes;
     const uint missing_msbs = params.total_bitplanes - pass_span;
     const uint p = 30u - missing_msbs;
 
@@ -921,7 +994,17 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     const uint mel_len = mel.pos;
     const uint vlc_len = vlc.pos;
     const uint cleanup_len = ms_len + mel_len + vlc_len;
-    const uint refinement_len = params.target_coding_passes > 1u ? 1u : 0u;
+    uint sigprop_len = 0u;
+    uint magref_len = 0u;
+    uint refinement_len = 0u;
+    if (params.target_coding_passes == 2u) {
+        refinement_len = 1u;
+    } else if (params.target_coding_passes == 3u) {
+        const uint sample_count = params.width * params.height;
+        sigprop_len = (sample_count + 7u) >> 3u;
+        magref_len = (significant_count + 7u) >> 3u;
+        refinement_len = sigprop_len + magref_len;
+    }
     const uint total_len = cleanup_len + refinement_len;
     if (cleanup_len < 2u || total_len > params.output_capacity) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u, 0u, 0u);
@@ -943,7 +1026,22 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         out[cleanup_last] = uchar(locator_bytes >> 4u);
         out[cleanup_prev] = uchar((out[cleanup_prev] & uchar(0xF0u)) | uchar(locator_bytes & 0x0Fu));
         if (refinement_len != 0u) {
-            out[cleanup_len] = uchar(0u);
+            for (uint idx = 0u; idx < refinement_len; ++idx) {
+                out[cleanup_len + idx] = uchar(0u);
+            }
+        }
+        if (params.target_coding_passes == 3u
+            && j2k_ht_write_magref_segment(
+                coefficients,
+                params.coefficient_stride,
+                params.width,
+                params.height,
+                out + cleanup_len + sigprop_len,
+                magref_len,
+                significant_count
+            ) == 0u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 7u, 0u, 0u, 0u);
+            return;
         }
     }
 
