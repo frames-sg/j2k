@@ -477,7 +477,7 @@ pub struct J2kTier1CodeBlockEncodeJob<'a> {
     pub style: J2kCodeBlockStyle,
 }
 
-/// Adapter HTJ2K cleanup-only code-block encode job for backend experimentation.
+/// Adapter HTJ2K code-block encode job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kHtCodeBlockEncodeJob<'a> {
     /// Quantized coefficients in row-major order.
@@ -488,6 +488,11 @@ pub struct J2kHtCodeBlockEncodeJob<'a> {
     pub height: u32,
     /// Total bitplanes for this subband/code-block.
     pub total_bitplanes: u8,
+    /// Requested HT coding passes for this contribution.
+    ///
+    /// `1` is cleanup-only. Higher values require an accelerator that can
+    /// encode those passes and must not be silently reduced by CPU fallback.
+    pub target_coding_passes: u8,
 }
 
 /// Adapter HTJ2K cleanup encode job for one unquantized sub-band.
@@ -693,7 +698,7 @@ pub struct J2kEncodeDispatchReport {
     pub quantize_subband: usize,
     /// Tier-1 code-block encode dispatch count.
     pub tier1_code_block: usize,
-    /// HTJ2K cleanup-only code-block encode dispatch count.
+    /// HTJ2K code-block encode dispatch count.
     pub ht_code_block: usize,
     /// Packetization dispatch count.
     pub packetization: usize,
@@ -836,7 +841,7 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
-    /// Optionally encode one HTJ2K cleanup-only code-block.
+    /// Optionally encode one HTJ2K code-block.
     ///
     /// Return `Ok(Some(output))` with encoded bytes and pass metadata. Return
     /// `Ok(None)` to use the CPU fallback.
@@ -847,7 +852,7 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
-    /// Optionally encode multiple HTJ2K cleanup-only code-blocks in one backend dispatch.
+    /// Optionally encode multiple HTJ2K code-blocks in one backend dispatch.
     ///
     /// Return `Ok(Some(outputs))` with one encoded output per input job. Return
     /// `Ok(None)` to use the per-block hook or CPU fallback.

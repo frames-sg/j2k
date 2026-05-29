@@ -2110,6 +2110,7 @@ fn encode_all_ht_code_blocks(
                     width: block.width,
                     height: block.height,
                     total_bitplanes: subband.total_bitplanes,
+                    target_coding_passes: 1,
                 })
         })
         .collect();
@@ -2200,6 +2201,9 @@ fn encode_all_tier1_code_blocks(
 fn encode_all_ht_code_blocks_serial_cpu(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    if jobs.iter().any(|job| job.target_coding_passes != 1) {
+        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    }
     jobs.iter()
         .map(|job| {
             ht_block_encode::encode_code_block(
@@ -2216,6 +2220,9 @@ fn encode_all_ht_code_blocks_serial_cpu(
 fn encode_all_ht_code_blocks_parallel(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    if jobs.iter().any(|job| job.target_coding_passes != 1) {
+        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    }
     jobs.par_iter()
         .map(|job| {
             ht_block_encode::encode_code_block(
@@ -2232,6 +2239,9 @@ fn encode_all_ht_code_blocks_parallel(
 fn encode_all_ht_code_blocks_parallel(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    if jobs.iter().any(|job| job.target_coding_passes != 1) {
+        return Err("CPU HTJ2K code-block fallback supports cleanup-only encode");
+    }
     jobs.iter()
         .map(|job| {
             ht_block_encode::encode_code_block(
@@ -2290,6 +2300,7 @@ fn encode_ht_code_block(
         width,
         height,
         total_bitplanes,
+        target_coding_passes: 1,
     })? {
         return Ok(ht_encoded_code_block_from_accelerator(encoded));
     }
@@ -2914,6 +2925,7 @@ mod tests {
                 width: 64,
                 height: 64,
                 total_bitplanes: 10,
+                target_coding_passes: 1,
             })
             .collect();
 
