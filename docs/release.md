@@ -15,9 +15,11 @@ may run before CPU fallback.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
 `cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` can use
 NVIDIA nvJPEG for full-frame RGB8 JPEG decode when `libnvjpeg` is installed;
-unsupported JPEG shapes and the J2K CUDA adapter still use CPU decode plus
-CUDA device memory upload. NVIDIA performance claims require self-hosted GPU
-benchmark evidence.
+unsupported JPEG shapes use explicit CPU-staged upload APIs where exposed. The
+J2K CUDA adapter reserves explicit CUDA requests for CUDA-resident HTJ2K
+codestream decode and reports unsupported inputs instead of CPU-decoding and
+uploading pixels. NVIDIA performance claims require self-hosted GPU benchmark
+evidence.
 
 ## Verification Gates
 
