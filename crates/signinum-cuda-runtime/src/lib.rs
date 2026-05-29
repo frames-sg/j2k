@@ -6012,13 +6012,13 @@ mod tests {
     }
 
     #[test]
-    fn htj2k_encode_rejects_target_three_sigprop_required_coefficients_when_required() {
+    fn htj2k_encode_rejects_unreachable_target_three_sigprop_coefficients_when_required() {
         if !cuda_runtime_required() {
             return;
         }
 
         let context = CudaContext::system_default().expect("CUDA context");
-        let coefficients = [0, 3, -5, 7];
+        let coefficients = [3, 0, 0, 0];
         let jobs = [CudaHtj2kEncodeCodeBlockJob {
             coefficient_offset: 0,
             width: 2,
@@ -6037,7 +6037,7 @@ mod tests {
                     uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
                 },
             )
-            .expect_err("target-3 encode cannot silently omit required SigProp work");
+            .expect_err("isolated target-3 SigProp coefficient is explicitly unsupported");
 
         match error {
             CudaError::KernelStatus {
