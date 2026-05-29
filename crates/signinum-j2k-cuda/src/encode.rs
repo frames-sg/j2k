@@ -1983,6 +1983,7 @@ fn cuda_encode_ht_code_block(
         width: job.width,
         height: job.height,
         total_bitplanes: job.total_bitplanes,
+        target_coding_passes: 1,
     }];
     context
         .encode_htj2k_codeblocks_with_resources(job.coefficients, &cuda_jobs, resources)
@@ -2016,6 +2017,7 @@ fn cuda_encode_ht_code_blocks(
             width: job.width,
             height: job.height,
             total_bitplanes: job.total_bitplanes,
+            target_coding_passes: 1,
         });
     }
 
@@ -2556,6 +2558,7 @@ fn cuda_ht_region_jobs(
                 width: block_width,
                 height: block_height,
                 total_bitplanes,
+                target_coding_passes: 1,
             });
         }
     }
@@ -4286,6 +4289,7 @@ mod tests {
             width: 4,
             height: 2,
             total_bitplanes: 5,
+            target_coding_passes: 1,
         }];
 
         let resident_encoded = context
@@ -4352,12 +4356,14 @@ mod tests {
             width: 2,
             height: 2,
             total_bitplanes: 5,
+            target_coding_passes: 1,
         }];
         let contiguous_jobs = [CudaHtj2kEncodeCodeBlockJob {
             coefficient_offset: 0,
             width: 2,
             height: 2,
             total_bitplanes: 5,
+            target_coding_passes: 1,
         }];
 
         let resident_encoded = context

@@ -35,6 +35,7 @@ struct J2kHtEncodeParams {
     uint coefficient_stride;
     uint total_bitplanes;
     uint output_capacity;
+    uint target_coding_passes;
 };
 
 struct J2kHtEncodeStatus {
@@ -766,6 +767,14 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 1u, 0u, 0u, 0u);
         return;
     }
+    if (params.target_coding_passes == 0u || params.target_coding_passes > 164u) {
+        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+        return;
+    }
+    if (params.target_coding_passes > 1u) {
+        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+        return;
+    }
 
     if (max_magnitude == 0u) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 1u, params.total_bitplanes);
@@ -1059,6 +1068,7 @@ struct J2kHtEncodeJob {
     uint total_bitplanes;
     uint output_offset;
     uint output_capacity;
+    uint target_coding_passes;
 };
 
 extern "C" __global__ void signinum_htj2k_encode_codeblocks(
@@ -1083,6 +1093,7 @@ extern "C" __global__ void signinum_htj2k_encode_codeblocks(
     params.coefficient_stride = job.coefficient_stride;
     params.total_bitplanes = job.total_bitplanes;
     params.output_capacity = job.output_capacity;
+    params.target_coding_passes = job.target_coding_passes;
 
     __shared__ uint block_max[256];
     const int *codeblock_coefficients = coefficients + job.coefficient_offset;
