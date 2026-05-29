@@ -164,6 +164,7 @@ benchmark compilation. Runtime GPU validation is available through the manual
 - Apple Silicon runners labeled `self-hosted`, `macOS`, `ARM64`, `metal`
   validate Metal tests and optionally timed Metal benchmarks.
 - x86_64 CUDA runners labeled `self-hosted`, `Linux`, `X64`, `cuda` validate
-  CUDA device-memory output with `cuda-runtime` and the nvJPEG full-frame RGB8
-  JPEG path when `libnvjpeg` is installed. Timed NVIDIA performance claims
-  require the workflow's timed benchmark mode and recorded output.
+  CUDA device-memory output with `cuda-runtime`, including strict CUDA-resident
+  HTJ2K codestream decode and encode, and the nvJPEG full-frame RGB8 JPEG path
+  when `libnvjpeg` is installed. Timed NVIDIA performance claims require the
+  workflow's timed benchmark mode and recorded output.

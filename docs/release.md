@@ -55,8 +55,9 @@ on self-hosted runners before claiming Metal runtime validation:
 3. Use the `run-timed-benchmarks` workflow input when a release needs measured
    GPU benchmark timing rather than compile-only coverage
 
-Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output
-and the opt-in nvJPEG JPEG decode path on a CUDA runner. Timed NVIDIA
+Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output,
+strict CUDA-resident HTJ2K codestream decode and encode (tests, profiling, and
+clippy), and the opt-in nvJPEG JPEG decode path on a CUDA runner. Timed NVIDIA
 performance claims require the `run-timed-benchmarks` workflow input and
 recorded benchmark output plus the benchmark publication report.
 
