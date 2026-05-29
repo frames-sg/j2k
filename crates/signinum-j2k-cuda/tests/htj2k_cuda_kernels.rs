@@ -311,7 +311,7 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
         return;
     }
 
-    let coefficients = [0, 2, -4, 2, 4, 0, -2, 2, 6, -2, 0, 2, 0, 0, 4, -4];
+    let coefficients = [0, 3, -5, 3, 5, 0, -3, 3, 7, -3, 0, 3, 0, 0, 5, -5];
 
     let context = CudaContext::system_default().expect("CUDA context");
     let uvlc_table = uvlc_encode_table_bytes();
