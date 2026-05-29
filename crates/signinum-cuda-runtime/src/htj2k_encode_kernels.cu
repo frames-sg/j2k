@@ -454,7 +454,7 @@ __device__ inline uint j2k_ht_write_magref_segment(
 
                     const uint magnitude =
                         j2k_classic_magnitude(coefficients[yy * coefficient_stride + x]);
-                    if (magnitude == 0u) {
+                    if (magnitude < 5u || (magnitude & 1u) == 0u) {
                         continue;
                     }
 
