@@ -6,7 +6,7 @@ JPEG decoders ingest adversarial byte streams from the wild. If you find a
 crash, memory-safety violation, or undefined behavior in `signinum`, please
 report it privately rather than opening a public issue.
 
-Use GitHub's private vulnerability reporting for the repository, or contact the
+Use GitHub private vulnerability reporting for the repository, or contact the
 maintainer through the repository owner profile if private reporting is not yet
 enabled.
 
@@ -20,6 +20,6 @@ generally within 30 days for high-severity issues.
 
 ## Supported versions
 
-The supported stable line is CPU-first 1.x. Pre-1.0 adapter crates receive
-security fixes in their latest minor line while they remain part of the
-repository.
+The supported stable line is `0.4.x`. Experimental adapter and transcode crates
+receive security fixes in their latest `0.4.x` release while they remain part of
+the repository.

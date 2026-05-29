@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! Viewport workload planning and composition for JPEG Metal decode.
+
 use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use signinum_jpeg::adapter::{
     build_metal_fast420_packet_for_decoder, build_metal_fast422_packet_for_decoder,
@@ -13,26 +15,40 @@ const VIEWPORT_TILE_EDGE: u32 = 96;
 const VIEWPORT_TILE_COLS: u32 = 6;
 const VIEWPORT_TILE_ROWS: u32 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One source tile and its destination rectangle in a viewport.
 pub struct ViewportTile {
+    /// Source image region to decode.
     pub source_roi: Rect,
+    /// Destination rectangle in the viewport output, expressed after scaling.
     pub dest: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A tiled viewport decode request.
 pub struct ViewportWorkload {
+    /// Downscale factor applied while decoding each source region.
     pub scale: Downscale,
+    /// Final viewport dimensions in pixels.
     pub viewport_dims: (u32, u32),
+    /// Tiles that compose the viewport.
     pub tiles: Vec<ViewportTile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Execution strategy selected for a viewport workload.
 pub enum ViewportSurfaceStrategy {
+    /// Decode individual tiles on CPU and composite them in host memory.
     CpuComposite,
+    /// Decode one contiguous source region on CPU.
     CpuContiguous,
+    /// Decode individual tiles through the hybrid Metal path and composite.
     HybridComposite,
+    /// Decode one contiguous source region through the hybrid Metal path.
     HybridContiguous,
 }
 
+/// Return the smallest source rectangle covering all viewport tiles.
 pub fn viewport_source_bounds(workload: &ViewportWorkload) -> Rect {
     let mut min_x = u32::MAX;
     let mut min_y = u32::MAX;
@@ -53,6 +69,7 @@ pub fn viewport_source_bounds(workload: &ViewportWorkload) -> Rect {
     }
 }
 
+/// Return whether the workload covers one contiguous scaled source region.
 pub fn is_contiguous_viewport_workload(workload: &ViewportWorkload) -> bool {
     if workload.tiles.is_empty() {
         return false;
@@ -106,6 +123,7 @@ pub fn is_contiguous_viewport_workload(workload: &ViewportWorkload) -> bool {
     area_sum == viewport_area
 }
 
+/// Choose a viewport surface strategy from workload layout and backend request.
 pub fn choose_viewport_surface_strategy(
     workload: &ViewportWorkload,
     backend: BackendRequest,
@@ -218,6 +236,7 @@ fn validate_explicit_metal_viewport_request(
     Ok(())
 }
 
+/// Suggest a representative tiled viewport workload for an image size.
 pub fn suggest_viewport_workload(dimensions: (u32, u32)) -> Option<ViewportWorkload> {
     let scales = [
         Downscale::Eighth,
@@ -280,6 +299,7 @@ pub fn suggest_viewport_workload(dimensions: (u32, u32)) -> Option<ViewportWorkl
     None
 }
 
+/// Decode and composite viewport tiles into a host-memory RGB buffer.
 pub fn compose_viewport_cpu(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
@@ -326,6 +346,7 @@ pub fn compose_viewport_cpu(
     Ok(viewport)
 }
 
+/// Decode the contiguous viewport source region into a host-memory buffer.
 pub fn decode_viewport_region_cpu(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
@@ -346,6 +367,7 @@ pub fn decode_viewport_region_cpu(
     Ok(viewport)
 }
 
+/// Decode a viewport workload into a surface chosen by the backend contract.
 pub fn decode_viewport_to_surface(
     decoder: &CpuDecoder<'_>,
     pool: &mut ScratchPool,
@@ -376,6 +398,7 @@ pub fn decode_viewport_to_surface(
     }
 }
 
+/// Decode a contiguous CPU viewport source region and wrap it as a surface.
 #[cfg(target_os = "macos")]
 pub fn decode_viewport_region_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
@@ -391,6 +414,7 @@ pub fn decode_viewport_region_cpu_to_surface(
     )
 }
 
+/// Decode a contiguous CPU viewport source region and wrap it as a surface.
 #[cfg(not(target_os = "macos"))]
 pub fn decode_viewport_region_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
@@ -406,6 +430,7 @@ pub fn decode_viewport_region_cpu_to_surface(
     )
 }
 
+/// Decode and composite CPU viewport tiles and wrap the result as a surface.
 #[cfg(target_os = "macos")]
 pub fn compose_viewport_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
@@ -430,6 +455,7 @@ pub fn compose_viewport_cpu_to_surface(
     )
 }
 
+/// Decode and composite CPU viewport tiles and wrap the result as a surface.
 #[cfg(not(target_os = "macos"))]
 pub fn compose_viewport_cpu_to_surface(
     decoder: &CpuDecoder<'_>,
@@ -454,6 +480,7 @@ pub fn compose_viewport_cpu_to_surface(
     )
 }
 
+/// Decode and composite viewport tiles through the Metal hybrid path.
 #[cfg(target_os = "macos")]
 pub fn compose_viewport_hybrid(
     decoder: &CpuDecoder<'_>,
@@ -465,6 +492,7 @@ pub fn compose_viewport_hybrid(
     crate::compute::compose_rgb_viewport_from_regions(decoder, pool, scale, viewport_dims, tiles)
 }
 
+/// Decode a contiguous viewport source region through the Metal hybrid path.
 #[cfg(target_os = "macos")]
 pub fn decode_viewport_region_hybrid(
     decoder: &CpuDecoder<'_>,
@@ -493,6 +521,7 @@ pub fn decode_viewport_region_hybrid(
     )
 }
 
+/// Return `Error::MetalUnavailable` for hybrid viewport decode on non-macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn decode_viewport_region_hybrid(
     _decoder: &CpuDecoder<'_>,
@@ -502,6 +531,8 @@ pub fn decode_viewport_region_hybrid(
     Err(Error::MetalUnavailable)
 }
 
+/// Return `Error::MetalUnavailable` for hybrid viewport composition on
+/// non-macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn compose_viewport_hybrid(
     _decoder: &CpuDecoder<'_>,

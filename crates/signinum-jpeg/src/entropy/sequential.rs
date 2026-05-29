@@ -733,6 +733,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
 
 fn finish_fast_tile_scan(br: &mut BitReader<'_>) -> Result<Vec<Warning>, JpegError> {
     let mut warnings = Vec::new();
+    br.advance_to_marker();
     match br.take_marker() {
         Some(0xD9) => Ok(warnings),
         Some(found) => Err(JpegError::UnexpectedMarker {
@@ -899,6 +900,7 @@ fn finish_scan(br: &mut BitReader<'_>, validate_eoi: bool) -> Result<Vec<Warning
     }
 
     let mut warnings = Vec::new();
+    br.advance_to_marker();
     match br.take_marker() {
         Some(0xD9) => Ok(warnings),
         Some(found) => Err(JpegError::UnexpectedMarker {
@@ -1047,7 +1049,7 @@ pub(crate) fn decode_scan_dct_blocks(
         for mcu_x in 0..mcus_per_row {
             let current_mcu = mcu_y * mcus_per_row + mcu_x;
             if restart > 0 && mcus_since_restart == u32::from(restart) {
-                let _ = br.ensure_bits(1);
+                br.advance_to_marker();
                 let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
                     mcu_at: current_mcu,
                     mcu_total: total_mcus,
@@ -1121,7 +1123,7 @@ fn skip_to_mcu(
 ) -> Result<(), JpegError> {
     while *current_mcu < target_mcu {
         if restart > 0 && *mcus_since_restart == u32::from(restart) {
-            let _ = br.ensure_bits(1);
+            br.advance_to_marker();
             let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
                 mcu_at: *current_mcu,
                 mcu_total: total_mcus,
@@ -1777,7 +1779,7 @@ fn decode_mcu_row(
     let mut pixels_2x2 = [0u8; 4];
     for mx in 0..mcus_per_row {
         if restart > 0 && *mcus_since_restart == u32::from(restart) {
-            let _ = br.ensure_bits(1);
+            br.advance_to_marker();
             let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
                 mcu_at: mcu_y * mcus_per_row + mx,
                 mcu_total: mcu_rows * mcus_per_row,
@@ -1990,6 +1992,7 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
     }
 
     let mut warnings = Vec::new();
+    br.advance_to_marker();
     match br.take_marker() {
         Some(0xD9) => Ok(warnings),
         Some(found) => Err(JpegError::UnexpectedMarker {
@@ -2026,7 +2029,7 @@ fn decode_mcu_row_fast_rgb_444(
 ) -> Result<(), JpegError> {
     for mx in 0..mcus_per_row {
         if restart > 0 && *mcus_since_restart == u32::from(restart) {
-            let _ = br.ensure_bits(1);
+            br.advance_to_marker();
             let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
                 mcu_at: mcu_y * mcus_per_row + mx,
                 mcu_total: mcu_rows * mcus_per_row,

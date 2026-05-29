@@ -2,54 +2,101 @@
 
 use signinum_core::{BufferError, CodecError, InputError, NotImplemented, Unsupported};
 
+/// Error returned by JPEG 2000 inspect, decode, encode, and recode APIs.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum J2kError {
+    /// Caller-owned buffers were too small or malformed.
     #[error(transparent)]
     Buffer(#[from] BufferError),
 
+    /// Input was too short or truncated while parsing.
     #[error(transparent)]
     Input(#[from] InputError),
 
+    /// Requested feature is planned but not implemented.
     #[error(transparent)]
     NotImplemented(#[from] NotImplemented),
 
+    /// Requested input feature or option is unsupported.
     #[error(transparent)]
     Unsupported(#[from] Unsupported),
 
+    /// Native backend or encode/decode stage failed.
     #[error("backend decode failed: {0}")]
     Backend(String),
 
+    /// Requested region lies outside image bounds.
     #[error("region ({x},{y} {w}x{h}) is outside image bounds {image_w}x{image_h}")]
     InvalidRegion {
+        /// Region left coordinate.
         x: u32,
+        /// Region top coordinate.
         y: u32,
+        /// Region width.
         w: u32,
+        /// Region height.
         h: u32,
+        /// Image width.
         image_w: u32,
+        /// Image height.
         image_h: u32,
     },
 
+    /// JP2 box structure was invalid.
     #[error("invalid JP2 box at offset {offset}: {what}")]
-    InvalidBox { offset: usize, what: &'static str },
+    InvalidBox {
+        /// Byte offset of the invalid box.
+        offset: usize,
+        /// Description of the invalid box condition.
+        what: &'static str,
+    },
 
+    /// Required JP2 box was absent.
     #[error("missing required JP2 box {box_type}")]
-    MissingRequiredBox { box_type: &'static str },
+    MissingRequiredBox {
+        /// Missing box type.
+        box_type: &'static str,
+    },
 
+    /// Codestream marker was invalid.
     #[error("invalid codestream marker FF{marker:02X} at offset {offset}")]
-    InvalidMarker { offset: usize, marker: u8 },
+    InvalidMarker {
+        /// Byte offset of the invalid marker.
+        offset: usize,
+        /// Marker byte following the `0xFF` prefix.
+        marker: u8,
+    },
 
+    /// Required codestream marker was absent.
     #[error("missing required codestream marker {marker}")]
-    MissingRequiredMarker { marker: &'static str },
+    MissingRequiredMarker {
+        /// Missing marker name.
+        marker: &'static str,
+    },
 
+    /// SIZ segment was invalid.
     #[error("invalid SIZ segment: {what}")]
-    InvalidSiz { what: &'static str },
+    InvalidSiz {
+        /// Description of the invalid SIZ condition.
+        what: &'static str,
+    },
 
+    /// COD segment was invalid.
     #[error("invalid COD segment: {what}")]
-    InvalidCod { what: &'static str },
+    InvalidCod {
+        /// Description of the invalid COD condition.
+        what: &'static str,
+    },
 
+    /// Image dimensions overflowed a size computation.
     #[error("dimension overflow: {width}x{height}")]
-    DimensionOverflow { width: u32, height: u32 },
+    DimensionOverflow {
+        /// Image width.
+        width: u32,
+        /// Image height.
+        height: u32,
+    },
 }
 
 impl CodecError for J2kError {

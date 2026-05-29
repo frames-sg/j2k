@@ -245,7 +245,7 @@ fn decode_signinum_once(
             stride: stride(tile, format),
         })
         .collect::<Vec<_>>();
-    decode_tiles_into(&mut jobs, format, TileBatchOptions { workers })
+    decode_tiles_into(&mut jobs, format, TileBatchOptions::new(workers))
         .map_err(|err| format!("signinum batch decode failed: {err}"))?;
     Ok(outputs.iter().map(Vec::len).sum())
 }
@@ -285,7 +285,7 @@ fn decode_external_once(
 ) -> Result<usize, String> {
     let worker_count = tile_batch_worker_count(
         tiles.len(),
-        TileBatchOptions { workers },
+        TileBatchOptions::new(workers),
         std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
     );
     let chunk_size = tiles.len().div_ceil(worker_count);

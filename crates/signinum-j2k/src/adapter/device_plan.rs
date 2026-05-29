@@ -3,14 +3,31 @@
 use crate::error::J2kError;
 use signinum_core::{Downscale, Rect};
 
+/// Device decode shape requested by a GPU adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceDecodeRequest {
+    /// Decode the full image at full resolution.
     Full,
-    Region { roi: Rect },
-    Scaled { scale: Downscale },
-    RegionScaled { roi: Rect, scale: Downscale },
+    /// Decode a full-resolution source region.
+    Region {
+        /// Source region of interest.
+        roi: Rect,
+    },
+    /// Decode the full image at reduced resolution.
+    Scaled {
+        /// Requested downscale factor.
+        scale: Downscale,
+    },
+    /// Decode a source region at reduced resolution.
+    RegionScaled {
+        /// Source region of interest.
+        roi: Rect,
+        /// Requested downscale factor.
+        scale: Downscale,
+    },
 }
 
+/// Normalized device decode plan derived from source dimensions and request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceDecodePlan {
     source_dims: (u32, u32),
@@ -20,6 +37,7 @@ pub struct DeviceDecodePlan {
 }
 
 impl DeviceDecodePlan {
+    /// Build a normalized plan for an image.
     pub fn for_image(
         source_dims: (u32, u32),
         request: DeviceDecodeRequest,
@@ -50,30 +68,37 @@ impl DeviceDecodePlan {
         })
     }
 
+    /// Original image dimensions.
     pub fn source_dims(self) -> (u32, u32) {
         self.source_dims
     }
 
+    /// Full-resolution source rectangle to read.
     pub fn source_rect(self) -> Rect {
         self.source_rect
     }
 
+    /// Requested downscale factor.
     pub fn scale(self) -> Downscale {
         self.scale
     }
 
+    /// Output rectangle in reduced-resolution coordinates.
     pub fn output_rect(self) -> Rect {
         self.output_rect
     }
 
+    /// Output dimensions in pixels.
     pub fn output_dims(self) -> (u32, u32) {
         (self.output_rect.w, self.output_rect.h)
     }
 
+    /// Target resolution hint for native decoders that accept one.
     pub fn target_resolution(self) -> Option<(u32, u32)> {
         (self.scale != Downscale::None).then_some(self.output_dims())
     }
 
+    /// Return true when the request is an unscaled full-frame decode.
     pub fn is_full_frame(self) -> bool {
         self.source_rect == Rect::full(self.source_dims) && self.scale == Downscale::None
     }

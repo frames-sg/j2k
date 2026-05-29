@@ -23,11 +23,12 @@ use crate::math::{floor_f32, log2_f32};
 use crate::profile;
 use crate::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output,
-    J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardRctJob,
+    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output,
+    J2kForwardIctJob, J2kForwardRctJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
     J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
     J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
-    J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
 };
 use crate::{DecodeSettings, Image};
 
@@ -257,7 +258,6 @@ pub struct PrecomputedHtj2k97Image {
 }
 
 /// Prequantized irreversible 9/7 HTJ2K code-block image.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PrequantizedHtj2k97Image {
     /// Reference-grid image width.
@@ -273,7 +273,6 @@ pub struct PrequantizedHtj2k97Image {
 }
 
 /// Prequantized irreversible 9/7 HTJ2K component.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PrequantizedHtj2k97Component {
     /// Horizontal SIZ sampling factor (`XRsiz`).
@@ -285,7 +284,6 @@ pub struct PrequantizedHtj2k97Component {
 }
 
 /// One component resolution's prequantized HTJ2K subbands.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PrequantizedHtj2k97Resolution {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
@@ -293,7 +291,6 @@ pub struct PrequantizedHtj2k97Resolution {
 }
 
 /// One prequantized HTJ2K subband split into code-blocks.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PrequantizedHtj2k97Subband {
     /// Subband kind.
@@ -309,7 +306,6 @@ pub struct PrequantizedHtj2k97Subband {
 }
 
 /// One prequantized HTJ2K code-block.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PrequantizedHtj2k97CodeBlock {
     /// Quantized coefficients in row-major order.
@@ -339,7 +335,6 @@ pub fn encode_precomputed_htj2k_53(
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
 /// codestream using optional block encode and packetization hooks.
-#[doc(hidden)]
 pub fn encode_precomputed_htj2k_53_with_accelerator(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
@@ -353,7 +348,6 @@ pub fn encode_precomputed_htj2k_53_with_accelerator(
 ///
 /// This is intended for coefficient-domain JPEG 2000 family recoding, where
 /// source codestream components may already be reversible-color-transformed.
-#[doc(hidden)]
 pub fn encode_precomputed_htj2k_53_with_mct(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
@@ -366,7 +360,6 @@ pub fn encode_precomputed_htj2k_53_with_mct(
 /// Encode precomputed reversible 5/3 wavelet coefficients while controlling
 /// the output COD multi-component transform flag and using optional encode
 /// stage hooks.
-#[doc(hidden)]
 pub fn encode_precomputed_htj2k_53_with_mct_and_accelerator(
     image: &PrecomputedHtj2k53Image,
     options: &EncodeOptions,
@@ -450,7 +443,6 @@ pub fn encode_precomputed_htj2k_97(
 
 /// Encode precomputed irreversible 9/7 wavelet coefficients into an HTJ2K
 /// codestream using optional block encode and packetization hooks.
-#[doc(hidden)]
 pub fn encode_precomputed_htj2k_97_with_accelerator(
     image: &PrecomputedHtj2k97Image,
     options: &EncodeOptions,
@@ -517,7 +509,6 @@ pub fn encode_precomputed_htj2k_97_with_accelerator(
 
 /// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
 /// codestream.
-#[doc(hidden)]
 pub fn encode_prequantized_htj2k_97(
     image: &PrequantizedHtj2k97Image,
     options: &EncodeOptions,
@@ -528,7 +519,6 @@ pub fn encode_prequantized_htj2k_97(
 
 /// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
 /// codestream using optional block encode and packetization hooks.
-#[doc(hidden)]
 pub fn encode_prequantized_htj2k_97_with_accelerator(
     image: &PrequantizedHtj2k97Image,
     options: &EncodeOptions,
@@ -921,6 +911,7 @@ fn prepared_subband_from_prequantized(
                 height: block.height,
             })
             .collect(),
+        preencoded_ht_code_blocks: None,
         num_cbs_x: subband.num_cbs_x,
         num_cbs_y: subband.num_cbs_y,
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
@@ -969,6 +960,13 @@ impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator for PrecomputedDwtA
         }
 
         Ok(Some(self.outputs.remove(0)))
+    }
+
+    fn encode_quantize_subband(
+        &mut self,
+        job: J2kQuantizeSubbandJob<'_>,
+    ) -> Result<Option<Vec<i32>>, &'static str> {
+        self.encode_accelerator.encode_quantize_subband(job)
     }
 
     fn encode_tier1_code_block(
@@ -1028,6 +1026,13 @@ impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator
         }
 
         Ok(Some(self.outputs.remove(0)))
+    }
+
+    fn encode_quantize_subband(
+        &mut self,
+        job: J2kQuantizeSubbandJob<'_>,
+    ) -> Result<Option<Vec<i32>>, &'static str> {
+        self.encode_accelerator.encode_quantize_subband(job)
     }
 
     fn encode_tier1_code_block(
@@ -1175,9 +1180,14 @@ fn encode_impl(
         validate_irreversible_quantization_scale(options.irreversible_quantization_scale)?;
     }
 
-    let num_pixels = (width * height) as usize;
+    let num_pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("image dimensions overflow")?;
     let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
-    let expected_len = num_pixels * num_components as usize * bytes_per_sample;
+    let expected_len = num_pixels
+        .checked_mul(num_components as usize)
+        .and_then(|len| len.checked_mul(bytes_per_sample))
+        .ok_or("image dimensions overflow")?;
     if pixels.len() < expected_len {
         return Err("pixel data too short");
     }
@@ -1186,31 +1196,120 @@ fn encode_impl(
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
 
+    let use_mct = options.use_mct && num_components >= 3;
+    let num_levels = options.num_decomposition_levels.min(
+        // Don't decompose more than the image supports
+        max_decomposition_levels(width, height),
+    );
+    let guard_bits = if options.reversible {
+        if use_mct {
+            options.guard_bits.max(2)
+        } else {
+            options.guard_bits
+        }
+    } else {
+        options.guard_bits.max(2)
+    };
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_scale(
+        bit_depth,
+        num_levels,
+        options.reversible,
+        guard_bits,
+        options.irreversible_quantization_scale,
+    );
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+    let cb_width = 1u32 << (options.code_block_width_exp + 2);
+    let cb_height = 1u32 << (options.code_block_height_exp + 2);
+    let params = EncodeParams {
+        width,
+        height,
+        num_components,
+        bit_depth,
+        signed,
+        num_decomposition_levels: num_levels,
+        reversible: options.reversible,
+        code_block_width_exp: options.code_block_width_exp,
+        code_block_height_exp: options.code_block_height_exp,
+        num_layers: 1,
+        use_mct,
+        guard_bits,
+        block_coding_mode,
+        progression_order: options.progression_order,
+        write_tlm: options.write_tlm,
+        component_sampling,
+    };
+
+    let stage_start = profile::profile_now(profile_enabled);
+    if block_coding_mode == BlockCodingMode::HighThroughput {
+        if let Some(tile_data) = accelerator.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            num_decomposition_levels: num_levels,
+            reversible: options.reversible,
+            use_mct,
+            guard_bits,
+            code_block_width: cb_width,
+            code_block_height: cb_height,
+            progression_order: public_packetization_progression_order(options.progression_order),
+            component_sampling: &params.component_sampling,
+            quantization_steps: &quant_params,
+        })? {
+            let tile_body_us = profile::elapsed_us(stage_start);
+            let stage_start = profile::profile_now(profile_enabled);
+            let codestream = codestream_write::write_codestream(&params, &tile_data, &quant_params);
+            let codestream_us = profile::elapsed_us(stage_start);
+            if profile_enabled {
+                profile::emit_profile_row(
+                    "encode",
+                    "accelerated",
+                    &[
+                        ("tile_body_us", tile_body_us),
+                        ("codestream_us", codestream_us),
+                        ("total_us", profile::elapsed_us(total_start)),
+                    ],
+                );
+            }
+            return Ok(codestream);
+        }
+    }
+
     // Step 1: Convert pixel bytes to f32 component arrays
     let stage_start = profile::profile_now(profile_enabled);
-    let mut components = deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed);
+    let mut components = match accelerator.encode_deinterleave(J2kDeinterleaveToF32Job {
+        pixels,
+        num_pixels,
+        num_components,
+        bit_depth,
+        signed,
+    })? {
+        Some(components) => {
+            validate_deinterleaved_components(components, num_components, num_pixels)?
+        }
+        None => deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed),
+    };
     let deinterleave_us = profile::elapsed_us(stage_start);
 
     // Step 2: Apply forward MCT if RGB with 3+ components
     let stage_start = profile::profile_now(profile_enabled);
-    let use_mct = options.use_mct && num_components >= 3;
     if use_mct {
         if options.reversible {
             if !try_encode_forward_rct(&mut components, accelerator)? {
                 forward_mct::forward_rct(&mut components);
             }
-        } else {
+        } else if !try_encode_forward_ict(&mut components, accelerator)? {
             forward_mct::forward_ict(&mut components);
         }
     }
     let mct_us = profile::elapsed_us(stage_start);
 
     // Step 3: Apply forward DWT to each component
-    let num_levels = options.num_decomposition_levels.min(
-        // Don't decompose more than the image supports
-        max_decomposition_levels(width, height),
-    );
-
     let stage_start = profile::profile_now(profile_enabled);
     let decompositions: Vec<DwtDecomposition> = components
         .iter()
@@ -1227,29 +1326,7 @@ fn encode_impl(
         .collect::<Result<Vec<_>, _>>()?;
     let dwt_us = profile::elapsed_us(stage_start);
 
-    // Step 4: Compute quantization step sizes
-    let guard_bits = if options.reversible {
-        if use_mct {
-            options.guard_bits.max(2)
-        } else {
-            options.guard_bits
-        }
-    } else {
-        options.guard_bits.max(2)
-    };
-
-    let step_sizes = quantize::compute_step_sizes_with_irreversible_scale(
-        bit_depth,
-        num_levels,
-        options.reversible,
-        guard_bits,
-        options.irreversible_quantization_scale,
-    );
-
     // Step 5: Quantize and encode code-blocks for each component
-    let cb_width = 1u32 << (options.code_block_width_exp + 2);
-    let cb_height = 1u32 << (options.code_block_height_exp + 2);
-
     let mut component_resolution_packets: Vec<Vec<PreparedResolutionPacket>> =
         Vec::with_capacity(num_components as usize);
 
@@ -1270,6 +1347,7 @@ fn encode_impl(
             cb_width,
             cb_height,
             SubBandType::LowLow,
+            accelerator,
         )?;
         packets.push(PreparedResolutionPacket {
             subbands: vec![ll_subband],
@@ -1292,6 +1370,7 @@ fn encode_impl(
                 cb_width,
                 cb_height,
                 SubBandType::HighLow,
+                accelerator,
             )?;
 
             // LH subband
@@ -1307,6 +1386,7 @@ fn encode_impl(
                 cb_width,
                 cb_height,
                 SubBandType::LowHigh,
+                accelerator,
             )?;
 
             // HH subband
@@ -1322,6 +1402,7 @@ fn encode_impl(
                 cb_width,
                 cb_height,
                 SubBandType::HighHigh,
+                accelerator,
             )?;
 
             packets.push(PreparedResolutionPacket {
@@ -1364,30 +1445,6 @@ fn encode_impl(
 
     // Step 7: Write codestream
     let stage_start = profile::profile_now(profile_enabled);
-    let quant_params: Vec<(u16, u16)> = step_sizes
-        .iter()
-        .map(|s| (s.exponent, s.mantissa))
-        .collect();
-
-    let params = EncodeParams {
-        width,
-        height,
-        num_components,
-        bit_depth,
-        signed,
-        num_decomposition_levels: num_levels,
-        reversible: options.reversible,
-        code_block_width_exp: options.code_block_width_exp,
-        code_block_height_exp: options.code_block_height_exp,
-        num_layers: 1,
-        use_mct,
-        guard_bits,
-        block_coding_mode,
-        progression_order: options.progression_order,
-        write_tlm: options.write_tlm,
-        component_sampling,
-    };
-
     let codestream = codestream_write::write_codestream(&params, &tile_data, &quant_params);
     let codestream_us = profile::elapsed_us(stage_start);
 
@@ -1419,6 +1476,20 @@ fn try_encode_forward_rct(
     let (plane0, rest) = components.split_at_mut(1);
     let (plane1, plane2) = rest.split_at_mut(1);
     accelerator.encode_forward_rct(J2kForwardRctJob {
+        plane0: &mut plane0[0],
+        plane1: &mut plane1[0],
+        plane2: &mut plane2[0],
+    })
+}
+
+fn try_encode_forward_ict(
+    components: &mut [Vec<f32>],
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<bool, &'static str> {
+    debug_assert!(components.len() >= 3);
+    let (plane0, rest) = components.split_at_mut(1);
+    let (plane1, plane2) = rest.split_at_mut(1);
+    accelerator.encode_forward_ict(J2kForwardIctJob {
         plane0: &mut plane0[0],
         plane1: &mut plane1[0],
         plane2: &mut plane2[0],
@@ -1528,6 +1599,23 @@ fn validate_band_len(actual: usize, width: u32, height: u32) -> Result<(), &'sta
         return Err("accelerated DWT output length mismatch");
     }
     Ok(())
+}
+
+fn validate_deinterleaved_components(
+    components: Vec<Vec<f32>>,
+    num_components: u8,
+    num_pixels: usize,
+) -> Result<Vec<Vec<f32>>, &'static str> {
+    if components.len() != usize::from(num_components) {
+        return Err("accelerated deinterleave component count mismatch");
+    }
+    if components
+        .iter()
+        .any(|component| component.len() != num_pixels)
+    {
+        return Err("accelerated deinterleave component length mismatch");
+    }
+    Ok(components)
 }
 
 fn component_sampling_for_options(
@@ -1691,6 +1779,7 @@ struct PreparedEncodeCodeBlock {
 
 struct PreparedEncodeSubband {
     code_blocks: Vec<PreparedEncodeCodeBlock>,
+    preencoded_ht_code_blocks: Option<Vec<EncodedHtJ2kCodeBlock>>,
     num_cbs_x: u32,
     num_cbs_y: u32,
     sub_band_type: SubBandType,
@@ -1736,10 +1825,12 @@ fn prepare_subband(
     cb_width: u32,
     cb_height: u32,
     sub_band_type: SubBandType,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<PreparedEncodeSubband, &'static str> {
     if width == 0 || height == 0 {
         return Ok(PreparedEncodeSubband {
             code_blocks: Vec::new(),
+            preencoded_ht_code_blocks: None,
             num_cbs_x: 0,
             num_cbs_y: 0,
             sub_band_type,
@@ -1748,17 +1839,62 @@ fn prepare_subband(
         });
     }
 
-    // Quantize
     let range_bits = subband_range_bits(bit_depth, sub_band_type);
-    let quantized = quantize::quantize_subband(coefficients, step_size, range_bits, reversible);
     debug_assert!(step_size.exponent <= u16::from(u8::MAX));
     let total_bitplanes = guard_bits
         .saturating_add(step_size.exponent as u8)
         .saturating_sub(1);
-
-    // Split into code-blocks
     let num_cbs_x = width.div_ceil(cb_width);
     let num_cbs_y = height.div_ceil(cb_height);
+
+    if block_coding_mode == BlockCodingMode::HighThroughput {
+        if let Some(encoded) = accelerator.encode_ht_subband(J2kHtSubbandEncodeJob {
+            coefficients,
+            width,
+            height,
+            step_exponent: step_size.exponent,
+            step_mantissa: step_size.mantissa,
+            range_bits,
+            reversible,
+            code_block_width: cb_width,
+            code_block_height: cb_height,
+            total_bitplanes,
+        })? {
+            let expected_code_blocks = (num_cbs_x as usize)
+                .checked_mul(num_cbs_y as usize)
+                .ok_or("code-block count overflow")?;
+            if encoded.len() != expected_code_blocks {
+                return Err("accelerated HT subband code-block count mismatch");
+            }
+            return Ok(PreparedEncodeSubband {
+                code_blocks: code_block_shapes(width, height, cb_width, cb_height)?,
+                preencoded_ht_code_blocks: Some(encoded),
+                num_cbs_x,
+                num_cbs_y,
+                sub_band_type,
+                total_bitplanes,
+                block_coding_mode,
+            });
+        }
+    }
+
+    let quantized = match accelerator.encode_quantize_subband(J2kQuantizeSubbandJob {
+        coefficients,
+        step_exponent: step_size.exponent,
+        step_mantissa: step_size.mantissa,
+        range_bits,
+        reversible,
+    })? {
+        Some(quantized) => {
+            if quantized.len() != coefficients.len() {
+                return Err("accelerated quantized subband length mismatch");
+            }
+            quantized
+        }
+        None => quantize::quantize_subband(coefficients, step_size, range_bits, reversible),
+    };
+
+    // Split into code-blocks
     let mut code_blocks = Vec::with_capacity((num_cbs_x * num_cbs_y) as usize);
 
     for cby in 0..num_cbs_y {
@@ -1789,12 +1925,41 @@ fn prepare_subband(
 
     Ok(PreparedEncodeSubband {
         code_blocks,
+        preencoded_ht_code_blocks: None,
         num_cbs_x,
         num_cbs_y,
         sub_band_type,
         total_bitplanes,
         block_coding_mode,
     })
+}
+
+fn code_block_shapes(
+    width: u32,
+    height: u32,
+    cb_width: u32,
+    cb_height: u32,
+) -> Result<Vec<PreparedEncodeCodeBlock>, &'static str> {
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let count = (num_cbs_x as usize)
+        .checked_mul(num_cbs_y as usize)
+        .ok_or("code-block count overflow")?;
+    let mut code_blocks = Vec::with_capacity(count);
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let x1 = (x0 + cb_width).min(width);
+            let y1 = (y0 + cb_height).min(height);
+            code_blocks.push(PreparedEncodeCodeBlock {
+                coefficients: Vec::new(),
+                width: x1 - x0,
+                height: y1 - y0,
+            });
+        }
+    }
+    Ok(code_blocks)
 }
 
 fn subband_range_bits(bit_depth: u8, sub_band_type: SubBandType) -> u8 {
@@ -1890,6 +2055,36 @@ fn encode_all_ht_code_blocks(
     prepared_subbands: &[PreparedEncodeSubband],
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<bitplane_encode::EncodedCodeBlock>, &'static str> {
+    if prepared_subbands.iter().all(|subband| {
+        subband.code_blocks.is_empty() || subband.preencoded_ht_code_blocks.is_some()
+    }) {
+        let total_blocks = prepared_subbands
+            .iter()
+            .map(|subband| subband.code_blocks.len())
+            .sum();
+        let mut encoded = Vec::with_capacity(total_blocks);
+        for subband in prepared_subbands {
+            if let Some(blocks) = &subband.preencoded_ht_code_blocks {
+                if blocks.len() != subband.code_blocks.len() {
+                    return Err("preencoded HT subband code-block count mismatch");
+                }
+                encoded.extend(
+                    blocks
+                        .iter()
+                        .cloned()
+                        .map(ht_encoded_code_block_from_accelerator),
+                );
+            }
+        }
+        return Ok(encoded);
+    }
+    if prepared_subbands
+        .iter()
+        .any(|subband| subband.preencoded_ht_code_blocks.is_some())
+    {
+        return Err("mixed preencoded and quantized HT subbands are unsupported");
+    }
+
     let jobs: Vec<_> = prepared_subbands
         .iter()
         .flat_map(|subband| {
@@ -2590,6 +2785,91 @@ mod tests {
     }
 
     #[test]
+    fn prepare_subband_uses_fused_ht_subband_without_host_quantized_codeblocks() {
+        #[derive(Default)]
+        struct FusedHtSubbandAccelerator {
+            subband_calls: usize,
+            quantize_calls: usize,
+            ht_batch_calls: usize,
+        }
+
+        impl crate::J2kEncodeStageAccelerator for FusedHtSubbandAccelerator {
+            fn encode_ht_subband(
+                &mut self,
+                job: crate::J2kHtSubbandEncodeJob<'_>,
+            ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str>
+            {
+                self.subband_calls += 1;
+                let count = (job.width.div_ceil(job.code_block_width) as usize)
+                    .checked_mul(job.height.div_ceil(job.code_block_height) as usize)
+                    .ok_or("test code-block count overflow")?;
+                Ok(Some(
+                    (0..count)
+                        .map(|idx| crate::EncodedHtJ2kCodeBlock {
+                            data: vec![u8::try_from(idx).expect("test block index fits"), 0],
+                            num_coding_passes: 1,
+                            num_zero_bitplanes: 0,
+                        })
+                        .collect(),
+                ))
+            }
+
+            fn encode_quantize_subband(
+                &mut self,
+                _job: crate::J2kQuantizeSubbandJob<'_>,
+            ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+                self.quantize_calls += 1;
+                Ok(None)
+            }
+
+            fn encode_ht_code_blocks(
+                &mut self,
+                _jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+            ) -> core::result::Result<Option<Vec<crate::EncodedHtJ2kCodeBlock>>, &'static str>
+            {
+                self.ht_batch_calls += 1;
+                Ok(None)
+            }
+        }
+
+        let coefficients = vec![0.0; 16];
+        let mut accelerator = FusedHtSubbandAccelerator::default();
+        let prepared = prepare_subband(
+            &coefficients,
+            4,
+            4,
+            &QuantStepSize {
+                exponent: 8,
+                mantissa: 0,
+            },
+            8,
+            2,
+            true,
+            BlockCodingMode::HighThroughput,
+            2,
+            2,
+            SubBandType::LowLow,
+            &mut accelerator,
+        )
+        .expect("fused HT subband prepare");
+
+        assert_eq!(accelerator.subband_calls, 1);
+        assert_eq!(accelerator.quantize_calls, 0);
+        assert!(prepared.preencoded_ht_code_blocks.is_some());
+        assert!(prepared
+            .code_blocks
+            .iter()
+            .all(|block| block.coefficients.is_empty()));
+
+        let precincts = encode_prepared_subbands(vec![prepared], &mut accelerator)
+            .expect("preencoded HT subband packet data");
+
+        assert_eq!(accelerator.ht_batch_calls, 0);
+        assert_eq!(precincts[0].code_blocks.len(), 4);
+        assert_eq!(precincts[0].code_blocks[2].data, vec![2, 0]);
+    }
+
+    #[test]
     fn ht_cpu_parallel_fallback_threshold_matches_parallel_output() {
         assert_eq!(HT_CPU_PARALLEL_FALLBACK_MIN_JOBS, 4);
 
@@ -2931,6 +3211,7 @@ mod tests {
         cb_width: u32,
         cb_height: u32,
     ) -> Result<PrequantizedHtj2k97Subband, &'static str> {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
         let prepared = prepare_subband(
             coefficients,
             width,
@@ -2943,6 +3224,7 @@ mod tests {
             cb_width,
             cb_height,
             sub_band_type,
+            &mut accelerator,
         )?;
 
         Ok(PrequantizedHtj2k97Subband {

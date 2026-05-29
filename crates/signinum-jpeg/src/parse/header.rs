@@ -143,6 +143,11 @@ pub(crate) fn parse_info(bytes: &[u8]) -> Result<Info, JpegError> {
     let sof = sof.ok_or(JpegError::MissingMarker {
         marker: MarkerKind::Sof,
     })?;
+    if scan_count == 0 {
+        return Err(JpegError::MissingMarker {
+            marker: MarkerKind::Sos,
+        });
+    }
     let dimensions = (u32::from(sof.width), u32::from(sof.height));
     Ok(Info {
         dimensions,
@@ -284,6 +289,11 @@ pub(crate) fn parse_header(bytes: &[u8]) -> Result<ParsedHeader, JpegError> {
     let sof = sof.ok_or(JpegError::MissingMarker {
         marker: MarkerKind::Sof,
     })?;
+    if scan.is_none() {
+        return Err(JpegError::MissingMarker {
+            marker: MarkerKind::Sos,
+        });
+    }
     let _ = sof_seen_code; // reserved for future use (progressive / lossless routing)
 
     Ok(ParsedHeader {

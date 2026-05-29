@@ -83,13 +83,15 @@ impl QueuedRequest {
     }
 }
 
-#[doc(hidden)]
+/// Summary of benchmark-only request grouping for ROI+scaled Metal decode.
 pub struct BenchmarkGroupedRequests {
+    /// Number of Metal-compatible batches produced by the grouping pass.
     pub batch_count: usize,
+    /// Largest number of requests in any produced batch.
     pub max_batch_len: usize,
 }
 
-#[doc(hidden)]
+/// Group synthetic ROI+scaled requests the same way the batch decoder would.
 pub fn benchmark_group_region_scaled_requests(
     inputs: &[Arc<[u8]>],
     fmt: PixelFormat,

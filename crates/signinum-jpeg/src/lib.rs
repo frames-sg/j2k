@@ -6,8 +6,8 @@
 //! is [`Decoder`] — start with [`Decoder::inspect`] for header-only parsing.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(missing_docs)]
 #![warn(unreachable_pub)]
-// `missing_docs` remains staged crate-by-crate; see Cargo.toml for rationale.
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("signinum-jpeg currently supports only x86_64 and aarch64 targets");
@@ -53,6 +53,7 @@ pub(crate) mod output;
 
 pub(crate) mod profile;
 
+/// Baseline JPEG encode APIs and CPU implementation.
 pub mod encoder;
 pub use encoder::{
     encode_jpeg_baseline, EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions,
@@ -78,7 +79,8 @@ pub use decoder::{
 pub use internal::scratch::ScratchPool;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Marker type used by generic codec traits.
 pub struct JpegCodec;
 
-#[doc(hidden)]
+/// Benchmark and regression-test support helpers.
 pub mod bench_support;

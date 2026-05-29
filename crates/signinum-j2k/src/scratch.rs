@@ -11,6 +11,7 @@ pub struct J2kScratchPool {
 }
 
 impl J2kScratchPool {
+    /// Create an empty JPEG 2000 scratch pool.
     pub const fn new() -> Self {
         Self {
             packed_bytes: Vec::new(),

@@ -6,12 +6,7 @@ use signinum_jpeg::{
 #[test]
 fn baseline_encode_helper_assembles_same_frame_as_cpu_encoder() {
     let pixels = signinum_test_support::patterned_rgb8(2, 2);
-    let options = JpegEncodeOptions {
-        quality: 87,
-        subsampling: JpegSubsampling::Ybr444,
-        restart_interval: Some(4),
-        backend: JpegBackend::Cpu,
-    };
+    let options = JpegEncodeOptions::new(87, JpegSubsampling::Ybr444, Some(4), JpegBackend::Cpu);
     let encoded = encode_jpeg_baseline(
         JpegSamples::Rgb8 {
             data: &pixels,
@@ -32,10 +27,12 @@ fn baseline_encode_helper_assembles_same_frame_as_cpu_encoder() {
 
 #[test]
 fn baseline_encode_tables_expose_sampling_for_adapters() {
-    let tables = baseline_encode_tables(JpegEncodeOptions {
-        subsampling: JpegSubsampling::Ybr420,
-        ..JpegEncodeOptions::default()
-    })
+    let tables = baseline_encode_tables(JpegEncodeOptions::new(
+        90,
+        JpegSubsampling::Ybr420,
+        None,
+        JpegBackend::Auto,
+    ))
     .expect("baseline tables");
 
     assert_eq!(tables.sampling.components, 3);

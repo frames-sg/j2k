@@ -25,6 +25,7 @@ use crate::{
 
 /// Options for classic JPEG 2000 reversible 5/3 to HTJ2K lossless recoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct J2kToHtj2kOptions {
     /// Requested output payload shape.
     ///
@@ -48,6 +49,21 @@ impl Default for J2kToHtj2kOptions {
     }
 }
 
+impl J2kToHtj2kOptions {
+    /// Create J2K/JP2 to HTJ2K recode options.
+    pub const fn new(
+        output_payload_kind: CompressedPayloadKind,
+        progression: J2kProgressionOrder,
+        validation: J2kEncodeValidation,
+    ) -> Self {
+        Self {
+            output_payload_kind,
+            progression,
+            validation,
+        }
+    }
+}
+
 /// Recode path used for a J2K/JP2 to HTJ2K request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum J2kToHtj2kMode {
@@ -64,21 +80,32 @@ pub enum J2kToHtj2kMode {
 /// Metadata describing a J2K/JP2 to HTJ2K recode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct J2kToHtj2kReport {
+    /// Recode path used for this output.
     pub mode: J2kToHtj2kMode,
+    /// Classified input transfer syntax.
     pub input_transfer_syntax: CompressedTransferSyntax,
+    /// Output transfer syntax.
     pub output_transfer_syntax: CompressedTransferSyntax,
+    /// Classified input payload/container kind.
     pub input_payload_kind: CompressedPayloadKind,
+    /// Output payload/container kind.
     pub output_payload_kind: CompressedPayloadKind,
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Component count.
     pub components: u8,
+    /// Significant bits per component.
     pub bit_depth: u8,
 }
 
 /// HTJ2K codestream bytes and recode metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReencodedHtj2k {
+    /// Encoded HTJ2K bytes.
     pub bytes: Vec<u8>,
+    /// Recode metadata and selected path.
     pub report: J2kToHtj2kReport,
 }
 

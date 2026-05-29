@@ -51,7 +51,10 @@ pub(crate) fn read_to_scratch_bounded<R: Read>(
 }
 
 pub(crate) fn observed_too_small(required: usize, have: usize) -> BufferError {
-    BufferError::OutputTooSmall { required, have }
+    BufferError::OutputExceedsCapacity {
+        lower_bound: required,
+        have,
+    }
 }
 
 pub(crate) fn copy_scratch_to_output(scratch: &[u8], out: &mut [u8]) -> usize {

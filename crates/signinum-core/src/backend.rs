@@ -5,30 +5,51 @@ compile_error!("signinum-core only supports x86_64 and aarch64 targets");
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
+/// Backend that actually executed or owns an output surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendKind {
+    /// Portable CPU implementation.
     Cpu,
+    /// Apple Metal implementation.
     Metal,
+    /// NVIDIA CUDA implementation.
     Cuda,
 }
 
+/// Caller preference for backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BackendRequest {
+    /// Let the codec pick a supported backend and fall back when documented.
     #[default]
     Auto,
+    /// Require portable CPU execution.
     Cpu,
+    /// Require Metal execution or a typed unavailable/unsupported error.
     Metal,
+    /// Require CUDA execution or a typed unavailable/unsupported error.
     Cuda,
 }
 
+/// CPU feature flags relevant to Signinum codec dispatch.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CpuFeatures {
+    /// x86 AVX2 support is available and enabled by the OS.
     pub avx2: bool,
+    /// x86 SSE4.1 support is available.
     pub sse41: bool,
+    /// ARM NEON support is available.
     pub neon: bool,
 }
 
 impl CpuFeatures {
+    /// Construct explicit CPU feature flags.
+    #[must_use]
+    pub const fn new(avx2: bool, sse41: bool, neon: bool) -> Self {
+        Self { avx2, sse41, neon }
+    }
+
+    /// Detect CPU SIMD features, caching the result process-wide.
     pub fn detect() -> Self {
         static DETECTED: AtomicU8 = AtomicU8::new(0);
 
@@ -127,14 +148,26 @@ fn detect_x86_avx2() -> bool {
     (leaf7.ebx & (1 << 5)) != 0
 }
 
+/// Host backend capabilities visible to portable codec selection code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BackendCapabilities {
+    /// Detected CPU features.
     pub cpu: CpuFeatures,
+    /// Whether a Metal backend can be requested on this target.
     pub metal: bool,
+    /// Whether a CUDA backend can be requested by this crate configuration.
     pub cuda: bool,
 }
 
 impl BackendCapabilities {
+    /// Construct explicit backend capabilities.
+    #[must_use]
+    pub const fn new(cpu: CpuFeatures, metal: bool, cuda: bool) -> Self {
+        Self { cpu, metal, cuda }
+    }
+
+    /// Detect host backend capabilities.
     #[must_use]
     pub fn detect() -> Self {
         Self {
@@ -144,6 +177,7 @@ impl BackendCapabilities {
         }
     }
 
+    /// Return whether a backend request can be satisfied on this host.
     #[must_use]
     pub const fn supports(self, request: BackendRequest) -> bool {
         match request {
@@ -153,6 +187,8 @@ impl BackendCapabilities {
         }
     }
 
+    /// Resolve a request to the backend that would run, or `None` if strict
+    /// device execution is unavailable.
     #[must_use]
     pub fn resolve(self, request: BackendRequest) -> Option<BackendKind> {
         match request {

@@ -369,12 +369,7 @@ fn grayscale_jpeg(width: u32, height: u32) -> Vec<u8> {
             width,
             height,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Gray, None, JpegBackend::Cpu),
     )
     .expect("encode grayscale JPEG")
     .data

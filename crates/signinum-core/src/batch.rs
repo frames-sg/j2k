@@ -5,9 +5,17 @@ use core::num::NonZeroUsize;
 
 /// Worker configuration for CPU tile batches.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TileBatchOptions {
     /// Worker count. `None` asks the codec crate to use available parallelism.
     pub workers: Option<NonZeroUsize>,
+}
+
+impl TileBatchOptions {
+    /// Create tile-batch options with an optional explicit worker count.
+    pub const fn new(workers: Option<NonZeroUsize>) -> Self {
+        Self { workers }
+    }
 }
 
 /// Indexed result produced by one tile-batch worker.

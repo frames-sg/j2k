@@ -42,6 +42,7 @@ pub struct Dwt97TwoDimensional<T> {
 
 /// Error returned when a DCT block grid cannot cover the requested component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Dct97GridError {
     block_count: usize,
     block_cols: usize,

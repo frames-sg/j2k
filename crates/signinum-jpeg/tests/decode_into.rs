@@ -119,6 +119,73 @@ fn decode_owned_region_scaled_matches_decode_region_into() {
 }
 
 #[test]
+fn decode_owned_region_rejects_huge_out_of_bounds_roi_before_allocation() {
+    let bytes = minimal_baseline_420_jpeg();
+    let dec = Decoder::new(&bytes).unwrap();
+    let roi = Rect {
+        x: 0,
+        y: 0,
+        w: u32::MAX,
+        h: u32::MAX,
+    };
+
+    let result = std::panic::catch_unwind(|| dec.decode_region(PixelFormat::Rgb8, roi));
+
+    let err = result
+        .expect("owned region decode must not panic")
+        .expect_err("huge ROI should be rejected");
+    assert!(matches!(err, JpegError::RectOutOfBounds { .. }));
+}
+
+#[test]
+fn decode_owned_region_scaled_rejects_huge_out_of_bounds_roi_before_allocation() {
+    let bytes = minimal_baseline_420_jpeg();
+    let dec = Decoder::new(&bytes).unwrap();
+    let roi = Rect {
+        x: 0,
+        y: 0,
+        w: u32::MAX,
+        h: u32::MAX,
+    };
+
+    let result = std::panic::catch_unwind(|| {
+        dec.decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::Quarter)
+    });
+
+    let err = result
+        .expect("owned scaled region decode must not panic")
+        .expect_err("huge ROI should be rejected");
+    assert!(matches!(err, JpegError::RectOutOfBounds { .. }));
+}
+
+#[test]
+fn decode_region_rejects_zero_area_roi() {
+    let bytes = minimal_baseline_420_jpeg();
+    let dec = Decoder::new(&bytes).unwrap();
+    let mut out = [0_u8; 16];
+
+    for roi in [
+        Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 4,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 0,
+        },
+    ] {
+        let err = dec
+            .decode_region_scaled_into(&mut out, 4 * 3, PixelFormat::Rgb8, roi, Downscale::Quarter)
+            .expect_err("zero-area ROI should be rejected");
+        assert!(matches!(err, JpegError::RectOutOfBounds { .. }));
+    }
+}
+
+#[test]
 fn decode_owned_scaled_matches_decode_scaled_into() {
     let bytes = rgb_app14_8x8_jpeg();
     let dec = Decoder::new(&bytes).unwrap();

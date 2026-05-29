@@ -30,61 +30,111 @@ pub enum MarkerKind {
     Other(u8),
 }
 
+/// Reason an SOF marker is permanently unsupported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UnsupportedReason {
+    /// Arithmetic entropy coding is unsupported.
     ArithmeticCoding,
+    /// Hierarchical JPEG is unsupported.
     Hierarchical,
+    /// Arithmetic entropy coding and hierarchical mode are both present.
     ArithmeticAndHierarchical,
+    /// Differential baseline coding is unsupported.
     DifferentialBaseline,
 }
 
+/// Reason Huffman entropy decode failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HuffmanFailure {
+    /// Huffman code construction overflowed valid code space.
     CodeOverflow,
+    /// Decoded symbol was invalid for the current table.
     InvalidSymbol,
+    /// Huffman table was exhausted before a valid symbol.
     TableExhausted,
 }
 
+/// Conflicting input configuration in a decode builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuilderConflictReason {
+    /// No input bytes or fragments were provided.
     NoInput,
+    /// Both contiguous input and scan fragments were provided.
     InputAndScanFragments,
+    /// Fragmented scan input was empty.
     ScanFragmentsEmpty,
 }
 
+/// JPEG table class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableKind {
+    /// Quantization table.
     Quant,
+    /// AC Huffman table.
     HuffmanAc,
+    /// DC Huffman table.
     HuffmanDc,
 }
 
+/// Error returned by JPEG inspect and decode APIs.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum JpegError {
+    /// Input ended before required bytes were available.
     #[error("JPEG truncated at offset {offset}: expected {expected} more bytes")]
-    Truncated { offset: usize, expected: usize },
+    Truncated {
+        /// Byte offset where truncation was detected.
+        offset: usize,
+        /// Additional bytes required.
+        expected: usize,
+    },
 
+    /// Invalid marker byte sequence.
     #[error("invalid marker FF{marker:02X} at offset {offset}")]
-    InvalidMarker { offset: usize, marker: u8 },
+    InvalidMarker {
+        /// Byte offset of the marker.
+        offset: usize,
+        /// Marker byte following `0xFF`.
+        marker: u8,
+    },
 
+    /// Marker did not match the parser state.
     #[error("expected {expected:?}, found FF{found:02X} at offset {offset}")]
     UnexpectedMarker {
+        /// Byte offset of the marker.
         offset: usize,
+        /// Expected marker category.
         expected: MarkerKind,
+        /// Found marker byte.
         found: u8,
     },
 
+    /// Required marker was absent.
     #[error("missing required marker {marker:?}")]
-    MissingMarker { marker: MarkerKind },
+    MissingMarker {
+        /// Missing marker category.
+        marker: MarkerKind,
+    },
 
+    /// Marker appeared more than once where only one is allowed.
     #[error("duplicate {marker:?} at offset {offset}")]
-    DuplicateMarker { offset: usize, marker: MarkerKind },
+    DuplicateMarker {
+        /// Byte offset of the duplicate marker.
+        offset: usize,
+        /// Duplicate marker category.
+        marker: MarkerKind,
+    },
 
+    /// Marker segment length was invalid.
     #[error("invalid length {length} for marker FF{marker:02X} at offset {offset}")]
     InvalidSegmentLength {
+        /// Byte offset of the segment.
         offset: usize,
+        /// Marker byte.
         marker: u8,
+        /// Segment length from the marker payload.
         length: u16,
     },
 
@@ -93,102 +143,242 @@ pub enum JpegError {
     /// decoder can distinguish FFC5 from FFC9 without relying on `reason`.
     #[error("unsupported SOF marker FF{marker:02X} ({reason:?})")]
     UnsupportedSof {
+        /// Raw SOF marker byte.
         marker: u8,
+        /// Unsupported SOF reason.
         reason: UnsupportedReason,
     },
 
+    /// Component count is outside the supported public decode surface.
     #[error("unsupported component count: {count}")]
-    UnsupportedComponentCount { count: u8 },
+    UnsupportedComponentCount {
+        /// Component count from the frame header.
+        count: u8,
+    },
 
+    /// Color space cannot be decoded by this release.
     #[error("unsupported color space for decode: {color_space:?}")]
-    UnsupportedColorSpace { color_space: ColorSpace },
+    UnsupportedColorSpace {
+        /// Unsupported color space.
+        color_space: ColorSpace,
+    },
 
+    /// Bit depth cannot be decoded by this release.
     #[error("unsupported bit depth: {depth}")]
-    UnsupportedBitDepth { depth: u8 },
+    UnsupportedBitDepth {
+        /// Unsupported bit depth.
+        depth: u8,
+    },
 
+    /// Lossless predictor is unsupported.
     #[error("unsupported lossless predictor: {predictor}")]
-    UnsupportedPredictor { predictor: u8 },
+    UnsupportedPredictor {
+        /// Predictor value.
+        predictor: u8,
+    },
 
+    /// SOF declared a zero width or height.
     #[error("zero dimension in SOF: {width}×{height}")]
-    ZeroDimension { width: u16, height: u16 },
+    ZeroDimension {
+        /// Declared width.
+        width: u16,
+        /// Declared height.
+        height: u16,
+    },
 
+    /// Dimensions exceed implementation limits.
     #[error("dimension overflow: {width}×{height} exceeds 65500")]
-    DimensionOverflow { width: u32, height: u32 },
+    DimensionOverflow {
+        /// Declared width.
+        width: u32,
+        /// Declared height.
+        height: u32,
+    },
 
+    /// Invalid component sampling factor.
     #[error("invalid sampling ({h}×{v}) for component {component}")]
-    InvalidSampling { component: u8, h: u8, v: u8 },
+    InvalidSampling {
+        /// Component id.
+        component: u8,
+        /// Horizontal sampling factor.
+        h: u8,
+        /// Vertical sampling factor.
+        v: u8,
+    },
 
+    /// Required quantization table is missing.
     #[error("missing quantization table {table_id} for component {component}")]
-    MissingQuantTable { component: u8, table_id: u8 },
+    MissingQuantTable {
+        /// Component id.
+        component: u8,
+        /// Quantization table id.
+        table_id: u8,
+    },
 
+    /// Required Huffman table is missing.
     #[error("missing Huffman table class={class} id={id} for component {component}")]
-    MissingHuffmanTable { component: u8, class: u8, id: u8 },
+    MissingHuffmanTable {
+        /// Component id.
+        component: u8,
+        /// Huffman table class.
+        class: u8,
+        /// Huffman table id.
+        id: u8,
+    },
 
     #[error(
         "invalid sequential scan parameters at offset {offset}: Ss={ss} Se={se} Ah={ah} Al={al}"
     )]
+    /// Sequential scan parameters are invalid for the SOF.
     InvalidScanParameters {
+        /// Byte offset of SOS.
         offset: usize,
+        /// Spectral selection start.
         ss: u8,
+        /// Spectral selection end.
         se: u8,
+        /// Successive approximation high bit.
         ah: u8,
+        /// Successive approximation low bit.
         al: u8,
     },
 
+    /// Scan referenced an unknown component id.
     #[error("unknown scan component id {component} at offset {offset}")]
-    UnknownScanComponent { offset: usize, component: u8 },
+    UnknownScanComponent {
+        /// Byte offset of SOS.
+        offset: usize,
+        /// Component id.
+        component: u8,
+    },
 
+    /// Scan listed a component id more than once.
     #[error("duplicate scan component id {component} at offset {offset}")]
-    DuplicateScanComponent { offset: usize, component: u8 },
+    DuplicateScanComponent {
+        /// Byte offset of SOS.
+        offset: usize,
+        /// Component id.
+        component: u8,
+    },
 
     #[error(
         "invalid sequential scan component set at offset {offset}: expected {expected} components, found {found}"
     )]
+    /// Sequential scan component set does not match the frame.
     InvalidSequentialComponentSet {
+        /// Byte offset of SOS.
         offset: usize,
+        /// Expected component count.
         expected: u8,
+        /// Found component count.
         found: u8,
     },
 
+    /// Sequential stream used an invalid number of scans.
     #[error("invalid sequential scan count for {sof:?}: expected 1, found {count}")]
-    InvalidSequentialScanCount { sof: SofKind, count: u16 },
+    InvalidSequentialScanCount {
+        /// Start-of-frame kind.
+        sof: SofKind,
+        /// Observed scan count.
+        count: u16,
+    },
 
+    /// Huffman entropy decode failed for an MCU.
     #[error("Huffman decode failed at MCU {mcu}: {reason:?}")]
-    HuffmanDecode { mcu: u32, reason: HuffmanFailure },
+    HuffmanDecode {
+        /// MCU index.
+        mcu: u32,
+        /// Failure reason.
+        reason: HuffmanFailure,
+    },
 
     #[error("restart mismatch at offset {offset}: expected RST{expected}, found FF{found:02X}")]
+    /// Restart marker did not match the expected restart index.
     RestartMismatch {
+        /// Byte offset of the restart marker.
         offset: usize,
+        /// Expected restart marker index.
         expected: u8,
+        /// Found marker byte.
         found: u8,
     },
 
+    /// End-of-image marker appeared before all MCUs were decoded.
     #[error("unexpected EOI at MCU {mcu_at}/{mcu_total}")]
-    UnexpectedEoi { mcu_at: u32, mcu_total: u32 },
+    UnexpectedEoi {
+        /// MCU index at EOI.
+        mcu_at: u32,
+        /// Total MCU count expected.
+        mcu_total: u32,
+    },
 
+    /// Entropy coefficient exceeded the supported numeric range.
     #[error("coefficient overflow at MCU {mcu}, component {component}")]
-    CoefficientOverflow { mcu: u32, component: u8 },
+    CoefficientOverflow {
+        /// MCU index.
+        mcu: u32,
+        /// Component id.
+        component: u8,
+    },
 
+    /// Decode allocation would exceed the configured cap.
     #[error("decode size {requested} bytes exceeds cap {cap} bytes")]
-    MemoryCapExceeded { requested: usize, cap: usize },
+    MemoryCapExceeded {
+        /// Requested byte count.
+        requested: usize,
+        /// Maximum allowed byte count.
+        cap: usize,
+    },
 
+    /// Caller-owned output buffer is too small.
     #[error("output buffer too small: need {required} bytes, got {provided}")]
-    OutputBufferTooSmall { required: usize, provided: usize },
+    OutputBufferTooSmall {
+        /// Required byte count.
+        required: usize,
+        /// Provided byte count.
+        provided: usize,
+    },
 
+    /// Caller-owned row stride is too small.
     #[error("stride {stride} smaller than row width {row}")]
-    InvalidStride { stride: usize, row: usize },
+    InvalidStride {
+        /// Provided stride.
+        stride: usize,
+        /// Required row byte count.
+        row: usize,
+    },
 
+    /// Requested region is outside image bounds.
     #[error("rect {rect:?} out of image bounds ({width}×{height})")]
-    RectOutOfBounds { rect: Rect, width: u32, height: u32 },
+    RectOutOfBounds {
+        /// Requested rectangle.
+        rect: Rect,
+        /// Image width.
+        width: u32,
+        /// Image height.
+        height: u32,
+    },
 
+    /// Downscale is unsupported for this SOF.
     #[error("downscale not supported for {sof:?} streams")]
-    DownscaleUnsupported { sof: SofKind },
+    DownscaleUnsupported {
+        /// Start-of-frame kind.
+        sof: SofKind,
+    },
 
+    /// Fragmented scan inputs overlap at an MCU boundary.
     #[error("scan fragments overlap at MCU {mcu}")]
-    ScanFragmentsOverlap { mcu: u32 },
+    ScanFragmentsOverlap {
+        /// First overlapping MCU index.
+        mcu: u32,
+    },
 
+    /// Decode builder inputs conflict.
     #[error("builder input configuration conflict: {reason:?}")]
-    BuilderConflict { reason: BuilderConflictReason },
+    BuilderConflict {
+        /// Conflict reason.
+        reason: BuilderConflictReason,
+    },
 
     /// Transient pre-1.0 gap: the SOF is parseable and will eventually be
     /// supported by the decoder, but the current release does not implement
@@ -198,8 +388,12 @@ pub enum JpegError {
     /// to a fallback decoder on `is_unsupported()` should NOT reroute streams
     /// that a newer version of signinum will decode natively.
     #[error("decode not yet implemented for {sof:?} — see CHANGELOG for milestone")]
-    NotImplemented { sof: SofKind },
+    NotImplemented {
+        /// Start-of-frame kind.
+        sof: SofKind,
+    },
 
+    /// Caller-provided row sink aborted decode.
     #[error("row sink aborted decode")]
     RowSinkAborted,
 }
@@ -289,16 +483,55 @@ impl CodecError for JpegError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Warning {
+    /// Input ended without an EOI marker.
     MissingEoi,
-    SofDimensionsPatched { from: (u16, u16), to: (u16, u16) },
+    /// SOF dimensions were patched from container metadata.
+    SofDimensionsPatched {
+        /// Dimensions declared by SOF.
+        from: (u16, u16),
+        /// Replacement dimensions.
+        to: (u16, u16),
+    },
+    /// Tables are valid but nonstandard.
     NonstandardTables,
-    AdobeApp14Ambiguous { raw_transform: u8 },
-    IccProfileIgnored { size: usize },
-    UnknownAppMarker { marker: u8, size: usize },
-    RestartRecovered { offset: usize },
-    PrecisionClamped { from_bits: u8, to_bits: u8 },
+    /// Adobe APP14 transform was ambiguous.
+    AdobeApp14Ambiguous {
+        /// Raw transform byte.
+        raw_transform: u8,
+    },
+    /// ICC profile was ignored by the decoder.
+    IccProfileIgnored {
+        /// ICC payload size.
+        size: usize,
+    },
+    /// Unknown APP marker was skipped.
+    UnknownAppMarker {
+        /// Marker byte.
+        marker: u8,
+        /// Segment size.
+        size: usize,
+    },
+    /// Decode recovered at a restart marker.
+    RestartRecovered {
+        /// Recovery byte offset.
+        offset: usize,
+    },
+    /// Sample precision was clamped.
+    PrecisionClamped {
+        /// Original bit precision.
+        from_bits: u8,
+        /// Output bit precision.
+        to_bits: u8,
+    },
+    /// Color profile could not be interpreted.
     UnknownColorProfile,
-    TableCacheMismatch { which: TableKind, id: u8 },
+    /// Cached table metadata did not match the stream.
+    TableCacheMismatch {
+        /// Table kind.
+        which: TableKind,
+        /// Table id.
+        id: u8,
+    },
 }
 
 impl core::fmt::Display for Warning {

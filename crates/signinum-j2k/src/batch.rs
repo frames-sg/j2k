@@ -355,10 +355,7 @@ fn decode_tile_region_scaled_shared_direct_color_u8_in_context(
         job.stride,
         fmt,
     )?;
-    Ok(Some(DecodeOutcome {
-        decoded,
-        warnings: Vec::new(),
-    }))
+    Ok(Some(DecodeOutcome::new(decoded, Vec::new())))
 }
 
 fn decode_tile_region_scaled_direct_color_u8_in_context(
@@ -408,10 +405,7 @@ fn decode_tile_region_scaled_direct_color_u8_in_context(
         job.stride,
         fmt,
     )?;
-    Ok(Some(DecodeOutcome {
-        decoded,
-        warnings: Vec::new(),
-    }))
+    Ok(Some(DecodeOutcome::new(decoded, Vec::new())))
 }
 
 #[derive(Clone, Copy)]

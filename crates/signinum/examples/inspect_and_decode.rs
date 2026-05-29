@@ -9,7 +9,7 @@
 use signinum::{
     j2k::{encode_j2k_lossless, J2kDecoder, J2kLosslessEncodeOptions, J2kLosslessSamples},
     jpeg::{
-        encode_jpeg_baseline, Decoder as JpegDecoder, JpegEncodeOptions, JpegSamples,
+        encode_jpeg_baseline, Decoder as JpegDecoder, JpegBackend, JpegEncodeOptions, JpegSamples,
         JpegSubsampling,
     },
     PixelFormat,
@@ -28,10 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width,
             height,
         },
-        JpegEncodeOptions {
-            subsampling: JpegSubsampling::Gray,
-            ..JpegEncodeOptions::default()
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Gray, None, JpegBackend::Auto),
     )?;
     let jpeg_info = JpegDecoder::inspect(&jpeg.data)?;
     let jpeg_stride = jpeg_info.dimensions.0 as usize * PixelFormat::Gray8.bytes_per_pixel();

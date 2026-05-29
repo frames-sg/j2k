@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! Metal-backed JPEG 2000 and HTJ2K decode/encode adapters.
+//!
+//! This crate provides the stable Metal contract for Signinum's J2K hybrid
+//! paths. `BackendRequest::Cpu` remains a portable CPU path,
+//! `BackendRequest::Auto` may use Metal and fall back to CPU, and
+//! `BackendRequest::Metal` is strict: unsupported shapes or unavailable
+//! devices return typed errors rather than silent CPU output.
+
+#![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
 
@@ -54,9 +63,7 @@ use signinum_j2k_native::{
 #[cfg(target_os = "macos")]
 use metal::{Buffer, Device, MTLResourceOptions};
 
-#[doc(hidden)]
 pub use batch::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
-#[doc(hidden)]
 pub use dicom::{
     extract_dicom_encapsulated_frames, extract_dicom_encapsulated_frames_with_limit,
     DicomFrameExtractError,
@@ -89,7 +96,7 @@ pub use encode::{
 };
 
 #[cfg(target_os = "macos")]
-#[doc(hidden)]
+/// Prepare a MetalDirect ROI+scaled decode plan for benchmark harnesses.
 pub fn benchmark_region_scaled_direct_plan_prepare(
     input: &[u8],
     fmt: PixelFormat,
@@ -100,7 +107,8 @@ pub fn benchmark_region_scaled_direct_plan_prepare(
 }
 
 #[cfg(not(target_os = "macos"))]
-#[doc(hidden)]
+/// Return `Error::MetalUnavailable` for MetalDirect benchmark preparation on
+/// non-macOS targets.
 pub fn benchmark_region_scaled_direct_plan_prepare(
     _input: &[u8],
     _fmt: PixelFormat,
@@ -111,19 +119,36 @@ pub fn benchmark_region_scaled_direct_plan_prepare(
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+/// Errors returned by the Metal J2K adapter.
 pub enum Error {
+    /// The portable J2K decoder rejected or could not decode the input.
     #[error(transparent)]
     Decode(#[from] J2kError),
+    /// Caller-provided output buffers or strides were invalid.
     #[error(transparent)]
     Buffer(#[from] BufferError),
+    /// The requested backend is outside this crate's Metal/CPU contract.
     #[error("backend request {request:?} is not supported by signinum-j2k-metal")]
-    UnsupportedBackend { request: BackendRequest },
+    UnsupportedBackend {
+        /// Backend requested by the caller.
+        request: BackendRequest,
+    },
+    /// The requested Metal decode shape is not supported by the current kernels.
     #[error("unsupported J2K Metal request: {reason}")]
-    UnsupportedMetalRequest { reason: &'static str },
+    UnsupportedMetalRequest {
+        /// Stable reason string suitable for diagnostics.
+        reason: &'static str,
+    },
+    /// Metal is not available on this host or platform.
     #[error("Metal is unavailable on this host")]
     MetalUnavailable,
+    /// Metal runtime, command submission, or kernel execution failed.
     #[error("Metal kernel error: {message}")]
-    MetalKernel { message: String },
+    MetalKernel {
+        /// Human-readable Metal failure detail.
+        message: String,
+    },
 }
 
 impl CodecError for Error {
@@ -186,6 +211,7 @@ const AUTO_REPEATED_GRAYSCALE_MIN_DIM: u32 = 512;
 const AUTO_REPEATED_GRAYSCALE_MIN_COUNT: usize = 16;
 
 #[derive(Clone)]
+/// Decoded J2K pixels backed by host memory or a Metal buffer.
 pub struct Surface {
     backend: BackendKind,
     residency: SurfaceResidency,
@@ -197,9 +223,14 @@ pub struct Surface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Residency of a decoded J2K surface.
 pub enum SurfaceResidency {
+    /// Pixels are stored in host memory.
     Host,
+    /// Pixels were produced directly by a Metal decode path.
     MetalResidentDecode,
+    /// Pixels were decoded on CPU and uploaded into a Metal buffer.
     CpuStagedMetalUpload,
 }
 
@@ -207,14 +238,17 @@ pub enum SurfaceResidency {
 const CPU_STAGED_METAL_REQUIRES_EXPLICIT_API: &str =
     "CPU-staged Metal upload requires the explicit CPU-staged API; BackendRequest::Metal only accepts resident Metal decode";
 impl Surface {
+    /// Return where the surface's pixels currently reside.
     pub fn residency(&self) -> SurfaceResidency {
         self.residency
     }
 
+    /// Number of bytes between consecutive rows in the surface storage.
     pub fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
     }
 
+    /// Return a tight byte view of the decoded pixels.
     pub fn as_bytes(&self) -> &[u8] {
         match &self.storage {
             Storage::Host(bytes) => {
@@ -234,12 +268,15 @@ impl Surface {
         }
     }
 
+    /// Copy decoded pixels into a caller-owned buffer with the provided stride.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
         copy_tight_pixels_to_strided_output(self.as_bytes(), self.dimensions, self.fmt, out, stride)
             .map_err(Error::from)
     }
 
     #[cfg(target_os = "macos")]
+    /// Return the backing Metal buffer and byte offset when the surface is
+    /// Metal-resident.
     pub fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
             Storage::Metal(buffer) => Some((buffer, self.byte_offset)),
@@ -303,22 +340,26 @@ impl DeviceSurface for Surface {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
+/// Reusable Metal device/session state for J2K hybrid operations.
 pub struct MetalBackendSession {
     device: Device,
 }
 
 #[cfg(target_os = "macos")]
 impl MetalBackendSession {
+    /// Create a session around an existing Metal device.
     pub fn new(device: Device) -> Self {
         Self { device }
     }
 
+    /// Create a session for the host's default Metal device.
     pub fn system_default() -> Result<Self, Error> {
         Device::system_default()
             .map(Self::new)
             .ok_or(Error::MetalUnavailable)
     }
 
+    /// Return the underlying Metal device.
     pub fn device(&self) -> &metal::DeviceRef {
         self.device.as_ref()
     }
@@ -335,23 +376,27 @@ impl core::fmt::Debug for MetalBackendSession {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default)]
+/// Placeholder Metal session type for non-macOS targets.
 pub struct MetalBackendSession {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
 impl MetalBackendSession {
+    /// Return `Error::MetalUnavailable` on non-macOS targets.
     pub fn system_default() -> Result<Self, Error> {
         Err(Error::MetalUnavailable)
     }
 }
 
 #[derive(Clone, Default)]
+/// Submission session for batched J2K Metal decode requests.
 pub struct MetalSession {
     shared: batch::SharedSession,
 }
 
 impl MetalSession {
+    /// Number of submitted Metal batches recorded by this session.
     pub fn submissions(&self) -> u64 {
         self.shared.0.lock().expect("J2K Metal session").submissions
     }
@@ -551,6 +596,7 @@ impl MetalTileBatch {
     }
 }
 
+/// J2K/HTJ2K decoder that can produce CPU pixels or Metal-backed surfaces.
 pub struct J2kDecoder<'a> {
     inner: CpuDecoder<'a>,
     pool: CpuJ2kScratchPool,
@@ -569,6 +615,7 @@ pub struct J2kDecoder<'a> {
 }
 
 impl<'a> J2kDecoder<'a> {
+    /// Parse a J2K/HTJ2K byte slice and prepare a decoder.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         Ok(Self {
             inner: CpuDecoder::new(input)?,
@@ -588,6 +635,7 @@ impl<'a> J2kDecoder<'a> {
         })
     }
 
+    /// Build a Metal-capable decoder from a previously parsed J2K view.
     pub fn from_view(view: J2kView<'a>) -> Result<Self, Error> {
         Ok(Self {
             inner: CpuDecoder::from_view(view)?,
@@ -607,10 +655,13 @@ impl<'a> J2kDecoder<'a> {
         })
     }
 
+    /// Return the portable CPU decoder used by this adapter.
     pub fn inner(&self) -> &CpuDecoder<'a> {
         &self.inner
     }
 
+    /// Strictly decode a full image into a Metal-backed surface using an
+    /// existing backend session.
     pub fn decode_to_device_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -639,10 +690,12 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Decode a full image through the CPU path and wrap it as a host surface.
     pub fn decode_to_host_surface(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {
         self.decode_to_cpu_surface(fmt)
     }
 
+    /// Decode a region through the CPU path and wrap it as a host surface.
     pub fn decode_region_to_host_surface(
         &mut self,
         fmt: PixelFormat,
@@ -655,6 +708,7 @@ impl<'a> J2kDecoder<'a> {
         self.decode_region_to_cpu_surface(fmt, plan)
     }
 
+    /// Decode a scaled image through the CPU path and wrap it as a host surface.
     pub fn decode_scaled_to_host_surface(
         &mut self,
         fmt: PixelFormat,
@@ -667,6 +721,8 @@ impl<'a> J2kDecoder<'a> {
         self.decode_scaled_to_cpu_surface(fmt, scale, plan)
     }
 
+    /// Decode a scaled region through the CPU path and wrap it as a host
+    /// surface.
     pub fn decode_region_scaled_to_host_surface(
         &mut self,
         fmt: PixelFormat,
@@ -680,6 +736,8 @@ impl<'a> J2kDecoder<'a> {
         self.decode_region_scaled_to_cpu_surface(fmt, roi, scale, plan)
     }
 
+    /// Decode a full image on CPU and upload it into a Metal buffer using an
+    /// existing backend session.
     pub fn decode_to_cpu_staged_metal_surface_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -706,6 +764,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Decode a region on CPU and upload it into a Metal buffer using an
+    /// existing backend session.
     pub fn decode_region_to_cpu_staged_metal_surface_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -742,6 +802,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Decode a scaled image on CPU and upload it into a Metal buffer using an
+    /// existing backend session.
     pub fn decode_scaled_to_cpu_staged_metal_surface_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -773,6 +835,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Decode a scaled region on CPU and upload it into a Metal buffer using an
+    /// existing backend session.
     pub fn decode_region_scaled_to_cpu_staged_metal_surface_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -1051,7 +1115,7 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    #[doc(hidden)]
+    /// Decode the same grayscale image repeatedly through the direct Metal path.
     pub fn decode_repeated_grayscale_direct_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -1092,7 +1156,7 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    #[doc(hidden)]
+    /// Decode the same color image repeatedly through the strict Metal path.
     pub fn decode_repeated_color_direct_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -1106,7 +1170,8 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    #[doc(hidden)]
+    /// Decode the same grayscale image repeatedly, allowing Auto to select CPU
+    /// or Metal according to the stable backend contract.
     pub fn decode_repeated_grayscale_auto_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -1385,6 +1450,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Strictly decode a region into a Metal-backed surface using an existing
+    /// backend session.
     pub fn decode_region_to_device_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -1474,6 +1541,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Strictly decode a scaled image into a Metal-backed surface using an
+    /// existing backend session.
     pub fn decode_scaled_to_device_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -1506,6 +1575,8 @@ impl<'a> J2kDecoder<'a> {
         }
     }
 
+    /// Strictly decode a scaled region into a Metal-backed surface using an
+    /// existing backend session.
     pub fn decode_region_scaled_to_device_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -1802,6 +1873,7 @@ impl<'a> ImageDecodeDevice<'a> for J2kDecoder<'a> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Tile-codec entry point for J2K Metal batch decode.
 pub struct Codec;
 
 impl ImageCodec for Codec {

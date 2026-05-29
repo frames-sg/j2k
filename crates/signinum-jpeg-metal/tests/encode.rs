@@ -58,12 +58,7 @@ fn metal_baseline_encoder_round_trips_rgb_422() {
             output_height: height,
             format: PixelFormat::Rgb8,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr422,
-            restart_interval: None,
-            backend: JpegBackend::Metal,
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Ybr422, None, JpegBackend::Metal),
         &session,
     )
     .expect("Metal JPEG baseline encode");
@@ -131,12 +126,7 @@ fn metal_baseline_encoder_round_trips_all_rgb_subsampling_modes() {
                 output_height: height,
                 format: PixelFormat::Rgb8,
             },
-            JpegEncodeOptions {
-                quality: 88,
-                subsampling,
-                restart_interval: Some(5),
-                backend: JpegBackend::Metal,
-            },
+            JpegEncodeOptions::new(88, subsampling, Some(5), JpegBackend::Metal),
             &session,
         )
         .expect("Metal JPEG baseline encode");
@@ -192,12 +182,7 @@ fn metal_baseline_encoder_round_trips_gray_with_padded_output() {
             output_height,
             format: PixelFormat::Gray8,
         },
-        JpegEncodeOptions {
-            quality: 85,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: Some(3),
-            backend: JpegBackend::Metal,
-        },
+        JpegEncodeOptions::new(85, JpegSubsampling::Gray, Some(3), JpegBackend::Metal),
         &session,
     )
     .expect("Metal JPEG baseline encode");
@@ -272,12 +257,7 @@ fn metal_baseline_batch_encoder_round_trips_multiple_rgb_tiles() {
 
     let encoded = encode_jpeg_baseline_batch_from_metal_buffers(
         &tiles,
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Ybr422,
-            restart_interval: Some(4),
-            backend: JpegBackend::Metal,
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Ybr422, Some(4), JpegBackend::Metal),
         &session,
     )
     .expect("Metal JPEG baseline batch encode");

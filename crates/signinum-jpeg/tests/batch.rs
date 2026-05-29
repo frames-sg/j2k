@@ -64,9 +64,7 @@ fn production_batch_decode_empty_input_succeeds() {
 fn production_batch_decode_worker_one_matches_single_tile_decode() {
     let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
     let mut actual = vec![0u8; expected.len()];
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(1),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(1));
 
     let outcomes = {
         let mut jobs = vec![TileDecodeJob {
@@ -96,9 +94,7 @@ fn production_batch_decode_progressive8_matches_single_tile_decode() {
         decode_tiles_into(
             &mut jobs,
             PixelFormat::Rgb8,
-            TileBatchOptions {
-                workers: NonZeroUsize::new(1),
-            },
+            TileBatchOptions::new(NonZeroUsize::new(1)),
         )
         .expect("progressive batch decode")
     };
@@ -114,9 +110,7 @@ fn production_batch_decode_parallel_preserves_order_and_output() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -149,9 +143,7 @@ fn production_batch_decode_with_options_preserves_forced_color_transform() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(2),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(2));
 
     let outcomes = {
         let mut jobs = outputs
@@ -178,9 +170,7 @@ fn production_batch_decode_reports_first_failing_tile_index() {
     let mut outputs = (0..3)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(2),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(2));
 
     let err = {
         let inputs: [&[u8]; 3] = [BASELINE_420, b"not a jpeg", BASELINE_420];
@@ -356,9 +346,7 @@ fn production_batch_region_scaled_decode_parallel_preserves_order_and_output() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -397,9 +385,7 @@ fn production_batch_scaled_decode_parallel_preserves_order_and_output() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -438,9 +424,7 @@ fn production_batch_scaled_decode_with_options_preserves_forced_color_transform(
     let mut outputs = (0..JOBS)
         .map(|_| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(2),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(2));
 
     let outcomes = {
         let mut jobs = outputs

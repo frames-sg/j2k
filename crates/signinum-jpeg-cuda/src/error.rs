@@ -3,19 +3,32 @@
 use signinum_core::{BackendRequest, BufferError, CodecError};
 use signinum_jpeg::JpegError;
 
+/// Error returned by the CUDA JPEG adapter.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
+    /// CPU JPEG decode failed.
     #[error(transparent)]
     Decode(#[from] JpegError),
+    /// Caller-owned output buffers were invalid.
     #[error(transparent)]
     Buffer(#[from] BufferError),
+    /// Backend request is unsupported by this adapter.
     #[error("backend request {request:?} is not supported by signinum-jpeg-cuda")]
-    UnsupportedBackend { request: BackendRequest },
+    UnsupportedBackend {
+        /// Requested backend.
+        request: BackendRequest,
+    },
+    /// CUDA runtime or device is unavailable.
     #[error("CUDA is unavailable on this host")]
     CudaUnavailable,
     #[cfg(feature = "cuda-runtime")]
+    /// CUDA runtime returned an error.
     #[error("CUDA runtime error: {message}")]
-    CudaRuntime { message: String },
+    CudaRuntime {
+        /// Runtime error message.
+        message: String,
+    },
 }
 
 impl CodecError for Error {

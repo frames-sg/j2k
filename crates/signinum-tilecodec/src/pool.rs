@@ -2,25 +2,30 @@
 
 use signinum_core::ScratchPool;
 
+/// Reusable scratch storage for Deflate decompression.
 #[derive(Debug, Default)]
 pub struct DeflatePool {
     pub(crate) scratch: Vec<u8>,
 }
 
+/// Reusable scratch storage for Zstd decompression.
 #[derive(Debug, Default)]
 pub struct ZstdPool {
     pub(crate) scratch: Vec<u8>,
 }
 
+/// Reusable scratch storage for LZW decompression.
 #[derive(Debug, Default)]
 pub struct LzwPool {
     pub(crate) scratch: Vec<u8>,
 }
 
+/// Empty scratch pool for codecs that do not retain allocations.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoPool;
 
 impl DeflatePool {
+    /// Create an empty Deflate scratch pool.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -28,6 +33,7 @@ impl DeflatePool {
 }
 
 impl ZstdPool {
+    /// Create an empty Zstd scratch pool.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -35,6 +41,7 @@ impl ZstdPool {
 }
 
 impl LzwPool {
+    /// Create an empty LZW scratch pool.
     #[must_use]
     pub fn new() -> Self {
         Self::default()

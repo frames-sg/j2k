@@ -10,13 +10,20 @@ pub(crate) struct CpuCheckpointCache {
     pub(crate) checkpoints: Vec<DeviceCheckpoint>,
 }
 
+/// Entropy decoder checkpoint consumed by device adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCheckpoint {
+    /// MCU index where this checkpoint begins.
     pub mcu_index: u32,
+    /// Byte offset in the entropy scan payload.
     pub scan_offset: usize,
+    /// Bit accumulator state at the checkpoint.
     pub bit_accumulator: u64,
+    /// Number of buffered bits in `bit_accumulator`.
     pub bits_buffered: u8,
+    /// Previous DC coefficient per component.
     pub prev_dc: [i32; 4],
+    /// Expected restart marker index at this point.
     pub expected_rst: u8,
 }
 
@@ -48,7 +55,7 @@ pub(crate) fn build_checkpoint_plan(
         if mcu_index > 0 {
             if let Some(restart) = restart_interval {
                 if mcus_since_restart == restart {
-                    let _ = br.ensure_bits(1);
+                    br.advance_to_marker();
                     let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
                         mcu_at: mcu_index,
                         mcu_total: total_mcus,
@@ -76,6 +83,7 @@ pub(crate) fn build_checkpoint_plan(
         mcus_since_restart += 1;
     }
 
+    br.advance_to_marker();
     match br.take_marker() {
         Some(0xd9) | None => {}
         Some(found) => {

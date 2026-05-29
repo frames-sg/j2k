@@ -281,15 +281,100 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
     let semver_job = workflow_job(&workflow, "semver");
+    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
 
     assert!(
         semver_job.contains("obi1kenobi/cargo-semver-checks-action@v2"),
         "CI semver job must use cargo-semver-checks action v2"
     );
     assert!(
-        semver_job.contains("release-type: patch"),
-        "CI semver job must check patch-release compatibility for the 0.4.x line"
+        semver_job.contains("release-type: major"),
+        "CI semver job must model the breaking 1.0 stabilization boundary"
     );
+
+    for package in stable_semver_library_packages() {
+        assert!(
+            semver_job.contains(package),
+            "CI semver job must cover stable library crate `{package}`"
+        );
+        assert!(
+            xtask.contains(&format!("\"{package}\"")),
+            "xtask semver gate must cover stable library crate `{package}`"
+        );
+    }
+
+    assert!(
+        xtask.contains("\"semver\" => semver()"),
+        "xtask must expose a local semver gate"
+    );
+    assert!(
+        xtask.contains("SIGNINUM_SEMVER_TOOLCHAIN") && xtask.contains("+{toolchain}"),
+        "xtask semver must run cargo-semver-checks on a toolchain new enough for the tool"
+    );
+
+    for package in [
+        "signinum-cli",
+        "signinum-j2k-compare",
+        "signinum-test-support",
+    ] {
+        assert!(
+            !semver_job.contains(package),
+            "CI semver job must not gate binary-only or unpublished crate `{package}`"
+        );
+    }
+}
+
+#[test]
+fn xtask_doc_enforces_missing_docs_for_1_0_stable_crates() {
+    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+
+    assert!(
+        xtask.contains("STABLE_DOC_LIBRARY_PACKAGES"),
+        "xtask doc must explicitly enumerate stable library crates"
+    );
+    assert!(
+        xtask.contains("-D warnings -D missing_docs"),
+        "xtask doc must promote missing_docs to an error for stable crates"
+    );
+    assert!(
+        xtask.contains("\"-p\", \"signinum-cli\""),
+        "xtask doc must also gate the stable CLI package"
+    );
+
+    for package in stable_doc_library_packages() {
+        assert!(
+            xtask.contains(&format!("\"{package}\"")),
+            "xtask doc gate must cover stable library crate `{package}`"
+        );
+    }
+}
+
+#[test]
+fn stable_crates_do_not_hide_public_semver_surface_with_doc_hidden() {
+    let root = repo_root();
+
+    let item_attr = ["#", "[doc(hidden)]"].concat();
+    let crate_attr = ["#!", "[doc(hidden)]"].concat();
+
+    for crate_dir in stable_crate_dirs() {
+        for path in rust_sources(&root.join(crate_dir).join("src")) {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            assert!(
+                !source.contains(&item_attr) && !source.contains(&crate_attr),
+                "{} must not use doc(hidden) to hide public semver surface in stable crates",
+                path.strip_prefix(root).unwrap_or(&path).display()
+            );
+        }
+    }
+}
+
+#[test]
+fn stable_api_inventory_1_0_covers_supported_crates_tiers_and_gpu_contract() {
+    let root = repo_root();
+    let path = root.join("docs/stable-api-1.0.md");
+    let docs =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
 
     for package in [
         "signinum",
@@ -297,17 +382,286 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
         "signinum-jpeg",
         "signinum-j2k",
         "signinum-tilecodec",
+        "signinum-cli",
+        "signinum-jpeg-metal",
+        "signinum-j2k-metal",
+        "signinum-jpeg-cuda",
+        "signinum-j2k-cuda",
+        "signinum-transcode",
+        "signinum-transcode-metal",
+        "signinum-j2k-native",
+        "signinum-cuda-runtime",
+        "signinum-profile",
     ] {
         assert!(
-            semver_job.contains(package),
-            "CI semver job must cover stable library crate `{package}`"
+            docs.contains(&format!("`{package}`")),
+            "{} must inventory stable crate `{package}`",
+            path.strip_prefix(root).unwrap_or(&path).display()
         );
     }
 
-    for package in ["signinum-cli", "signinum-transcode", "signinum-j2k-metal"] {
+    for required in [
+        "Application API",
+        "Direct Codec API",
+        "Adapter API",
+        "Adapter Integration API",
+        "Trait Implementation Policy",
+        "intentional extension points",
+        "New traits that callers should only invoke, not implement, must be sealed",
+        "BackendRequest::Cpu",
+        "BackendRequest::Auto",
+        "BackendRequest::Metal",
+        "BackendRequest::Cuda",
+        "no silent CPU fallback",
+        "CPU/GPU parity",
+        "dispatch reports",
+        "lossy/hybrid tolerances",
+        "kernel packet builders",
+        "checkpoint structs",
+        "raw device plans",
+        "helper table builders",
+        "missing_docs",
+        "cargo xtask semver",
+    ] {
         assert!(
-            !semver_job.contains(package),
-            "CI semver job must not gate experimental or CLI crate `{package}`"
+            docs.contains(required),
+            "{} must document `{required}`",
+            path.strip_prefix(root).unwrap_or(&path).display()
+        );
+    }
+}
+
+#[test]
+fn gpu_backend_contract_is_documented_and_covered_by_behavior_tests() {
+    let root = repo_root();
+    assert_gpu_contract_docs(root);
+    assert_jpeg_metal_gpu_contract_tests(root);
+    assert_j2k_metal_gpu_contract_tests(root);
+    assert_cuda_gpu_contract_tests(root);
+}
+
+fn assert_gpu_contract_docs(root: &Path) {
+    let docs_path = root.join("docs/stable-api-1.0.md");
+    let docs = fs::read_to_string(&docs_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", docs_path.display()));
+
+    for required in [
+        "`BackendRequest::Cpu` never uses GPU",
+        "`BackendRequest::Auto` may use GPU",
+        "CPU fallback is allowed and observable",
+        "`BackendRequest::Metal` and `BackendRequest::Cuda` are strict requests",
+        "no silent CPU fallback",
+        "CPU/GPU parity",
+        "dispatch reports",
+        "lossy/hybrid tolerances",
+    ] {
+        assert!(
+            docs.contains(required),
+            "{} must document GPU backend contract point `{required}`",
+            docs_path.strip_prefix(root).unwrap_or(&docs_path).display()
+        );
+    }
+}
+
+fn assert_jpeg_metal_gpu_contract_tests(root: &Path) {
+    assert_file_contains_all(
+        root,
+        "crates/signinum-jpeg-metal/tests/core_traits.rs",
+        &[
+            "fn decode_to_metal_matches_cpu_decode_bytes",
+            "fn cpu_device_request_stays_host_backed",
+            "fn auto_region_scaled_unsupported_metal_shape_returns_cpu_surface",
+            "fn auto_viewport_cpu_fallback_returns_cpu_surface",
+            "fn explicit_metal_unsupported_grayscale_shape_is_rejected",
+            "fn explicit_metal_unsupported_error_is_codec_unsupported",
+            "fn cuda_request_remains_unsupported_backend",
+        ],
+    );
+    assert_file_contains_all(
+        root,
+        "crates/signinum-jpeg-metal/tests/batch.rs",
+        &[
+            "fn tile_device_decode_matches_host_tile_decode",
+            "fn auto_small_restart_tile_batch_stays_cpu_surface",
+            "fn auto_restart_wsi_tile_batch_uses_metal_at_threshold",
+            "fn auto_tile_region_scaled_unsupported_metal_shape_returns_cpu_surface",
+            "fn explicit_metal_tile_unsupported_shape_is_rejected",
+            "fn explicit_metal_tile_unsupported_error_is_codec_unsupported",
+            "fn cuda_tile_request_remains_unsupported_backend",
+        ],
+    );
+    assert_file_contains_all(
+        root,
+        "crates/signinum-jpeg-metal/tests/viewport.rs",
+        &[
+            "fn hybrid_viewport_quadrants_match_cpu_viewport",
+            "fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport",
+            "fn hybrid_contiguous_viewport_region_matches_cpu_region",
+            "fn auto_viewport_surface_path_prefers_cpu_for_small_contiguous_workloads",
+            "fn non_macos_auto_viewport_surface_returns_cpu_surface",
+            "fn non_macos_explicit_metal_viewport_surface_is_unavailable",
+            "fn explicit_metal_viewport_unsupported_shape_is_rejected",
+        ],
+    );
+}
+
+fn assert_j2k_metal_gpu_contract_tests(root: &Path) {
+    assert_file_contains_all(
+        root,
+        "crates/signinum-j2k-metal/tests/device.rs",
+        &[
+            "fn full_classic_grayscale_decode_to_metal_matches_host_decode",
+            "fn full_htj2k_decode_to_metal_matches_host_decode",
+            "fn auto_full_grayscale_prefers_cpu_for_small_classic_fixture",
+            "fn auto_repeated_grayscale_uses_metal_for_512_batch",
+            "fn explicit_cpu_staged_metal_api_uses_session_device_and_marks_residency",
+            "fn decode_to_device_with_session_unsupported_rgba16_is_rejected",
+            "fn auto_region_and_scaled_fallback_to_cpu_surface_and_match_host_decode",
+        ],
+    );
+}
+
+fn assert_cuda_gpu_contract_tests(root: &Path) {
+    assert_file_contains_all(
+        root,
+        "crates/signinum-jpeg-cuda/tests/host_surface.rs",
+        &[
+            "fn auto_falls_back_to_cpu_surface",
+            "fn explicit_cuda_request_returns_cuda_surface_or_clear_unavailable_error",
+            "fn explicit_cuda_request_validates_decode_before_upload",
+            "fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required",
+            "fn explicit_cuda_full_frame_uses_hardware_decode_when_required",
+            "fn submit_to_device_auto_falls_back_to_cpu_surface",
+            "fn submit_to_device_auto_does_not_initialize_cuda_runtime",
+            "fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes",
+            "fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error",
+            "fn decode_tiles_to_device_explicit_cuda_uses_hardware_decode_when_required",
+        ],
+    );
+    assert_file_contains_all(
+        root,
+        "crates/signinum-j2k-cuda/tests/host_surface.rs",
+        &[
+            "fn auto_falls_back_to_cpu_surface",
+            "fn explicit_cuda_classic_j2k_request_rejects_cpu_staged_upload",
+            "fn explicit_cuda_request_validates_decode_before_upload",
+            "fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_runtime_required",
+            "fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required",
+            "fn submit_to_device_auto_falls_back_to_cpu_surface",
+            "fn submit_to_device_auto_does_not_initialize_cuda_runtime",
+            "fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes",
+            "fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error",
+        ],
+    );
+}
+
+#[test]
+fn stable_api_item_level_snapshot_is_checked_in_and_gated() {
+    let root = repo_root();
+    let docs =
+        fs::read_to_string(root.join("docs/stable-api-1.0.md")).expect("read stable API inventory");
+    let snapshot_path = root.join("docs/stable-api-1.0.public-api.txt");
+    let snapshot = fs::read_to_string(&snapshot_path).expect("read generated stable API snapshot");
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let stable_api_job = workflow_job(&workflow, "stable-api");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+
+    assert!(
+        docs.contains("docs/stable-api-1.0.public-api.txt"),
+        "docs/stable-api-1.0.md must point at the item-level public API snapshot"
+    );
+    for required in [
+        "\"stable-api\" => stable_api",
+        "STABLE_API_SNAPSHOT",
+        "cargo-public-api",
+        "0.52.0",
+        "public-api",
+        "--all-features",
+        "-sss",
+        "--color",
+        "never",
+    ] {
+        assert!(
+            xtask.contains(required),
+            "xtask stable-api gate must contain `{required}`"
+        );
+    }
+    for required in [
+        "cargo install cargo-public-api --version 0.52.0 --locked",
+        "cargo xtask stable-api",
+    ] {
+        assert!(
+            stable_api_job.contains(required),
+            "CI stable-api job must contain `{required}`"
+        );
+    }
+    assert!(
+        snapshot.contains("Generator: `cargo-public-api 0.52.0`."),
+        "{} must record the cargo-public-api generator version",
+        snapshot_path
+            .strip_prefix(root)
+            .unwrap_or(&snapshot_path)
+            .display()
+    );
+
+    for package in stable_doc_library_packages() {
+        assert!(
+            snapshot.contains(&format!("## `{package}`")),
+            "{} must include a generated item-level section for stable library crate {package}",
+            snapshot_path
+                .strip_prefix(root)
+                .unwrap_or(&snapshot_path)
+                .display()
+        );
+    }
+    assert!(
+        snapshot.contains("## `signinum-cli`") && snapshot.contains("binary package"),
+        "{} must acknowledge the stable CLI command contract even though it is not a library API",
+        snapshot_path
+            .strip_prefix(root)
+            .unwrap_or(&snapshot_path)
+            .display()
+    );
+}
+
+#[test]
+fn stable_api_snapshot_future_proofs_option_report_and_error_shapes() {
+    let root = repo_root();
+    let snapshot_path = root.join("docs/stable-api-1.0.public-api.txt");
+    let snapshot = fs::read_to_string(&snapshot_path).expect("read generated stable API snapshot");
+
+    for required in [
+        "#[non_exhaustive] pub struct signinum_core::batch::TileBatchOptions",
+        "pub const fn signinum_core::batch::TileBatchOptions::new",
+        "#[non_exhaustive] pub struct signinum_core::context::CacheStats",
+        "pub const fn signinum_core::context::CacheStats::new",
+        "#[non_exhaustive] pub enum signinum_core::traits::DecodeRowsError",
+        "#[non_exhaustive] pub struct signinum_core::types::DecodeOutcome",
+        "pub fn signinum_core::types::DecodeOutcome<W>::new",
+        "#[non_exhaustive] pub struct signinum_jpeg::info::DecodeOptions",
+        "pub const fn signinum_jpeg::info::DecodeOptions::new",
+        "#[non_exhaustive] pub struct signinum_jpeg::encoder::JpegEncodeOptions",
+        "pub const fn signinum_jpeg::encoder::JpegEncodeOptions::new",
+        "#[non_exhaustive] pub struct signinum_j2k::J2kLosslessEncodeOptions",
+        "pub const fn signinum_j2k::J2kLosslessEncodeOptions::with_backend",
+        "#[non_exhaustive] pub struct signinum_j2k::J2kToHtj2kOptions",
+        "pub const fn signinum_j2k::J2kToHtj2kOptions::new",
+        "#[non_exhaustive] pub struct signinum_transcode::JpegToHtj2kOptions",
+        "pub fn signinum_transcode::JpegToHtj2kOptions::with_coefficient_path",
+        "#[non_exhaustive] pub enum signinum_transcode::JpegToHtj2kError",
+        "#[non_exhaustive] pub enum signinum_transcode_metal::MetalTranscodeError",
+        "#[non_exhaustive] pub enum signinum_j2k_native::DecodeError",
+        "#[non_exhaustive] pub enum signinum_j2k_native::FormatError",
+        "#[non_exhaustive] pub enum signinum_j2k_native::ValidationError",
+    ] {
+        assert!(
+            snapshot.contains(required),
+            "{} must preserve future-proof public API shape `{required}`",
+            snapshot_path
+                .strip_prefix(root)
+                .unwrap_or(&snapshot_path)
+                .display()
         );
     }
 }
@@ -331,6 +685,63 @@ fn xtask_test_does_not_run_benchmarks_as_tests() {
         !test_section.contains("\"--all-targets\""),
         "xtask test must not pass --all-targets because harness=false benchmark binaries would run as tests"
     );
+}
+
+#[test]
+fn xtask_release_cpu_covers_facade_crate() {
+    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let release_packages = const_array_block(&xtask, "CPU_RELEASE_PACKAGES");
+
+    assert!(
+        release_packages.contains("\"signinum\""),
+        "CPU release tests must include the facade crate so feature re-exports and integration API compile in release mode"
+    );
+}
+
+#[test]
+fn xtask_bench_build_compiles_all_public_benchmark_targets() {
+    let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
+    let bench_build_section = xtask
+        .split("fn bench_build()")
+        .nth(1)
+        .and_then(|rest| rest.split("fn j2k_bench_signoff()").next())
+        .expect("xtask bench_build section");
+
+    for (package, bench) in [
+        ("signinum", "facade"),
+        ("signinum-j2k", "public_api"),
+        ("signinum-j2k-native", "tier1_bitplane"),
+        ("signinum-j2k-native", "htj2k_sigprop_phase"),
+        ("signinum-j2k-native", "direct_cpu"),
+        ("signinum-j2k-cuda", "encode_stages"),
+        ("signinum-jpeg-cuda", "device_decode"),
+        ("signinum-jpeg", "encode_cpu"),
+        ("signinum-tilecodec", "compare"),
+        ("signinum-transcode", "dct53"),
+        ("signinum-transcode-metal", "dct97"),
+    ] {
+        assert!(
+            bench_build_section.contains(&format!("\"{package}\""))
+                && bench_build_section.contains(&format!("\"{bench}\"")),
+            "xtask bench-build must compile benchmark `{bench}` for package `{package}`"
+        );
+    }
+}
+
+#[test]
+fn facade_cuda_feature_enables_adapter_runtime_features() {
+    let manifest =
+        fs::read_to_string(repo_root().join("crates/signinum/Cargo.toml")).expect("read facade");
+
+    for required in [
+        "signinum-jpeg-cuda/cuda-runtime",
+        "signinum-j2k-cuda/cuda-runtime",
+    ] {
+        assert!(
+            manifest.contains(required),
+            "facade cuda feature must enable adapter runtime feature `{required}`"
+        );
+    }
 }
 
 #[test]
@@ -568,6 +979,291 @@ fn release_docs_use_manifest_versions_for_publish_order() {
     );
 }
 
+#[test]
+fn public_docs_match_current_release_line_and_feature_defaults() {
+    let root = repo_root();
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+    let version = workspace_package_version(&workspace);
+    let facade_manifest =
+        fs::read_to_string(root.join("crates/signinum/Cargo.toml")).expect("read facade manifest");
+    let facade_docs =
+        fs::read_to_string(root.join("crates/signinum/src/lib.rs")).expect("read facade docs");
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    let security = fs::read_to_string(root.join("SECURITY.md")).expect("read security policy");
+
+    assert!(
+        readme.contains(&format!("signinum = \"{version}\"")),
+        "README install snippet must match workspace version {version}"
+    );
+    assert!(
+        security.contains("supported stable line is `0.4.x`"),
+        "SECURITY.md must name the supported 0.4.x line while the public release line is 0.4.x"
+    );
+
+    for (name, docs) in public_release_texts(root) {
+        assert!(
+            !docs.contains("CPU-first 1.0") && !docs.contains("1.0 stability promise"),
+            "{name} must not describe the current 0.4.x line as a stale 1.0 release"
+        );
+    }
+
+    if facade_manifest.contains("default = []") {
+        assert!(
+            !facade_docs.contains("Metal adapter by default")
+                && !readme.contains("portable Metal adapter"),
+            "facade docs must not claim Metal is compiled by default when default features are empty"
+        );
+    }
+}
+
+#[test]
+fn benchmark_report_task_records_publication_evidence() {
+    let root = repo_root();
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let bench_docs = fs::read_to_string(root.join("docs/bench.md")).expect("read bench docs");
+    let release = fs::read_to_string(root.join("docs/release.md")).expect("read release docs");
+
+    for required in [
+        "\"bench-report\"",
+        "BenchmarkReport",
+        "host",
+        "rustc",
+        "cargo",
+        "git_revision",
+        "workspace_version",
+        "input_source",
+        "comparator_versions",
+        "skipped_rows",
+    ] {
+        assert!(xtask.contains(required), "xtask must contain `{required}`");
+    }
+
+    for docs in [bench_docs.as_str(), release.as_str()] {
+        for required in [
+            "cargo xtask bench-report",
+            "benchmark publication report",
+            "input source",
+            "comparator versions",
+            "skipped rows",
+        ] {
+            assert!(
+                docs.contains(required),
+                "benchmark and release docs must document `{required}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn scheduled_fuzzing_runs_targets_and_documents_reproducers() {
+    let root = repo_root();
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/fuzz.yml")).expect("read fuzz workflow");
+    let fuzz_docs = fs::read_to_string(root.join("docs/fuzzing.md")).expect("read fuzzing docs");
+    let corpus_docs =
+        fs::read_to_string(root.join("corpus/fuzz/README.md")).expect("read fuzz corpus docs");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+
+    for required in [
+        "schedule:",
+        "cargo install cargo-fuzz",
+        "cargo xtask fuzz-run",
+        "actions/upload-artifact",
+        "signinum-fuzz-artifacts",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "fuzz workflow must contain `{required}`"
+        );
+    }
+
+    for required in [
+        "\"fuzz-run\"",
+        "SIGNINUM_FUZZ_RUNS",
+        "decode_fuzz",
+        "parse_fuzz",
+        "decompress_fuzz",
+    ] {
+        assert!(xtask.contains(required), "xtask must contain `{required}`");
+    }
+
+    for docs in [fuzz_docs.as_str(), corpus_docs.as_str()] {
+        for required in [
+            "seed corpus",
+            "minimized crash",
+            "cargo fuzz tmin",
+            "reproducer",
+            "artifact",
+        ] {
+            assert!(
+                docs.contains(required),
+                "fuzzing docs must document `{required}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn unsafe_simd_audit_is_documented_and_gated() {
+    let root = repo_root();
+    let audit = fs::read_to_string(root.join("docs/unsafe-audit.md"))
+        .expect("read unsafe audit documentation");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+
+    for required in [
+        "\"unsafe-audit\"",
+        "verify_unsafe_audit",
+        "docs/unsafe-audit.md",
+    ] {
+        assert!(xtask.contains(required), "xtask must contain `{required}`");
+    }
+
+    for path in rust_sources(&root.join("crates")) {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains("unsafe ") || source.contains("unsafe{") {
+            assert!(
+                audit.contains(&relative),
+                "docs/unsafe-audit.md must list unsafe source file {relative}"
+            );
+        }
+    }
+
+    for required in [
+        "Safety invariants",
+        "CPU feature detection",
+        "SIMD load/store bounds",
+        "Miri",
+        "sanitizer",
+    ] {
+        assert!(
+            audit.contains(required),
+            "unsafe audit docs must contain `{required}`"
+        );
+    }
+}
+
+#[test]
+fn public_api_documentation_debt_is_explicitly_ratcheted() {
+    let root = repo_root();
+    let docs = fs::read_to_string(root.join("docs/public-api-docs.md"))
+        .expect("read public API docs policy");
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    let jpeg_manifest = fs::read_to_string(root.join("crates/signinum-jpeg/Cargo.toml"))
+        .expect("read JPEG manifest");
+
+    for required in [
+        "stable crate rustdoc coverage",
+        "missing_docs ratchet",
+        "signinum-core",
+        "signinum-jpeg",
+        "signinum-j2k",
+        "signinum-tilecodec",
+        "cargo xtask doc",
+    ] {
+        assert!(
+            docs.contains(required),
+            "docs/public-api-docs.md must contain `{required}`"
+        );
+    }
+    assert!(
+        readme.contains("docs/public-api-docs.md"),
+        "README must link public API documentation policy"
+    );
+    assert!(
+        !jpeg_manifest.contains("after the 1.0"),
+        "stable crate documentation debt comments must not refer to stale 1.0 integration"
+    );
+}
+
+#[test]
+fn external_corpus_and_downstream_smoke_are_documented() {
+    let root = repo_root();
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    let corpus = fs::read_to_string(root.join("docs/external-corpus.md"))
+        .expect("read external corpus docs");
+    let downstream = fs::read_to_string(root.join("docs/downstream-integration.md"))
+        .expect("read downstream integration docs");
+
+    for link in ["docs/external-corpus.md", "docs/downstream-integration.md"] {
+        assert!(readme.contains(link), "README must link {link}");
+    }
+
+    for required in [
+        "source",
+        "license",
+        "hash",
+        "manifest",
+        "unsupported",
+        "reproducer",
+    ] {
+        assert!(
+            corpus.contains(required),
+            "external corpus docs must contain `{required}`"
+        );
+    }
+
+    for required in [
+        "statumen",
+        "wsi-dicom",
+        "cargo xtask downstream-smoke",
+        "container parsing",
+        "DICOM VL Whole Slide Microscopy",
+    ] {
+        assert!(
+            downstream.contains(required),
+            "downstream integration docs must contain `{required}`"
+        );
+    }
+}
+
+#[test]
+fn release_operations_files_are_present() {
+    let root = repo_root();
+    let codeowners = fs::read_to_string(root.join(".github/CODEOWNERS")).expect("read CODEOWNERS");
+    let dependabot =
+        fs::read_to_string(root.join(".github/dependabot.yml")).expect("read dependabot config");
+    let codecov = fs::read_to_string(root.join("codecov.yml")).expect("read codecov config");
+    let bug_report = fs::read_to_string(root.join(".github/ISSUE_TEMPLATE/bug_report.yml"))
+        .expect("read bug report template");
+    let issue_config = fs::read_to_string(root.join(".github/ISSUE_TEMPLATE/config.yml"))
+        .expect("read issue template config");
+    let security = fs::read_to_string(root.join("SECURITY.md")).expect("read security policy");
+
+    assert!(
+        codeowners.contains("* @frames-sg"),
+        "CODEOWNERS must name the repository owner for default review ownership"
+    );
+    for required in ["github-actions", "cargo", "weekly"] {
+        assert!(
+            dependabot.contains(required),
+            "dependabot config must contain `{required}`"
+        );
+    }
+    for required in ["coverage:", "project:", "patch:"] {
+        assert!(
+            codecov.contains(required),
+            "codecov.yml must contain `{required}`"
+        );
+    }
+    for required in ["Minimal reproducer", "Codec surface", "Rust version"] {
+        assert!(
+            bug_report.contains(required),
+            "bug report template must contain `{required}`"
+        );
+    }
+    assert!(
+        issue_config.contains("Private vulnerability report")
+            && security.contains("GitHub private vulnerability reporting"),
+        "issue templates and SECURITY.md must route vulnerabilities to private reporting"
+    );
+}
+
 fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {
     let start = source
         .find(&format!("const {name}:"))
@@ -577,6 +1273,78 @@ fn const_array_block<'a>(source: &'a str, name: &str) -> &'a str {
         .find("];")
         .unwrap_or_else(|| panic!("unterminated const {name}"));
     &rest[..end]
+}
+
+fn assert_file_contains_all(root: &Path, relative: &str, required_items: &[&str]) {
+    let path = root.join(relative);
+    let source =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+
+    for required in required_items {
+        assert!(
+            source.contains(required),
+            "{} must contain `{required}`",
+            path.strip_prefix(root).unwrap_or(&path).display()
+        );
+    }
+}
+
+fn stable_semver_library_packages() -> &'static [&'static str] {
+    &[
+        "signinum",
+        "signinum-core",
+        "signinum-jpeg",
+        "signinum-j2k",
+        "signinum-tilecodec",
+        "signinum-jpeg-metal",
+        "signinum-j2k-metal",
+        "signinum-jpeg-cuda",
+        "signinum-j2k-cuda",
+        "signinum-transcode",
+        "signinum-transcode-metal",
+        "signinum-j2k-native",
+        "signinum-cuda-runtime",
+        "signinum-profile",
+    ]
+}
+
+fn stable_doc_library_packages() -> &'static [&'static str] {
+    &[
+        "signinum",
+        "signinum-core",
+        "signinum-jpeg",
+        "signinum-j2k",
+        "signinum-tilecodec",
+        "signinum-jpeg-metal",
+        "signinum-j2k-metal",
+        "signinum-jpeg-cuda",
+        "signinum-j2k-cuda",
+        "signinum-transcode",
+        "signinum-transcode-metal",
+        "signinum-j2k-native",
+        "signinum-cuda-runtime",
+        "signinum-profile",
+    ]
+}
+
+fn stable_crate_dirs() -> &'static [&'static str] {
+    &[
+        "crates/signinum",
+        "crates/signinum-core",
+        "crates/signinum-jpeg",
+        "crates/signinum-j2k",
+        "crates/signinum-tilecodec",
+        "crates/signinum-cli",
+        "crates/signinum-jpeg-metal",
+        "crates/signinum-j2k-metal",
+        "crates/signinum-jpeg-cuda",
+        "crates/signinum-j2k-cuda",
+        "crates/signinum-transcode",
+        "crates/signinum-transcode-metal",
+        "crates/signinum-j2k-native",
+        "crates/signinum-cuda-runtime",
+        "crates/signinum-profile",
+    ]
 }
 
 fn workspace_package_version(workspace_manifest: &str) -> &str {
@@ -926,7 +1694,7 @@ fn j2k_compare_bench_exposes_fair_comparator_controls() {
     for required in [
         "SIGNINUM_J2K_COMPARE_THREADS",
         "j2k_compare_workers",
-        "TileBatchOptions { workers",
+        "TileBatchOptions::new",
     ] {
         assert!(
             compare_common.contains(required),
@@ -1116,6 +1884,32 @@ fn publishable_crate_dirs() -> &'static [&'static str] {
         "crates/signinum-cli",
         "crates/signinum",
     ]
+}
+
+fn public_release_texts(root: &Path) -> Vec<(String, String)> {
+    let mut texts = Vec::new();
+    for relative in [
+        "README.md",
+        "SECURITY.md",
+        "docs/support-matrix.md",
+        "docs/release.md",
+        "docs/wsi-decode-api.md",
+        "crates/signinum/README.md",
+        "crates/signinum-core/README.md",
+        "crates/signinum-jpeg/README.md",
+        "crates/signinum-j2k/README.md",
+        "crates/signinum-j2k-native/README.md",
+        "crates/signinum-tilecodec/README.md",
+        "crates/signinum-cli/README.md",
+    ] {
+        let path = root.join(relative);
+        texts.push((
+            relative.to_owned(),
+            fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display())),
+        ));
+    }
+    texts
 }
 
 fn cargo_metadata_workspace_edges(root: &Path) -> BTreeSet<(String, String)> {

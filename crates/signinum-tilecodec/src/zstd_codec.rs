@@ -5,8 +5,9 @@ use crate::{
     pool::ZstdPool,
     TileCodecError,
 };
-use signinum_core::TileDecompress;
+use signinum_core::{InputError, TileDecompress};
 
+/// Zstandard tile decompressor.
 pub struct ZstdCodec;
 
 impl TileDecompress for ZstdCodec {
@@ -23,16 +24,21 @@ impl TileDecompress for ZstdCodec {
         out: &mut [u8],
     ) -> Result<usize, Self::Error> {
         pool.scratch.clear();
-        let mut decoder = zstd::stream::read::Decoder::new(input).map_err(|error| {
-            TileCodecError::Backend(format!("zstd decoder init failed: {error}"))
+        let mut decoder = zstd::stream::read::Decoder::new(input).map_err(|_| {
+            TileCodecError::Input(InputError::TruncatedAt {
+                offset: input.len(),
+                segment: "zstd header",
+            })
         })?;
         let written = match read_to_scratch_bounded(&mut decoder, &mut pool.scratch, out.len()) {
             Ok(written) => written,
             Err(BoundedReadError::OutputTooSmall(error)) => return Err(error.into()),
             Err(BoundedReadError::Io(error)) => {
-                return Err(TileCodecError::Backend(format!(
-                    "zstd decode failed: {error}"
-                )));
+                let _ = error;
+                return Err(TileCodecError::Input(InputError::TruncatedAt {
+                    offset: input.len(),
+                    segment: "zstd payload",
+                }));
             }
         };
 

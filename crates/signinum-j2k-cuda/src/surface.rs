@@ -15,17 +15,32 @@ pub(crate) enum Storage {
     Cuda(CudaDeviceBuffer),
 }
 
+/// CUDA surface execution counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaSurfaceStats {
-    pub(crate) kernel_dispatches: usize,
+    pub(crate) total: usize,
+    pub(crate) copy: usize,
+    pub(crate) decode: usize,
 }
 
 impl CudaSurfaceStats {
+    /// Total CUDA kernel dispatches associated with the surface.
     pub fn kernel_dispatches(self) -> usize {
-        self.kernel_dispatches
+        self.total
+    }
+
+    /// CUDA copy/upload kernel dispatches associated with the surface.
+    pub fn copy_kernel_dispatches(self) -> usize {
+        self.copy
+    }
+
+    /// CUDA codestream decode kernel dispatches associated with the surface.
+    pub fn decode_kernel_dispatches(self) -> usize {
+        self.decode
     }
 }
 
+/// Borrowed view of a CUDA-resident surface.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaSurface<'a> {
     #[cfg(feature = "cuda-runtime")]
@@ -36,6 +51,7 @@ pub struct CudaSurface<'a> {
 }
 
 impl CudaSurface<'_> {
+    /// Raw CUDA device pointer value.
     pub fn device_ptr(&self) -> u64 {
         #[cfg(feature = "cuda-runtime")]
         {
@@ -47,14 +63,35 @@ impl CudaSurface<'_> {
         }
     }
 
+    /// Execution counters for this surface.
     pub fn stats(&self) -> CudaSurfaceStats {
         self.stats
     }
 }
 
+/// Residency of a decoded J2K CUDA adapter surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfaceResidency {
+    /// Pixels are stored in host memory.
+    Host,
+    /// Pixels were produced directly by a CUDA codestream decode path.
+    CudaResidentDecode,
+    /// Pixels were decoded on CPU and uploaded into a CUDA buffer.
+    CpuStagedCudaUpload,
+}
+
+impl Default for SurfaceResidency {
+    fn default() -> Self {
+        Self::Host
+    }
+}
+
+/// Host- or CUDA-backed decoded surface.
 #[derive(Debug)]
 pub struct Surface {
     pub(crate) backend: BackendKind,
+    pub(crate) residency: SurfaceResidency,
     pub(crate) dimensions: (u32, u32),
     pub(crate) fmt: PixelFormat,
     pub(crate) pitch_bytes: usize,
@@ -63,10 +100,17 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Return where the surface's pixels currently reside.
+    pub fn residency(&self) -> SurfaceResidency {
+        self.residency
+    }
+
+    /// Row pitch in bytes.
     pub fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
     }
 
+    /// Borrow host bytes when the surface is host-backed.
     pub fn as_host_bytes(&self) -> Option<&[u8]> {
         match &self.storage {
             Storage::Host(bytes) => Some(bytes),
@@ -75,6 +119,7 @@ impl Surface {
         }
     }
 
+    /// Download or copy the surface into caller-owned strided output.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
         match &self.storage {
             Storage::Host(bytes) => {
@@ -91,6 +136,7 @@ impl Surface {
         }
     }
 
+    /// Borrow CUDA metadata when the surface is CUDA-backed.
     pub fn cuda_surface(&self) -> Option<CudaSurface<'_>> {
         #[cfg(feature = "cuda-runtime")]
         match &self.storage {

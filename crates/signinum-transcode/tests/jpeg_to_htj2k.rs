@@ -55,11 +55,9 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear53)
+        .with_float_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with validation enabled");
@@ -77,10 +75,7 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options = JpegToHtj2kOptions::lossy_97().with_float_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG to lossy 9/7 HTJ2K");
@@ -140,10 +135,8 @@ fn option_constructors_select_consistent_default_codec_modes() {
 #[test]
 fn transcode_rejects_inconsistent_codec_mode_options() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear97);
 
     let err = jpeg_to_htj2k(jpeg, &options).expect_err("9/7 path requires irreversible encode");
 
@@ -157,10 +150,7 @@ fn transcode_rejects_inconsistent_codec_mode_options() {
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options = JpegToHtj2kOptions::lossy_97().with_float_reference_validation(true);
 
     let encoded = jpeg_to_htj2k(jpeg, &options).expect("transcode 4:2:0 JPEG to lossy 9/7 HTJ2K");
     let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
@@ -189,10 +179,7 @@ fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() 
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with integer validation");
@@ -219,10 +206,7 @@ fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
 #[test]
 fn default_transcode_uses_integer_direct_coefficients() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
 
     let encoded = jpeg_to_htj2k(jpeg, &options)
         .expect("transcode 4:2:0 JPEG with default integer direct path");
@@ -246,12 +230,10 @@ fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
-    let options = JpegToHtj2kOptions {
-        encode_options,
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_encode_options(encode_options)
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear53)
+        .with_float_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode grayscale JPEG with two DWT levels");
@@ -277,11 +259,9 @@ fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
-    let options = JpegToHtj2kOptions {
-        encode_options,
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_encode_options(encode_options)
+        .with_integer_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("integer-direct transcode supports two DWT levels");
@@ -356,12 +336,7 @@ fn grayscale_multiblock_jpeg_transcodes_to_decodable_htj2k() {
             width,
             height,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Gray, None, JpegBackend::Cpu),
     )
     .expect("encode grayscale JPEG fixture");
 
@@ -385,10 +360,7 @@ fn grayscale_multiblock_jpeg_transcodes_to_decodable_htj2k() {
 fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_grayscale_dimensions() {
     for (width, height) in [(8, 8), (13, 11), (16, 16)] {
         let jpeg = encoded_gray_jpeg(width, height);
-        let options = JpegToHtj2kOptions {
-            validate_against_integer_reference: true,
-            ..JpegToHtj2kOptions::default()
-        };
+        let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
         let scalar = jpeg_to_htj2k(&jpeg, &options).expect("scalar integer-direct transcode");
         let mut transcoder = JpegToHtj2kTranscoder::default();
         let mut accelerator = RayonReversibleDwt53Accelerator::default();
@@ -415,10 +387,7 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_grayscale_
 #[test]
 fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
     let scalar = jpeg_to_htj2k(jpeg, &options).expect("scalar 4:2:0 integer-direct transcode");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = RayonReversibleDwt53Accelerator::default();
@@ -500,11 +469,9 @@ fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
 #[test]
 fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear53)
+        .with_float_reference_validation(true);
 
     let encoded =
         jpeg_to_htj2k(jpeg, &options).expect("transcode 4:2:0 JPEG with validation enabled");
@@ -523,10 +490,8 @@ fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
 fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
     let larger_jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let smaller_jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let options = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options = JpegToHtj2kOptions::default()
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear53);
     let mut transcoder = JpegToHtj2kTranscoder::default();
 
     let larger = transcoder
@@ -556,10 +521,8 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
-    let options_53 = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        ..JpegToHtj2kOptions::default()
-    };
+    let options_53 = JpegToHtj2kOptions::default()
+        .with_coefficient_path(JpegToHtj2kCoefficientPath::FloatDirectLinear53);
     let encoded_53 = transcoder
         .transcode_with_accelerator(jpeg, &options_53, &mut accelerator)
         .expect("accelerated 5/3 float transcode succeeds");
@@ -568,9 +531,7 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
     assert_eq!(encoded_53.report.timings.accelerator_dispatches, 1);
     assert_eq!(encoded_53.report.timings.cpu_fallback_jobs, 0);
 
-    let options_97 = JpegToHtj2kOptions {
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options_97 = JpegToHtj2kOptions::lossy_97();
     let encoded_97 = transcoder
         .transcode_with_accelerator(jpeg, &options_97, &mut accelerator)
         .expect("accelerated 9/7 float transcode succeeds");
@@ -648,10 +609,7 @@ fn integer_direct_transcode_batches_same_geometry_components_when_available() {
             expected_batch_sizes: &[1, 2],
         },
     ] {
-        let options = JpegToHtj2kOptions {
-            validate_against_integer_reference: true,
-            ..JpegToHtj2kOptions::default()
-        };
+        let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
         let scalar =
             jpeg_to_htj2k(fixture.jpeg, &options).expect("scalar integer-direct transcode");
         let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -707,10 +665,7 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
             expected_batch_sizes: &[4, 4, 4],
         },
     ] {
-        let options = JpegToHtj2kOptions {
-            validate_against_integer_reference: true,
-            ..JpegToHtj2kOptions::default()
-        };
+        let options = JpegToHtj2kOptions::default().with_integer_reference_validation(true);
         let inputs = vec![
             JpegTileBatchInput {
                 bytes: fixture.jpeg
@@ -1265,12 +1220,7 @@ fn encoded_gray_jpeg(width: u32, height: u32) -> Vec<u8> {
             width,
             height,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(90, JpegSubsampling::Gray, None, JpegBackend::Cpu),
     )
     .expect("encode grayscale JPEG fixture")
     .data

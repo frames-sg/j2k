@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible Signinum bug that is not security-sensitive.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report crashes with private or security-sensitive inputs here.
+        Use GitHub private vulnerability reporting for likely security issues.
+  - type: textarea
+    id: surface
+    attributes:
+      label: Codec surface
+      description: Which crate/API/CLI command was used?
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Include input source, command/API call, features, and expected vs observed behavior.
+    validations:
+      required: true
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust version
+      placeholder: "rustc -Vv"
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target triple
+      placeholder: "x86_64-unknown-linux-gnu"
+    validations:
+      required: true
+

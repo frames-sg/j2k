@@ -52,6 +52,7 @@ impl Dwt53MultiLevel<f64> {
 
 /// Error returned when the requested decomposition level count is invalid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Dwt53MultiLevelError {
     requested_levels: usize,
     available_levels: usize,

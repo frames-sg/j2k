@@ -98,11 +98,9 @@ pub(crate) mod profile;
 pub(crate) mod writer;
 
 use crate::math::{dispatch, f32x8, Level, Simd, SIMD_WIDTH};
-#[doc(hidden)]
 pub use direct_cpu::{
     execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into, J2kDirectCpuScratch,
 };
-#[doc(hidden)]
 pub use direct_plan::{
     HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan,
     J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
@@ -148,11 +146,9 @@ pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage
 mod j2c;
 mod jp2;
 pub(crate) mod reader;
-#[doc(hidden)]
 pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 
-/// Hidden HTJ2K code-block job description for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K code-block job description for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct HtCodeBlockDecodeJob<'a> {
     /// Combined cleanup/refinement bytes for the code block.
@@ -181,8 +177,7 @@ pub struct HtCodeBlockDecodeJob<'a> {
     pub dequantization_step: f32,
 }
 
-/// Hidden HTJ2K scalar decode phase limit for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K scalar decode phase limit for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtCodeBlockDecodePhaseLimit {
     /// Stop after the cleanup pass has produced coefficient magnitudes/signs.
@@ -193,8 +188,7 @@ pub enum HtCodeBlockDecodePhaseLimit {
     MagnitudeRefinement,
 }
 
-/// Hidden HTJ2K batched code-block decode job for one sub-band.
-#[doc(hidden)]
+/// Adapter HTJ2K batched code-block decode job for one sub-band.
 #[derive(Debug, Clone, Copy)]
 pub struct HtCodeBlockBatchJob<'a> {
     /// X offset within the target sub-band coefficient buffer.
@@ -205,8 +199,7 @@ pub struct HtCodeBlockBatchJob<'a> {
     pub code_block: HtCodeBlockDecodeJob<'a>,
 }
 
-/// Hidden HTJ2K batched sub-band decode request for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K batched sub-band decode request for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct HtSubBandDecodeJob<'a> {
     /// Sub-band width in samples.
@@ -217,8 +210,7 @@ pub struct HtSubBandDecodeJob<'a> {
     pub jobs: &'a [HtCodeBlockBatchJob<'a>],
 }
 
-/// Hidden classic J2K sub-band kind for backend experimentation.
-#[doc(hidden)]
+/// Adapter classic J2K sub-band kind for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum J2kSubBandType {
     /// Low-low sub-band.
@@ -231,8 +223,7 @@ pub enum J2kSubBandType {
     HighHigh,
 }
 
-/// Hidden classic J2K code-block style for backend experimentation.
-#[doc(hidden)]
+/// Adapter classic J2K code-block style for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kCodeBlockStyle {
     /// Selective arithmetic coding bypass was enabled.
@@ -247,8 +238,7 @@ pub struct J2kCodeBlockStyle {
     pub segmentation_symbols: bool,
 }
 
-/// Hidden classic J2K coded segment for backend experimentation.
-#[doc(hidden)]
+/// Adapter classic J2K coded segment for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kCodeBlockSegment {
     /// Byte offset of this segment within the combined payload.
@@ -263,8 +253,7 @@ pub struct J2kCodeBlockSegment {
     pub use_arithmetic: bool,
 }
 
-/// Hidden classic J2K code-block job description for backend experimentation.
-#[doc(hidden)]
+/// Adapter classic J2K code-block job description for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kCodeBlockDecodeJob<'a> {
     /// Combined payload bytes for all coded segments in this code block.
@@ -293,8 +282,7 @@ pub struct J2kCodeBlockDecodeJob<'a> {
     pub dequantization_step: f32,
 }
 
-/// Hidden encoded classic J2K code-block payload for backend experimentation.
-#[doc(hidden)]
+/// Adapter encoded classic J2K code-block payload for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct EncodedJ2kCodeBlock {
     /// Combined payload bytes for all coded segments in this code block.
@@ -307,8 +295,7 @@ pub struct EncodedJ2kCodeBlock {
     pub missing_bit_planes: u8,
 }
 
-/// Hidden encoded HTJ2K cleanup code-block payload for backend experimentation.
-#[doc(hidden)]
+/// Adapter encoded HTJ2K cleanup code-block payload for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct EncodedHtJ2kCodeBlock {
     /// Combined cleanup/refinement bytes for this code block.
@@ -319,8 +306,22 @@ pub struct EncodedHtJ2kCodeBlock {
     pub num_zero_bitplanes: u8,
 }
 
-/// Hidden forward RCT job for backend experimentation.
-#[doc(hidden)]
+/// Adapter pixel deinterleave/level-shift job for backend experimentation.
+#[derive(Debug, Clone, Copy)]
+pub struct J2kDeinterleaveToF32Job<'a> {
+    /// Interleaved source pixel bytes.
+    pub pixels: &'a [u8],
+    /// Number of pixels to convert.
+    pub num_pixels: usize,
+    /// Number of interleaved components per pixel.
+    pub num_components: u8,
+    /// Source sample bit depth.
+    pub bit_depth: u8,
+    /// Whether source samples are signed.
+    pub signed: bool,
+}
+
+/// Adapter forward RCT job for backend experimentation.
 #[derive(Debug)]
 pub struct J2kForwardRctJob<'a> {
     /// First component plane, updated in place.
@@ -331,8 +332,18 @@ pub struct J2kForwardRctJob<'a> {
     pub plane2: &'a mut [f32],
 }
 
-/// Hidden forward 5/3 DWT job for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward ICT job for backend experimentation.
+#[derive(Debug)]
+pub struct J2kForwardIctJob<'a> {
+    /// First component plane, updated in place.
+    pub plane0: &'a mut [f32],
+    /// Second component plane, updated in place.
+    pub plane1: &'a mut [f32],
+    /// Third component plane, updated in place.
+    pub plane2: &'a mut [f32],
+}
+
+/// Adapter forward 5/3 DWT job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kForwardDwt53Job<'a> {
     /// Source samples in row-major order.
@@ -345,8 +356,7 @@ pub struct J2kForwardDwt53Job<'a> {
     pub num_levels: u8,
 }
 
-/// Hidden forward 5/3 DWT output for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward 5/3 DWT output for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kForwardDwt53Output {
     /// LL subband coefficients from the lowest decomposition level.
@@ -359,8 +369,7 @@ pub struct J2kForwardDwt53Output {
     pub levels: Vec<J2kForwardDwt53Level>,
 }
 
-/// Hidden forward 5/3 DWT detail level for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward 5/3 DWT detail level for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kForwardDwt53Level {
     /// HL subband coefficients.
@@ -383,8 +392,7 @@ pub struct J2kForwardDwt53Level {
     pub high_height: u32,
 }
 
-/// Hidden forward irreversible 9/7 DWT job for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward irreversible 9/7 DWT job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kForwardDwt97Job<'a> {
     /// Source samples in row-major order.
@@ -397,8 +405,7 @@ pub struct J2kForwardDwt97Job<'a> {
     pub num_levels: u8,
 }
 
-/// Hidden forward 9/7 DWT output for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward 9/7 DWT output for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kForwardDwt97Output {
     /// LL subband coefficients from the lowest decomposition level.
@@ -411,8 +418,7 @@ pub struct J2kForwardDwt97Output {
     pub levels: Vec<J2kForwardDwt97Level>,
 }
 
-/// Hidden forward 9/7 DWT detail level for backend experimentation.
-#[doc(hidden)]
+/// Adapter forward 9/7 DWT detail level for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kForwardDwt97Level {
     /// HL subband coefficients.
@@ -435,8 +441,22 @@ pub struct J2kForwardDwt97Level {
     pub high_height: u32,
 }
 
-/// Hidden Tier-1 classic J2K code-block encode job for backend experimentation.
-#[doc(hidden)]
+/// Adapter sub-band quantization job for backend experimentation.
+#[derive(Debug, Clone, Copy)]
+pub struct J2kQuantizeSubbandJob<'a> {
+    /// Source sub-band coefficients in row-major order.
+    pub coefficients: &'a [f32],
+    /// Quantization step-size exponent.
+    pub step_exponent: u16,
+    /// Quantization step-size mantissa.
+    pub step_mantissa: u16,
+    /// Nominal range bits for this sub-band.
+    pub range_bits: u8,
+    /// Whether to use reversible integer quantization.
+    pub reversible: bool,
+}
+
+/// Adapter Tier-1 classic J2K code-block encode job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kTier1CodeBlockEncodeJob<'a> {
     /// Quantized coefficients in row-major order.
@@ -453,8 +473,7 @@ pub struct J2kTier1CodeBlockEncodeJob<'a> {
     pub style: J2kCodeBlockStyle,
 }
 
-/// Hidden HTJ2K cleanup-only code-block encode job for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup-only code-block encode job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kHtCodeBlockEncodeJob<'a> {
     /// Quantized coefficients in row-major order.
@@ -467,8 +486,67 @@ pub struct J2kHtCodeBlockEncodeJob<'a> {
     pub total_bitplanes: u8,
 }
 
-/// Hidden HTJ2K cleanup-encode shape counters for backend benchmarking.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup encode job for one unquantized sub-band.
+#[derive(Debug, Clone, Copy)]
+pub struct J2kHtSubbandEncodeJob<'a> {
+    /// Source sub-band coefficients in row-major order.
+    pub coefficients: &'a [f32],
+    /// Sub-band width in samples.
+    pub width: u32,
+    /// Sub-band height in samples.
+    pub height: u32,
+    /// Quantization step-size exponent.
+    pub step_exponent: u16,
+    /// Quantization step-size mantissa.
+    pub step_mantissa: u16,
+    /// Nominal range bits for this sub-band.
+    pub range_bits: u8,
+    /// Whether to use reversible integer quantization.
+    pub reversible: bool,
+    /// Code-block width in samples.
+    pub code_block_width: u32,
+    /// Code-block height in samples.
+    pub code_block_height: u32,
+    /// Total coded bitplanes for this sub-band.
+    pub total_bitplanes: u8,
+}
+
+/// Adapter HTJ2K tile-body encode job for backend-resident full-tile paths.
+#[derive(Debug, Clone, Copy)]
+pub struct J2kHtj2kTileEncodeJob<'a> {
+    /// Interleaved source pixel bytes.
+    pub pixels: &'a [u8],
+    /// Tile/image width in samples.
+    pub width: u32,
+    /// Tile/image height in samples.
+    pub height: u32,
+    /// Number of interleaved image components.
+    pub num_components: u8,
+    /// Source component bit depth.
+    pub bit_depth: u8,
+    /// Whether source samples are signed.
+    pub signed: bool,
+    /// Number of DWT decomposition levels.
+    pub num_decomposition_levels: u8,
+    /// Whether the codestream uses reversible coding.
+    pub reversible: bool,
+    /// Whether a multi-component transform should be applied.
+    pub use_mct: bool,
+    /// JPEG 2000 guard bits used to derive total coded bitplanes.
+    pub guard_bits: u8,
+    /// Code-block width in samples.
+    pub code_block_width: u32,
+    /// Code-block height in samples.
+    pub code_block_height: u32,
+    /// Packet progression order to emit.
+    pub progression_order: J2kPacketizationProgressionOrder,
+    /// Per-component sampling factors, as `(x_rsiz, y_rsiz)`.
+    pub component_sampling: &'a [(u8, u8)],
+    /// Quantization step sizes, as `(exponent, mantissa)`, in codestream order.
+    pub quantization_steps: &'a [(u16, u16)],
+}
+
+/// Adapter HTJ2K cleanup-encode shape counters for backend benchmarking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HtCleanupEncodeDistribution {
     /// Total 2x2 cleanup quads visited.
@@ -501,8 +579,7 @@ pub struct HtCleanupEncodeDistribution {
     pub mag_sign_encoded_samples: u64,
 }
 
-/// Hidden LRCP packetization code-block contribution for backend experimentation.
-#[doc(hidden)]
+/// Adapter LRCP packetization code-block contribution for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kPacketizationCodeBlock<'a> {
     /// Encoded Tier-1 bitstream bytes for this packet contribution.
@@ -519,8 +596,7 @@ pub struct J2kPacketizationCodeBlock<'a> {
     pub block_coding_mode: J2kPacketizationBlockCodingMode,
 }
 
-/// Hidden packetization block coding mode for backend experimentation.
-#[doc(hidden)]
+/// Adapter packetization block coding mode for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum J2kPacketizationBlockCodingMode {
     /// Classic JPEG 2000 Part 1 EBCOT block coding.
@@ -529,8 +605,7 @@ pub enum J2kPacketizationBlockCodingMode {
     HighThroughput,
 }
 
-/// Hidden packet progression order for backend packetization experimentation.
-#[doc(hidden)]
+/// Adapter packet progression order for backend packetization experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum J2kPacketizationProgressionOrder {
     /// Layer-resolution-component-position progression.
@@ -539,8 +614,7 @@ pub enum J2kPacketizationProgressionOrder {
     Rpcl,
 }
 
-/// Hidden LRCP packetization subband precinct for backend experimentation.
-#[doc(hidden)]
+/// Adapter LRCP packetization subband precinct for backend experimentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct J2kPacketizationSubband<'a> {
     /// Code-block contributions in row-major order.
@@ -551,16 +625,14 @@ pub struct J2kPacketizationSubband<'a> {
     pub num_cbs_y: u32,
 }
 
-/// Hidden LRCP packetization resolution packet for backend experimentation.
-#[doc(hidden)]
+/// Adapter LRCP packetization resolution packet for backend experimentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct J2kPacketizationResolution<'a> {
     /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
     pub subbands: Vec<J2kPacketizationSubband<'a>>,
 }
 
-/// Hidden explicit packet descriptor for backend packetization experimentation.
-#[doc(hidden)]
+/// Adapter explicit packet descriptor for backend packetization experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kPacketizationPacketDescriptor {
     /// Index into the packet contribution array.
@@ -577,8 +649,7 @@ pub struct J2kPacketizationPacketDescriptor {
     pub precinct: u64,
 }
 
-/// Hidden LRCP packetization job for backend experimentation.
-#[doc(hidden)]
+/// Adapter LRCP packetization job for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kPacketizationEncodeJob<'a> {
     /// Number of resolution packets prepared for packetization.
@@ -597,14 +668,21 @@ pub struct J2kPacketizationEncodeJob<'a> {
     pub resolutions: &'a [J2kPacketizationResolution<'a>],
 }
 
-/// Hidden encode-stage dispatch counters for backend experimentation.
-#[doc(hidden)]
+/// Adapter encode-stage dispatch counters for backend experimentation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct J2kEncodeDispatchReport {
+    /// Pixel deinterleave/level-shift dispatch count.
+    pub deinterleave: usize,
     /// Forward RCT kernel dispatch count.
     pub forward_rct: usize,
+    /// Forward ICT kernel dispatch count.
+    pub forward_ict: usize,
     /// Forward reversible 5/3 DWT kernel dispatch count.
     pub forward_dwt53: usize,
+    /// Forward irreversible 9/7 DWT kernel dispatch count.
+    pub forward_dwt97: usize,
+    /// Sub-band quantization dispatch count.
+    pub quantize_subband: usize,
     /// Tier-1 code-block encode dispatch count.
     pub tier1_code_block: usize,
     /// HTJ2K cleanup-only code-block encode dispatch count.
@@ -618,8 +696,14 @@ impl J2kEncodeDispatchReport {
     #[must_use]
     pub fn saturating_delta(self, before: Self) -> Self {
         Self {
+            deinterleave: self.deinterleave.saturating_sub(before.deinterleave),
             forward_rct: self.forward_rct.saturating_sub(before.forward_rct),
+            forward_ict: self.forward_ict.saturating_sub(before.forward_ict),
             forward_dwt53: self.forward_dwt53.saturating_sub(before.forward_dwt53),
+            forward_dwt97: self.forward_dwt97.saturating_sub(before.forward_dwt97),
+            quantize_subband: self
+                .quantize_subband
+                .saturating_sub(before.quantize_subband),
             tier1_code_block: self
                 .tier1_code_block
                 .saturating_sub(before.tier1_code_block),
@@ -632,7 +716,11 @@ impl J2kEncodeDispatchReport {
     #[must_use]
     pub fn total(self) -> usize {
         self.forward_rct
+            .saturating_add(self.deinterleave)
+            .saturating_add(self.forward_ict)
             .saturating_add(self.forward_dwt53)
+            .saturating_add(self.forward_dwt97)
+            .saturating_add(self.quantize_subband)
             .saturating_add(self.tier1_code_block)
             .saturating_add(self.ht_code_block)
             .saturating_add(self.packetization)
@@ -645,12 +733,22 @@ impl J2kEncodeDispatchReport {
     }
 }
 
-/// Hidden JPEG 2000 encode-stage accelerator for backend experimentation.
-#[doc(hidden)]
+/// Adapter JPEG 2000 encode-stage accelerator for backend experimentation.
 pub trait J2kEncodeStageAccelerator {
     /// Report cumulative backend dispatches completed by this accelerator.
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
         J2kEncodeDispatchReport::default()
+    }
+
+    /// Optionally deinterleave interleaved pixel bytes into f32 component planes.
+    ///
+    /// Return `Ok(Some(components))` with one plane per component. Return
+    /// `Ok(None)` to use the CPU fallback.
+    fn encode_deinterleave(
+        &mut self,
+        _job: J2kDeinterleaveToF32Job<'_>,
+    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        Ok(None)
     }
 
     /// Optionally apply forward RCT in place.
@@ -660,6 +758,17 @@ pub trait J2kEncodeStageAccelerator {
     fn encode_forward_rct(
         &mut self,
         _job: J2kForwardRctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        Ok(false)
+    }
+
+    /// Optionally apply forward ICT in place.
+    ///
+    /// Return `Ok(true)` after writing transformed planes. Return `Ok(false)`
+    /// to use the CPU fallback.
+    fn encode_forward_ict(
+        &mut self,
+        _job: J2kForwardIctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         Ok(false)
     }
@@ -683,6 +792,17 @@ pub trait J2kEncodeStageAccelerator {
         &mut self,
         _job: J2kForwardDwt97Job<'_>,
     ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally quantize one sub-band.
+    ///
+    /// Return `Ok(Some(coefficients))` with one quantized coefficient for each
+    /// input coefficient. Return `Ok(None)` to use the CPU fallback.
+    fn encode_quantize_subband(
+        &mut self,
+        _job: J2kQuantizeSubbandJob<'_>,
+    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
         Ok(None)
     }
 
@@ -730,11 +850,34 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 
+    /// Optionally quantize and encode one HTJ2K cleanup-only sub-band.
+    ///
+    /// Return `Ok(Some(outputs))` with one encoded output per code block in
+    /// raster code-block order. Return `Ok(None)` to use the separate
+    /// quantization and code-block hooks or CPU fallback.
+    fn encode_ht_subband(
+        &mut self,
+        _job: J2kHtSubbandEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally encode the complete HTJ2K tile packet body.
+    ///
+    /// Return `Ok(Some(bytes))` with the complete tile bitstream body. CPU
+    /// marker/header writing remains outside this hook. Return `Ok(None)` to
+    /// use the normal staged encode pipeline.
+    fn encode_htj2k_tile(
+        &mut self,
+        _job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        Ok(None)
+    }
+
     /// Return whether native CPU code-block fallback should use internal rayon parallelism.
     ///
     /// External accelerators keep serial per-block fallback so their hooks still
     /// observe every fallback block after a declined batch hook.
-    #[doc(hidden)]
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
         false
     }
@@ -751,8 +894,7 @@ pub trait J2kEncodeStageAccelerator {
     }
 }
 
-/// Hidden CPU-only encode accelerator that always falls back to native stages.
-#[doc(hidden)]
+/// Adapter CPU-only encode accelerator that always falls back to native stages.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuOnlyJ2kEncodeStageAccelerator;
 
@@ -762,8 +904,7 @@ impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
     }
 }
 
-/// Hidden classic J2K batched code-block decode job for one sub-band.
-#[doc(hidden)]
+/// Adapter classic J2K batched code-block decode job for one sub-band.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kCodeBlockBatchJob<'a> {
     /// X offset within the target sub-band coefficient buffer.
@@ -774,8 +915,7 @@ pub struct J2kCodeBlockBatchJob<'a> {
     pub code_block: J2kCodeBlockDecodeJob<'a>,
 }
 
-/// Hidden classic J2K batched sub-band decode request for backend experimentation.
-#[doc(hidden)]
+/// Adapter classic J2K batched sub-band decode request for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kSubBandDecodeJob<'a> {
     /// Sub-band width in samples.
@@ -786,8 +926,7 @@ pub struct J2kSubBandDecodeJob<'a> {
     pub jobs: &'a [J2kCodeBlockBatchJob<'a>],
 }
 
-/// Hidden integer rectangle for backend experimentation.
-#[doc(hidden)]
+/// Adapter integer rectangle for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kRect {
     /// Inclusive minimum x coordinate.
@@ -812,8 +951,7 @@ impl J2kRect {
     }
 }
 
-/// Hidden wavelet transform selector for backend experimentation.
-#[doc(hidden)]
+/// Adapter wavelet transform selector for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum J2kWaveletTransform {
     /// Reversible 5/3 transform.
@@ -822,8 +960,7 @@ pub enum J2kWaveletTransform {
     Irreversible97,
 }
 
-/// Hidden single sub-band payload for backend experimentation.
-#[doc(hidden)]
+/// Adapter single sub-band payload for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kIdwtBand<'a> {
     /// Rect covered by this band.
@@ -832,8 +969,7 @@ pub struct J2kIdwtBand<'a> {
     pub coefficients: &'a [f32],
 }
 
-/// Hidden single-decomposition IDWT job for backend experimentation.
-#[doc(hidden)]
+/// Adapter single-decomposition IDWT job for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kSingleDecompositionIdwtJob<'a> {
     /// Output rect of the decomposition level.
@@ -850,8 +986,7 @@ pub struct J2kSingleDecompositionIdwtJob<'a> {
     pub hh: J2kIdwtBand<'a>,
 }
 
-/// Hidden inverse MCT job for backend experimentation.
-#[doc(hidden)]
+/// Adapter inverse MCT job for backend experimentation.
 #[derive(Debug)]
 pub struct J2kInverseMctJob<'a> {
     /// Transform to apply.
@@ -870,8 +1005,7 @@ pub struct J2kInverseMctJob<'a> {
     pub addend2: f32,
 }
 
-/// Hidden component-store job for backend experimentation.
-#[doc(hidden)]
+/// Adapter component-store job for backend experimentation.
 #[derive(Debug)]
 pub struct J2kStoreComponentJob<'a> {
     /// Source IDWT coefficients in row-major order.
@@ -898,8 +1032,7 @@ pub struct J2kStoreComponentJob<'a> {
     pub addend: f32,
 }
 
-/// Hidden HTJ2K code-block decode hook for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K code-block decode hook for backend experimentation.
 pub trait HtCodeBlockDecoder {
     /// Optionally decode a full classic J2K sub-band in one batch.
     ///
@@ -999,8 +1132,7 @@ fn internal_j2k_code_block_style(style: J2kCodeBlockStyle) -> j2c::codestream::C
     }
 }
 
-/// Hidden scalar classic J2K encoder helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar classic J2K encoder helper for backend experimentation.
 pub fn encode_j2k_code_block_scalar_with_style(
     coefficients: &[i32],
     width: u32,
@@ -1037,8 +1169,7 @@ pub fn encode_j2k_code_block_scalar_with_style(
     })
 }
 
-/// Hidden scalar HTJ2K cleanup-only encoder helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar HTJ2K cleanup-only encoder helper for backend experimentation.
 pub fn encode_ht_code_block_scalar(
     coefficients: &[i32],
     width: u32,
@@ -1054,8 +1185,7 @@ pub fn encode_ht_code_block_scalar(
     })
 }
 
-/// Hidden HTJ2K cleanup-encode distribution helper for benchmark tuning.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup-encode distribution helper for benchmark tuning.
 pub fn collect_ht_cleanup_encode_distribution(
     coefficients: &[i32],
     width: u32,
@@ -1065,8 +1195,7 @@ pub fn collect_ht_cleanup_encode_distribution(
     j2c::ht_block_encode::collect_encode_distribution(coefficients, width, height, total_bitplanes)
 }
 
-/// Hidden scalar Tier-2 packetization helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar Tier-2 packetization helper for backend experimentation.
 pub fn encode_j2k_packetization_scalar(
     job: J2kPacketizationEncodeJob<'_>,
 ) -> core::result::Result<Vec<u8>, &'static str> {
@@ -1129,8 +1258,7 @@ pub fn encode_j2k_packetization_scalar(
     }
 }
 
-/// Hidden scalar classic J2K decoder helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar classic J2K decoder helper for backend experimentation.
 pub fn decode_j2k_code_block_scalar(
     job: J2kCodeBlockDecodeJob<'_>,
     output: &mut [f32],
@@ -1182,8 +1310,7 @@ pub fn decode_j2k_code_block_scalar(
     Ok(())
 }
 
-/// Hidden scalar classic J2K batched decoder helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar classic J2K batched decoder helper for backend experimentation.
 pub fn decode_j2k_sub_band_scalar(job: J2kSubBandDecodeJob<'_>, output: &mut [f32]) -> Result<()> {
     let required_len = if job.height == 0 {
         0
@@ -1244,8 +1371,7 @@ pub fn decode_j2k_sub_band_scalar(job: J2kSubBandDecodeJob<'_>, output: &mut [f3
     Ok(())
 }
 
-/// Hidden scalar HTJ2K decoder helper for backend experimentation.
-#[doc(hidden)]
+/// Adapter scalar HTJ2K decoder helper for backend experimentation.
 pub fn decode_ht_code_block_scalar(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],
@@ -1255,8 +1381,7 @@ pub fn decode_ht_code_block_scalar(
     )
 }
 
-/// Hidden scalar HTJ2K decoder helper that stops after the selected phase.
-#[doc(hidden)]
+/// Adapter scalar HTJ2K decoder helper that stops after the selected phase.
 pub fn decode_ht_code_block_scalar_until_phase(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],
@@ -1279,8 +1404,7 @@ pub fn decode_ht_code_block_scalar_until_phase(
     }
 }
 
-/// Hidden reusable scalar HTJ2K decode workspace for backend experimentation.
-#[doc(hidden)]
+/// Adapter reusable scalar HTJ2K decode workspace for backend experimentation.
 #[derive(Default)]
 pub struct HtCodeBlockDecodeWorkspace {
     coefficients: Vec<u32>,
@@ -1289,14 +1413,12 @@ pub struct HtCodeBlockDecodeWorkspace {
 
 impl HtCodeBlockDecodeWorkspace {
     /// Current coefficient buffer capacity retained by this workspace.
-    #[doc(hidden)]
     pub fn coefficient_capacity(&self) -> usize {
         self.coefficients.capacity()
     }
 }
 
-/// Hidden scalar HTJ2K decoder helper that reuses caller-owned scratch buffers.
-#[doc(hidden)]
+/// Adapter scalar HTJ2K decoder helper that reuses caller-owned scratch buffers.
 pub fn decode_ht_code_block_scalar_with_workspace(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],
@@ -1378,20 +1500,17 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
     Ok(())
 }
 
-/// Hidden HTJ2K SigProp benchmark state for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K SigProp benchmark state for backend experimentation.
 pub struct HtSigPropBenchmarkState(j2c::ht_block_decode::HtSigPropBenchmarkState);
 
 impl HtSigPropBenchmarkState {
     /// Coefficient buffer length required by `decode_ht_sigprop_benchmark_state`.
-    #[doc(hidden)]
     pub fn output_len(&self) -> usize {
         self.0.output_len()
     }
 }
 
-/// Hidden helper that precomputes cleanup-derived SigProp inputs for benchmarks.
-#[doc(hidden)]
+/// Adapter helper that precomputes cleanup-derived SigProp inputs for benchmarks.
 pub fn prepare_ht_sigprop_benchmark_state(
     job: HtCodeBlockDecodeJob<'_>,
 ) -> Result<HtSigPropBenchmarkState> {
@@ -1414,8 +1533,7 @@ pub fn prepare_ht_sigprop_benchmark_state(
     Ok(HtSigPropBenchmarkState(state))
 }
 
-/// Hidden helper that runs only the HTJ2K significance-propagation phase.
-#[doc(hidden)]
+/// Adapter helper that runs only the HTJ2K significance-propagation phase.
 pub fn decode_ht_sigprop_benchmark_state(
     state: &mut HtSigPropBenchmarkState,
     output: &mut [u32],
@@ -1423,44 +1541,37 @@ pub fn decode_ht_sigprop_benchmark_state(
     j2c::ht_block_decode::decode_sigprop_benchmark_state(&mut state.0, output)
 }
 
-/// Hidden HTJ2K VLC table 0 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K VLC table 0 for backend experimentation.
 pub fn ht_vlc_table0() -> &'static [u16; 1024] {
     &j2c::ht_tables::VLC_TABLE0
 }
 
-/// Hidden HTJ2K VLC table 1 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K VLC table 1 for backend experimentation.
 pub fn ht_vlc_table1() -> &'static [u16; 1024] {
     &j2c::ht_tables::VLC_TABLE1
 }
 
-/// Hidden HTJ2K UVLC table 0 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K UVLC table 0 for backend experimentation.
 pub fn ht_uvlc_table0() -> &'static [u16; 320] {
     &j2c::ht_tables::UVLC_TABLE0
 }
 
-/// Hidden HTJ2K UVLC table 1 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K UVLC table 1 for backend experimentation.
 pub fn ht_uvlc_table1() -> &'static [u16; 256] {
     &j2c::ht_tables::UVLC_TABLE1
 }
 
-/// Hidden HTJ2K cleanup encoder VLC table 0 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup encoder VLC table 0 for backend experimentation.
 pub fn ht_vlc_encode_table0() -> &'static [u16; 2048] {
     &j2c::ht_encode_tables::HT_VLC_ENCODE_TABLE0
 }
 
-/// Hidden HTJ2K cleanup encoder VLC table 1 for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup encoder VLC table 1 for backend experimentation.
 pub fn ht_vlc_encode_table1() -> &'static [u16; 2048] {
     &j2c::ht_encode_tables::HT_VLC_ENCODE_TABLE1
 }
 
-/// Hidden HTJ2K cleanup encoder UVLC table for backend experimentation.
-#[doc(hidden)]
+/// Adapter HTJ2K cleanup encoder UVLC table for backend experimentation.
 pub fn ht_uvlc_encode_table() -> &'static [HtUvlcTableEntry; 75] {
     &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE
 }
@@ -1561,7 +1672,6 @@ impl<'a> Image<'a> {
     }
 
     /// Whether decode finishes with additional host-side component mutation or reordering.
-    #[doc(hidden)]
     pub fn supports_direct_device_plane_reuse(&self) -> bool {
         if self.settings.resolve_palette_indices && self.boxes.palette.is_some() {
             return false;
@@ -1630,8 +1740,7 @@ impl<'a> Image<'a> {
         })
     }
 
-    /// Build a hidden grayscale direct device plan without materializing host component planes.
-    #[doc(hidden)]
+    /// Build a adapter grayscale direct device plan without materializing host component planes.
     pub fn build_direct_grayscale_plan_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -1645,8 +1754,7 @@ impl<'a> Image<'a> {
         j2c::build_direct_grayscale_plan(self.codestream, &self.header, decoder_context)
     }
 
-    /// Build a hidden grayscale direct device plan for an output-space region.
-    #[doc(hidden)]
+    /// Build a adapter grayscale direct device plan for an output-space region.
     pub fn build_direct_grayscale_plan_region_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -1665,8 +1773,7 @@ impl<'a> Image<'a> {
         result
     }
 
-    /// Build a hidden RGB direct device plan without materializing host component planes.
-    #[doc(hidden)]
+    /// Build a adapter RGB direct device plan without materializing host component planes.
     pub fn build_direct_color_plan_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -1680,8 +1787,7 @@ impl<'a> Image<'a> {
         j2c::build_direct_color_plan(self.codestream, &self.header, decoder_context)
     }
 
-    /// Build a hidden RGB direct device plan for an output-space region.
-    #[doc(hidden)]
+    /// Build a adapter RGB direct device plan for an output-space region.
     pub fn build_direct_color_plan_region_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -1700,7 +1806,6 @@ impl<'a> Image<'a> {
     }
 
     /// Decode borrowed component planes while delegating HTJ2K code-block decode.
-    #[doc(hidden)]
     pub fn decode_components_with_ht_decoder<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
@@ -1753,8 +1858,7 @@ impl<'a> Image<'a> {
     }
 
     /// Decode borrowed component planes for a requested region while
-    /// delegating code-block/transform stages through the hidden backend hook.
-    #[doc(hidden)]
+    /// delegating code-block/transform stages through the adapter backend hook.
     pub fn decode_region_components_with_ht_decoder<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
@@ -1838,7 +1942,6 @@ impl<'a> Image<'a> {
     ///
     /// This decodes classic Tier-1 code-blocks into dequantized reversible
     /// wavelet coefficients, but does not run inverse DWT or color conversion.
-    #[doc(hidden)]
     pub fn decode_reversible_53_coefficients(&self) -> Result<Reversible53CoefficientImage> {
         let mut decoder_context = DecoderContext::default();
         self.decode_reversible_53_coefficients_with_context(&mut decoder_context)
@@ -1846,7 +1949,6 @@ impl<'a> Image<'a> {
 
     /// Extract reversible 5/3 wavelet coefficients using a caller-provided
     /// decoder context.
-    #[doc(hidden)]
     pub fn decode_reversible_53_coefficients_with_context(
         &self,
         decoder_context: &mut DecoderContext<'a>,
@@ -2048,6 +2150,7 @@ impl<'a> Image<'a> {
         }
 
         if let Some(cdef) = &decoded_image.boxes.channel_definition {
+            validate_channel_definition(cdef, decoded_image.decoded_components.len())?;
             let mut components = decoded_image
                 .decoded_components
                 .iter()
@@ -2094,6 +2197,30 @@ impl<'a> Image<'a> {
         decoder_context.set_output_region(None);
         decode_result
     }
+}
+
+fn validate_channel_definition(
+    cdef: &jp2::cdef::ChannelDefinitionBox,
+    component_count: usize,
+) -> Result<()> {
+    if cdef.channel_definitions.len() != component_count {
+        bail!(ValidationError::InvalidChannelDefinition);
+    }
+
+    let mut seen_color_associations = vec![false; component_count];
+    for definition in &cdef.channel_definitions {
+        if let ChannelAssociation::Colour(association) = definition._association {
+            let Some(index) = association.checked_sub(1).map(usize::from) else {
+                bail!(ValidationError::InvalidChannelDefinition);
+            };
+            if index >= component_count || seen_color_associations[index] {
+                bail!(ValidationError::InvalidChannelDefinition);
+            }
+            seen_color_associations[index] = true;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn resolve_alpha_and_color_space(

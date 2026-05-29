@@ -2,4 +2,5 @@
 
 //! Public adapter-facing JPEG 2000 planning APIs.
 
+/// Device decode request normalization.
 pub mod device_plan;

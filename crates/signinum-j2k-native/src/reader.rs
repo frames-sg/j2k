@@ -145,7 +145,7 @@ impl<'a> BitReader<'a> {
     pub(crate) fn needs_to_read_stuff_bit(&mut self) -> bool {
         // B.10.1: "If the value of the byte is 0xFF, the next byte includes an extra zero bit
         // stuffed into the MSB."
-        self.bit_pos() == 7 && self.data[self.byte_pos()] == 0xff
+        self.bit_pos() == 7 && self.data.get(self.byte_pos()) == Some(&0xff)
     }
 
     #[inline]
@@ -177,5 +177,20 @@ impl<'a> BitReader<'a> {
     #[inline]
     pub(crate) fn peek_marker(&mut self) -> Option<u8> {
         self.clone().read_marker().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BitReader;
+
+    #[test]
+    fn stuffing_check_at_eof_returns_none_instead_of_panicking() {
+        let mut reader = BitReader {
+            data: &[],
+            cur_pos: 7,
+        };
+
+        assert_eq!(reader.read_bits_with_stuffing(1), None);
     }
 }

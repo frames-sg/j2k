@@ -129,13 +129,21 @@ impl<'a> BitReader<'a> {
             if self.pos + 1 >= self.bytes.len() {
                 return false;
             }
-            let next = self.bytes[self.pos + 1];
+            let mut code_pos = self.pos + 1;
+            while code_pos < self.bytes.len() && self.bytes[code_pos] == 0xFF {
+                code_pos += 1;
+            }
+            if code_pos >= self.bytes.len() {
+                return false;
+            }
+            let next = self.bytes[code_pos];
             if next == 0x00 {
                 self.push_byte(0xFF);
-                self.pos += 2;
+                self.pos = code_pos + 1;
                 true
             } else {
                 self.marker = Some(next);
+                self.pos = code_pos - 1;
                 false
             }
         } else {
@@ -223,6 +231,45 @@ impl<'a> BitReader<'a> {
         let m = self.marker.take()?;
         self.pos += 2;
         Some(m)
+    }
+
+    /// Discard remaining entropy padding/lookahead and expose the next marker.
+    ///
+    /// Huffman decode intentionally prefetches bytes into the reservoir. At a
+    /// restart or scan boundary, all not-yet-consumed bits before the next
+    /// marker are byte-alignment fill, so callers must not require the marker
+    /// to have been discovered by the normal refill path already.
+    pub(crate) fn advance_to_marker(&mut self) {
+        if self.marker.is_some() {
+            return;
+        }
+        self.acc = 0;
+        self.bits = 0;
+
+        while self.pos < self.bytes.len() {
+            if self.bytes[self.pos] != 0xFF {
+                self.pos += 1;
+                continue;
+            }
+
+            let mut code_pos = self.pos + 1;
+            while code_pos < self.bytes.len() && self.bytes[code_pos] == 0xFF {
+                code_pos += 1;
+            }
+            if code_pos >= self.bytes.len() {
+                self.pos = self.bytes.len();
+                return;
+            }
+
+            match self.bytes[code_pos] {
+                0x00 => self.pos = code_pos + 1,
+                marker => {
+                    self.pos = code_pos - 1;
+                    self.marker = Some(marker);
+                    return;
+                }
+            }
+        }
     }
 
     /// Current cursor into the input. Used only by diagnostics; not part of
@@ -369,6 +416,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn advance_to_marker_discards_prefetched_bits_before_marker() {
+        let data = [
+            0x12u8, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0xff, 0xd5, 0x99,
+        ];
+        let mut br = BitReader::new(&data);
+        br.ensure_bits_padded(12).unwrap();
+        br.consume_bits(5);
+        assert_eq!(br.take_marker(), None);
+
+        br.advance_to_marker();
+
+        assert_eq!(br.take_marker(), Some(0xD5));
+        assert_eq!(br.position(), 12);
+    }
+
+    #[test]
+    fn advance_to_marker_skips_fill_ff_bytes() {
+        let data = [
+            0x12u8, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0xff, 0xff, 0xd0, 0x34,
+        ];
+        let mut br = BitReader::new(&data);
+        br.ensure_bits_padded(8).unwrap();
+        assert_eq!(br.take_marker(), None);
+
+        br.advance_to_marker();
+
+        assert_eq!(br.take_marker(), Some(0xD0));
+        assert_eq!(br.position(), 12);
     }
 
     #[test]

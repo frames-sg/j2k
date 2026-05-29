@@ -84,7 +84,6 @@ fn build_region_scaled_direct_plan(
     }
 }
 
-#[doc(hidden)]
 pub(crate) fn benchmark_region_scaled_direct_plan_prepare(
     input: &[u8],
     fmt: PixelFormat,

@@ -3,9 +3,9 @@
 //! Facade crate for the `signinum` pathology image codecs.
 //!
 //! Runtime backend requests default to [`BackendRequest::Auto`]. The facade
-//! compiles portable CPU codecs plus the Metal adapter by default, then uses
-//! device backends for supported workloads when they are compiled and available.
-//! CPU is the fallback for `Auto`, not the policy default.
+//! compiles portable CPU codecs by default. Metal and CUDA adapters are opt-in
+//! features; when compiled and available, `Auto` may use device backends for
+//! supported workloads and otherwise falls back to CPU.
 //!
 //! # Examples
 //!
@@ -47,6 +47,7 @@
 //! assert_eq!(written, 3);
 //! ```
 
+#![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
 pub mod core {
@@ -180,10 +181,7 @@ pub mod j2k {
         accelerator: &mut impl J2kEncodeStageAccelerator,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
         let requested_backend = options.backend;
-        let device_options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            ..options
-        };
+        let device_options = options.with_backend(EncodeBackendPreference::PreferDevice);
         let before = accelerator.dispatch_report();
         let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
             samples,
@@ -235,11 +233,9 @@ pub mod j2k {
 
             let encoded = encode_with_device_accelerator(
                 samples,
-                J2kLosslessEncodeOptions {
-                    backend: EncodeBackendPreference::Auto,
-                    validation: J2kEncodeValidation::External,
-                    ..J2kLosslessEncodeOptions::default()
-                },
+                J2kLosslessEncodeOptions::default()
+                    .with_backend(EncodeBackendPreference::Auto)
+                    .with_validation(J2kEncodeValidation::External),
                 BackendKind::Metal,
                 &mut accelerator,
             )

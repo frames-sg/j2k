@@ -128,9 +128,13 @@ Backend selection uses `BackendRequest`:
 - `BackendRequest::Cuda` requires CUDA device memory output. When an adapter is
   built with `cuda-runtime` and a CUDA driver is available, explicit CUDA
   requests return CUDA-backed surfaces. `signinum-jpeg-cuda` uses nvJPEG for
-  full-frame RGB8 JPEG decode when `libnvjpeg` is available; unsupported JPEG
-  shapes and J2K CUDA requests use CPU decode plus CUDA upload. Hosts without
-  CUDA return unavailable. `Cpu` and `Auto` remain CPU-backed host surfaces.
+  full-frame RGB8 JPEG decode when `libnvjpeg` is available, with documented
+  JPEG-only fallback paths. `signinum-j2k-cuda` reserves explicit CUDA requests
+  for strict CUDA-resident HTJ2K codestream decode; classic J2K and unsupported
+  HTJ2K shapes fail instead of silently using CPU decode plus CUDA upload.
+  Call explicit CPU-staged CUDA APIs when a J2K caller intentionally wants CPU
+  decode followed by CUDA upload. Hosts without CUDA return unavailable. `Cpu`
+  and `Auto` remain CPU-backed host surfaces.
 
 For Metal adapters, `BackendRequest::Auto` is a routing hint and may fall back
 to host-backed CPU output when the request shape is not on the Metal-supported

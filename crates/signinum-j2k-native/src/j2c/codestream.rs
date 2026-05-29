@@ -148,6 +148,9 @@ pub(crate) fn read_header<'a>(
         .ok_or(ValidationError::InvalidComponentMetadata)?;
     let skipped_resolution_levels =
         if let Some((target_width, target_height)) = settings.target_resolution {
+            if target_width == 0 || target_height == 0 {
+                bail!(ValidationError::InvalidDimensions);
+            }
             let width_log = (size_data.image_width() / target_width)
                 .checked_ilog2()
                 .unwrap_or(0);

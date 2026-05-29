@@ -185,12 +185,19 @@ impl<'a> PassthroughCandidate<'a> {
 /// Destination requirements for copying compressed bytes unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassthroughRequirements {
+    /// Required destination compressed syntax.
     pub transfer_syntax: CompressedTransferSyntax,
+    /// Required destination payload/container shape.
     pub payload_kind: CompressedPayloadKind,
+    /// Optional exact destination dimensions.
     pub dimensions: Option<(u32, u32)>,
+    /// Optional exact destination component count.
     pub components: Option<u8>,
+    /// Optional exact destination bit depth.
     pub bit_depth: Option<u8>,
+    /// Optional exact destination colorspace.
     pub colorspace: Option<Colorspace>,
+    /// Optional exact destination tile layout.
     pub tile_layout: Option<TileLayout>,
 }
 
@@ -252,42 +259,70 @@ impl PassthroughRequirements {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassthroughDecision<'a> {
     /// Copy these compressed bytes unchanged.
-    Copy { bytes: &'a [u8] },
+    Copy {
+        /// Original compressed bytes to copy unchanged.
+        bytes: &'a [u8],
+    },
     /// Decode/transcode instead, for the stated reason.
-    Transcode { reason: PassthroughRejectReason },
+    Transcode {
+        /// First reason passthrough was rejected.
+        reason: PassthroughRejectReason,
+    },
 }
 
 /// First reason a compressed payload was rejected for byte-preserving copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PassthroughRejectReason {
+    /// Source payload is empty.
     EmptyPayload,
+    /// Source and destination compressed syntax differ.
     TransferSyntaxMismatch {
+        /// Source compressed syntax.
         source: CompressedTransferSyntax,
+        /// Destination compressed syntax.
         destination: CompressedTransferSyntax,
     },
+    /// Source and destination payload/container shape differ.
     PayloadKindMismatch {
+        /// Source payload kind.
         source: CompressedPayloadKind,
+        /// Destination payload kind.
         destination: CompressedPayloadKind,
     },
+    /// Source and destination dimensions differ.
     DimensionsMismatch {
+        /// Source dimensions.
         source: (u32, u32),
+        /// Destination dimensions.
         destination: (u32, u32),
     },
+    /// Source and destination component counts differ.
     ComponentsMismatch {
+        /// Source component count.
         source: u8,
+        /// Destination component count.
         destination: u8,
     },
+    /// Source and destination bit depths differ.
     BitDepthMismatch {
+        /// Source bit depth.
         source: u8,
+        /// Destination bit depth.
         destination: u8,
     },
+    /// Source and destination colorspaces differ.
     ColorspaceMismatch {
+        /// Source colorspace.
         source: Colorspace,
+        /// Destination colorspace.
         destination: Colorspace,
     },
+    /// Source and destination tile layouts differ.
     TileLayoutMismatch {
+        /// Source tile layout.
         source: Option<TileLayout>,
+        /// Destination tile layout.
         destination: TileLayout,
     },
 }

@@ -100,6 +100,7 @@ impl MetalEncodeDispatchStages {
 }
 
 impl MetalEncodeStageAccelerator {
+    /// Create an accelerator that leaves reversible color transform on CPU.
     pub fn with_cpu_forward_rct() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::ALL
@@ -108,6 +109,7 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Create the stage set used by `Auto` host-output encode paths.
     pub fn for_auto_host_output() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::FORWARD_DWT53,
@@ -116,6 +118,7 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Create an accelerator that only attempts HT code-block encoding on GPU.
     pub fn for_ht_code_block_encode() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::HT_CODE_BLOCK,
@@ -133,42 +136,52 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Number of forward RCT acceleration attempts.
     pub fn forward_rct_attempts(&self) -> usize {
         self.forward_rct_attempts
     }
 
+    /// Number of forward 5/3 DWT acceleration attempts.
     pub fn forward_dwt53_attempts(&self) -> usize {
         self.forward_dwt53_attempts
     }
 
+    /// Number of classic tier-1 code-block acceleration attempts.
     pub fn tier1_code_block_attempts(&self) -> usize {
         self.tier1_code_block_attempts
     }
 
+    /// Number of HT code-block acceleration attempts.
     pub fn ht_code_block_attempts(&self) -> usize {
         self.ht_code_block_attempts
     }
 
+    /// Number of packetization acceleration attempts.
     pub fn packetization_attempts(&self) -> usize {
         self.packetization_attempts
     }
 
+    /// Number of forward RCT jobs dispatched to Metal.
     pub fn forward_rct_dispatches(&self) -> usize {
         self.forward_rct_dispatches
     }
 
+    /// Number of forward 5/3 DWT jobs dispatched to Metal.
     pub fn forward_dwt53_dispatches(&self) -> usize {
         self.forward_dwt53_dispatches
     }
 
+    /// Number of classic tier-1 code-block jobs dispatched to Metal.
     pub fn tier1_code_block_dispatches(&self) -> usize {
         self.tier1_code_block_dispatches
     }
 
+    /// Number of HT code-block jobs dispatched to Metal.
     pub fn ht_code_block_dispatches(&self) -> usize {
         self.ht_code_block_dispatches
     }
 
+    /// Number of packetization jobs dispatched to Metal.
     pub fn packetization_dispatches(&self) -> usize {
         self.packetization_dispatches
     }
@@ -201,8 +214,12 @@ fn metal_dispatch_option<T>(
 impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
         J2kEncodeDispatchReport {
+            deinterleave: 0,
             forward_rct: self.forward_rct_dispatches,
+            forward_ict: 0,
             forward_dwt53: self.forward_dwt53_dispatches,
+            forward_dwt97: 0,
+            quantize_subband: 0,
             tier1_code_block: self.tier1_code_block_dispatches,
             ht_code_block: self.ht_code_block_dispatches,
             packetization: self.packetization_dispatches,
@@ -430,38 +447,60 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
+/// A lossless J2K/HTJ2K encode input tile stored in a Metal buffer.
 pub struct MetalLosslessEncodeTile<'a> {
+    /// Metal buffer containing the input samples.
     pub buffer: &'a Buffer,
+    /// Byte offset from the start of `buffer` to the first input sample.
     pub byte_offset: usize,
+    /// Width of the source tile in pixels.
     pub width: u32,
+    /// Height of the source tile in pixels.
     pub height: u32,
+    /// Number of bytes between consecutive source rows.
     pub pitch_bytes: usize,
+    /// Width to write into the codestream.
     pub output_width: u32,
+    /// Height to write into the codestream.
     pub output_height: u32,
+    /// Pixel format of the source tile.
     pub format: PixelFormat,
 }
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
+/// Placeholder Metal lossless encode tile for non-macOS targets.
 pub struct MetalLosslessEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Metal residency stages used by a lossless encode.
 pub struct MetalLosslessEncodeResidency {
+    /// Whether coefficient preparation ran on Metal.
     pub coefficient_prep_used: bool,
+    /// Whether packetization ran on Metal.
     pub packetization_used: bool,
+    /// Whether final codestream assembly ran on Metal.
     pub codestream_assembly_used: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Lossless encode output plus dispatch and timing metadata.
 pub struct MetalLosslessEncodeOutcome {
+    /// Encoded J2K/HTJ2K codestream in host memory.
     pub encoded: EncodedJ2k,
+    /// Whether the input had to be copied or padded before encode.
     pub input_copy_used: bool,
+    /// Metal-resident stages used by the encode.
     pub resident: MetalLosslessEncodeResidency,
+    /// Time spent staging input samples.
     pub input_copy_duration: Duration,
+    /// End-to-end encode duration.
     pub encode_duration: Duration,
+    /// GPU-only duration when resident timing is available.
     pub gpu_duration: Option<Duration>,
+    /// Time spent validating the encoded result.
     pub validation_duration: Duration,
 }
 
@@ -472,14 +511,23 @@ pub struct MetalLosslessEncodeOutcome {
 /// callers can stream `codestream_bytes()` into file or network writers without
 /// first materializing an owned `Vec<u8>`.
 pub struct MetalEncodedJ2k {
+    /// Metal buffer containing the codestream.
     pub codestream_buffer: Buffer,
+    /// Byte offset of the codestream within `codestream_buffer`.
     pub byte_offset: usize,
+    /// Number of codestream bytes.
     pub byte_len: usize,
+    /// Allocated codestream capacity in bytes.
     pub capacity: usize,
+    /// Encoded image width.
     pub width: u32,
+    /// Encoded image height.
     pub height: u32,
+    /// Number of encoded components.
     pub components: u8,
+    /// Encoded component precision.
     pub bit_depth: u8,
+    /// Whether encoded samples are signed.
     pub signed: bool,
 }
 
@@ -526,18 +574,26 @@ impl MetalEncodedJ2k {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder buffer-backed codestream type for non-macOS targets.
 pub struct MetalEncodedJ2k {
     _private: (),
 }
 
 /// Metal lossless encode report for buffer-backed codestream output.
 pub struct MetalLosslessBufferEncodeOutcome {
+    /// Buffer-backed encoded codestream.
     pub encoded: MetalEncodedJ2k,
+    /// Whether the input had to be copied or padded before encode.
     pub input_copy_used: bool,
+    /// Metal-resident stages used by the encode.
     pub resident: MetalLosslessEncodeResidency,
+    /// Time spent staging input samples.
     pub input_copy_duration: Duration,
+    /// End-to-end encode duration.
     pub encode_duration: Duration,
+    /// GPU-only duration when resident timing is available.
     pub gpu_duration: Option<Duration>,
+    /// Time spent validating the encoded result.
     pub validation_duration: Duration,
 }
 
@@ -558,18 +614,28 @@ pub struct MetalLosslessEncodeConfig {
 /// Optional resident Metal encode stage timings.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeStageStats {
+    /// Time spent planning resident encode work.
     pub plan_duration: Duration,
+    /// Time spent preparing and submitting GPU work.
     pub prepare_submit_duration: Duration,
+    /// Time spent building HT encode tables.
     pub ht_table_build_duration: Duration,
+    /// Time spent allocating HT encode buffers.
     pub ht_buffer_allocation_duration: Duration,
+    /// Time spent encoding HT Metal commands.
     pub ht_command_encode_duration: Duration,
+    /// Time spent waiting for resident codestream assembly.
     pub codestream_wait_duration: Duration,
+    /// Number of resident encode chunks.
     pub chunk_count: usize,
+    /// Number of encoded tiles.
     pub tile_count: usize,
+    /// Number of encoded code blocks.
     pub code_block_count: usize,
 }
 
 impl MetalLosslessEncodeStageStats {
+    /// Return whether any timing field contains a non-zero duration.
     pub fn has_timings(&self) -> bool {
         self.plan_duration > Duration::ZERO
             || self.prepare_submit_duration > Duration::ZERO
@@ -619,33 +685,46 @@ impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStat
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeBatchStats {
+    /// Caller-requested in-flight tile count, if provided.
     pub configured_inflight_tiles: Option<usize>,
+    /// In-flight tile count used after clamping by the memory budget.
     pub effective_inflight_tiles: usize,
+    /// Caller-requested memory budget, if provided.
     pub configured_memory_budget_bytes: Option<usize>,
+    /// Memory budget used for resident encode planning.
     pub effective_memory_budget_bytes: usize,
+    /// Estimated peak resident memory per tile.
     pub estimated_peak_bytes_per_tile: usize,
+    /// Maximum number of tiles observed in flight at once.
     pub max_observed_inflight_tiles: usize,
+    /// End-to-end wall-clock duration for the batch.
     pub encode_wall_duration: Duration,
+    /// Stage-level resident encode metrics.
     pub stage_stats: MetalLosslessEncodeStageStats,
 }
 
 /// Resident Metal lossless J2K/HTJ2K tile batch output and batch-level metrics.
 pub struct MetalLosslessBufferEncodeBatchOutcome {
+    /// Per-tile encode outcomes in input order.
     pub outcomes: Vec<MetalLosslessBufferEncodeOutcome>,
+    /// Batch-level resident encode metrics.
     pub stats: MetalLosslessEncodeBatchStats,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted single-tile lossless encode.
 pub struct SubmittedJ2kLosslessMetalEncode {
     inner: SubmittedJ2kLosslessMetalEncodeBatch,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted multi-tile lossless encode returning host-memory codestreams.
 pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     state: SubmittedJ2kLosslessMetalEncodeBatchState,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted multi-tile lossless encode returning Metal-backed codestreams.
 pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
     state: SubmittedJ2kLosslessMetalBufferEncodeBatchState,
 }
@@ -715,16 +794,19 @@ impl OwnedMetalLosslessEncodeTile {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted single-tile lossless encode for non-macOS targets.
 pub struct SubmittedJ2kLosslessMetalEncode {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted multi-tile lossless encode for non-macOS targets.
 pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted Metal-buffer lossless encode for non-macOS targets.
 pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
     _private: (),
 }
@@ -829,6 +911,7 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-backed tile into a host-memory lossless J2K/HTJ2K codestream.
 pub fn encode_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -838,6 +921,7 @@ pub fn encode_lossless_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-backed tile into a Metal-buffer-backed codestream.
 pub fn encode_lossless_from_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -847,6 +931,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit one Metal-backed tile for lossless encode into host-memory output.
 pub fn submit_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -857,6 +942,7 @@ pub fn submit_lossless_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-backed tile and return host-memory output plus timings.
 pub fn encode_lossless_from_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -873,6 +959,7 @@ pub fn encode_lossless_from_metal_buffer_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-backed tile and return Metal-buffer output plus timings.
 pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -890,6 +977,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded contiguous Metal-backed tile into host-memory output.
 pub fn encode_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -899,6 +987,7 @@ pub fn encode_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded contiguous Metal-backed tile into Metal-buffer output.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -911,6 +1000,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit one already padded contiguous Metal-backed tile for lossless encode.
 pub fn submit_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -921,6 +1011,7 @@ pub fn submit_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded Metal-backed tile and return host-memory timings.
 pub fn encode_lossless_from_padded_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -937,6 +1028,7 @@ pub fn encode_lossless_from_padded_metal_buffer_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded Metal-backed tile and return Metal-buffer timings.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -954,6 +1046,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode Metal-backed tiles into host-memory lossless J2K/HTJ2K codestreams.
 pub fn encode_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -963,6 +1056,7 @@ pub fn encode_lossless_from_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode Metal-backed tiles into Metal-buffer-backed codestreams.
 pub fn encode_lossless_from_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -977,6 +1071,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit Metal-backed tiles for lossless encode into host-memory outputs.
 pub fn submit_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -991,6 +1086,7 @@ pub fn submit_lossless_from_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit Metal-backed tiles for lossless encode with explicit batch tuning.
 pub fn submit_lossless_from_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1007,6 +1103,7 @@ pub fn submit_lossless_from_metal_buffers_with_config(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode Metal-backed tiles and return host-memory outputs plus timings.
 pub fn encode_lossless_from_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1021,6 +1118,7 @@ pub fn encode_lossless_from_metal_buffers_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode Metal-backed tiles and return Metal-buffer outputs plus timings.
 pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1036,6 +1134,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit Metal-backed tiles for resident Metal-buffer batch output.
 pub fn submit_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1052,6 +1151,7 @@ pub fn submit_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode Metal-backed tiles into a Metal-buffer batch output with metrics.
 pub fn encode_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1062,6 +1162,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded Metal-backed tiles into host-memory codestreams.
 pub fn encode_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1071,6 +1172,7 @@ pub fn encode_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded Metal-backed tiles into Metal-buffer codestreams.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1085,6 +1187,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded Metal-backed tiles for host-memory lossless encode.
 pub fn submit_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1099,6 +1202,7 @@ pub fn submit_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded Metal-backed tiles with explicit batch tuning.
 pub fn submit_lossless_from_padded_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1115,6 +1219,7 @@ pub fn submit_lossless_from_padded_metal_buffers_with_config(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded Metal-backed tiles and return host-memory timings.
 pub fn encode_lossless_from_padded_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1129,6 +1234,7 @@ pub fn encode_lossless_from_padded_metal_buffers_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded Metal-backed tiles and return Metal-buffer timings.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1144,6 +1250,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded Metal-backed tiles for resident Metal-buffer batch output.
 pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1160,6 +1267,7 @@ pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded Metal-backed tiles into a Metal-buffer batch output.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3317,6 +3425,7 @@ fn encode_lossless_tile_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for one-tile Metal encode on non-macOS.
 pub fn encode_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3326,6 +3435,7 @@ pub fn encode_lossless_from_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer encode on non-macOS.
 pub fn encode_lossless_from_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3336,6 +3446,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for one-tile submit on non-macOS.
 pub fn submit_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3346,6 +3457,7 @@ pub fn submit_lossless_from_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for one-tile encode reports on non-macOS.
 pub fn encode_lossless_from_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3356,6 +3468,7 @@ pub fn encode_lossless_from_metal_buffer_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer encode reports on non-macOS.
 pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3366,6 +3479,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded one-tile encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3375,6 +3489,7 @@ pub fn encode_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3385,6 +3500,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded one-tile submit on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3395,6 +3511,7 @@ pub fn submit_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded one-tile reports on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3405,6 +3522,7 @@ pub fn encode_lossless_from_padded_metal_buffer_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer reports on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3415,6 +3533,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile encode on non-macOS.
 pub fn encode_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3424,6 +3543,7 @@ pub fn encode_lossless_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile Metal-buffer encode on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3434,6 +3554,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile submit on non-macOS.
 pub fn submit_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3444,6 +3565,7 @@ pub fn submit_lossless_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for configured multi-tile submit on non-macOS.
 pub fn submit_lossless_from_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3455,6 +3577,7 @@ pub fn submit_lossless_from_metal_buffers_with_config(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile encode reports on non-macOS.
 pub fn encode_lossless_from_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3465,6 +3588,7 @@ pub fn encode_lossless_from_metal_buffers_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer encode reports on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3475,6 +3599,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer batch encode on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3486,6 +3611,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer batch submit on non-macOS.
 pub fn submit_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3497,6 +3623,7 @@ pub fn submit_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded multi-tile encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3506,6 +3633,7 @@ pub fn encode_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3516,6 +3644,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded multi-tile submit on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3526,6 +3655,7 @@ pub fn submit_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for configured padded submit on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3537,6 +3667,7 @@ pub fn submit_lossless_from_padded_metal_buffers_with_config(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded multi-tile reports on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3547,6 +3678,7 @@ pub fn encode_lossless_from_padded_metal_buffers_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer batch encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3558,6 +3690,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer batch submit on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3569,6 +3702,7 @@ pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer reports on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3579,6 +3713,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Validate that a lossless codestream round-trips through Metal decode.
 pub fn validate_lossless_roundtrip_on_metal(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3588,6 +3723,7 @@ pub fn validate_lossless_roundtrip_on_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal validation on non-macOS.
 pub fn validate_lossless_roundtrip_on_metal(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3597,6 +3733,7 @@ pub fn validate_lossless_roundtrip_on_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Validate a lossless codestream round-trip using an existing Metal session.
 pub fn validate_lossless_roundtrip_on_metal_with_session(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3655,6 +3792,7 @@ pub fn validate_lossless_roundtrip_on_metal_with_session(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for session validation on non-macOS.
 pub fn validate_lossless_roundtrip_on_metal_with_session(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3795,6 +3933,23 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
+
+    #[cfg(target_os = "macos")]
+    fn j2k_lossless_options(
+        backend: EncodeBackendPreference,
+        block_coding_mode: J2kBlockCodingMode,
+        progression: J2kProgressionOrder,
+        validation: J2kEncodeValidation,
+    ) -> J2kLosslessEncodeOptions {
+        J2kLosslessEncodeOptions::new(
+            backend,
+            block_coding_mode,
+            progression,
+            None,
+            signinum_j2k::ReversibleTransform::Rct53,
+            validation,
+        )
+    }
 
     #[cfg(target_os = "macos")]
     fn private_buffer_with_bytes(session: &crate::MetalBackendSession, bytes: &[u8]) -> Buffer {
@@ -4095,10 +4250,12 @@ mod tests {
         let samples = J2kLosslessSamples::new(&pixels, 16, 16, 3, 8, false).unwrap();
         let encoded = signinum_j2k::encode_j2k_lossless(
             samples,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::CpuOnly,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &j2k_lossless_options(
+                EncodeBackendPreference::CpuOnly,
+                J2kBlockCodingMode::Classic,
+                J2kProgressionOrder::Lrcp,
+                J2kEncodeValidation::CpuRoundTrip,
+            ),
         )
         .expect("lossless encode");
 
@@ -4134,10 +4291,12 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &j2k_lossless_options(
+                EncodeBackendPreference::RequireDevice,
+                J2kBlockCodingMode::Classic,
+                J2kProgressionOrder::Lrcp,
+                J2kEncodeValidation::CpuRoundTrip,
+            ),
             &session,
         )
         .expect("Metal buffer lossless encode");
@@ -4185,10 +4344,12 @@ mod tests {
                     output_height: 8,
                     format: PixelFormat::Rgb8,
                 },
-                &J2kLosslessEncodeOptions {
-                    backend: EncodeBackendPreference::RequireDevice,
-                    ..J2kLosslessEncodeOptions::default()
-                },
+                &j2k_lossless_options(
+                    EncodeBackendPreference::RequireDevice,
+                    J2kBlockCodingMode::Classic,
+                    J2kProgressionOrder::Lrcp,
+                    J2kEncodeValidation::CpuRoundTrip,
+                ),
                 &session,
             )
             .expect("submit Metal buffer lossless encode");
@@ -4236,10 +4397,12 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &j2k_lossless_options(
+                EncodeBackendPreference::RequireDevice,
+                J2kBlockCodingMode::Classic,
+                J2kProgressionOrder::Lrcp,
+                J2kEncodeValidation::CpuRoundTrip,
+            ),
             &session,
         )
         .expect("Metal padded buffer lossless encode");
@@ -4274,10 +4437,12 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &j2k_lossless_options(
+                EncodeBackendPreference::RequireDevice,
+                J2kBlockCodingMode::Classic,
+                J2kProgressionOrder::Lrcp,
+                J2kEncodeValidation::CpuRoundTrip,
+            ),
             &session,
         )
         .expect("Metal private padded buffer lossless encode");
@@ -4297,20 +4462,20 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
-        let routed = super::host_output_encode_options(J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::Auto,
-            validation: J2kEncodeValidation::CpuRoundTrip,
-            ..J2kLosslessEncodeOptions::default()
-        });
+        let routed = super::host_output_encode_options(
+            J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::Auto)
+                .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        );
 
         assert_eq!(routed.backend, EncodeBackendPreference::Auto);
         assert_eq!(routed.validation, J2kEncodeValidation::External);
 
-        let prefer_device = super::host_output_encode_options(J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            validation: J2kEncodeValidation::CpuRoundTrip,
-            ..J2kLosslessEncodeOptions::default()
-        });
+        let prefer_device = super::host_output_encode_options(
+            J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::PreferDevice)
+                .with_validation(J2kEncodeValidation::CpuRoundTrip),
+        );
         assert_eq!(prefer_device.backend, EncodeBackendPreference::PreferDevice);
         assert_eq!(prefer_device.validation, J2kEncodeValidation::External);
     }
@@ -4321,11 +4486,9 @@ mod tests {
         let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 17) & 0xff) as u8).collect();
         let samples =
             J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::Auto,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::Auto)
+            .with_validation(J2kEncodeValidation::External);
         let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
 
         let encoded = encode_j2k_lossless_with_accelerator(
@@ -4361,11 +4524,9 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::Auto,
-                validation: J2kEncodeValidation::External,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::Auto)
+                .with_validation(J2kEncodeValidation::External),
             &session,
         )
         .expect("Auto host-output encode should avoid resident prep and still succeed");
@@ -4399,10 +4560,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal private padded buffer lossless encode to Metal buffer");
@@ -4448,10 +4607,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal private edge buffer lossless encode to Metal buffer");
@@ -4503,10 +4660,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("submit Metal private padded RGB8 encode");
@@ -4543,10 +4698,8 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal private padded DWT buffer lossless encode");
@@ -4588,10 +4741,8 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal private padded RGB8 DWT buffer lossless encode");
@@ -4630,11 +4781,9 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                progression: J2kProgressionOrder::Rpcl,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_progression(J2kProgressionOrder::Rpcl),
             &session,
         )
         .expect("Metal private padded RPCL buffer lossless encode");
@@ -4672,10 +4821,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Gray16,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal private padded Gray16 buffer lossless encode");
@@ -4710,11 +4857,9 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
             &session,
         )
         .expect("Metal private padded HTJ2K buffer lossless encode");
@@ -4761,12 +4906,10 @@ mod tests {
                 output_height: 512,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                progression: J2kProgressionOrder::Rpcl,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+                .with_progression(J2kProgressionOrder::Rpcl),
             &session,
         )
         .expect("Metal private padded HTJ2K RPCL 512 buffer lossless encode");
@@ -4829,12 +4972,10 @@ mod tests {
                 format: PixelFormat::Rgb8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External);
 
         compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
@@ -4903,10 +5044,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal padded buffer batch lossless encode");
@@ -4958,10 +5097,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal padded buffer batch lossless encode to Metal buffers");
@@ -5030,10 +5167,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice),
             &session,
         )
         .expect("Metal edge buffer batch lossless encode to Metal buffers");
@@ -5107,11 +5242,9 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
             &session,
         )
         .expect("Metal HTJ2K batch lossless encode to Metal buffers");
@@ -5187,12 +5320,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External);
 
         compute::with_isolated_runtime_for_device_for_test(&device, || {
             compute::reset_private_buffer_pool_misses_for_test();
@@ -5257,12 +5388,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External);
 
         let _route = compute::force_ht_simd_prototype_route_for_test(true);
         compute::reset_ht_simd_prototype_dispatches_for_test();
@@ -5412,12 +5541,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             })
             .collect::<Vec<_>>();
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External);
 
         let serial = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
             &tiles,
@@ -5515,12 +5642,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_validation(J2kEncodeValidation::External);
 
         super::set_test_resident_encode_failure_index(Some(1));
         let Err(err) = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
@@ -5583,10 +5708,8 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::PreferDevice,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::PreferDevice),
             BackendKind::Metal,
             &mut accelerator,
         )
@@ -5639,11 +5762,9 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
             BackendKind::Metal,
             &mut accelerator,
         )
@@ -5664,11 +5785,9 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
-            },
+            &J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput),
             BackendKind::Metal,
             &mut accelerator,
         )

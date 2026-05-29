@@ -8,6 +8,7 @@
 //! when the CUDA runtime and library are available. Explicit CUDA requests
 //! return CUDA-backed surfaces or a clear unavailable error.
 
+#![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
 mod codec;

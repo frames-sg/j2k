@@ -31,6 +31,7 @@ pub struct Dwt53Row<T> {
 
 /// Error returned when a logical row length cannot be covered by DCT blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Dct53RowLengthError {
     sample_len: usize,
     capacity: usize,

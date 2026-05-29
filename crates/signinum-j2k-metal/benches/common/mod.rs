@@ -112,9 +112,7 @@ fn j2k_compare_worker_count(job_count: usize) -> usize {
         .unwrap_or(1);
     tile_batch_worker_count(
         job_count,
-        TileBatchOptions {
-            workers: j2k_compare_workers(),
-        },
+        TileBatchOptions::new(j2k_compare_workers()),
         available,
     )
 }
@@ -743,7 +741,7 @@ pub(crate) fn signinum_decode_tile_batch(bytes: &[u8], mode: DecodeMode, count: 
                 stride,
             })
             .collect::<Vec<_>>();
-        decode_tiles_into(&mut jobs, fmt, TileBatchOptions { workers }).expect("tile decode")
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::new(workers)).expect("tile decode")
     };
     black_box((outputs, outcomes));
 }
@@ -797,7 +795,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::new(workers))
             .expect("tile region scaled decode")
     };
     black_box((outputs, outcomes));
@@ -880,7 +878,7 @@ pub(crate) fn signinum_decode_tile_batch_distinct(inputs: &[Vec<u8>], mode: Deco
                 stride,
             })
             .collect::<Vec<_>>();
-        decode_tiles_into(&mut jobs, fmt, TileBatchOptions { workers }).expect("tile decode")
+        decode_tiles_into(&mut jobs, fmt, TileBatchOptions::new(workers)).expect("tile decode")
     };
     black_box((outputs, outcomes));
 }
@@ -978,7 +976,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled_distinct(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::new(workers))
             .expect("tile region scaled decode")
     };
     black_box((outputs, outcomes));
@@ -1016,7 +1014,7 @@ pub(crate) fn signinum_decode_external_tile_batch_region_scaled(
                 scale,
             })
             .collect::<Vec<_>>();
-        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions { workers })
+        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::new(workers))
             .expect("external tile region scaled decode")
     };
     black_box((outputs, outcomes));

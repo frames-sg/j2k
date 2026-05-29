@@ -17,14 +17,17 @@ use crate::{
 /// Error wrapper used by row-streaming decode when either the codec or the
 /// caller-provided row sink can fail.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeRowsError<D, E>
 where
     D: core::error::Error + 'static,
     E: core::error::Error + 'static,
 {
     #[error(transparent)]
+    /// Codec decode failed before or during row delivery.
     Decode(D),
     #[error(transparent)]
+    /// Caller-provided row sink rejected a decoded row.
     Sink(E),
 }
 

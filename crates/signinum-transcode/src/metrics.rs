@@ -48,6 +48,7 @@ impl ErrorMetrics {
 
 /// Error returned when metric inputs do not describe the same coefficient set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MetricsLengthError {
     actual_len: usize,
     expected_len: usize,

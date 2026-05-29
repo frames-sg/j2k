@@ -518,10 +518,8 @@ fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new(spec.name, "scalar"), &jpeg, |b, jpeg| {
             let mut transcoder = JpegToHtj2kTranscoder::default();
-            let options = JpegToHtj2kOptions {
-                coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-                ..JpegToHtj2kOptions::lossless_53()
-            };
+            let mut options = JpegToHtj2kOptions::lossless_53();
+            options.coefficient_path = JpegToHtj2kCoefficientPath::FloatDirectLinear53;
             b.iter(|| {
                 black_box(
                     transcoder
@@ -538,10 +536,8 @@ fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
                 |b, jpeg| {
                     let mut transcoder = JpegToHtj2kTranscoder::default();
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
-                    let options = JpegToHtj2kOptions {
-                        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-                        ..JpegToHtj2kOptions::lossless_53()
-                    };
+                    let mut options = JpegToHtj2kOptions::lossless_53();
+                    options.coefficient_path = JpegToHtj2kCoefficientPath::FloatDirectLinear53;
                     b.iter(|| {
                         black_box(
                             transcoder
@@ -758,12 +754,12 @@ fn encoded_fixture(spec: WsiFixtureSpec) -> Vec<u8> {
             width: spec.dim as u32,
             height: spec.dim as u32,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling: spec.subsampling,
-            restart_interval: Some((spec.dim / 8) as u16),
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(
+            90,
+            spec.subsampling,
+            Some((spec.dim / 8) as u16),
+            JpegBackend::Cpu,
+        ),
     )
     .expect("encode benchmark JPEG fixture")
     .data

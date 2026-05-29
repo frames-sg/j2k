@@ -79,10 +79,8 @@ fn facade_auto_j2k_lossless_encode_uses_device_when_available() {
                 J2kLosslessSamples::new(&pixels, 4, 4, 3, 8, false).expect("valid samples");
             let required = encode_j2k_lossless(
                 samples,
-                &J2kLosslessEncodeOptions {
-                    backend: signinum::EncodeBackendPreference::RequireDevice,
-                    ..J2kLosslessEncodeOptions::default()
-                },
+                &J2kLosslessEncodeOptions::default()
+                    .with_backend(signinum::EncodeBackendPreference::RequireDevice),
             );
             assert!(
                 required.is_err(),

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental coefficient-domain transcode primitives.
+//! Coefficient-domain transcode primitives.
 //!
-//! The first target is a constrained synthetic proof for mapping one 8-sample
-//! DCT block into one level of the reversible 5/3 wavelet transform.
+//! The stable API covers the CPU-first JPEG-to-HTJ2K transcode pipeline, its
+//! validation reports, and the accelerator hooks used by device adapters.
+
+#![deny(missing_docs)]
 
 pub mod accelerator;
 pub mod corpus_validation;

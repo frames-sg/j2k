@@ -23,6 +23,7 @@ use crate::surface::{CudaSurfaceStats, Storage};
 use crate::{profile, CudaSession, Error, Surface};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Marker type implementing tile-batch CUDA surface decode traits.
 pub struct Codec;
 
 impl ImageCodec for Codec {

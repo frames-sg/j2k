@@ -85,6 +85,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, cuda]
     env:
       SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
+      SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
       SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
     steps:
       - uses: actions/checkout@v4
@@ -99,19 +100,24 @@ jobs:
           else
             echo "nvidia-smi not found; CUDA runtime validation requires a working CUDA driver"
           fi
-          if command -v nvcc >/dev/null 2>&1; then
-            nvcc --version
-          else
-            echo "nvcc not found; CUDA encode kernel build will use fallback PTX"
-          fi
+          command -v nvcc
+          nvcc --version
           if command -v ldconfig >/dev/null 2>&1; then
             ldconfig -p | grep -i nvjpeg || true
           fi
       - run: cargo test -p signinum-cuda-runtime --all-targets
+      - run: cargo test -p signinum-cuda-runtime --all-targets --features cuda-profiling
       - run: cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime
       - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-runtime
+      - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-profiling
+      - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
+      - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
+      - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-runtime -- -D warnings
+      - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-profiling -- -D warnings
       - run: cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
       - run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime --no-run
+      - run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
+      - run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
@@ -123,3 +129,11 @@ jobs:
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
         run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot
+      - if: ${{ inputs.run-timed-benchmarks }}
+        env:
+          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot
+      - if: ${{ inputs.run-timed-benchmarks }}
+        env:
+          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot

@@ -15,6 +15,7 @@ pub(crate) enum Storage {
     Cuda(CudaDeviceBuffer),
 }
 
+/// CUDA surface execution counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaSurfaceStats {
     pub(crate) kernel_dispatches: usize,
@@ -24,23 +25,28 @@ pub struct CudaSurfaceStats {
 }
 
 impl CudaSurfaceStats {
+    /// Total CUDA kernel dispatches associated with the surface.
     pub fn kernel_dispatches(self) -> usize {
         self.kernel_dispatches
     }
 
+    /// Copy-kernel dispatch count.
     pub fn copy_kernel_dispatches(self) -> usize {
         self.copy_kernel_dispatches
     }
 
+    /// Hardware decode dispatch count.
     pub fn decode_kernel_dispatches(self) -> usize {
         self.decode_kernel_dispatches
     }
 
+    /// True when nvJPEG hardware decode was used.
     pub fn used_hardware_decode(self) -> bool {
         self.hardware_decode
     }
 }
 
+/// Borrowed view of a CUDA-resident surface.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaSurface<'a> {
     #[cfg(feature = "cuda-runtime")]
@@ -51,6 +57,7 @@ pub struct CudaSurface<'a> {
 }
 
 impl CudaSurface<'_> {
+    /// Raw CUDA device pointer value.
     pub fn device_ptr(&self) -> u64 {
         #[cfg(feature = "cuda-runtime")]
         {
@@ -62,11 +69,13 @@ impl CudaSurface<'_> {
         }
     }
 
+    /// Execution counters for this surface.
     pub fn stats(&self) -> CudaSurfaceStats {
         self.stats
     }
 }
 
+/// Host- or CUDA-backed decoded surface.
 #[derive(Debug)]
 pub struct Surface {
     pub(crate) backend: BackendKind,
@@ -78,10 +87,12 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Row pitch in bytes.
     pub fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
     }
 
+    /// Borrow host bytes when the surface is host-backed.
     pub fn as_host_bytes(&self) -> Option<&[u8]> {
         match &self.storage {
             Storage::Host(bytes) => Some(bytes),
@@ -90,6 +101,7 @@ impl Surface {
         }
     }
 
+    /// Download or copy the surface into caller-owned strided output.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
         match &self.storage {
             Storage::Host(bytes) => {
@@ -106,6 +118,7 @@ impl Surface {
         }
     }
 
+    /// Borrow CUDA metadata when the surface is CUDA-backed.
     pub fn cuda_surface(&self) -> Option<CudaSurface<'_>> {
         #[cfg(feature = "cuda-runtime")]
         match &self.storage {

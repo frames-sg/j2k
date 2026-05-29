@@ -73,6 +73,17 @@ fn minimal_baseline_jpeg_with_restart_interval(interval: u16) -> Vec<u8> {
     bytes
 }
 
+fn baseline_header_without_scan() -> Vec<u8> {
+    let mut bytes = minimal_baseline_jpeg();
+    let sos_pos = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xda])
+        .expect("SOS marker");
+    bytes.truncate(sos_pos);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 fn restart_coded_grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
@@ -154,6 +165,27 @@ fn inspect_returns_info_for_valid_baseline_jpeg() {
         }
     );
     assert_eq!(info.scan_count, 1, "single SOS → scan_count must be 1");
+}
+
+#[test]
+fn inspect_and_view_reject_sof_without_scan() {
+    let bytes = baseline_header_without_scan();
+
+    let inspect_err = Decoder::inspect(&bytes).expect_err("inspect must reject missing SOS");
+    let view_err = JpegView::parse(&bytes).expect_err("view must reject missing SOS");
+
+    assert!(matches!(
+        inspect_err,
+        JpegError::MissingMarker {
+            marker: signinum_jpeg::MarkerKind::Sos
+        }
+    ));
+    assert!(matches!(
+        view_err,
+        JpegError::MissingMarker {
+            marker: signinum_jpeg::MarkerKind::Sos
+        }
+    ));
 }
 
 #[test]
