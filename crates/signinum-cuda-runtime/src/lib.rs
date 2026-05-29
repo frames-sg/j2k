@@ -683,8 +683,9 @@ pub struct CudaHtj2kEncodeCodeBlockJob {
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
     /// Requested HT coding passes. `1` emits cleanup-only output; `2` emits a
-    /// zero `SigProp` segment for exactly representable blocks; `3` emits zero
-    /// `SigProp` bits plus `MagRef` bits for exactly representable blocks.
+    /// zero `SigProp` segment for exactly representable blocks; `3` emits
+    /// SigProp bits for newly significant magnitude-3 samples plus `MagRef`
+    /// bits for cleanup-significant samples.
     pub target_coding_passes: u8,
 }
 
@@ -702,8 +703,9 @@ pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
     /// Requested HT coding passes. `1` emits cleanup-only output; `2` emits a
-    /// zero `SigProp` segment for exactly representable blocks; `3` emits zero
-    /// `SigProp` bits plus `MagRef` bits for exactly representable blocks.
+    /// zero `SigProp` segment for exactly representable blocks; `3` emits
+    /// SigProp bits for newly significant magnitude-3 samples plus `MagRef`
+    /// bits for cleanup-significant samples.
     pub target_coding_passes: u8,
 }
 
