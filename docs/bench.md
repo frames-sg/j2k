@@ -612,6 +612,10 @@ For CUDA-only signoff, also set `run-metal-validation=false`; otherwise the
 workflow will wait for a Metal runner even after the CUDA job has completed.
 The CUDA job prints `nvcc --version` and fails during diagnostics when `nvcc` is
 not available on the self-hosted runner.
+Timed GPU workflow benches run with Criterion smoke settings
+(`--sample-size 10 --warm-up-time 1 --measurement-time 2`) so the signoff gate
+checks real device execution without turning validation into a full benchmark
+publication run.
 
 ## Device-output adapters
 
