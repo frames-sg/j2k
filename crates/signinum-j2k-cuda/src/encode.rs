@@ -1983,7 +1983,7 @@ fn cuda_encode_ht_code_block(
         width: job.width,
         height: job.height,
         total_bitplanes: job.total_bitplanes,
-        target_coding_passes: 1,
+        target_coding_passes: job.target_coding_passes,
     }];
     context
         .encode_htj2k_codeblocks_with_resources(job.coefficients, &cuda_jobs, resources)
@@ -2017,7 +2017,7 @@ fn cuda_encode_ht_code_blocks(
             width: job.width,
             height: job.height,
             total_bitplanes: job.total_bitplanes,
-            target_coding_passes: 1,
+            target_coding_passes: job.target_coding_passes,
         });
     }
 
@@ -4219,6 +4219,37 @@ mod tests {
             accelerator.dispatch_report().ht_code_block,
             accelerator.ht_code_block_dispatches()
         );
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn cuda_htj2k_codeblock_preserves_requested_refinement_passes_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let coefficients = [0, 3, -5, 3, 5, 0, -3, 3, 7, -3, 0, 3, 0, 0, 5, -5];
+        let mut accelerator = CudaEncodeStageAccelerator::default();
+
+        let encoded = accelerator
+            .encode_ht_code_block(signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+                coefficients: &coefficients,
+                width: 4,
+                height: 4,
+                total_bitplanes: 4,
+                target_coding_passes: 2,
+            })
+            .expect("CUDA HTJ2K code-block encode hook")
+            .expect("CUDA HTJ2K code-block encode output");
+
+        assert_eq!(encoded.num_coding_passes, 2);
+        assert_eq!(encoded.num_zero_bitplanes, 2);
+        assert_eq!(encoded.refinement_length, 1);
+        assert_eq!(
+            encoded.cleanup_length + encoded.refinement_length,
+            u32::try_from(encoded.data.len()).expect("test payload length fits u32")
+        );
+        assert_eq!(accelerator.ht_code_block_dispatches(), 1);
     }
 
     #[cfg(feature = "cuda-runtime")]

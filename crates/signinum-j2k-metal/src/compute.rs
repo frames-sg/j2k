@@ -12686,6 +12686,8 @@ fn read_ht_encoded_code_block(
     };
     Ok(EncodedHtJ2kCodeBlock {
         data,
+        cleanup_length: status.data_len,
+        refinement_length: 0,
         num_coding_passes: u8::try_from(status.num_coding_passes).map_err(|_| {
             Error::MetalKernel {
                 message: "HTJ2K Metal encode pass count exceeds u8".to_string(),
@@ -12856,6 +12858,11 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
+    if jobs.iter().any(|job| job.target_coding_passes != 1) {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal cleanup encode supports one coding pass".to_string(),
+        });
+    }
 
     let output_capacity = J2K_HT_ENCODE_BASE_OUTPUT_SIZE;
     let output_capacity_u32 = u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
@@ -12968,6 +12975,11 @@ pub(crate) fn encode_ht_cleanup_code_block(
     job: J2kHtCodeBlockEncodeJob<'_>,
 ) -> Result<EncodedHtJ2kCodeBlock, Error> {
     with_runtime(|runtime| {
+        if job.target_coding_passes != 1 {
+            return Err(Error::MetalKernel {
+                message: "HTJ2K Metal cleanup encode supports one coding pass".to_string(),
+            });
+        }
         let expected_coefficients = usize::try_from(job.width)
             .ok()
             .and_then(|w| {
@@ -13059,6 +13071,8 @@ pub(crate) fn encode_ht_cleanup_code_block(
         };
         Ok(EncodedHtJ2kCodeBlock {
             data,
+            cleanup_length: status.data_len,
+            refinement_length: 0,
             num_coding_passes: u8::try_from(status.num_coding_passes).map_err(|_| {
                 Error::MetalKernel {
                     message: "HTJ2K Metal encode pass count exceeds u8".to_string(),

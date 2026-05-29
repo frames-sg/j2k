@@ -85,11 +85,9 @@ fn bench_encode_stages(c: &mut Criterion) {
     let mut encode = c.benchmark_group("j2k_metal_lossless_rgb8_encode");
     for &dim in ENCODE_BENCH_DIMS {
         let pixels = generate_rgb8_pixels(dim, dim);
-        let cpu_options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::CpuOnly,
-            validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let cpu_options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_validation(J2kEncodeValidation::External);
         encode.bench_with_input(BenchmarkId::new("cpu", dim), &pixels, |b, pixels| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(pixels, dim, dim, 3, 8, false)
@@ -97,10 +95,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                 encode_j2k_lossless(samples, &cpu_options).expect("CPU J2K lossless encode")
             });
         });
-        let cpu_ht_options = J2kLosslessEncodeOptions {
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            ..cpu_options
-        };
+        let cpu_ht_options = cpu_options.with_block_coding_mode(J2kBlockCodingMode::HighThroughput);
         encode.bench_with_input(BenchmarkId::new("cpu_htj2k", dim), &pixels, |b, pixels| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(pixels, dim, dim, 3, 8, false)
@@ -113,20 +108,14 @@ fn bench_encode_stages(c: &mut Criterion) {
         if metal_encode_available() {
             let session = MetalBackendSession::system_default().expect("Metal session");
             let buffer = private_buffer_with_bytes(&session, &pixels);
-            let metal_options = J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::RequireDevice,
-                validation: J2kEncodeValidation::External,
-                ..J2kLosslessEncodeOptions::default()
-            };
-            let auto_options = J2kLosslessEncodeOptions {
-                backend: EncodeBackendPreference::Auto,
-                validation: J2kEncodeValidation::External,
-                ..J2kLosslessEncodeOptions::default()
-            };
-            let auto_ht_options = J2kLosslessEncodeOptions {
-                block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..auto_options
-            };
+            let metal_options = J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_validation(J2kEncodeValidation::External);
+            let auto_options = J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::Auto)
+                .with_validation(J2kEncodeValidation::External);
+            let auto_ht_options =
+                auto_options.with_block_coding_mode(J2kBlockCodingMode::HighThroughput);
             encode.bench_with_input(BenchmarkId::new("resident_metal", dim), &pixels, |b, _| {
                 b.iter(|| {
                     let encoded = encode_lossless_from_padded_metal_buffer_with_report(
@@ -237,6 +226,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                         width: 64,
                         height: 64,
                         total_bitplanes: 10,
+                        target_coding_passes: 1,
                     })
                     .collect::<Vec<_>>();
                 b.iter(|| {
@@ -259,13 +249,11 @@ fn bench_encode_stages(c: &mut Criterion) {
         let session = MetalBackendSession::system_default().expect("Metal session");
         let pixels = generate_rgb8_pixels(512, 512);
         let buffer = private_buffer_with_bytes(&session, &pixels);
-        let options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::RequireDevice,
-            validation: J2kEncodeValidation::External,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            progression: J2kProgressionOrder::Rpcl,
-            ..J2kLosslessEncodeOptions::default()
-        };
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_validation(J2kEncodeValidation::External)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_progression(J2kProgressionOrder::Rpcl);
         let config = MetalLosslessEncodeConfig {
             gpu_encode_inflight_tiles: None,
             gpu_encode_memory_budget_bytes: None,

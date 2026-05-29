@@ -201,8 +201,12 @@ fn metal_dispatch_option<T>(
 impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn dispatch_report(&self) -> J2kEncodeDispatchReport {
         J2kEncodeDispatchReport {
+            deinterleave: 0,
             forward_rct: self.forward_rct_dispatches,
+            forward_ict: 0,
             forward_dwt53: self.forward_dwt53_dispatches,
+            forward_dwt97: 0,
+            quantize_subband: 0,
             tier1_code_block: self.tier1_code_block_dispatches,
             ht_code_block: self.ht_code_block_dispatches,
             packetization: self.packetization_dispatches,
@@ -3796,6 +3800,14 @@ mod tests {
     #[cfg(target_os = "macos")]
     use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
 
+    macro_rules! lossless_options {
+        ($($field:ident: $value:expr),+ $(,)?) => {{
+            let mut options = J2kLosslessEncodeOptions::default();
+            $(options.$field = $value;)+
+            options
+        }};
+    }
+
     #[cfg(target_os = "macos")]
     fn private_buffer_with_bytes(session: &crate::MetalBackendSession, bytes: &[u8]) -> Buffer {
         let upload = session.device().new_buffer_with_data(
@@ -4095,9 +4107,8 @@ mod tests {
         let samples = J2kLosslessSamples::new(&pixels, 16, 16, 3, 8, false).unwrap();
         let encoded = signinum_j2k::encode_j2k_lossless(
             samples,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::CpuOnly,
-                ..J2kLosslessEncodeOptions::default()
             },
         )
         .expect("lossless encode");
@@ -4134,9 +4145,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4185,9 +4195,8 @@ mod tests {
                     output_height: 8,
                     format: PixelFormat::Rgb8,
                 },
-                &J2kLosslessEncodeOptions {
+                &lossless_options! {
                     backend: EncodeBackendPreference::RequireDevice,
-                    ..J2kLosslessEncodeOptions::default()
                 },
                 &session,
             )
@@ -4236,9 +4245,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4274,9 +4282,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4297,19 +4304,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn auto_host_output_encode_options_preserve_auto_for_hybrid_path() {
-        let routed = super::host_output_encode_options(J2kLosslessEncodeOptions {
+        let routed = super::host_output_encode_options(lossless_options! {
             backend: EncodeBackendPreference::Auto,
             validation: J2kEncodeValidation::CpuRoundTrip,
-            ..J2kLosslessEncodeOptions::default()
         });
 
         assert_eq!(routed.backend, EncodeBackendPreference::Auto);
         assert_eq!(routed.validation, J2kEncodeValidation::External);
 
-        let prefer_device = super::host_output_encode_options(J2kLosslessEncodeOptions {
+        let prefer_device = super::host_output_encode_options(lossless_options! {
             backend: EncodeBackendPreference::PreferDevice,
             validation: J2kEncodeValidation::CpuRoundTrip,
-            ..J2kLosslessEncodeOptions::default()
         });
         assert_eq!(prefer_device.backend, EncodeBackendPreference::PreferDevice);
         assert_eq!(prefer_device.validation, J2kEncodeValidation::External);
@@ -4321,10 +4326,9 @@ mod tests {
         let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 17) & 0xff) as u8).collect();
         let samples =
             J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::Auto,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
         let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
 
@@ -4361,10 +4365,9 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::Auto,
                 validation: J2kEncodeValidation::External,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4399,9 +4402,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4448,9 +4450,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4503,9 +4504,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4543,9 +4543,8 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4588,9 +4587,8 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4630,10 +4628,9 @@ mod tests {
                 output_height: 128,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 progression: J2kProgressionOrder::Rpcl,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4672,9 +4669,8 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Gray16,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4710,10 +4706,9 @@ mod tests {
                 output_height: 8,
                 format: PixelFormat::Gray8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4761,11 +4756,10 @@ mod tests {
                 output_height: 512,
                 format: PixelFormat::Rgb8,
             },
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 block_coding_mode: J2kBlockCodingMode::HighThroughput,
                 progression: J2kProgressionOrder::Rpcl,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4829,11 +4823,10 @@ mod tests {
                 format: PixelFormat::Rgb8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
             block_coding_mode: J2kBlockCodingMode::HighThroughput,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
 
         compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
@@ -4903,9 +4896,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -4958,9 +4950,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -5030,9 +5021,8 @@ mod tests {
 
         let encoded = super::encode_lossless_from_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -5107,10 +5097,9 @@ mod tests {
 
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
             },
             &session,
         )
@@ -5187,11 +5176,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
             block_coding_mode: J2kBlockCodingMode::HighThroughput,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
 
         compute::with_isolated_runtime_for_device_for_test(&device, || {
@@ -5257,11 +5245,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
             block_coding_mode: J2kBlockCodingMode::HighThroughput,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
 
         let _route = compute::force_ht_simd_prototype_route_for_test(true);
@@ -5412,11 +5399,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             })
             .collect::<Vec<_>>();
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
             block_coding_mode: J2kBlockCodingMode::HighThroughput,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
 
         let serial = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
@@ -5515,11 +5501,10 @@ mod tests {
                 format: PixelFormat::Gray8,
             },
         ];
-        let options = J2kLosslessEncodeOptions {
+        let options = lossless_options! {
             backend: EncodeBackendPreference::RequireDevice,
             block_coding_mode: J2kBlockCodingMode::HighThroughput,
             validation: J2kEncodeValidation::External,
-            ..J2kLosslessEncodeOptions::default()
         };
 
         super::set_test_resident_encode_failure_index(Some(1));
@@ -5583,9 +5568,8 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::PreferDevice,
-                ..J2kLosslessEncodeOptions::default()
             },
             BackendKind::Metal,
             &mut accelerator,
@@ -5639,10 +5623,9 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
             },
             BackendKind::Metal,
             &mut accelerator,
@@ -5664,10 +5647,9 @@ mod tests {
 
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
-            &J2kLosslessEncodeOptions {
+            &lossless_options! {
                 backend: EncodeBackendPreference::RequireDevice,
                 block_coding_mode: J2kBlockCodingMode::HighThroughput,
-                ..J2kLosslessEncodeOptions::default()
             },
             BackendKind::Metal,
             &mut accelerator,
@@ -5860,6 +5842,7 @@ mod tests {
             width: 8,
             height: 8,
             total_bitplanes: 8,
+            target_coding_passes: 1,
         };
 
         let gpu = compute::encode_ht_cleanup_code_block(job).expect("Metal HT encode");
@@ -5894,6 +5877,7 @@ mod tests {
             width: 64,
             height: 64,
             total_bitplanes: 8,
+            target_coding_passes: 1,
         };
 
         let scalar = {
@@ -5954,24 +5938,28 @@ mod tests {
                 width: 8,
                 height: 8,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
             signinum_j2k_native::J2kHtCodeBlockEncodeJob {
                 coefficients: &non_square,
                 width: 16,
                 height: 32,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
             signinum_j2k_native::J2kHtCodeBlockEncodeJob {
                 coefficients: &bitplane_edge,
                 width: 16,
                 height: 16,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
             signinum_j2k_native::J2kHtCodeBlockEncodeJob {
                 coefficients: &wide,
                 width: 64,
                 height: 64,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
         ];
 
@@ -6018,12 +6006,14 @@ mod tests {
                 width: 8,
                 height: 8,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
             signinum_j2k_native::J2kHtCodeBlockEncodeJob {
                 coefficients: &patterned,
                 width: 64,
                 height: 64,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             },
         ];
 
@@ -6060,6 +6050,8 @@ mod tests {
         let code_blocks = vec![
             signinum_j2k_native::J2kPacketizationCodeBlock {
                 data: &block0,
+                ht_cleanup_length: 0,
+                ht_refinement_length: 0,
                 num_coding_passes: 1,
                 num_zero_bitplanes: 2,
                 previously_included: false,
@@ -6068,6 +6060,8 @@ mod tests {
             },
             signinum_j2k_native::J2kPacketizationCodeBlock {
                 data: &block1,
+                ht_cleanup_length: u32::try_from(block1.len()).expect("test payload fits u32"),
+                ht_refinement_length: 0,
                 num_coding_passes: 1,
                 num_zero_bitplanes: 1,
                 previously_included: false,
@@ -6119,6 +6113,8 @@ mod tests {
             subbands: vec![signinum_j2k_native::J2kPacketizationSubband {
                 code_blocks: vec![signinum_j2k_native::J2kPacketizationCodeBlock {
                     data: &block0,
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 0,
                     previously_included: false,
@@ -6134,6 +6130,8 @@ mod tests {
             subbands: vec![signinum_j2k_native::J2kPacketizationSubband {
                 code_blocks: vec![signinum_j2k_native::J2kPacketizationCodeBlock {
                     data: &block1,
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 0,
                     previously_included: false,
@@ -6190,6 +6188,8 @@ mod tests {
             subbands: vec![signinum_j2k_native::J2kPacketizationSubband {
                 code_blocks: vec![signinum_j2k_native::J2kPacketizationCodeBlock {
                     data: &block0,
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 0,
                     previously_included: false,
@@ -6205,6 +6205,8 @@ mod tests {
             subbands: vec![signinum_j2k_native::J2kPacketizationSubband {
                 code_blocks: vec![signinum_j2k_native::J2kPacketizationCodeBlock {
                     data: &block1,
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 0,
                     previously_included: false,
