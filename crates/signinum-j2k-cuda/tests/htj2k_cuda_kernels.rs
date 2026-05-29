@@ -338,12 +338,14 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
                     width: 8,
                     height: 8,
                     total_bitplanes: 8,
+                    target_coding_passes: 1,
                 },
                 CudaHtj2kEncodeCodeBlockJob {
                     coefficient_offset: block1_offset,
                     width: 4,
                     height: 4,
                     total_bitplanes: 6,
+                    target_coding_passes: 1,
                 },
             ],
             CudaHtj2kEncodeTables {

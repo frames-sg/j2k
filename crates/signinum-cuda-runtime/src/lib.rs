@@ -668,9 +668,10 @@ struct CudaHtj2kEncodeParams {
     coefficient_stride: u32,
     total_bitplanes: u32,
     output_capacity: u32,
+    target_coding_passes: u32,
 }
 
-/// One HTJ2K cleanup-pass code-block encode job consumed by the CUDA batch encoder.
+/// One HTJ2K code-block encode job consumed by the CUDA batch encoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockJob {
     /// Offset, in i32 coefficients, into the contiguous coefficient buffer.
@@ -681,9 +682,13 @@ pub struct CudaHtj2kEncodeCodeBlockJob {
     pub height: u32,
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
+    /// Requested HT coding passes. `1` emits the cleanup pass; `>1` is reserved
+    /// for refinement-capable kernels and is rejected instead of silently
+    /// falling back to cleanup-only output.
+    pub target_coding_passes: u8,
 }
 
-/// One HTJ2K cleanup-pass code-block region consumed from a strided resident coefficient buffer.
+/// One HTJ2K code-block region consumed from a strided resident coefficient buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     /// Offset, in i32 coefficients, to the top-left coefficient of this code block.
@@ -696,6 +701,10 @@ pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     pub height: u32,
     /// Total coded bitplanes for this code block's sub-band.
     pub total_bitplanes: u8,
+    /// Requested HT coding passes. `1` emits the cleanup pass; `>1` is reserved
+    /// for refinement-capable kernels and is rejected instead of silently
+    /// falling back to cleanup-only output.
+    pub target_coding_passes: u8,
 }
 
 #[repr(C)]
@@ -708,6 +717,7 @@ struct CudaHtj2kEncodeKernelJob {
     total_bitplanes: u32,
     output_offset: u32,
     output_capacity: u32,
+    target_coding_passes: u32,
 }
 
 /// Status written by the CUDA HTJ2K code-block cleanup-pass encoder.
@@ -1625,6 +1635,7 @@ impl CudaContext {
                     len: HTJ2K_ENCODE_OUTPUT_CAPACITY,
                 }
             })?,
+            target_coding_passes: 1,
         };
         let params_buffer = self.upload(htj2k_encode_params_as_bytes(&params))?;
         let initial_status = CudaHtj2kEncodeStatus {
@@ -4950,6 +4961,7 @@ fn htj2k_encode_kernel_jobs(
                     len: HTJ2K_ENCODE_OUTPUT_CAPACITY,
                 }
             })?,
+            target_coding_passes: u32::from(job.target_coding_passes),
         });
         output_offset = output_end;
     }
@@ -5007,6 +5019,7 @@ fn htj2k_encode_region_kernel_jobs(
                     len: HTJ2K_ENCODE_OUTPUT_CAPACITY,
                 }
             })?,
+            target_coding_passes: u32::from(job.target_coding_passes),
         });
         output_offset = output_end;
     }
@@ -5766,9 +5779,9 @@ fn checked_image_words(width: u32, height: u32, channels: usize) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        CudaContext, CudaError, CudaHtj2kDecodeTables, CudaHtj2kEncodeCodeBlockRegionJob,
-        CudaHtj2kEncodeTables, CudaJ2kIdwtJob, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob,
-        CudaJ2kRect, CudaKernelName,
+        CudaContext, CudaError, CudaHtj2kDecodeTables, CudaHtj2kEncodeCodeBlockJob,
+        CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeTables, CudaJ2kIdwtJob,
+        CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaKernelName,
     };
 
     fn cuda_runtime_required() -> bool {
@@ -5898,6 +5911,7 @@ mod tests {
             width: 2,
             height: 2,
             total_bitplanes: 1,
+            target_coding_passes: 1,
         }];
 
         let encoded = context
@@ -5911,6 +5925,50 @@ mod tests {
 
         assert_eq!(encoded.execution().kernel_dispatches(), 1);
         assert_eq!(encoded.code_blocks().len(), 1);
+    }
+
+    #[test]
+    fn htj2k_encode_rejects_requested_refinement_passes_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let coefficients = [0, 2, -3, 1];
+        let jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 2,
+            total_bitplanes: 3,
+            target_coding_passes: 3,
+        }];
+
+        let error = context
+            .encode_htj2k_codeblocks(
+                &coefficients,
+                &jobs,
+                CudaHtj2kEncodeTables {
+                    vlc_table0: &[0u16; 2048],
+                    vlc_table1: &[0u16; 2048],
+                    uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
+                },
+            )
+            .expect_err(
+                "multi-pass HTJ2K encode is explicit unsupported until refinement kernels exist",
+            );
+
+        match error {
+            CudaError::KernelStatus {
+                kernel,
+                code,
+                detail,
+            } => {
+                assert_eq!(kernel, "signinum_htj2k_encode_codeblocks");
+                assert_eq!(code, super::HTJ2K_STATUS_UNSUPPORTED);
+                assert_eq!(detail, 5);
+            }
+            other => panic!("unexpected CUDA encode error: {other:?}"),
+        }
     }
 
     #[test]

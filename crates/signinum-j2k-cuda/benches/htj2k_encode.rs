@@ -423,6 +423,7 @@ fn contiguous_jobs(width: u32, height: u32, batch: usize) -> Vec<CudaHtj2kEncode
             width,
             height,
             total_bitplanes: 8,
+            target_coding_passes: 1,
         });
     }
     jobs
@@ -452,6 +453,7 @@ fn strided_region_jobs(
                 width: block_dim,
                 height: block_dim,
                 total_bitplanes: 8,
+                target_coding_passes: 1,
             });
         }
     }
