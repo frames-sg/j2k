@@ -771,7 +771,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
         return;
     }
-    if (params.target_coding_passes > 1u) {
+    if (params.target_coding_passes > 2u) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
         return;
     }
@@ -902,8 +902,10 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     const uint ms_len = ms.pos;
     const uint mel_len = mel.pos;
     const uint vlc_len = vlc.pos;
-    const uint total_len = ms_len + mel_len + vlc_len;
-    if (total_len < 2u || total_len > params.output_capacity) {
+    const uint cleanup_len = ms_len + mel_len + vlc_len;
+    const uint refinement_len = params.target_coding_passes > 1u ? 1u : 0u;
+    const uint total_len = cleanup_len + refinement_len;
+    if (cleanup_len < 2u || total_len > params.output_capacity) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u, 0u, 0u);
         return;
     }
@@ -917,11 +919,14 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
             out[ms_len + mel_len + idx] = out[J2K_HT_VLC_OFFSET + vlc_start + idx];
         }
 
-        const uint last = total_len - 1u;
-        const uint prev = total_len - 2u;
         const uint locator_bytes = mel_len + vlc_len;
-        out[last] = uchar(locator_bytes >> 4u);
-        out[prev] = uchar((out[prev] & uchar(0xF0u)) | uchar(locator_bytes & 0x0Fu));
+        const uint cleanup_last = cleanup_len - 1u;
+        const uint cleanup_prev = cleanup_len - 2u;
+        out[cleanup_last] = uchar(locator_bytes >> 4u);
+        out[cleanup_prev] = uchar((out[cleanup_prev] & uchar(0xF0u)) | uchar(locator_bytes & 0x0Fu));
+        if (refinement_len != 0u) {
+            out[cleanup_len] = uchar(0u);
+        }
     }
 
     j2k_set_ht_encode_status_with_segments(
@@ -929,10 +934,10 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         J2K_ENCODE_STATUS_OK,
         0u,
         total_len,
-        1u,
+        params.target_coding_passes,
         missing_msbs,
-        total_len,
-        0u,
+        cleanup_len,
+        refinement_len,
         0u
     );
 }
