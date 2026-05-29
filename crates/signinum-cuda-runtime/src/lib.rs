@@ -6270,11 +6270,11 @@ mod tests {
             let g = expected[1][idx];
             let b = expected[2][idx];
             let expected_y = 0.299 * r + 0.587 * g + 0.114 * b;
-            let expected_cb = -0.16875 * r - 0.33126 * g + 0.5 * b;
-            let expected_cr = 0.5 * r - 0.41869 * g - 0.08131 * b;
+            let blue_chroma = -0.16875 * r - 0.33126 * g + 0.5 * b;
+            let red_chroma = 0.5 * r - 0.41869 * g - 0.08131 * b;
             assert!((actual[0][idx] - expected_y).abs() < 0.000_1);
-            assert!((actual[1][idx] - expected_cb).abs() < 0.000_1);
-            assert!((actual[2][idx] - expected_cr).abs() < 0.000_1);
+            assert!((actual[1][idx] - blue_chroma).abs() < 0.000_1);
+            assert!((actual[2][idx] - red_chroma).abs() < 0.000_1);
         }
     }
 
