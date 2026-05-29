@@ -47,7 +47,7 @@ backend APIs are still hardening.
 | `signinum-jpeg-metal` | adapter | Apple Metal device-output adapter for `signinum-jpeg`. Hosts compute kernels for color conversion, interleave/pack, and `MTLBuffer` production. |
 | `signinum-j2k-metal` | adapter | Apple Metal device-output adapter for `signinum-j2k`. Same shape as the JPEG adapter. |
 | `signinum-jpeg-cuda` | adapter | CUDA-facing API adapter for JPEG. `Auto`/`Cpu` stay host-backed; explicit full-frame RGB8 CUDA requests use nvJPEG when `cuda-runtime`, a CUDA driver, and `libnvjpeg` are available, with CPU decode plus CUDA upload fallback for unsupported shapes. |
-| `signinum-j2k-cuda` | adapter | CUDA-facing API adapter for J2K. Explicit CUDA requests are reserved for strict CUDA-resident HTJ2K codestream decode; CPU-decode-then-upload is exposed only through explicitly named CPU-staged APIs. |
+| `signinum-j2k-cuda` | adapter | CUDA-facing API adapter for J2K. Explicit CUDA requests are reserved for strict CUDA-resident HTJ2K codestream decode, and `encode_j2k_lossless_with_cuda` provides strict CUDA HTJ2K lossless encode that returns an error rather than a CPU codestream when a required stage is not device-dispatched; CPU-decode-then-upload is exposed only through explicitly named CPU-staged APIs. |
 | `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Owns the coupling between JPEG DCT extraction and native HTJ2K coefficient encode so codec crates stay independent. APIs in this crate are not stable until validation coverage and codestream integration land. |
 | `signinum-transcode-metal` | experimental adapter | Metal accelerator for selected `signinum-transcode` stages. Keeps JPEG parsing, entropy decode, dequantization, scheduling, and HTJ2K encode on CPU while optionally replacing direct DCT-grid to wavelet projection. |
 | `signinum` | facade | Stable public import surface over `core`, the CPU codecs, tile decompression, and optional Metal/CUDA adapters behind facade features. |
@@ -100,8 +100,9 @@ matures, mirroring harness-engineering structural tests):
    produce CUDA device memory when `cuda-runtime` and a CUDA driver are
    available. JPEG full-frame RGB8 requests may use nvJPEG with JPEG-only
    fallback routes. J2K CUDA requests are strict resident HTJ2K codestream
-   decode; CPU decode plus CUDA upload is exposed only through explicitly named
-   CPU-staged J2K APIs.
+   decode, with strict CUDA HTJ2K lossless encode that errors instead of
+   emitting a CPU codestream for unsupported stages; CPU decode plus CUDA
+   upload is exposed only through explicitly named CPU-staged J2K APIs.
 6. `signinum-jpeg` keeps its NEON and x86 intrinsics scoped per-backend
    in `crates/signinum-jpeg/src/backend/`. `signinum-j2k-native` keeps
    its SIMD behind `fearless_simd` so the engine can stay
@@ -302,8 +303,8 @@ There are three target backends. Selection is explicit in the public API.
   `cuda-runtime` feature and a CUDA driver are available, and otherwise reports
   CUDA as unavailable. JPEG full-frame RGB8 can decode through nvJPEG when
   `libnvjpeg` is available; J2K CUDA requests use strict resident HTJ2K
-  codestream decode, while CPU-staged J2K upload is exposed through explicit
-  adapter APIs.
+  codestream decode and strict CUDA HTJ2K lossless encode, while CPU-staged
+  J2K upload is exposed through explicit adapter APIs.
 
 `BackendRequest::Auto` stays conservative: small or low-yield decodes are
 served from CPU; larger batches with supported shapes can be routed to a

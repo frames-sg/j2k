@@ -599,9 +599,11 @@ self-hosted runners for GPU signoff:
 
 - Apple Silicon Metal runners validate Metal adapter tests and can run timed
   `signinum-jpeg-metal` and `signinum-j2k-metal` Criterion benches.
-- x86_64 CUDA runners validate CUDA device-memory output with `cuda-runtime`
-  and can run the `signinum-jpeg-cuda` nvJPEG Criterion bench. NVIDIA
-  performance claims require recorded timed-benchmark output from those hosts.
+- x86_64 CUDA runners validate CUDA device-memory output with `cuda-runtime`,
+  including strict CUDA-resident HTJ2K decode and encode tests and profiling,
+  and can run the `signinum-jpeg-cuda` nvJPEG and `signinum-j2k-cuda` HTJ2K
+  decode/encode Criterion benches. NVIDIA performance claims require recorded
+  timed-benchmark output from those hosts.
 
 Set the manual workflow input `run-timed-benchmarks=true` when collecting
 release benchmark evidence. Leave it false for faster device/API validation.
