@@ -30,11 +30,6 @@ static constexpr uint J2K_HT_MEL_OFFSET = J2K_HT_MS_SIZE;
 static constexpr uint J2K_HT_VLC_OFFSET = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
 static constexpr uint J2K_HT_SIGPROP_SCRATCH = 513u;
 
-static constexpr uint J2K_HT_SIGPROP_SPREAD_MASKS[16] = {
-    0x33u, 0x76u, 0xECu, 0xC8u, 0x330u, 0x760u, 0xEC0u, 0xC80u,
-    0x3300u, 0x7600u, 0xEC00u, 0xC800u, 0x33000u, 0x76000u, 0xEC000u, 0xC8000u,
-};
-
 struct J2kHtEncodeParams {
     uint width;
     uint height;
@@ -146,6 +141,28 @@ __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total
     const uint magnitude = (coefficient < 0 ? uint(-coefficient) : uint(coefficient))
         << (31u - total_bitplanes);
     return sign | magnitude;
+}
+
+__device__ inline uint j2k_ht_sigprop_spread_mask(uint bit) {
+    switch (bit) {
+        case 0u: return 0x33u;
+        case 1u: return 0x76u;
+        case 2u: return 0xECu;
+        case 3u: return 0xC8u;
+        case 4u: return 0x330u;
+        case 5u: return 0x760u;
+        case 6u: return 0xEC0u;
+        case 7u: return 0xC80u;
+        case 8u: return 0x3300u;
+        case 9u: return 0x7600u;
+        case 10u: return 0xEC00u;
+        case 11u: return 0xC800u;
+        case 12u: return 0x33000u;
+        case 13u: return 0x76000u;
+        case 14u: return 0xEC000u;
+        case 15u: return 0xC8000u;
+        default: return 0u;
+    }
 }
 
 __device__ inline void j2k_ht_sigprop_writer_init(J2kHtSigPropWriter &writer, uint capacity) {
@@ -354,7 +371,7 @@ __device__ inline uint j2k_ht_write_sigprop_segment(
                     }
                     if (desired != 0u) {
                         new_sig |= sample_mask;
-                        candidates |= J2K_HT_SIGPROP_SPREAD_MASKS[bit] & inv_sig & ~processed;
+                        candidates |= j2k_ht_sigprop_spread_mask(bit) & inv_sig & ~processed;
                     }
                 }
 
