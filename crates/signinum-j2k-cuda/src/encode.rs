@@ -3540,7 +3540,7 @@ mod tests {
             .with_validation(J2kEncodeValidation::CpuRoundTrip);
 
         let encoded = encode_j2k_lossless_with_cuda(samples, &options)
-            .expect("strict CUDA cleanup-only encode should dispatch all required stages");
+            .expect("strict CUDA single-pass HT encode should dispatch all required stages");
         let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()

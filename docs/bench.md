@@ -346,8 +346,10 @@ Remaining gaps from this run:
 - `wsi_tile_batch_region_scaled_rgb_q4/signinum-cpu-staged-metal_htj2k_rgb_512_batch_16`
   reported +10.48%. It is a diagnostic explicit CPU-staged WSI row; public CPU
   tile-batch and Metal-resident WSI rows improved and remain hard-gated.
-- True multi-pass HTJ2K encode semantics remain out of scope. The current
-  encode benches and tests cover cleanup-only behavior only.
+- CUDA HTJ2K encode now has dedicated strict-device benches. Generated lossless
+  codestreams use one HT cleanup pass per code block, while packetization tests
+  and kernels cover HT refinement pass headers for externally supplied
+  multi-pass block contributions.
 
 Run the facade dispatch benches:
 
@@ -600,8 +602,9 @@ self-hosted runners for GPU signoff:
 - Apple Silicon Metal runners validate Metal adapter tests and can run timed
   `signinum-jpeg-metal` and `signinum-j2k-metal` Criterion benches.
 - x86_64 CUDA runners validate CUDA device-memory output with `cuda-runtime`
-  and can run the `signinum-jpeg-cuda` nvJPEG Criterion bench. NVIDIA
-  performance claims require recorded timed-benchmark output from those hosts.
+  and can run the `signinum-jpeg-cuda` nvJPEG and `signinum-j2k-cuda` HTJ2K
+  Criterion benches. NVIDIA performance claims require recorded
+  timed-benchmark output from those hosts.
 
 Set the manual workflow input `run-timed-benchmarks=true` when collecting
 release benchmark evidence. Leave it false for faster device/API validation.

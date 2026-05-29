@@ -669,7 +669,7 @@ struct CudaHtj2kEncodeParams {
     output_capacity: u32,
 }
 
-/// One HTJ2K cleanup-only code-block encode job consumed by the CUDA batch encoder.
+/// One HTJ2K cleanup-pass code-block encode job consumed by the CUDA batch encoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockJob {
     /// Offset, in i32 coefficients, into the contiguous coefficient buffer.
@@ -682,7 +682,7 @@ pub struct CudaHtj2kEncodeCodeBlockJob {
     pub total_bitplanes: u8,
 }
 
-/// One HTJ2K cleanup-only code-block region consumed from a strided resident coefficient buffer.
+/// One HTJ2K cleanup-pass code-block region consumed from a strided resident coefficient buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     /// Offset, in i32 coefficients, to the top-left coefficient of this code block.
@@ -709,7 +709,7 @@ struct CudaHtj2kEncodeKernelJob {
     output_capacity: u32,
 }
 
-/// Status written by the CUDA HTJ2K cleanup encoder.
+/// Status written by the CUDA HTJ2K code-block cleanup-pass encoder.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStatus {
@@ -738,14 +738,14 @@ impl CudaHtj2kEncodeStatus {
     }
 }
 
-/// CUDA event timings for HTJ2K cleanup encode stages.
+/// CUDA event timings for HTJ2K cleanup-pass encode stages.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStageTimings {
-    /// HT cleanup encode dispatch time, in microseconds.
+    /// HT cleanup-pass encode dispatch time, in microseconds.
     pub ht_encode_us: u128,
 }
 
-/// Host-visible HTJ2K cleanup encode result produced by a CUDA kernel.
+/// Host-visible HTJ2K cleanup-pass encode result produced by a CUDA kernel.
 #[derive(Debug)]
 pub struct CudaHtj2kEncodedCodeBlock {
     data: Vec<u8>,
@@ -755,7 +755,7 @@ pub struct CudaHtj2kEncodedCodeBlock {
 }
 
 impl CudaHtj2kEncodedCodeBlock {
-    /// Encoded cleanup payload bytes.
+    /// Encoded cleanup-pass payload bytes.
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -786,7 +786,7 @@ impl CudaHtj2kEncodedCodeBlock {
     }
 }
 
-/// Host-visible HTJ2K cleanup encode batch produced by one CUDA kernel dispatch.
+/// Host-visible HTJ2K cleanup-pass encode batch produced by one CUDA kernel dispatch.
 #[derive(Debug)]
 pub struct CudaHtj2kEncodedCodeBlocks {
     code_blocks: Vec<CudaHtj2kEncodedCodeBlock>,
@@ -1554,7 +1554,7 @@ impl CudaContext {
         })
     }
 
-    /// Encode one HTJ2K cleanup-only code block with CUDA.
+    /// Encode one HTJ2K cleanup-pass code block with CUDA.
     pub fn encode_htj2k_codeblock(
         &self,
         coefficients: &[i32],
@@ -1573,7 +1573,7 @@ impl CudaContext {
         )
     }
 
-    /// Encode one HTJ2K cleanup-only code block with pre-uploaded lookup tables.
+    /// Encode one HTJ2K cleanup-pass code block with pre-uploaded lookup tables.
     pub fn encode_htj2k_codeblock_with_resources(
         &self,
         coefficients: &[i32],
@@ -1655,7 +1655,7 @@ impl CudaContext {
         })
     }
 
-    /// Encode multiple HTJ2K cleanup-only code blocks with one CUDA dispatch.
+    /// Encode multiple HTJ2K cleanup-pass code blocks with one CUDA dispatch.
     pub fn encode_htj2k_codeblocks(
         &self,
         coefficients: &[i32],
@@ -1666,7 +1666,7 @@ impl CudaContext {
         self.encode_htj2k_codeblocks_with_resources(coefficients, jobs, &resources)
     }
 
-    /// Encode multiple HTJ2K cleanup-only code blocks with pre-uploaded lookup tables.
+    /// Encode multiple HTJ2K cleanup-pass code blocks with pre-uploaded lookup tables.
     pub fn encode_htj2k_codeblocks_with_resources(
         &self,
         coefficients: &[i32],
@@ -1691,7 +1691,7 @@ impl CudaContext {
         )
     }
 
-    /// Encode multiple HTJ2K cleanup-only code blocks from resident quantized coefficients.
+    /// Encode multiple HTJ2K cleanup-pass code blocks from resident quantized coefficients.
     pub fn encode_htj2k_codeblocks_resident(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -1708,7 +1708,7 @@ impl CudaContext {
         )
     }
 
-    /// Encode multiple cleanup-only code blocks from resident coefficients with lookup table reuse.
+    /// Encode multiple cleanup-pass code blocks from resident coefficients with lookup table reuse.
     pub fn encode_htj2k_codeblocks_resident_with_resources(
         &self,
         coefficients: &CudaDeviceBuffer,
@@ -1744,7 +1744,7 @@ impl CudaContext {
         )
     }
 
-    /// Encode cleanup-only code blocks from strided resident coefficient regions.
+    /// Encode cleanup-pass code blocks from strided resident coefficient regions.
     pub fn encode_htj2k_codeblock_regions_resident(
         &self,
         coefficients: &CudaDeviceBuffer,
