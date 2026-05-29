@@ -4111,7 +4111,9 @@ mod tests {
         let options = EncodeOptions {
             reversible: true,
             use_ht_block_coding: true,
-            num_decomposition_levels: 1,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
             ..EncodeOptions::default()
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
