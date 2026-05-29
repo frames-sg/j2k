@@ -23,6 +23,10 @@ use crate::J2kPacketizationProgressionOrder;
 pub(crate) struct CodeBlockPacketData {
     /// Encoded bitstream data.
     pub(crate) data: Vec<u8>,
+    /// HTJ2K cleanup segment length in bytes.
+    pub(crate) ht_cleanup_length: u32,
+    /// HTJ2K refinement segment length in bytes.
+    pub(crate) ht_refinement_length: u32,
     /// Number of coding passes in this contribution.
     pub(crate) num_coding_passes: u8,
     /// Number of zero bitplanes (only relevant for first inclusion).
@@ -160,9 +164,9 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
                     encode_length(data_len, &mut cb.l_block, num_bits, &mut header_writer);
                 }
                 BlockCodingMode::HighThroughput => {
-                    let num_bits = bits_for_ht_cleanup_length(cb.l_block, cb.num_coding_passes);
                     encode_num_ht_coding_passes(cb.num_coding_passes, &mut header_writer);
-                    encode_length(data_len, &mut cb.l_block, num_bits, &mut header_writer);
+                    encode_ht_segment_lengths(cb, &mut header_writer)
+                        .expect("encoder prepared valid HTJ2K segment lengths");
                 }
             }
 
@@ -400,17 +404,12 @@ fn form_packet_with_state(
                     );
                 }
                 BlockCodingMode::HighThroughput => {
-                    let num_bits = bits_for_ht_cleanup_length(
-                        state_block.l_block,
-                        packet_block.num_coding_passes,
-                    );
                     encode_num_ht_coding_passes(packet_block.num_coding_passes, &mut header_writer);
-                    encode_length(
-                        data_len,
+                    encode_ht_segment_lengths_with_lblock(
+                        packet_block,
                         &mut state_block.l_block,
-                        num_bits,
                         &mut header_writer,
-                    );
+                    )?;
                 }
             }
             body.extend_from_slice(&packet_block.data);
@@ -477,6 +476,95 @@ fn encode_length(length: u32, l_block: &mut u32, mut num_bits: u32, writer: &mut
     }
     writer.write_bit(0);
     writer.write_bits(length, num_bits as u8);
+}
+
+fn encode_ht_segment_lengths(
+    code_block: &mut CodeBlockPacketData,
+    writer: &mut BitWriter,
+) -> Result<(), &'static str> {
+    let mut l_block = code_block.l_block;
+    encode_ht_segment_lengths_with_lblock(code_block, &mut l_block, writer)?;
+    code_block.l_block = l_block;
+    Ok(())
+}
+
+fn encode_ht_segment_lengths_with_lblock(
+    code_block: &CodeBlockPacketData,
+    l_block: &mut u32,
+    writer: &mut BitWriter,
+) -> Result<(), &'static str> {
+    let (cleanup_length, refinement_length) = ht_segment_lengths(code_block)?;
+    let mut cleanup_bits = bits_for_ht_cleanup_length(*l_block, code_block.num_coding_passes);
+    let refinement_extra_bits = u32::from(code_block.num_coding_passes > 2);
+
+    while !value_fits_in_bits(cleanup_length, cleanup_bits)
+        || (code_block.num_coding_passes > 1
+            && !value_fits_in_bits(refinement_length, *l_block + refinement_extra_bits))
+    {
+        writer.write_bit(1);
+        *l_block += 1;
+        cleanup_bits += 1;
+    }
+    writer.write_bit(0);
+    writer.write_bits(cleanup_length, cleanup_bits as u8);
+
+    if code_block.num_coding_passes > 1 {
+        writer.write_bits(refinement_length, (*l_block + refinement_extra_bits) as u8);
+    }
+
+    Ok(())
+}
+
+fn ht_segment_lengths(code_block: &CodeBlockPacketData) -> Result<(u32, u32), &'static str> {
+    if code_block.num_coding_passes == 0 {
+        if code_block.data.is_empty()
+            && code_block.ht_cleanup_length == 0
+            && code_block.ht_refinement_length == 0
+        {
+            return Ok((0, 0));
+        }
+        return Err("empty HTJ2K packet contribution must not carry segment bytes");
+    }
+
+    let data_len = u32::try_from(code_block.data.len())
+        .map_err(|_| "HTJ2K packet contribution exceeds u32 length")?;
+    if code_block.num_coding_passes == 1 {
+        if code_block.ht_refinement_length != 0 {
+            return Err("single-pass HTJ2K packet contribution must not carry refinement bytes");
+        }
+        let cleanup_length = if code_block.ht_cleanup_length == 0 {
+            data_len
+        } else {
+            code_block.ht_cleanup_length
+        };
+        if cleanup_length != data_len {
+            return Err("single-pass HTJ2K packet contribution length mismatch");
+        }
+        return Ok((cleanup_length, 0));
+    }
+
+    if code_block.ht_cleanup_length == 0 || code_block.ht_refinement_length == 0 {
+        return Err("multi-pass HTJ2K packet contribution requires cleanup/refinement lengths");
+    }
+    if code_block
+        .ht_cleanup_length
+        .checked_add(code_block.ht_refinement_length)
+        .ok_or("multi-pass HTJ2K packet contribution length overflow")?
+        != data_len
+    {
+        return Err("multi-pass HTJ2K packet contribution length mismatch");
+    }
+    if !(2..65535).contains(&code_block.ht_cleanup_length) {
+        return Err("HTJ2K cleanup segment length is out of range");
+    }
+    if code_block.ht_refinement_length >= 2047 {
+        return Err("HTJ2K refinement segment length is out of range");
+    }
+
+    Ok((
+        code_block.ht_cleanup_length,
+        code_block.ht_refinement_length,
+    ))
 }
 
 fn value_fits_in_bits(value: u32, bits: u32) -> bool {
@@ -556,6 +644,21 @@ pub(crate) fn form_tile_bitstream_for_progression(
     }
 }
 
+pub(crate) fn validate_ht_segment_lengths(
+    resolution_packets: &[ResolutionPacket],
+) -> Result<(), &'static str> {
+    for resolution in resolution_packets {
+        for subband in &resolution.subbands {
+            for code_block in &subband.code_blocks {
+                if code_block.block_coding_mode == BlockCodingMode::HighThroughput {
+                    ht_segment_lengths(code_block)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +733,8 @@ mod tests {
             subbands: vec![SubbandPrecinct {
                 code_blocks: vec![CodeBlockPacketData {
                     data: Vec::new(),
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 0,
                     num_zero_bitplanes: 31,
                     previously_included: false,
@@ -651,6 +756,8 @@ mod tests {
             subbands: vec![SubbandPrecinct {
                 code_blocks: vec![CodeBlockPacketData {
                     data: vec![0x12, 0x34, 0x56],
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 20,
                     previously_included: false,
@@ -688,6 +795,8 @@ mod tests {
                     .zip(lengths.iter().copied())
                     .map(|(num_zero_bitplanes, len)| CodeBlockPacketData {
                         data: vec![0; len],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1 + 3 * (8 - num_zero_bitplanes) - 2,
                         num_zero_bitplanes,
                         previously_included: false,
@@ -748,6 +857,8 @@ mod tests {
                 subbands: vec![SubbandPrecinct {
                     code_blocks: vec![CodeBlockPacketData {
                         data: vec![0x80; len],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 0,
                         previously_included: false,
@@ -820,6 +931,8 @@ mod tests {
                 SubbandPrecinct {
                     code_blocks: vec![CodeBlockPacketData {
                         data: vec![0x10, 0x20],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 20,
                         previously_included: false,
@@ -832,6 +945,8 @@ mod tests {
                 SubbandPrecinct {
                     code_blocks: vec![CodeBlockPacketData {
                         data: vec![0x30, 0x40],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 22,
                         previously_included: false,
@@ -844,6 +959,8 @@ mod tests {
                 SubbandPrecinct {
                     code_blocks: vec![CodeBlockPacketData {
                         data: vec![0x50],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 24,
                         previously_included: false,
@@ -898,6 +1015,8 @@ mod tests {
             subbands: vec![SubbandPrecinct {
                 code_blocks: vec![CodeBlockPacketData {
                     data: vec![0x12, 0x34, 0x56],
+                    ht_cleanup_length: 3,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 20,
                     previously_included: false,
@@ -920,6 +1039,8 @@ mod tests {
             subbands: vec![SubbandPrecinct {
                 code_blocks: vec![CodeBlockPacketData {
                     data: payload.clone(),
+                    ht_cleanup_length: 3,
+                    ht_refinement_length: 2,
                     num_coding_passes: 3,
                     num_zero_bitplanes: 2,
                     previously_included: false,
@@ -960,11 +1081,31 @@ mod tests {
             l_block += 1;
             length_bits += 1;
         }
+        assert_eq!(reader.read_bits_with_stuffing(length_bits as u8), Some(3));
+        let refinement_bits = l_block + 1;
         assert_eq!(
-            reader.read_bits_with_stuffing(length_bits as u8),
-            Some(payload.len() as u32)
+            reader.read_bits_with_stuffing(refinement_bits as u8),
+            Some(2)
         );
         assert_eq!(&packet[header_len..], payload.as_slice());
+    }
+
+    #[test]
+    fn ht_packet_segment_lengths_reject_overflowing_refinement_sum() {
+        let code_block = CodeBlockPacketData {
+            data: vec![0x12],
+            ht_cleanup_length: u32::MAX,
+            ht_refinement_length: 1,
+            num_coding_passes: 3,
+            num_zero_bitplanes: 2,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: BlockCodingMode::HighThroughput,
+        };
+
+        let err = ht_segment_lengths(&code_block).expect_err("overflowing HT lengths rejected");
+
+        assert_eq!(err, "multi-pass HTJ2K packet contribution length overflow");
     }
 
     fn single_block_packet(data: Vec<u8>, previously_included: bool) -> ResolutionPacket {
@@ -972,6 +1113,8 @@ mod tests {
             subbands: vec![SubbandPrecinct {
                 code_blocks: vec![CodeBlockPacketData {
                     data,
+                    ht_cleanup_length: 0,
+                    ht_refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 0,
                     previously_included,

@@ -420,6 +420,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
     let payload = [0x12, 0x34, 0x56, 0x78];
     let code_block = J2kPacketizationCodeBlock {
         data: &payload,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
         num_coding_passes: 1,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -476,6 +478,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
             &[CudaHtj2kPacketizationBlock {
                 data_offset: 0,
                 data_len: payload_len,
+                cleanup_length: 0,
+                refinement_length: 0,
                 num_coding_passes: 1,
                 num_zero_bitplanes: 2,
                 l_block: 3,
@@ -509,6 +513,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         .enumerate()
         .map(|(idx, payload)| J2kPacketizationCodeBlock {
             data: payload.as_slice(),
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: u8::try_from(idx + 1).expect("test zbp fits in u8"),
             previously_included: false,
@@ -549,6 +555,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         CudaHtj2kPacketizationBlock {
             data_offset: 0,
             data_len: 3,
+            cleanup_length: 0,
+            refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 1,
             l_block: 3,
@@ -558,6 +566,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         CudaHtj2kPacketizationBlock {
             data_offset: 3,
             data_len: 2,
+            cleanup_length: 0,
+            refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 2,
             l_block: 3,
@@ -567,6 +577,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         CudaHtj2kPacketizationBlock {
             data_offset: 5,
             data_len: 4,
+            cleanup_length: 0,
+            refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 3,
             l_block: 3,
@@ -576,6 +588,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         CudaHtj2kPacketizationBlock {
             data_offset: 9,
             data_len: 1,
+            cleanup_length: 0,
+            refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 4,
             l_block: 3,
@@ -621,6 +635,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
     let payload = [0x12, 0x34, 0x56, 0x78, 0x9a];
     let code_block = J2kPacketizationCodeBlock {
         data: &payload,
+        ht_cleanup_length: 3,
+        ht_refinement_length: 2,
         num_coding_passes: 3,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -676,6 +692,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
             &[CudaHtj2kPacketizationBlock {
                 data_offset: 0,
                 data_len: u32::try_from(payload.len()).expect("test payload length fits in u32"),
+                cleanup_length: 3,
+                refinement_length: 2,
                 num_coding_passes: 3,
                 num_zero_bitplanes: 2,
                 l_block: 3,
@@ -702,6 +720,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
     let second_payload = [0x22u8; 5];
     let first_block = J2kPacketizationCodeBlock {
         data: &first_payload,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
         num_coding_passes: 1,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -710,6 +730,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
     };
     let second_block = J2kPacketizationCodeBlock {
         data: &second_payload,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
         num_coding_passes: 1,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -804,6 +826,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
                     data_offset: 0,
                     data_len: u32::try_from(first_payload.len())
                         .expect("test payload length fits in u32"),
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -815,6 +839,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
                         .expect("test payload length fits in u32"),
                     data_len: u32::try_from(second_payload.len())
                         .expect("test payload length fits in u32"),
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 2,
                     l_block: 5,
@@ -841,6 +867,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
     let payload = [0x44u8; 5];
     let first_block = J2kPacketizationCodeBlock {
         data: &[],
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
         num_coding_passes: 0,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -849,6 +877,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
     };
     let second_block = J2kPacketizationCodeBlock {
         data: &payload,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
         num_coding_passes: 1,
         num_zero_bitplanes: 2,
         previously_included: false,
@@ -941,6 +971,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                 CudaHtj2kPacketizationBlock {
                     data_offset: 0,
                     data_len: 0,
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 0,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -951,6 +983,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                     data_offset: 0,
                     data_len: u32::try_from(payload.len())
                         .expect("test payload length fits in u32"),
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -983,6 +1017,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                 code_blocks: vec![
                     J2kPacketizationCodeBlock {
                         data: &first_payload,
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -991,6 +1027,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                     },
                     J2kPacketizationCodeBlock {
                         data: &[],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 0,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -1007,6 +1045,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                 code_blocks: vec![
                     J2kPacketizationCodeBlock {
                         data: &[],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 0,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -1015,6 +1055,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                     },
                     J2kPacketizationCodeBlock {
                         data: &second_payload,
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -1099,6 +1141,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                     data_offset: 0,
                     data_len: u32::try_from(first_payload.len())
                         .expect("test payload length fits in u32"),
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -1108,6 +1152,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                 CudaHtj2kPacketizationBlock {
                     data_offset: 0,
                     data_len: 0,
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 0,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -1117,6 +1163,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                 CudaHtj2kPacketizationBlock {
                     data_offset: 0,
                     data_len: 0,
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 0,
                     num_zero_bitplanes: 2,
                     l_block: 3,
@@ -1128,6 +1176,8 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
                         .expect("test payload length fits in u32"),
                     data_len: u32::try_from(second_payload.len())
                         .expect("test payload length fits in u32"),
+                    cleanup_length: 0,
+                    refinement_length: 0,
                     num_coding_passes: 1,
                     num_zero_bitplanes: 2,
                     l_block: 3,

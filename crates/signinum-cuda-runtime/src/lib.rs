@@ -658,6 +658,7 @@ pub struct CudaHtj2kEncodeResources {
 
 const HTJ2K_STATUS_OK: u32 = 0;
 const HTJ2K_STATUS_UNSUPPORTED: u32 = 2;
+const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_htj2k_encode_ptx_built);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -886,6 +887,10 @@ pub struct CudaHtj2kPacketizationBlock {
     pub data_offset: u32,
     /// Encoded code-block payload length in bytes.
     pub data_len: u32,
+    /// HTJ2K cleanup segment length in bytes.
+    pub cleanup_length: u32,
+    /// HTJ2K refinement segment length in bytes.
+    pub refinement_length: u32,
     /// Number of coding passes in this contribution.
     pub num_coding_passes: u32,
     /// Number of zero most-significant bitplanes before first inclusion.
@@ -1933,6 +1938,13 @@ impl CudaContext {
         tag_nodes: &[CudaHtj2kPacketizationTagNodeState],
     ) -> Result<CudaHtj2kPacketizedTile, CudaError> {
         self.inner.set_current()?;
+        if !HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA
+            && blocks.iter().any(|block| block.num_coding_passes > 1)
+        {
+            return Err(CudaError::InvalidArgument {
+                message: "multi-pass HTJ2K packetization requires CUDA PTX rebuilt from htj2k_encode_kernels.cu".to_string(),
+            });
+        }
         let kernel_packets =
             htj2k_packetization_kernel_packets(packets, subbands, blocks, payload.len())?;
         validate_htj2k_packetization_tag_state(subbands, subband_tag_states, tag_nodes)?;

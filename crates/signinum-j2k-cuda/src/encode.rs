@@ -360,6 +360,8 @@ struct CudaHtj2kPacketizationPlanSubband {
 struct CudaHtj2kPacketizationPlanBlock {
     data_offset: u32,
     data_len: u32,
+    cleanup_length: u32,
+    refinement_length: u32,
     num_coding_passes: u32,
     num_zero_bitplanes: u32,
     l_block: u32,
@@ -833,8 +835,13 @@ fn update_cuda_htj2k_packetization_state_after_block(
             .blocks
             .get_mut(block_index)
             .ok_or("CUDA HTJ2K packetization state layout mismatch")?;
-        state_block.l_block =
-            updated_ht_l_block(l_block, code_block.num_coding_passes, code_block.data.len())?;
+        let (cleanup_length, refinement_length) = cuda_ht_segment_lengths(code_block)?;
+        state_block.l_block = updated_ht_l_block(
+            l_block,
+            code_block.num_coding_passes,
+            cleanup_length,
+            refinement_length,
+        )?;
         state_block.previously_included = true;
     }
     Ok(())
@@ -955,6 +962,7 @@ fn flatten_cuda_htj2k_packet_inner(
                 u32::try_from(code_block.data.len())
                     .map_err(|_| "CUDA HTJ2K packetization code-block payload exceeds u32")?
             };
+            let (cleanup_length, refinement_length) = cuda_ht_segment_lengths(code_block)?;
             if code_block.num_coding_passes > 0 {
                 sink.payload.extend_from_slice(code_block.data);
                 body_len = body_len
@@ -964,6 +972,8 @@ fn flatten_cuda_htj2k_packet_inner(
             sink.blocks.push(CudaHtj2kPacketizationPlanBlock {
                 data_offset,
                 data_len,
+                cleanup_length,
+                refinement_length,
                 num_coding_passes: u32::from(code_block.num_coding_passes),
                 num_zero_bitplanes: zero_bitplanes,
                 l_block,
@@ -1021,12 +1031,15 @@ fn flatten_cuda_htj2k_packet_inner(
 fn updated_ht_l_block(
     mut l_block: u32,
     num_coding_passes: u8,
-    length: usize,
+    cleanup_length: u32,
+    refinement_length: u32,
 ) -> core::result::Result<u32, &'static str> {
-    let length = u32::try_from(length)
-        .map_err(|_| "CUDA HTJ2K packetization code-block payload exceeds u32")?;
     let mut num_bits = ht_cleanup_length_bits(l_block, num_coding_passes);
-    while !value_fits_in_bits(length, num_bits) {
+    let refinement_extra_bits = u32::from(num_coding_passes > 2);
+    while !value_fits_in_bits(cleanup_length, num_bits)
+        || (num_coding_passes > 1
+            && !value_fits_in_bits(refinement_length, l_block + refinement_extra_bits))
+    {
         l_block = l_block
             .checked_add(1)
             .ok_or("CUDA HTJ2K packetization L-block overflow")?;
@@ -1035,6 +1048,60 @@ fn updated_ht_l_block(
             .ok_or("CUDA HTJ2K packetization L-block overflow")?;
     }
     Ok(l_block)
+}
+
+fn cuda_ht_segment_lengths(
+    code_block: &J2kPacketizationCodeBlock<'_>,
+) -> core::result::Result<(u32, u32), &'static str> {
+    if code_block.num_coding_passes == 0 {
+        if code_block.data.is_empty()
+            && code_block.ht_cleanup_length == 0
+            && code_block.ht_refinement_length == 0
+        {
+            return Ok((0, 0));
+        }
+        return Err("CUDA HTJ2K packetization empty contributions must not carry payload");
+    }
+
+    let data_len = u32::try_from(code_block.data.len())
+        .map_err(|_| "CUDA HTJ2K packetization code-block payload exceeds u32")?;
+    if code_block.num_coding_passes == 1 {
+        if code_block.ht_refinement_length != 0 {
+            return Err("CUDA HTJ2K single-pass packet contribution has refinement bytes");
+        }
+        let cleanup_length = if code_block.ht_cleanup_length == 0 {
+            data_len
+        } else {
+            code_block.ht_cleanup_length
+        };
+        if cleanup_length != data_len {
+            return Err("CUDA HTJ2K single-pass packet contribution length mismatch");
+        }
+        return Ok((cleanup_length, 0));
+    }
+
+    if code_block.ht_cleanup_length == 0 || code_block.ht_refinement_length == 0 {
+        return Err("CUDA HTJ2K multi-pass packet contribution requires segment lengths");
+    }
+    if code_block
+        .ht_cleanup_length
+        .checked_add(code_block.ht_refinement_length)
+        .ok_or("CUDA HTJ2K multi-pass packet contribution length overflow")?
+        != data_len
+    {
+        return Err("CUDA HTJ2K multi-pass packet contribution length mismatch");
+    }
+    if !(2..65535).contains(&code_block.ht_cleanup_length) {
+        return Err("CUDA HTJ2K cleanup segment length is out of range");
+    }
+    if code_block.ht_refinement_length >= 2047 {
+        return Err("CUDA HTJ2K refinement segment length is out of range");
+    }
+
+    Ok((
+        code_block.ht_cleanup_length,
+        code_block.ht_refinement_length,
+    ))
 }
 
 fn ht_cleanup_length_bits(l_block: u32, num_coding_passes: u8) -> u32 {
@@ -1860,6 +1927,8 @@ fn cuda_packetization_blocks(
         .map(|block| CudaHtj2kPacketizationBlock {
             data_offset: block.data_offset,
             data_len: block.data_len,
+            cleanup_length: block.cleanup_length,
+            refinement_length: block.refinement_length,
             num_coding_passes: block.num_coding_passes,
             num_zero_bitplanes: block.num_zero_bitplanes,
             l_block: block.l_block,
@@ -2514,6 +2583,8 @@ fn cuda_packetize_tile_body(
                         .iter()
                         .map(|block| J2kPacketizationCodeBlock {
                             data: block.data.as_slice(),
+                            ht_cleanup_length: block.cleanup_length,
+                            ht_refinement_length: block.refinement_length,
                             num_coding_passes: block.num_coding_passes,
                             num_zero_bitplanes: block.num_zero_bitplanes,
                             previously_included: false,
@@ -2689,8 +2760,12 @@ fn ht_subband_code_block_count(
 fn encoded_ht_code_block_from_cuda(
     encoded: &signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock,
 ) -> EncodedHtJ2kCodeBlock {
+    let cleanup_length =
+        u32::try_from(encoded.data().len()).expect("CUDA HTJ2K encode output length fits u32");
     EncodedHtJ2kCodeBlock {
         data: encoded.data().to_vec(),
+        cleanup_length,
+        refinement_length: 0,
         num_coding_passes: encoded.num_coding_passes(),
         num_zero_bitplanes: encoded.num_zero_bitplanes(),
     }
@@ -3008,6 +3083,8 @@ mod tests {
         let payload = [0x12, 0x34, 0x56, 0x78];
         let code_block = J2kPacketizationCodeBlock {
             data: &payload,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3073,6 +3150,8 @@ mod tests {
             .enumerate()
             .map(|(idx, payload)| J2kPacketizationCodeBlock {
                 data: payload.as_slice(),
+                ht_cleanup_length: 0,
+                ht_refinement_length: 0,
                 num_coding_passes: 1,
                 num_zero_bitplanes: u8::try_from(idx + 1).expect("test zbp fits in u8"),
                 previously_included: false,
@@ -3132,6 +3211,8 @@ mod tests {
         let payload = [0x12, 0x34, 0x56, 0x78, 0x9a];
         let code_block = J2kPacketizationCodeBlock {
             data: &payload,
+            ht_cleanup_length: 3,
+            ht_refinement_length: 2,
             num_coding_passes: 3,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3176,10 +3257,35 @@ mod tests {
     }
 
     #[test]
+    fn cuda_packetization_rejects_overflowing_ht_refinement_lengths() {
+        let payload = [0x12];
+        let code_block = J2kPacketizationCodeBlock {
+            data: &payload,
+            ht_cleanup_length: u32::MAX,
+            ht_refinement_length: 1,
+            num_coding_passes: 3,
+            num_zero_bitplanes: 2,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+        };
+
+        let err = super::cuda_ht_segment_lengths(&code_block)
+            .expect_err("overflowing CUDA HT segment lengths rejected");
+
+        assert_eq!(
+            err,
+            "CUDA HTJ2K multi-pass packet contribution length overflow"
+        );
+    }
+
+    #[test]
     fn cuda_packetization_flatten_rejects_out_of_range_ht_pass_count() {
         let payload = [0u8; 1];
         let code_block = J2kPacketizationCodeBlock {
             data: &payload,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 165,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3227,6 +3333,8 @@ mod tests {
         let second_payload = [0x22u8; 5];
         let first_block = J2kPacketizationCodeBlock {
             data: &first_payload,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3235,6 +3343,8 @@ mod tests {
         };
         let second_block = J2kPacketizationCodeBlock {
             data: &second_payload,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3311,6 +3421,8 @@ mod tests {
         let payload = [0x44u8; 5];
         let first_block = J2kPacketizationCodeBlock {
             data: &[],
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 0,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3319,6 +3431,8 @@ mod tests {
         };
         let second_block = J2kPacketizationCodeBlock {
             data: &payload,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
             num_coding_passes: 1,
             num_zero_bitplanes: 2,
             previously_included: false,
@@ -3391,6 +3505,8 @@ mod tests {
                 code_blocks: vec![
                     J2kPacketizationCodeBlock {
                         data: &first_payload,
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -3399,6 +3515,8 @@ mod tests {
                     },
                     J2kPacketizationCodeBlock {
                         data: &[],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 0,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -3415,6 +3533,8 @@ mod tests {
                 code_blocks: vec![
                     J2kPacketizationCodeBlock {
                         data: &[],
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 0,
                         num_zero_bitplanes: 2,
                         previously_included: false,
@@ -3423,6 +3543,8 @@ mod tests {
                     },
                     J2kPacketizationCodeBlock {
                         data: &second_payload,
+                        ht_cleanup_length: 0,
+                        ht_refinement_length: 0,
                         num_coding_passes: 1,
                         num_zero_bitplanes: 2,
                         previously_included: false,

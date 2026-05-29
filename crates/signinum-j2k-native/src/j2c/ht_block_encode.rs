@@ -294,6 +294,8 @@ pub(crate) fn encode_code_block(
             data: Vec::new(),
             num_coding_passes: 0,
             num_zero_bitplanes: total_bitplanes,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
         });
     };
 
@@ -310,11 +312,15 @@ pub(crate) fn encode_code_block(
         height as usize,
         total_bitplanes,
     )?;
+    let ht_cleanup_length =
+        u32::try_from(data.len()).map_err(|_| "HTJ2K cleanup segment exceeds u32 length")?;
 
     Ok(EncodedCodeBlock {
         data,
         num_coding_passes: 1,
         num_zero_bitplanes: missing_msbs,
+        ht_cleanup_length,
+        ht_refinement_length: 0,
     })
 }
 
