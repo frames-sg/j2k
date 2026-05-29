@@ -608,6 +608,10 @@ self-hosted runners for GPU signoff:
 
 Set the manual workflow input `run-timed-benchmarks=true` when collecting
 release benchmark evidence. Leave it false for faster device/API validation.
+For CUDA-only signoff, also set `run-metal-validation=false`; otherwise the
+workflow will wait for a Metal runner even after the CUDA job has completed.
+The CUDA job prints `nvcc --version` and fails during diagnostics when `nvcc` is
+not available on the self-hosted runner.
 
 ## Device-output adapters
 

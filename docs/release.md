@@ -42,9 +42,12 @@ on self-hosted runners before claiming Metal runtime validation:
 2. x86_64 CUDA runner labels: `self-hosted`, `Linux`, `X64`, `cuda`
 3. Use the `run-timed-benchmarks` workflow input when a release needs measured
    GPU benchmark timing rather than compile-only coverage
+4. Use `run-metal-validation=false` for CUDA-only signoff runs so a missing or
+   busy Metal runner does not keep a completed CUDA validation queued
 
 Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output
-and the opt-in nvJPEG JPEG decode path on a CUDA runner. Timed NVIDIA
+and the opt-in nvJPEG JPEG decode path on a CUDA runner. The CUDA diagnostics
+require `nvcc` and print `nvcc --version` before the tests run. Timed NVIDIA
 performance claims require the `run-timed-benchmarks` workflow input and
 recorded benchmark output.
 

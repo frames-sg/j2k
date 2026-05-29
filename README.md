@@ -262,9 +262,11 @@ CUDA adapters expose CUDA device-memory output for explicit CUDA requests when
 they are built with `cuda-runtime`. `signinum-jpeg-cuda` can use NVIDIA nvJPEG
 for full-frame RGB8 JPEG requests when `cuda-runtime`, a CUDA driver, and
 `libnvjpeg` are available; unsupported JPEG shapes use CPU decode plus CUDA
-upload. `signinum-j2k-cuda` currently returns CUDA-backed output by uploading
-CPU-decoded JPEG 2000 / HTJ2K pixels; it does not claim CUDA codestream decode
-kernels yet.
+upload. `signinum-j2k-cuda` reserves explicit CUDA requests for strict
+CUDA-resident HTJ2K codestream decode, including HT entropy, IDWT, inverse MCT,
+and store kernels; classic JPEG 2000 and unsupported HTJ2K shapes return
+unsupported errors instead of silently CPU-decoding and uploading pixels. Use
+the explicitly named CPU-staged CUDA upload APIs when that fallback is desired.
 
 ## Architecture at a glance
 
