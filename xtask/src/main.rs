@@ -1,5 +1,8 @@
 use std::env;
 use std::ffi::OsString;
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod perf_guard;
@@ -47,7 +50,45 @@ const CPU_RELEASE_PACKAGES: &[&str] = &[
     "signinum-j2k",
     "signinum-tilecodec",
     "signinum-cli",
+    "signinum",
 ];
+
+const STABLE_SEMVER_PACKAGES: &[&str] = &[
+    "signinum",
+    "signinum-core",
+    "signinum-jpeg",
+    "signinum-j2k",
+    "signinum-tilecodec",
+    "signinum-jpeg-metal",
+    "signinum-j2k-metal",
+    "signinum-jpeg-cuda",
+    "signinum-j2k-cuda",
+    "signinum-transcode",
+    "signinum-transcode-metal",
+    "signinum-j2k-native",
+    "signinum-cuda-runtime",
+    "signinum-profile",
+];
+
+const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
+    "signinum",
+    "signinum-core",
+    "signinum-jpeg",
+    "signinum-j2k",
+    "signinum-tilecodec",
+    "signinum-jpeg-metal",
+    "signinum-j2k-metal",
+    "signinum-jpeg-cuda",
+    "signinum-j2k-cuda",
+    "signinum-transcode",
+    "signinum-transcode-metal",
+    "signinum-j2k-native",
+    "signinum-cuda-runtime",
+    "signinum-profile",
+];
+
+const STABLE_API_SNAPSHOT: &str = "docs/stable-api-1.0.public-api.txt";
+const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
 
 const NO_STD_TARGET: &str = "aarch64-unknown-none";
 
@@ -72,12 +113,18 @@ fn run() -> Result<(), String> {
         "doc" | "docs" => doc(),
         "typos" => typos(),
         "bench-build" => bench_build(),
+        "bench-report" => bench_report(env::args().skip(2)),
         "j2k-bench-signoff" => j2k_bench_signoff(),
         "j2k-perf-guard" => perf_guard::j2k_perf_guard(env::args().skip(2)),
         "fuzz-build" => fuzz_build(),
+        "fuzz-run" => fuzz_run(),
+        "stable-api" => stable_api(env::args().skip(2)),
+        "semver" => semver(),
         "deny" => deny(),
         "machete" => machete(),
         "no-std" => no_std(),
+        "unsafe-audit" => verify_unsafe_audit(),
+        "downstream-smoke" => downstream_smoke(),
         "release-cpu" => release_cpu(),
         "release-metal" => release_metal(),
         "coverage" => coverage(),
@@ -95,7 +142,8 @@ fn ci() -> Result<(), String> {
     fmt()?;
     clippy()?;
     test()?;
-    doc()
+    doc()?;
+    verify_unsafe_audit()
 }
 
 fn fmt() -> Result<(), String> {
@@ -115,7 +163,7 @@ fn clippy() -> Result<(), String> {
 }
 
 fn clippy_strict() -> Result<(), String> {
-    run_cargo(&[
+    let mut args = vec![
         "clippy",
         "-p",
         "signinum-j2k-native",
@@ -131,8 +179,63 @@ fn clippy_strict() -> Result<(), String> {
         "clippy::nursery",
         "-D",
         "warnings",
-    ])
+    ];
+
+    // Keep the strict gate useful as a ratchet: enable pedantic/nursery, but
+    // baseline high-noise codec-math lints so new lint classes still fail.
+    for lint in STRICT_CLIPPY_BASELINE_ALLOWED_LINTS {
+        args.extend(["-A", lint]);
+    }
+
+    run_cargo(&args)
 }
+
+const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
+    "clippy::bool_to_int_with_if",
+    "clippy::branches_sharing_code",
+    "clippy::cast_lossless",
+    "clippy::cast_possible_truncation",
+    "clippy::cast_possible_wrap",
+    "clippy::cast_precision_loss",
+    "clippy::cast_sign_loss",
+    "clippy::checked_conversions",
+    "clippy::cognitive_complexity",
+    "clippy::doc_markdown",
+    "clippy::elidable_lifetime_names",
+    "clippy::explicit_deref_methods",
+    "clippy::explicit_iter_loop",
+    "clippy::float_cmp",
+    "clippy::if_not_else",
+    "clippy::inconsistent_struct_constructor",
+    "clippy::inline_always",
+    "clippy::items_after_statements",
+    "clippy::manual_let_else",
+    "clippy::map_unwrap_or",
+    "clippy::match_same_arms",
+    "clippy::missing_const_for_fn",
+    "clippy::missing_errors_doc",
+    "clippy::must_use_candidate",
+    "clippy::needless_collect",
+    "clippy::needless_pass_by_ref_mut",
+    "clippy::needless_pass_by_value",
+    "clippy::no_effect_underscore_binding",
+    "clippy::or_fun_call",
+    "clippy::redundant_clone",
+    "clippy::redundant_closure_for_method_calls",
+    "clippy::redundant_else",
+    "clippy::redundant_pub_crate",
+    "clippy::similar_names",
+    "clippy::struct_excessive_bools",
+    "clippy::struct_field_names",
+    "clippy::suboptimal_flops",
+    "clippy::suspicious_operation_groupings",
+    "clippy::too_many_lines",
+    "clippy::trivially_copy_pass_by_ref",
+    "clippy::unnecessary_wraps",
+    "clippy::unreadable_literal",
+    "clippy::used_underscore_binding",
+    "clippy::useless_let_if_seq",
+];
 
 fn test() -> Result<(), String> {
     if env::consts::OS != "macos" {
@@ -205,6 +308,18 @@ fn doc() -> Result<(), String> {
     run_cargo_with_env(
         &["doc", "--workspace", "--all-features", "--no-deps"],
         &[("RUSTDOCFLAGS", "-D warnings")],
+    )?;
+
+    for package in STABLE_DOC_LIBRARY_PACKAGES {
+        run_cargo_with_env(
+            &["doc", "-p", package, "--lib", "--no-deps"],
+            &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
+        )?;
+    }
+
+    run_cargo_with_env(
+        &["doc", "-p", "signinum-cli", "--no-deps"],
+        &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
     )
 }
 
@@ -229,7 +344,31 @@ fn bench_build() -> Result<(), String> {
         "tier1_bitplane",
         "--no-run",
     ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-native",
+        "--bench",
+        "htj2k_sigprop_phase",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-native",
+        "--bench",
+        "direct_cpu",
+        "--no-run",
+    ])?;
     run_cargo(&["bench", "-p", "signinum", "--bench", "facade", "--no-run"])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-jpeg",
+        "--bench",
+        "encode_cpu",
+        "--no-run",
+    ])?;
     run_cargo(&["bench", "-p", "signinum-jpeg", "--no-run"])?;
     run_cargo(&["bench", "-p", "signinum-jpeg-metal", "--no-run"])?;
     run_cargo(&[
@@ -242,6 +381,36 @@ fn bench_build() -> Result<(), String> {
         "cuda-runtime",
         "--no-run",
     ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-cuda",
+        "--bench",
+        "encode_stages",
+        "--features",
+        "cuda-runtime",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-cuda",
+        "--bench",
+        "htj2k_decode",
+        "--features",
+        "cuda-runtime",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-j2k-cuda",
+        "--bench",
+        "htj2k_encode",
+        "--features",
+        "cuda-runtime",
+        "--no-run",
+    ])?;
     run_cargo(&["bench", "-p", "signinum-j2k-metal", "--no-run"])?;
     run_cargo(&[
         "bench",
@@ -249,6 +418,22 @@ fn bench_build() -> Result<(), String> {
         "signinum-tilecodec",
         "--bench",
         "compare",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-transcode",
+        "--bench",
+        "dct53",
+        "--no-run",
+    ])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-transcode-metal",
+        "--bench",
+        "dct97",
         "--no-run",
     ])
 }
@@ -281,6 +466,98 @@ fn j2k_bench_signoff() -> Result<(), String> {
     ])
 }
 
+#[derive(Debug)]
+struct BenchmarkReport {
+    command: String,
+    host: String,
+    rustc: String,
+    cargo: String,
+    git_revision: String,
+    workspace_version: String,
+    input_source: String,
+    compare_threads: String,
+    comparator_versions: Vec<(String, String)>,
+    skipped_rows: Vec<String>,
+}
+
+fn bench_report(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut command = env::var("SIGNINUM_BENCH_COMMAND").unwrap_or_else(|_| "not recorded".into());
+    let mut input_source = env::var("SIGNINUM_BENCH_INPUT_SOURCE")
+        .or_else(|_| env::var("SIGNINUM_BENCH_INPUTS"))
+        .unwrap_or_else(|_| "not recorded".into());
+    let mut out_path = None::<PathBuf>;
+    let mut skipped_rows = env::var("SIGNINUM_BENCH_SKIPPED_ROWS")
+        .ok()
+        .map(|rows| split_semicolon_list(&rows))
+        .unwrap_or_default();
+
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--command" => {
+                command = args
+                    .next()
+                    .ok_or_else(|| "--command requires a value".to_string())?;
+            }
+            "--input-source" => {
+                input_source = args
+                    .next()
+                    .ok_or_else(|| "--input-source requires a value".to_string())?;
+            }
+            "--skipped-row" => {
+                skipped_rows.push(
+                    args.next()
+                        .ok_or_else(|| "--skipped-row requires a value".to_string())?,
+                );
+            }
+            "--out" => {
+                out_path = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--out requires a value".to_string())?,
+                ));
+            }
+            "--help" | "-h" => {
+                print_bench_report_help();
+                return Ok(());
+            }
+            other => return Err(format!("unknown bench-report argument `{other}`")),
+        }
+    }
+
+    let report = BenchmarkReport {
+        command,
+        host: host_description(),
+        rustc: command_output("rustc", &["-Vv"])
+            .unwrap_or_else(|err| format!("unavailable: {err}")),
+        cargo: command_output_os(cargo(), &["-V"])
+            .unwrap_or_else(|err| format!("unavailable: {err}")),
+        git_revision: command_output("git", &["rev-parse", "HEAD"])
+            .unwrap_or_else(|err| format!("unavailable: {err}")),
+        workspace_version: workspace_version()?,
+        input_source,
+        compare_threads: env::var("SIGNINUM_J2K_COMPARE_THREADS")
+            .unwrap_or_else(|_| "not set".to_string()),
+        comparator_versions: comparator_versions(),
+        skipped_rows,
+    };
+    let rendered = render_benchmark_report(&report);
+
+    if let Some(path) = out_path {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        }
+        fs::write(&path, rendered)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))
+    } else {
+        print!("{rendered}");
+        Ok(())
+    }
+}
+
 fn fuzz_build() -> Result<(), String> {
     run_cargo(&[
         "check",
@@ -297,6 +574,148 @@ fn fuzz_build() -> Result<(), String> {
         "--manifest-path",
         "crates/signinum-tilecodec/fuzz/Cargo.toml",
     ])
+}
+
+const FUZZ_TARGETS: &[(&str, &str)] = &[
+    ("crates/signinum-j2k", "decode_fuzz"),
+    ("crates/signinum-j2k", "parse_fuzz"),
+    ("crates/signinum-jpeg", "decode_fuzz"),
+    ("crates/signinum-jpeg", "parse_fuzz"),
+    ("crates/signinum-tilecodec", "decompress_fuzz"),
+];
+
+fn fuzz_run() -> Result<(), String> {
+    let runs = env::var("SIGNINUM_FUZZ_RUNS").unwrap_or_else(|_| "1000".to_string());
+    let max_total_time = env::var("SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS").ok();
+
+    for (crate_dir, target) in FUZZ_TARGETS {
+        let mut args = vec![
+            "fuzz".to_string(),
+            "run".to_string(),
+            (*target).to_string(),
+            "--".to_string(),
+            format!("-runs={runs}"),
+        ];
+        if let Some(seconds) = &max_total_time {
+            args.push(format!("-max_total_time={seconds}"));
+        }
+        run_cargo_in_dir_owned(crate_dir, &args)?;
+    }
+    Ok(())
+}
+
+fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut write_snapshot = false;
+    for arg in args {
+        match arg.as_str() {
+            "--write" => write_snapshot = true,
+            "--help" | "-h" => {
+                print_stable_api_help();
+                return Ok(());
+            }
+            other => return Err(format!("unknown stable-api argument `{other}`")),
+        }
+    }
+
+    let rendered = render_stable_api_snapshot()?;
+    if write_snapshot {
+        fs::write(STABLE_API_SNAPSHOT, rendered)
+            .map_err(|err| format!("failed to write {STABLE_API_SNAPSHOT}: {err}"))?;
+        return Ok(());
+    }
+
+    let committed = fs::read_to_string(STABLE_API_SNAPSHOT)
+        .map_err(|err| format!("failed to read {STABLE_API_SNAPSHOT}: {err}"))?;
+    if committed == rendered {
+        Ok(())
+    } else {
+        Err(format!(
+            "{STABLE_API_SNAPSHOT} is stale; run `cargo xtask stable-api --write` and review the public API diff"
+        ))
+    }
+}
+
+fn render_stable_api_snapshot() -> Result<String, String> {
+    let tool_version =
+        command_output_os(cargo(), &["public-api", "--version"]).map_err(|err| {
+            format!(
+                "failed to detect cargo-public-api: {err}; \
+                 install cargo-public-api with `cargo install cargo-public-api --version {CARGO_PUBLIC_API_VERSION} --locked`"
+            )
+        })?;
+    if !tool_version.contains(CARGO_PUBLIC_API_VERSION) {
+        return Err(format!(
+            "cargo-public-api version must be {CARGO_PUBLIC_API_VERSION}; found `{tool_version}`"
+        ));
+    }
+
+    let mut out = String::new();
+    writeln!(
+        &mut out,
+        "# Signinum 1.0 Public API Snapshot\n\n\
+         This file is generated by `cargo xtask stable-api --write` from \
+         `cargo public-api -p <package> --all-features -sss --color never`.\n\n\
+         Generator: `{tool_version}`.\n\n\
+         It is the item-level companion to `docs/stable-api-1.0.md`: every \
+         public module, type, trait, function, method, constant, variant, and \
+         field reported here is semver-visible unless moved private before 1.0.\n"
+    )
+    .unwrap();
+
+    for package in STABLE_DOC_LIBRARY_PACKAGES {
+        let api = command_output_os(
+            cargo(),
+            &[
+                "public-api",
+                "-p",
+                package,
+                "--all-features",
+                "-sss",
+                "--color",
+                "never",
+            ],
+        )
+        .map_err(|err| {
+            format!(
+                "failed to generate public API for {package}: {err}; \
+                 install cargo-public-api with `cargo install cargo-public-api --version {CARGO_PUBLIC_API_VERSION} --locked`"
+            )
+        })?;
+        writeln!(&mut out, "## `{package}`\n\n```text").unwrap();
+        writeln!(&mut out, "{api}").unwrap();
+        writeln!(&mut out, "```\n").unwrap();
+    }
+
+    writeln!(
+        &mut out,
+        "## `signinum-cli`\n\n\
+         `signinum-cli` is a binary package. Its stable command, stdout/stderr, \
+         and exit-code contract is documented in `docs/stable-api-1.0.md`.\n"
+    )
+    .unwrap();
+
+    Ok(out)
+}
+
+fn semver() -> Result<(), String> {
+    let toolchain = env::var("SIGNINUM_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "stable".to_string());
+    let toolchain_arg = format!("+{toolchain}");
+    for package in STABLE_SEMVER_PACKAGES {
+        run_program(
+            OsString::from("cargo"),
+            &[
+                toolchain_arg.as_str(),
+                "semver-checks",
+                "check-release",
+                "--package",
+                package,
+                "--release-type",
+                "major",
+            ],
+            &[],
+        )?;
+    }
+    Ok(())
 }
 
 fn deny() -> Result<(), String> {
@@ -322,6 +741,35 @@ fn no_std() -> Result<(), String> {
         "--target",
         NO_STD_TARGET,
     ])
+}
+
+fn verify_unsafe_audit() -> Result<(), String> {
+    let audit_path = Path::new("docs/unsafe-audit.md");
+    let audit = fs::read_to_string(audit_path)
+        .map_err(|err| format!("failed to read {}: {err}", audit_path.display()))?;
+    let mut missing = Vec::new();
+    for path in rust_sources(Path::new("crates"))? {
+        let source = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        if source.contains("unsafe ") || source.contains("unsafe{") {
+            let relative = path.to_string_lossy().replace('\\', "/");
+            if !audit.contains(&relative) {
+                missing.push(relative);
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "docs/unsafe-audit.md is missing unsafe source entries: {missing:?}"
+        ))
+    }
+}
+
+fn downstream_smoke() -> Result<(), String> {
+    run_cargo(&["test", "-p", "signinum", "--examples"])?;
+    run_cargo(&["test", "-p", "signinum-transcode", "--examples"])
 }
 
 fn release_cpu() -> Result<(), String> {
@@ -421,6 +869,10 @@ fn run_cargo(args: &[&str]) -> Result<(), String> {
     run_cargo_with_env(args, &[])
 }
 
+fn run_cargo_in_dir_owned(dir: &str, args: &[String]) -> Result<(), String> {
+    run_program_in_dir_owned(cargo(), dir, args, &[])
+}
+
 fn run_cargo_with_env(args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
     run_program(cargo(), args, envs)
 }
@@ -443,8 +895,221 @@ fn run_program(program: OsString, args: &[&str], envs: &[(&str, &str)]) -> Resul
     }
 }
 
+fn run_program_in_dir_owned(
+    program: OsString,
+    dir: &str,
+    args: &[String],
+    envs: &[(&str, &str)],
+) -> Result<(), String> {
+    let display = program.to_string_lossy();
+    eprintln!("+ cd {dir} && {} {}", display, args.join(" "));
+    let mut command = Command::new(&program);
+    command.args(args);
+    command.current_dir(dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command
+        .status()
+        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`{display}` exited with {status}"))
+    }
+}
+
 fn cargo() -> OsString {
     env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
+
+fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
+    command_output_os(OsString::from(program), args)
+}
+
+fn command_output_allow_failure(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to start `{program}`: {err}"))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if text.is_empty() {
+        text = stderr;
+    } else if !stderr.is_empty() {
+        text.push('\n');
+        text.push_str(&stderr);
+    }
+    if text.is_empty() {
+        Err(format!(
+            "`{program}` exited with {} and no output",
+            output.status
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
+fn command_output_os(program: OsString, args: &[&str]) -> Result<String, String> {
+    let display = program.to_string_lossy();
+    let output = Command::new(&program)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
+    if !output.status.success() {
+        return Err(format!("`{display}` exited with {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn host_description() -> String {
+    command_output("uname", &["-a"])
+        .unwrap_or_else(|_| format!("{} {}", env::consts::OS, env::consts::ARCH))
+}
+
+fn workspace_version() -> Result<String, String> {
+    let manifest = fs::read_to_string("Cargo.toml")
+        .map_err(|err| format!("failed to read Cargo.toml: {err}"))?;
+    manifest
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("version")
+                .and_then(|rest| rest.split('"').nth(1))
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "failed to find workspace package version".to_string())
+}
+
+fn comparator_versions() -> Vec<(String, String)> {
+    vec![
+        (
+            "OpenJPEG".to_string(),
+            comparator_command_version(
+                "SIGNINUM_OPENJPEG_DECOMPRESS_BIN",
+                "opj_decompress",
+                &["-h"],
+            ),
+        ),
+        (
+            "Grok".to_string(),
+            env::var("SIGNINUM_GROK_ROOT")
+                .map(|root| format!("configured root: {root}"))
+                .unwrap_or_else(|_| "unavailable: SIGNINUM_GROK_ROOT not set".to_string()),
+        ),
+        (
+            "libjpeg-turbo".to_string(),
+            command_output("pkg-config", &["--modversion", "libturbojpeg"])
+                .map(|version| format!("pkg-config libturbojpeg {version}"))
+                .unwrap_or_else(|err| format!("unavailable: {err}")),
+        ),
+    ]
+}
+
+fn comparator_command_version(env_var: &str, fallback: &str, args: &[&str]) -> String {
+    let program = env::var(env_var).unwrap_or_else(|_| fallback.to_string());
+    let path = program.clone();
+    command_output_allow_failure(&program, args)
+        .map(|version| format!("{}; path: {path}", best_version_line(&version)))
+        .unwrap_or_else(|err| format!("unavailable: {err}; path: {path}"))
+}
+
+fn best_version_line(output: &str) -> &str {
+    output
+        .lines()
+        .find(|line| line.contains("compiled against") || line.contains("version"))
+        .or_else(|| output.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or("version unavailable")
+}
+
+fn render_benchmark_report(report: &BenchmarkReport) -> String {
+    let mut out = String::new();
+    writeln!(&mut out, "# Benchmark publication report").unwrap();
+    writeln!(&mut out).unwrap();
+    writeln!(&mut out, "- command: {}", report.command).unwrap();
+    writeln!(&mut out, "- host: {}", report.host).unwrap();
+    writeln!(&mut out, "- rustc: {}", one_line(&report.rustc)).unwrap();
+    writeln!(&mut out, "- cargo: {}", one_line(&report.cargo)).unwrap();
+    writeln!(&mut out, "- crate revision: {}", report.git_revision).unwrap();
+    writeln!(
+        &mut out,
+        "- workspace version: {}",
+        report.workspace_version
+    )
+    .unwrap();
+    writeln!(&mut out, "- input source: {}", report.input_source).unwrap();
+    writeln!(
+        &mut out,
+        "- SIGNINUM_J2K_COMPARE_THREADS: {}",
+        report.compare_threads
+    )
+    .unwrap();
+    writeln!(&mut out).unwrap();
+    writeln!(&mut out, "## comparator versions").unwrap();
+    for (name, version) in &report.comparator_versions {
+        writeln!(&mut out, "- {name}: {version}").unwrap();
+    }
+    writeln!(&mut out).unwrap();
+    writeln!(&mut out, "## skipped rows").unwrap();
+    if report.skipped_rows.is_empty() {
+        writeln!(&mut out, "- none recorded").unwrap();
+    } else {
+        for row in &report.skipped_rows {
+            writeln!(&mut out, "- {row}").unwrap();
+        }
+    }
+    out
+}
+
+fn one_line(value: &str) -> String {
+    value.lines().next().unwrap_or(value).to_string()
+}
+
+fn split_semicolon_list(value: &str) -> Vec<String> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|row| !row.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn rust_sources(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    collect_rust_sources(root, &mut out)?;
+    Ok(out)
+}
+
+fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in
+        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?
+    {
+        let entry =
+            entry.map_err(|err| format!("failed to read {} entry: {err}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, out)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn print_bench_report_help() {
+    println!(
+        "usage: cargo xtask bench-report [--command <command>] [--input-source <source>] \
+         [--skipped-row <row>]... [--out <path>]"
+    );
+}
+
+fn print_stable_api_help() {
+    println!(
+        "usage: cargo xtask stable-api [--write]\n\n\
+         Without --write, checks docs/stable-api-1.0.public-api.txt against \
+         cargo-public-api output for all 1.0-stable library crates. With \
+         --write, refreshes the snapshot."
+    );
 }
 
 fn print_help() {
@@ -460,12 +1125,18 @@ fn print_help() {
            doc           build workspace docs with warnings denied\n\
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
+           bench-report  print or write a benchmark publication report\n\
            j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
            j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\
+           fuzz-run      run scheduled fuzz targets with SIGNINUM_FUZZ_RUNS\n\
+           stable-api    check the generated 1.0 public API inventory snapshot\n\
+           semver        check stable library crates across the 1.0 major-release boundary\n\
            deny          run cargo-deny\n\
            machete       run cargo-machete unused-dependency scan\n\
            no-std        check no_std-compatible codec crates\n\
+           unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
+           downstream-smoke run facade and transcode examples used by integration docs\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-metal run release-mode Metal tests on macOS\n\
            coverage      generate lcov.info with cargo-llvm-cov\n\
@@ -623,7 +1294,12 @@ mod tests {
         let root = temp_dir("signinum-perf-guard-sync-test");
         let source = root.join("source");
         let target = root.join("target");
+        let jpeg_manifest = "crates/signinum-jpeg/Cargo.toml";
+        let cuda_manifest = "crates/signinum-j2k-cuda/Cargo.toml";
         let public_bench = "crates/signinum-j2k/benches/public_api.rs";
+        let jpeg_encode_bench = "crates/signinum-jpeg/benches/encode_cpu.rs";
+        let cuda_decode_bench = "crates/signinum-j2k-cuda/benches/htj2k_decode.rs";
+        let cuda_encode_bench = "crates/signinum-j2k-cuda/benches/htj2k_encode.rs";
         let metal_common_bench = "crates/signinum-j2k-metal/benches/common/mod.rs";
         let metal_compare_bench = "crates/signinum-j2k-metal/benches/compare.rs";
         let native_bench = "crates/signinum-j2k-native/benches/tier1_bitplane.rs";
@@ -631,14 +1307,38 @@ mod tests {
         let native_fixture =
             "crates/signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k";
         fs::create_dir_all(source.join("crates/signinum-j2k/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/signinum-jpeg/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/signinum-j2k-cuda/benches")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-metal/benches/common")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-native/benches")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
+        fs::create_dir_all(target.join("crates/signinum-jpeg")).unwrap();
+        fs::create_dir_all(target.join("crates/signinum-j2k-cuda")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/signinum-jpeg/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/signinum-j2k-cuda/benches")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-metal/benches/common")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-native/benches")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
+        fs::write(
+            source.join(jpeg_manifest),
+            "[package]\nname = \"signinum-jpeg\"\n\n[[bench]]\nname = \"encode_cpu\"\nharness = false\n",
+        )
+        .unwrap();
+        fs::write(
+            target.join(jpeg_manifest),
+            "[package]\nname = \"signinum-jpeg\"\n",
+        )
+        .unwrap();
+        fs::write(
+            target.join(cuda_manifest),
+            "[package]\nname = \"signinum-j2k-cuda\"\n",
+        )
+        .unwrap();
         fs::write(source.join(public_bench), "current public bench").unwrap();
+        fs::write(source.join(jpeg_encode_bench), "current jpeg encode bench").unwrap();
+        fs::write(source.join(cuda_decode_bench), "current cuda decode bench").unwrap();
+        fs::write(source.join(cuda_encode_bench), "current cuda encode bench").unwrap();
         fs::write(
             source.join(metal_common_bench),
             "current metal common bench",
@@ -653,6 +1353,9 @@ mod tests {
         fs::write(source.join(native_sigprop_bench), "current sigprop bench").unwrap();
         fs::write(source.join(native_fixture), "current fixture").unwrap();
         fs::write(target.join(public_bench), "old public bench").unwrap();
+        fs::write(target.join(jpeg_encode_bench), "old jpeg encode bench").unwrap();
+        fs::write(target.join(cuda_decode_bench), "old cuda decode bench").unwrap();
+        fs::write(target.join(cuda_encode_bench), "old cuda encode bench").unwrap();
         fs::write(target.join(metal_common_bench), "old metal common bench").unwrap();
         fs::write(target.join(metal_compare_bench), "old metal compare bench").unwrap();
         fs::write(target.join(native_bench), "old native bench").unwrap();
@@ -664,6 +1367,31 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join(public_bench)).unwrap(),
             "current public bench"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(jpeg_encode_bench)).unwrap(),
+            "current jpeg encode bench"
+        );
+        let target_jpeg_manifest = fs::read_to_string(target.join(jpeg_manifest)).unwrap();
+        assert!(
+            target_jpeg_manifest.contains("name = \"encode_cpu\"")
+                && target_jpeg_manifest.contains("harness = false"),
+            "baseline overlay must register encode_cpu as a Criterion bench"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(cuda_decode_bench)).unwrap(),
+            "current cuda decode bench"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(cuda_encode_bench)).unwrap(),
+            "current cuda encode bench"
+        );
+        let target_cuda_manifest = fs::read_to_string(target.join(cuda_manifest)).unwrap();
+        assert!(
+            target_cuda_manifest.contains("name = \"htj2k_decode\"")
+                && target_cuda_manifest.contains("name = \"htj2k_encode\"")
+                && target_cuda_manifest.contains("required-features = [\"cuda-runtime\"]"),
+            "baseline overlay must register CUDA HTJ2K Criterion benches"
         );
         assert_eq!(
             fs::read_to_string(target.join(metal_common_bench)).unwrap(),

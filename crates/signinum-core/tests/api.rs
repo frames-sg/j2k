@@ -236,9 +236,7 @@ fn tile_batch_worker_count_uses_available_workers_when_unspecified() {
 
 #[test]
 fn tile_batch_worker_count_clamps_to_batch_size_and_at_least_one_worker() {
-    let options = TileBatchOptions {
-        workers: Some(NonZeroUsize::new(16).expect("nonzero")),
-    };
+    let options = TileBatchOptions::new(Some(NonZeroUsize::new(16).expect("nonzero")));
 
     assert_eq!(signinum_core::tile_batch_worker_count(3, options, 8), 3);
     assert_eq!(
@@ -291,11 +289,7 @@ fn collect_indexed_batch_results_rejects_out_of_bounds_error_index() {
 
 #[test]
 fn backend_capabilities_resolve_auto_and_explicit_requests() {
-    let caps = BackendCapabilities {
-        cpu: CpuFeatures::default(),
-        metal: true,
-        cuda: false,
-    };
+    let caps = BackendCapabilities::new(CpuFeatures::default(), true, false);
     assert_eq!(caps.resolve(BackendRequest::Auto), Some(BackendKind::Metal));
     assert_eq!(caps.resolve(BackendRequest::Cpu), Some(BackendKind::Cpu));
     assert_eq!(

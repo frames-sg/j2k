@@ -144,12 +144,7 @@ fn bench_encode_baseline(c: &mut Criterion) {
 }
 
 fn options(backend: JpegBackend) -> JpegEncodeOptions {
-    JpegEncodeOptions {
-        quality: bench_quality(),
-        subsampling: JpegSubsampling::Ybr422,
-        restart_interval: None,
-        backend,
-    }
+    JpegEncodeOptions::new(bench_quality(), JpegSubsampling::Ybr422, None, backend)
 }
 
 fn bench_dim() -> u32 {

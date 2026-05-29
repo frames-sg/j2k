@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private vulnerability report
+    url: https://github.com/frames-sg/signinum/security/advisories/new
+    about: Report crashes, memory-safety issues, or sensitive reproducer inputs privately.
+

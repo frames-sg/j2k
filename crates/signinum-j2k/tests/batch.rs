@@ -125,9 +125,7 @@ fn assert_region_scaled_batch_matches_single_decode(bytes: &[u8], fmt: PixelForm
     let mut outputs = (0..JOBS)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -167,9 +165,7 @@ fn production_batch_decode_worker_one_matches_single_tile_decode() {
     let codestream = rgb_fixture();
     let (expected, stride) = decode_rgb8_reference(&codestream);
     let mut actual = vec![0_u8; expected.len()];
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(1),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(1));
 
     let outcomes = {
         let mut jobs = vec![TileDecodeJob {
@@ -192,9 +188,7 @@ fn production_batch_decode_parallel_preserves_order_and_output() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -230,9 +224,7 @@ fn production_batch_decode_matches_repeated_single_tile_decodes() {
         .iter()
         .map(|tile| vec![0_u8; tile.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(2),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(2));
 
     let outcomes = {
         let mut jobs = inputs
@@ -282,9 +274,7 @@ fn production_batch_region_scaled_decode_parallel_preserves_order_and_output() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(3),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(3));
 
     let outcomes = {
         let mut jobs = outputs
@@ -341,9 +331,7 @@ fn production_batch_region_scaled_htj2k_rgb_matches_single_decode() {
     let mut outputs = (0..JOBS)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(4),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(4));
 
     let outcomes = {
         let mut jobs = outputs
@@ -390,9 +378,7 @@ fn production_batch_decode_reports_first_failing_tile_index() {
     let mut outputs = (0..3)
         .map(|_| vec![0_u8; expected.len()])
         .collect::<Vec<_>>();
-    let options = TileBatchOptions {
-        workers: NonZeroUsize::new(2),
-    };
+    let options = TileBatchOptions::new(NonZeroUsize::new(2));
 
     let err = {
         let inputs: [&[u8]; 3] = [codestream.as_slice(), b"not j2k", codestream.as_slice()];

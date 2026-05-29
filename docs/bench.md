@@ -21,6 +21,22 @@ comparator availability, comparator version, comparator path, and skipped rows.
 Rows skipped because a comparator is unavailable are development diagnostics,
 not evidence for public claims.
 
+Before copying benchmark numbers into public docs or release notes, generate a
+benchmark publication report and store it with the raw benchmark output:
+
+```sh
+cargo xtask bench-report \
+  --command "SIGNINUM_J2K_COMPARE_THREADS=8 cargo bench -p signinum-j2k-metal --bench compare" \
+  --input-source "external-corpus:example-manifest-sha256" \
+  --out target/signinum-bench-report.md
+```
+
+The report records host/compiler/revision metadata, input source,
+comparator versions, comparator paths, `SIGNINUM_J2K_COMPARE_THREADS`, and
+skipped rows. It is the minimum evidence bundle for any benchmark publication
+report that supports OpenJPEG, Grok, libjpeg-turbo, Metal, CUDA, or CPU
+comparator claims.
+
 Baseline JPEG encode benchmarks are fallback diagnostics only. WSI/DICOM
 storage signoff should first prove compressed-tile passthrough eligibility and
 then measure lossless J2K/HTJ2K encode paths for cases that must transcode.
@@ -430,7 +446,7 @@ SIGNINUM_GPU_ROUTE_PROFILE=1 \
   cargo test -p signinum-jpeg-cuda explicit_cuda_request_returns_cuda_surface_or_clear_unavailable_error \
   --test host_surface -- --nocapture
 SIGNINUM_GPU_ROUTE_PROFILE=1 \
-  cargo test -p signinum-j2k-cuda explicit_cuda_request_returns_cuda_surface_or_clear_unavailable_error \
+  cargo test -p signinum-j2k-cuda explicit_cuda_classic_j2k_request_rejects_cpu_staged_upload \
   --test host_surface -- --nocapture
 
 # Aggregated route decisions for benches.
@@ -659,22 +675,27 @@ cargo bench -p signinum-j2k-metal --bench device_upload -- --noplot
 ```
 
 `signinum-jpeg-cuda` and `signinum-j2k-cuda` expose the same device-output API
-surface. On hosts with a CUDA driver and the `cuda-runtime` feature, explicit
-CUDA requests return CUDA-backed surfaces:
+surface, but their strict device-residency contracts differ. On hosts with a
+CUDA driver and the `cuda-runtime` feature:
 
 - `BackendRequest::Cpu` returns a host-backed surface
 - `BackendRequest::Auto` falls back to the CPU surface
-- `BackendRequest::Cuda` returns a CUDA-backed surface or fails explicitly as
-  unavailable on non-CUDA hosts
+- `signinum-jpeg-cuda` may use nvJPEG or an explicit CPU-upload fallback
+- `signinum-j2k-cuda` reserves `BackendRequest::Cuda` for CUDA-resident HTJ2K
+  codestream decode; CPU-staged J2K upload uses the explicit
+  `decode_*_cpu_staged_cuda_surface_with_session` APIs
 
 `signinum-jpeg-cuda` has a full-frame RGB8 nvJPEG path when `libnvjpeg` is
-available. Region, scaled, non-RGB8, nvJPEG-unsupported JPEG, and J2K CUDA
-requests use CPU decode plus CUDA device-memory upload.
+available. Region, scaled, non-RGB8, and nvJPEG-unsupported JPEG requests use
+CPU decode plus CUDA device-memory upload. J2K CUDA requests must not silently
+take that fallback path.
 
-Compile the CUDA JPEG bench:
+Compile the CUDA benches:
 
 ```sh
 cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
+cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
+cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
 ```
 
 Run it on an NVIDIA host:
@@ -698,6 +719,46 @@ Set `SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE=1` when the run must fail
 instead of benchmarking the CPU-upload fallback. Small committed fixtures are
 useful for compile smoke tests, but realistic GPU comparisons need larger
 WSI-shaped JPEG tiles.
+
+For J2K CUDA HTJ2K planning/profile smoke tests:
+
+```sh
+SIGNINUM_J2K_PROFILE_STAGES=1 \
+  cargo test -p signinum-j2k-cuda grayscale_plan_profile_reports_stable_cuda_htj2k_fields \
+  --features cuda-runtime --test htj2k_plan -- --nocapture
+```
+
+For J2K CUDA HTJ2K decode timing, use the dedicated Criterion target:
+
+```sh
+SIGNINUM_REQUIRE_CUDA_BENCH=1 \
+  cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot
+```
+
+It covers strict CUDA-resident full-tile, ROI, scaled, ROI+scaled, and tile-batch
+HTJ2K decode rows. CUDA rows assert `CudaResidentDecode`; CPU-staged upload is
+not a valid fallback for this benchmark target.
+
+For J2K CUDA HTJ2K encode timing, use the dedicated Criterion target:
+
+```sh
+SIGNINUM_REQUIRE_CUDA_BENCH=1 \
+  cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot
+```
+
+It covers full host-input HTJ2K encode, host-staged code-block cleanup
+microkernels, resident contiguous code-block cleanup, and resident strided
+device-input code-block cleanup. CUDA rows assert a CUDA backend or CUDA kernel
+dispatch, so CPU-staged fallback cannot satisfy the timed benchmark gate.
+
+Set `SIGNINUM_J2K_CUDA_TRACE=/path/trace.json` with strict CUDA HTJ2K decode or
+encode runs to export Chrome-trace-compatible stage spans. Add the
+`cuda-profiling` feature when collecting Nsight Systems/Compute traces; it wraps
+CUDA HTJ2K stages in optional NVTX ranges and dynamically no-ops when NVTX is
+not installed.
+Set `SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT=1` together with
+`SIGNINUM_REQUIRE_CUDA_RUNTIME=1` on GPU runners when strict resident HTJ2K
+decode kernels are expected to pass and fallback must fail.
 
 ## `signinum-tilecodec`
 

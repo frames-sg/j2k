@@ -25,7 +25,6 @@ use crate::{
 };
 
 /// Reversible 5/3 source coefficients ready for HTJ2K code-block recoding.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct Reversible53CoefficientImage {
     /// Precomputed wavelet coefficients in the native HTJ2K encoder shape.

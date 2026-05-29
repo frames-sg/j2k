@@ -5,9 +5,10 @@ use crate::{
     pool::LzwPool,
     TileCodecError,
 };
-use signinum_core::TileDecompress;
+use signinum_core::{InputError, TileDecompress};
 use weezl::{decode::Decoder, BitOrder};
 
+/// TIFF-style MSB-first LZW tile decompressor.
 pub struct LzwCodec;
 
 impl TileDecompress for LzwCodec {
@@ -53,27 +54,37 @@ impl TileDecompress for LzwCodec {
 
             match result.status {
                 Ok(weezl::LzwStatus::Done) => {
+                    if input_offset != input.len() {
+                        return Err(TileCodecError::Input(InputError::TruncatedAt {
+                            offset: input_offset,
+                            segment: "lzw trailing bytes",
+                        }));
+                    }
                     pool.scratch.truncate(output_offset);
                     let written = copy_scratch_to_output(&pool.scratch, out);
                     return Ok(written);
                 }
                 Ok(weezl::LzwStatus::Ok) => {}
                 Ok(weezl::LzwStatus::NoProgress) => {
-                    return Err(TileCodecError::Backend(
-                        "lzw decode failed: no progress before end marker".to_string(),
-                    ));
+                    return Err(TileCodecError::Input(InputError::TruncatedAt {
+                        offset: input_offset,
+                        segment: "lzw payload",
+                    }));
                 }
                 Err(error) => {
-                    return Err(TileCodecError::Backend(format!(
-                        "lzw decode failed: {error:?}"
-                    )));
+                    let _ = error;
+                    return Err(TileCodecError::Input(InputError::TruncatedAt {
+                        offset: input_offset,
+                        segment: "lzw payload",
+                    }));
                 }
             }
 
             if input_offset == input.len() {
-                return Err(TileCodecError::Backend(
-                    "lzw decode failed: missing end marker".to_string(),
-                ));
+                return Err(TileCodecError::Input(InputError::TruncatedAt {
+                    offset: input_offset,
+                    segment: "lzw end marker",
+                }));
             }
         }
     }

@@ -113,6 +113,7 @@ fn new_decode_plane_buffer(device: &Device, bytes: usize, returned_publicly: boo
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 struct FastRgbDecodeBuffer {
     buffer: Buffer,
     dimensions: (u32, u32),
@@ -121,6 +122,7 @@ struct FastRgbDecodeBuffer {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn private_jpeg_tile_from_fast_rgb_buffer(
     decoded: FastRgbDecodeBuffer,
 ) -> crate::ResidentPrivateJpegTile {
@@ -1249,6 +1251,7 @@ impl PlaneStage {
         surface_from_plane_buffer(out_buffer, self.dims, fmt, residency)
     }
 
+    #[allow(dead_code)]
     fn dispatch_private_rgb8_with_runtime(
         self,
         runtime: &MetalRuntime,
@@ -6422,6 +6425,7 @@ pub(crate) fn decode_full_batch_to_surfaces(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub(crate) fn decode_full_batch_to_surfaces_with_session(
     requests: &[batch::QueuedRequest],
     session: &crate::MetalBackendSession,
@@ -7940,6 +7944,7 @@ fn try_decode_fast444_to_surface(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn try_decode_fast444_to_private_rgb8_tile(
     runtime: &MetalRuntime,
     decoder: &CpuDecoder<'_>,
@@ -8559,6 +8564,7 @@ pub(crate) fn decode_to_surface_with_session(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub(crate) fn decode_private_rgb8_tile_with_session(
     decoder: &CpuDecoder<'_>,
     fast444_packet: Option<&JpegMetalFast444PacketV1>,

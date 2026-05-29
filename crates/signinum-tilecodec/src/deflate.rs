@@ -6,8 +6,9 @@ use crate::{
     TileCodecError,
 };
 use flate2::read::{DeflateDecoder, ZlibDecoder};
-use signinum_core::TileDecompress;
+use signinum_core::{InputError, TileDecompress};
 
+/// Zlib/raw Deflate tile decompressor.
 pub struct DeflateCodec;
 
 impl TileDecompress for DeflateCodec {
@@ -41,9 +42,13 @@ impl TileDecompress for DeflateCodec {
                         Ok(written)
                     }
                     Err(BoundedReadError::OutputTooSmall(error)) => Err(error.into()),
-                    Err(BoundedReadError::Io(raw_error)) => Err(TileCodecError::Backend(format!(
-                        "deflate decode failed (zlib: {zlib_error}; raw: {raw_error})"
-                    ))),
+                    Err(BoundedReadError::Io(raw_error)) => {
+                        let _ = (zlib_error, raw_error);
+                        Err(TileCodecError::Input(InputError::TruncatedAt {
+                            offset: input.len(),
+                            segment: "deflate payload",
+                        }))
+                    }
                 }
             }
         }

@@ -170,7 +170,7 @@ fn consume_restart(
     dc_predictors: &mut [i32],
     eob_run: &mut u32,
 ) -> Result<(), JpegError> {
-    let _ = br.ensure_bits(1);
+    br.advance_to_marker();
     let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
         mcu_at: mcu_index,
         mcu_total: total_mcus,

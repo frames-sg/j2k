@@ -10,13 +10,32 @@ use signinum_transcode::{
 use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
 #[cfg(target_os = "macos")]
+fn lossy_97_with_float_reference() -> JpegToHtj2kOptions {
+    let mut options = JpegToHtj2kOptions::lossy_97();
+    options.validate_against_float_reference = true;
+    options
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_53_float_direct_with_float_reference() -> JpegToHtj2kOptions {
+    let mut options = JpegToHtj2kOptions::lossless_53();
+    options.coefficient_path = JpegToHtj2kCoefficientPath::FloatDirectLinear53;
+    options.validate_against_float_reference = true;
+    options
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_53_with_integer_reference() -> JpegToHtj2kOptions {
+    let mut options = JpegToHtj2kOptions::lossless_53();
+    options.validate_against_integer_reference = true;
+    options
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options = lossy_97_with_float_reference();
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -65,11 +84,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let options = JpegToHtj2kOptions {
-        coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::lossless_53()
-    };
+    let options = lossless_53_float_direct_with_float_reference();
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -167,10 +182,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
-    let options = JpegToHtj2kOptions {
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::lossless_53()
-    };
+    let options = lossless_53_with_integer_reference();
     let mut scalar_transcoder = JpegToHtj2kTranscoder::default();
     let scalar = scalar_transcoder
         .transcode(jpeg, &options)
@@ -213,10 +225,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
     let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
-    let options = JpegToHtj2kOptions {
-        validate_against_float_reference: true,
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options = lossy_97_with_float_reference();
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
@@ -338,10 +347,7 @@ fn assert_explicit_metal_integer53_matches_scalar(
     expected_codestream_sampling: &[(u8, u8)],
     expected_batch_dispatches: usize,
 ) {
-    let options = JpegToHtj2kOptions {
-        validate_against_integer_reference: true,
-        ..JpegToHtj2kOptions::lossless_53()
-    };
+    let options = lossless_53_with_integer_reference();
     let mut scalar_transcoder = JpegToHtj2kTranscoder::default();
     let scalar = scalar_transcoder
         .transcode(jpeg, &options)

@@ -13,6 +13,45 @@ const BASELINE_420_RESTART: &[u8] =
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
 
 #[cfg(target_os = "macos")]
+fn same_length_distinct_baseline_420() -> Vec<u8> {
+    let (baseline, _) = CpuDecoder::new(BASELINE_420)
+        .expect("baseline decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("baseline decode");
+
+    let scan_start = BASELINE_420
+        .windows(2)
+        .position(|window| window == [0xFF, 0xDA])
+        .expect("SOS marker")
+        + 2;
+    let entropy_start = scan_start
+        + 2
+        + u16::from_be_bytes([BASELINE_420[scan_start], BASELINE_420[scan_start + 1]]) as usize;
+    let entropy_end = BASELINE_420
+        .windows(2)
+        .rposition(|window| window == [0xFF, 0xD9])
+        .expect("EOI marker");
+
+    for index in entropy_start..entropy_end {
+        for mask in [0x01_u8, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40] {
+            let mut candidate = BASELINE_420.to_vec();
+            candidate[index] ^= mask;
+            let Ok(candidate_decoder) = CpuDecoder::new(&candidate) else {
+                continue;
+            };
+            let Ok((candidate_pixels, _)) = candidate_decoder.decode(PixelFormat::Rgb8) else {
+                continue;
+            };
+            if candidate_pixels != baseline {
+                return candidate;
+            }
+        }
+    }
+
+    panic!("could not construct same-length distinct JPEG fixture");
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn tile_device_decode_matches_host_tile_decode() {
     let mut ctx = DecoderContext::<JpegDecoderContext>::new();
@@ -132,6 +171,53 @@ fn compatible_tile_submits_flush_once() {
     }
 
     assert_eq!(session.submissions(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reused_mutable_input_slice_is_copied_per_submission() {
+    let mut ctx = DecoderContext::<JpegDecoderContext>::new();
+    let mut pool = ScratchPool::new();
+    let mut session = MetalSession::default();
+    let mut input = BASELINE_420.to_vec();
+    let second_input = same_length_distinct_baseline_420();
+
+    let (expected_first, _) = CpuDecoder::new(&input)
+        .expect("first decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("first decode");
+    let (expected_second, _) = CpuDecoder::new(&second_input)
+        .expect("second decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("second decode");
+    assert_ne!(expected_first, expected_second);
+
+    let first = <Codec as TileBatchDecodeSubmit>::submit_tile_to_device(
+        &mut ctx,
+        &mut session,
+        &mut pool,
+        &input,
+        PixelFormat::Rgb8,
+        BackendRequest::Metal,
+    )
+    .expect("first submit");
+
+    input.copy_from_slice(&second_input);
+    let second = <Codec as TileBatchDecodeSubmit>::submit_tile_to_device(
+        &mut ctx,
+        &mut session,
+        &mut pool,
+        &input,
+        PixelFormat::Rgb8,
+        BackendRequest::Metal,
+    )
+    .expect("second submit");
+
+    let second_surface = second.wait().expect("second wait");
+    let first_surface = first.wait().expect("first wait");
+
+    assert_eq!(first_surface.as_bytes(), expected_first.as_slice());
+    assert_eq!(second_surface.as_bytes(), expected_second.as_slice());
 }
 
 #[cfg(target_os = "macos")]

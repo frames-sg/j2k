@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Hidden helpers used by Criterion benches.
+//! Benchmark and regression-test support helpers.
+//!
+//! This module is public so workspace benches and integration tests can
+//! exercise the same kernels used by production decode paths. It is not needed
+//! by ordinary application integrations.
 
 use crate::backend::Backend;
 use crate::color::upsample::upsample_h2v2_fancy_rows;
@@ -30,18 +34,20 @@ use std::time::Instant;
 #[path = "backend/scalar.rs"]
 mod bench_scalar_backend;
 
-#[doc(hidden)]
 #[derive(Default, Debug, Clone)]
+/// Dispatch counters collected while exercising the 4:2:0 RGB row-pair path.
 pub struct Bench420DispatchStats {
     scalar_chunks: usize,
     neon_tail_chunks: usize,
 }
 
 impl Bench420DispatchStats {
+    /// Number of scalar chunks dispatched.
     pub fn scalar_chunks(&self) -> usize {
         self.scalar_chunks
     }
 
+    /// Number of NEON tail chunks dispatched.
     pub fn neon_tail_chunks(&self) -> usize {
         self.neon_tail_chunks
     }
@@ -57,8 +63,8 @@ impl Bench420DispatchStats {
     }
 }
 
-#[doc(hidden)]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Block activity counters recorded by the fast 4:2:0 profile path.
 pub struct BenchBlockActivityCounts {
     total: usize,
     dc_only: usize,
@@ -67,18 +73,22 @@ pub struct BenchBlockActivityCounts {
 }
 
 impl BenchBlockActivityCounts {
+    /// Total decoded blocks.
     pub fn total_blocks(self) -> usize {
         self.total
     }
 
+    /// Blocks decoded through the DC-only path.
     pub fn dc_only_blocks(self) -> usize {
         self.dc_only
     }
 
+    /// Blocks whose lower half was zero.
     pub fn bottom_half_zero_blocks(self) -> usize {
         self.bottom_half_zero
     }
 
+    /// Blocks decoded through the general AC path.
     pub fn general_blocks(self) -> usize {
         self.general
     }
@@ -99,8 +109,8 @@ impl BenchBlockActivityCounts {
     }
 }
 
-#[doc(hidden)]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Timing and block-activity profile for fast 4:2:0 tile batches.
 pub struct BenchFast420Profile {
     total_ns: u128,
     parse_plan_ns: u128,
@@ -112,30 +122,37 @@ pub struct BenchFast420Profile {
 }
 
 impl BenchFast420Profile {
+    /// Total measured time in nanoseconds.
     pub fn total_ns(self) -> u128 {
         self.total_ns
     }
 
+    /// JPEG parse and plan setup time in nanoseconds.
     pub fn parse_plan_ns(self) -> u128 {
         self.parse_plan_ns
     }
 
+    /// MCU entropy decode time in nanoseconds.
     pub fn mcu_decode_ns(self) -> u128 {
         self.mcu_decode_ns
     }
 
+    /// RGB emission time in nanoseconds.
     pub fn rgb_emit_ns(self) -> u128 {
         self.rgb_emit_ns
     }
 
+    /// Finish/finalization time in nanoseconds.
     pub fn finish_ns(self) -> u128 {
         self.finish_ns
     }
 
+    /// Number of decoded tiles included in the profile.
     pub fn tile_count(self) -> usize {
         self.tile_count
     }
 
+    /// Block activity counters collected during the profile.
     pub fn block_activity_counts(self) -> BenchBlockActivityCounts {
         self.block_activity_counts
     }
@@ -290,7 +307,7 @@ impl OutputWriter for BenchProfileSinkWriter {
     }
 }
 
-#[doc(hidden)]
+/// Profile repeated fast 4:2:0 tile decodes.
 pub fn bench_profile_fast420_tile_batch(
     bytes: &[u8],
     batch_size: usize,
@@ -329,7 +346,7 @@ pub fn bench_profile_fast420_tile_batch(
     Ok(Some(profile))
 }
 
-#[doc(hidden)]
+/// Reusable Huffman decode state for entropy microbenchmarks.
 pub struct BenchHuffmanState {
     table: HuffmanTable,
     bytes: Vec<u8>,
@@ -337,6 +354,7 @@ pub struct BenchHuffmanState {
 }
 
 impl BenchHuffmanState {
+    /// Create a luma-DC table state containing `symbols` zero symbols.
     #[must_use]
     pub fn luma_dc_zeros(symbols: usize) -> Self {
         let table = HuffmanTable::from_raw(&RawHuffmanTable {
@@ -352,6 +370,7 @@ impl BenchHuffmanState {
         }
     }
 
+    /// Decode every symbol and return their accumulated value.
     pub fn decode_all(&self) -> Result<u32, JpegError> {
         let mut br = BitReader::new(&self.bytes);
         let mut sum = 0u32;
@@ -362,7 +381,7 @@ impl BenchHuffmanState {
     }
 }
 
-#[doc(hidden)]
+/// Build and decode a deterministic scalar ISLOW IDCT reference block.
 #[must_use]
 pub fn bench_idct_reference_block() -> [u8; 64] {
     let mut coeffs = [0i16; 64];
@@ -380,20 +399,17 @@ pub fn bench_idct_reference_block() -> [u8; 64] {
 
 /// Run the scalar ISLOW IDCT on a caller-provided block. Used by
 /// `tests/idct_parity.rs` as the reference oracle.
-#[doc(hidden)]
 pub fn bench_idct_reference_block_with(input: &[i16; 64], output: &mut [u8; 64]) {
     idct_islow(input, output);
 }
 
 /// Run the scalar DC-only ISLOW IDCT helper on a caller-provided coefficient.
-#[doc(hidden)]
 pub fn bench_idct_dc_only_block_with(dc_coeff: i16, output: &mut [u8; 64]) {
     idct_islow_dc_only(dc_coeff, output);
 }
 
 /// Run the scalar reduced 2x2 IDCT on a caller-provided block. Used by future
 /// quarter-scale parity and microbench coverage.
-#[doc(hidden)]
 pub fn bench_idct_reduced_2x2_block_with(input: &[i16; 64], output: &mut [u8; 4]) {
     idct_islow_2x2_scalar(input, output);
 }
@@ -402,7 +418,6 @@ pub fn bench_idct_reduced_2x2_block_with(input: &[i16; 64], output: &mut [u8; 4]
 /// does not support NEON — on aarch64 NEON is architecturally mandatory,
 /// so the feature check is a formality. Used by `tests/idct_parity.rs`.
 #[cfg(target_arch = "aarch64")]
-#[doc(hidden)]
 pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
     unsafe { crate::idct::neon::idct_islow(input, output) };
 }
@@ -410,14 +425,12 @@ pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
 /// Run the AVX2 IDCT on a caller-provided block. Requires runtime AVX2
 /// support — call `std::is_x86_feature_detected!("avx2")` first.
 #[cfg(target_arch = "x86_64")]
-#[doc(hidden)]
 pub fn bench_idct_avx2_block(input: &[i16; 64], output: &mut [u8; 64]) {
     unsafe { crate::idct::avx2::idct_islow(input, output) };
 }
 
 /// Pre-allocated scratch for the 4:2:0 RGB row-pair microbench. Stores two
 /// luma rows, three chroma rows per plane, and two packed RGB output rows.
-#[doc(hidden)]
 pub struct BenchRgb420RowPairScratch {
     y_top: Vec<u8>,
     y_bottom: Vec<u8>,
@@ -490,7 +503,6 @@ impl BenchRgb420RowPairScratch {
 
 /// Run the platform's normal RGB 4:2:0 row-pair backend on caller-provided
 /// inputs. On aarch64 this routes through the detected NEON path.
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn bench_rgb_row_pair_from_420(
     y_top: &[u8],
@@ -510,7 +522,6 @@ pub fn bench_rgb_row_pair_from_420(
 }
 
 /// Run the RGB 4:2:0 row-pair backend with dispatch stats.
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn bench_rgb_row_pair_from_420_with_stats(
     y_top: &[u8],
@@ -534,7 +545,6 @@ pub fn bench_rgb_row_pair_from_420_with_stats(
 }
 
 /// Run the scalar RGB 4:2:0 row-pair reference on caller-provided inputs.
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn bench_rgb_row_pair_from_420_reference(
     y_top: &[u8],
@@ -556,7 +566,6 @@ pub fn bench_rgb_row_pair_from_420_reference(
 /// Pre-allocated scratch for the 4:2:0 fancy-upsample microbench. Stores
 /// three chroma input rows (`prev`, `curr`, `next`) of length `chroma_width`
 /// and two output rows of length `2 * chroma_width`.
-#[doc(hidden)]
 pub struct BenchUpsampleH2V2Scratch {
     prev: Vec<u8>,
     curr: Vec<u8>,
@@ -600,7 +609,6 @@ impl BenchUpsampleH2V2Scratch {
 /// Pre-allocated scratch for the scalar YCbCr→RGB row microbench. Holds three
 /// planar input rows of length `width` and one packed RGB output buffer of
 /// length `3 * width`.
-#[doc(hidden)]
 pub struct BenchColorRowScratch {
     backend: Backend,
     y: Vec<u8>,

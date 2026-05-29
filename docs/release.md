@@ -15,8 +15,10 @@ may run before CPU fallback.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
 `cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` can use
 NVIDIA nvJPEG for full-frame RGB8 JPEG decode when `libnvjpeg` is installed;
-unsupported JPEG shapes and the J2K CUDA adapter still use CPU decode plus
-CUDA device memory upload. NVIDIA performance claims require self-hosted GPU
+unsupported JPEG shapes keep their documented JPEG fallback behavior. The J2K
+CUDA adapter reserves explicit CUDA requests for strict CUDA-resident HTJ2K
+codestream decode; CPU decode plus CUDA upload is available only through
+explicit CPU-staged J2K APIs. NVIDIA performance claims require self-hosted GPU
 benchmark evidence.
 
 ## Verification Gates
@@ -31,6 +33,18 @@ Hosted CI must pass before release staging:
    denied
 5. Benchmark compile checks for JPEG, JPEG Metal, J2K Metal, and tilecodec
 
+For any release note that includes benchmark numbers or comparator language,
+attach a benchmark publication report generated with:
+
+```sh
+cargo xtask bench-report --command "<exact benchmark command>" \
+  --input-source "<manifest, generated input label, or external corpus hash>" \
+  --out target/signinum-bench-report.md
+```
+
+The report must include input source, comparator versions, comparator paths,
+thread settings, skipped rows, host/compiler metadata, and crate revision.
+
 Runtime GPU validation is intentionally separate because hosted GitHub runners
 do not provide the required devices. Run `.github/workflows/gpu-validation.yml`
 on self-hosted runners before claiming Metal runtime validation:
@@ -44,7 +58,7 @@ on self-hosted runners before claiming Metal runtime validation:
 Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output
 and the opt-in nvJPEG JPEG decode path on a CUDA runner. Timed NVIDIA
 performance claims require the `run-timed-benchmarks` workflow input and
-recorded benchmark output.
+recorded benchmark output plus the benchmark publication report.
 
 ## Crates.io
 

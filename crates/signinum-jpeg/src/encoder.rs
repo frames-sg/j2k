@@ -23,26 +23,40 @@ use crate::adapter::{
 use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
 use std::time::{Duration, Instant};
 
+/// Backend selected for baseline JPEG encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegBackend {
+    /// Let the codec choose a backend.
     Auto,
+    /// Portable CPU encoder.
     Cpu,
+    /// Metal encoder adapter.
     Metal,
 }
 
+/// Baseline JPEG chroma subsampling mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JpegSubsampling {
+    /// Single-channel grayscale.
     Gray,
+    /// Three-component 4:4:4 YBR.
     Ybr444,
+    /// Three-component 4:2:2 YBR.
     Ybr422,
+    /// Three-component 4:2:0 YBR.
     Ybr420,
 }
 
+/// Options for baseline JPEG encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JpegEncodeOptions {
+    /// JPEG quality in `1..=100`; values outside this range are clamped.
     pub quality: u8,
+    /// Chroma subsampling mode.
     pub subsampling: JpegSubsampling,
+    /// Optional restart interval in MCUs.
     pub restart_interval: Option<u16>,
+    /// Requested backend.
     pub backend: JpegBackend,
 }
 
@@ -57,47 +71,107 @@ impl Default for JpegEncodeOptions {
     }
 }
 
+impl JpegEncodeOptions {
+    /// Create baseline JPEG encode options.
+    pub const fn new(
+        quality: u8,
+        subsampling: JpegSubsampling,
+        restart_interval: Option<u16>,
+        backend: JpegBackend,
+    ) -> Self {
+        Self {
+            quality,
+            subsampling,
+            restart_interval,
+            backend,
+        }
+    }
+}
+
+/// Borrowed sample data for baseline JPEG encoding.
 #[derive(Debug, Clone, Copy)]
 pub enum JpegSamples<'a> {
+    /// 8-bit grayscale samples.
     Gray8 {
+        /// Tightly packed sample bytes.
         data: &'a [u8],
+        /// Image width in pixels.
         width: u32,
+        /// Image height in pixels.
         height: u32,
     },
+    /// Interleaved 8-bit RGB samples.
     Rgb8 {
+        /// Tightly packed RGB bytes.
         data: &'a [u8],
+        /// Image width in pixels.
         width: u32,
+        /// Image height in pixels.
         height: u32,
     },
 }
 
+/// Encoded JPEG bytes and backend metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedJpeg {
+    /// Complete JPEG interchange bytes.
     pub data: Vec<u8>,
+    /// Backend that produced the bytes.
     pub backend: JpegBackend,
 }
 
+/// Error returned by baseline JPEG encoding.
 #[derive(Debug, Error)]
 pub enum JpegEncodeError {
+    /// Width or height was zero.
     #[error("JPEG encode requires nonzero dimensions")]
     EmptyDimensions,
+    /// Width or height exceeds the baseline JPEG field size.
     #[error("JPEG baseline dimensions must fit in u16, got {width}x{height}")]
-    DimensionsTooLarge { width: u32, height: u32 },
+    DimensionsTooLarge {
+        /// Image width.
+        width: u32,
+        /// Image height.
+        height: u32,
+    },
+    /// Sample buffer length does not match geometry and format.
     #[error("JPEG sample buffer length mismatch: expected {expected}, got {actual}")]
-    SampleLength { expected: usize, actual: usize },
+    SampleLength {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        actual: usize,
+    },
+    /// Requested subsampling cannot be used with the sample format.
     #[error("JPEG subsampling {subsampling:?} is incompatible with {samples}")]
     IncompatibleSubsampling {
+        /// Requested subsampling.
         subsampling: JpegSubsampling,
+        /// Sample format name.
         samples: &'static str,
     },
+    /// Restart interval was zero.
     #[error("JPEG restart interval must be nonzero when provided")]
     InvalidRestartInterval,
+    /// Requested encode backend is unavailable.
     #[error("JPEG encode backend {backend:?} is unavailable in signinum-jpeg CPU crate")]
-    UnsupportedBackend { backend: JpegBackend },
+    UnsupportedBackend {
+        /// Requested backend.
+        backend: JpegBackend,
+    },
+    /// Marker segment exceeded JPEG length limits.
     #[error("JPEG encoded marker segment is too large: {name}")]
-    SegmentTooLarge { name: &'static str },
+    SegmentTooLarge {
+        /// Marker segment name.
+        name: &'static str,
+    },
+    /// Entropy encoder could not find a Huffman code.
     #[error("JPEG entropy symbol has no Huffman code: {symbol}")]
-    MissingHuffmanCode { symbol: u8 },
+    MissingHuffmanCode {
+        /// Missing symbol.
+        symbol: u8,
+    },
+    /// Internal encode failure.
     #[error("JPEG encode failed: {0}")]
     Internal(String),
 }
@@ -170,6 +244,7 @@ impl BitWriter {
     }
 }
 
+/// Encode borrowed samples into baseline JPEG interchange bytes.
 pub fn encode_jpeg_baseline(
     samples: JpegSamples<'_>,
     options: JpegEncodeOptions,
@@ -305,13 +380,7 @@ impl JpegSamples<'_> {
                 height,
             } => (data, width, height, 3usize, "Rgb8"),
         };
-        let expected = width as usize * height as usize * components;
-        if data.len() != expected {
-            return Err(JpegEncodeError::SampleLength {
-                expected,
-                actual: data.len(),
-            });
-        }
+        validate_sample_len(data, width, height, components)?;
         match (name, subsampling) {
             ("Gray8", JpegSubsampling::Gray) => Ok(()),
             (
@@ -326,12 +395,78 @@ impl JpegSamples<'_> {
     }
 }
 
+fn validate_sample_len(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    components: usize,
+) -> Result<usize, JpegEncodeError> {
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| JpegEncodeError::Internal("JPEG pixel count overflow".into()))?;
+    let expected = pixels
+        .checked_mul(components)
+        .ok_or_else(|| JpegEncodeError::Internal("JPEG sample byte count overflow".into()))?;
+    if data.len() != expected {
+        return Err(JpegEncodeError::SampleLength {
+            expected,
+            actual: data.len(),
+        });
+    }
+    Ok(pixels)
+}
+
+enum ComponentPlanes<'a> {
+    Gray { data: &'a [u8] },
+    Ycc { data: Vec<u8>, pixels: usize },
+}
+
+impl ComponentPlanes<'_> {
+    #[inline]
+    fn plane(&self, component: usize) -> &[u8] {
+        match self {
+            Self::Gray { data } => {
+                debug_assert_eq!(component, 0);
+                data
+            }
+            Self::Ycc { data, pixels } => {
+                let start = component
+                    .checked_mul(*pixels)
+                    .expect("JPEG component index overflow");
+                let end = start + *pixels;
+                &data[start..end]
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn allocation_count(&self) -> usize {
+        match self {
+            Self::Gray { .. } => 0,
+            Self::Ycc { .. } => 1,
+        }
+    }
+}
+
 fn component_planes(
     samples: JpegSamples<'_>,
     subsampling: JpegSubsampling,
-) -> Result<Vec<Vec<u8>>, JpegEncodeError> {
+) -> Result<ComponentPlanes<'_>, JpegEncodeError> {
     match samples {
-        JpegSamples::Gray8 { data, .. } => Ok(vec![data.to_vec()]),
+        JpegSamples::Gray8 {
+            data,
+            width,
+            height,
+        } => {
+            if subsampling != JpegSubsampling::Gray {
+                return Err(JpegEncodeError::IncompatibleSubsampling {
+                    subsampling,
+                    samples: "Gray8",
+                });
+            }
+            validate_sample_len(data, width, height, 1)?;
+            Ok(ComponentPlanes::Gray { data })
+        }
         JpegSamples::Rgb8 {
             data,
             width,
@@ -343,17 +478,33 @@ fn component_planes(
                     samples: "Rgb8",
                 });
             }
-            let pixels = width as usize * height as usize;
-            let mut y_plane = Vec::with_capacity(pixels);
-            let mut cb_plane = Vec::with_capacity(pixels);
-            let mut cr_plane = Vec::with_capacity(pixels);
-            for rgb in data.chunks_exact(3) {
+            let pixels = validate_sample_len(data, width, height, 3)?;
+            let plane_bytes = pixels
+                .checked_mul(3)
+                .expect("validated RGB plane byte count");
+            let mut planes: Vec<u8> = Vec::with_capacity(plane_bytes);
+            let y_plane = planes.as_mut_ptr();
+            let cb_plane = y_plane.wrapping_add(pixels);
+            let cr_plane = cb_plane.wrapping_add(pixels);
+            for (idx, rgb) in data.chunks_exact(3).enumerate() {
                 let (y, cb, cr) = rgb_to_ycbcr(rgb[0], rgb[1], rgb[2]);
-                y_plane.push(y);
-                cb_plane.push(cb);
-                cr_plane.push(cr);
+                // The validated RGB buffer yields exactly `pixels` loop indexes,
+                // and the reserved buffer has three `pixels`-sized regions.
+                unsafe {
+                    y_plane.add(idx).write(y);
+                    cb_plane.add(idx).write(cb);
+                    cr_plane.add(idx).write(cr);
+                }
             }
-            Ok(vec![y_plane, cb_plane, cr_plane])
+            // All three component planes are fully initialized above; u8 has no drop glue
+            // if a panic occurs before this point.
+            unsafe {
+                planes.set_len(plane_bytes);
+            }
+            Ok(ComponentPlanes::Ycc {
+                data: planes,
+                pixels,
+            })
         }
     }
 }
@@ -374,7 +525,7 @@ fn clamp_u8(value: i32) -> u8 {
 
 #[allow(clippy::too_many_arguments)]
 fn encode_entropy(
-    planes: &[Vec<u8>],
+    planes: &ComponentPlanes<'_>,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -406,7 +557,7 @@ fn encode_entropy(
 
 #[allow(clippy::too_many_arguments)]
 fn encode_entropy_serial(
-    planes: &[Vec<u8>],
+    planes: &ComponentPlanes<'_>,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -474,7 +625,7 @@ fn encode_entropy_serial(
 
 #[allow(clippy::too_many_arguments)]
 fn encode_entropy_restart_segments(
-    planes: &[Vec<u8>],
+    planes: &ComponentPlanes<'_>,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -535,7 +686,7 @@ fn encode_entropy_restart_segments(
 
 #[allow(clippy::too_many_arguments)]
 fn encode_entropy_mcu_range(
-    planes: &[Vec<u8>],
+    planes: &ComponentPlanes<'_>,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -587,7 +738,7 @@ fn encode_entropy_mcu_range(
 
 #[allow(clippy::too_many_arguments)]
 fn sample_block(
-    planes: &[Vec<u8>],
+    planes: &ComponentPlanes<'_>,
     width: u32,
     height: u32,
     sampling: JpegBaselineSampling,
@@ -598,6 +749,8 @@ fn sample_block(
     block_y: u8,
 ) -> [u8; 64] {
     let mut out = [0u8; 64];
+    let plane = planes.plane(component);
+    let width_usize = width as usize;
     let max_h = u32::from(sampling.max_h);
     let max_v = u32::from(sampling.max_v);
     let comp_h = u32::from(sampling.h[component]);
@@ -606,12 +759,27 @@ fn sample_block(
     let y_scale = max_v / comp_v;
     let mcu_origin_x = mcu_x * max_h * 8;
     let mcu_origin_y = mcu_y * max_v * 8;
+    let direct_sample = component == 0 || (x_scale == 1 && y_scale == 1);
+    let block_origin_x = mcu_origin_x + u32::from(block_x) * 8;
+    let block_origin_y = mcu_origin_y + u32::from(block_y) * 8;
+
+    if direct_sample && block_origin_x + 7 < width && block_origin_y + 7 < height {
+        let src_x = block_origin_x as usize;
+        let src_y = block_origin_y as usize;
+        for row in 0..8usize {
+            let src = (src_y + row) * width_usize + src_x;
+            let dst = row * 8;
+            out[dst..dst + 8].copy_from_slice(&plane[src..src + 8]);
+        }
+        return out;
+    }
+
     for y in 0..8u32 {
         for x in 0..8u32 {
-            let value = if component == 0 {
-                let sx = (mcu_origin_x + u32::from(block_x) * 8 + x).min(width - 1);
-                let sy = (mcu_origin_y + u32::from(block_y) * 8 + y).min(height - 1);
-                planes[component][(sy as usize * width as usize) + sx as usize]
+            let value = if direct_sample {
+                let sx = (block_origin_x + x).min(width - 1);
+                let sy = (block_origin_y + y).min(height - 1);
+                plane[(sy as usize * width_usize) + sx as usize]
             } else {
                 let mut sum = 0u32;
                 for dy in 0..y_scale {
@@ -620,9 +788,7 @@ fn sample_block(
                             .min(width - 1);
                         let sy = (mcu_origin_y + (u32::from(block_y) * 8 + y) * y_scale + dy)
                             .min(height - 1);
-                        sum += u32::from(
-                            planes[component][sy as usize * width as usize + sx as usize],
-                        );
+                        sum += u32::from(plane[sy as usize * width_usize + sx as usize]);
                     }
                 }
                 (sum / (x_scale * y_scale)) as u8
@@ -635,14 +801,24 @@ fn sample_block(
 
 fn fdct_quantize(block: &[u8; 64], quant: &[u8; 64], cosine: &[[f64; 8]; 8]) -> [i32; 64] {
     let mut coeffs = [0i32; 64];
+    let mut rows = [[0.0; 8]; 8];
+
+    for y in 0..8 {
+        for u in 0..8 {
+            let mut sum = 0.0;
+            for x in 0..8 {
+                let sample = f64::from(block[y * 8 + x]) - 128.0;
+                sum += sample * cosine[u][x];
+            }
+            rows[y][u] = sum;
+        }
+    }
+
     for v in 0..8 {
         for u in 0..8 {
             let mut sum = 0.0;
             for y in 0..8 {
-                for x in 0..8 {
-                    let sample = f64::from(block[y * 8 + x]) - 128.0;
-                    sum += sample * cosine[u][x] * cosine[v][y];
-                }
+                sum += rows[y][u] * cosine[v][y];
             }
             let cu = if u == 0 {
                 core::f64::consts::FRAC_1_SQRT_2
@@ -656,10 +832,49 @@ fn fdct_quantize(block: &[u8; 64], quant: &[u8; 64], cosine: &[[f64; 8]; 8]) -> 
             };
             let natural = v * 8 + u;
             let transformed = 0.25 * cu * cv * sum;
-            coeffs[natural] = (transformed / f64::from(quant[natural])).round() as i32;
+            let normalized = transformed / f64::from(quant[natural]);
+            coeffs[natural] = if is_near_rounding_boundary(normalized) {
+                fdct_quantize_coefficient_reference(block, quant, cosine, u, v)
+            } else {
+                normalized.round() as i32
+            };
         }
     }
     coeffs
+}
+
+fn is_near_rounding_boundary(value: f64) -> bool {
+    let fraction = value - value.floor();
+    (fraction - 0.5).abs() <= 1.0e-9
+}
+
+fn fdct_quantize_coefficient_reference(
+    block: &[u8; 64],
+    quant: &[u8; 64],
+    cosine: &[[f64; 8]; 8],
+    u: usize,
+    v: usize,
+) -> i32 {
+    let mut sum = 0.0;
+    for y in 0..8 {
+        for x in 0..8 {
+            let sample = f64::from(block[y * 8 + x]) - 128.0;
+            sum += sample * cosine[u][x] * cosine[v][y];
+        }
+    }
+    let cu = if u == 0 {
+        core::f64::consts::FRAC_1_SQRT_2
+    } else {
+        1.0
+    };
+    let cv = if v == 0 {
+        core::f64::consts::FRAC_1_SQRT_2
+    } else {
+        1.0
+    };
+    let natural = v * 8 + u;
+    let transformed = 0.25 * cu * cv * sum;
+    (transformed / f64::from(quant[natural])).round() as i32
 }
 
 pub(crate) fn encode_block(
@@ -761,6 +976,295 @@ mod tests {
             }
         }
         pixels
+    }
+
+    fn reference_fdct_quantize(
+        block: &[u8; 64],
+        quant: &[u8; 64],
+        cosine: &[[f64; 8]; 8],
+    ) -> [i32; 64] {
+        let mut coeffs = [0i32; 64];
+        for v in 0..8 {
+            for u in 0..8 {
+                let mut sum = 0.0;
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let sample = f64::from(block[y * 8 + x]) - 128.0;
+                        sum += sample * cosine[u][x] * cosine[v][y];
+                    }
+                }
+                let cu = if u == 0 {
+                    core::f64::consts::FRAC_1_SQRT_2
+                } else {
+                    1.0
+                };
+                let cv = if v == 0 {
+                    core::f64::consts::FRAC_1_SQRT_2
+                } else {
+                    1.0
+                };
+                let natural = v * 8 + u;
+                let transformed = 0.25 * cu * cv * sum;
+                coeffs[natural] = (transformed / f64::from(quant[natural])).round() as i32;
+            }
+        }
+        coeffs
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sample_block_reference(
+        planes: &ComponentPlanes<'_>,
+        width: u32,
+        height: u32,
+        sampling: JpegBaselineSampling,
+        component: usize,
+        mcu_x: u32,
+        mcu_y: u32,
+        block_x: u8,
+        block_y: u8,
+    ) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        let plane = planes.plane(component);
+        let max_h = u32::from(sampling.max_h);
+        let max_v = u32::from(sampling.max_v);
+        let comp_h = u32::from(sampling.h[component]);
+        let comp_v = u32::from(sampling.v[component]);
+        let x_scale = max_h / comp_h;
+        let y_scale = max_v / comp_v;
+        let mcu_origin_x = mcu_x * max_h * 8;
+        let mcu_origin_y = mcu_y * max_v * 8;
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let value = if component == 0 {
+                    let sx = (mcu_origin_x + u32::from(block_x) * 8 + x).min(width - 1);
+                    let sy = (mcu_origin_y + u32::from(block_y) * 8 + y).min(height - 1);
+                    plane[(sy as usize * width as usize) + sx as usize]
+                } else {
+                    let mut sum = 0u32;
+                    for dy in 0..y_scale {
+                        for dx in 0..x_scale {
+                            let sx = (mcu_origin_x + (u32::from(block_x) * 8 + x) * x_scale + dx)
+                                .min(width - 1);
+                            let sy = (mcu_origin_y + (u32::from(block_y) * 8 + y) * y_scale + dy)
+                                .min(height - 1);
+                            sum += u32::from(plane[sy as usize * width as usize + sx as usize]);
+                        }
+                    }
+                    (sum / (x_scale * y_scale)) as u8
+                };
+                out[(y * 8 + x) as usize] = value;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn separable_fdct_matches_reference_quantized_coefficients() {
+        let cosine = cosine_table();
+        for quality in [50, 90, 98] {
+            let tables = baseline_encode_tables(JpegEncodeOptions {
+                quality,
+                subsampling: JpegSubsampling::Ybr422,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            })
+            .unwrap();
+
+            for quant in [&tables.q_luma, &tables.q_chroma] {
+                for seed in [0u32, 1, 17, 93, 251, 997] {
+                    let mut block = [0u8; 64];
+                    for (idx, sample) in block.iter_mut().enumerate() {
+                        *sample =
+                            ((idx as u32 * 37 + seed * 19 + (idx as u32 / 8) * 11) & 0xFF) as u8;
+                    }
+                    assert_eq!(
+                        fdct_quantize(&block, quant, &cosine),
+                        reference_fdct_quantize(&block, quant, &cosine),
+                        "quality {quality}, seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_block_fast_paths_match_clamped_reference() {
+        let gray_width = 17;
+        let gray_height = 19;
+        let gray: Vec<_> = (0..gray_width * gray_height)
+            .map(|idx| ((idx * 7 + 13) & 0xFF) as u8)
+            .collect();
+        let gray_planes = component_planes(
+            JpegSamples::Gray8 {
+                data: &gray,
+                width: gray_width,
+                height: gray_height,
+            },
+            JpegSubsampling::Gray,
+        )
+        .unwrap();
+        let gray_sampling = baseline_encode_tables(JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Gray,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        })
+        .unwrap()
+        .sampling;
+
+        for (mcu_x, mcu_y) in [(0, 0), (2, 2)] {
+            assert_eq!(
+                sample_block(
+                    &gray_planes,
+                    gray_width,
+                    gray_height,
+                    gray_sampling,
+                    0,
+                    mcu_x,
+                    mcu_y,
+                    0,
+                    0,
+                ),
+                sample_block_reference(
+                    &gray_planes,
+                    gray_width,
+                    gray_height,
+                    gray_sampling,
+                    0,
+                    mcu_x,
+                    mcu_y,
+                    0,
+                    0,
+                ),
+                "gray mcu {mcu_x},{mcu_y}"
+            );
+        }
+
+        let rgb_width = 17;
+        let rgb_height = 19;
+        let rgb = patterned_rgb(rgb_width, rgb_height);
+        let rgb_planes = component_planes(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: rgb_width,
+                height: rgb_height,
+            },
+            JpegSubsampling::Ybr444,
+        )
+        .unwrap();
+        let rgb_sampling = baseline_encode_tables(JpegEncodeOptions {
+            quality: 90,
+            subsampling: JpegSubsampling::Ybr444,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        })
+        .unwrap()
+        .sampling;
+
+        for component in 0..3 {
+            for (mcu_x, mcu_y) in [(0, 0), (2, 2)] {
+                assert_eq!(
+                    sample_block(
+                        &rgb_planes,
+                        rgb_width,
+                        rgb_height,
+                        rgb_sampling,
+                        component,
+                        mcu_x,
+                        mcu_y,
+                        0,
+                        0,
+                    ),
+                    sample_block_reference(
+                        &rgb_planes,
+                        rgb_width,
+                        rgb_height,
+                        rgb_sampling,
+                        component,
+                        mcu_x,
+                        mcu_y,
+                        0,
+                        0,
+                    ),
+                    "Ybr444 component {component}, mcu {mcu_x},{mcu_y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn component_planes_borrow_gray_and_store_rgb_contiguously() {
+        let gray = [3_u8, 7, 11, 19];
+        let gray_planes = component_planes(
+            JpegSamples::Gray8 {
+                data: &gray,
+                width: 2,
+                height: 2,
+            },
+            JpegSubsampling::Gray,
+        )
+        .unwrap();
+        assert_eq!(gray_planes.plane(0), &gray);
+        assert_eq!(gray_planes.allocation_count(), 0);
+
+        let rgb = [10_u8, 20, 30, 40, 50, 60];
+        let rgb_planes = component_planes(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 2,
+                height: 1,
+            },
+            JpegSubsampling::Ybr444,
+        )
+        .unwrap();
+        let (y0, cb0, cr0) = rgb_to_ycbcr(10, 20, 30);
+        let (y1, cb1, cr1) = rgb_to_ycbcr(40, 50, 60);
+        assert_eq!(rgb_planes.plane(0), &[y0, y1]);
+        assert_eq!(rgb_planes.plane(1), &[cb0, cb1]);
+        assert_eq!(rgb_planes.plane(2), &[cr0, cr1]);
+        assert_eq!(rgb_planes.plane(0).len(), 2);
+        assert_eq!(rgb_planes.plane(1).len(), 2);
+        assert_eq!(rgb_planes.plane(2).len(), 2);
+        assert_eq!(rgb_planes.allocation_count(), 1);
+    }
+
+    #[test]
+    fn component_planes_revalidates_sample_lengths_before_storage() {
+        let Err(gray_err) = component_planes(
+            JpegSamples::Gray8 {
+                data: &[1, 2, 3],
+                width: 2,
+                height: 2,
+            },
+            JpegSubsampling::Gray,
+        ) else {
+            panic!("invalid gray length should be rejected");
+        };
+        assert!(matches!(
+            gray_err,
+            JpegEncodeError::SampleLength {
+                expected: 4,
+                actual: 3
+            }
+        ));
+
+        let Err(rgb_err) = component_planes(
+            JpegSamples::Rgb8 {
+                data: &[],
+                width: 1,
+                height: 1,
+            },
+            JpegSubsampling::Ybr444,
+        ) else {
+            panic!("invalid RGB length should be rejected");
+        };
+        assert!(matches!(
+            rgb_err,
+            JpegEncodeError::SampleLength {
+                expected: 3,
+                actual: 0
+            }
+        ));
     }
 
     #[test]

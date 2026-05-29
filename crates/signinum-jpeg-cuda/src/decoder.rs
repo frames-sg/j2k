@@ -21,11 +21,13 @@ use crate::runtime::{validate_surface_request, wrap_surface};
 use crate::surface::{CudaSurfaceStats, Storage};
 use crate::{profile, CudaSession, Error, Surface};
 
+/// CUDA-facing JPEG decoder wrapper.
 pub struct Decoder<'a> {
     inner: CpuDecoder<'a>,
 }
 
 impl<'a> Decoder<'a> {
+    /// Create a CUDA-facing decoder from compressed JPEG bytes.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         Ok(Self {
             inner: CpuDecoder::new(input)?,

@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
+/// Scalar sample storage type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SampleType {
+    /// Unsigned 8-bit sample.
     U8,
+    /// Unsigned 16-bit sample.
     U16,
 }
 
+/// Marker trait for sample types accepted by typed row-streaming APIs.
 pub trait Sample: Copy + Default + Send + Sync + 'static {
+    /// Runtime sample type identifier.
     const TYPE: SampleType;
+    /// Number of significant bits in the storage type.
     const BITS: u8;
 }
 

@@ -2,33 +2,22 @@
 
 use signinum_core::{CacheStats, CodecContext};
 use signinum_j2k_native::CpuDecodeParallelism;
-#[cfg(target_os = "macos")]
-use signinum_j2k_native::J2kDirectGrayscalePlan;
 
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone)]
-struct DirectGrayPlanCache {
-    key: u64,
-    plan: J2kDirectGrayscalePlan,
-}
-
+/// Reusable JPEG 2000 decode context and cache state.
 #[derive(Debug, Default, Clone)]
 pub struct J2kContext {
     hits: u64,
     misses: u64,
     cpu_decode_parallelism: CpuDecodeParallelism,
-    #[cfg(target_os = "macos")]
-    direct_gray_plan: Option<DirectGrayPlanCache>,
 }
 
 impl J2kContext {
+    /// Create an empty JPEG 2000 context.
     pub const fn new() -> Self {
         Self {
             hits: 0,
             misses: 0,
             cpu_decode_parallelism: CpuDecodeParallelism::Auto,
-            #[cfg(target_os = "macos")]
-            direct_gray_plan: None,
         }
     }
 
@@ -36,31 +25,14 @@ impl J2kContext {
         self.misses = self.misses.saturating_add(1);
     }
 
+    /// Return the CPU decode parallelism policy.
     pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {
         self.cpu_decode_parallelism
     }
 
+    /// Set the CPU decode parallelism policy.
     pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
         self.cpu_decode_parallelism = parallelism;
-    }
-
-    #[cfg(target_os = "macos")]
-    #[doc(hidden)]
-    pub fn cached_direct_gray_plan(&mut self, key: u64) -> Option<J2kDirectGrayscalePlan> {
-        if let Some(cache) = &self.direct_gray_plan {
-            if cache.key == key {
-                self.hits = self.hits.saturating_add(1);
-                return Some(cache.plan.clone());
-            }
-        }
-        self.misses = self.misses.saturating_add(1);
-        None
-    }
-
-    #[cfg(target_os = "macos")]
-    #[doc(hidden)]
-    pub fn store_direct_gray_plan(&mut self, key: u64, plan: J2kDirectGrayscalePlan) {
-        self.direct_gray_plan = Some(DirectGrayPlanCache { key, plan });
     }
 }
 
@@ -69,16 +41,9 @@ impl CodecContext for J2kContext {
         self.hits = 0;
         self.misses = 0;
         self.cpu_decode_parallelism = CpuDecodeParallelism::Auto;
-        #[cfg(target_os = "macos")]
-        {
-            self.direct_gray_plan = None;
-        }
     }
 
     fn cache_stats(&self) -> CacheStats {
-        CacheStats {
-            hits: self.hits,
-            misses: self.misses,
-        }
+        CacheStats::new(self.hits, self.misses)
     }
 }

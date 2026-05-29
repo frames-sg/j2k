@@ -126,6 +126,13 @@ fn parse_jp2h(payload: &[u8], base_offset: usize) -> Result<(bool, Option<Colors
 
     while offset < payload.len() {
         let header = read_box_header(payload, offset)?;
+        if header.end > payload.len() {
+            return Err(InputError::TruncatedAt {
+                offset: base_offset + offset,
+                segment: "box payload",
+            }
+            .into());
+        }
         let inner = &payload[header.payload_start..header.end];
         match &header.box_type {
             b"ihdr" => {

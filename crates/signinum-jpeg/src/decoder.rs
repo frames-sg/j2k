@@ -70,10 +70,7 @@ pub struct DecodeOutcome {
 
 impl From<DecodeOutcome> for CoreDecodeOutcome<Warning> {
     fn from(outcome: DecodeOutcome) -> Self {
-        Self {
-            decoded: outcome.decoded.into(),
-            warnings: outcome.warnings,
-        }
+        Self::new(outcome.decoded.into(), outcome.warnings)
     }
 }
 
@@ -1002,10 +999,34 @@ impl<'a> Decoder<'a> {
         roi: Rect,
         scale: Downscale,
     ) -> Result<(Vec<u8>, DecodeOutcome), JpegError> {
+        if roi.w == 0 || roi.h == 0 || !roi.is_within(self.info.dimensions) {
+            return Err(JpegError::RectOutOfBounds {
+                rect: roi,
+                width: self.info.dimensions.0,
+                height: self.info.dimensions.1,
+            });
+        }
         let legacy = output_format_from_parts(self.info.sof_kind, fmt, scale)?;
         let scaled_roi = scaled_rect_covering(roi, legacy.downscale())?;
-        let stride = scaled_roi.w as usize * legacy.bytes_per_pixel();
-        let len = stride * scaled_roi.h as usize;
+        let stride = (scaled_roi.w as usize)
+            .checked_mul(legacy.bytes_per_pixel())
+            .ok_or(JpegError::MemoryCapExceeded {
+                requested: usize::MAX,
+                cap: DEFAULT_MAX_DECODE_BYTES,
+            })?;
+        let len =
+            stride
+                .checked_mul(scaled_roi.h as usize)
+                .ok_or(JpegError::MemoryCapExceeded {
+                    requested: usize::MAX,
+                    cap: DEFAULT_MAX_DECODE_BYTES,
+                })?;
+        if len > DEFAULT_MAX_DECODE_BYTES {
+            return Err(JpegError::MemoryCapExceeded {
+                requested: len,
+                cap: DEFAULT_MAX_DECODE_BYTES,
+            });
+        }
         let mut out = allocate_output_buffer(len);
         let outcome =
             self.decode_region_scaled_into_with_scratch(pool, &mut out, stride, fmt, roi, scale)?;
@@ -1034,7 +1055,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<DecodeOutcome, JpegError> {
         let profile_enabled = jpeg_profile_stages_enabled();
         let total_start = profile_enabled.then(Instant::now);
-        if !roi.is_within(self.info.dimensions) {
+        if roi.w == 0 || roi.h == 0 || !roi.is_within(self.info.dimensions) {
             return Err(JpegError::RectOutOfBounds {
                 rect: roi,
                 width: self.info.dimensions.0,

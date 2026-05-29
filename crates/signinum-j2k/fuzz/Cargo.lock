@@ -174,14 +174,14 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "signinum-j2k"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "fearless_simd",
  "libm",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-profile"
-version = "0.4.3"
+version = "0.4.4"
 
 [[package]]
 name = "syn"

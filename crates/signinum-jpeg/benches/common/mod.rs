@@ -318,9 +318,7 @@ fn signinum_tile_batch_worker_count(batch_size: usize) -> usize {
         .and_then(std::num::NonZeroUsize::new);
     tile_batch_worker_count(
         batch_size,
-        TileBatchOptions {
-            workers: configured,
-        },
+        TileBatchOptions::new(configured),
         std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
     )
 }

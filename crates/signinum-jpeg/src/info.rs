@@ -29,10 +29,15 @@ pub enum SofKind {
 /// Declared input color space after APP14 detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
+    /// Single-channel grayscale.
     Grayscale,
+    /// JPEG YCbCr.
     YCbCr,
+    /// RGB.
     Rgb,
+    /// CMYK.
     Cmyk,
+    /// YCbCr plus key channel.
     Ycck,
 }
 
@@ -48,6 +53,7 @@ pub struct SamplingFactors {
 }
 
 impl SamplingFactors {
+    /// Construct sampling metadata from per-component `(H, V)` factors.
     pub fn from_components(components: &[(u8, u8)]) -> Self {
         assert!(
             components.len() <= 4,
@@ -69,18 +75,22 @@ impl SamplingFactors {
         }
     }
 
+    /// Number of declared components.
     pub fn len(&self) -> usize {
         self.component_count as usize
     }
 
+    /// True when no components are declared.
     pub fn is_empty(&self) -> bool {
         self.component_count == 0
     }
 
+    /// Return one component's `(H, V)` sampling factors.
     pub fn component(&self, index: usize) -> Option<(u8, u8)> {
         self.components().get(index).copied()
     }
 
+    /// Return all component sampling factors in declaration order.
     pub fn components(&self) -> &[(u8, u8)] {
         &self.components[..self.component_count as usize]
     }
@@ -148,9 +158,13 @@ impl McuGeometry {
 /// Inclusive axis-aligned rectangle in image coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
+    /// Left coordinate.
     pub x: u32,
+    /// Top coordinate.
     pub y: u32,
+    /// Width in pixels.
     pub w: u32,
+    /// Height in pixels.
     pub h: u32,
 }
 
@@ -256,13 +270,17 @@ impl DownscaleFactor {
 /// Override for APP14 color-transform detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorTransform {
+    /// Use APP14 and header metadata to infer the transform.
     Auto,
+    /// Force RGB interpretation for three-component data.
     ForceRgb,
+    /// Force YCbCr interpretation for three-component data.
     ForceYCbCr,
 }
 
 /// Public decode options for JPEG reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DecodeOptions {
     color_transform: ColorTransform,
 }
@@ -276,6 +294,11 @@ impl Default for DecodeOptions {
 }
 
 impl DecodeOptions {
+    /// Create decode options with an explicit color-transform override.
+    pub const fn new(color_transform: ColorTransform) -> Self {
+        Self { color_transform }
+    }
+
     /// Override APP14 color-transform detection.
     pub fn set_color_transform(&mut self, color_transform: ColorTransform) {
         self.color_transform = color_transform;
@@ -309,17 +332,26 @@ impl DecodeOptions {
 /// count of refinement passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
+    /// Image dimensions in pixels.
     pub dimensions: (u32, u32),
+    /// Declared or inferred color space.
     pub color_space: ColorSpace,
+    /// Per-component sampling factors.
     pub sampling: SamplingFactors,
+    /// Start-of-frame kind.
     pub sof_kind: SofKind,
+    /// Significant bits per sample.
     pub bit_depth: u8,
+    /// Optional restart interval in MCUs.
     pub restart_interval: Option<u16>,
+    /// Minimum coded unit geometry.
     pub mcu_geometry: McuGeometry,
+    /// Number of SOS markers observed.
     pub scan_count: u16,
 }
 
 impl Info {
+    /// Convert JPEG-specific metadata to the shared Signinum metadata shape.
     pub fn to_core_info(&self) -> signinum_core::Info {
         signinum_core::Info {
             dimensions: self.dimensions,

@@ -6,10 +6,12 @@
 //! projections used by `signinum-transcode`'s HTJ2K paths. CPU scalar code
 //! remains the oracle and fallback.
 
+#![deny(missing_docs)]
+
 #[cfg(target_os = "macos")]
 mod metal;
 
-#[doc(hidden)]
+/// Projection weight generation shared by Metal kernels and validation tests.
 pub mod weights;
 
 use core::fmt;
@@ -37,6 +39,7 @@ const MAX_AUTO_DWT97_STAGED_BATCH_AXIS: usize = 1024;
 
 /// Error returned by the Metal transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MetalTranscodeError {
     /// Metal is unavailable on this host or target.
     MetalUnavailable,

@@ -16,6 +16,10 @@ targets = []
 name = "signinum_cuda_runtime"
 path = "src/lib.rs"
 
+[features]
+default = []
+cuda-profiling = []
+
 [dependencies]
 libloading = { workspace = true }
 thiserror = { workspace = true }

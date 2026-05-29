@@ -23,6 +23,33 @@ writer. Use [`statumen`](https://github.com/frames-sg/statumen) for slide
 container parsing and [`wsi-dicom`](https://github.com/frames-sg/wsi-dicom)
 for DICOM VL Whole Slide Microscopy export.
 
+## How the frames-sg projects fit together
+
+The frames-sg WSI stack is split by responsibility:
+[`signinum`](https://github.com/frames-sg/signinum) provides codec primitives
+for JPEG, JPEG 2000, HTJ2K, and tile decompression;
+[`statumen`](https://github.com/frames-sg/statumen) uses those codecs to open
+vendor whole-slide formats such as SVS and NDPI, normalize pyramid geometry,
+and read regions or tiles; and
+[`wsi-dicom`](https://github.com/frames-sg/wsi-dicom) consumes
+Statumen-readable slides and writes DICOM VL Whole Slide Microscopy instances.
+Applications can use any layer directly, but the conversion path is codec layer
+to slide reader to DICOM exporter.
+
+```mermaid
+flowchart LR
+    source["Vendor WSI files<br/>SVS, NDPI, TIFF, CZI, MIRAX"]
+    codecs["signinum<br/>JPEG, JPEG 2000, HTJ2K, tile codecs"]
+    reader["statumen<br/>container parsing, metadata, tile/region reads"]
+    exporter["wsi-dicom<br/>DICOM VL Whole Slide Microscopy export"]
+    outputs["Apps, CLIs, archives, PACS"]
+
+    source --> reader
+    codecs --> reader
+    reader --> exporter
+    exporter --> outputs
+```
+
 CPU decode is always available and is the default facade build. Metal and CUDA
 adapters are opt-in features used only for supported workloads. CUDA adapters
 expose CUDA device memory through `cuda-runtime` when a CUDA driver is
@@ -337,8 +364,13 @@ collected on self-hosted runners with the target device stack installed.
 - [docs/support-matrix.md](docs/support-matrix.md) - stable surfaces, backend limits, MSRV, and benchmark-publication gates
 - [docs/wsi-decode-api.md](docs/wsi-decode-api.md) - public WSI decode API guide
 - [docs/wsi-dicom-passthrough.md](docs/wsi-dicom-passthrough.md) - passthrough-first conversion policy
+- [docs/downstream-integration.md](docs/downstream-integration.md) - container and DICOM integration boundary
+- [docs/external-corpus.md](docs/external-corpus.md) - external corpus manifest policy
 - [docs/bench.md](docs/bench.md) - benchmark methodology
 - [docs/parity.md](docs/parity.md) - reference decoder parity expectations
+- [docs/fuzzing.md](docs/fuzzing.md) - scheduled fuzzing, seed corpus, and crash reproducer workflow
+- [docs/unsafe-audit.md](docs/unsafe-audit.md) - unsafe/SIMD/FFI inventory and safety invariants
+- [docs/public-api-docs.md](docs/public-api-docs.md) - stable crate rustdoc coverage ratchet
 - [docs/release.md](docs/release.md) - release staging notes
 - [CHANGELOG.md](CHANGELOG.md) - release history
 

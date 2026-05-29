@@ -1,6 +1,6 @@
 # signinum-core
 
-Shared CPU-first 1.0 decode contracts for the `signinum` workspace.
+Shared stable `0.4.x` decode contracts for the `signinum` workspace.
 
 Install:
 

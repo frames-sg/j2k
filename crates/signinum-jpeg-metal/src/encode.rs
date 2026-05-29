@@ -20,24 +20,35 @@ use crate::compute;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
+/// A JPEG baseline encode input tile stored in a Metal buffer.
 pub struct JpegBaselineMetalEncodeTile<'a> {
+    /// Metal buffer containing the input pixels.
     pub buffer: &'a Buffer,
+    /// Byte offset from the start of `buffer` to the first input pixel.
     pub byte_offset: usize,
+    /// Width of the input tile in pixels.
     pub width: u32,
+    /// Height of the input tile in pixels.
     pub height: u32,
+    /// Number of bytes between consecutive input rows.
     pub pitch_bytes: usize,
+    /// Width to write into the JPEG codestream.
     pub output_width: u32,
+    /// Height to write into the JPEG codestream.
     pub output_height: u32,
+    /// Pixel format of the source tile.
     pub format: PixelFormat,
 }
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
+/// Placeholder Metal encode tile type for non-macOS targets.
 pub struct JpegBaselineMetalEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-backed tile as a JPEG baseline codestream.
 pub fn encode_jpeg_baseline_from_metal_buffer(
     tile: JpegBaselineMetalEncodeTile<'_>,
     options: JpegEncodeOptions,
@@ -80,6 +91,7 @@ pub fn encode_jpeg_baseline_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-backed tiles as JPEG baseline codestreams.
 pub fn encode_jpeg_baseline_batch_from_metal_buffers(
     tiles: &[JpegBaselineMetalEncodeTile<'_>],
     options: JpegEncodeOptions,

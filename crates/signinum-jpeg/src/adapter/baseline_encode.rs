@@ -6,32 +6,50 @@ use crate::encoder::{
     EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling,
 };
 
+/// Baseline JPEG sampling factors used by adapter encoders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JpegBaselineSampling {
+    /// Component count.
     pub components: u8,
+    /// Horizontal sampling factor per component.
     pub h: [u8; 3],
+    /// Vertical sampling factor per component.
     pub v: [u8; 3],
+    /// Maximum horizontal sampling factor.
     pub max_h: u8,
+    /// Maximum vertical sampling factor.
     pub max_v: u8,
 }
 
+/// Canonical Huffman encode table expanded for device encoders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JpegBaselineHuffmanTable {
+    /// Huffman codes by symbol.
     pub codes: [u16; 256],
+    /// Huffman code lengths by symbol.
     pub lens: [u8; 256],
 }
 
+/// Quantization, Huffman, and sampling tables for baseline encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JpegBaselineEncodeTables {
+    /// Sampling factors.
     pub sampling: JpegBaselineSampling,
+    /// Luma quantization table in natural order.
     pub q_luma: [u8; 64],
+    /// Chroma quantization table in natural order.
     pub q_chroma: [u8; 64],
+    /// Luma DC Huffman table.
     pub huff_dc_luma: JpegBaselineHuffmanTable,
+    /// Luma AC Huffman table.
     pub huff_ac_luma: JpegBaselineHuffmanTable,
+    /// Chroma DC Huffman table.
     pub huff_dc_chroma: JpegBaselineHuffmanTable,
+    /// Chroma AC Huffman table.
     pub huff_ac_chroma: JpegBaselineHuffmanTable,
 }
 
+/// Build baseline JPEG tables from public encode options.
 pub fn baseline_encode_tables(
     options: JpegEncodeOptions,
 ) -> Result<JpegBaselineEncodeTables, JpegEncodeError> {
@@ -47,6 +65,7 @@ pub fn baseline_encode_tables(
     })
 }
 
+/// Validate that baseline JPEG dimensions are nonzero and fit the format.
 pub fn validate_jpeg_baseline_dimensions(width: u32, height: u32) -> Result<(), JpegEncodeError> {
     if width == 0 || height == 0 {
         return Err(JpegEncodeError::EmptyDimensions);
@@ -57,6 +76,7 @@ pub fn validate_jpeg_baseline_dimensions(width: u32, height: u32) -> Result<(), 
     Ok(())
 }
 
+/// Validate a restart interval for baseline JPEG encoding.
 pub fn validate_jpeg_baseline_restart_interval(
     restart_interval: Option<u16>,
 ) -> Result<(), JpegEncodeError> {
@@ -66,6 +86,7 @@ pub fn validate_jpeg_baseline_restart_interval(
     Ok(())
 }
 
+/// Return sampling factors for a public baseline subsampling mode.
 pub fn jpeg_baseline_sampling_for(subsampling: JpegSubsampling) -> JpegBaselineSampling {
     match subsampling {
         JpegSubsampling::Gray => JpegBaselineSampling {
@@ -99,6 +120,7 @@ pub fn jpeg_baseline_sampling_for(subsampling: JpegSubsampling) -> JpegBaselineS
     }
 }
 
+/// Conservative entropy buffer capacity for adapter baseline encoders.
 pub fn jpeg_baseline_entropy_capacity_bytes(
     width: u32,
     height: u32,
@@ -130,6 +152,7 @@ pub fn jpeg_baseline_entropy_capacity_bytes(
         .map_err(|_| JpegEncodeError::Internal("JPEG entropy capacity exceeds usize".into()))
 }
 
+/// Assemble a complete baseline JPEG frame from entropy bytes and tables.
 pub fn assemble_jpeg_baseline_frame(
     entropy: &[u8],
     width: u32,
@@ -198,6 +221,7 @@ pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
     Ok(EncodedJpeg { data: out, backend })
 }
 
+/// JPEG zig-zag order mapping for baseline coefficient serialization.
 pub const JPEG_BASELINE_ZIGZAG: [u8; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,

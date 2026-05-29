@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_core::{
-    Colorspace, CompressedPayloadKind, CompressedTransferSyntax, PassthroughDecision,
+    Colorspace, CompressedPayloadKind, CompressedTransferSyntax, InputError, PassthroughDecision,
     PassthroughRequirements,
 };
 use signinum_j2k::{J2kDecoder, J2kError, J2kView};
@@ -84,6 +84,24 @@ fn minimal_jp2() -> Vec<u8> {
     bytes.extend_from_slice(&[
         0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r', 0, 0, 0, 64, 0,
         0, 0, 128, 0, 3, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0, 16,
+    ]);
+    let len = (8 + codestream.len()) as u32;
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(b"jp2c");
+    bytes.extend_from_slice(&codestream);
+    bytes
+}
+
+fn jp2_with_truncated_jp2h_child_box() -> Vec<u8> {
+    let codestream = minimal_codestream();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 16, b'j', b'p', b'2', b'h', 0, 0, 0, 32, b'i', b'h', b'd', b'r',
     ]);
     let len = (8 + codestream.len()) as u32;
     bytes.extend_from_slice(&len.to_be_bytes());
@@ -235,6 +253,20 @@ fn codestream_truncated_after_main_header_is_rejected() {
     assert!(matches!(
         err,
         J2kError::Input(signinum_core::InputError::TruncatedAt { .. })
+    ));
+}
+
+#[test]
+fn jp2_with_truncated_nested_header_box_returns_error() {
+    let err = J2kDecoder::inspect(&jp2_with_truncated_jp2h_child_box())
+        .expect_err("truncated nested jp2h child box");
+
+    assert!(matches!(
+        err,
+        J2kError::Input(InputError::TruncatedAt {
+            segment: "box payload",
+            ..
+        })
     ));
 }
 

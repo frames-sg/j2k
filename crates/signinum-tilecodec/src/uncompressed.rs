@@ -3,6 +3,7 @@
 use crate::{pool::NoPool, TileCodecError};
 use signinum_core::{BufferError, TileDecompress};
 
+/// Pass-through decompressor for uncompressed tile payloads.
 pub struct UncompressedCodec;
 
 impl TileDecompress for UncompressedCodec {

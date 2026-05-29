@@ -8,6 +8,7 @@ use crate::runtime::cuda_error;
 #[cfg(feature = "cuda-runtime")]
 use crate::Error;
 
+/// Mutable CUDA adapter session reused across submissions.
 #[derive(Clone, Default)]
 pub struct CudaSession {
     submissions: u64,
@@ -16,11 +17,13 @@ pub struct CudaSession {
 }
 
 impl CudaSession {
+    /// Number of submissions recorded by this session.
     pub fn submissions(&self) -> u64 {
         self.submissions
     }
 
     #[cfg(feature = "cuda-runtime")]
+    /// True when a CUDA runtime context has been initialized.
     pub fn is_runtime_initialized(&self) -> bool {
         self.context.is_some()
     }

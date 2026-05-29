@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! Tile payload decompression codecs used by Signinum container integrations.
+
+#![deny(missing_docs)]
+
 mod bounded;
 mod deflate;
 mod error;

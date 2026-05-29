@@ -11,23 +11,49 @@ const PLANNER_FAST_BITS: u8 = 12;
 const PLANNER_FAST_ENTRIES: usize = 1 << PLANNER_FAST_BITS;
 const MAX_NONRESTART_ENTROPY_CHECKPOINTS: u32 = 2048;
 
+/// Error returned while building a Metal fast-path packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MetalFast420PacketError {
+    /// CPU parser rejected the JPEG input.
     Decode(JpegError),
+    /// SOF kind is unsupported by the packet shape.
     UnsupportedSof(SofKind),
+    /// Color space is unsupported by the packet shape.
     UnsupportedColorSpace(ColorSpace),
+    /// Sampling factors do not match the requested packet shape.
     UnsupportedSampling,
+    /// Component ids or order cannot be represented by the packet shape.
     UnsupportedComponentOrder,
+    /// Input did not contain a scan.
     MissingScan,
-    MissingQuantTable { slot: u8 },
-    MissingHuffmanTable { kind: TableKind, slot: u8 },
-    EntropyMarkerUnsupported { marker: u8 },
+    /// Required quantization table is missing.
+    MissingQuantTable {
+        /// Table slot.
+        slot: u8,
+    },
+    /// Required Huffman table is missing.
+    MissingHuffmanTable {
+        /// Huffman table kind.
+        kind: TableKind,
+        /// Table slot.
+        slot: u8,
+    },
+    /// Entropy payload contains an unsupported marker.
+    EntropyMarkerUnsupported {
+        /// Marker byte.
+        marker: u8,
+    },
+    /// Entropy payload ended before a valid packet could be produced.
     TruncatedEntropy,
 }
 
+/// Huffman table class used by Metal packet builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableKind {
+    /// DC table.
     Dc,
+    /// AC table.
     Ac,
 }
 
@@ -37,24 +63,37 @@ impl From<JpegError> for MetalFast420PacketError {
     }
 }
 
+/// Huffman table payload copied into Metal packet descriptors.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetalHuffmanTable {
+    /// JPEG BITS counts for lengths 1 through 16.
     pub bits: [u8; 16],
+    /// Number of valid entries in `values`.
     pub values_len: u16,
+    /// JPEG HUFFVAL values.
     pub values: [u8; 256],
 }
 
+/// Entropy checkpoint copied into Metal packet descriptors.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JpegMetalEntropyCheckpointV1 {
+    /// MCU index where this checkpoint begins.
     pub mcu_index: u32,
+    /// Byte offset in the entropy payload.
     pub entropy_pos: u32,
+    /// Bit accumulator state.
     pub bit_acc: u64,
+    /// Number of buffered bits.
     pub bit_count: u32,
+    /// Previous Y DC value.
     pub y_prev_dc: i32,
+    /// Previous Cb DC value.
     pub cb_prev_dc: i32,
+    /// Previous Cr DC value.
     pub cr_prev_dc: i32,
+    /// Reserved for ABI-compatible expansion.
     pub reserved: u32,
 }
 
@@ -86,80 +125,141 @@ impl MetalHuffmanTable {
     }
 }
 
+/// Metal packet for baseline 4:2:0 YCbCr decode.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegMetalFast420PacketV1 {
+    /// Image dimensions.
     pub dimensions: (u32, u32),
+    /// MCU columns.
     pub mcus_per_row: u32,
+    /// MCU rows.
     pub mcu_rows: u32,
+    /// Restart interval in MCUs, or zero when absent.
     pub restart_interval_mcus: u32,
+    /// Entropy byte offsets for restart markers.
     pub restart_offsets: Vec<u32>,
+    /// Entropy checkpoints for non-restart streams.
     pub entropy_checkpoints: Vec<JpegMetalEntropyCheckpointV1>,
+    /// Y quantization table.
     pub y_quant: [u16; 64],
+    /// Cb quantization table.
     pub cb_quant: [u16; 64],
+    /// Cr quantization table.
     pub cr_quant: [u16; 64],
+    /// Y DC Huffman table.
     pub y_dc_table: MetalHuffmanTable,
+    /// Y AC Huffman table.
     pub y_ac_table: MetalHuffmanTable,
+    /// Cb DC Huffman table.
     pub cb_dc_table: MetalHuffmanTable,
+    /// Cb AC Huffman table.
     pub cb_ac_table: MetalHuffmanTable,
+    /// Cr DC Huffman table.
     pub cr_dc_table: MetalHuffmanTable,
+    /// Cr AC Huffman table.
     pub cr_ac_table: MetalHuffmanTable,
+    /// Entropy-coded scan bytes.
     pub entropy_bytes: Vec<u8>,
 }
 
+/// Metal packet for baseline 4:2:2 YCbCr decode.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegMetalFast422PacketV1 {
+    /// Image dimensions.
     pub dimensions: (u32, u32),
+    /// MCU columns.
     pub mcus_per_row: u32,
+    /// MCU rows.
     pub mcu_rows: u32,
+    /// Restart interval in MCUs, or zero when absent.
     pub restart_interval_mcus: u32,
+    /// Entropy byte offsets for restart markers.
     pub restart_offsets: Vec<u32>,
+    /// Entropy checkpoints for non-restart streams.
     pub entropy_checkpoints: Vec<JpegMetalEntropyCheckpointV1>,
+    /// Y quantization table.
     pub y_quant: [u16; 64],
+    /// Cb quantization table.
     pub cb_quant: [u16; 64],
+    /// Cr quantization table.
     pub cr_quant: [u16; 64],
+    /// Y DC Huffman table.
     pub y_dc_table: MetalHuffmanTable,
+    /// Y AC Huffman table.
     pub y_ac_table: MetalHuffmanTable,
+    /// Cb DC Huffman table.
     pub cb_dc_table: MetalHuffmanTable,
+    /// Cb AC Huffman table.
     pub cb_ac_table: MetalHuffmanTable,
+    /// Cr DC Huffman table.
     pub cr_dc_table: MetalHuffmanTable,
+    /// Cr AC Huffman table.
     pub cr_ac_table: MetalHuffmanTable,
+    /// Entropy-coded scan bytes.
     pub entropy_bytes: Vec<u8>,
 }
 
+/// Metal packet for baseline 4:4:4 YCbCr decode.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegMetalFast444PacketV1 {
+    /// Image dimensions.
     pub dimensions: (u32, u32),
+    /// MCU columns.
     pub mcus_per_row: u32,
+    /// MCU rows.
     pub mcu_rows: u32,
+    /// Restart interval in MCUs, or zero when absent.
     pub restart_interval_mcus: u32,
+    /// Entropy byte offsets for restart markers.
     pub restart_offsets: Vec<u32>,
+    /// Entropy checkpoints for non-restart streams.
     pub entropy_checkpoints: Vec<JpegMetalEntropyCheckpointV1>,
+    /// Y quantization table.
     pub y_quant: [u16; 64],
+    /// Cb quantization table.
     pub cb_quant: [u16; 64],
+    /// Cr quantization table.
     pub cr_quant: [u16; 64],
+    /// Y DC Huffman table.
     pub y_dc_table: MetalHuffmanTable,
+    /// Y AC Huffman table.
     pub y_ac_table: MetalHuffmanTable,
+    /// Cb DC Huffman table.
     pub cb_dc_table: MetalHuffmanTable,
+    /// Cb AC Huffman table.
     pub cb_ac_table: MetalHuffmanTable,
+    /// Cr DC Huffman table.
     pub cr_dc_table: MetalHuffmanTable,
+    /// Cr AC Huffman table.
     pub cr_ac_table: MetalHuffmanTable,
+    /// Entropy-coded scan bytes.
     pub entropy_bytes: Vec<u8>,
 }
 
+/// Metal packet for baseline grayscale decode.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegMetalGrayPacketV1 {
+    /// Image dimensions.
     pub dimensions: (u32, u32),
+    /// MCU columns.
     pub mcus_per_row: u32,
+    /// MCU rows.
     pub mcu_rows: u32,
+    /// Restart interval in MCUs, or zero when absent.
     pub restart_interval_mcus: u32,
+    /// Entropy byte offsets for restart markers.
     pub restart_offsets: Vec<u32>,
+    /// Y quantization table.
     pub y_quant: [u16; 64],
+    /// Y DC Huffman table.
     pub y_dc_table: MetalHuffmanTable,
+    /// Y AC Huffman table.
     pub y_ac_table: MetalHuffmanTable,
+    /// Entropy-coded scan bytes.
     pub entropy_bytes: Vec<u8>,
 }
 
@@ -377,6 +477,7 @@ impl<'a> PlannerBitReader<'a> {
     }
 }
 
+/// Build a 4:2:0 Metal packet from raw JPEG bytes.
 pub fn build_metal_fast420_packet(
     bytes: &[u8],
 ) -> Result<JpegMetalFast420PacketV1, MetalFast420PacketError> {
@@ -458,6 +559,7 @@ pub fn build_metal_fast420_packet(
     })
 }
 
+/// Build a 4:4:4 Metal packet from raw JPEG bytes.
 pub fn build_metal_fast444_packet(
     bytes: &[u8],
 ) -> Result<JpegMetalFast444PacketV1, MetalFast420PacketError> {
@@ -539,6 +641,7 @@ pub fn build_metal_fast444_packet(
     })
 }
 
+/// Build a 4:2:2 Metal packet from raw JPEG bytes.
 pub fn build_metal_fast422_packet(
     bytes: &[u8],
 ) -> Result<JpegMetalFast422PacketV1, MetalFast420PacketError> {
@@ -620,6 +723,7 @@ pub fn build_metal_fast422_packet(
     })
 }
 
+/// Build a grayscale Metal packet from raw JPEG bytes.
 pub fn build_metal_gray_packet(
     bytes: &[u8],
 ) -> Result<JpegMetalGrayPacketV1, MetalFast420PacketError> {
@@ -689,24 +793,28 @@ pub fn build_metal_gray_packet(
     })
 }
 
+/// Build a 4:2:0 Metal packet from an existing decoder.
 pub fn build_metal_fast420_packet_for_decoder(
     decoder: &crate::decoder::Decoder<'_>,
 ) -> Result<JpegMetalFast420PacketV1, MetalFast420PacketError> {
     build_metal_fast420_packet(decoder.bytes)
 }
 
+/// Build a 4:4:4 Metal packet from an existing decoder.
 pub fn build_metal_fast444_packet_for_decoder(
     decoder: &crate::decoder::Decoder<'_>,
 ) -> Result<JpegMetalFast444PacketV1, MetalFast420PacketError> {
     build_metal_fast444_packet(decoder.bytes)
 }
 
+/// Build a 4:2:2 Metal packet from an existing decoder.
 pub fn build_metal_fast422_packet_for_decoder(
     decoder: &crate::decoder::Decoder<'_>,
 ) -> Result<JpegMetalFast422PacketV1, MetalFast420PacketError> {
     build_metal_fast422_packet(decoder.bytes)
 }
 
+/// Build a grayscale Metal packet from an existing decoder.
 pub fn build_metal_gray_packet_for_decoder(
     decoder: &crate::decoder::Decoder<'_>,
 ) -> Result<JpegMetalGrayPacketV1, MetalFast420PacketError> {

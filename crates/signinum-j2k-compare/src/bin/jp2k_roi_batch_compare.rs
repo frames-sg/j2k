@@ -127,13 +127,11 @@ fn encode_htj2k_rgb_codestream(width: u32, height: u32) -> Result<Vec<u8>, Strin
     let pixels = patterned_rgb8(width, height);
     let samples = J2kLosslessSamples::new(&pixels, width, height, 3, 8, false)
         .map_err(|error| error.to_string())?;
-    let options = J2kLosslessEncodeOptions {
-        backend: EncodeBackendPreference::CpuOnly,
-        block_coding_mode: J2kBlockCodingMode::HighThroughput,
-        max_decomposition_levels: Some(2),
-        validation: J2kEncodeValidation::External,
-        ..J2kLosslessEncodeOptions::default()
-    };
+    let options = J2kLosslessEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::CpuOnly)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(2))
+        .with_validation(J2kEncodeValidation::External);
     Ok(encode_j2k_lossless(samples, &options)
         .map_err(|error| error.to_string())?
         .codestream)
@@ -209,7 +207,7 @@ fn decode_signinum_once_with_workers(
             scale: case.scale,
         })
         .collect::<Vec<_>>();
-    decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions { workers })
+    decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::new(workers))
         .map_err(|error| error.to_string())?;
     Ok(outputs.into_iter().flatten().collect())
 }
@@ -234,7 +232,7 @@ fn measure_grok(
 fn decode_grok_once(case: &CompareCase, workers: Option<NonZeroUsize>) -> Result<Vec<u8>, String> {
     let worker_count = tile_batch_worker_count(
         case.batch_size,
-        TileBatchOptions { workers },
+        TileBatchOptions::new(workers),
         std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
     );
     let chunk_size = case.batch_size.div_ceil(worker_count);

@@ -158,6 +158,19 @@ fn decode_into_handles_restart_marker_after_partial_entropy_byte() {
     assert!(out.iter().all(|&sample| sample == 128));
 }
 
+#[test]
+fn decode_into_handles_restart_marker_after_prefetched_entropy_reservoir() {
+    let bytes = grayscale_restart_jpeg_with_interval(192, 2);
+    let dec = Decoder::new(&bytes).expect("restart fixture must parse");
+    let (width, height) = dec.info().dimensions;
+    let stride = width as usize;
+    let mut out = vec![0u8; stride * height as usize];
+
+    dec.decode_scaled_into(&mut out, stride, PixelFormat::Gray8, Downscale::None)
+        .expect("restart marker after a long entropy segment must decode");
+    assert!(out.iter().all(|&sample| sample == 128));
+}
+
 fn decode_rgb(bytes: &[u8]) -> Vec<u8> {
     let dec = Decoder::new(bytes).expect("fixture must construct");
     let (w, h) = dec.info().dimensions;
@@ -275,6 +288,64 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
     bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
     bytes
+}
+
+fn grayscale_restart_jpeg_with_interval(interval_mcus: u16, segment_count: u16) -> Vec<u8> {
+    let width = interval_mcus * 8;
+    let height = segment_count * 8;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff,
+        0xc0,
+        0x00,
+        11,
+        8,
+        (height >> 8) as u8,
+        height as u8,
+        (width >> 8) as u8,
+        width as u8,
+        1,
+        1,
+        0x11,
+        0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff,
+        0xdd,
+        0x00,
+        0x04,
+        (interval_mcus >> 8) as u8,
+        interval_mcus as u8,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
+    for segment in 0..segment_count {
+        append_zero_dc_eob_entropy_segment(&mut bytes, interval_mcus);
+        if segment + 1 != segment_count {
+            bytes.extend_from_slice(&[0xff, 0xd0 | ((segment & 0x07) as u8)]);
+        }
+    }
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn append_zero_dc_eob_entropy_segment(bytes: &mut Vec<u8>, mcu_count: u16) {
+    let bit_count = usize::from(mcu_count) * 2;
+    let byte_count = bit_count.div_ceil(8);
+    bytes.extend(std::iter::repeat_n(0u8, byte_count));
+    let fill_bits = (8 - bit_count % 8) % 8;
+    if fill_bits != 0 {
+        let last = bytes.last_mut().expect("segment emits at least one byte");
+        *last |= (1u8 << fill_bits) - 1;
+    }
 }
 
 fn rgb_app14_constant_jpeg(scan_order: [u8; 3]) -> Vec<u8> {

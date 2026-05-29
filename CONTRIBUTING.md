@@ -12,10 +12,12 @@ Use the Rust toolchain pinned by `rust-toolchain.toml`.
 cargo test --workspace
 cargo doc --workspace --no-deps
 cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask unsafe-audit
 ```
 
 Comparator benchmarks may need optional system libraries. See
-`docs/bench.md` for setup and skip behavior.
+`docs/bench.md` for setup, skip behavior, and benchmark publication report
+requirements.
 
 ## Pull Requests
 
@@ -26,6 +28,7 @@ Comparator benchmarks may need optional system libraries. See
 - Avoid hardcoded secrets, credentials, or local machine paths.
 - Surface unsupported inputs and backend failures explicitly; do not add silent
   fallback paths.
+- Update `docs/unsafe-audit.md` when adding or removing unsafe Rust.
 - Run the narrowest relevant tests before opening a PR, then run the workspace
   checks above before release-facing changes.
 

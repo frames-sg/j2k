@@ -13,7 +13,6 @@ use crate::{batch, Error};
 
 const BATCH_SHAPE_CACHE_SLOTS: usize = 8;
 const FAST_PACKET_CACHE_SLOTS: usize = 8;
-const INPUT_ALIAS_CACHE_SLOTS: usize = 8;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
@@ -39,13 +38,6 @@ pub(crate) struct CachedFastPackets {
     fast420_packet: Option<Arc<JpegMetalFast420PacketV1>>,
 }
 
-#[derive(Clone)]
-struct CachedInputAlias {
-    source_ptr: usize,
-    source_len: usize,
-    input: Arc<[u8]>,
-}
-
 #[derive(Default)]
 pub(crate) struct SessionState {
     pub(crate) submissions: u64,
@@ -53,7 +45,6 @@ pub(crate) struct SessionState {
     pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
     batch_shapes: VecDeque<CachedBatchShape>,
     fast_packets: VecDeque<CachedFastPackets>,
-    input_aliases: VecDeque<CachedInputAlias>,
 }
 
 impl SessionState {
@@ -64,27 +55,8 @@ impl SessionState {
         slot
     }
 
-    pub(crate) fn intern_input_slice(&mut self, input: &[u8]) -> Arc<[u8]> {
-        let source_ptr = input.as_ptr() as usize;
-        let source_len = input.len();
-        if let Some(entry) = self
-            .input_aliases
-            .iter()
-            .find(|entry| entry.source_ptr == source_ptr && entry.source_len == source_len)
-        {
-            return Arc::clone(&entry.input);
-        }
-
-        let input = Arc::<[u8]>::from(input);
-        if self.input_aliases.len() == INPUT_ALIAS_CACHE_SLOTS {
-            self.input_aliases.pop_front();
-        }
-        self.input_aliases.push_back(CachedInputAlias {
-            source_ptr,
-            source_len,
-            input: Arc::clone(&input),
-        });
-        input
+    pub(crate) fn intern_input_slice(input: &[u8]) -> Arc<[u8]> {
+        Arc::<[u8]>::from(input)
     }
 
     pub(crate) fn resolve_batch_shape(

@@ -144,6 +144,7 @@ pub struct CorpusFixtureReport {
 
 /// Corpus validation failure.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CorpusValidationError {
     /// No fixtures were provided to the deterministic validation pass.
     EmptyCorpus,

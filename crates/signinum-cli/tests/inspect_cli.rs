@@ -102,12 +102,12 @@ fn minimal_jpeg() -> Vec<u8> {
             width: 8,
             height: 8,
         },
-        signinum_jpeg::JpegEncodeOptions {
-            quality: 90,
-            subsampling: signinum_jpeg::JpegSubsampling::Gray,
-            restart_interval: None,
-            backend: signinum_jpeg::JpegBackend::Cpu,
-        },
+        signinum_jpeg::JpegEncodeOptions::new(
+            90,
+            signinum_jpeg::JpegSubsampling::Gray,
+            None,
+            signinum_jpeg::JpegBackend::Cpu,
+        ),
     )
     .expect("encode CLI test JPEG")
     .data

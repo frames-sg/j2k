@@ -63,9 +63,8 @@ static HYBRID_CPU_DECODE_INPUTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static FLATTENED_HYBRID_CPU_DECODE_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
-static DIRECT_TIER1_INPUT_BUFFER_PREPARES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(target_os = "macos", test))]
 std::thread_local! {
+    static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
     static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static HT_SIMD_PROTOTYPE_DISPATCHES: Cell<usize> = const { Cell::new(0) };
@@ -84,12 +83,12 @@ pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_direct_tier1_input_buffer_prepares_for_test() {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.store(0, Ordering::Relaxed);
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn direct_tier1_input_buffer_prepares_for_test() -> usize {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.load(Ordering::Relaxed)
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -2313,7 +2312,7 @@ enum DirectTier1Mode {
 
 #[cfg(all(target_os = "macos", test))]
 fn record_direct_tier1_input_buffer_prepare() {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.fetch_add(1, Ordering::Relaxed);
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get().saturating_add(1)));
 }
 
 #[cfg(all(target_os = "macos", not(test)))]

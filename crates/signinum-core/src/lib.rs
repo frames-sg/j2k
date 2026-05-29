@@ -5,22 +5,35 @@
 //! selection contracts without depending on each other.
 
 #![no_std]
+#![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
 extern crate alloc;
 
+/// Backend selection and host capability detection.
 pub mod backend;
+/// Tile-batch ordering and worker-count helpers.
 pub mod batch;
 mod buffer;
+/// Reusable codec context traits and wrappers.
 pub mod context;
+/// Shared error traits and buffer/input error types.
 pub mod error;
+/// Compressed-payload passthrough eligibility types.
 pub mod passthrough;
+/// Pixel format and layout descriptors.
 pub mod pixel;
+/// Row-streaming output sink trait.
 pub mod row_sink;
+/// Sample type markers for typed pixel rows.
 pub mod sample;
+/// Reduced-resolution decode scale factors.
 pub mod scale;
+/// Caller-owned scratch pool trait.
 pub mod scratch;
+/// Codec, decode, device, batch, and decompression traits.
 pub mod traits;
+/// Shared image metadata, rectangles, and decode outcomes.
 pub mod types;
 
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};

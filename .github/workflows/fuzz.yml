@@ -1,0 +1,31 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SIGNINUM_FUZZ_RUNS: "100000"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo xtask fuzz-run
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: signinum-fuzz-artifacts
+          path: |
+            crates/**/fuzz/artifacts
+            crates/**/fuzz/corpus
+            crates/**/fuzz/crashes
+          if-no-files-found: ignore

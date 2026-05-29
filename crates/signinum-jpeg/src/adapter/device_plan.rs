@@ -8,36 +8,58 @@ use crate::Warning;
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
+/// One component entry in a device decode plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceComponentPlan {
+    /// Horizontal sampling factor.
     pub h: u8,
+    /// Vertical sampling factor.
     pub v: u8,
+    /// Output component index.
     pub output_index: usize,
 }
 
+/// Baseline JPEG device decode plan shared with adapter crates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceDecodePlan<'a> {
+    /// Image dimensions in pixels.
     pub dimensions: (u32, u32),
+    /// JPEG color space.
     pub color_space: ColorSpace,
+    /// Optional restart interval in MCUs.
     pub restart_interval: Option<u16>,
+    /// Warnings carried from CPU header parsing.
     pub warnings: Vec<Warning>,
+    /// Entropy-coded scan bytes.
     pub scan_bytes: Cow<'a, [u8]>,
+    /// Per-component sampling/output metadata.
     pub components: Vec<DeviceComponentPlan>,
+    /// Entropy checkpoints for restart or synthetic cadence boundaries.
     pub checkpoints: Vec<DeviceCheckpoint>,
+    /// True when the plan matches the Metal 4:2:0 fast path.
     pub matches_fast_420: bool,
+    /// True when the plan matches the Metal 4:2:2 fast path.
     pub matches_fast_422: bool,
+    /// True when the plan matches the Metal 4:4:4 fast path.
     pub matches_fast_444: bool,
 }
 
+/// Cheap summary of a device decode plan for batch planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceBatchSummary {
+    /// Optional restart interval in MCUs.
     pub restart_interval: Option<u16>,
+    /// Number of checkpoints that would be produced.
     pub checkpoint_count: usize,
+    /// True when the decoder matches the Metal 4:2:0 fast path.
     pub matches_fast_420: bool,
+    /// True when the decoder matches the Metal 4:2:2 fast path.
     pub matches_fast_422: bool,
+    /// True when the decoder matches the Metal 4:4:4 fast path.
     pub matches_fast_444: bool,
 }
 
+/// Build a full adapter decode plan for a decoder.
 pub fn build_device_plan<'a>(
     decoder: &'a Decoder<'a>,
     cadence_mcus: u32,
@@ -82,6 +104,7 @@ pub fn build_device_plan<'a>(
     })
 }
 
+/// Summarize device-batch properties without materializing scan bytes.
 pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> DeviceBatchSummary {
     if !matches!(
         decoder.info().sof_kind,

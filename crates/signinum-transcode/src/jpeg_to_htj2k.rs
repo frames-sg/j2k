@@ -40,8 +40,9 @@ use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 /// profile rather than paying irreversible loss without file-size benefit.
 pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 5.0;
 
-/// Options for the experimental JPEG-to-HTJ2K path.
+/// Options for the JPEG-to-HTJ2K coefficient-domain path.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct JpegToHtj2kOptions {
     /// Native HTJ2K encode options used after wavelet bands are produced.
     pub encode_options: EncodeOptions,
@@ -65,6 +66,49 @@ impl Default for JpegToHtj2kOptions {
 }
 
 impl JpegToHtj2kOptions {
+    /// Create JPEG-to-HTJ2K options from explicit encode options and
+    /// coefficient path.
+    #[must_use]
+    pub fn new(
+        encode_options: EncodeOptions,
+        coefficient_path: JpegToHtj2kCoefficientPath,
+    ) -> Self {
+        Self {
+            encode_options,
+            coefficient_path,
+            validate_against_float_reference: false,
+            validate_against_integer_reference: false,
+        }
+    }
+
+    /// Return options with different native HTJ2K encode options.
+    #[must_use]
+    pub fn with_encode_options(mut self, encode_options: EncodeOptions) -> Self {
+        self.encode_options = encode_options;
+        self
+    }
+
+    /// Return options with a different coefficient production path.
+    #[must_use]
+    pub fn with_coefficient_path(mut self, coefficient_path: JpegToHtj2kCoefficientPath) -> Self {
+        self.coefficient_path = coefficient_path;
+        self
+    }
+
+    /// Return options with float-reference validation enabled or disabled.
+    #[must_use]
+    pub fn with_float_reference_validation(mut self, enabled: bool) -> Self {
+        self.validate_against_float_reference = enabled;
+        self
+    }
+
+    /// Return options with integer-reference validation enabled or disabled.
+    #[must_use]
+    pub fn with_integer_reference_validation(mut self, enabled: bool) -> Self {
+        self.validate_against_integer_reference = enabled;
+        self
+    }
+
     /// Options for the default reversible 5/3 HTJ2K coefficient path.
     #[must_use]
     pub fn lossless_53() -> Self {
@@ -540,8 +584,9 @@ pub struct TranscodeReport {
     pub timings: TranscodeTimingReport,
 }
 
-/// Error returned by the experimental transcode path.
+/// Error returned by the JPEG-to-HTJ2K coefficient-domain path.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum JpegToHtj2kError {
     /// JPEG parse or entropy decode failed.
     Jpeg(signinum_jpeg::JpegError),

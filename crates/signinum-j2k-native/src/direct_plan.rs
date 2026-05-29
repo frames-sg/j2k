@@ -2,12 +2,10 @@ use alloc::vec::Vec;
 
 use crate::{J2kRect, J2kWaveletTransform};
 
-/// Hidden identifier for one device-owned grayscale coefficient band.
-#[doc(hidden)]
+/// Adapter identifier for one device-owned grayscale coefficient band.
 pub type J2kDirectBandId = u32;
 
-/// Hidden grayscale-only direct device-plan step for backend experimentation.
-#[doc(hidden)]
+/// Adapter grayscale-only direct device-plan step for backend experimentation.
 #[derive(Debug, Clone)]
 pub enum J2kDirectGrayscaleStep {
     /// Decode one classic J2K sub-band into a device-owned coefficient buffer.
@@ -20,8 +18,7 @@ pub enum J2kDirectGrayscaleStep {
     Store(J2kDirectStoreStep),
 }
 
-/// Hidden grayscale-only direct device plan for backend experimentation.
-#[doc(hidden)]
+/// Adapter grayscale-only direct device plan for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kDirectGrayscalePlan {
     /// Final output dimensions.
@@ -32,8 +29,7 @@ pub struct J2kDirectGrayscalePlan {
     pub steps: Vec<J2kDirectGrayscaleStep>,
 }
 
-/// Hidden RGB direct device plan for backend experimentation.
-#[doc(hidden)]
+/// Adapter RGB direct device plan for backend experimentation.
 #[derive(Debug, Clone)]
 pub struct J2kDirectColorPlan {
     /// Final output dimensions.
@@ -48,8 +44,7 @@ pub struct J2kDirectColorPlan {
     pub component_plans: Vec<J2kDirectGrayscalePlan>,
 }
 
-/// Hidden owned classic J2K sub-band decode job.
-#[doc(hidden)]
+/// Adapter owned classic J2K sub-band decode job.
 #[derive(Debug, Clone)]
 pub struct J2kOwnedSubBandPlan {
     /// Stable identifier for the decoded coefficient band produced by this step.
@@ -64,8 +59,7 @@ pub struct J2kOwnedSubBandPlan {
     pub jobs: Vec<J2kOwnedCodeBlockBatchJob>,
 }
 
-/// Hidden owned HTJ2K sub-band decode job.
-#[doc(hidden)]
+/// Adapter owned HTJ2K sub-band decode job.
 #[derive(Debug, Clone)]
 pub struct HtOwnedSubBandPlan {
     /// Stable identifier for the decoded coefficient band produced by this step.
@@ -80,8 +74,7 @@ pub struct HtOwnedSubBandPlan {
     pub jobs: Vec<HtOwnedCodeBlockBatchJob>,
 }
 
-/// Hidden owned classic J2K batched code-block decode job.
-#[doc(hidden)]
+/// Adapter owned classic J2K batched code-block decode job.
 #[derive(Debug, Clone)]
 pub struct J2kOwnedCodeBlockBatchJob {
     /// X offset within the target sub-band coefficient buffer.
@@ -114,8 +107,7 @@ pub struct J2kOwnedCodeBlockBatchJob {
     pub dequantization_step: f32,
 }
 
-/// Hidden owned HTJ2K batched code-block decode job.
-#[doc(hidden)]
+/// Adapter owned HTJ2K batched code-block decode job.
 #[derive(Debug, Clone)]
 pub struct HtOwnedCodeBlockBatchJob {
     /// X offset within the target sub-band coefficient buffer.
@@ -148,8 +140,7 @@ pub struct HtOwnedCodeBlockBatchJob {
     pub dequantization_step: f32,
 }
 
-/// Hidden single grayscale IDWT step for a direct device plan.
-#[doc(hidden)]
+/// Adapter single grayscale IDWT step for a direct device plan.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kDirectIdwtStep {
     /// Stable identifier of the output coefficient band produced by this step.
@@ -176,8 +167,7 @@ pub struct J2kDirectIdwtStep {
     pub hh: J2kRect,
 }
 
-/// Hidden grayscale store step for a direct device plan.
-#[doc(hidden)]
+/// Adapter grayscale store step for a direct device plan.
 #[derive(Debug, Clone, Copy)]
 pub struct J2kDirectStoreStep {
     /// Stable identifier of the input coefficient band.

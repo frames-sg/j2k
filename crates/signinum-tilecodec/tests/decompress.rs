@@ -4,7 +4,7 @@ use flate2::{
     write::{DeflateEncoder, ZlibEncoder},
     Compression,
 };
-use signinum_core::{ScratchPool, TileDecompress};
+use signinum_core::{CodecError, ScratchPool, TileDecompress};
 use signinum_tilecodec::{
     DeflateCodec, DeflatePool, LzwCodec, LzwPool, NoPool, TileCodecError, UncompressedCodec,
     ZstdCodec, ZstdPool,
@@ -63,6 +63,26 @@ fn zstd_codec_roundtrips_payload() {
 }
 
 #[test]
+fn invalid_deflate_is_classified_as_input_error() {
+    let mut pool = DeflatePool::new();
+    let mut out = vec![0_u8; 128];
+    let err = DeflateCodec::decompress_into(&mut pool, b"not deflate", &mut out).unwrap_err();
+
+    assert!(err.is_truncated());
+    assert!(matches!(err, TileCodecError::Input(_)));
+}
+
+#[test]
+fn invalid_zstd_is_classified_as_input_error() {
+    let mut pool = ZstdPool::new();
+    let mut out = vec![0_u8; 128];
+    let err = ZstdCodec::decompress_into(&mut pool, b"not zstd", &mut out).unwrap_err();
+
+    assert!(err.is_truncated());
+    assert!(matches!(err, TileCodecError::Input(_)));
+}
+
+#[test]
 fn lzw_codec_roundtrips_payload() {
     let source = sample_bytes();
     let mut compressor = Encoder::new(BitOrder::Msb, 8);
@@ -74,6 +94,36 @@ fn lzw_codec_roundtrips_payload() {
 
     assert_eq!(written, source.len());
     assert_eq!(&out[..written], source.as_slice());
+}
+
+#[test]
+fn truncated_lzw_is_classified_as_truncated_input() {
+    let source = sample_bytes();
+    let mut compressor = Encoder::new(BitOrder::Msb, 8);
+    let mut encoded_bytes = compressor.encode(&source).expect("lzw encode");
+    encoded_bytes.pop();
+
+    let mut pool = LzwPool::new();
+    let mut out = vec![0_u8; source.len()];
+    let err = LzwCodec::decompress_into(&mut pool, &encoded_bytes, &mut out).unwrap_err();
+
+    assert!(err.is_truncated());
+    assert!(matches!(err, TileCodecError::Input(_)));
+}
+
+#[test]
+fn lzw_rejects_trailing_bytes_after_end_marker() {
+    let source = sample_bytes();
+    let mut compressor = Encoder::new(BitOrder::Msb, 8);
+    let mut encoded_bytes = compressor.encode(&source).expect("lzw encode");
+    encoded_bytes.extend_from_slice(b"trailing garbage");
+
+    let mut pool = LzwPool::new();
+    let mut out = vec![0_u8; source.len()];
+    let err = LzwCodec::decompress_into(&mut pool, &encoded_bytes, &mut out).unwrap_err();
+
+    assert!(err.is_truncated());
+    assert!(matches!(err, TileCodecError::Input(_)));
 }
 
 #[test]
@@ -140,10 +190,10 @@ fn deflate_codec_rejects_oversized_zlib_without_full_scratch_allocation() {
 
     assert!(matches!(
         err,
-        TileCodecError::Buffer(signinum_core::BufferError::OutputTooSmall {
-            required,
+        TileCodecError::Buffer(signinum_core::BufferError::OutputExceedsCapacity {
+            lower_bound,
             have: 128
-        }) if required == 129
+        }) if lower_bound == 129
     ));
     assert!(
         pool.bytes_allocated() < source.len() / 16,
@@ -164,10 +214,10 @@ fn zstd_codec_rejects_oversized_payload_without_full_scratch_allocation() {
 
     assert!(matches!(
         err,
-        TileCodecError::Buffer(signinum_core::BufferError::OutputTooSmall {
-            required,
+        TileCodecError::Buffer(signinum_core::BufferError::OutputExceedsCapacity {
+            lower_bound,
             have: 128
-        }) if required == 129
+        }) if lower_bound == 129
     ));
     assert!(
         pool.bytes_allocated() < source.len() / 16,
@@ -189,10 +239,10 @@ fn lzw_codec_rejects_oversized_payload_without_full_scratch_allocation() {
 
     assert!(matches!(
         err,
-        TileCodecError::Buffer(signinum_core::BufferError::OutputTooSmall {
-            required,
+        TileCodecError::Buffer(signinum_core::BufferError::OutputExceedsCapacity {
+            lower_bound,
             have: 128
-        }) if required == 129
+        }) if lower_bound == 129
     ));
     assert!(
         pool.bytes_allocated() < source.len() / 16,

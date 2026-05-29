@@ -15,12 +15,7 @@ fn encode_rgb(subsampling: JpegSubsampling) -> EncodedJpeg {
             width,
             height,
         },
-        JpegEncodeOptions {
-            quality: 90,
-            subsampling,
-            restart_interval: None,
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(90, subsampling, None, JpegBackend::Cpu),
     )
     .expect("encode RGB baseline JPEG")
 }
@@ -84,12 +79,7 @@ fn cpu_encoder_round_trips_gray_and_writes_required_markers() {
             width,
             height,
         },
-        JpegEncodeOptions {
-            quality: 85,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: Some(4),
-            backend: JpegBackend::Cpu,
-        },
+        JpegEncodeOptions::new(85, JpegSubsampling::Gray, Some(4), JpegBackend::Cpu),
     )
     .expect("encode gray JPEG");
 

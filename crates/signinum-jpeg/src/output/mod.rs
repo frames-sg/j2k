@@ -78,13 +78,20 @@ pub(crate) fn validate_buffer(
                 required,
                 provided: have,
             },
+            BufferError::OutputExceedsCapacity { lower_bound, have } => {
+                JpegError::OutputBufferTooSmall {
+                    required: lower_bound,
+                    provided: have,
+                }
+            }
             BufferError::SizeOverflow { .. } => JpegError::OutputBufferTooSmall {
                 required: usize::MAX,
                 provided: out.len(),
             },
             BufferError::InputTooSmall { .. }
             | BufferError::StrideNotAligned { .. }
-            | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
+            | BufferError::SampleTypeMismatch { .. }
+            | _ => JpegError::OutputBufferTooSmall {
                 required: usize::MAX,
                 provided: out.len(),
             },
