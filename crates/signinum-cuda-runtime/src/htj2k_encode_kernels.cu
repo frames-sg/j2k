@@ -77,7 +77,10 @@ struct J2kHtMagSgnEncoder {
     uint failed;
 };
 
-static constexpr uint J2K_HT_MEL_EXP[13] = {
+// `__device__` storage is required because this table is indexed at runtime
+// inside device code; a file-scope `static constexpr` array has no device
+// storage and nvcc reports it as undefined in device code.
+__device__ static const uint J2K_HT_MEL_EXP[13] = {
     0u, 0u, 0u, 1u, 1u, 1u, 2u, 2u, 2u, 3u, 3u, 4u, 5u
 };
 
