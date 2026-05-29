@@ -3852,7 +3852,7 @@ mod tests {
 
         assert_eq!(decoded.data.len(), pixels.len());
         assert_eq!(accelerator.forward_dwt97_attempts(), 1);
-        assert_eq!(accelerator.forward_dwt97_dispatches(), 2);
+        assert_eq!(accelerator.forward_dwt97_dispatches(), 3);
     }
 
     #[cfg(feature = "cuda-runtime")]
@@ -4073,7 +4073,9 @@ mod tests {
         let options = EncodeOptions {
             reversible: true,
             use_ht_block_coding: true,
-            num_decomposition_levels: 1,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
             ..EncodeOptions::default()
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
