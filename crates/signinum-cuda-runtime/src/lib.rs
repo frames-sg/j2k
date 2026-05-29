@@ -6264,12 +6264,18 @@ mod tests {
         let actual = components
             .download_components()
             .expect("download resident components");
-        assert!((actual[0][0] - -109.850_006).abs() < 0.000_1);
-        assert!((actual[1][0] - 5.625).abs() < 0.000_1);
-        assert!((actual[2][0] - -7.687_5).abs() < 0.000_1);
-        assert!((actual[0][1] - -79.85).abs() < 0.000_1);
-        assert!((actual[1][1] - 5.625).abs() < 0.000_1);
-        assert!((actual[2][1] - -7.687_5).abs() < 0.000_1);
+        let expected = [[-118.0f32, -88.0], [-108.0, -78.0], [-98.0, -68.0]];
+        for idx in 0..2 {
+            let r = expected[0][idx];
+            let g = expected[1][idx];
+            let b = expected[2][idx];
+            let expected_y = 0.299 * r + 0.587 * g + 0.114 * b;
+            let expected_cb = -0.16875 * r - 0.33126 * g + 0.5 * b;
+            let expected_cr = 0.5 * r - 0.41869 * g - 0.08131 * b;
+            assert!((actual[0][idx] - expected_y).abs() < 0.000_1);
+            assert!((actual[1][idx] - expected_cb).abs() < 0.000_1);
+            assert!((actual[2][idx] - expected_cr).abs() < 0.000_1);
+        }
     }
 
     #[test]
