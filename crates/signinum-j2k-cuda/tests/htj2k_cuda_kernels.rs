@@ -311,7 +311,7 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
         return;
     }
 
-    let coefficients = [0, 2, -3, 1, 4, 0, -1, 2, 3, -2, 0, 1, 0, 0, 5, -4];
+    let coefficients = [0, 2, -4, 2, 4, 0, -2, 2, 6, -2, 0, 2, 0, 0, 4, -4];
 
     let context = CudaContext::system_default().expect("CUDA context");
     let uvlc_table = uvlc_encode_table_bytes();
@@ -338,6 +338,7 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
         .expect("one encoded code block");
 
     assert_eq!(block.num_coding_passes(), 2);
+    assert_eq!(block.num_zero_bitplanes(), 2);
     assert_eq!(block.refinement_length(), 1);
     assert_eq!(
         block.cleanup_length() + block.refinement_length(),
