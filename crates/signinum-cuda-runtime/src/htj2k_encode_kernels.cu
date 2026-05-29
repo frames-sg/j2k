@@ -151,6 +151,10 @@ __device__ inline uint j2k_ht_write_magref_segment(
     }
 
     uint bit_idx = 0u;
+    uint byte_from_end = 0u;
+    uint used_bits = 0u;
+    uint unstuff = 1u;
+    uchar current = uchar(0u);
     for (uint y = 0u; y < height; y += 4u) {
         for (uint x_base = 0u; x_base < width; x_base += 8u) {
             for (uint col = 0u; col < 8u; ++col) {
@@ -170,30 +174,36 @@ __device__ inline uint j2k_ht_write_magref_segment(
                         continue;
                     }
 
-                    const uint byte_from_end = bit_idx >> 3u;
-                    if (byte_from_end >= magref_len) {
-                        return 0u;
-                    }
-                    const uint out_idx = magref_len - 1u - byte_from_end;
-                    out[out_idx] = uchar(uint(out[out_idx]) | (((magnitude >> 1u) & 1u) << (bit_idx & 7u)));
+                    current = uchar(uint(current) | (((magnitude >> 1u) & 1u) << used_bits));
+                    used_bits += 1u;
                     bit_idx += 1u;
+
+                    const bool stuffed =
+                        unstuff != 0u && used_bits == 7u && (current & uchar(0x7Fu)) == uchar(0x7Fu);
+                    if (stuffed || used_bits == 8u) {
+                        if (byte_from_end >= magref_len) {
+                            return 0u;
+                        }
+                        out[magref_len - 1u - byte_from_end] = current;
+                        byte_from_end += 1u;
+                        unstuff = current > uchar(0x8Fu) ? 1u : 0u;
+                        current = uchar(0u);
+                        used_bits = 0u;
+                    }
                 }
             }
         }
     }
 
-    if (bit_idx != expected_bits) {
-        return 0u;
-    }
-
-    for (uint idx = 0u; idx < magref_len; ++idx) {
-        if (out[idx] > uchar(0x8Fu)) {
+    if (used_bits != 0u) {
+        if (byte_from_end >= magref_len) {
             return 0u;
         }
+        out[magref_len - 1u - byte_from_end] = current;
+        byte_from_end += 1u;
     }
 
-    const uchar first_magref_byte = out[magref_len - 1u];
-    if ((first_magref_byte & uchar(0x7Fu)) == uchar(0x7Fu)) {
+    if (bit_idx != expected_bits || byte_from_end > magref_len) {
         return 0u;
     }
 
@@ -1002,7 +1012,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     } else if (params.target_coding_passes == 3u) {
         const uint sample_count = params.width * params.height;
         sigprop_len = (sample_count + 7u) >> 3u;
-        magref_len = (significant_count + 7u) >> 3u;
+        magref_len = (significant_count + 6u) / 7u;
         refinement_len = sigprop_len + magref_len;
     }
     const uint total_len = cleanup_len + refinement_len;
