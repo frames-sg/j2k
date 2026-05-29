@@ -787,7 +787,25 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         return;
     }
 
-    const uint missing_msbs = params.total_bitplanes - 1u;
+    if (params.target_coding_passes > 1u) {
+        if (params.total_bitplanes < 2u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+            return;
+        }
+        for (uint y = 0u; y < params.height; ++y) {
+            for (uint x = 0u; x < params.width; ++x) {
+                const uint magnitude =
+                    j2k_classic_magnitude(coefficients[y * params.coefficient_stride + x]);
+                if ((magnitude & 1u) != 0u) {
+                    j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
+                    return;
+                }
+            }
+        }
+    }
+
+    const uint pass_span = params.target_coding_passes > 1u ? 2u : 1u;
+    const uint missing_msbs = params.total_bitplanes - pass_span;
     const uint p = 30u - missing_msbs;
 
     J2kHtMelEncoder mel;

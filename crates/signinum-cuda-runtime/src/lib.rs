@@ -5972,6 +5972,48 @@ mod tests {
     }
 
     #[test]
+    fn htj2k_encode_rejects_lossy_zero_sigprop_request_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let coefficients = [0, 2, -3, 4];
+        let jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 2,
+            total_bitplanes: 3,
+            target_coding_passes: 2,
+        }];
+
+        let error = context
+            .encode_htj2k_codeblocks(
+                &coefficients,
+                &jobs,
+                CudaHtj2kEncodeTables {
+                    vlc_table0: &[0u16; 2048],
+                    vlc_table1: &[0u16; 2048],
+                    uvlc_table: &[0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES],
+                },
+            )
+            .expect_err("target-2 zero SigProp cannot silently drop low coefficient bits");
+
+        match error {
+            CudaError::KernelStatus {
+                kernel,
+                code,
+                detail,
+            } => {
+                assert_eq!(kernel, "signinum_htj2k_encode_codeblocks");
+                assert_eq!(code, super::HTJ2K_STATUS_UNSUPPORTED);
+                assert_eq!(detail, 6);
+            }
+            other => panic!("unexpected CUDA encode error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn htj2k_encode_resources_feed_single_codeblock_encode_when_required() {
         if !cuda_runtime_required() {
             return;
