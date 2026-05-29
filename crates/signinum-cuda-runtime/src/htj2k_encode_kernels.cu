@@ -796,7 +796,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
             for (uint x = 0u; x < params.width; ++x) {
                 const uint magnitude =
                     j2k_classic_magnitude(coefficients[y * params.coefficient_stride + x]);
-                if ((magnitude & 1u) != 0u) {
+                if (magnitude == 1u || (magnitude > 1u && (magnitude & 1u) == 0u)) {
                     j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 6u, 0u, 0u, 0u);
                     return;
                 }
