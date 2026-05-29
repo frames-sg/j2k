@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_KERNEL_BUILD");
+    println!("cargo:rustc-check-cfg=cfg(signinum_cuda_htj2k_encode_ptx_built)");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let nvcc = env::var_os("NVCC").unwrap_or_else(|| "nvcc".into());
@@ -36,13 +37,16 @@ fn main() {
         require_kernel_build,
     );
     let htj2k_encode_ptx = out_dir.join("htj2k_encode_kernels.ptx");
-    compile_or_copy_ptx(
+    let htj2k_encode_compiled = compile_or_copy_ptx(
         &nvcc,
         Path::new("src/htj2k_encode_kernels.cu"),
         Path::new("src/htj2k_encode_kernels.ptx"),
         &htj2k_encode_ptx,
         require_kernel_build,
     );
+    if htj2k_encode_compiled {
+        println!("cargo:rustc-cfg=signinum_cuda_htj2k_encode_ptx_built");
+    }
 }
 
 fn compile_or_copy_ptx(
@@ -51,7 +55,7 @@ fn compile_or_copy_ptx(
     fallback: &Path,
     ptx: &Path,
     require_kernel_build: bool,
-) {
+) -> bool {
     let compiled = Command::new(nvcc)
         .args(["--ptx", "-O3", "--std=c++14"])
         .arg(source)
@@ -66,6 +70,7 @@ fn compile_or_copy_ptx(
             bytes.push(0);
             fs::write(ptx, bytes).expect("NUL-terminate generated CUDA PTX");
         }
+        true
     } else {
         assert!(
             !require_kernel_build,
@@ -77,5 +82,6 @@ fn compile_or_copy_ptx(
             bytes.push(0);
         }
         fs::write(ptx, bytes).expect("write fallback CUDA PTX");
+        false
     }
 }

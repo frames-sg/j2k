@@ -300,6 +300,10 @@ pub struct EncodedJ2kCodeBlock {
 pub struct EncodedHtJ2kCodeBlock {
     /// Combined cleanup/refinement bytes for this code block.
     pub data: Vec<u8>,
+    /// Cleanup segment length in bytes.
+    pub cleanup_length: u32,
+    /// Refinement segment length in bytes.
+    pub refinement_length: u32,
     /// Number of coding passes present for this code block.
     pub num_coding_passes: u8,
     /// Number of zero most-significant bitplanes before first inclusion.
@@ -584,6 +588,10 @@ pub struct HtCleanupEncodeDistribution {
 pub struct J2kPacketizationCodeBlock<'a> {
     /// Encoded Tier-1 bitstream bytes for this packet contribution.
     pub data: &'a [u8],
+    /// HTJ2K cleanup segment length in bytes when using high-throughput coding.
+    pub ht_cleanup_length: u32,
+    /// HTJ2K refinement segment length in bytes when using high-throughput coding.
+    pub ht_refinement_length: u32,
     /// Number of coding passes in this contribution.
     pub num_coding_passes: u8,
     /// Number of zero most-significant bitplanes before first inclusion.
@@ -1180,6 +1188,8 @@ pub fn encode_ht_code_block_scalar(
         j2c::ht_block_encode::encode_code_block(coefficients, width, height, total_bitplanes)?;
     Ok(EncodedHtJ2kCodeBlock {
         data: encoded.data,
+        cleanup_length: encoded.ht_cleanup_length,
+        refinement_length: encoded.ht_refinement_length,
         num_coding_passes: encoded.num_coding_passes,
         num_zero_bitplanes: encoded.num_zero_bitplanes,
     })
@@ -1212,6 +1222,8 @@ pub fn encode_j2k_packetization_scalar(
                         .iter()
                         .map(|code_block| j2c::packet_encode::CodeBlockPacketData {
                             data: code_block.data.to_vec(),
+                            ht_cleanup_length: code_block.ht_cleanup_length,
+                            ht_refinement_length: code_block.ht_refinement_length,
                             num_coding_passes: code_block.num_coding_passes,
                             num_zero_bitplanes: code_block.num_zero_bitplanes,
                             previously_included: code_block.previously_included,
@@ -1245,6 +1257,8 @@ pub fn encode_j2k_packetization_scalar(
             precinct: descriptor.precinct,
         })
         .collect::<Vec<_>>();
+
+    j2c::packet_encode::validate_ht_segment_lengths(&resolutions)?;
 
     if descriptors.is_empty() {
         Ok(j2c::packet_encode::form_tile_bitstream_for_progression(
@@ -2843,6 +2857,45 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_packetization_rejects_overflowing_ht_refinement_lengths_without_panic() {
+        let payload = [0x12];
+        let block = J2kPacketizationCodeBlock {
+            data: &payload,
+            ht_cleanup_length: u32::MAX,
+            ht_refinement_length: 1,
+            num_coding_passes: 3,
+            num_zero_bitplanes: 2,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+        };
+        let subband = J2kPacketizationSubband {
+            code_blocks: vec![block],
+            num_cbs_x: 1,
+            num_cbs_y: 1,
+        };
+        let resolution = J2kPacketizationResolution {
+            subbands: vec![subband],
+        };
+        let resolutions = [resolution];
+        let job = J2kPacketizationEncodeJob {
+            resolution_count: 1,
+            num_layers: 1,
+            num_components: 1,
+            code_block_count: 1,
+            progression_order: J2kPacketizationProgressionOrder::Lrcp,
+            packet_descriptors: &[],
+            resolutions: &resolutions,
+        };
+
+        let err = encode_j2k_packetization_scalar(job)
+            .expect_err("overflowing HT packetization segment lengths rejected");
+
+        assert_eq!(err, "multi-pass HTJ2K packet contribution length overflow");
+    }
+
     #[derive(Default)]
     struct DecodeWorkCounter {
         classic_code_blocks: usize,

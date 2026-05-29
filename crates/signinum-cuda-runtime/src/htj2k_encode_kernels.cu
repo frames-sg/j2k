@@ -1129,6 +1129,8 @@ struct J2kHtPacketSubband {
 struct J2kHtPacketBlock {
     uint data_offset;
     uint data_len;
+    uint cleanup_length;
+    uint refinement_length;
     uint num_coding_passes;
     uint num_zero_bitplanes;
     uint l_block;
@@ -1305,6 +1307,32 @@ __device__ inline void j2k_packet_encode_length(
     }
     j2k_packet_write_bit(writer, 0u);
     j2k_packet_write_bits(writer, length, num_bits);
+}
+
+__device__ inline void j2k_packet_encode_ht_segment_lengths(
+    J2kPacketBitWriter &writer,
+    J2kHtPacketBlock block
+) {
+    const uint cleanup_length =
+        (block.num_coding_passes == 1u && block.cleanup_length == 0u)
+            ? block.data_len
+            : block.cleanup_length;
+    uint l_block = block.l_block;
+    uint cleanup_bits = j2k_packet_ht_length_bits(l_block, block.num_coding_passes);
+    const uint refinement_extra_bits = block.num_coding_passes > 2u ? 1u : 0u;
+    while (!j2k_packet_value_fits(cleanup_length, cleanup_bits)
+        || (block.num_coding_passes > 1u
+            && !j2k_packet_value_fits(block.refinement_length, l_block + refinement_extra_bits))) {
+        j2k_packet_write_bit(writer, 1u);
+        l_block += 1u;
+        cleanup_bits += 1u;
+    }
+    j2k_packet_write_bit(writer, 0u);
+    j2k_packet_write_bits(writer, cleanup_length, cleanup_bits);
+
+    if (block.num_coding_passes > 1u) {
+        j2k_packet_write_bits(writer, block.refinement_length, l_block + refinement_extra_bits);
+    }
 }
 
 __device__ inline uint j2k_packet_tag_tree_init(
@@ -1551,6 +1579,28 @@ __device__ inline J2kPacketHeaderResult j2k_packet_build_header_serial(
                 || j2k_ulong(block.data_offset) + j2k_ulong(block.data_len) > payload_len) {
                 return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2u, 0u, 0u, 0u);
             }
+            if (block.num_coding_passes == 0u) {
+                if (block.data_len != 0u || block.cleanup_length != 0u || block.refinement_length != 0u) {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 10u, 0u, 0u, 0u);
+                }
+            } else if (block.num_coding_passes == 1u) {
+                const uint cleanup_length =
+                    block.cleanup_length == 0u ? block.data_len : block.cleanup_length;
+                if (cleanup_length != block.data_len || block.refinement_length != 0u) {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 11u, 0u, 0u, 0u);
+                }
+            } else {
+                const j2k_ulong segment_len =
+                    j2k_ulong(block.cleanup_length) + j2k_ulong(block.refinement_length);
+                if (block.cleanup_length == 0u
+                    || block.refinement_length == 0u
+                    || segment_len != j2k_ulong(block.data_len)
+                    || block.cleanup_length < 2u
+                    || block.cleanup_length >= 65535u
+                    || block.refinement_length >= 2047u) {
+                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 12u, 0u, 0u, 0u);
+                }
+            }
         }
     }
 
@@ -1616,9 +1666,7 @@ __device__ inline J2kPacketHeaderResult j2k_packet_build_header_serial(
                 continue;
             }
             j2k_packet_encode_num_ht_passes(writer, block.num_coding_passes);
-            const uint length_bits =
-                j2k_packet_ht_length_bits(block.l_block, block.num_coding_passes);
-            j2k_packet_encode_length(writer, block.data_len, block.l_block, length_bits);
+            j2k_packet_encode_ht_segment_lengths(writer, block);
         }
     }
 

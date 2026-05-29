@@ -29,6 +29,10 @@ pub(crate) struct EncodedCodeBlock {
     pub(crate) num_coding_passes: u8,
     /// Number of leading zero bitplanes (missing MSBs).
     pub(crate) num_zero_bitplanes: u8,
+    /// HTJ2K cleanup segment length in bytes when this block uses HT coding.
+    pub(crate) ht_cleanup_length: u32,
+    /// HTJ2K refinement segment length in bytes when this block uses HT coding.
+    pub(crate) ht_refinement_length: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -204,6 +208,8 @@ pub(crate) fn encode_code_block_with_style(
             data: Vec::new(),
             num_coding_passes: 0,
             num_zero_bitplanes: total_bitplanes,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
         };
     }
 
@@ -320,6 +326,8 @@ pub(crate) fn encode_code_block_with_style(
         data,
         num_coding_passes,
         num_zero_bitplanes,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
     }
 }
 

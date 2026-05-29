@@ -1745,6 +1745,8 @@ fn public_packetization_resolutions(
                         .iter()
                         .map(|code_block| J2kPacketizationCodeBlock {
                             data: &code_block.data,
+                            ht_cleanup_length: code_block.ht_cleanup_length,
+                            ht_refinement_length: code_block.ht_refinement_length,
                             num_coding_passes: code_block.num_coding_passes,
                             num_zero_bitplanes: code_block.num_zero_bitplanes,
                             previously_included: code_block.previously_included,
@@ -2031,6 +2033,18 @@ fn encode_prepared_subbands(
                 .ok_or("encoded code-block count mismatch")?;
             code_blocks.push(CodeBlockPacketData {
                 data: encoded.data,
+                ht_cleanup_length: if subband.block_coding_mode == BlockCodingMode::HighThroughput {
+                    encoded.ht_cleanup_length
+                } else {
+                    0
+                },
+                ht_refinement_length: if subband.block_coding_mode
+                    == BlockCodingMode::HighThroughput
+                {
+                    encoded.ht_refinement_length
+                } else {
+                    0
+                },
                 num_coding_passes: encoded.num_coding_passes,
                 num_zero_bitplanes: encoded.num_zero_bitplanes,
                 previously_included: false,
@@ -2290,6 +2304,8 @@ fn ht_encoded_code_block_from_accelerator(
         data: encoded.data,
         num_coding_passes: encoded.num_coding_passes,
         num_zero_bitplanes: encoded.num_zero_bitplanes,
+        ht_cleanup_length: encoded.cleanup_length,
+        ht_refinement_length: encoded.refinement_length,
     }
 }
 
@@ -2328,6 +2344,8 @@ fn encoded_code_block_from_accelerator(
         data: encoded.data,
         num_coding_passes: encoded.number_of_coding_passes,
         num_zero_bitplanes: encoded.missing_bit_planes,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
     }
 }
 
@@ -2807,6 +2825,8 @@ mod tests {
                     (0..count)
                         .map(|idx| crate::EncodedHtJ2kCodeBlock {
                             data: vec![u8::try_from(idx).expect("test block index fits"), 0],
+                            cleanup_length: 2,
+                            refinement_length: 0,
                             num_coding_passes: 1,
                             num_zero_bitplanes: 0,
                         })
