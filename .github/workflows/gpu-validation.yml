@@ -70,15 +70,15 @@ jobs:
           SIGNINUM_GPU_BENCH_DIM: "1024"
           SIGNINUM_GPU_BENCH_BATCH: "64"
           SIGNINUM_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p signinum-jpeg-metal --bench device_upload -- --noplot
+        run: cargo bench -p signinum-jpeg-metal --bench device_upload -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p signinum-jpeg-metal --bench compare -- --noplot
+        run: cargo bench -p signinum-jpeg-metal --bench compare -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p signinum-j2k-metal --bench compare
+        run: cargo bench -p signinum-j2k-metal --bench compare -- --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_METAL_BENCH: "1"
-        run: cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot
+        run: cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
 
   cuda-x86_64-compatibility:
     name: CUDA API compatibility on x86_64
@@ -125,16 +125,16 @@ jobs:
           SIGNINUM_GPU_BENCH_DIM: "4096"
           SIGNINUM_GPU_BENCH_BATCH: "64"
           SIGNINUM_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot
+        run: cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot
+        run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot
+        run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot
+        run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
