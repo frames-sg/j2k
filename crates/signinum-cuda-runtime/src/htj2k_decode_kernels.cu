@@ -6,7 +6,7 @@
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
-typedef unsigned long long ulong;
+typedef unsigned long long j2k_ulong;
 
 __device__ inline uint j2k_min_u32(uint a, uint b) { return a < b ? a : b; }
 __device__ inline int j2k_max_i32(int a, int b) { return a > b ? a : b; }
@@ -85,7 +85,7 @@ struct MelDecoder {
     uchar bits_left;
     uint k;
     uint num_runs;
-    ulong runs;
+    j2k_ulong runs;
 };
 
 __device__ inline MelDecoder mel_decoder_new(const uchar *data, uint lcup, uint scup) {
@@ -157,7 +157,7 @@ __device__ inline bool mel_decode_more_runs(MelDecoder &decoder) {
             run = (bits << 1u) | 1u;
         }
 
-        decoder.runs |= (ulong(run) << (decoder.num_runs * 7u));
+        decoder.runs |= (j2k_ulong(run) << (decoder.num_runs * 7u));
         decoder.num_runs += 1u;
 
         if (eval == 5u && first == 0u && decoder.num_runs >= 8u) {
@@ -183,7 +183,7 @@ struct ForwardBitReader {
     const uchar *data;
     uint data_len;
     uint pos;
-    ulong tmp;
+    j2k_ulong tmp;
     uint bits;
     bool unstuff;
     uchar pad;
@@ -204,7 +204,7 @@ __device__ inline ForwardBitReader forward_reader_new(const uchar *data, uint da
 __device__ inline void forward_reader_fill(ForwardBitReader &reader) {
     while (reader.bits <= 32u) {
         const uchar byte = reader.pos < reader.data_len ? reader.data[reader.pos++] : reader.pad;
-        reader.tmp |= (ulong(byte) << reader.bits);
+        reader.tmp |= (j2k_ulong(byte) << reader.bits);
         reader.bits += 8u - uint(reader.unstuff);
         reader.unstuff = byte == uchar(0xFF);
     }
@@ -226,7 +226,7 @@ struct ReverseBitReader {
     const uchar *data;
     int pos;
     uint remaining;
-    ulong tmp;
+    j2k_ulong tmp;
     uint bits;
     bool unstuff;
 };
@@ -237,7 +237,7 @@ __device__ inline ReverseBitReader reverse_reader_new_vlc(
     uint scup
 ) {
     const uchar d = data[lcup - 2u];
-    const ulong tmp = ulong(d >> 4);
+    const j2k_ulong tmp = j2k_ulong(d >> 4);
 
     ReverseBitReader reader;
     reader.data = data;
@@ -272,7 +272,7 @@ __device__ inline void reverse_reader_fill(ReverseBitReader &reader) {
             reader.remaining -= 1u;
         }
         const uint d_bits = 8u - uint(reader.unstuff && (byte & uchar(0x7F)) == uchar(0x7F));
-        reader.tmp |= (ulong(byte) << reader.bits);
+        reader.tmp |= (j2k_ulong(byte) << reader.bits);
         reader.bits += d_bits;
         reader.unstuff = byte > uchar(0x8F);
     }
