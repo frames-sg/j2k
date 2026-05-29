@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <stdint.h>
-#include <math.h>
 
+// NOTE: do not include <math.h>. On Linux it transitively declares the system
+// `ulong` type (unsigned long), which conflicts with the `unsigned long long`
+// `ulong` typedef below. nvcc provides floorf/roundf/fmaxf/fminf as device
+// built-ins under `--ptx` device compilation, so the header is unnecessary.
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
