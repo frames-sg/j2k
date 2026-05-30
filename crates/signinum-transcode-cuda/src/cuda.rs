@@ -21,6 +21,8 @@ use signinum_transcode::htj2k97_codeblock_oracle::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes,
 };
 
+use std::sync::OnceLock;
+
 use signinum_cuda_runtime::{
     transcode_kernels_built, CudaContext, CudaDwt97BatchStageTimings, CudaHtj2k97CodeblockBands,
     CudaHtj2k97QuantizeParams, CudaTranscodeDwt97Bands, CudaTranscodeReversible53Bands,
@@ -31,6 +33,21 @@ use crate::CudaTranscodeError;
 /// Returned until a given kernel path is wired to `signinum-cuda-runtime`.
 const NOT_WIRED: CudaTranscodeError =
     CudaTranscodeError::UnsupportedJob("signinum-transcode-cuda kernel not yet wired");
+
+/// A process-wide CUDA context, created on first use and reused thereafter.
+///
+/// `CudaContext::system_default()` creates a fresh context every call, and the
+/// first kernel launch in a context JIT-compiles the transcode PTX. Creating a
+/// context (and re-JITing the kernels) per dispatch dominated wall-clock for
+/// real workloads; sharing one context pays that cost once. The context is an
+/// `Arc` handle (`Send + Sync`), so cloning it out is cheap.
+fn shared_context() -> Result<CudaContext, CudaTranscodeError> {
+    static SHARED: OnceLock<Option<CudaContext>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| CudaContext::system_default().ok())
+        .clone()
+        .ok_or(CudaTranscodeError::CudaUnavailable)
+}
 
 /// Flatten `&[[i16; 64]]` into the contiguous `&[i16]` the runtime job expects.
 fn flatten_blocks(blocks: &[[i16; 64]]) -> &[i16] {
@@ -75,7 +92,7 @@ pub(crate) fn dispatch_reversible_dwt53(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
-    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let context = shared_context()?;
     run_reversible(&context, job)
 }
 
@@ -85,7 +102,7 @@ pub(crate) fn dispatch_reversible_dwt53_batch(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
-    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let context = shared_context()?;
     let mut outputs = Vec::with_capacity(jobs.len());
     for job in jobs {
         outputs.push(run_reversible(&context, *job)?);
@@ -160,7 +177,7 @@ pub(crate) fn dispatch_dwt97(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
-    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let context = shared_context()?;
     run_dwt97(&context, job)
 }
 
@@ -170,7 +187,7 @@ pub(crate) fn dispatch_dwt97_batch(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
-    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let context = shared_context()?;
 
     let Some(first) = jobs.first() else {
         return Ok((Vec::new(), Dwt97BatchStageTimings::default()));
@@ -318,7 +335,7 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
-    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let context = shared_context()?;
 
     let Some(first) = jobs.first() else {
         return Ok((Vec::new(), Dwt97BatchStageTimings::default()));

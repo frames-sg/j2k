@@ -1033,6 +1033,7 @@ dependencies = [
  "signinum-jpeg",
  "signinum-transcode",
  "signinum-transcode-cuda",
+ "signinum-transcode-metal",
 ]
 
 [[package]]

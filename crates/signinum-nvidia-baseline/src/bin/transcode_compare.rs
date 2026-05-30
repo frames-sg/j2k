@@ -24,7 +24,14 @@ use signinum_nvidia_baseline::{
 use signinum_transcode::{
     JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
-use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
+
+// The signinum GPU backend is platform-selected: Metal on macOS, CUDA elsewhere.
+#[cfg(target_os = "macos")]
+use signinum_transcode_metal::MetalDctToWaveletStageAccelerator as BenchAccelerator;
+#[cfg(not(target_os = "macos"))]
+use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator as BenchAccelerator;
+
+const BACKEND_NAME: &str = if cfg!(target_os = "macos") { "Metal" } else { "CUDA" };
 
 const WARMUP: usize = 2;
 const ITERATIONS: usize = 10;
@@ -156,7 +163,7 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
     // Warm up (and detect whether the GPU path is available).
     let mut used_gpu = true;
     for iteration in 0..WARMUP.max(1) {
-        let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
+        let mut accelerator = BenchAccelerator::new_explicit();
         let mut transcoder = JpegToHtj2kTranscoder::default();
         if transcoder
             .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
@@ -164,7 +171,7 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
         {
             used_gpu = false;
             if iteration == 0 {
-                eprintln!("signinum: explicit CUDA path unavailable; measuring scalar CPU fallback");
+                eprintln!("signinum: explicit {BACKEND_NAME} path unavailable; measuring scalar CPU fallback");
             }
             break;
         }
@@ -173,7 +180,7 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
     let mut best_wall_s = f64::INFINITY;
     let mut last = SigninumResult::default();
     for _ in 0..ITERATIONS {
-        let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
+        let mut accelerator = BenchAccelerator::new_explicit();
         let mut transcoder = JpegToHtj2kTranscoder::default();
         let start = Instant::now();
         let batch = if used_gpu {
@@ -309,7 +316,7 @@ fn mean_psnr(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<f64> {
         let Some(recon) = native_decode_rgb(codestream) else {
             continue;
         };
-        if let Some(psnr) = psnr_u8(&recon, &source) {
+        if let Some(psnr) = best_psnr(&recon, &source) {
             if psnr.is_finite() {
                 total += psnr;
                 counted += 1;
@@ -317,6 +324,34 @@ fn mean_psnr(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<f64> {
         }
     }
     (counted > 0).then(|| total / counted as f64)
+}
+
+/// PSNR of a reconstruction vs the RGB source, taking the consistent color
+/// interpretation. NVIDIA's codestream is RGB (MCT); signinum's coefficient-
+/// domain transcode keeps the JPEG's YCbCr — so try both and keep the higher,
+/// which corrects the color-space mismatch without hiding real quality loss
+/// (genuine degradation lowers both interpretations).
+fn best_psnr(recon: &[u8], source_rgb: &[u8]) -> Option<f64> {
+    let direct = psnr_u8(recon, source_rgb);
+    let converted = psnr_u8(&ycbcr_to_rgb(recon), source_rgb);
+    match (direct, converted) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// JFIF full-range YCbCr -> RGB, interleaved.
+fn ycbcr_to_rgb(ycbcr: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(ycbcr.len());
+    for px in ycbcr.chunks_exact(3) {
+        let y = f32::from(px[0]);
+        let cb = f32::from(px[1]) - 128.0;
+        let cr = f32::from(px[2]) - 128.0;
+        rgb.push((y + 1.402 * cr).clamp(0.0, 255.0).round() as u8);
+        rgb.push((y - 0.344_136 * cb - 0.714_136 * cr).clamp(0.0, 255.0).round() as u8);
+        rgb.push((y + 1.772 * cb).clamp(0.0, 255.0).round() as u8);
+    }
+    rgb
 }
 
 #[allow(clippy::similar_names)]
@@ -402,7 +437,7 @@ fn print_report(
     let sig_psnr = mean_psnr(jpegs, &signinum.codestreams);
     let nv_psnr = if nvidia.ran { mean_psnr(jpegs, &nvidia.codestreams) } else { None };
     println!(
-        "  PSNR vs source (dB):  signinum {}   NVIDIA {}",
+        "  PSNR vs source (dB, best color interp):  signinum {}   NVIDIA {}",
         fmt_psnr(sig_psnr),
         fmt_psnr(nv_psnr),
     );
