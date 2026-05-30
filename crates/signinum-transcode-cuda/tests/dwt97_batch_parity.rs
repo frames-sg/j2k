@@ -78,7 +78,10 @@ fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
         .last_dwt97_batch_stage_timings()
         .expect("CUDA 9/7 batch records backend stage timings");
     assert!(timings.pack_upload_us > 0, "pack/upload stage not timed");
-    assert!(timings.idct_row_lift_us > 0, "idct+row-lift stage not timed");
+    assert!(
+        timings.idct_row_lift_us > 0,
+        "idct+row-lift stage not timed"
+    );
     assert!(timings.column_lift_us > 0, "column-lift stage not timed");
     assert_eq!(
         timings.quantize_codeblock_us, 0,

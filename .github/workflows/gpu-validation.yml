@@ -42,7 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with:
+          components: rustfmt, clippy
       - name: Show runner diagnostics
         run: |
           uname -a

@@ -659,7 +659,9 @@ mod tests {
             *out = REF_LP
                 .iter()
                 .enumerate()
-                .map(|(t, &tap)| tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 4, n)])
+                .map(|(t, &tap)| {
+                    tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 4, n)]
+                })
                 .sum();
         }
         for (m, out) in high.iter_mut().enumerate() {
@@ -667,7 +669,9 @@ mod tests {
             *out = REF_HP
                 .iter()
                 .enumerate()
-                .map(|(t, &tap)| tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 3, n)])
+                .map(|(t, &tap)| {
+                    tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 3, n)]
+                })
                 .sum();
         }
         (low, high)
@@ -750,10 +754,16 @@ mod tests {
 
         // Even symmetry.
         for k in 0..4 {
-            assert!((REF_LP[k] - REF_LP[8 - k]).abs() < 1e-15, "low-pass asymmetric at {k}");
+            assert!(
+                (REF_LP[k] - REF_LP[8 - k]).abs() < 1e-15,
+                "low-pass asymmetric at {k}"
+            );
         }
         for k in 0..3 {
-            assert!((REF_HP[k] - REF_HP[6 - k]).abs() < 1e-15, "high-pass asymmetric at {k}");
+            assert!(
+                (REF_HP[k] - REF_HP[6 - k]).abs() < 1e-15,
+                "high-pass asymmetric at {k}"
+            );
         }
 
         // Four vanishing moments: the high-pass annihilates polynomials of
@@ -796,7 +806,10 @@ mod tests {
             let signal: Vec<f64> = (0..n)
                 .map(|i| {
                     let x = i as f64;
-                    coeffs[3].mul_add(x * x * x, coeffs[2].mul_add(x * x, coeffs[1].mul_add(x, coeffs[0])))
+                    coeffs[3].mul_add(
+                        x * x * x,
+                        coeffs[2].mul_add(x * x, coeffs[1].mul_add(x, coeffs[0])),
+                    )
                 })
                 .collect();
             let lifted = linearized_97_from_sample_slice(&signal);
@@ -824,8 +837,18 @@ mod tests {
             let got = linearized_97_2d_from_plane(&samples, width, height);
             let want = ref_analysis_2d(&samples, width, height);
             assert_eq!(
-                (got.low_width, got.low_height, got.high_width, got.high_height),
-                (want.low_width, want.low_height, want.high_width, want.high_height),
+                (
+                    got.low_width,
+                    got.low_height,
+                    got.high_width,
+                    got.high_height
+                ),
+                (
+                    want.low_width,
+                    want.low_height,
+                    want.high_width,
+                    want.high_height
+                ),
                 "band dimensions for {width}x{height}"
             );
             assert_bands_close(&got.ll, &want.ll, &format!("{width}x{height} ll"), 1e-9);
@@ -865,9 +888,16 @@ mod tests {
     // DCT-III cosine sum so a basis/normalization/transpose bug cannot hide
     // inside both the oracle and its CUDA port.
     fn exact_idct_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
-        let alpha = |k: usize| if k == 0 { (1.0_f64 / 8.0).sqrt() } else { (2.0_f64 / 8.0).sqrt() };
-        let cos_term =
-            |sample: usize, freq: usize| (((2 * sample + 1) as f64) * freq as f64 * PI / 16.0).cos();
+        let alpha = |k: usize| {
+            if k == 0 {
+                (1.0_f64 / 8.0).sqrt()
+            } else {
+                (2.0_f64 / 8.0).sqrt()
+            }
+        };
+        let cos_term = |sample: usize, freq: usize| {
+            (((2 * sample + 1) as f64) * freq as f64 * PI / 16.0).cos()
+        };
         let mut acc = 0.0;
         for (v, row) in block.iter().enumerate() {
             for (u, &coeff) in row.iter().enumerate() {

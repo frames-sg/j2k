@@ -74,7 +74,10 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
             tile.report.coefficient_path,
             JpegToHtj2kCoefficientPath::FloatDirectLinear97
         );
-        assert_eq!(tile.report.path, "native_component_sampling_float_direct_97");
+        assert_eq!(
+            tile.report.path,
+            "native_component_sampling_float_direct_97"
+        );
         assert!(tile.report.float_reference_metrics.is_none());
         assert_component_sampling(&tile.codestream, &[(1, 1), (2, 2), (2, 2)]);
     }

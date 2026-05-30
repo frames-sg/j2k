@@ -722,7 +722,9 @@ mod ground_truth_tests {
             (9, 7),
             (32, 32),
         ] {
-            let plane: Vec<i32> = (0..width * height).map(|_| next_sample(&mut state)).collect();
+            let plane: Vec<i32> = (0..width * height)
+                .map(|_| next_sample(&mut state))
+                .collect();
             let (blocks, block_cols, block_rows) = pack_plane(&plane, width, height);
             let got = reversible_dwt53_first_level_from_block_samples(
                 &blocks, block_cols, block_rows, width, height,
@@ -730,8 +732,18 @@ mod ground_truth_tests {
             .expect("oracle accepts the packed grid");
             let want = ref_53_2d(&plane, width, height);
             assert_eq!(
-                (got.low_width, got.low_height, got.high_width, got.high_height),
-                (want.low_width, want.low_height, want.high_width, want.high_height),
+                (
+                    got.low_width,
+                    got.low_height,
+                    got.high_width,
+                    got.high_height
+                ),
+                (
+                    want.low_width,
+                    want.low_height,
+                    want.high_width,
+                    want.high_height
+                ),
                 "band dimensions for {width}x{height}"
             );
             assert_eq!(got.ll, want.ll, "LL mismatch for {width}x{height}");
@@ -775,8 +787,14 @@ mod ground_truth_tests {
         let (blocks, bc, br) = pack_plane(&varies_in_x, width, height);
         let t = reversible_dwt53_first_level_from_block_samples(&blocks, bc, br, width, height)
             .expect("oracle accepts grid");
-        assert!(t.lh.iter().all(|&v| v == 0), "x-only plane produced LH detail");
-        assert!(t.hh.iter().all(|&v| v == 0), "x-only plane produced HH detail");
+        assert!(
+            t.lh.iter().all(|&v| v == 0),
+            "x-only plane produced LH detail"
+        );
+        assert!(
+            t.hh.iter().all(|&v| v == 0),
+            "x-only plane produced HH detail"
+        );
 
         // Varies only along y -> no horizontal detail (HL and HH vanish).
         let varies_in_y: Vec<i32> = (0..width * height)
@@ -785,7 +803,13 @@ mod ground_truth_tests {
         let (blocks, bc, br) = pack_plane(&varies_in_y, width, height);
         let t = reversible_dwt53_first_level_from_block_samples(&blocks, bc, br, width, height)
             .expect("oracle accepts grid");
-        assert!(t.hl.iter().all(|&v| v == 0), "y-only plane produced HL detail");
-        assert!(t.hh.iter().all(|&v| v == 0), "y-only plane produced HH detail");
+        assert!(
+            t.hl.iter().all(|&v| v == 0),
+            "y-only plane produced HL detail"
+        );
+        assert!(
+            t.hh.iter().all(|&v| v == 0),
+            "y-only plane produced HH detail"
+        );
     }
 }

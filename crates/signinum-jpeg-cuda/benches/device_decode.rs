@@ -169,7 +169,7 @@ fn assert_in_bench_bounds(value: u16) {
 #[cfg(feature = "cuda-runtime")]
 fn bench_batch_decode(c: &mut Criterion) {
     let dim = batch_dim();
-    let input = generated_jpeg(dim);
+    let input = generated_jpeg(dim, dim);
     let dimensions = (u32::from(dim), u32::from(dim));
     let batch_size = batch_size();
     let batch_inputs = vec![(input.as_slice(), dimensions); batch_size];
