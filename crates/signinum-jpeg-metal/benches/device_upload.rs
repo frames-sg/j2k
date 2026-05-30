@@ -65,12 +65,15 @@ fn bench_input() -> Vec<u8> {
         None if std::env::var_os("SIGNINUM_GPU_BENCH_SMALL_FIXTURE").is_some() => {
             BASELINE_420.to_vec()
         }
-        None => generated_jpeg(generated_dim()),
+        None => {
+            let (width, height) = generated_dimensions();
+            generated_jpeg(width, height)
+        }
     }
 }
 
-fn generated_jpeg(dim: u16) -> Vec<u8> {
-    let rgb = signinum_test_support::gpu_bench_rgb8(u32::from(dim), u32::from(dim));
+fn generated_jpeg(width: u16, height: u16) -> Vec<u8> {
+    let rgb = signinum_test_support::gpu_bench_rgb8(u32::from(width), u32::from(height));
 
     let mut jpeg = Vec::new();
     let mut encoder = Encoder::new(&mut jpeg, 90);
@@ -79,24 +82,49 @@ fn generated_jpeg(dim: u16) -> Vec<u8> {
         encoder.set_restart_interval(interval);
     }
     encoder
-        .encode(&rgb, dim, dim, ColorType::Rgb)
+        .encode(&rgb, width, height, ColorType::Rgb)
         .expect("encode generated benchmark JPEG");
     jpeg
 }
 
-fn generated_dim() -> u16 {
+fn generated_dimensions() -> (u16, u16) {
     let Some(value) = std::env::var_os("SIGNINUM_GPU_BENCH_DIM") else {
-        return DEFAULT_GENERATED_DIM;
+        return (DEFAULT_GENERATED_DIM, DEFAULT_GENERATED_DIM);
     };
-    let value = value
-        .to_string_lossy()
+    parse_dimensions(&value.to_string_lossy())
+}
+
+fn parse_dimensions(value: &str) -> (u16, u16) {
+    if let Some((width, height)) = value.split_once('x') {
+        parse_dimensions_pair(width, height)
+    } else {
+        let square = value
+            .parse::<u16>()
+            .expect("SIGNINUM_GPU_BENCH_DIM must be a u16 or WIDTHxHEIGHT");
+        assert_in_bench_bounds(square);
+        (square, square)
+    }
+}
+
+fn parse_dimensions_pair(width: &str, height: &str) -> (u16, u16) {
+    let width = width
+        .trim()
         .parse::<u16>()
-        .expect("SIGNINUM_GPU_BENCH_DIM must be a u16");
+        .expect("SIGNINUM_GPU_BENCH_DIM must be a u16 or WIDTHxHEIGHT");
+    let height = height
+        .trim()
+        .parse::<u16>()
+        .expect("SIGNINUM_GPU_BENCH_DIM must be a u16 or WIDTHxHEIGHT");
+    assert_in_bench_bounds(width);
+    assert_in_bench_bounds(height);
+    (width, height)
+}
+
+fn assert_in_bench_bounds(value: u16) {
     assert!(
         (256..=8192).contains(&value),
-        "SIGNINUM_GPU_BENCH_DIM must be between 256 and 8192"
+        "SIGNINUM_GPU_BENCH_DIM dimensions must be between 256 and 8192"
     );
-    value
 }
 
 fn restart_interval() -> Option<u16> {
@@ -114,7 +142,7 @@ fn restart_interval() -> Option<u16> {
 
 fn bench_batch_decode(c: &mut Criterion) {
     let dim = batch_dim();
-    let input = generated_jpeg(dim);
+    let input = generated_jpeg(dim, dim);
     let batch_size = batch_size();
 
     let mut group = c.benchmark_group("jpeg_metal_batch_decode");
@@ -181,8 +209,8 @@ fn batch_size() -> usize {
         .parse::<usize>()
         .expect("SIGNINUM_GPU_BENCH_BATCH must be a usize");
     assert!(
-        (1..=256).contains(&value),
-        "SIGNINUM_GPU_BENCH_BATCH must be between 1 and 256"
+        (1..=512).contains(&value),
+        "SIGNINUM_GPU_BENCH_BATCH must be between 1 and 512"
     );
     value
 }
