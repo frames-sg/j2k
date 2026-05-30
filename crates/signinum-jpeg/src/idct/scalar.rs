@@ -330,7 +330,13 @@ mod tests {
     /// coefficient at horizontal frequency `u`, vertical frequency `v`.
     fn exact_idct_pixel(coeffs: &[i16; 64], x: usize, y: usize) -> f64 {
         use core::f64::consts::PI;
-        let alpha = |k: usize| if k == 0 { (1.0_f64 / 8.0).sqrt() } else { (2.0_f64 / 8.0).sqrt() };
+        let alpha = |k: usize| {
+            if k == 0 {
+                (1.0_f64 / 8.0).sqrt()
+            } else {
+                (2.0_f64 / 8.0).sqrt()
+            }
+        };
         let cos_term = |sample: usize, freq: usize| -> f64 {
             let s = f64::from(u8::try_from(sample).unwrap());
             let f = f64::from(u8::try_from(freq).unwrap());

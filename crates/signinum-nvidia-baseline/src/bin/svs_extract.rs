@@ -26,11 +26,15 @@ use signinum_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSample
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(svs_path) = args.next() else {
-        eprintln!("usage: svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]");
+        eprintln!(
+            "usage: svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]"
+        );
         std::process::exit(2);
     };
     let Some(out_dir) = args.next() else {
-        eprintln!("usage: svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]");
+        eprintln!(
+            "usage: svs_extract <slide.svs> <out-dir> [--limit N] [--stride S] [--quality Q]"
+        );
         std::process::exit(2);
     };
     let mut limit = 256usize;
@@ -40,10 +44,19 @@ fn main() {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--limit" => limit = args.next().and_then(|v| v.parse().ok()).unwrap_or(limit),
-            "--stride" => stride = args.next().and_then(|v| v.parse().ok()).unwrap_or(stride).max(1),
+            "--stride" => {
+                stride = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(stride)
+                    .max(1)
+            }
             "--quality" => quality = args.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
             "--min-tissue" => {
-                min_tissue = args.next().and_then(|v| v.parse().ok()).unwrap_or(min_tissue);
+                min_tissue = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(min_tissue);
             }
             other => {
                 eprintln!("unknown flag: {other}");
@@ -70,8 +83,12 @@ fn run(
     let ifd0 = parse_first_ifd(&bytes)?;
     println!(
         "slide: {}x{} px, {}x{} tiles, compression {}, {} tiles total",
-        ifd0.image_width, ifd0.image_height, ifd0.tile_width, ifd0.tile_height,
-        ifd0.compression, ifd0.tile_offsets.len()
+        ifd0.image_width,
+        ifd0.image_height,
+        ifd0.tile_width,
+        ifd0.tile_height,
+        ifd0.compression,
+        ifd0.tile_offsets.len()
     );
 
     std::fs::create_dir_all(out_dir).map_err(|e| format!("create {out_dir}: {e}"))?;
@@ -113,19 +130,28 @@ fn run(
         }
 
         let encoded = encode_jpeg_baseline(
-            JpegSamples::Rgb8 { data: &rgb, width: w, height: h },
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: w,
+                height: h,
+            },
             options,
         )
         .map_err(|e| format!("encode tile {index}: {e}"))?;
 
         let path = Path::new(out_dir).join(format!("tile_{written:05}.jpg"));
-        std::fs::write(&path, &encoded.data).map_err(|e| format!("write {}: {e}", path.display()))?;
+        std::fs::write(&path, &encoded.data)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
         written += 1;
         min_seen_fraction = min_seen_fraction.min(fraction);
         sum_fraction += fraction;
     }
 
-    let mean_fraction = if written > 0 { sum_fraction / written as f64 } else { 0.0 };
+    let mean_fraction = if written > 0 {
+        sum_fraction / written as f64
+    } else {
+        0.0
+    };
     println!(
         "wrote {written} JPEG tiles to {out_dir} (attempted {attempted}, skipped {skipped_blank} below {:.0}% tissue, {decode_failures} decode failures)",
         min_tissue * 100.0
@@ -136,7 +162,10 @@ fn run(
         mean_fraction * 100.0
     );
     if written == 0 {
-        return Err("no tiles written — decode may be unsupported, or all tiles below the tissue threshold".to_string());
+        return Err(
+            "no tiles written — decode may be unsupported, or all tiles below the tissue threshold"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -240,7 +269,9 @@ fn parse_first_ifd(bytes: &[u8]) -> Result<Ifd, String> {
     }
     let magic = u16::from_le_bytes([bytes[2], bytes[3]]);
     if magic != 42 {
-        return Err(format!("unsupported TIFF magic {magic} (BigTIFF is not supported)"));
+        return Err(format!(
+            "unsupported TIFF magic {magic} (BigTIFF is not supported)"
+        ));
     }
     let ifd_off = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
     if ifd_off + 2 > bytes.len() {
@@ -261,7 +292,12 @@ fn parse_first_ifd(bytes: &[u8]) -> Result<Ifd, String> {
         }
         let tag = u16::from_le_bytes([bytes[base], bytes[base + 1]]);
         let typ = u16::from_le_bytes([bytes[base + 2], bytes[base + 3]]);
-        let count = u32::from_le_bytes([bytes[base + 4], bytes[base + 5], bytes[base + 6], bytes[base + 7]]);
+        let count = u32::from_le_bytes([
+            bytes[base + 4],
+            bytes[base + 5],
+            bytes[base + 6],
+            bytes[base + 7],
+        ]);
         let value_field = &bytes[base + 8..base + 12];
         match tag {
             256 => image_width = scalar(typ, value_field),
@@ -276,7 +312,9 @@ fn parse_first_ifd(bytes: &[u8]) -> Result<Ifd, String> {
     }
 
     if tile_offsets.is_empty() || tile_offsets.len() != tile_byte_counts.len() {
-        return Err("IFD has no tiles or mismatched tile arrays (is this a tiled SVS?)".to_string());
+        return Err(
+            "IFD has no tiles or mismatched tile arrays (is this a tiled SVS?)".to_string(),
+        );
     }
     Ok(Ifd {
         image_width,
@@ -293,12 +331,22 @@ fn parse_first_ifd(bytes: &[u8]) -> Result<Ifd, String> {
 fn scalar(typ: u16, value_field: &[u8]) -> u32 {
     match typ {
         3 => u32::from(u16::from_le_bytes([value_field[0], value_field[1]])),
-        _ => u32::from_le_bytes([value_field[0], value_field[1], value_field[2], value_field[3]]),
+        _ => u32::from_le_bytes([
+            value_field[0],
+            value_field[1],
+            value_field[2],
+            value_field[3],
+        ]),
     }
 }
 
 /// Read a SHORT/LONG array, inline when it fits in 4 bytes else at the offset.
-fn read_u32_array(bytes: &[u8], typ: u16, count: u32, value_field: &[u8]) -> Result<Vec<u32>, String> {
+fn read_u32_array(
+    bytes: &[u8],
+    typ: u16,
+    count: u32,
+    value_field: &[u8],
+) -> Result<Vec<u32>, String> {
     let count = count as usize;
     let elem = match typ {
         3 => 2usize,
@@ -309,15 +357,27 @@ fn read_u32_array(bytes: &[u8], typ: u16, count: u32, value_field: &[u8]) -> Res
     let data: &[u8] = if total <= 4 {
         value_field
     } else {
-        let off = u32::from_le_bytes([value_field[0], value_field[1], value_field[2], value_field[3]]) as usize;
-        bytes.get(off..off + total).ok_or_else(|| "tile array out of range".to_string())?
+        let off = u32::from_le_bytes([
+            value_field[0],
+            value_field[1],
+            value_field[2],
+            value_field[3],
+        ]) as usize;
+        bytes
+            .get(off..off + total)
+            .ok_or_else(|| "tile array out of range".to_string())?
     };
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let v = if elem == 2 {
             u32::from(u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]))
         } else {
-            u32::from_le_bytes([data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]])
+            u32::from_le_bytes([
+                data[i * 4],
+                data[i * 4 + 1],
+                data[i * 4 + 2],
+                data[i * 4 + 3],
+            ])
         };
         out.push(v);
     }

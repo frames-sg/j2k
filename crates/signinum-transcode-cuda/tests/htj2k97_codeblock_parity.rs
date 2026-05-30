@@ -35,25 +35,34 @@ fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 
 
 /// Code-block geometry must match exactly: same component/resolution/subband
 /// nesting, code-block counts, declared bitplanes, and code-block dimensions.
-fn assert_layout_eq(actual: &PrequantizedHtj2k97Component, expected: &PrequantizedHtj2k97Component) {
+fn assert_layout_eq(
+    actual: &PrequantizedHtj2k97Component,
+    expected: &PrequantizedHtj2k97Component,
+) {
     assert_eq!(actual.x_rsiz, expected.x_rsiz);
     assert_eq!(actual.y_rsiz, expected.y_rsiz);
     assert_eq!(actual.resolutions.len(), expected.resolutions.len());
     for (actual_res, expected_res) in actual.resolutions.iter().zip(expected.resolutions.iter()) {
         assert_eq!(actual_res.subbands.len(), expected_res.subbands.len());
-        for (actual_sub, expected_sub) in actual_res.subbands.iter().zip(expected_res.subbands.iter())
+        for (actual_sub, expected_sub) in
+            actual_res.subbands.iter().zip(expected_res.subbands.iter())
         {
             assert_eq!(actual_sub.sub_band_type, expected_sub.sub_band_type);
             assert_eq!(actual_sub.num_cbs_x, expected_sub.num_cbs_x);
             assert_eq!(actual_sub.num_cbs_y, expected_sub.num_cbs_y);
             assert_eq!(actual_sub.total_bitplanes, expected_sub.total_bitplanes);
             assert_eq!(actual_sub.code_blocks.len(), expected_sub.code_blocks.len());
-            for (actual_block, expected_block) in
-                actual_sub.code_blocks.iter().zip(expected_sub.code_blocks.iter())
+            for (actual_block, expected_block) in actual_sub
+                .code_blocks
+                .iter()
+                .zip(expected_sub.code_blocks.iter())
             {
                 assert_eq!(actual_block.width, expected_block.width);
                 assert_eq!(actual_block.height, expected_block.height);
-                assert_eq!(actual_block.coefficients.len(), expected_block.coefficients.len());
+                assert_eq!(
+                    actual_block.coefficients.len(),
+                    expected_block.coefficients.len()
+                );
             }
         }
     }
@@ -66,10 +75,13 @@ fn assert_coefficients_close(
     max_abs_error: i32,
 ) {
     for (actual_res, expected_res) in actual.resolutions.iter().zip(expected.resolutions.iter()) {
-        for (actual_sub, expected_sub) in actual_res.subbands.iter().zip(expected_res.subbands.iter())
+        for (actual_sub, expected_sub) in
+            actual_res.subbands.iter().zip(expected_res.subbands.iter())
         {
-            for (actual_block, expected_block) in
-                actual_sub.code_blocks.iter().zip(expected_sub.code_blocks.iter())
+            for (actual_block, expected_block) in actual_sub
+                .code_blocks
+                .iter()
+                .zip(expected_sub.code_blocks.iter())
             {
                 for (&actual_coeff, &expected_coeff) in actual_block
                     .coefficients
@@ -149,9 +161,15 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
         .last_dwt97_batch_stage_timings()
         .expect("CUDA code-block batch records backend stage timings");
     assert!(timings.pack_upload_us > 0, "pack/upload stage not timed");
-    assert!(timings.idct_row_lift_us > 0, "idct+row-lift stage not timed");
+    assert!(
+        timings.idct_row_lift_us > 0,
+        "idct+row-lift stage not timed"
+    );
     assert!(timings.column_lift_us > 0, "column-lift stage not timed");
-    assert!(timings.quantize_codeblock_us > 0, "quantize stage not timed");
+    assert!(
+        timings.quantize_codeblock_us > 0,
+        "quantize stage not timed"
+    );
     assert!(timings.readback_us > 0, "readback stage not timed");
 }
 

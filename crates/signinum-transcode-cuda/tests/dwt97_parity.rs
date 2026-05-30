@@ -74,8 +74,9 @@ fn cuda_dwt97_matches_scalar_oracle_within_tolerance_when_required() {
             .expect("CUDA 9/7 dispatch should succeed on the runner")
             .expect("CUDA should handle the 9/7 job (explicit mode)");
 
-        let expected = dct8x8_blocks_then_dwt97_float(&blocks, block_cols, block_rows, width, height)
-            .expect("scalar 9/7 oracle accepts the job");
+        let expected =
+            dct8x8_blocks_then_dwt97_float(&blocks, block_cols, block_rows, width, height)
+                .expect("scalar 9/7 oracle accepts the job");
 
         let diff = max_abs_diff(&actual, &expected);
         assert!(

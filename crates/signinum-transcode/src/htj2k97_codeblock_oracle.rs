@@ -101,7 +101,8 @@ pub fn quantize_codeblock_subband(
             let mut block_coefficients = Vec::with_capacity(block_width * block_height);
             for y in 0..block_height {
                 let row_start = (y0 + y) * width + x0;
-                block_coefficients.extend_from_slice(&quantized[row_start..row_start + block_width]);
+                block_coefficients
+                    .extend_from_slice(&quantized[row_start..row_start + block_width]);
             }
             code_blocks.push(PrequantizedHtj2k97CodeBlock {
                 coefficients: block_coefficients,
@@ -153,7 +154,10 @@ pub fn htj2k97_subband_total_bitplanes(
 ) -> u8 {
     let _ = sub_band_type;
     let (exponent, _) = htj2k97_step(options);
-    options.guard_bits.saturating_add(exponent).saturating_sub(1)
+    options
+        .guard_bits
+        .saturating_add(exponent)
+        .saturating_sub(1)
 }
 
 fn quantize_subband_coefficients(
@@ -179,8 +183,8 @@ fn quantize_subband_coefficients(
 /// Mirrors native `QuantStepSize::from_delta` applied to
 /// `base_step.delta · scale`, where `base_step.delta = 2^(−guard_bits)`.
 fn htj2k97_step(options: Htj2k97CodeBlockOptions) -> (u8, u16) {
-    let base_delta =
-        pow2i_f64(-i32::from(options.guard_bits)) * f64::from(options.irreversible_quantization_scale);
+    let base_delta = pow2i_f64(-i32::from(options.guard_bits))
+        * f64::from(options.irreversible_quantization_scale);
     let floor_log2 = base_delta.log2().floor() as i32;
     let mut exponent = i32::from(options.bit_depth) - floor_log2;
     let normalized = base_delta / pow2i_f64(floor_log2);
