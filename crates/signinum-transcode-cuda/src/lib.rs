@@ -208,6 +208,7 @@ impl CudaDctToWaveletStageAccelerator {
     }
 
     /// Outcome for a job that CUDA cannot serve, resolved by dispatch mode.
+    #[cfg(not(feature = "cuda-runtime"))]
     fn unavailable<T>(&self) -> Result<Option<T>, &'static str> {
         match self.mode {
             CudaDispatchMode::Explicit => Err(CUDA_UNAVAILABLE),

@@ -664,6 +664,14 @@ const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_htj2k_encode_p
 /// returns a typed error instead of loading a non-existent kernel.
 const TRANSCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_transcode_ptx_built);
 
+/// Whether the coefficient-domain transcode kernels were compiled (runner).
+/// Backends check this to fall back to the scalar oracle when the kernels are
+/// unavailable (e.g. a non-nvcc build) instead of attempting a device launch.
+#[must_use]
+pub fn transcode_kernels_built() -> bool {
+    TRANSCODE_PTX_BUILT_FROM_CUDA
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct CudaHtj2kEncodeParams {
