@@ -5267,10 +5267,7 @@ impl CudaContext {
         })
     }
 
-    fn download_i32_band(
-        buffer: &CudaDeviceBuffer,
-        count: usize,
-    ) -> Result<Vec<i32>, CudaError> {
+    fn download_i32_band(buffer: &CudaDeviceBuffer, count: usize) -> Result<Vec<i32>, CudaError> {
         let mut out = vec![0i32; count];
         if count != 0 {
             buffer.copy_to_host(i32_slice_as_bytes_mut(&mut out))?;
@@ -5292,8 +5289,8 @@ impl CudaContext {
             .kernel_function(CudaKernel::TranscodeReversible53Idct)?;
         let mut blocks_ptr = blocks.device_ptr();
         let mut samples_ptr = samples.device_ptr();
-        let mut count =
-            u32::try_from(block_count).map_err(|_| CudaError::LengthTooLarge { len: block_count })?;
+        let mut count = u32::try_from(block_count)
+            .map_err(|_| CudaError::LengthTooLarge { len: block_count })?;
         let mut params = [
             (&raw mut blocks_ptr).cast::<c_void>(),
             (&raw mut samples_ptr).cast::<c_void>(),
@@ -5327,8 +5324,7 @@ impl CudaContext {
             (&raw mut out_ptr).cast::<c_void>(),
             (&raw mut rows).cast::<c_void>(),
         ];
-        let grid_w =
-            u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_w = u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let grid_h = u32::try_from(out_rows).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let geometry = j2k_dwt53_launch_geometry(grid_w, grid_h)
             .ok_or(CudaError::LengthTooLarge { len: 0 })?;
@@ -5366,8 +5362,8 @@ impl CudaContext {
             (&raw mut low_ptr).cast::<c_void>(),
             (&raw mut high_ptr).cast::<c_void>(),
         ];
-        let geometry =
-            copy_u8_launch_geometry(row_count).ok_or(CudaError::LengthTooLarge { len: row_count })?;
+        let geometry = copy_u8_launch_geometry(row_count)
+            .ok_or(CudaError::LengthTooLarge { len: row_count })?;
         self.launch_kernel(function, geometry, &mut params)
     }
 }
@@ -5552,7 +5548,13 @@ impl CudaContext {
         self.launch_transcode_dwt97_idct(dims, &blocks_dev, &spatial)?;
         self.launch_transcode_dwt97_row_lift(dims, &spatial, &row_low, &row_high)?;
         if dims.low_width > 0 {
-            self.launch_transcode_dwt97_column_lift(&row_low, dims.low_width, dims.height, &ll, &lh)?;
+            self.launch_transcode_dwt97_column_lift(
+                &row_low,
+                dims.low_width,
+                dims.height,
+                &ll,
+                &lh,
+            )?;
         }
         if dims.high_width > 0 {
             self.launch_transcode_dwt97_column_lift(
@@ -5576,10 +5578,7 @@ impl CudaContext {
         })
     }
 
-    fn download_f32_band(
-        buffer: &CudaDeviceBuffer,
-        count: usize,
-    ) -> Result<Vec<f32>, CudaError> {
+    fn download_f32_band(buffer: &CudaDeviceBuffer, count: usize) -> Result<Vec<f32>, CudaError> {
         let mut out = vec![0f32; count];
         if count != 0 {
             buffer.copy_to_host(f32_slice_as_bytes_mut(&mut out))?;
@@ -5606,8 +5605,7 @@ impl CudaContext {
             (&raw mut height).cast::<c_void>(),
             (&raw mut spatial_ptr).cast::<c_void>(),
         ];
-        let grid_w =
-            u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_w = u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let grid_h =
             u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let geometry = j2k_dwt53_launch_geometry(grid_w, grid_h)
@@ -5622,7 +5620,9 @@ impl CudaContext {
         row_low: &CudaDeviceBuffer,
         row_high: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::TranscodeDwt97RowLift)?;
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeDwt97RowLift)?;
         let mut spatial_ptr = spatial.device_ptr();
         let mut width = dims.width;
         let mut height = dims.height;
@@ -5639,7 +5639,8 @@ impl CudaContext {
             (&raw mut low_ptr).cast::<c_void>(),
             (&raw mut high_ptr).cast::<c_void>(),
         ];
-        let rows = usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let rows =
+            usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let geometry =
             copy_u8_launch_geometry(rows).ok_or(CudaError::LengthTooLarge { len: rows })?;
         self.launch_kernel(function, geometry, &mut params)
@@ -5696,8 +5697,8 @@ impl CudaContext {
         width: usize,
         height: usize,
     ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
-        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) =
-            self.transcode_dwt97_batch_to_device(
+        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
+            .transcode_dwt97_batch_to_device(
                 blocks, item_count, block_cols, block_rows, width, height,
             )?;
         let Dwt97BatchDeviceBands {
@@ -5754,7 +5755,11 @@ impl CudaContext {
     /// into code-block-major `i32` layout. `params` carries the per-subband
     /// inverse step sizes (derived by the caller from the `signinum-transcode`
     /// code-block oracle) and the code-block geometry.
-    #[allow(clippy::too_many_arguments, clippy::similar_names)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
     pub fn j2k_transcode_htj2k97_codeblock_batch(
         &self,
         blocks: &[f32],
@@ -5765,8 +5770,8 @@ impl CudaContext {
         height: usize,
         params: CudaHtj2k97QuantizeParams,
     ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
-        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) =
-            self.transcode_dwt97_batch_to_device(
+        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
+            .transcode_dwt97_batch_to_device(
                 blocks, item_count, block_cols, block_rows, width, height,
             )?;
         let Dwt97BatchDeviceBands {
@@ -5783,7 +5788,8 @@ impl CudaContext {
         let to_i32 = |value: usize| -> Result<i32, CudaError> {
             i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
         };
-        let items = u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
+        let items =
+            u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
         let cb_w = to_i32(params.cb_width)?;
         let cb_h = to_i32(params.cb_height)?;
 
@@ -5905,9 +5911,12 @@ impl CudaContext {
         let per_item_coeffs = block_count
             .checked_mul(64)
             .ok_or(CudaError::LengthTooLarge { len: block_count })?;
-        let expected_coeffs = per_item_coeffs
-            .checked_mul(item_count)
-            .ok_or(CudaError::LengthTooLarge { len: per_item_coeffs })?;
+        let expected_coeffs =
+            per_item_coeffs
+                .checked_mul(item_count)
+                .ok_or(CudaError::LengthTooLarge {
+                    len: per_item_coeffs,
+                })?;
         if item_count == 0
             || width == 0
             || height == 0
@@ -5935,7 +5944,8 @@ impl CudaContext {
             low_width: to_i32(low_width)?,
             high_width: to_i32(high_width)?,
         };
-        let items = u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
+        let items =
+            u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
         let blocks_per_item = to_i32(block_count)?;
         let low_height_i32 = to_i32(low_height)?;
         let high_height_i32 = to_i32(high_height)?;
@@ -6048,7 +6058,8 @@ impl CudaContext {
             (&raw mut spatial_ptr).cast::<c_void>(),
         ];
         let grid_w = u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
-        let grid_h = u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_h =
+            u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
             .ok_or(CudaError::LengthTooLarge { len: 0 })?;
         let geometry = kernels::CudaLaunchGeometry {
@@ -6085,7 +6096,8 @@ impl CudaContext {
             (&raw mut low_ptr).cast::<c_void>(),
             (&raw mut high_ptr).cast::<c_void>(),
         ];
-        let rows = usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let rows =
+            usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
         let base = copy_u8_launch_geometry(rows).ok_or(CudaError::LengthTooLarge { len: rows })?;
         let geometry = kernels::CudaLaunchGeometry {
             grid: (base.grid.0, items, 1),
@@ -6130,8 +6142,8 @@ impl CudaContext {
             (&raw mut low_ptr).cast::<c_void>(),
             (&raw mut high_ptr).cast::<c_void>(),
         ];
-        let base = copy_u8_launch_geometry(columns)
-            .ok_or(CudaError::LengthTooLarge { len: columns })?;
+        let base =
+            copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
         let geometry = kernels::CudaLaunchGeometry {
             grid: (base.grid.0, items, 1),
             block: base.block,
@@ -7187,11 +7199,11 @@ mod tests {
             .expect("resource-backed single HTJ2K encode");
 
         assert_eq!(encoded.execution().kernel_dispatches(), 1);
-        assert_eq!(encoded.num_coding_passes(), 1);
-        assert_eq!(
-            encoded.cleanup_length(),
-            u32::try_from(encoded.data().len()).expect("test payload length fits u32")
-        );
+        // An all-zero codeblock has no significant bitplanes, so the encoder emits zero
+        // coding passes (matching native ht_block_encode::encode_code_block).
+        assert_eq!(encoded.num_coding_passes(), 0);
+        assert_eq!(encoded.cleanup_length(), 0);
+        assert_eq!(encoded.data().len(), 0);
         assert_eq!(encoded.refinement_length(), 0);
     }
 
@@ -7794,7 +7806,9 @@ mod tests {
             )
             .expect("CUDA irreversible quantize");
         assert_eq!(irreversible.execution().kernel_dispatches(), 1);
-        assert_eq!(irreversible.coefficients(), &[-1, -1, 0, 0, 0, 0, 1, 4]);
+        // delta = 2^(range_bits - step_exponent) = 2^(8 - 9) = 0.5, so q = sign*floor(|s|/0.5).
+        // Matches native QuantStepSize::delta and JPEG 2000 T.800 Annex E.
+        assert_eq!(irreversible.coefficients(), &[-7, -5, 0, 0, 0, 3, 6, 19]);
     }
 
     #[test]

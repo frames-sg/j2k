@@ -31,7 +31,7 @@ pub use direct_plan::{
 pub use encode::cuda_dwt53_output_to_j2k_for_test;
 pub use encode::{
     encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile,
-    CudaEncodeStageAccelerator,
+    CudaEncodeStageAccelerator, CudaEncodeStageTimings,
 };
 pub use error::Error;
 pub use profile::{CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport};

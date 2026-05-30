@@ -1138,7 +1138,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     }
 
     if (max_magnitude == 0u) {
-        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 1u, params.total_bitplanes);
+        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 0u, params.total_bitplanes);
         return;
     }
 

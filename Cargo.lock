@@ -1029,6 +1029,7 @@ dependencies = [
 name = "signinum-nvidia-baseline"
 version = "0.4.4"
 dependencies = [
+ "signinum-j2k-cuda",
  "signinum-j2k-native",
  "signinum-jpeg",
  "signinum-transcode",

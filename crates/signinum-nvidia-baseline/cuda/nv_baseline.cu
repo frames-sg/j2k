@@ -4,8 +4,7 @@
 // the JPEG to RGB on the GPU, then nvJPEG2000 encodes it to a High-Throughput
 // JPEG 2000 (HTJ2K) codestream on the GPU. This is the apples-to-apples NVIDIA
 // path against signinum's coefficient-domain transcode (which skips the pixel
-// round-trip). Exposes a single C ABI entry point so the Rust side keeps a tiny
-// FFI surface.
+// round-trip). Exposes a tiny C ABI surface for the Rust wrapper.
 //
 // Compiled by build.rs with nvcc only when the `nvjpeg2000` feature is on and
 // the libraries are present. nvJPEG2000 ships separately from the CUDA toolkit.
@@ -15,6 +14,7 @@
 
 #include <cstring>
 #include <cuda_runtime.h>
+#include <new>
 #include <nvjpeg.h>
 #include <nvjpeg2k.h>
 
@@ -26,26 +26,96 @@
 #define NVJPEG2K_MODE_HT 0x40
 #endif
 
+struct NvbSession {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t start = nullptr;
+    cudaEvent_t mid = nullptr;
+    cudaEvent_t stop = nullptr;
+    nvjpegHandle_t jpeg_handle = nullptr;
+    nvjpegJpegState_t jpeg_state = nullptr;
+    nvjpeg2kEncoder_t enc = nullptr;
+    nvjpeg2kEncodeState_t enc_state = nullptr;
+    nvjpeg2kEncodeParams_t enc_params = nullptr;
+    unsigned char* planes[3] = {nullptr, nullptr, nullptr};
+    size_t plane_capacity = 0;
+};
+
+static void nvb_session_release_planes(NvbSession* session) {
+    for (int c = 0; c < 3; ++c) {
+        if (session->planes[c]) {
+            cudaFree(session->planes[c]);
+            session->planes[c] = nullptr;
+        }
+    }
+    session->plane_capacity = 0;
+}
+
+static int nvb_session_ensure_planes(NvbSession* session, size_t plane_bytes) {
+    if (session->plane_capacity >= plane_bytes) {
+        return 0;
+    }
+    nvb_session_release_planes(session);
+    for (int c = 0; c < 3; ++c) {
+        if (cudaMalloc((void**)&session->planes[c], plane_bytes) != cudaSuccess) {
+            nvb_session_release_planes(session);
+            return 902;
+        }
+    }
+    session->plane_capacity = plane_bytes;
+    return 0;
+}
+
 extern "C" {
+
+void nvb_session_destroy(NvbSession* session) {
+    if (!session) {
+        return;
+    }
+    nvb_session_release_planes(session);
+    if (session->enc_params) { nvjpeg2kEncodeParamsDestroy(session->enc_params); }
+    if (session->enc_state) { nvjpeg2kEncodeStateDestroy(session->enc_state); }
+    if (session->enc) { nvjpeg2kEncoderDestroy(session->enc); }
+    if (session->jpeg_state) { nvjpegJpegStateDestroy(session->jpeg_state); }
+    if (session->jpeg_handle) { nvjpegDestroy(session->jpeg_handle); }
+    if (session->start) { cudaEventDestroy(session->start); }
+    if (session->mid) { cudaEventDestroy(session->mid); }
+    if (session->stop) { cudaEventDestroy(session->stop); }
+    if (session->stream) { cudaStreamDestroy(session->stream); }
+    delete session;
+}
+
+int nvb_session_create(NvbSession** out) {
+    int rc = 0;
+    NvbSession* session = nullptr;
+    if (!out) { return 900; }
+    *out = nullptr;
+    session = new (std::nothrow) NvbSession();
+    if (!session) { return 904; }
+
+    if (cudaStreamCreate(&session->stream) != cudaSuccess) { rc = 901; goto cleanup; }
+    if (cudaEventCreate(&session->start) != cudaSuccess) { rc = 905; goto cleanup; }
+    if (cudaEventCreate(&session->mid) != cudaSuccess) { rc = 905; goto cleanup; }
+    if (cudaEventCreate(&session->stop) != cudaSuccess) { rc = 905; goto cleanup; }
+    if (nvjpegCreateSimple(&session->jpeg_handle) != NVJPEG_STATUS_SUCCESS) { rc = 101; goto cleanup; }
+    if (nvjpegJpegStateCreate(session->jpeg_handle, &session->jpeg_state) != NVJPEG_STATUS_SUCCESS) { rc = 102; goto cleanup; }
+    if (nvjpeg2kEncoderCreateSimple(&session->enc) != NVJPEG2K_STATUS_SUCCESS) { rc = 201; goto cleanup; }
+    if (nvjpeg2kEncodeStateCreate(session->enc, &session->enc_state) != NVJPEG2K_STATUS_SUCCESS) { rc = 202; goto cleanup; }
+    if (nvjpeg2kEncodeParamsCreate(&session->enc_params) != NVJPEG2K_STATUS_SUCCESS) { rc = 203; goto cleanup; }
+
+    *out = session;
+    return 0;
+
+cleanup:
+    nvb_session_destroy(session);
+    return rc;
+}
 
 // Probe: returns 1 if the nvJPEG and nvJPEG2000 handles can be created.
 int nvb_available(void) {
-    nvjpegHandle_t jpeg = nullptr;
-    nvjpeg2kEncoder_t enc = nullptr;
-    int ok = 1;
-    if (nvjpegCreateSimple(&jpeg) != NVJPEG_STATUS_SUCCESS) {
-        ok = 0;
-    }
-    if (nvjpeg2kEncoderCreateSimple(&enc) != NVJPEG2K_STATUS_SUCCESS) {
-        ok = 0;
-    }
-    if (enc) {
-        nvjpeg2kEncoderDestroy(enc);
-    }
-    if (jpeg) {
-        nvjpegDestroy(jpeg);
-    }
-    return ok;
+    NvbSession* session = nullptr;
+    const int rc = nvb_session_create(&session);
+    nvb_session_destroy(session);
+    return rc == 0 ? 1 : 0;
 }
 
 // Reference decode (untimed): JPEG -> interleaved RGB on the host, for PSNR.
@@ -99,24 +169,17 @@ cleanup:
     return rc;
 }
 
-// Full GPU transcode: JPEG bytes -> HTJ2K bytes. Returns 0 on success, or a
-// non-zero stage code (1xx nvJPEG decode, 2xx nvJPEG2000 encode, 9xx CUDA).
+// Reused-session GPU transcode: JPEG bytes -> HTJ2K bytes. Returns 0 on success,
+// or a non-zero stage code (1xx nvJPEG decode, 2xx nvJPEG2000 encode, 9xx CUDA).
 // `decode_ms` / `encode_ms` are GPU stage times (cudaEvent). `out` must have
 // `out_cap` bytes; on success `*out_len` holds the codestream length.
-int nvb_transcode_jpeg_to_htj2k(
+int nvb_session_transcode_jpeg_to_htj2k(
+    NvbSession* session,
     const unsigned char* jpeg, size_t jpeg_len,
     unsigned char* out, size_t out_cap, size_t* out_len,
     double* decode_ms, double* encode_ms,
     int* width, int* height, int* num_components) {
     int rc = 0;
-    cudaStream_t stream = nullptr;
-    cudaEvent_t start = nullptr, mid = nullptr, stop = nullptr;
-    nvjpegHandle_t jpeg_handle = nullptr;
-    nvjpegJpegState_t jpeg_state = nullptr;
-    nvjpeg2kEncoder_t enc = nullptr;
-    nvjpeg2kEncodeState_t enc_state = nullptr;
-    nvjpeg2kEncodeParams_t enc_params = nullptr;
-    unsigned char* planes[3] = {nullptr, nullptr, nullptr};
     int comps = 0;
     nvjpegChromaSubsampling_t subsampling;
     int widths[NVJPEG_MAX_COMPONENT] = {0};
@@ -136,15 +199,10 @@ int nvb_transcode_jpeg_to_htj2k(
     float decode_elapsed = 0.0f;
     float encode_elapsed = 0.0f;
 
-    if (cudaStreamCreate(&stream) != cudaSuccess) { return 901; }
-    cudaEventCreate(&start);
-    cudaEventCreate(&mid);
-    cudaEventCreate(&stop);
+    if (!session) { return 900; }
 
-    if (nvjpegCreateSimple(&jpeg_handle) != NVJPEG_STATUS_SUCCESS) { rc = 101; goto cleanup; }
-    if (nvjpegJpegStateCreate(jpeg_handle, &jpeg_state) != NVJPEG_STATUS_SUCCESS) { rc = 102; goto cleanup; }
-    if (nvjpegGetImageInfo(jpeg_handle, jpeg, jpeg_len, &comps, &subsampling, widths, heights)
-        != NVJPEG_STATUS_SUCCESS) { rc = 103; goto cleanup; }
+    if (nvjpegGetImageInfo(session->jpeg_handle, jpeg, jpeg_len, &comps, &subsampling, widths, heights)
+        != NVJPEG_STATUS_SUCCESS) { return 103; }
 
     w = widths[0];
     h = heights[0];
@@ -154,25 +212,20 @@ int nvb_transcode_jpeg_to_htj2k(
 
     // Planar RGB destination (one plane per channel, tightly packed).
     plane_bytes = (size_t)w * (size_t)h;
-    for (int c = 0; c < 3; ++c) {
-        if (cudaMalloc((void**)&planes[c], plane_bytes) != cudaSuccess) { rc = 902; goto cleanup; }
-    }
+    rc = nvb_session_ensure_planes(session, plane_bytes);
+    if (rc != 0) { return rc; }
     memset(&dest, 0, sizeof(dest));
     for (int c = 0; c < 3; ++c) {
-        dest.channel[c] = planes[c];
+        dest.channel[c] = session->planes[c];
         dest.pitch[c] = (size_t)w;
     }
 
-    cudaEventRecord(start, stream);
-    if (nvjpegDecode(jpeg_handle, jpeg_state, jpeg, jpeg_len, NVJPEG_OUTPUT_RGB, &dest, stream)
-        != NVJPEG_STATUS_SUCCESS) { rc = 110; goto cleanup; }
-    cudaEventRecord(mid, stream);
+    cudaEventRecord(session->start, session->stream);
+    if (nvjpegDecode(session->jpeg_handle, session->jpeg_state, jpeg, jpeg_len, NVJPEG_OUTPUT_RGB, &dest, session->stream)
+        != NVJPEG_STATUS_SUCCESS) { return 110; }
+    cudaEventRecord(session->mid, session->stream);
 
     // --- nvJPEG2000 HTJ2K encode of the planar RGB ---
-    if (nvjpeg2kEncoderCreateSimple(&enc) != NVJPEG2K_STATUS_SUCCESS) { rc = 201; goto cleanup; }
-    if (nvjpeg2kEncodeStateCreate(enc, &enc_state) != NVJPEG2K_STATUS_SUCCESS) { rc = 202; goto cleanup; }
-    if (nvjpeg2kEncodeParamsCreate(&enc_params) != NVJPEG2K_STATUS_SUCCESS) { rc = 203; goto cleanup; }
-
     for (int c = 0; c < 3; ++c) {
         comp_info[c].component_width = (uint32_t)w;
         comp_info[c].component_height = (uint32_t)h;
@@ -202,13 +255,13 @@ int nvb_transcode_jpeg_to_htj2k(
     config.encode_modes = NVJPEG2K_MODE_HT;
     config.irreversible = 1; // 9/7 irreversible path.
 
-    if (nvjpeg2kEncodeParamsSetEncodeConfig(enc_params, &config) != NVJPEG2K_STATUS_SUCCESS) {
-        rc = 204; goto cleanup;
+    if (nvjpeg2kEncodeParamsSetEncodeConfig(session->enc_params, &config) != NVJPEG2K_STATUS_SUCCESS) {
+        return 204;
     }
 
-    plane_ptrs[0] = planes[0];
-    plane_ptrs[1] = planes[1];
-    plane_ptrs[2] = planes[2];
+    plane_ptrs[0] = session->planes[0];
+    plane_ptrs[1] = session->planes[1];
+    plane_ptrs[2] = session->planes[2];
     pitches[0] = (size_t)w;
     pitches[1] = (size_t)w;
     pitches[2] = (size_t)w;
@@ -218,38 +271,51 @@ int nvb_transcode_jpeg_to_htj2k(
     input.pixel_type = NVJPEG2K_UINT8;
     input.num_components = 3;
 
-    if (nvjpeg2kEncode(enc, enc_state, enc_params, &input, stream) != NVJPEG2K_STATUS_SUCCESS) {
-        rc = 210; goto cleanup;
+    if (nvjpeg2kEncode(session->enc, session->enc_state, session->enc_params, &input, session->stream) != NVJPEG2K_STATUS_SUCCESS) {
+        return 210;
     }
-    cudaEventRecord(stop, stream);
-    cudaStreamSynchronize(stream);
+    cudaEventRecord(session->stop, session->stream);
+    cudaStreamSynchronize(session->stream);
 
-    if (nvjpeg2kEncodeRetrieveBitstream(enc, enc_state, nullptr, &length, stream)
-        != NVJPEG2K_STATUS_SUCCESS) { rc = 211; goto cleanup; }
-    if (length > out_cap) { rc = 212; goto cleanup; }
-    if (nvjpeg2kEncodeRetrieveBitstream(enc, enc_state, out, &length, stream)
-        != NVJPEG2K_STATUS_SUCCESS) { rc = 213; goto cleanup; }
-    cudaStreamSynchronize(stream);
+    if (nvjpeg2kEncodeRetrieveBitstream(session->enc, session->enc_state, nullptr, &length, session->stream)
+        != NVJPEG2K_STATUS_SUCCESS) { return 211; }
+    if (length > out_cap) { return 212; }
+    if (nvjpeg2kEncodeRetrieveBitstream(session->enc, session->enc_state, out, &length, session->stream)
+        != NVJPEG2K_STATUS_SUCCESS) { return 213; }
+    cudaStreamSynchronize(session->stream);
     *out_len = length;
 
-    cudaEventElapsedTime(&decode_elapsed, start, mid);
-    cudaEventElapsedTime(&encode_elapsed, mid, stop);
+    cudaEventElapsedTime(&decode_elapsed, session->start, session->mid);
+    cudaEventElapsedTime(&encode_elapsed, session->mid, session->stop);
     *decode_ms = (double)decode_elapsed;
     *encode_ms = (double)encode_elapsed;
+    return 0;
+}
 
-cleanup:
-    for (int c = 0; c < 3; ++c) {
-        if (planes[c]) { cudaFree(planes[c]); }
-    }
-    if (enc_params) { nvjpeg2kEncodeParamsDestroy(enc_params); }
-    if (enc_state) { nvjpeg2kEncodeStateDestroy(enc_state); }
-    if (enc) { nvjpeg2kEncoderDestroy(enc); }
-    if (jpeg_state) { nvjpegJpegStateDestroy(jpeg_state); }
-    if (jpeg_handle) { nvjpegDestroy(jpeg_handle); }
-    if (start) { cudaEventDestroy(start); }
-    if (mid) { cudaEventDestroy(mid); }
-    if (stop) { cudaEventDestroy(stop); }
-    if (stream) { cudaStreamDestroy(stream); }
+// Compatibility one-shot wrapper.
+int nvb_transcode_jpeg_to_htj2k(
+    const unsigned char* jpeg, size_t jpeg_len,
+    unsigned char* out, size_t out_cap, size_t* out_len,
+    double* decode_ms, double* encode_ms,
+    int* width, int* height, int* num_components) {
+    int rc = 0;
+    NvbSession* session = nullptr;
+    rc = nvb_session_create(&session);
+    if (rc != 0) { return rc; }
+    rc = nvb_session_transcode_jpeg_to_htj2k(
+        session,
+        jpeg,
+        jpeg_len,
+        out,
+        out_cap,
+        out_len,
+        decode_ms,
+        encode_ms,
+        width,
+        height,
+        num_components
+    );
+    nvb_session_destroy(session);
     return rc;
 }
 
