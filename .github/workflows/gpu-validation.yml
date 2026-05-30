@@ -21,6 +21,11 @@ on:
         type: boolean
         required: false
         default: false
+      run-nvidia-baseline:
+        description: "Run the nvJPEG/nvJPEG2000 baseline comparison (requires nvJPEG2000 installed on the runner)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -137,6 +142,15 @@ jobs:
           echo "transcode parity tests passed: ${passed:-0}"
           test "${passed:-0}" -ge 7 || { echo "Expected at least 7 executed transcode parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
       - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-profiling
+      # Opt-in: requires a separately-installed libnvjpeg2k (set NVJPEG2K_LIB_DIR /
+      # NVJPEG2K_INCLUDE_DIR if it is not under /usr/local/cuda). Point at real WSI
+      # tiles via SIGNINUM_BENCH_JPEG_DIR; otherwise it runs the bundled fixture as
+      # a build/link/run smoke test of the FFI.
+      - name: NVIDIA baseline comparison (nvJPEG + nvJPEG2000)
+        if: ${{ inputs.run-nvidia-baseline }}
+        env:
+          SIGNINUM_REQUIRE_NV_BASELINE_BUILD: "1"
+        run: cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin transcode_compare
       - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
       - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-runtime -- -D warnings
