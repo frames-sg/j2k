@@ -659,6 +659,10 @@ pub struct CudaHtj2kEncodeResources {
 const HTJ2K_STATUS_OK: u32 = 0;
 const HTJ2K_STATUS_UNSUPPORTED: u32 = 2;
 const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_htj2k_encode_ptx_built);
+/// True when the coefficient-domain transcode kernels were compiled by nvcc
+/// (the runner). When false, build.rs wrote a placeholder PTX, so dispatch
+/// returns a typed error instead of loading a non-existent kernel.
+const TRANSCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_transcode_ptx_built);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -5085,6 +5089,278 @@ impl CudaExecutionStats {
     /// True when nvJPEG hardware decode was used.
     pub fn used_hardware_decode(self) -> bool {
         self.hardware_decode
+    }
+}
+
+/// Reversible 5/3 transcode bands downloaded from the device. Layout matches
+/// `signinum_transcode::accelerator::ReversibleDwt53FirstLevel`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CudaTranscodeReversible53Bands {
+    /// Low-horizontal, low-vertical band (`low_width * low_height`).
+    pub ll: Vec<i32>,
+    /// High-horizontal, low-vertical band (`high_width * low_height`).
+    pub hl: Vec<i32>,
+    /// Low-horizontal, high-vertical band (`low_width * high_height`).
+    pub lh: Vec<i32>,
+    /// High-horizontal, high-vertical band (`high_width * high_height`).
+    pub hh: Vec<i32>,
+    /// Width of horizontally low-pass bands.
+    pub low_width: usize,
+    /// Height of vertically low-pass bands.
+    pub low_height: usize,
+    /// Width of horizontally high-pass bands.
+    pub high_width: usize,
+    /// Height of vertically high-pass bands.
+    pub high_height: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Reversible53Dims {
+    block_cols: i32,
+    width: i32,
+    height: i32,
+    low_width: i32,
+    high_width: i32,
+}
+
+impl CudaContext {
+    /// Compute one reversible integer 5/3 level directly from dequantized 8x8
+    /// DCT blocks, bit-exact with the `signinum-transcode` scalar oracle.
+    ///
+    /// `dequantized_blocks` holds `block_cols * block_rows` natural-order blocks
+    /// of 64 `i16` coefficients. `width`/`height` are the logical component
+    /// dimensions (<= `block_cols*8` / `block_rows*8`).
+    #[allow(clippy::too_many_lines)]
+    pub fn j2k_transcode_reversible_dwt53(
+        &self,
+        dequantized_blocks: &[i16],
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<CudaTranscodeReversible53Bands, CudaError> {
+        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
+            return Err(CudaError::InvalidArgument {
+                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
+                    .to_string(),
+            });
+        }
+        let block_count = block_cols
+            .checked_mul(block_rows)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_w = block_cols
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_h = block_rows
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_rows })?;
+        let expected_coeffs = block_count
+            .checked_mul(64)
+            .ok_or(CudaError::LengthTooLarge { len: block_count })?;
+        if width == 0
+            || height == 0
+            || width > covered_w
+            || height > covered_h
+            || dequantized_blocks.len() != expected_coeffs
+        {
+            return Err(CudaError::InvalidArgument {
+                message: "reversible 5/3 transcode job has unsupported grid geometry".to_string(),
+            });
+        }
+
+        let low_width = width.div_ceil(2);
+        let low_height = height.div_ceil(2);
+        let high_width = width / 2;
+        let high_height = height / 2;
+
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let dims = Reversible53Dims {
+            block_cols: to_i32(block_cols)?,
+            width: to_i32(width)?,
+            height: to_i32(height)?,
+            low_width: to_i32(low_width)?,
+            high_width: to_i32(high_width)?,
+        };
+
+        self.inner.set_current()?;
+
+        let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
+            self.allocate(bytes)
+        };
+        let samples = alloc_i32(expected_coeffs)?;
+        let v_low = alloc_i32(width * low_height)?;
+        let v_high = alloc_i32(width * high_height)?;
+        let ll = alloc_i32(low_width * low_height)?;
+        let hl = alloc_i32(high_width * low_height)?;
+        let lh = alloc_i32(low_width * high_height)?;
+        let hh = alloc_i32(high_width * high_height)?;
+
+        // SAFETY: `dequantized_blocks` is a live `&[i16]`; reinterpreting it as a
+        // byte slice of `len * 2` bytes for upload is a read-only view with the
+        // same lifetime and no alignment requirement on the destination.
+        let block_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                dequantized_blocks.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(dequantized_blocks),
+            )
+        };
+        let blocks_dev = self.upload(block_bytes)?;
+
+        self.launch_transcode_reversible53_idct(&blocks_dev, &samples, block_count)?;
+        if low_height > 0 {
+            self.launch_transcode_reversible53_vertical(
+                CudaKernel::TranscodeReversible53VerticalLow,
+                &samples,
+                dims,
+                &v_low,
+                to_i32(low_height)?,
+            )?;
+            self.launch_transcode_reversible53_horizontal(
+                CudaKernel::TranscodeReversible53HorizontalLow,
+                &v_low,
+                dims,
+                to_i32(low_height)?,
+                &ll,
+                &hl,
+            )?;
+        }
+        if high_height > 0 {
+            self.launch_transcode_reversible53_vertical(
+                CudaKernel::TranscodeReversible53VerticalHigh,
+                &samples,
+                dims,
+                &v_high,
+                to_i32(high_height)?,
+            )?;
+            self.launch_transcode_reversible53_horizontal(
+                CudaKernel::TranscodeReversible53HorizontalHigh,
+                &v_high,
+                dims,
+                to_i32(high_height)?,
+                &lh,
+                &hh,
+            )?;
+        }
+
+        Ok(CudaTranscodeReversible53Bands {
+            ll: Self::download_i32_band(&ll, low_width * low_height)?,
+            hl: Self::download_i32_band(&hl, high_width * low_height)?,
+            lh: Self::download_i32_band(&lh, low_width * high_height)?,
+            hh: Self::download_i32_band(&hh, high_width * high_height)?,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        })
+    }
+
+    fn download_i32_band(
+        buffer: &CudaDeviceBuffer,
+        count: usize,
+    ) -> Result<Vec<i32>, CudaError> {
+        let mut out = vec![0i32; count];
+        if count != 0 {
+            buffer.copy_to_host(i32_slice_as_bytes_mut(&mut out))?;
+        }
+        Ok(out)
+    }
+
+    fn launch_transcode_reversible53_idct(
+        &self,
+        blocks: &CudaDeviceBuffer,
+        samples: &CudaDeviceBuffer,
+        block_count: usize,
+    ) -> Result<(), CudaError> {
+        if block_count == 0 {
+            return Ok(());
+        }
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeReversible53Idct)?;
+        let mut blocks_ptr = blocks.device_ptr();
+        let mut samples_ptr = samples.device_ptr();
+        let mut count =
+            u32::try_from(block_count).map_err(|_| CudaError::LengthTooLarge { len: block_count })?;
+        let mut params = [
+            (&raw mut blocks_ptr).cast::<c_void>(),
+            (&raw mut samples_ptr).cast::<c_void>(),
+            (&raw mut count).cast::<c_void>(),
+        ];
+        let geometry = copy_u8_launch_geometry(block_count)
+            .ok_or(CudaError::LengthTooLarge { len: block_count })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_reversible53_vertical(
+        &self,
+        kernel: CudaKernel,
+        samples: &CudaDeviceBuffer,
+        dims: Reversible53Dims,
+        out: &CudaDeviceBuffer,
+        out_rows: i32,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(kernel)?;
+        let mut samples_ptr = samples.device_ptr();
+        let mut block_cols = dims.block_cols;
+        let mut width = dims.width;
+        let mut height = dims.height;
+        let mut out_ptr = out.device_ptr();
+        let mut rows = out_rows;
+        let mut params = [
+            (&raw mut samples_ptr).cast::<c_void>(),
+            (&raw mut block_cols).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut height).cast::<c_void>(),
+            (&raw mut out_ptr).cast::<c_void>(),
+            (&raw mut rows).cast::<c_void>(),
+        ];
+        let grid_w =
+            u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_h = u32::try_from(out_rows).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let geometry = j2k_dwt53_launch_geometry(grid_w, grid_h)
+            .ok_or(CudaError::LengthTooLarge { len: 0 })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_reversible53_horizontal(
+        &self,
+        kernel: CudaKernel,
+        rows_buffer: &CudaDeviceBuffer,
+        dims: Reversible53Dims,
+        n_rows: i32,
+        low_out: &CudaDeviceBuffer,
+        high_out: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let row_count =
+            usize::try_from(n_rows).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        if row_count == 0 {
+            return Ok(());
+        }
+        let function = self.inner.kernel_function(kernel)?;
+        let mut rows_ptr = rows_buffer.device_ptr();
+        let mut width = dims.width;
+        let mut rows = n_rows;
+        let mut low_width = dims.low_width;
+        let mut high_width = dims.high_width;
+        let mut low_ptr = low_out.device_ptr();
+        let mut high_ptr = high_out.device_ptr();
+        let mut params = [
+            (&raw mut rows_ptr).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut rows).cast::<c_void>(),
+            (&raw mut low_width).cast::<c_void>(),
+            (&raw mut high_width).cast::<c_void>(),
+            (&raw mut low_ptr).cast::<c_void>(),
+            (&raw mut high_ptr).cast::<c_void>(),
+        ];
+        let geometry =
+            copy_u8_launch_geometry(row_count).ok_or(CudaError::LengthTooLarge { len: row_count })?;
+        self.launch_kernel(function, geometry, &mut params)
     }
 }
 

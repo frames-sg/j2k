@@ -30,6 +30,12 @@ pub(crate) enum CudaKernel {
     J2kStoreGray8,
     J2kStoreRgb16,
     J2kStoreRgb8,
+    // Coefficient-domain JPEG->HTJ2K transcode (signinum-transcode-cuda).
+    TranscodeReversible53Idct,
+    TranscodeReversible53VerticalLow,
+    TranscodeReversible53VerticalHigh,
+    TranscodeReversible53HorizontalLow,
+    TranscodeReversible53HorizontalHigh,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +75,11 @@ impl CudaKernel {
             Self::Htj2kEncodeCodeblock
             | Self::Htj2kEncodeCodeblocks
             | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
+            Self::TranscodeReversible53Idct
+            | Self::TranscodeReversible53VerticalLow
+            | Self::TranscodeReversible53VerticalHigh
+            | Self::TranscodeReversible53HorizontalLow
+            | Self::TranscodeReversible53HorizontalHigh => TRANSCODE_PTX,
         }
     }
 
@@ -102,6 +113,11 @@ impl CudaKernel {
             Self::J2kStoreGray8 => b"signinum_j2k_store_gray8\0",
             Self::J2kStoreRgb16 => b"signinum_j2k_store_rgb16\0",
             Self::J2kStoreRgb8 => b"signinum_j2k_store_rgb8\0",
+            Self::TranscodeReversible53Idct => b"transcode_reversible53_idct\0",
+            Self::TranscodeReversible53VerticalLow => b"transcode_reversible53_vertical_low\0",
+            Self::TranscodeReversible53VerticalHigh => b"transcode_reversible53_vertical_high\0",
+            Self::TranscodeReversible53HorizontalLow => b"transcode_reversible53_horizontal_low\0",
+            Self::TranscodeReversible53HorizontalHigh => b"transcode_reversible53_horizontal_high\0",
         }
     }
 }
@@ -123,6 +139,9 @@ const HTJ2K_DECODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_decode_kernels.ptx"));
 const HTJ2K_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_encode_kernels.ptx"));
+// Always resolves: build.rs writes a placeholder empty module when nvcc is
+// absent (the dispatch checks `signinum_cuda_transcode_ptx_built` before load).
+const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));
 
 pub(crate) fn j2k_forward_rct_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
     let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
