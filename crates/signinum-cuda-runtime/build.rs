@@ -99,6 +99,13 @@ fn compile_optional_ptx(
             "strict CUDA kernel build required, but nvcc failed for {}",
             source.display()
         );
+        // No checked-in fallback exists for this kernel. Write a placeholder
+        // empty PTX module so `include_bytes!(OUT_DIR/transcode_kernels.ptx)`
+        // always resolves on non-nvcc hosts and the Rust dispatch type-checks.
+        // It is never loaded at runtime: the dispatch first checks the
+        // `signinum_cuda_transcode_ptx_built` cfg and returns a typed error.
+        fs::write(ptx, b".version 7.0\n.target sm_52\n.address_size 64\n\0")
+            .expect("write placeholder transcode PTX");
         false
     }
 }
