@@ -332,7 +332,7 @@ CUDA encode path.
 | Coding passes | HT cleanup-pass-only |
 | Tile / layer / precinct | Single tile, single quality layer, single precinct |
 | Components | 1 (grayscale), 3 (RGB — MCT/RCT applied to all three planes), 4 (RGBA/CMYK — MCT/RCT on the first three planes; 4th component passed through) |
-| Bit depth | 8–16, signed and unsigned |
+| Bit depth | 8–16; unsigned and signed (signed = encode/codestream byte-parity only — native decode does not reconstruct signed samples; see Non-goals) |
 | Code-block sizes | Multi-codeblock layouts |
 | Component subsampling | (1,1) only — equal subsampling for all components |
 
@@ -356,6 +356,21 @@ stated reason.
 - **HT SigProp/MagRef refinement passes** — these are experimental and go
   beyond what the native cleanup-pass-only path produces; round-trip validation
   against the native reference is not established.
+- **Native decode reconstruction of signed samples** — the encoder emits
+  spec-correct signed codestreams (the SIZ `Ssiz` signed bit is set, and
+  CUDA-vs-native codestream byte-parity holds for signed inputs across all
+  component counts, bit depths, and decomposition levels). However, the *shared
+  native decoder* reads the `Ssiz` signed bit and ignores it
+  (`signinum-j2k-native/src/j2c/codestream.rs`) and unconditionally re-applies
+  the unsigned inverse DC level-shift, then clamps negatives
+  (`decode_native_with_context` in `signinum-j2k-native/src/lib.rs`), so a signed
+  sample does not round-trip back through signinum's own decoder — it is offset
+  by `+2^(depth-1)`. This is a native-*decoder* limitation that affects the CPU
+  and Metal decode paths identically (decode reconstruction is shared), not a
+  CUDA encode issue. The parity gate therefore asserts byte-exact pixel
+  round-trip only for unsigned cells; signed cells assert codestream byte-parity
+  plus a successful, correctly-sized decode. Signed sources are otherwise treated
+  as unsupported in adjacent paths (e.g. the recode path rejects them).
 
 ### No silent fallback
 

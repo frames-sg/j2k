@@ -163,9 +163,10 @@ HTJ2K lossless encode. The function targets a codestream byte-identical to
 **Supported inputs:** reversible 5/3 DWT, HT cleanup-pass-only, single tile /
 single quality layer / single precinct, 1-component (grayscale), 3-component
 (RGB — MCT/RCT on all three planes), or 4-component (RGBA/CMYK — MCT/RCT on
-the first three planes; 4th component passed through), bit depths 8–16 signed
-or unsigned, multi-level DWT, multi-codeblock. Component subsampling must be
-(1,1).
+the first three planes; 4th component passed through), bit depths 8–16 unsigned
+or signed (signed = encode/codestream byte-parity only; native decode does not
+reconstruct signed samples — see Non-goals), multi-level DWT, multi-codeblock.
+Component subsampling must be (1,1).
 
 **Parity contract:** byte-parity against the CPU reference is the contract
 enforced by the `cuda-x86_64-compatibility` job in
@@ -193,6 +194,13 @@ in-scope input.
 - HT SigProp/MagRef refinement passes — experimental; beyond the native
   cleanup-pass-only path and not round-trip-validated against the native
   reference.
+- Native decode reconstruction of signed samples — the encoder produces
+  spec-correct, byte-parity signed codestreams, but the shared native decoder
+  ignores the SIZ `Ssiz` signed bit and does not reconstruct signed samples
+  (output is offset by `+2^(depth-1)`). This affects the CPU and Metal decode
+  paths identically; it is not a CUDA *encode* issue. The parity gate asserts
+  byte-exact pixel round-trip for unsigned cells only; signed cells assert
+  codestream byte-parity plus a successful decode.
 
 ## Current Validation Scope
 
