@@ -10,10 +10,12 @@ fn main() {
     println!("cargo:rerun-if-changed=src/htj2k_decode_kernels.ptx");
     println!("cargo:rerun-if-changed=src/htj2k_encode_kernels.cu");
     println!("cargo:rerun-if-changed=src/htj2k_encode_kernels.ptx");
+    println!("cargo:rerun-if-changed=src/transcode_kernels.cu");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_KERNEL_BUILD");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_htj2k_encode_ptx_built)");
+    println!("cargo:rustc-check-cfg=cfg(signinum_cuda_transcode_ptx_built)");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let nvcc = env::var_os("NVCC").unwrap_or_else(|| "nvcc".into());
@@ -46,6 +48,58 @@ fn main() {
     );
     if htj2k_encode_compiled {
         println!("cargo:rustc-cfg=signinum_cuda_htj2k_encode_ptx_built");
+    }
+
+    // Transcode (DCT->wavelet) kernels are new: there is no checked-in PTX
+    // fallback, so this is an OPTIONAL compile. On nvcc success it sets a cfg
+    // that gates the Rust dispatch; on a non-nvcc host it is skipped (the
+    // dispatch is cfg'd out). The runner sets the strict env, which requires
+    // nvcc to succeed.
+    let transcode_ptx = out_dir.join("transcode_kernels.ptx");
+    let transcode_compiled = compile_optional_ptx(
+        &nvcc,
+        Path::new("src/transcode_kernels.cu"),
+        &transcode_ptx,
+        require_kernel_build,
+    );
+    if transcode_compiled {
+        println!("cargo:rustc-cfg=signinum_cuda_transcode_ptx_built");
+    }
+}
+
+/// Compile a CUDA kernel to PTX with nvcc only (no checked-in fallback).
+///
+/// Returns whether nvcc produced PTX. When `require_kernel_build` is set (the
+/// runner), nvcc failure is a hard error; otherwise a non-nvcc host simply
+/// skips the kernel and the Rust dispatch is cfg-gated off.
+fn compile_optional_ptx(
+    nvcc: &std::ffi::OsStr,
+    source: &Path,
+    ptx: &Path,
+    require_kernel_build: bool,
+) -> bool {
+    let compiled = Command::new(nvcc)
+        .args(["--ptx", "-O3", "--std=c++14", "--fmad=false"])
+        .arg(source)
+        .arg("-o")
+        .arg(ptx)
+        .status()
+        .is_ok_and(|status| status.success());
+
+    if compiled {
+        let mut bytes = fs::read(ptx).expect("read generated CUDA transcode PTX");
+        if bytes.last().copied() != Some(0) {
+            bytes.push(0);
+            fs::write(ptx, bytes).expect("NUL-terminate generated CUDA transcode PTX");
+        }
+        true
+    } else {
+        assert!(
+            !require_kernel_build,
+            "strict CUDA kernel build required, but nvcc failed for {}",
+            source.display()
+        );
+        false
     }
 }
 
