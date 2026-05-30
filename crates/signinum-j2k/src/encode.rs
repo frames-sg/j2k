@@ -177,7 +177,8 @@ pub struct J2kLosslessSamples<'a> {
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
-    /// Component count. The stable facade accepts 1 or 3.
+    /// Component count. The stable facade accepts 1, 3, or 4 (2 is rejected:
+    /// native's decoder raises TooManyChannels, so it cannot round-trip).
     pub components: u8,
     /// Significant bits per component sample.
     pub bit_depth: u8,
@@ -198,9 +199,10 @@ impl<'a> J2kLosslessSamples<'a> {
         if width == 0 || height == 0 {
             return Err(J2kError::Backend("invalid dimensions".to_string()));
         }
-        if !matches!(components, 1 | 3) {
+        // 2-component is excluded: native's decoder rejects it (TooManyChannels), so it cannot round-trip.
+        if !matches!(components, 1 | 3 | 4) {
             return Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossless encode supports only grayscale or RGB samples",
+                what: "JPEG 2000 lossless encode supports 1-, 3-, or 4-component samples (grayscale, RGB, or RGBA/CMYK)",
             }));
         }
         if bit_depth == 0 || bit_depth > 16 {
@@ -610,8 +612,9 @@ fn validate_lossless_roundtrip(
 mod tests {
     use super::{
         encode_j2k_lossless, j2k_lossless_decomposition_levels_for_options,
-        native_lossless_options, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
-        J2kLosslessSamples, J2kProgressionOrder, ReversibleTransform,
+        native_lossless_options, DecodeSettings, EncodeBackendPreference, Image,
+        J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
+        J2kProgressionOrder, ReversibleTransform,
     };
 
     fn cod_mct(codestream: &[u8]) -> u8 {
@@ -686,5 +689,62 @@ mod tests {
 
         assert!(!external.validate_high_throughput_codestream);
         assert!(!roundtrip.validate_high_throughput_codestream);
+    }
+
+    #[test]
+    fn lossless_facade_roundtrips_four_component_via_public_api() {
+        let width: u32 = 32;
+        let height: u32 = 24;
+        let components: u8 = 4;
+
+        // Deterministic 4-component (RGBA/CMYK) 8-bit input, distinct per plane.
+        let mut pixels = Vec::with_capacity((width * height * u32::from(components)) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..u32::from(components) {
+                    let value = (x.wrapping_mul(7) ^ y.wrapping_mul(13)).wrapping_add(c * 41);
+                    pixels.push((value & 0xFF) as u8);
+                }
+            }
+        }
+
+        // MUST go through the real public constructor.
+        let samples = J2kLosslessSamples::new(&pixels, width, height, components, 8, false)
+            .expect("4-component samples must be accepted by the public constructor");
+
+        // Encode via the public CPU lossless entry.
+        let encoded = encode_j2k_lossless(
+            samples,
+            &J2kLosslessEncodeOptions {
+                backend: EncodeBackendPreference::CpuOnly,
+                validation: J2kEncodeValidation::CpuRoundTrip,
+                ..J2kLosslessEncodeOptions::default()
+            },
+        )
+        .expect("4-component CPU lossless encode must succeed");
+
+        assert_eq!(encoded.components, components);
+
+        // Decode the bytes with the native decoder and assert an exact round-trip.
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .expect("native decode of 4-component codestream must construct")
+            .decode_native()
+            .expect("native decode of 4-component codestream must succeed");
+
+        assert_eq!(decoded.width, width);
+        assert_eq!(decoded.height, height);
+        assert_eq!(decoded.num_components, components);
+        assert_eq!(decoded.bit_depth, 8);
+        assert_eq!(
+            decoded.data, pixels,
+            "4-component pixels must round-trip exactly"
+        );
+
+        // 2-component stays rejected: native's decoder raises TooManyChannels.
+        let two_component = vec![0u8; (width * height * 2) as usize];
+        assert!(
+            J2kLosslessSamples::new(&two_component, width, height, 2, 8, false).is_err(),
+            "2-component must remain rejected by the public constructor"
+        );
     }
 }

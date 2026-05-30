@@ -3720,7 +3720,9 @@ mod tests {
         let pixel_count = (WIDTH * HEIGHT) as usize * usize::from(NUM_COMPONENTS);
         let pixels: Vec<u8> = (0..pixel_count)
             .map(|i| {
-                let v = i.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let v = i
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (v >> 56) as u8
             })
             .collect();
@@ -3733,19 +3735,40 @@ mod tests {
             ..EncodeOptions::default()
         };
 
-        let baseline = encode_htj2k(&pixels, WIDTH, HEIGHT, NUM_COMPONENTS, BIT_DEPTH, false, &options)
-            .expect("encode_htj2k baseline failed");
+        let baseline = encode_htj2k(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            NUM_COMPONENTS,
+            BIT_DEPTH,
+            false,
+            &options,
+        )
+        .expect("encode_htj2k baseline failed");
 
-        assert!(!baseline.is_empty(), "baseline codestream must not be empty");
+        assert!(
+            !baseline.is_empty(),
+            "baseline codestream must not be empty"
+        );
 
         for i in 0..REPETITIONS {
-            let result = encode_htj2k(&pixels, WIDTH, HEIGHT, NUM_COMPONENTS, BIT_DEPTH, false, &options)
-                .unwrap_or_else(|e| panic!("encode_htj2k repetition {i} failed: {e}"));
+            let result = encode_htj2k(
+                &pixels,
+                WIDTH,
+                HEIGHT,
+                NUM_COMPONENTS,
+                BIT_DEPTH,
+                false,
+                &options,
+            )
+            .unwrap_or_else(|e| panic!("encode_htj2k repetition {i} failed: {e}"));
             assert_eq!(
-                result, baseline,
+                result,
+                baseline,
                 "encode_htj2k repetition {i} produced different bytes \
                  (len baseline={}, len result={})",
-                baseline.len(), result.len()
+                baseline.len(),
+                result.len()
             );
         }
 
@@ -3798,13 +3821,21 @@ mod tests {
             },
         )
         .expect("native 2-component HTJ2K parse failed");
-        let decoded = image.decode_native().expect("native 2-component HTJ2K decode failed");
+        let decoded = image
+            .decode_native()
+            .expect("native 2-component HTJ2K decode failed");
 
         assert_eq!(decoded.width, WIDTH, "width mismatch");
         assert_eq!(decoded.height, HEIGHT, "height mismatch");
         assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
-        assert_eq!(decoded.num_components, NUM_COMPONENTS, "component count mismatch");
-        assert_eq!(decoded.data, pixels, "2-component HTJ2K lossless round-trip mismatch");
+        assert_eq!(
+            decoded.num_components, NUM_COMPONENTS,
+            "component count mismatch"
+        );
+        assert_eq!(
+            decoded.data, pixels,
+            "2-component HTJ2K lossless round-trip mismatch"
+        );
 
         println!(
             "native_htj2k_roundtrips_two_component_lossless: {} bytes codestream, {} pixel bytes",
@@ -3849,13 +3880,21 @@ mod tests {
             },
         )
         .expect("native 4-component HTJ2K parse failed");
-        let decoded = image.decode_native().expect("native 4-component HTJ2K decode failed");
+        let decoded = image
+            .decode_native()
+            .expect("native 4-component HTJ2K decode failed");
 
         assert_eq!(decoded.width, WIDTH, "width mismatch");
         assert_eq!(decoded.height, HEIGHT, "height mismatch");
         assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
-        assert_eq!(decoded.num_components, NUM_COMPONENTS, "component count mismatch");
-        assert_eq!(decoded.data, pixels, "4-component HTJ2K lossless round-trip mismatch");
+        assert_eq!(
+            decoded.num_components, NUM_COMPONENTS,
+            "component count mismatch"
+        );
+        assert_eq!(
+            decoded.data, pixels,
+            "4-component HTJ2K lossless round-trip mismatch"
+        );
 
         println!(
             "native_htj2k_roundtrips_four_component_lossless: {} bytes codestream, {} pixel bytes",

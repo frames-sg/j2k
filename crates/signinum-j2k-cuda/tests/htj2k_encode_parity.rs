@@ -504,19 +504,22 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
                     let pixels = synthesize_pixels(&cell);
                     let opts = cell_encode_options(&cell);
 
-                    // Build J2kLosslessSamples directly to allow 4-component
-                    // cells (J2kLosslessSamples::new rejects comps != 1|3, but
-                    // all fields are pub so we can construct 4-component samples
-                    // directly; the CUDA facade now supports 4-component resident
-                    // MCT end-to-end).
-                    let samples = J2kLosslessSamples {
-                        data: pixels.as_slice(),
-                        width: cell.w,
-                        height: cell.h,
-                        components: cell.comps,
-                        bit_depth: cell.depth,
-                        signed: cell.signed,
-                    };
+                    // Build J2kLosslessSamples through the real public
+                    // constructor for every cell, including 4-component:
+                    // J2kLosslessSamples::new now accepts comps ∈ {1, 3, 4}
+                    // (2-component stays rejected). The CUDA facade supports
+                    // 4-component resident MCT end-to-end.
+                    let samples = J2kLosslessSamples::new(
+                        pixels.as_slice(),
+                        cell.w,
+                        cell.h,
+                        cell.comps,
+                        cell.depth,
+                        cell.signed,
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!("cell={cell:?}: J2kLosslessSamples::new rejected an in-scope cell: {err}")
+                    });
 
                     // --- CUDA encode ---
                     let cuda_result = encode_j2k_lossless_with_cuda(samples, &opts);

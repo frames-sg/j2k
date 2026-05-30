@@ -4163,19 +4163,11 @@ mod tests {
         let mantissa = 0u16;
         let range_bits = 8u8;
 
-        let result = quantize_reversible_reference(
-            &coefficients,
-            exponent,
-            mantissa,
-            range_bits,
-            true,
-        );
+        let result =
+            quantize_reversible_reference(&coefficients, exponent, mantissa, range_bits, true);
 
         // Internal path
-        let step = j2c::quantize::QuantStepSize {
-            exponent,
-            mantissa,
-        };
+        let step = j2c::quantize::QuantStepSize { exponent, mantissa };
         let internal = j2c::quantize::quantize_subband(&coefficients, &step, range_bits, true);
 
         assert_eq!(result, internal, "quantize output mismatch");
