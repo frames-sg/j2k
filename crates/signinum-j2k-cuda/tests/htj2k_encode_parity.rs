@@ -466,8 +466,8 @@ fn cell_encode_options(cell: &ParityCell) -> J2kLosslessEncodeOptions {
 
 // Matrix constants live at module scope to avoid the items_after_statements lint.
 // comps ∈ {1, 3, 4} (2-component is OUT OF SCOPE — native decoder rejects it).
-// 4-component cells are expected to fail until P1-T7 implements resident MCT;
-// they are included here so the test turns green automatically once T7 lands.
+// 4-component resident MCT is implemented (RCT on planes 0-2, passthrough 4);
+// these cells are now asserted byte-exact like every other supported cell.
 #[cfg(feature = "cuda-runtime")]
 const MATRIX_COMPS: &[u8] = &[1, 3, 4];
 #[cfg(feature = "cuda-runtime")]
@@ -506,9 +506,9 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 
                     // Build J2kLosslessSamples directly to allow 4-component
                     // cells (J2kLosslessSamples::new rejects comps != 1|3, but
-                    // all fields are pub so we can bypass the constructor for
-                    // cells that are intentionally expected to fail on the CUDA
-                    // side until a later task adds 4-component resident MCT).
+                    // all fields are pub so we can construct 4-component samples
+                    // directly; the CUDA facade now supports 4-component resident
+                    // MCT end-to-end).
                     let samples = J2kLosslessSamples {
                         data: pixels.as_slice(),
                         width: cell.w,
@@ -530,24 +530,20 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 
                     match (cuda_result, cpu_result) {
                         (Err(cuda_err), Err(cpu_err)) => {
-                            // Both errored — expected for 4-component until T7.
-                            eprintln!(
-                                "SKIP (both encoders rejected) cell={cell:?} \
+                            // Every matrix cell (comps ∈ {1, 3, 4}) is in scope and
+                            // must encode successfully on both paths.
+                            failures.push(format!(
+                                "cell={cell:?}: both encoders rejected an in-scope cell: \
                                  cuda_err={cuda_err} cpu_err={cpu_err}"
-                            );
+                            ));
                         }
                         (Err(cuda_err), Ok(_)) => {
-                            // CUDA failed but CPU succeeded — red until T7 for 4-comp.
-                            eprintln!(
-                                "EXPECTED FAILURE (CUDA only) cell={cell:?} \
-                                 cuda_err={cuda_err}"
-                            );
-                            if comps != 4 {
-                                failures.push(format!(
-                                    "cell={cell:?}: CUDA encode failed but CPU succeeded: \
-                                     {cuda_err}"
-                                ));
-                            }
+                            // CUDA must dispatch for every in-scope cell, including
+                            // 4-component (resident MCT lands in P1-T7).
+                            failures.push(format!(
+                                "cell={cell:?}: CUDA encode failed but CPU succeeded: \
+                                 {cuda_err}"
+                            ));
                         }
                         (Ok(_), Err(cpu_err)) => {
                             failures.push(format!(
