@@ -20,7 +20,7 @@ use signinum_j2k_native::{
     J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::profile;
 
@@ -139,17 +139,42 @@ pub struct CudaEncodeStageAccelerator {
 }
 
 impl CudaEncodeStageAccelerator {
-    fn with_profile_collection(collect_profile: bool) -> Self {
+    /// Create an encode-stage accelerator with optional CUDA stage timing collection.
+    #[must_use]
+    pub fn with_profile_collection(collect_profile: bool) -> Self {
         Self {
             collect_profile,
             ..Self::default()
         }
     }
 
+    /// Return cumulative CUDA encode stage timings collected by this accelerator.
+    #[must_use]
+    pub const fn collected_stage_timings(&self) -> CudaEncodeStageTimings {
+        CudaEncodeStageTimings {
+            deinterleave_us: self.deinterleave_us,
+            mct_us: self.mct_us,
+            dwt_us: self.dwt_us,
+            quantize_us: self.quantize_us,
+            ht_encode_us: self.ht_encode_us,
+            packetize_us: self.packetize_us,
+        }
+    }
+
+    /// Clear cumulative CUDA encode stage timings without changing dispatch counters.
+    pub fn reset_collected_stage_timings(&mut self) {
+        self.deinterleave_us = 0;
+        self.mct_us = 0;
+        self.dwt_us = 0;
+        self.quantize_us = 0;
+        self.ht_encode_us = 0;
+        self.packetize_us = 0;
+    }
+
     #[cfg(feature = "cuda-runtime")]
     fn cuda_context(&mut self) -> core::result::Result<Option<CudaContext>, &'static str> {
         if self.context.is_none() {
-            match CudaContext::system_default() {
+            match shared_cuda_context() {
                 Ok(context) => self.context = Some(context),
                 Err(_) if cuda_runtime_required() => return Err("CUDA encode stage unavailable"),
                 Err(_) => return Ok(None),
@@ -288,6 +313,23 @@ impl CudaEncodeStageAccelerator {
 }
 
 #[cfg(feature = "cuda-runtime")]
+fn shared_cuda_context() -> core::result::Result<CudaContext, CudaError> {
+    static SHARED: OnceLock<CudaContext> = OnceLock::new();
+    if let Some(context) = SHARED.get() {
+        return Ok(context.clone());
+    }
+
+    let context = CudaContext::system_default()?;
+    let _ = SHARED.set(context);
+    SHARED
+        .get()
+        .cloned()
+        .ok_or_else(|| CudaError::InvalidArgument {
+            message: "CUDA encode context cache was not initialized".to_string(),
+        })
+}
+
+#[cfg(feature = "cuda-runtime")]
 fn cuda_runtime_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
 }
@@ -308,15 +350,35 @@ fn time_cuda_stage<T>(
     }
 }
 
+/// Cumulative CUDA encode-stage timings collected by `CudaEncodeStageAccelerator`.
 #[allow(clippy::struct_field_names)]
-#[derive(Clone, Copy, Debug, Default)]
-struct CudaEncodeStageTimings {
-    deinterleave_us: u128,
-    mct_us: u128,
-    dwt_us: u128,
-    quantize_us: u128,
-    ht_encode_us: u128,
-    packetize_us: u128,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CudaEncodeStageTimings {
+    /// Pixel deinterleave and level-shift CUDA stage time.
+    pub deinterleave_us: u128,
+    /// Forward MCT CUDA stage time.
+    pub mct_us: u128,
+    /// Forward DWT CUDA stage time.
+    pub dwt_us: u128,
+    /// Quantization CUDA stage time.
+    pub quantize_us: u128,
+    /// HT code-block encode CUDA stage time.
+    pub ht_encode_us: u128,
+    /// HTJ2K packetization CUDA stage time.
+    pub packetize_us: u128,
+}
+
+impl CudaEncodeStageTimings {
+    /// Total collected CUDA encode-stage time.
+    #[must_use]
+    pub const fn total_us(self) -> u128 {
+        self.deinterleave_us
+            .saturating_add(self.mct_us)
+            .saturating_add(self.dwt_us)
+            .saturating_add(self.quantize_us)
+            .saturating_add(self.ht_encode_us)
+            .saturating_add(self.packetize_us)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -14,19 +14,20 @@
 mod ffi {
     use std::os::raw::{c_int, c_uchar};
 
+    #[repr(C)]
+    pub struct NvbSession {
+        _private: [u8; 0],
+    }
+
     extern "C" {
         pub fn nvb_available() -> c_int;
 
-        pub fn nvb_decode_jpeg_rgb(
-            jpeg: *const c_uchar,
-            jpeg_len: usize,
-            out_rgb: *mut c_uchar,
-            out_cap: usize,
-            width: *mut c_int,
-            height: *mut c_int,
-        ) -> c_int;
+        pub fn nvb_session_create(out: *mut *mut NvbSession) -> c_int;
 
-        pub fn nvb_transcode_jpeg_to_htj2k(
+        pub fn nvb_session_destroy(session: *mut NvbSession);
+
+        pub fn nvb_session_transcode_jpeg_to_htj2k(
+            session: *mut NvbSession,
             jpeg: *const c_uchar,
             jpeg_len: usize,
             out: *mut c_uchar,
@@ -38,6 +39,16 @@ mod ffi {
             height: *mut c_int,
             num_components: *mut c_int,
         ) -> c_int;
+
+        pub fn nvb_decode_jpeg_rgb(
+            jpeg: *const c_uchar,
+            jpeg_len: usize,
+            out_rgb: *mut c_uchar,
+            out_cap: usize,
+            width: *mut c_int,
+            height: *mut c_int,
+        ) -> c_int;
+
     }
 }
 
@@ -56,6 +67,61 @@ pub struct NvTranscodeResult {
     pub height: u32,
     /// Component count (3 for the RGB pipeline).
     pub num_components: u32,
+}
+
+/// Reusable NVIDIA baseline session.
+///
+/// This keeps nvJPEG/nvJPEG2000 handles, CUDA stream/events, encode state, and
+/// reusable device RGB planes alive across tile transcodes.
+pub struct NvBaselineSession {
+    #[cfg(nvbaseline_built)]
+    raw: std::ptr::NonNull<ffi::NvbSession>,
+}
+
+impl NvBaselineSession {
+    /// Create a reusable nvJPEG + nvJPEG2000 transcode session.
+    pub fn new() -> Result<Self, NvBaselineError> {
+        #[cfg(not(nvbaseline_built))]
+        {
+            Err(NvBaselineError::NotBuilt)
+        }
+        #[cfg(nvbaseline_built)]
+        {
+            let mut raw = std::ptr::null_mut();
+            // SAFETY: `raw` is a valid out pointer. On success the C side
+            // returns an owned session pointer that `Drop` releases.
+            let rc = unsafe { ffi::nvb_session_create(&mut raw) };
+            if rc != 0 {
+                return Err(NvBaselineError::Stage(rc));
+            }
+            let raw = std::ptr::NonNull::new(raw).ok_or(NvBaselineError::Stage(900))?;
+            Ok(Self { raw })
+        }
+    }
+
+    /// Transcode one JPEG to HTJ2K using reused session resources.
+    pub fn transcode_jpeg_to_htj2k(
+        &mut self,
+        jpeg: &[u8],
+    ) -> Result<NvTranscodeResult, NvBaselineError> {
+        #[cfg(not(nvbaseline_built))]
+        {
+            let _ = jpeg;
+            Err(NvBaselineError::NotBuilt)
+        }
+        #[cfg(nvbaseline_built)]
+        {
+            nvidia_transcode_with_session(self.raw.as_ptr(), jpeg)
+        }
+    }
+}
+
+#[cfg(nvbaseline_built)]
+impl Drop for NvBaselineSession {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is owned by this wrapper and is destroyed exactly once.
+        unsafe { ffi::nvb_session_destroy(self.raw.as_ptr()) };
+    }
 }
 
 /// Whether the NVIDIA baseline is compiled in and the codec handles initialize.
@@ -93,8 +159,9 @@ pub fn nvidia_decode_jpeg_rgb(jpeg: &[u8]) -> Result<(Vec<u8>, u32, u32), NvBase
     {
         let mut width = 0i32;
         let mut height = 0i32;
-        // Two-pass: read dimensions cheaply from the header first.
-        let info = nvjpeg_image_dimensions(jpeg)?;
+        // Size the host RGB buffer from the JPEG SOF header without creating
+        // extra codec handles.
+        let info = jpeg_dimensions_from_header(jpeg)?;
         let mut out = vec![0u8; (info.0 as usize) * (info.1 as usize) * 3];
         // SAFETY: `out` is sized to width*height*3 and `jpeg` is a valid slice.
         let rc = unsafe {
@@ -123,79 +190,119 @@ pub fn nvidia_transcode_jpeg_to_htj2k(jpeg: &[u8]) -> Result<NvTranscodeResult, 
     }
     #[cfg(nvbaseline_built)]
     {
-        // HTJ2K of an 8-bit RGB image is well under the raw pixel size; allocate
-        // raw RGB size plus header slack and grow once if the codec disagrees.
-        let dims = nvjpeg_image_dimensions(jpeg)?;
-        let mut capacity = (dims.0 as usize) * (dims.1 as usize) * 3 + (1 << 16);
-        loop {
-            let mut out = vec![0u8; capacity];
-            let mut out_len = 0usize;
-            let mut decode_ms = 0f64;
-            let mut encode_ms = 0f64;
-            let mut width = 0i32;
-            let mut height = 0i32;
-            let mut num_components = 0i32;
-            // SAFETY: all pointers reference live, correctly-sized allocations.
-            let rc = unsafe {
-                ffi::nvb_transcode_jpeg_to_htj2k(
-                    jpeg.as_ptr(),
-                    jpeg.len(),
-                    out.as_mut_ptr(),
-                    out.len(),
-                    &mut out_len,
-                    &mut decode_ms,
-                    &mut encode_ms,
-                    &mut width,
-                    &mut height,
-                    &mut num_components,
-                )
-            };
-            // rc 212 == output buffer too small; double and retry once more.
-            if rc == 212 && capacity < (1 << 30) {
-                capacity *= 2;
-                continue;
-            }
-            if rc != 0 {
-                return Err(NvBaselineError::Stage(rc));
-            }
-            out.truncate(out_len);
-            return Ok(NvTranscodeResult {
-                codestream: out,
-                decode_ms,
-                encode_ms,
-                width: width as u32,
-                height: height as u32,
-                num_components: num_components as u32,
-            });
-        }
+        let mut session = NvBaselineSession::new()?;
+        session.transcode_jpeg_to_htj2k(jpeg)
     }
 }
 
-/// Read (width, height) from a JPEG header via a cheap reference decode probe.
 #[cfg(nvbaseline_built)]
-fn nvjpeg_image_dimensions(jpeg: &[u8]) -> Result<(u32, u32), NvBaselineError> {
-    let mut width = 0i32;
-    let mut height = 0i32;
-    // A zero-capacity decode returns the dimensions via the out params and a
-    // benign "too small" code (120); we only consume the dimensions here.
-    // SAFETY: out_rgb is null with zero capacity; the helper fills width/height
-    // from the header before checking capacity.
-    let rc = unsafe {
-        ffi::nvb_decode_jpeg_rgb(
-            jpeg.as_ptr(),
-            jpeg.len(),
-            std::ptr::null_mut(),
-            0,
-            &mut width,
-            &mut height,
-        )
-    };
-    // 0 (unexpected for zero cap) or 120 (capacity too small) both yield dims.
-    if (rc == 0 || rc == 120) && width > 0 && height > 0 {
-        Ok((width as u32, height as u32))
-    } else {
-        Err(NvBaselineError::Stage(rc))
+fn nvidia_transcode_with_session(
+    session: *mut ffi::NvbSession,
+    jpeg: &[u8],
+) -> Result<NvTranscodeResult, NvBaselineError> {
+    // HTJ2K of an 8-bit RGB image is well under the raw pixel size; allocate
+    // raw RGB size plus header slack and grow once if the codec disagrees.
+    let dims = jpeg_dimensions_from_header(jpeg)?;
+    let mut capacity = (dims.0 as usize) * (dims.1 as usize) * 3 + (1 << 16);
+    loop {
+        let mut out = vec![0u8; capacity];
+        let mut out_len = 0usize;
+        let mut decode_ms = 0f64;
+        let mut encode_ms = 0f64;
+        let mut width = 0i32;
+        let mut height = 0i32;
+        let mut num_components = 0i32;
+        // SAFETY: all pointers reference live, correctly-sized allocations.
+        let rc = unsafe {
+            ffi::nvb_session_transcode_jpeg_to_htj2k(
+                session,
+                jpeg.as_ptr(),
+                jpeg.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &mut out_len,
+                &mut decode_ms,
+                &mut encode_ms,
+                &mut width,
+                &mut height,
+                &mut num_components,
+            )
+        };
+        // rc 212 == output buffer too small; double and retry once more.
+        if rc == 212 && capacity < (1 << 30) {
+            capacity *= 2;
+            continue;
+        }
+        if rc != 0 {
+            return Err(NvBaselineError::Stage(rc));
+        }
+        out.truncate(out_len);
+        return Ok(NvTranscodeResult {
+            codestream: out,
+            decode_ms,
+            encode_ms,
+            width: width as u32,
+            height: height as u32,
+            num_components: num_components as u32,
+        });
     }
+}
+
+/// Read `(width, height)` from a JPEG SOF marker without initializing nvJPEG.
+#[cfg(nvbaseline_built)]
+fn jpeg_dimensions_from_header(jpeg: &[u8]) -> Result<(u32, u32), NvBaselineError> {
+    if jpeg.len() < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 {
+        return Err(NvBaselineError::Stage(103));
+    }
+
+    let mut offset = 2usize;
+    while offset + 3 < jpeg.len() {
+        if jpeg[offset] != 0xFF {
+            offset = offset.saturating_add(1);
+            continue;
+        }
+        while offset + 1 < jpeg.len() && jpeg[offset + 1] == 0xFF {
+            offset = offset.saturating_add(1);
+        }
+        if offset + 1 >= jpeg.len() {
+            break;
+        }
+
+        let marker = jpeg[offset + 1];
+        if marker == 0xD9 || marker == 0xDA {
+            break;
+        }
+        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) {
+            offset = offset.saturating_add(2);
+            continue;
+        }
+        if offset + 3 >= jpeg.len() {
+            break;
+        }
+
+        let segment_len = (usize::from(jpeg[offset + 2]) << 8) | usize::from(jpeg[offset + 3]);
+        if segment_len < 2 || offset + 2 + segment_len > jpeg.len() {
+            break;
+        }
+        let is_sof = matches!(
+            marker,
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF
+        );
+        if is_sof {
+            if segment_len < 7 {
+                break;
+            }
+            let height = (u32::from(jpeg[offset + 5]) << 8) | u32::from(jpeg[offset + 6]);
+            let width = (u32::from(jpeg[offset + 7]) << 8) | u32::from(jpeg[offset + 8]);
+            if width != 0 && height != 0 {
+                return Ok((width, height));
+            }
+            break;
+        }
+        offset = offset.saturating_add(2 + segment_len);
+    }
+
+    Err(NvBaselineError::Stage(103))
 }
 
 /// Peak-signal-to-noise ratio (dB) between two equal-length 8-bit buffers.

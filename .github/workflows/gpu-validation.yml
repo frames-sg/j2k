@@ -170,6 +170,8 @@ jobs:
           fi
           export SIGNINUM_BENCH_JPEG_DIR="$DIR"
           echo "benchmark JPEG dir: ${SIGNINUM_BENCH_JPEG_DIR}"
+          cargo test -p signinum-nvidia-baseline --features nvjpeg2000 --all-targets
+          cargo clippy -p signinum-nvidia-baseline --features nvjpeg2000 --all-targets -- -D warnings
           cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin transcode_compare
       - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings

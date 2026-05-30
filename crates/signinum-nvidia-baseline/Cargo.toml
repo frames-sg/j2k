@@ -21,11 +21,16 @@ default = []
 # Compile + link the C++ nvJPEG/nvJPEG2000 baseline. Runner-only: requires nvcc,
 # libnvjpeg, and a separately-installed libnvjpeg2k. Also turns on the CUDA path
 # for the signinum side of the comparison.
-nvjpeg2000 = ["signinum-transcode-cuda/cuda-runtime"]
+nvjpeg2000 = [
+    "signinum-transcode-cuda/cuda-runtime",
+    "dep:signinum-j2k-cuda",
+    "signinum-j2k-cuda/cuda-runtime",
+]
 
 [dependencies]
 signinum-transcode = { path = "../signinum-transcode", version = "=0.4.4" }
 signinum-transcode-cuda = { path = "../signinum-transcode-cuda", version = "=0.4.4" }
+signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.4", optional = true }
 signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
 signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 

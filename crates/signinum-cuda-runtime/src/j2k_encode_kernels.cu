@@ -390,7 +390,7 @@ __device__ int signinum_j2k_quantize_sample(
         return int(rounded);
     }
 
-    const int exponent = int(step_exponent) - int(range_bits);
+    const int exponent = int(range_bits) - int(step_exponent);
     const float base = ldexpf(1.0f, exponent);
     const float delta = base * (1.0f + float(step_mantissa) / 2048.0f);
     if (delta <= 0.0f) {

@@ -42,10 +42,16 @@ const NOT_WIRED: CudaTranscodeError =
 /// real workloads; sharing one context pays that cost once. The context is an
 /// `Arc` handle (`Send + Sync`), so cloning it out is cheap.
 fn shared_context() -> Result<CudaContext, CudaTranscodeError> {
-    static SHARED: OnceLock<Option<CudaContext>> = OnceLock::new();
+    static SHARED: OnceLock<CudaContext> = OnceLock::new();
+    if let Some(context) = SHARED.get() {
+        return Ok(context.clone());
+    }
+
+    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let _ = SHARED.set(context);
     SHARED
-        .get_or_init(|| CudaContext::system_default().ok())
-        .clone()
+        .get()
+        .cloned()
         .ok_or(CudaTranscodeError::CudaUnavailable)
 }
 
@@ -166,7 +172,13 @@ fn run_dwt97(
 ) -> Result<Dwt97TwoDimensional<f64>, CudaTranscodeError> {
     let coeffs = flatten_f64_blocks_to_f32(job.blocks);
     let bands = context
-        .j2k_transcode_dwt97(&coeffs, job.block_cols, job.block_rows, job.width, job.height)
+        .j2k_transcode_dwt97(
+            &coeffs,
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+        )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 transcode dispatch failed"))?;
     Ok(dwt97_bands_to_f64(bands))
 }
@@ -356,7 +368,8 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
 
     // Per-subband inverse step sizes from the shared oracle (same numbers the
     // CPU oracle and Metal use), plus code-block geometry from the options.
-    let inv_delta = |sub: J2kSubBandType| -> f32 { (1.0 / htj2k97_subband_delta(options, sub)) as f32 };
+    let inv_delta =
+        |sub: J2kSubBandType| -> f32 { (1.0 / htj2k97_subband_delta(options, sub)) as f32 };
     let params = CudaHtj2k97QuantizeParams {
         inv_delta_ll: inv_delta(J2kSubBandType::LowLow),
         inv_delta_hl: inv_delta(J2kSubBandType::HighLow),

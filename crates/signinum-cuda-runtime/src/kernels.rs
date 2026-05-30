@@ -131,7 +131,9 @@ impl CudaKernel {
             Self::TranscodeReversible53VerticalLow => b"transcode_reversible53_vertical_low\0",
             Self::TranscodeReversible53VerticalHigh => b"transcode_reversible53_vertical_high\0",
             Self::TranscodeReversible53HorizontalLow => b"transcode_reversible53_horizontal_low\0",
-            Self::TranscodeReversible53HorizontalHigh => b"transcode_reversible53_horizontal_high\0",
+            Self::TranscodeReversible53HorizontalHigh => {
+                b"transcode_reversible53_horizontal_high\0"
+            }
             Self::TranscodeDwt97Idct => b"transcode_dwt97_idct\0",
             Self::TranscodeDwt97RowLift => b"transcode_dwt97_row_lift\0",
             Self::TranscodeDwt97ColumnLift => b"transcode_dwt97_column_lift\0",
@@ -328,6 +330,13 @@ mod tests {
     }
 
     #[test]
+    fn j2k_encode_kernel_uses_native_irreversible_delta_formula() {
+        let cuda_source = include_str!("j2k_encode_kernels.cu");
+        assert!(cuda_source.contains("const int exponent = int(range_bits) - int(step_exponent);"));
+        assert!(!cuda_source.contains("const int exponent = int(step_exponent) - int(range_bits);"));
+    }
+
+    #[test]
     fn htj2k_decode_kernel_metadata_matches_generated_ptx() {
         assert_eq!(HTJ2K_DECODE_PTX.last(), Some(&0));
         assert_eq!(
@@ -408,6 +417,17 @@ mod tests {
         let cuda_source = include_str!("htj2k_encode_kernels.cu");
         assert!(cuda_source.contains("j2k_ht_reduce_max_magnitude_cooperative"));
         assert!(cuda_source.contains("j2k_packet_copy_body_cooperative"));
+    }
+
+    #[test]
+    fn htj2k_encode_kernel_reports_zero_passes_for_all_zero_codeblocks() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        assert!(cuda_source.contains(
+            "j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 0u, params.total_bitplanes);"
+        ));
+        assert!(!cuda_source.contains(
+            "j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 1u, params.total_bitplanes);"
+        ));
     }
 
     #[test]
