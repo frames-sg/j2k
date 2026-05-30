@@ -2108,7 +2108,7 @@ fn cuda_encode_htj2k_tile_body(
         .iter()
         .any(|&sampling| sampling != (1, 1))
     {
-        return Ok(None);
+        return Err("CUDA HTJ2K tile encode does not support component subsampling != (1, 1)");
     }
     // Native treats `use_mct = options.use_mct && num_components >= 3`, applying the
     // color transform to component planes 0,1,2 and passing any 4th plane through
