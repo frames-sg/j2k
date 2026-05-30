@@ -378,6 +378,29 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
 }
 
 // ---------------------------------------------------------------------------
+// Tripwire (ungated — runs on every host, no GPU required)
+// ---------------------------------------------------------------------------
+//
+// If CI sets SIGNINUM_REQUIRE_CUDA_RUNTIME but the `cuda-runtime` feature was
+// not compiled in, every gated parity test early-returns and false-greens.
+// This test is NOT inside any `#[cfg(feature = "cuda-runtime")]` block so it
+// is always compiled and always executed regardless of feature flags.
+
+#[test]
+fn cuda_runtime_required_implies_feature_compiled() {
+    // Fail-closed: if CI asserts the CUDA runtime is required but the cuda-runtime
+    // feature was not compiled in, every gated parity test would silently early-return
+    // and masquerade as green. Make that misconfiguration a hard failure instead.
+    if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some() {
+        assert!(
+            cfg!(feature = "cuda-runtime"),
+            "SIGNINUM_REQUIRE_CUDA_RUNTIME is set but the cuda-runtime feature is not compiled — \
+             gated CUDA parity tests would silently skip and false-green"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase-1 ACCEPTANCE GATE
 // Test 5: CUDA facade byte-exact parity matrix vs. CPU reference
 // ---------------------------------------------------------------------------
