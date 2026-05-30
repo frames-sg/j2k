@@ -472,3 +472,108 @@ extern "C" __global__ void transcode_dwt97_column_lift(
         }
     }
 }
+
+// ===========================================================================
+// Same-geometry 9/7 batch: per-item replicas of the three single-job kernels
+// above, selecting the item from a grid dimension and offsetting every buffer
+// by the item's uniform per-item stride. Output is bit-identical to running the
+// single-job kernels once per item (same f32 op ordering, same --fmad=false).
+// ===========================================================================
+
+// Kernel: batched separable float IDCT. Grid (x, y, item); thread per sample.
+// `blocks_per_item` = block_cols * block_rows; spatial item stride = width*height.
+extern "C" __global__ void transcode_dwt97_idct_batch(
+    const f32* blocks, int block_cols, int width, int height,
+    int blocks_per_item, f32* spatial) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int item = blockIdx.z;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const f32* item_blocks = blocks + (size_t)item * blocks_per_item * 64;
+    const int block_idx = (y >> 3) * block_cols + (x >> 3);
+    const f32* block = item_blocks + (size_t)block_idx * 64;
+    spatial[((size_t)item * height + y) * width + x] = idct8x8_sample(block, x & 7, y & 7);
+}
+
+// Kernel: batched horizontal 9/7 row lift + split. Grid (row, item); thread per row.
+extern "C" __global__ void transcode_dwt97_row_lift_batch(
+    f32* spatial, int width, int height, int low_width, int high_width,
+    f32* row_low, f32* row_high) {
+    const int y = blockIdx.x * blockDim.x + threadIdx.x;
+    const int item = blockIdx.y;
+    if (y >= height) {
+        return;
+    }
+    f32* item_spatial = spatial + (size_t)item * width * height;
+    f32* item_row_low = row_low + (size_t)item * height * low_width;
+    f32* item_row_high = row_high + (size_t)item * height * high_width;
+    f32* row = item_spatial + (size_t)y * width;
+    forward_lift_97(row, width, 1);
+    for (int i = 0; i < low_width; ++i) {
+        item_row_low[(size_t)y * low_width + i] = row[i * 2];
+    }
+    for (int i = 0; i < high_width; ++i) {
+        item_row_high[(size_t)y * high_width + i] = row[i * 2 + 1];
+    }
+}
+
+// Kernel: batched vertical 9/7 column lift + split. Grid (column, item); thread
+// per column. `low_height`/`high_height` give the per-item output band strides.
+extern "C" __global__ void transcode_dwt97_column_lift_batch(
+    f32* rows, int band_width, int height, int low_height, int high_height,
+    f32* low_out, f32* high_out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int item = blockIdx.y;
+    if (x >= band_width) {
+        return;
+    }
+    f32* item_rows = rows + (size_t)item * height * band_width;
+    f32* item_low = low_out + (size_t)item * low_height * band_width;
+    f32* item_high = high_out + (size_t)item * high_height * band_width;
+    forward_lift_97(item_rows + x, height, band_width);
+    for (int i = 0; i < height; ++i) {
+        const f32 value = item_rows[(size_t)i * band_width + x];
+        if ((i & 1) == 0) {
+            item_low[(size_t)(i / 2) * band_width + x] = value;
+        } else {
+            item_high[(size_t)(i / 2) * band_width + x] = value;
+        }
+    }
+}
+
+// Kernel: deadzone-quantize one 9/7 band into code-block-major i32 layout for one
+// batch, mirroring the signinum-transcode shared code-block oracle and Metal's
+// dct97_quantize_codeblocks_batch. Launched once per subband (its own width,
+// height, and inv_delta). Grid (x, y, item); thread per band sample.
+//
+//   q = sign(value) * floor(|value| * inv_delta), sign(0) = +1
+//
+// Output offset for (cbx, cby, local): code-block-major (outer cby, inner cbx),
+// each block stored row-major; per-item stride = width*height (coeffs preserved).
+extern "C" __global__ void transcode_dwt97_quantize_codeblocks(
+    const f32* band, i32* output, int width, int height,
+    int cb_width, int cb_height, f32 inv_delta) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int item = blockIdx.z;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const size_t item_stride = (size_t)width * height;
+    const f32 value = band[(size_t)item * item_stride + (size_t)y * width + x];
+    const int sign = (value < 0.0f) ? -1 : 1;
+    const int magnitude = (int)floorf(fabsf(value) * inv_delta);
+
+    const int cbx = x / cb_width;
+    const int cby = y / cb_height;
+    const int local_x = x - cbx * cb_width;
+    const int local_y = y - cby * cb_height;
+    const int block_width = min(cb_width, width - cbx * cb_width);
+    const int block_height = min(cb_height, height - cby * cb_height);
+    const size_t offset = (size_t)cby * cb_height * width
+        + (size_t)cbx * cb_width * block_height
+        + (size_t)local_y * block_width + local_x;
+    output[(size_t)item * item_stride + offset] = sign * magnitude;
+}
