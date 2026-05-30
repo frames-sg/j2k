@@ -17,22 +17,73 @@ use signinum_transcode::accelerator::{
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
+use signinum_cuda_runtime::{transcode_kernels_built, CudaContext, CudaTranscodeReversible53Bands};
+
 use crate::CudaTranscodeError;
 
 /// Returned until a given kernel path is wired to `signinum-cuda-runtime`.
 const NOT_WIRED: CudaTranscodeError =
     CudaTranscodeError::UnsupportedJob("signinum-transcode-cuda kernel not yet wired");
 
-pub(crate) fn dispatch_reversible_dwt53(
-    _job: DctGridToReversibleDwt53Job<'_>,
+/// Flatten `&[[i16; 64]]` into the contiguous `&[i16]` the runtime job expects.
+fn flatten_blocks(blocks: &[[i16; 64]]) -> &[i16] {
+    // SAFETY: `[[i16; 64]]` is laid out contiguously, so reinterpreting it as a
+    // flat `&[i16]` of `len * 64` elements is a read-only view with identical
+    // layout, alignment, and lifetime.
+    unsafe { std::slice::from_raw_parts(blocks.as_ptr().cast::<i16>(), blocks.len() * 64) }
+}
+
+fn bands_to_first_level(bands: CudaTranscodeReversible53Bands) -> ReversibleDwt53FirstLevel {
+    ReversibleDwt53FirstLevel {
+        ll: bands.ll,
+        hl: bands.hl,
+        lh: bands.lh,
+        hh: bands.hh,
+        low_width: bands.low_width,
+        low_height: bands.low_height,
+        high_width: bands.high_width,
+        high_height: bands.high_height,
+    }
+}
+
+fn run_reversible(
+    context: &CudaContext,
+    job: DctGridToReversibleDwt53Job<'_>,
 ) -> Result<ReversibleDwt53FirstLevel, CudaTranscodeError> {
-    Err(NOT_WIRED)
+    let bands = context
+        .j2k_transcode_reversible_dwt53(
+            flatten_blocks(job.dequantized_blocks),
+            job.block_cols,
+            job.block_rows,
+            job.width,
+            job.height,
+        )
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA reversible 5/3 transcode dispatch failed"))?;
+    Ok(bands_to_first_level(bands))
+}
+
+pub(crate) fn dispatch_reversible_dwt53(
+    job: DctGridToReversibleDwt53Job<'_>,
+) -> Result<ReversibleDwt53FirstLevel, CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    run_reversible(&context, job)
 }
 
 pub(crate) fn dispatch_reversible_dwt53_batch(
-    _jobs: &[DctGridToReversibleDwt53Job<'_>],
+    jobs: &[DctGridToReversibleDwt53Job<'_>],
 ) -> Result<Vec<ReversibleDwt53FirstLevel>, CudaTranscodeError> {
-    Err(NOT_WIRED)
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let mut outputs = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        outputs.push(run_reversible(&context, *job)?);
+    }
+    Ok(outputs)
 }
 
 pub(crate) fn dispatch_dwt53(
