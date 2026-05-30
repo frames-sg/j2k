@@ -160,11 +160,16 @@ jobs:
           if [ -z "$DIR" ] && [ -n "${SIGNINUM_BENCH_SVS:-}" ] && [ -f "${SIGNINUM_BENCH_SVS}" ]; then
             echo "extracting benchmark tiles from ${SIGNINUM_BENCH_SVS}"
             cargo run --release -p signinum-nvidia-baseline --bin svs_extract -- \
-              "${SIGNINUM_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" --limit 256 --stride 53
+              "${SIGNINUM_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" \
+              --limit 256 --stride 51 --quality 85 --min-tissue 0.6
             DIR="${RUNNER_TEMP:-/tmp}/svs_bench_tiles"
           fi
+          # Default to the committed pancreas tissue tiles when nothing else is set.
+          if [ -z "$DIR" ]; then
+            DIR="crates/signinum-nvidia-baseline/benchtiles/pancreas"
+          fi
           export SIGNINUM_BENCH_JPEG_DIR="$DIR"
-          echo "benchmark JPEG dir: ${SIGNINUM_BENCH_JPEG_DIR:-<bundled fixture>}"
+          echo "benchmark JPEG dir: ${SIGNINUM_BENCH_JPEG_DIR}"
           cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin transcode_compare
       - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
