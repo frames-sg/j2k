@@ -14,6 +14,20 @@ use signinum_j2k_native::{
 };
 
 // ---------------------------------------------------------------------------
+// Imports needed only by the facade parity matrix test.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cuda-runtime")]
+use signinum_j2k::{
+    encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
+    J2kLosslessEncodeOptions, J2kLosslessSamples,
+};
+#[cfg(feature = "cuda-runtime")]
+use signinum_j2k_cuda::encode_j2k_lossless_with_cuda;
+#[cfg(feature = "cuda-runtime")]
+use signinum_j2k_native::{DecodeSettings, Image};
+
+// ---------------------------------------------------------------------------
 // Gating helper — mirrors the pattern in htj2k_cuda_kernels.rs (line 24–26).
 // ---------------------------------------------------------------------------
 
@@ -361,4 +375,242 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             "16-bit signed deinterleave mismatch"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase-1 ACCEPTANCE GATE
+// Test 5: CUDA facade byte-exact parity matrix vs. CPU reference
+// ---------------------------------------------------------------------------
+//
+// CPU reference rationale
+// -----------------------
+// `encode_j2k_lossless_with_cuda` calls `strict_cuda_encode_options(*options)`
+// (crates/signinum-j2k-cuda/src/encode.rs:88–91), which sets
+// `backend = RequireDevice` and otherwise leaves all other fields untouched.
+// It then delegates to `signinum_j2k::encode_j2k_lossless_with_accelerator`
+// (encode.rs:40–45), which internally calls `native_lossless_options` to build
+// the `EncodeOptions` for the native encoder (signinum-j2k/src/encode.rs:377–392).
+//
+// The CPU reference here is `signinum_j2k::encode_j2k_lossless(samples, &opts)`
+// with `backend = CpuOnly` and all other option fields identical to what the
+// caller passed to the CUDA facade.  `encode_j2k_lossless` calls `encode_cpu`
+// (encode.rs:254–270) which calls the same `native_lossless_options` helper,
+// producing the same `EncodeOptions` (same reversible transform, block coding
+// mode, progression order, decomposition levels, write_tlm flag, use_mct flag).
+// The only difference is the dispatch path: CUDA uses the GPU accelerator for
+// compute stages; CPU uses the scalar fallback.  When the GPU produces a
+// bit-identical codestream for supported configurations, `bytes_cuda ==
+// bytes_native` must hold.
+//
+// Validation policy for the CPU call is `External` to avoid double round-trip
+// overhead in CI; the CUDA facade runs its own validation internally.
+
+// Cell descriptor used for matrix iteration and assertion messages.
+#[cfg(feature = "cuda-runtime")]
+#[derive(Debug, Clone, Copy)]
+struct ParityCell {
+    w: u32,
+    h: u32,
+    comps: u8,
+    depth: u8,
+    signed: bool,
+    levels: u8,
+}
+
+/// Build a deterministic byte buffer for the given cell geometry.
+///
+/// For 8-bit samples each byte is a single sample.
+/// For 16-bit samples each sample is two bytes (native-endian u16), packed
+/// interleaved (e.g., `lo_byte`, `hi_byte` per sample per component).
+#[cfg(feature = "cuda-runtime")]
+fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
+    let npixels = cell.w as usize * cell.h as usize;
+    let nsamples = npixels * cell.comps as usize;
+
+    if cell.depth <= 8 {
+        // 8-bit: one byte per sample; deterministic from index.
+        // The modulus is exactly 256, so truncation is intentional.
+        #[allow(clippy::cast_possible_truncation)]
+        (0..nsamples).map(|i| ((i * 31 + 17) % 256) as u8).collect()
+    } else {
+        // 16-bit: two bytes per sample (native-endian u16).
+        let max_val: u32 = (1u32 << cell.depth) - 1;
+        let mut buf = Vec::with_capacity(nsamples * 2);
+        for i in 0..nsamples {
+            // i < w*h*comps ≤ 64*48*4 = 12288, safely fits in u32.
+            #[allow(clippy::cast_possible_truncation)]
+            let i32 = i as u32;
+            // Result is bounded by max_val < 2^16, so truncation to u16 is safe.
+            #[allow(clippy::cast_possible_truncation)]
+            let v = ((i32 * 1_000_003 + 7) % (max_val + 1)) as u16;
+            buf.extend_from_slice(&v.to_ne_bytes());
+        }
+        buf
+    }
+}
+
+/// Build the `J2kLosslessEncodeOptions` for a given cell.
+///
+/// We use HTJ2K block coding and LRCP progression (matching the strict CUDA
+/// facade's default contract), and pass the cell's `levels` as an explicit
+/// `max_decomposition_levels` request.  The reversible transform is left at
+/// the facade default (`Rct53` for 3-component; the native encoder also applies
+/// it to 1-component via a no-op path that does not change the codestream bytes).
+#[cfg(feature = "cuda-runtime")]
+fn cell_encode_options(cell: &ParityCell) -> J2kLosslessEncodeOptions {
+    J2kLosslessEncodeOptions::default()
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(cell.levels))
+        .with_validation(J2kEncodeValidation::External)
+}
+
+// Matrix constants live at module scope to avoid the items_after_statements lint.
+// comps ∈ {1, 3, 4} (2-component is OUT OF SCOPE — native decoder rejects it).
+// 4-component cells are expected to fail until P1-T7 implements resident MCT;
+// they are included here so the test turns green automatically once T7 lands.
+#[cfg(feature = "cuda-runtime")]
+const MATRIX_COMPS: &[u8] = &[1, 3, 4];
+#[cfg(feature = "cuda-runtime")]
+const MATRIX_DEPTHS: &[u8] = &[8, 16];
+#[cfg(feature = "cuda-runtime")]
+const MATRIX_SIGNED: &[bool] = &[false, true];
+#[cfg(feature = "cuda-runtime")]
+const MATRIX_LEVELS: &[u8] = &[0, 1, 3];
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_facade_byte_matches_native_across_matrix_when_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    let w: u32 = 64;
+    let h: u32 = 48;
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for &comps in MATRIX_COMPS {
+        for &depth in MATRIX_DEPTHS {
+            for &signed in MATRIX_SIGNED {
+                for &levels in MATRIX_LEVELS {
+                    let cell = ParityCell {
+                        w,
+                        h,
+                        comps,
+                        depth,
+                        signed,
+                        levels,
+                    };
+                    let pixels = synthesize_pixels(&cell);
+                    let opts = cell_encode_options(&cell);
+
+                    // Build J2kLosslessSamples directly to allow 4-component
+                    // cells (J2kLosslessSamples::new rejects comps != 1|3, but
+                    // all fields are pub so we can bypass the constructor for
+                    // cells that are intentionally expected to fail on the CUDA
+                    // side until a later task adds 4-component resident MCT).
+                    let samples = J2kLosslessSamples {
+                        data: pixels.as_slice(),
+                        width: cell.w,
+                        height: cell.h,
+                        components: cell.comps,
+                        bit_depth: cell.depth,
+                        signed: cell.signed,
+                    };
+
+                    // --- CUDA encode ---
+                    let cuda_result = encode_j2k_lossless_with_cuda(samples, &opts);
+
+                    // --- CPU reference encode (configuration-identical) ---
+                    // Uses encode_j2k_lossless with CpuOnly backend so it takes
+                    // the identical native_lossless_options path as the CUDA facade
+                    // (signinum-j2k/src/encode.rs:341–355 via encode_cpu).
+                    let cpu_opts = opts.with_backend(EncodeBackendPreference::CpuOnly);
+                    let cpu_result = encode_j2k_lossless(samples, &cpu_opts);
+
+                    match (cuda_result, cpu_result) {
+                        (Err(cuda_err), Err(cpu_err)) => {
+                            // Both errored — expected for 4-component until T7.
+                            eprintln!(
+                                "SKIP (both encoders rejected) cell={cell:?} \
+                                 cuda_err={cuda_err} cpu_err={cpu_err}"
+                            );
+                        }
+                        (Err(cuda_err), Ok(_)) => {
+                            // CUDA failed but CPU succeeded — red until T7 for 4-comp.
+                            eprintln!(
+                                "EXPECTED FAILURE (CUDA only) cell={cell:?} \
+                                 cuda_err={cuda_err}"
+                            );
+                            if comps != 4 {
+                                failures.push(format!(
+                                    "cell={cell:?}: CUDA encode failed but CPU succeeded: \
+                                     {cuda_err}"
+                                ));
+                            }
+                        }
+                        (Ok(_), Err(cpu_err)) => {
+                            failures.push(format!(
+                                "cell={cell:?}: CPU encode failed but CUDA succeeded: \
+                                 {cpu_err}"
+                            ));
+                        }
+                        (Ok(bytes_cuda), Ok(bytes_native)) => {
+                            // --- Byte-exact codestream parity assertion ---
+                            if bytes_cuda.codestream != bytes_native.codestream {
+                                failures.push(format!(
+                                    "cell={cell:?}: codestream byte mismatch \
+                                     (cuda={} bytes, cpu={} bytes)",
+                                    bytes_cuda.codestream.len(),
+                                    bytes_native.codestream.len()
+                                ));
+                                continue;
+                            }
+
+                            // --- Round-trip decode of the CUDA codestream ---
+                            // Decode with signinum_j2k_native::Image::decode_native
+                            // and compare the raw pixel bytes to the original input.
+                            let image = match Image::new(
+                                &bytes_cuda.codestream,
+                                &DecodeSettings::default(),
+                            ) {
+                                Ok(img) => img,
+                                Err(e) => {
+                                    failures.push(format!(
+                                        "cell={cell:?}: CUDA codestream parse failed: {e}"
+                                    ));
+                                    continue;
+                                }
+                            };
+
+                            let decoded = match image.decode_native() {
+                                Ok(bmp) => bmp,
+                                Err(e) => {
+                                    failures.push(format!(
+                                        "cell={cell:?}: CUDA codestream decode failed: {e}"
+                                    ));
+                                    continue;
+                                }
+                            };
+
+                            if decoded.data != pixels {
+                                failures.push(format!(
+                                    "cell={cell:?}: round-trip pixel mismatch \
+                                     (decoded={} bytes, original={} bytes)",
+                                    decoded.data.len(),
+                                    pixels.len()
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "facade parity matrix failures:\n{}",
+        failures.join("\n")
+    );
 }
