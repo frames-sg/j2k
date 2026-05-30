@@ -154,3 +154,53 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
     assert!(timings.quantize_codeblock_us > 0, "quantize stage not timed");
     assert!(timings.readback_us > 0, "readback stage not timed");
 }
+
+#[test]
+fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    // The fused code-block kernels require uniform geometry; a mixed-geometry
+    // batch must surface a typed error in Explicit mode (Auto would fall back to
+    // the scalar oracle). There is no single-job GPU code-block entry point, so
+    // the whole batch is rejected rather than handled per job.
+    let block_cols = 4usize;
+    let block_rows = 4usize;
+    let first = make_blocks(block_cols, block_rows, 0);
+    let second = make_blocks(block_cols, block_rows, 37);
+    let jobs = [
+        DctGridToHtj2k97CodeBlockJob {
+            blocks: &first,
+            block_cols,
+            block_rows,
+            width: 29,
+            height: 31,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+        DctGridToHtj2k97CodeBlockJob {
+            blocks: &second,
+            block_cols,
+            block_rows,
+            width: 24,
+            height: 26,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        },
+    ];
+    let options = Htj2k97CodeBlockOptions {
+        bit_depth: 8,
+        guard_bits: 2,
+        code_block_width_exp: 2,
+        code_block_height_exp: 2,
+        irreversible_quantization_scale: 2.5,
+    };
+
+    let result = CudaDctToWaveletStageAccelerator::new_explicit()
+        .dct_grid_to_htj2k97_codeblock_batch(&jobs, options);
+    assert!(
+        result.is_err(),
+        "explicit CUDA code-block batch must reject non-uniform geometry, got {result:?}"
+    );
+}

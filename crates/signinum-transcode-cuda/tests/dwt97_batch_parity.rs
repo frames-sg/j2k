@@ -86,3 +86,53 @@ fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
     );
     assert!(timings.readback_us > 0, "readback stage not timed");
 }
+
+#[test]
+fn cuda_dwt97_batch_non_uniform_geometry_falls_back_to_per_job_when_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    // Two jobs share a 4x4 block grid (covers 32x32) but differ in logical
+    // dimensions, so the batch cannot use the same-geometry staged path and must
+    // fall back to the per-job loop — still bit-exact, just without batch timings.
+    let block_cols = 4usize;
+    let block_rows = 4usize;
+    let first = make_blocks(block_cols, block_rows, 0);
+    let second = make_blocks(block_cols, block_rows, 37);
+    let jobs = [
+        DctGridToDwt97Job {
+            blocks: &first,
+            block_cols,
+            block_rows,
+            width: 29,
+            height: 31,
+        },
+        DctGridToDwt97Job {
+            blocks: &second,
+            block_cols,
+            block_rows,
+            width: 24,
+            height: 26,
+        },
+    ];
+
+    let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
+    let batch = accelerator
+        .dct_grid_to_dwt97_batch(&jobs)
+        .expect("CUDA 9/7 batch dispatch should succeed on the runner")
+        .expect("CUDA should handle the mixed-geometry 9/7 batch via per-job fallback");
+
+    assert_eq!(batch.len(), jobs.len());
+    for (job, batched) in jobs.iter().zip(batch.iter()) {
+        let per_job = CudaDctToWaveletStageAccelerator::new_explicit()
+            .dct_grid_to_dwt97(*job)
+            .expect("CUDA 9/7 dispatch should succeed on the runner")
+            .expect("CUDA should handle the 9/7 job (explicit mode)");
+        assert_eq!(
+            batched, &per_job,
+            "non-uniform batch item diverged from per-job 9/7 for {}x{}",
+            job.width, job.height
+        );
+    }
+}
