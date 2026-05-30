@@ -316,6 +316,102 @@ mod tests {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Ground truth: exact mathematical inverse DCT.
+    //
+    // ISLOW is a fixed-point (Chen-Wang) approximation; nothing previously
+    // pinned it to the *defining* inverse DCT, so a wrong constant or butterfly
+    // could pass the sanity checks (and be faithfully copied by the CUDA port).
+    // Compare every pixel to the exact double-precision IDCT. ISLOW meets the
+    // IEEE-1180 peak-error bound, so a 1-LSB tolerance is the correct gate.
+
+    /// Exact 8x8 inverse DCT (DCT-III, orthonormal) of natural-order signed
+    /// coefficients, before the +128 level shift. `coeffs[v * 8 + u]` is the
+    /// coefficient at horizontal frequency `u`, vertical frequency `v`.
+    fn exact_idct_pixel(coeffs: &[i16; 64], x: usize, y: usize) -> f64 {
+        use core::f64::consts::PI;
+        let alpha = |k: usize| if k == 0 { (1.0_f64 / 8.0).sqrt() } else { (2.0_f64 / 8.0).sqrt() };
+        let cos_term = |sample: usize, freq: usize| -> f64 {
+            let s = f64::from(u8::try_from(sample).unwrap());
+            let f = f64::from(u8::try_from(freq).unwrap());
+            (((2.0 * s) + 1.0) * f * PI / 16.0).cos()
+        };
+        let mut acc = 0.0;
+        for v in 0..8 {
+            for u in 0..8 {
+                acc += alpha(u)
+                    * alpha(v)
+                    * f64::from(coeffs[v * 8 + u])
+                    * cos_term(x, u)
+                    * cos_term(y, v);
+            }
+        }
+        acc
+    }
+
+    /// The exact IDCT pixels with JPEG's +128 level shift and `[0, 255]` clamp.
+    fn exact_islow_reference(coeffs: &[i16; 64]) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        for y in 0..8 {
+            for x in 0..8 {
+                let value = exact_idct_pixel(coeffs, x, y) + 128.0;
+                out[y * 8 + x] = value.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        out
+    }
+
+    fn next_coeff(state: &mut u64) -> i16 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // Modest dequantized magnitudes so most pixels stay inside 8-bit range.
+        ((*state >> 40) & 0x1ff) as i32 as i16 - 256
+    }
+
+    #[test]
+    fn islow_matches_exact_idct_within_one_lsb() {
+        let mut state = 0x0bad_c0de_1234_5678u64;
+        for _ in 0..256 {
+            let mut coeffs = [0i16; 64];
+            for c in &mut coeffs {
+                *c = next_coeff(&mut state);
+            }
+            // Keep DC moderate so the field is centered in range.
+            coeffs[0] = i16::try_from(i32::from(coeffs[0]) / 4).unwrap();
+
+            let mut got = [0u8; 64];
+            idct_islow(&coeffs, &mut got);
+            let want = exact_islow_reference(&coeffs);
+            for i in 0..64 {
+                assert!(
+                    (i32::from(got[i]) - i32::from(want[i])).abs() <= 1,
+                    "pixel {i}: islow={} exact={} (coeffs {coeffs:?})",
+                    got[i],
+                    want[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn islow_dc_only_matches_closed_form() {
+        // DC-only block: every pixel is F(0,0)/8 + 128.
+        for dc in [-512i16, -200, -64, 8, 64, 200, 512] {
+            let mut coeffs = [0i16; 64];
+            coeffs[0] = dc;
+            let mut got = [0u8; 64];
+            idct_islow(&coeffs, &mut got);
+            let expected = ((f64::from(dc) / 8.0) + 128.0).round().clamp(0.0, 255.0) as u8;
+            for &px in &got {
+                assert!(
+                    (i32::from(px) - i32::from(expected)).abs() <= 1,
+                    "dc={dc}: px={px} expected={expected}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn dc_only_helper_matches_full_idct() {
         let mut input = [0i16; 64];
