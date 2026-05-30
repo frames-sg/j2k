@@ -3703,4 +3703,56 @@ mod tests {
         assert_eq!(decoded.height, 64);
         assert_eq!(decoded.data, original, "round-trip mismatch");
     }
+
+    /// Precondition gate: native encode_htj2k must produce byte-identical output
+    /// across repeated invocations with the same input before CUDA parity can be
+    /// asserted.  96x80 with 3 components and 5 decomposition levels exercises
+    /// multi-codeblock subbands.
+    #[test]
+    fn encode_htj2k_is_byte_deterministic() {
+        const WIDTH: u32 = 96;
+        const HEIGHT: u32 = 80;
+        const NUM_COMPONENTS: u8 = 3;
+        const BIT_DEPTH: u8 = 8;
+        const REPETITIONS: usize = 8;
+
+        // Deterministic pseudo-random pixel data: simple LCG-like sequence.
+        let pixel_count = (WIDTH * HEIGHT) as usize * usize::from(NUM_COMPONENTS);
+        let pixels: Vec<u8> = (0..pixel_count)
+            .map(|i| {
+                let v = i.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (v >> 56) as u8
+            })
+            .collect();
+
+        let options = EncodeOptions {
+            use_ht_block_coding: true,
+            reversible: true,
+            num_decomposition_levels: 5,
+            validate_high_throughput_codestream: true,
+            ..EncodeOptions::default()
+        };
+
+        let baseline = encode_htj2k(&pixels, WIDTH, HEIGHT, NUM_COMPONENTS, BIT_DEPTH, false, &options)
+            .expect("encode_htj2k baseline failed");
+
+        assert!(!baseline.is_empty(), "baseline codestream must not be empty");
+
+        for i in 0..REPETITIONS {
+            let result = encode_htj2k(&pixels, WIDTH, HEIGHT, NUM_COMPONENTS, BIT_DEPTH, false, &options)
+                .unwrap_or_else(|e| panic!("encode_htj2k repetition {i} failed: {e}"));
+            assert_eq!(
+                result, baseline,
+                "encode_htj2k repetition {i} produced different bytes \
+                 (len baseline={}, len result={})",
+                baseline.len(), result.len()
+            );
+        }
+
+        println!(
+            "encode_htj2k_is_byte_deterministic: {} bytes, {} repetitions all identical",
+            baseline.len(),
+            REPETITIONS
+        );
+    }
 }
