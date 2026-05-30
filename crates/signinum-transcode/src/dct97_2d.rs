@@ -856,4 +856,59 @@ mod tests {
         assert_all_close(&t.hl, 0.0, 1e-9);
         assert_all_close(&t.hh, 0.0, 1e-9);
     }
+
+    // -------------------------------------------------------------------------
+    // Ground truth: exact mathematical inverse DCT for the float 9/7 path.
+    //
+    // The 9/7 transcode oracle (`dct8x8_blocks_then_dwt97_float`) feeds
+    // `idct8x8_sample` into the wavelet. Validate that IDCT against the defining
+    // DCT-III cosine sum so a basis/normalization/transpose bug cannot hide
+    // inside both the oracle and its CUDA port.
+    fn exact_idct_sample(block: &[[f64; 8]; 8], x: usize, y: usize) -> f64 {
+        let alpha = |k: usize| if k == 0 { (1.0_f64 / 8.0).sqrt() } else { (2.0_f64 / 8.0).sqrt() };
+        let cos_term =
+            |sample: usize, freq: usize| (((2 * sample + 1) as f64) * freq as f64 * PI / 16.0).cos();
+        let mut acc = 0.0;
+        for (v, row) in block.iter().enumerate() {
+            for (u, &coeff) in row.iter().enumerate() {
+                acc += alpha(u) * alpha(v) * coeff * cos_term(x, u) * cos_term(y, v);
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn idct8x8_sample_matches_exact_cosine_sum() {
+        let mut state = 0x5151_aaaa_bbbb_ccccu64;
+        for _ in 0..64 {
+            let mut block = [[0.0f64; 8]; 8];
+            for row in &mut block {
+                for coeff in row {
+                    *coeff = next_unit(&mut state) * 64.0;
+                }
+            }
+            for y in 0..8 {
+                for x in 0..8 {
+                    let got = idct8x8_sample(&block, x, y);
+                    let want = exact_idct_sample(&block, x, y);
+                    assert!(
+                        (got - want).abs() < 1e-9,
+                        "idct8x8_sample({x},{y})={got} exact={want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn idct8x8_sample_dc_only_is_uniform() {
+        // DC-only block -> uniform plane equal to F(0,0) / 8.
+        let mut block = [[0.0f64; 8]; 8];
+        block[0][0] = 320.0;
+        for y in 0..8 {
+            for x in 0..8 {
+                assert!((idct8x8_sample(&block, x, y) - 40.0).abs() < 1e-9);
+            }
+        }
+    }
 }
