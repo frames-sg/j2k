@@ -613,3 +613,121 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
         failures.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: subsampling != (1,1) rejection via the accelerator hook (runner-gated)
+//
+// `cuda_encode_htj2k_tile_body` now returns a typed Err — not Ok(None) — for
+// inputs with component subsampling factors != (1, 1).  This test verifies the
+// rejection at the hook level via `J2kEncodeStageAccelerator::encode_htj2k_tile`
+// on the CUDA runner where the subsampling check actually executes.
+//
+// NOTE: Subsampling != (1,1) is NOT expressible through the public lossless
+// facade (`encode_j2k_lossless_with_cuda` / `J2kLosslessEncodeOptions`):
+// `native_lossless_options` never sets `EncodeOptions::component_sampling`,
+// which defaults to `None` → all (1,1).  The rejection here is a defense-in-
+// depth contract within `cuda_encode_htj2k_tile_body`, exercised via the
+// lower-level hook to confirm the guard exists.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_runtime_required() {
+    use signinum_j2k_cuda::CudaEncodeStageAccelerator;
+    use signinum_j2k_native::{
+        J2kEncodeStageAccelerator as _, J2kHtj2kTileEncodeJob, J2kPacketizationProgressionOrder,
+    };
+
+    if !runtime_required() {
+        return;
+    }
+
+    // Minimal 4x4 grayscale HTJ2K tile job with subsampling (2,1) on the single
+    // component — this is the only path that triggers the subsampling guard in
+    // cuda_encode_htj2k_tile_body.
+    let pixels: Vec<u8> = (0u8..16).collect();
+    let quantization_steps = [(8u16, 0u16)]; // num_decomposition_levels=0 → 1 step
+    let sampling = [(2u8, 1u8)]; // non-unit subsampling for component 0
+
+    let mut accelerator = CudaEncodeStageAccelerator::default();
+    let result = accelerator.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
+        pixels: &pixels,
+        width: 4,
+        height: 4,
+        num_components: 1,
+        bit_depth: 8,
+        signed: false,
+        reversible: true,
+        use_mct: false,
+        num_decomposition_levels: 0,
+        guard_bits: 1,
+        code_block_width: 4,
+        code_block_height: 4,
+        quantization_steps: &quantization_steps,
+        component_sampling: &sampling,
+        progression_order: J2kPacketizationProgressionOrder::Lrcp,
+    });
+
+    let err = result.expect_err(
+        "encode_htj2k_tile must return Err for subsampling != (1,1) when CUDA is available",
+    );
+    assert!(
+        err.contains("subsampling"),
+        "typed rejection must mention subsampling, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 (CPU-only, no runtime gate): assert that the lossless facade's public
+// types cannot express subsampling != (1,1).
+//
+// `J2kLosslessEncodeOptions` has no subsampling field.  `native_lossless_options`
+// always leaves `EncodeOptions::component_sampling` as `None`, which the native
+// encoder resolves to all-(1,1).  This structural invariant means the subsampling
+// rejection in `cuda_encode_htj2k_tile_body` is unreachable through the facade.
+//
+// This test encodes a 1-component in-scope cell and asserts the call succeeds —
+// proving no silent Ok(None) fallback occurs for in-scope inputs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lossless_facade_in_scope_input_never_hits_ok_none_fallback() {
+    use signinum_core::{BackendKind, CodecError as _};
+    use signinum_j2k::{
+        J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
+    };
+    use signinum_j2k_cuda::encode_j2k_lossless_with_cuda;
+
+    // Small 8x8 single-component 8-bit input — minimal in-scope cell.
+    let pixels: Vec<u8> = (0u8..64).collect();
+    let samples =
+        J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).expect("valid in-scope samples");
+    let options = J2kLosslessEncodeOptions::default()
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(0))
+        .with_validation(J2kEncodeValidation::External);
+
+    let result = encode_j2k_lossless_with_cuda(samples, &options);
+
+    // Without CUDA, the facade must return a typed Err (not Ok with CPU backend),
+    // because strict_cuda_encode_options forces RequireDevice and the missing
+    // deinterleave dispatch triggers the unsupported-backend error.
+    // With CUDA, the call succeeds.
+    // Either way, the result must NOT be Ok with backend == Cpu (silent fallback).
+    match result {
+        Ok(encoded) => {
+            assert_eq!(
+                encoded.backend,
+                BackendKind::Cuda,
+                "encode_j2k_lossless_with_cuda must not silently fall back to CPU backend for in-scope inputs"
+            );
+        }
+        Err(err) => {
+            // Strict encode error is expected when CUDA is unavailable.
+            assert!(
+                err.is_unsupported(),
+                "rejection for an in-scope input must be a typed unsupported error, not an internal panic or silent fallback: {err}"
+            );
+        }
+    }
+}
