@@ -3755,4 +3755,112 @@ mod tests {
             REPETITIONS
         );
     }
+
+    /// Precondition gate: prove native encode_htj2k round-trips 2-component
+    /// (e.g. Y+A or YCbCr-420-placeholder) 8-bit lossless images exactly.
+    ///
+    /// SCOPE FINDING: native's decoder raises `Validation(TooManyChannels)` when
+    /// asked to decode a 2-component codestream it produced itself. Native cannot
+    /// serve as a parity oracle for 2-component HTJ2K lossless; this component
+    /// count is OUT OF SCOPE for CUDA parity verification.
+    #[test]
+    #[ignore = "native does not round-trip 2-component HTJ2K lossless; out of scope"]
+    fn native_htj2k_roundtrips_two_component_lossless() {
+        const WIDTH: u32 = 32;
+        const HEIGHT: u32 = 24;
+        const NUM_COMPONENTS: u8 = 2;
+        const BIT_DEPTH: u8 = 8;
+
+        // Deterministic per-pixel pattern: each sample is a function of its
+        // flat index so the two planes carry different, non-trivial data.
+        let pixel_count = WIDTH as usize * HEIGHT as usize * usize::from(NUM_COMPONENTS);
+        let pixels: Vec<u8> = (0..pixel_count)
+            .map(|i| ((i.wrapping_mul(251).wrapping_add(i / 7)) & 0xFF) as u8)
+            .collect();
+
+        let codestream = encode_htj2k(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            NUM_COMPONENTS,
+            BIT_DEPTH,
+            false,
+            &EncodeOptions::default(),
+        )
+        .expect("native 2-component HTJ2K encode failed");
+
+        let image = Image::new(
+            &codestream,
+            &DecodeSettings {
+                resolve_palette_indices: true,
+                strict: true,
+                target_resolution: None,
+            },
+        )
+        .expect("native 2-component HTJ2K parse failed");
+        let decoded = image.decode_native().expect("native 2-component HTJ2K decode failed");
+
+        assert_eq!(decoded.width, WIDTH, "width mismatch");
+        assert_eq!(decoded.height, HEIGHT, "height mismatch");
+        assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
+        assert_eq!(decoded.num_components, NUM_COMPONENTS, "component count mismatch");
+        assert_eq!(decoded.data, pixels, "2-component HTJ2K lossless round-trip mismatch");
+
+        println!(
+            "native_htj2k_roundtrips_two_component_lossless: {} bytes codestream, {} pixel bytes",
+            codestream.len(),
+            pixels.len()
+        );
+    }
+
+    /// Precondition gate: prove native encode_htj2k round-trips 4-component
+    /// (e.g. RGBA) 8-bit lossless images exactly.
+    /// Required before a CUDA parity oracle can be established for this component count.
+    #[test]
+    fn native_htj2k_roundtrips_four_component_lossless() {
+        const WIDTH: u32 = 32;
+        const HEIGHT: u32 = 24;
+        const NUM_COMPONENTS: u8 = 4;
+        const BIT_DEPTH: u8 = 8;
+
+        // Deterministic per-sample pattern across all four planes.
+        let pixel_count = WIDTH as usize * HEIGHT as usize * usize::from(NUM_COMPONENTS);
+        let pixels: Vec<u8> = (0..pixel_count)
+            .map(|i| ((i.wrapping_mul(197).wrapping_add(i / 13)) & 0xFF) as u8)
+            .collect();
+
+        let codestream = encode_htj2k(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            NUM_COMPONENTS,
+            BIT_DEPTH,
+            false,
+            &EncodeOptions::default(),
+        )
+        .expect("native 4-component HTJ2K encode failed");
+
+        let image = Image::new(
+            &codestream,
+            &DecodeSettings {
+                resolve_palette_indices: true,
+                strict: true,
+                target_resolution: None,
+            },
+        )
+        .expect("native 4-component HTJ2K parse failed");
+        let decoded = image.decode_native().expect("native 4-component HTJ2K decode failed");
+
+        assert_eq!(decoded.width, WIDTH, "width mismatch");
+        assert_eq!(decoded.height, HEIGHT, "height mismatch");
+        assert_eq!(decoded.bit_depth, BIT_DEPTH, "bit_depth mismatch");
+        assert_eq!(decoded.num_components, NUM_COMPONENTS, "component count mismatch");
+        assert_eq!(decoded.data, pixels, "4-component HTJ2K lossless round-trip mismatch");
+
+        println!(
+            "native_htj2k_roundtrips_four_component_lossless: {} bytes codestream, {} pixel bytes",
+            codestream.len(),
+            pixels.len()
+        );
+    }
 }
