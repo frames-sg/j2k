@@ -288,6 +288,13 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
+        if self.mode == CudaDispatchMode::Auto
+            && jobs
+                .iter()
+                .all(|job| job.width.saturating_mul(job.height) < self.min_auto_samples)
+        {
+            return Ok(None);
+        }
 
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -377,6 +384,13 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
+        }
+        if self.mode == CudaDispatchMode::Auto
+            && jobs
+                .iter()
+                .all(|job| job.width.saturating_mul(job.height) < self.min_auto_samples)
+        {
+            return Ok(None);
         }
 
         #[cfg(not(feature = "cuda-runtime"))]

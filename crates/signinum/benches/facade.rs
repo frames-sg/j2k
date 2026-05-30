@@ -13,23 +13,19 @@ const TILE_SIDE: u32 = 128;
 const MATRIX_SIDE: u32 = 512;
 
 fn bench_encode_options() -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        backend: EncodeBackendPreference::CpuOnly,
-        validation: J2kEncodeValidation::External,
-        ..J2kLosslessEncodeOptions::default()
-    }
+    J2kLosslessEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::CpuOnly)
+        .with_validation(J2kEncodeValidation::External)
 }
 
 fn matrix_encode_options(
     backend: EncodeBackendPreference,
     block_coding_mode: J2kBlockCodingMode,
 ) -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions {
-        backend,
-        validation: J2kEncodeValidation::External,
-        block_coding_mode,
-        ..J2kLosslessEncodeOptions::default()
-    }
+    J2kLosslessEncodeOptions::default()
+        .with_backend(backend)
+        .with_validation(J2kEncodeValidation::External)
+        .with_block_coding_mode(block_coding_mode)
 }
 
 fn bench_facade_j2k_encode(c: &mut Criterion) {

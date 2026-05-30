@@ -301,7 +301,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count: cuda_plan.code_blocks().len(),
             payload_bytes: cuda_plan.payload().len(),
-            dispatch_count: cuda_plan.dispatch_count_hint(),
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -348,7 +348,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count: cuda_plan.code_blocks().len(),
             payload_bytes: cuda_plan.payload().len(),
-            dispatch_count: cuda_plan.dispatch_count_hint(),
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -393,7 +393,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count: cuda_plan.code_blocks().len(),
             payload_bytes: cuda_plan.payload().len(),
-            dispatch_count: cuda_plan.dispatch_count_hint(),
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -447,7 +447,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count: cuda_plan.code_blocks().len(),
             payload_bytes: cuda_plan.payload().len(),
-            dispatch_count: cuda_plan.dispatch_count_hint(),
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -490,10 +490,6 @@ impl<'a> J2kDecoder<'a> {
             .map(|plan| plan.code_blocks().len())
             .sum::<usize>();
         let payload_bytes = payload.len();
-        let dispatch_count = components
-            .iter()
-            .map(CudaHtj2kDecodePlan::dispatch_count_hint)
-            .sum::<usize>();
         let report = CudaHtj2kProfileReport {
             parse_us,
             plan_us,
@@ -501,7 +497,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count,
             payload_bytes,
-            dispatch_count,
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -560,10 +556,6 @@ impl<'a> J2kDecoder<'a> {
             .map(|plan| plan.code_blocks().len())
             .sum::<usize>();
         let payload_bytes = payload.len();
-        let dispatch_count = components
-            .iter()
-            .map(CudaHtj2kDecodePlan::dispatch_count_hint)
-            .sum::<usize>();
         let report = CudaHtj2kProfileReport {
             parse_us,
             plan_us,
@@ -571,7 +563,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count,
             payload_bytes,
-            dispatch_count,
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -628,10 +620,6 @@ impl<'a> J2kDecoder<'a> {
             .map(|plan| plan.code_blocks().len())
             .sum::<usize>();
         let payload_bytes = payload.len();
-        let dispatch_count = components
-            .iter()
-            .map(CudaHtj2kDecodePlan::dispatch_count_hint)
-            .sum::<usize>();
         let report = CudaHtj2kProfileReport {
             parse_us,
             plan_us,
@@ -639,7 +627,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count,
             payload_bytes,
-            dispatch_count,
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };
@@ -703,10 +691,6 @@ impl<'a> J2kDecoder<'a> {
             .map(|plan| plan.code_blocks().len())
             .sum::<usize>();
         let payload_bytes = payload.len();
-        let dispatch_count = components
-            .iter()
-            .map(CudaHtj2kDecodePlan::dispatch_count_hint)
-            .sum::<usize>();
         let report = CudaHtj2kProfileReport {
             parse_us,
             plan_us,
@@ -714,7 +698,7 @@ impl<'a> J2kDecoder<'a> {
             total_us: profile::elapsed_us(total_start),
             block_count,
             payload_bytes,
-            dispatch_count,
+            dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
             ..CudaHtj2kProfileReport::default()
         };

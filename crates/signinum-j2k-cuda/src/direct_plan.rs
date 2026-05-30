@@ -20,6 +20,7 @@ const PLAN_OUTPUT_RECT_MISMATCH: &str =
 
 /// CUDA-side DWT transform selector for a flat HTJ2K plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub enum CudaHtj2kTransform {
     /// Reversible 5/3 transform.
     Reversible53,

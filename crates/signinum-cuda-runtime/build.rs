@@ -14,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_KERNEL_BUILD");
+    println!("cargo:rustc-check-cfg=cfg(signinum_cuda_j2k_encode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_htj2k_encode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_transcode_ptx_built)");
 
@@ -23,13 +24,16 @@ fn main() {
         || env::var_os("SIGNINUM_REQUIRE_CUDA_KERNEL_BUILD").is_some();
 
     let j2k_encode_ptx = out_dir.join("j2k_encode_kernels.ptx");
-    compile_or_copy_ptx(
+    let j2k_encode_compiled = compile_or_copy_ptx(
         &nvcc,
         Path::new("src/j2k_encode_kernels.cu"),
         Path::new("src/j2k_encode_kernels.ptx"),
         &j2k_encode_ptx,
         require_kernel_build,
     );
+    if j2k_encode_compiled {
+        println!("cargo:rustc-cfg=signinum_cuda_j2k_encode_ptx_built");
+    }
     let htj2k_decode_ptx = out_dir.join("htj2k_decode_kernels.ptx");
     compile_or_copy_ptx(
         &nvcc,

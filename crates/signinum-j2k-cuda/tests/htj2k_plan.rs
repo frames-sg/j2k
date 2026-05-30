@@ -477,7 +477,7 @@ fn grayscale_plan_profile_reports_stable_cuda_htj2k_fields() {
 
     assert_eq!(report.block_count, plan.code_blocks().len());
     assert_eq!(report.payload_bytes, plan.payload().len());
-    assert_eq!(report.dispatch_count, plan.dispatch_count_hint());
+    assert_eq!(report.dispatch_count, 0);
     assert_eq!(report.residency, SurfaceResidency::CudaResidentDecode);
     assert_eq!(report.h2d_us, 0);
     assert_eq!(report.ht_cleanup_us, 0);

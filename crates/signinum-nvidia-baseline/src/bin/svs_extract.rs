@@ -49,7 +49,7 @@ fn main() {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(stride)
-                    .max(1)
+                    .max(1);
             }
             "--quality" => quality = args.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
             "--min-tissue" => {

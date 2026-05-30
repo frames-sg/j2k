@@ -86,8 +86,8 @@ pub fn quantize_codeblock_subband(
     options: Htj2k97CodeBlockOptions,
 ) -> PrequantizedHtj2k97Subband {
     let quantized = quantize_subband_coefficients(coefficients, sub_band_type, options);
-    let cb_width = 1usize << (options.code_block_width_exp + 2);
-    let cb_height = 1usize << (options.code_block_height_exp + 2);
+    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp);
+    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp);
     let num_cbs_x = width.div_ceil(cb_width);
     let num_cbs_y = height.div_ceil(cb_height);
     let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
@@ -125,7 +125,7 @@ pub fn quantize_codeblock_subband(
 ///
 /// `Δ = 2^(range_bits − exponent) · (1 + mantissa/2048)`, with
 /// `range_bits = bit_depth + {LL:0, HL:1, LH:1, HH:2}` and the shared
-/// `(exponent, mantissa)` from [`htj2k97_step`].
+/// `(exponent, mantissa)` derived by this module's quantizer.
 #[must_use]
 pub fn htj2k97_subband_delta(
     options: Htj2k97CodeBlockOptions,
@@ -146,7 +146,7 @@ pub fn htj2k97_subband_delta(
 /// `saturating(guard_bits + exponent − 1)`. The exponent is subband-independent
 /// for the quality-first single-step quantizer, so the result does not vary by
 /// `sub_band_type`; the parameter is kept for call-site symmetry with
-/// [`htj2k97_subband_delta`].
+/// `htj2k97_subband_delta`.
 #[must_use]
 pub fn htj2k97_subband_total_bitplanes(
     options: Htj2k97CodeBlockOptions,
@@ -202,11 +202,13 @@ fn htj2k97_step(options: Htj2k97CodeBlockOptions) -> (u8, u16) {
 }
 
 fn pow2i_f64(exp: i32) -> f64 {
-    if exp >= 0 {
-        f64::from(1u32 << exp.cast_unsigned())
-    } else {
-        1.0 / f64::from(1u32 << (-exp).cast_unsigned())
-    }
+    2.0f64.powi(exp)
+}
+
+fn htj2k97_code_block_dim(exp_minus_two: u8) -> usize {
+    1usize
+        .checked_shl(u32::from(exp_minus_two) + 2)
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]

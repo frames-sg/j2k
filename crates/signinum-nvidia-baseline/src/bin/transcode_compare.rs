@@ -72,6 +72,7 @@ fn main() {
     let nvidia = run_nvidia(&jpegs);
 
     print_report(&jpegs, megapixels, &signinum, &nvidia);
+    enforce_required_results(&signinum, &nvidia);
 }
 
 struct JpegInput {
@@ -114,7 +115,12 @@ fn load_inputs() -> std::io::Result<Vec<JpegInput>> {
     let mut inputs = Vec::with_capacity(paths.len());
     for path in paths {
         let bytes = std::fs::read(&path)?;
-        let (width, height) = jpeg_dimensions(&bytes).unwrap_or((0, 0));
+        let (width, height) = jpeg_dimensions(&bytes).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("could not parse JPEG dimensions from {}", path.display()),
+            )
+        })?;
         inputs.push(JpegInput {
             bytes,
             width,
@@ -130,6 +136,9 @@ fn load_inputs() -> std::io::Result<Vec<JpegInput>> {
 
 /// Parse a JPEG's pixel dimensions from its SOF marker (no decode).
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
     let mut i = 2; // skip SOI
     while i + 9 < bytes.len() {
         if bytes[i] != 0xFF {
@@ -143,7 +152,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         if is_sof {
             let height = u32::from(bytes[i + 5]) << 8 | u32::from(bytes[i + 6]);
             let width = u32::from(bytes[i + 7]) << 8 | u32::from(bytes[i + 8]);
-            return Some((width, height));
+            return (width != 0 && height != 0).then_some((width, height));
         }
         if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
             i += 2;
@@ -193,8 +202,9 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
 
     // Warm up (and detect whether the GPU path is available).
     let mut used_gpu = true;
+    let mut session = SigninumBenchSession::new(true);
     for iteration in 0..WARMUP.max(1) {
-        match run_signinum_batch(&inputs, &options, true) {
+        match session.transcode_batch(&inputs, &options) {
             Ok((batch, encode_metrics)) => validate_signinum_cuda_dispatch(&batch, encode_metrics),
             Err(error) => {
                 assert!(
@@ -207,6 +217,7 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
                         "signinum: explicit {BACKEND_NAME} path unavailable; measuring scalar CPU fallback"
                     );
                 }
+                session = SigninumBenchSession::new(false);
                 break;
             }
         }
@@ -216,10 +227,17 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
     let mut last = SigninumResult::default();
     for _ in 0..ITERATIONS {
         let start = Instant::now();
-        let batch = run_signinum_batch(&inputs, &options, used_gpu).ok();
+        let batch = session.transcode_batch(&inputs, &options);
         let elapsed = start.elapsed().as_secs_f64();
-        let Some((batch, encode_metrics)) = batch else {
-            return SigninumResult::default();
+        let (batch, encode_metrics) = match batch {
+            Ok(batch) => batch,
+            Err(error) => {
+                assert!(
+                    !signinum_cuda_required(),
+                    "signinum: explicit {BACKEND_NAME} path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                );
+                return SigninumResult::default();
+            }
         };
         validate_signinum_cuda_dispatch(&batch, encode_metrics);
         if elapsed < best_wall_s {
@@ -264,74 +282,149 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
     last
 }
 
-fn run_signinum_batch(
-    inputs: &[JpegTileBatchInput<'_>],
-    options: &JpegToHtj2kOptions,
+struct SigninumBenchSession {
     use_gpu: bool,
-) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
-    if !use_gpu {
-        let mut transcoder = JpegToHtj2kTranscoder::default();
-        return transcoder
-            .transcode_batch(inputs, options)
-            .map(|batch| (batch, EncodeBenchMetrics::default()));
+    transcoder: JpegToHtj2kTranscoder,
+    transform_accelerator: Option<BenchAccelerator>,
+    #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+    encode_accelerator: Option<CudaEncodeStageAccelerator>,
+}
+
+impl SigninumBenchSession {
+    fn new(use_gpu: bool) -> Self {
+        Self {
+            use_gpu,
+            transcoder: JpegToHtj2kTranscoder::default(),
+            transform_accelerator: use_gpu.then(BenchAccelerator::new_explicit),
+            #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+            encode_accelerator: use_gpu
+                .then(|| CudaEncodeStageAccelerator::with_profile_collection(true)),
+        }
     }
 
-    run_signinum_gpu_batch(inputs, options)
+    fn transcode_batch(
+        &mut self,
+        inputs: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
+        if !self.use_gpu {
+            return self
+                .transcoder
+                .transcode_batch(inputs, options)
+                .and_then(reject_failed_signinum_tiles)
+                .map(|batch| (batch, EncodeBenchMetrics::default()));
+        }
+
+        self.transcode_gpu_batch(inputs, options)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn transcode_gpu_batch(
+        &mut self,
+        inputs: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
+        let accelerator = self
+            .transform_accelerator
+            .as_mut()
+            .expect("GPU signinum session has a transform accelerator");
+        self.transcoder
+            .transcode_batch_with_accelerator(inputs, options, accelerator)
+            .and_then(reject_failed_signinum_tiles)
+            .map(|batch| (batch, EncodeBenchMetrics::default()))
+    }
+
+    #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+    fn transcode_gpu_batch(
+        &mut self,
+        inputs: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
+        let transform_accelerator = self
+            .transform_accelerator
+            .as_mut()
+            .expect("GPU signinum session has a transform accelerator");
+        let encode_accelerator = self
+            .encode_accelerator
+            .as_mut()
+            .expect("CUDA signinum session has an encode accelerator");
+        let before = encode_accelerator.dispatch_report();
+        encode_accelerator.reset_collected_stage_timings();
+        let batch = self.transcoder.transcode_batch_with_accelerators(
+            inputs,
+            options,
+            transform_accelerator,
+            encode_accelerator,
+        )?;
+        let batch = reject_failed_signinum_tiles(batch)?;
+        let encode_timings = encode_accelerator.collected_stage_timings();
+        let dispatch = encode_accelerator
+            .dispatch_report()
+            .saturating_delta(before);
+        Ok((
+            batch,
+            EncodeBenchMetrics {
+                cuda_stage_us: encode_timings.total_us(),
+                total_dispatches: dispatch.total(),
+                ht_code_block_dispatches: dispatch.ht_code_block,
+                packetization_dispatches: dispatch.packetization,
+            },
+        ))
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(feature = "nvjpeg2000")))]
+    fn transcode_gpu_batch(
+        &mut self,
+        inputs: &[JpegTileBatchInput<'_>],
+        options: &JpegToHtj2kOptions,
+    ) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
+        let accelerator = self
+            .transform_accelerator
+            .as_mut()
+            .expect("GPU signinum session has a transform accelerator");
+        self.transcoder
+            .transcode_batch_with_accelerator(inputs, options, accelerator)
+            .and_then(reject_failed_signinum_tiles)
+            .map(|batch| (batch, EncodeBenchMetrics::default()))
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn run_signinum_gpu_batch(
-    inputs: &[JpegTileBatchInput<'_>],
-    options: &JpegToHtj2kOptions,
-) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
-    let mut accelerator = BenchAccelerator::new_explicit();
-    let mut transcoder = JpegToHtj2kTranscoder::default();
-    transcoder
-        .transcode_batch_with_accelerator(inputs, options, &mut accelerator)
-        .map(|batch| (batch, EncodeBenchMetrics::default()))
-}
-
-#[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-fn run_signinum_gpu_batch(
-    inputs: &[JpegTileBatchInput<'_>],
-    options: &JpegToHtj2kOptions,
-) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
-    let mut transform_accelerator = BenchAccelerator::new_explicit();
-    let mut encode_accelerator = CudaEncodeStageAccelerator::with_profile_collection(true);
-    let mut transcoder = JpegToHtj2kTranscoder::default();
-    let batch = transcoder.transcode_batch_with_accelerators(
-        inputs,
-        options,
-        &mut transform_accelerator,
-        &mut encode_accelerator,
-    )?;
-    let encode_timings = encode_accelerator.collected_stage_timings();
-    let dispatch = encode_accelerator.dispatch_report();
-    Ok((
-        batch,
-        EncodeBenchMetrics {
-            cuda_stage_us: encode_timings.total_us(),
-            total_dispatches: dispatch.total(),
-            ht_code_block_dispatches: dispatch.ht_code_block,
-            packetization_dispatches: dispatch.packetization,
-        },
-    ))
-}
-
-#[cfg(all(not(target_os = "macos"), not(feature = "nvjpeg2000")))]
-fn run_signinum_gpu_batch(
-    inputs: &[JpegTileBatchInput<'_>],
-    options: &JpegToHtj2kOptions,
-) -> Result<(EncodedTranscodeBatch, EncodeBenchMetrics), JpegToHtj2kError> {
-    let mut accelerator = BenchAccelerator::new_explicit();
-    let mut transcoder = JpegToHtj2kTranscoder::default();
-    transcoder
-        .transcode_batch_with_accelerator(inputs, options, &mut accelerator)
-        .map(|batch| (batch, EncodeBenchMetrics::default()))
+fn reject_failed_signinum_tiles(
+    batch: EncodedTranscodeBatch,
+) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+    if batch.report.failed_tiles == 0 {
+        Ok(batch)
+    } else {
+        Err(JpegToHtj2kError::Validation(
+            "signinum benchmark produced one or more failed tiles",
+        ))
+    }
 }
 
 fn signinum_cuda_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
+}
+
+fn nvidia_baseline_required() -> bool {
+    std::env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some()
+}
+
+fn enforce_required_results(signinum: &SigninumResult, nvidia: &NvidiaResult) {
+    let mut failed = false;
+    if signinum_cuda_required() && !(signinum.ran && signinum.used_gpu) {
+        eprintln!("signinum: required CUDA benchmark did not produce a GPU result");
+        failed = true;
+    }
+    if nvidia_baseline_required() && !nvidia.ran {
+        eprintln!(
+            "NVIDIA baseline: required nvJPEG/nvJPEG2000 benchmark did not run: {}",
+            nv_status(nvidia)
+        );
+        failed = true;
+    }
+    if failed {
+        std::process::exit(1);
+    }
 }
 
 fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: EncodeBenchMetrics) {
@@ -446,17 +539,15 @@ fn mean_psnr(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<f64> {
         let Ok((source, _, _)) = nvidia_decode_jpeg_rgb(&jpeg.bytes) else {
             return None;
         };
-        let Some(recon) = native_decode_rgb(codestream) else {
-            continue;
-        };
+        let recon = native_decode_rgb(codestream)?;
         if let Some(psnr) = best_psnr(&recon, &source) {
-            if psnr.is_finite() {
-                total += psnr;
-                counted += 1;
-            }
+            total += psnr;
+            counted += 1;
+        } else {
+            return None;
         }
     }
-    (counted > 0).then(|| total / counted as f64)
+    (counted == jpegs.len()).then(|| total / counted as f64)
 }
 
 /// PSNR of a reconstruction vs the RGB source, taking the consistent color

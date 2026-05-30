@@ -180,10 +180,7 @@ pub mod j2k {
         accelerator: &mut impl J2kEncodeStageAccelerator,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
         let requested_backend = options.backend;
-        let device_options = J2kLosslessEncodeOptions {
-            backend: EncodeBackendPreference::PreferDevice,
-            ..options
-        };
+        let device_options = options.with_backend(EncodeBackendPreference::PreferDevice);
         let before = accelerator.dispatch_report();
         let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
             samples,
@@ -235,11 +232,9 @@ pub mod j2k {
 
             let encoded = encode_with_device_accelerator(
                 samples,
-                J2kLosslessEncodeOptions {
-                    backend: EncodeBackendPreference::Auto,
-                    validation: J2kEncodeValidation::External,
-                    ..J2kLosslessEncodeOptions::default()
-                },
+                J2kLosslessEncodeOptions::default()
+                    .with_backend(EncodeBackendPreference::Auto)
+                    .with_validation(J2kEncodeValidation::External),
                 BackendKind::Metal,
                 &mut accelerator,
             )
