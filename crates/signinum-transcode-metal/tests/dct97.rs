@@ -3,14 +3,14 @@
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 #[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::{
-    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, J2kSubBandType,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband,
+    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, PrequantizedHtj2k97Component,
 };
 #[cfg(target_os = "macos")]
 use signinum_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
+#[cfg(target_os = "macos")]
+use signinum_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97;
 use signinum_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
@@ -272,8 +272,7 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
             &mut scalar_scratch,
         )
         .expect("scalar 9/7 IDCT path accepts covered grid");
-        let expected =
-            prequantized_component_from_dwt_for_test(&dwt, options, job.x_rsiz, job.y_rsiz);
+        let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
 
         assert_prequantized_component_layout_eq(actual, &expected);
         assert_prequantized_component_coefficients_close(actual, &expected, 1);
@@ -378,181 +377,6 @@ fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensiona
         .chain(actual.hh.iter().zip(expected.hh.iter()))
         .map(|(actual, expected)| (actual - expected).abs())
         .fold(0.0, f64::max)
-}
-
-#[cfg(target_os = "macos")]
-fn prequantized_component_from_dwt_for_test(
-    dwt: &Dwt97TwoDimensional<f64>,
-    options: Htj2k97CodeBlockOptions,
-    x_rsiz: u8,
-    y_rsiz: u8,
-) -> PrequantizedHtj2k97Component {
-    PrequantizedHtj2k97Component {
-        x_rsiz,
-        y_rsiz,
-        resolutions: vec![
-            PrequantizedHtj2k97Resolution {
-                subbands: vec![prequantized_subband_from_coefficients_for_test(
-                    &dwt.ll,
-                    dwt.low_width,
-                    dwt.low_height,
-                    J2kSubBandType::LowLow,
-                    quantized_97_total_bitplanes_for_test(options, J2kSubBandType::LowLow),
-                    options,
-                )],
-            },
-            PrequantizedHtj2k97Resolution {
-                subbands: vec![
-                    prequantized_subband_from_coefficients_for_test(
-                        &dwt.hl,
-                        dwt.high_width,
-                        dwt.low_height,
-                        J2kSubBandType::HighLow,
-                        quantized_97_total_bitplanes_for_test(options, J2kSubBandType::HighLow),
-                        options,
-                    ),
-                    prequantized_subband_from_coefficients_for_test(
-                        &dwt.lh,
-                        dwt.low_width,
-                        dwt.high_height,
-                        J2kSubBandType::LowHigh,
-                        quantized_97_total_bitplanes_for_test(options, J2kSubBandType::LowHigh),
-                        options,
-                    ),
-                    prequantized_subband_from_coefficients_for_test(
-                        &dwt.hh,
-                        dwt.high_width,
-                        dwt.high_height,
-                        J2kSubBandType::HighHigh,
-                        quantized_97_total_bitplanes_for_test(options, J2kSubBandType::HighHigh),
-                        options,
-                    ),
-                ],
-            },
-        ],
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn prequantized_subband_from_coefficients_for_test(
-    coefficients: &[f64],
-    width: usize,
-    height: usize,
-    sub_band_type: J2kSubBandType,
-    total_bitplanes: u8,
-    options: Htj2k97CodeBlockOptions,
-) -> PrequantizedHtj2k97Subband {
-    let quantized = quantize_97_subband_for_test(coefficients, sub_band_type, options);
-    let cb_width = 1usize << (options.code_block_width_exp + 2);
-    let cb_height = 1usize << (options.code_block_height_exp + 2);
-    let num_cbs_x = width.div_ceil(cb_width);
-    let num_cbs_y = height.div_ceil(cb_height);
-    let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
-
-    for cby in 0..num_cbs_y {
-        for cbx in 0..num_cbs_x {
-            let x0 = cbx * cb_width;
-            let y0 = cby * cb_height;
-            let block_width = (width - x0).min(cb_width);
-            let block_height = (height - y0).min(cb_height);
-            let mut block_coefficients = Vec::with_capacity(block_width * block_height);
-            for y in 0..block_height {
-                let row_start = (y0 + y) * width + x0;
-                block_coefficients
-                    .extend_from_slice(&quantized[row_start..row_start + block_width]);
-            }
-            code_blocks.push(PrequantizedHtj2k97CodeBlock {
-                coefficients: block_coefficients,
-                width: block_width as u32,
-                height: block_height as u32,
-            });
-        }
-    }
-
-    PrequantizedHtj2k97Subband {
-        sub_band_type,
-        num_cbs_x: num_cbs_x as u32,
-        num_cbs_y: num_cbs_y as u32,
-        total_bitplanes,
-        code_blocks,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn quantize_97_subband_for_test(
-    coefficients: &[f64],
-    sub_band_type: J2kSubBandType,
-    options: Htj2k97CodeBlockOptions,
-) -> Vec<i32> {
-    let delta = quantized_97_delta_for_test(options, sub_band_type);
-    let inv_delta = 1.0 / delta;
-
-    coefficients
-        .iter()
-        .map(|&coefficient| {
-            let sign = if coefficient < 0.0 { -1 } else { 1 };
-            sign * (coefficient.abs() * inv_delta).floor() as i32
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn quantized_97_total_bitplanes_for_test(
-    options: Htj2k97CodeBlockOptions,
-    sub_band_type: J2kSubBandType,
-) -> u8 {
-    let (exponent, _) = quantized_97_step_for_test(options, sub_band_type);
-    options
-        .guard_bits
-        .saturating_add(exponent)
-        .saturating_sub(1)
-}
-
-#[cfg(target_os = "macos")]
-fn quantized_97_delta_for_test(
-    options: Htj2k97CodeBlockOptions,
-    sub_band_type: J2kSubBandType,
-) -> f64 {
-    let log_gain = match sub_band_type {
-        J2kSubBandType::LowLow => 0,
-        J2kSubBandType::HighLow | J2kSubBandType::LowHigh => 1,
-        J2kSubBandType::HighHigh => 2,
-    };
-    let range_bits = i32::from(options.bit_depth) + log_gain;
-    let (exponent, mantissa) = quantized_97_step_for_test(options, sub_band_type);
-    pow2i_f64_for_test(range_bits - i32::from(exponent)) * (1.0 + f64::from(mantissa) / 2048.0)
-}
-
-#[cfg(target_os = "macos")]
-fn quantized_97_step_for_test(
-    options: Htj2k97CodeBlockOptions,
-    _sub_band_type: J2kSubBandType,
-) -> (u8, u16) {
-    let base_delta = pow2i_f64_for_test(-i32::from(options.guard_bits))
-        * f64::from(options.irreversible_quantization_scale);
-    let floor_log2 = base_delta.log2().floor() as i32;
-    let mut exponent = i32::from(options.bit_depth) - floor_log2;
-    let normalized = base_delta / pow2i_f64_for_test(floor_log2);
-    let mut mantissa = ((normalized - 1.0) * 2048.0).round() as i32;
-
-    if mantissa >= 2048 {
-        exponent -= 1;
-        mantissa = 0;
-    }
-
-    (
-        u8::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u8"),
-        u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn pow2i_f64_for_test(exp: i32) -> f64 {
-    if exp >= 0 {
-        f64::from(1u32 << exp.cast_unsigned())
-    } else {
-        1.0 / f64::from(1u32 << (-exp).cast_unsigned())
-    }
 }
 
 #[cfg(target_os = "macos")]

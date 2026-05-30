@@ -39,6 +39,10 @@ pub(crate) enum CudaKernel {
     TranscodeDwt97Idct,
     TranscodeDwt97RowLift,
     TranscodeDwt97ColumnLift,
+    TranscodeDwt97IdctBatch,
+    TranscodeDwt97RowLiftBatch,
+    TranscodeDwt97ColumnLiftBatch,
+    TranscodeDwt97QuantizeCodeblocks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,7 +89,11 @@ impl CudaKernel {
             | Self::TranscodeReversible53HorizontalHigh
             | Self::TranscodeDwt97Idct
             | Self::TranscodeDwt97RowLift
-            | Self::TranscodeDwt97ColumnLift => TRANSCODE_PTX,
+            | Self::TranscodeDwt97ColumnLift
+            | Self::TranscodeDwt97IdctBatch
+            | Self::TranscodeDwt97RowLiftBatch
+            | Self::TranscodeDwt97ColumnLiftBatch
+            | Self::TranscodeDwt97QuantizeCodeblocks => TRANSCODE_PTX,
         }
     }
 
@@ -127,6 +135,10 @@ impl CudaKernel {
             Self::TranscodeDwt97Idct => b"transcode_dwt97_idct\0",
             Self::TranscodeDwt97RowLift => b"transcode_dwt97_row_lift\0",
             Self::TranscodeDwt97ColumnLift => b"transcode_dwt97_column_lift\0",
+            Self::TranscodeDwt97IdctBatch => b"transcode_dwt97_idct_batch\0",
+            Self::TranscodeDwt97RowLiftBatch => b"transcode_dwt97_row_lift_batch\0",
+            Self::TranscodeDwt97ColumnLiftBatch => b"transcode_dwt97_column_lift_batch\0",
+            Self::TranscodeDwt97QuantizeCodeblocks => b"transcode_dwt97_quantize_codeblocks\0",
         }
     }
 }
@@ -396,6 +408,54 @@ mod tests {
         let cuda_source = include_str!("htj2k_encode_kernels.cu");
         assert!(cuda_source.contains("j2k_ht_reduce_max_magnitude_cooperative"));
         assert!(cuda_source.contains("j2k_packet_copy_body_cooperative"));
+    }
+
+    #[test]
+    fn transcode_kernel_entrypoints_match_names() {
+        assert_eq!(
+            CudaKernel::TranscodeDwt97Idct.entrypoint(),
+            b"transcode_dwt97_idct\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97RowLift.entrypoint(),
+            b"transcode_dwt97_row_lift\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97ColumnLift.entrypoint(),
+            b"transcode_dwt97_column_lift\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97IdctBatch.entrypoint(),
+            b"transcode_dwt97_idct_batch\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97RowLiftBatch.entrypoint(),
+            b"transcode_dwt97_row_lift_batch\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97ColumnLiftBatch.entrypoint(),
+            b"transcode_dwt97_column_lift_batch\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97QuantizeCodeblocks.entrypoint(),
+            b"transcode_dwt97_quantize_codeblocks\0"
+        );
+        // All transcode kernels share the one translation unit's PTX.
+        assert_eq!(
+            CudaKernel::TranscodeDwt97QuantizeCodeblocks.ptx().as_ptr(),
+            TRANSCODE_PTX.as_ptr()
+        );
+
+        // The placeholder PTX is empty when nvcc is absent; only validate entry
+        // points are present once the runner actually compiled the kernels.
+        if cfg!(signinum_cuda_transcode_ptx_built) {
+            let source = std::str::from_utf8(&TRANSCODE_PTX[..TRANSCODE_PTX.len() - 1])
+                .expect("transcode ptx utf8");
+            assert!(source.contains(".visible .entry transcode_dwt97_idct_batch("));
+            assert!(source.contains(".visible .entry transcode_dwt97_row_lift_batch("));
+            assert!(source.contains(".visible .entry transcode_dwt97_column_lift_batch("));
+            assert!(source.contains(".visible .entry transcode_dwt97_quantize_codeblocks("));
+        }
     }
 
     #[test]
