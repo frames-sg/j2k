@@ -26,6 +26,9 @@ pub use direct_plan::{
     CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kRect, CudaHtj2kStoreStep,
     CudaHtj2kSubband, CudaHtj2kTransform,
 };
+#[cfg(feature = "cuda-runtime")]
+#[doc(hidden)]
+pub use encode::cuda_dwt53_output_to_j2k_for_test;
 pub use encode::{
     encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile,
     CudaEncodeStageAccelerator,

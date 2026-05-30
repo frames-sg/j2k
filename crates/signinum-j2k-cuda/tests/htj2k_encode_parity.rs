@@ -23,7 +23,7 @@ use signinum_j2k::{
     J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_cuda::encode_j2k_lossless_with_cuda;
+use signinum_j2k_cuda::{cuda_dwt53_output_to_j2k_for_test, encode_j2k_lossless_with_cuda};
 #[cfg(feature = "cuda-runtime")]
 use signinum_j2k_native::{DecodeSettings, Image};
 
@@ -37,61 +37,105 @@ fn runtime_required() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// DWT sub-band extraction helper
+// DWT sub-band reshape
 //
-// The CUDA `j2k_forward_dwt53` output stores coefficients in the same
-// "polyphase-flat" layout used by the internal CPU DWT: the full image stride
-// is preserved, low-frequency rows come first (rows 0..low_height), then
-// high-frequency rows (rows low_height..height), and within each row the
-// low-frequency columns come first (cols 0..low_width) followed by the
-// high-frequency columns (cols low_width..width).
+// The CUDA `j2k_forward_dwt53` output stores coefficients in a single
+// "polyphase-flat" plane that preserves the original image stride.  For a
+// MULTI-level DWT the deeper levels are nested inside the LL quadrant of the
+// previous level, so each sub-band must be addressed with an explicit (x0, y0)
+// origin — not anchored at the buffer origin.  Additionally, CUDA emits its
+// `levels()` finest→coarsest, while native `forward_dwt53_reference` returns
+// them coarsest→finest (it calls `levels.reverse()`), so a naive same-index
+// zip compares mismatched levels.
 //
-// The native `forward_dwt53_reference` returns separately allocated sub-band
-// vecs (ll, hl, lh, hh) with their own row-major storage.  This helper
-// extracts those four sub-bands from the flat CUDA buffer so the comparison
-// is apples-to-apples.
+// Rather than re-derive this geometry in the test (the source of the original
+// bug), we reuse the EXACT production conversion `cuda_dwt53_output_to_j2k`
+// (re-exported as `cuda_dwt53_output_to_j2k_for_test`).  It extracts each band
+// with explicit offsets (HL at (low_width, 0), LH at (0, low_height), HH at
+// (low_width, low_height)) and reverses the level order, producing a
+// `J2kForwardDwt53Output` directly comparable to `forward_dwt53_reference`.
 // ---------------------------------------------------------------------------
-
-#[cfg(feature = "cuda-runtime")]
-fn extract_subbands_from_flat(
-    flat: &[f32],
-    full_width: u32,
-    low_width: u32,
-    low_height: u32,
-    high_width: u32,
-    high_height: u32,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
-    let fw = full_width as usize;
-    let lw = low_width as usize;
-    let lh = low_height as usize;
-    let hw = high_width as usize;
-    let hh = high_height as usize;
-
-    let mut ll = Vec::with_capacity(lw * lh);
-    let mut hl = Vec::with_capacity(hw * lh);
-    let mut lh_out = Vec::with_capacity(lw * hh);
-    let mut hh_out = Vec::with_capacity(hw * hh);
-
-    // Low-frequency rows (rows 0..lh) → LL (cols 0..lw) and HL (cols lw..lw+hw)
-    for row in 0..lh {
-        let row_start = row * fw;
-        ll.extend_from_slice(&flat[row_start..row_start + lw]);
-        hl.extend_from_slice(&flat[row_start + lw..row_start + lw + hw]);
-    }
-
-    // High-frequency rows (rows lh..lh+hh) → LH (cols 0..lw) and HH (cols lw..lw+hw)
-    for row in 0..hh {
-        let row_start = (lh + row) * fw;
-        lh_out.extend_from_slice(&flat[row_start..row_start + lw]);
-        hh_out.extend_from_slice(&flat[row_start + lw..row_start + lw + hw]);
-    }
-
-    (ll, hl, lh_out, hh_out)
-}
 
 // ---------------------------------------------------------------------------
 // Test 1: forward DWT 5/3
 // ---------------------------------------------------------------------------
+
+#[cfg(feature = "cuda-runtime")]
+fn assert_cuda_forward_dwt53_matches_native(width: u32, height: u32, num_levels: u8) {
+    // Deterministic signed-ish integer samples in [-128, 127] so the lossless
+    // path keeps integer coefficients (f32::from is lossless for this range).
+    let samples: Vec<f32> = (0u32..width * height)
+        .map(|i| {
+            let v = i16::try_from((i * 7 + 3) % 256).expect("sample fits in i16") - 128;
+            f32::from(v)
+        })
+        .collect();
+
+    // Native CPU reference (levels ordered coarsest→finest; LL at deepest level).
+    let native = forward_dwt53_reference(&samples, width, height, num_levels);
+
+    // CUDA forward DWT (levels ordered finest→coarsest in the flat plane).
+    let context = CudaContext::system_default().expect("CUDA context");
+    let cuda_out = context
+        .j2k_forward_dwt53(&samples, width, height, num_levels)
+        .expect("CUDA forward DWT 5/3");
+
+    assert_eq!(
+        cuda_out.levels().len(),
+        native.levels.len(),
+        "level count (levels={num_levels})"
+    );
+    assert_eq!(
+        cuda_out.ll_dimensions(),
+        (native.ll_width, native.ll_height),
+        "LL dimensions (levels={num_levels})"
+    );
+
+    // Convert the flat CUDA plane to the native sub-band representation using
+    // the SAME production reshape the encoder uses.  This handles the nested
+    // per-level band offsets AND the finest→coarsest to coarsest→finest level
+    // reversal, so the result lines up index-for-index with `native`.
+    let cuda_as_native = cuda_dwt53_output_to_j2k_for_test(&cuda_out)
+        .expect("CUDA DWT output -> native subband reshape");
+
+    assert_eq!(
+        cuda_as_native.levels.len(),
+        native.levels.len(),
+        "reshaped level count (levels={num_levels})"
+    );
+    assert_eq!(
+        (cuda_as_native.ll_width, cuda_as_native.ll_height),
+        (native.ll_width, native.ll_height),
+        "reshaped LL dimensions (levels={num_levels})"
+    );
+
+    // Per-level HL/LH/HH parity (both now coarsest→finest at the same index).
+    for (level_idx, (cuda_level, native_level)) in cuda_as_native
+        .levels
+        .iter()
+        .zip(native.levels.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            cuda_level.hl, native_level.hl,
+            "levels={num_levels} level {level_idx} HL mismatch"
+        );
+        assert_eq!(
+            cuda_level.lh, native_level.lh,
+            "levels={num_levels} level {level_idx} LH mismatch"
+        );
+        assert_eq!(
+            cuda_level.hh, native_level.hh,
+            "levels={num_levels} level {level_idx} HH mismatch"
+        );
+    }
+
+    // Deepest LL sub-band parity.
+    assert_eq!(
+        cuda_as_native.ll, native.ll,
+        "levels={num_levels} final LL mismatch"
+    );
+}
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
@@ -100,87 +144,14 @@ fn cuda_forward_dwt53_matches_native_reference_when_required() {
         return;
     }
 
-    // 40×24, 2 decomposition levels; deterministic signed-ish integer samples.
-    let width: u32 = 40;
-    let height: u32 = 24;
-    let num_levels: u8 = 2;
-    let samples: Vec<f32> = (0u32..width * height)
-        .map(|i| {
-            // Produce values in [-128, 127] so the lossless path keeps integer coefficients.
-            // The modulus bounds the value to [0, 255] which fits in i16, so f32::from is lossless.
-            let v = i16::try_from((i * 7 + 3) % 256).expect("sample fits in i16") - 128;
-            f32::from(v)
-        })
-        .collect();
-
-    // Native CPU reference
-    let native = forward_dwt53_reference(&samples, width, height, num_levels);
-
-    // CUDA
-    let context = CudaContext::system_default().expect("CUDA context");
-    let cuda_out = context
-        .j2k_forward_dwt53(&samples, width, height, num_levels)
-        .expect("CUDA forward DWT 5/3");
-
-    assert_eq!(cuda_out.levels().len(), native.levels.len(), "level count");
-    assert_eq!(
-        cuda_out.ll_dimensions(),
-        (native.ll_width, native.ll_height),
-        "LL dimensions"
-    );
-
-    // Walk each decomposition level from coarsest to finest and compare sub-bands.
-    // After each level the active region shrinks to (low_width × low_height).
-    // We iterate in finest-first order (index 0 is the outermost DWT level).
-    //
-    // Reshape note: the CUDA flat plane stores all coefficients in the original
-    // image stride; subbands are addressed by quadrant (rows × cols).  The
-    // native reference keeps HL/LH/HH as separate vecs per level, with the LL
-    // band only available for the deepest level in `native.ll`.  We compare
-    // HL/LH/HH at every level and LL only at the final (deepest) level.
-    let mut current_width = width;
-
-    for (level_idx, (cuda_level, native_level)) in cuda_out
-        .levels()
-        .iter()
-        .zip(native.levels.iter())
-        .enumerate()
-    {
-        let low_width = cuda_level.low_width;
-        let low_height = cuda_level.low_height;
-        let high_width = cuda_level.high_width;
-        let high_height = cuda_level.high_height;
-
-        // Extract HL/LH/HH from the flat CUDA plane; LL is skipped here because
-        // the native reference only exposes LL at the deepest level.
-        let (_, cuda_horiz, cuda_vert, cuda_diag) = extract_subbands_from_flat(
-            cuda_out.transformed(),
-            current_width,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        );
-
-        // HL = horizontal high-pass, LH = vertical high-pass, HH = diagonal high-pass.
-        assert_eq!(cuda_horiz, native_level.hl, "level {level_idx} HL mismatch");
-        assert_eq!(cuda_vert, native_level.lh, "level {level_idx} LH mismatch");
-        assert_eq!(cuda_diag, native_level.hh, "level {level_idx} HH mismatch");
-
-        // Advance current region to the low-pass output for the next level.
-        current_width = low_width;
-    }
-
-    // Compare the deepest LL sub-band (native.ll_width × native.ll_height).
-    let (cuda_ll_final, _, _, _) = extract_subbands_from_flat(
-        cuda_out.transformed(),
-        current_width,
-        native.ll_width,
-        native.ll_height,
-        0,
-        0,
-    );
-    assert_eq!(cuda_ll_final, native.ll, "final LL mismatch");
+    // num_levels = 2 exercises the multi-level (nested-band) path that the
+    // original buggy reshape mishandled.  num_levels = 1 and 3 lock the level
+    // ordering for the single-level and deeper-nesting cases respectively.
+    // 40×24 stays divisible enough that every level keeps a non-degenerate
+    // high-pass quadrant.
+    assert_cuda_forward_dwt53_matches_native(40, 24, 1);
+    assert_cuda_forward_dwt53_matches_native(40, 24, 2);
+    assert_cuda_forward_dwt53_matches_native(40, 24, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +304,10 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let values: &[u16] = &[0x0010, 0x0080, 0x00FF, 0x0100, 0x0800, 0x0FFF];
         let mut pixels: Vec<u8> = Vec::with_capacity(values.len() * 2);
         for v in values {
-            pixels.extend_from_slice(&v.to_ne_bytes());
+            // Native deinterleave reads u16::from_le_bytes and the CUDA kernel
+            // reads little-endian explicitly, so pack little-endian regardless
+            // of host endianness.
+            pixels.extend_from_slice(&v.to_le_bytes());
         }
         let num_pixels = 2usize;
         let num_components = 3u8;
@@ -357,7 +331,8 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
         let values: &[i16] = &[-32768, -1, 0, 32767];
         let mut pixels: Vec<u8> = Vec::with_capacity(values.len() * 2);
         for v in values {
-            pixels.extend_from_slice(&v.to_ne_bytes());
+            // Little-endian to match native deinterleave and the CUDA kernel.
+            pixels.extend_from_slice(&v.to_le_bytes());
         }
         let num_pixels = 4usize;
         let num_components = 1u8;
@@ -443,8 +418,10 @@ struct ParityCell {
 /// Build a deterministic byte buffer for the given cell geometry.
 ///
 /// For 8-bit samples each byte is a single sample.
-/// For 16-bit samples each sample is two bytes (native-endian u16), packed
-/// interleaved (e.g., `lo_byte`, `hi_byte` per sample per component).
+/// For 16-bit samples each sample is two bytes (little-endian u16), packed
+/// interleaved (e.g., `lo_byte`, `hi_byte` per sample per component).  The
+/// native encoder reads 16-bit samples with `u16::from_le_bytes`, so packing
+/// little-endian keeps the input interpretation host-endianness independent.
 #[cfg(feature = "cuda-runtime")]
 fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
     let npixels = cell.w as usize * cell.h as usize;
@@ -456,7 +433,8 @@ fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
         #[allow(clippy::cast_possible_truncation)]
         (0..nsamples).map(|i| ((i * 31 + 17) % 256) as u8).collect()
     } else {
-        // 16-bit: two bytes per sample (native-endian u16).
+        // 16-bit: two bytes per sample (little-endian u16, matching the
+        // native encoder's u16::from_le_bytes read).
         let max_val: u32 = (1u32 << cell.depth) - 1;
         let mut buf = Vec::with_capacity(nsamples * 2);
         for i in 0..nsamples {
@@ -466,7 +444,7 @@ fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
             // Result is bounded by max_val < 2^16, so truncation to u16 is safe.
             #[allow(clippy::cast_possible_truncation)]
             let v = ((i32 * 1_000_003 + 7) % (max_val + 1)) as u16;
-            buf.extend_from_slice(&v.to_ne_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
         }
         buf
     }

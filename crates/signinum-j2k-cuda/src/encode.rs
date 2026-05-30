@@ -2890,6 +2890,22 @@ fn cuda_dwt53_output_to_j2k(
     })
 }
 
+/// Test-only accessor that converts a CUDA forward 5/3 DWT output into the
+/// native `J2kForwardDwt53Output` sub-band representation using the *exact*
+/// production reshape (`cuda_dwt53_output_to_j2k`).
+///
+/// This is `#[doc(hidden)]` and exists solely so the stage-parity test crate
+/// can compare CUDA output against `forward_dwt53_reference` through the same
+/// conversion the encoder uses (correct nested-band offsets + finest→coarsest
+/// to coarsest→finest level reversal), instead of re-deriving the geometry.
+#[cfg(feature = "cuda-runtime")]
+#[doc(hidden)]
+pub fn cuda_dwt53_output_to_j2k_for_test(
+    output: &CudaDwt53Output,
+) -> core::result::Result<J2kForwardDwt53Output, &'static str> {
+    cuda_dwt53_output_to_j2k(output)
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn cuda_dwt97_output_to_j2k(
     output: &CudaDwt97Output,
