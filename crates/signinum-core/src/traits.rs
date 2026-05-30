@@ -23,8 +23,10 @@ where
     E: core::error::Error + 'static,
 {
     #[error(transparent)]
+    /// Codec decode failure.
     Decode(D),
     #[error(transparent)]
+    /// Caller-provided row sink failure.
     Sink(E),
 }
 

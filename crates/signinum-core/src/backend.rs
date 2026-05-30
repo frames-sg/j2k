@@ -5,30 +5,44 @@ compile_error!("signinum-core only supports x86_64 and aarch64 targets");
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
+/// Runtime backend that executes codec work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendKind {
+    /// Portable CPU implementation.
     Cpu,
+    /// Apple Metal implementation.
     Metal,
+    /// NVIDIA CUDA implementation.
     Cuda,
 }
 
+/// Caller preference for backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BackendRequest {
+    /// Let the codec choose the best available backend.
     #[default]
     Auto,
+    /// Force the portable CPU backend.
     Cpu,
+    /// Force Metal and fail if unavailable.
     Metal,
+    /// Force CUDA and fail if unavailable.
     Cuda,
 }
 
+/// CPU SIMD feature flags detected for the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CpuFeatures {
+    /// True when AVX2 is available and enabled by the OS.
     pub avx2: bool,
+    /// True when SSE4.1 is available.
     pub sse41: bool,
+    /// True when NEON is available.
     pub neon: bool,
 }
 
 impl CpuFeatures {
+    /// Detect CPU SIMD features once and reuse the cached result.
     pub fn detect() -> Self {
         static DETECTED: AtomicU8 = AtomicU8::new(0);
 
@@ -127,14 +141,19 @@ fn detect_x86_avx2() -> bool {
     (leaf7.ebx & (1 << 5)) != 0
 }
 
+/// Backend availability for a codec/runtime combination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendCapabilities {
+    /// Host CPU feature set.
     pub cpu: CpuFeatures,
+    /// True when Metal is available to this crate.
     pub metal: bool,
+    /// True when CUDA is available to this crate.
     pub cuda: bool,
 }
 
 impl BackendCapabilities {
+    /// Detect default backend capabilities for the current build target.
     #[must_use]
     pub fn detect() -> Self {
         Self {
@@ -144,6 +163,7 @@ impl BackendCapabilities {
         }
     }
 
+    /// Return whether a backend request can be satisfied.
     #[must_use]
     pub const fn supports(self, request: BackendRequest) -> bool {
         match request {
@@ -153,6 +173,7 @@ impl BackendCapabilities {
         }
     }
 
+    /// Resolve a backend request to the concrete backend that should run.
     #[must_use]
     pub fn resolve(self, request: BackendRequest) -> Option<BackendKind> {
         match request {

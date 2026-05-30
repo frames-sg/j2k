@@ -9,18 +9,30 @@
 
 extern crate alloc;
 
+/// Backend selection and capability discovery.
 pub mod backend;
+/// Shared helpers for ordered tile-batch work.
 pub mod batch;
 mod buffer;
+/// Reusable codec context wrappers.
 pub mod context;
+/// Common error classifications and helper error types.
 pub mod error;
+/// Compressed-byte passthrough eligibility checks.
 pub mod passthrough;
+/// Pixel layout and format descriptors.
 pub mod pixel;
+/// Row-streaming output sink trait.
 pub mod row_sink;
+/// Integer sample type descriptors.
 pub mod sample;
+/// Decode downscale options.
 pub mod scale;
+/// Caller-owned scratch pool trait.
 pub mod scratch;
+/// Facade traits implemented by codec crates.
 pub mod traits;
+/// Shared metadata and geometry types.
 pub mod types;
 
 pub use backend::{BackendCapabilities, BackendKind, BackendRequest, CpuFeatures};
