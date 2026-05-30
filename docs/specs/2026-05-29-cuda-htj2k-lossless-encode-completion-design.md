@@ -57,12 +57,13 @@ producible lossless set** — and only inputs native is *proven* to round-trip.
 ### In scope
 - Reversible 5/3 DWT (lossless), HTJ2K **cleanup-pass-only** codeblocks.
 - **Single** tile / layer / precinct.
-- 1–4 components (MCT/RCT applies at exactly 3, and to the first three planes of a
-  4-component image with the 4th passed through; 1–2 components carry no MCT).
-  **Precondition:** 2- and 4-component cells become parity targets only after a
-  native-only round-trip test proves native itself round-trips them (§7) — native
-  has no existing 2-/4-component round-trip coverage, so we must not codify a
-  native bug as the oracle.
+- **1, 3, and 4 components** (MCT/RCT applies at exactly 3, and to the first three
+  planes of a 4-component image with the 4th passed through; 1-component carries no
+  MCT). **2-component is OUT OF SCOPE** — the precondition test
+  (`native_htj2k_roundtrips_two_component_lossless`, now `#[ignore]`) showed native's
+  own decoder rejects its 2-component HTJ2K codestream with
+  `Validation(TooManyChannels)`, so native cannot be the parity oracle for it.
+  4-component round-trip is confirmed (`native_htj2k_roundtrips_four_component_lossless`).
 - All bit depths 8–16, signed and unsigned.
 - Multi-level DWT (0..N resolutions), multi-codeblock, multi-subband — **bounded
   by GPU tag-tree capacity** (next bullet).
