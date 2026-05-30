@@ -435,15 +435,21 @@ fn synthesize_pixels(cell: &ParityCell) -> Vec<u8> {
     } else {
         // 16-bit: two bytes per sample (little-endian u16, matching the
         // native encoder's u16::from_le_bytes read).
-        let max_val: u32 = (1u32 << cell.depth) - 1;
+        //
+        // `modulus == 2^depth`; for the in-scope depths (≤ 16) this is ≤ 65536,
+        // so every `value % modulus` lands in 0..2^16 and the u16 cast is exact.
+        let modulus: u64 = 1u64 << cell.depth;
         let mut buf = Vec::with_capacity(nsamples * 2);
         for i in 0..nsamples {
-            // i < w*h*comps ≤ 64*48*4 = 12288, safely fits in u32.
+            // Mix in u64: the intermediate product `idx * 1_000_003` exceeds
+            // u32::MAX once idx ≥ 4295 (reached at comps ≥ 3, since
+            // nsamples = w*h*comps), which previously panicked in debug builds
+            // with "attempt to multiply with overflow". idx ≤ 12288 here, so
+            // idx * 1_000_003 + 7 < 2^34 and cannot overflow u64.
+            let idx = i as u64;
+            // The modulo keeps the result < modulus ≤ 2^16, so the cast is exact.
             #[allow(clippy::cast_possible_truncation)]
-            let i32 = i as u32;
-            // Result is bounded by max_val < 2^16, so truncation to u16 is safe.
-            #[allow(clippy::cast_possible_truncation)]
-            let v = ((i32 * 1_000_003 + 7) % (max_val + 1)) as u16;
+            let v = ((idx * 1_000_003 + 7) % modulus) as u16;
             buf.extend_from_slice(&v.to_le_bytes());
         }
         buf
