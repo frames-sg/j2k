@@ -2389,7 +2389,7 @@ fn default_public_code_block_style() -> crate::J2kCodeBlockStyle {
 }
 
 /// Convert interleaved pixel bytes to per-component f32 arrays.
-fn deinterleave_to_f32(
+pub(crate) fn deinterleave_to_f32(
     pixels: &[u8],
     num_pixels: usize,
     num_components: u8,
