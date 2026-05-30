@@ -563,3 +563,229 @@ fn reversible_lift_53_i32(values: &mut [i32]) {
 fn floor_div_i32(numerator: i32, denominator: i32) -> i32 {
     numerator.div_euclid(denominator)
 }
+
+#[cfg(test)]
+mod ground_truth_tests {
+    //! Independent ground truth for the reversible integer 5/3.
+    //!
+    //! The CUDA 5/3 kernel is parity-tested against the lifting in this module,
+    //! so a boundary/indexing/band-split bug here would be faithfully copied by
+    //! the kernel and pass parity. Validate the lifting against the canonical
+    //! JPEG2000 reversible 5/3 (ISO/IEC 15444-1 Annex F.3.8.1) evaluated per
+    //! output index from a whole-sample-symmetrically extended signal — a
+    //! structurally different implementation than the in-place two-pass loops.
+
+    use super::{
+        reversible_dwt53_first_level_from_block_samples, reversible_lift_53_i32,
+        ReversibleDwt53FirstLevel,
+    };
+
+    fn floor2(a: i32, b: i32) -> i32 {
+        a.div_euclid(b)
+    }
+
+    /// Whole-sample symmetric reflection (mirror about 0 and `n - 1`, endpoints
+    /// not repeated) — the boundary extension the lifting realizes at the edges.
+    fn ws_reflect(i: isize, n: usize) -> usize {
+        if n == 1 {
+            return 0;
+        }
+        let n = isize::try_from(n).unwrap();
+        let period = 2 * (n - 1);
+        let mut k = i.rem_euclid(period);
+        if k >= n {
+            k = period - k;
+        }
+        usize::try_from(k).unwrap()
+    }
+
+    /// Canonical forward 5/3: `(low, high)` where `low[m]` is the even/approx
+    /// coefficient and `high[m]` the odd/detail coefficient. Every index is read
+    /// through whole-sample symmetric extension of the original signal, so the
+    /// detail-boundary behavior follows automatically (no special cases).
+    fn ref_53_forward(signal: &[i32]) -> (Vec<i32>, Vec<i32>) {
+        let n = signal.len();
+        if n < 2 {
+            return (signal.to_vec(), Vec::new());
+        }
+        let sig = |i: isize| signal[ws_reflect(i, n)];
+        let detail = |m: isize| {
+            let c = 2 * m + 1;
+            sig(c) - floor2(sig(c - 1) + sig(c + 1), 2)
+        };
+        let low: Vec<i32> = (0..n.div_ceil(2))
+            .map(|m| {
+                let mi = isize::try_from(m).unwrap();
+                sig(2 * mi) + floor2(detail(mi - 1) + detail(mi) + 2, 4)
+            })
+            .collect();
+        let high: Vec<i32> = (0..n / 2)
+            .map(|m| detail(isize::try_from(m).unwrap()))
+            .collect();
+        (low, high)
+    }
+
+    /// Separable 2D reference matching the oracle's vertical-then-horizontal
+    /// order (integer floor lifting is NOT order-independent, so order matters).
+    fn ref_53_2d(plane: &[i32], width: usize, height: usize) -> ReversibleDwt53FirstLevel {
+        let low_width = width.div_ceil(2);
+        let high_width = width / 2;
+        let low_height = height.div_ceil(2);
+        let high_height = height / 2;
+
+        let mut v_low = vec![0i32; width * low_height];
+        let mut v_high = vec![0i32; width * high_height];
+        for x in 0..width {
+            let column: Vec<i32> = (0..height).map(|y| plane[y * width + x]).collect();
+            let (lo, hi) = ref_53_forward(&column);
+            for (oy, &value) in lo.iter().enumerate() {
+                v_low[oy * width + x] = value;
+            }
+            for (oy, &value) in hi.iter().enumerate() {
+                v_high[oy * width + x] = value;
+            }
+        }
+
+        let horizontal = |source: &[i32], rows: usize| -> (Vec<i32>, Vec<i32>) {
+            let mut low = vec![0i32; low_width * rows];
+            let mut high = vec![0i32; high_width * rows];
+            for oy in 0..rows {
+                let (lo, hi) = ref_53_forward(&source[oy * width..oy * width + width]);
+                low[oy * low_width..oy * low_width + low_width].copy_from_slice(&lo);
+                high[oy * high_width..oy * high_width + high_width].copy_from_slice(&hi);
+            }
+            (low, high)
+        };
+
+        let (ll, hl) = horizontal(&v_low, low_height);
+        let (lh, hh) = horizontal(&v_high, high_height);
+
+        ReversibleDwt53FirstLevel {
+            ll,
+            hl,
+            lh,
+            hh,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        }
+    }
+
+    /// Pack a flat `width x height` sample plane into the block-major
+    /// `[[i32; 64]]` layout `reversible_dwt53_first_level_from_block_samples`
+    /// consumes (local index `(y % 8) * 8 + (x % 8)`).
+    fn pack_plane(plane: &[i32], width: usize, height: usize) -> (Vec<[i32; 64]>, usize, usize) {
+        let block_cols = width.div_ceil(8);
+        let block_rows = height.div_ceil(8);
+        let mut blocks = vec![[0i32; 64]; block_cols * block_rows];
+        for y in 0..height {
+            for x in 0..width {
+                let block = (y / 8) * block_cols + (x / 8);
+                blocks[block][(y % 8) * 8 + (x % 8)] = plane[y * width + x];
+            }
+        }
+        (blocks, block_cols, block_rows)
+    }
+
+    fn next_sample(state: &mut u64) -> i32 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*state >> 40) & 0x1ff) as i32 - 256
+    }
+
+    #[test]
+    fn reversible_lift_53_matches_canonical_formula_1d() {
+        let mut state = 0x0a11_ce5e_ed00_d001u64;
+        for n in [2usize, 3, 4, 5, 8, 9, 12, 15, 16, 23, 32, 33, 64, 65] {
+            let signal: Vec<i32> = (0..n).map(|_| next_sample(&mut state)).collect();
+            let mut lifted = signal.clone();
+            reversible_lift_53_i32(&mut lifted);
+            let lifted_low: Vec<i32> = lifted.iter().step_by(2).copied().collect();
+            let lifted_high: Vec<i32> = lifted.iter().skip(1).step_by(2).copied().collect();
+            let (low, high) = ref_53_forward(&signal);
+            assert_eq!(lifted_low, low, "low band mismatch for n={n}");
+            assert_eq!(lifted_high, high, "high band mismatch for n={n}");
+        }
+    }
+
+    #[test]
+    fn reversible_dwt53_2d_matches_canonical_separable() {
+        let mut state = 0xfeed_5eed_d00d_face_u64;
+        for (width, height) in [
+            (8usize, 8usize),
+            (16, 16),
+            (24, 16),
+            (15, 13),
+            (16, 23),
+            (9, 7),
+            (32, 32),
+        ] {
+            let plane: Vec<i32> = (0..width * height).map(|_| next_sample(&mut state)).collect();
+            let (blocks, block_cols, block_rows) = pack_plane(&plane, width, height);
+            let got = reversible_dwt53_first_level_from_block_samples(
+                &blocks, block_cols, block_rows, width, height,
+            )
+            .expect("oracle accepts the packed grid");
+            let want = ref_53_2d(&plane, width, height);
+            assert_eq!(
+                (got.low_width, got.low_height, got.high_width, got.high_height),
+                (want.low_width, want.low_height, want.high_width, want.high_height),
+                "band dimensions for {width}x{height}"
+            );
+            assert_eq!(got.ll, want.ll, "LL mismatch for {width}x{height}");
+            assert_eq!(got.hl, want.hl, "HL mismatch for {width}x{height}");
+            assert_eq!(got.lh, want.lh, "LH mismatch for {width}x{height}");
+            assert_eq!(got.hh, want.hh, "HH mismatch for {width}x{height}");
+        }
+    }
+
+    #[test]
+    fn reversible_lift_53_kills_dc_and_linear_detail() {
+        // Constant -> low = constant, detail exactly zero.
+        let mut constant = vec![7i32; 32];
+        reversible_lift_53_i32(&mut constant);
+        assert!(
+            constant.iter().skip(1).step_by(2).all(|&v| v == 0),
+            "constant produced nonzero detail"
+        );
+        assert!(
+            constant.iter().step_by(2).all(|&v| v == 7),
+            "constant low band drifted from 7"
+        );
+
+        // Linear ramp -> interior detail exactly zero (two vanishing moments).
+        let ramp: Vec<i32> = (0..40_i32).map(|k| 3 * k - 5).collect();
+        let mut lifted = ramp;
+        reversible_lift_53_i32(&mut lifted);
+        let detail: Vec<i32> = lifted.iter().skip(1).step_by(2).copied().collect();
+        for &value in &detail[1..detail.len() - 1] {
+            assert_eq!(value, 0, "linear ramp produced interior detail {value}");
+        }
+    }
+
+    #[test]
+    fn reversible_dwt53_2d_separates_horizontal_and_vertical_detail() {
+        // Varies only along x -> no vertical detail (LH and HH vanish).
+        let (width, height) = (16usize, 16usize);
+        let varies_in_x: Vec<i32> = (0..width * height)
+            .map(|i| 3 * i32::try_from(i % width).unwrap() - 7)
+            .collect();
+        let (blocks, bc, br) = pack_plane(&varies_in_x, width, height);
+        let t = reversible_dwt53_first_level_from_block_samples(&blocks, bc, br, width, height)
+            .expect("oracle accepts grid");
+        assert!(t.lh.iter().all(|&v| v == 0), "x-only plane produced LH detail");
+        assert!(t.hh.iter().all(|&v| v == 0), "x-only plane produced HH detail");
+
+        // Varies only along y -> no horizontal detail (HL and HH vanish).
+        let varies_in_y: Vec<i32> = (0..width * height)
+            .map(|i| 3 * i32::try_from(i / width).unwrap() - 7)
+            .collect();
+        let (blocks, bc, br) = pack_plane(&varies_in_y, width, height);
+        let t = reversible_dwt53_first_level_from_block_samples(&blocks, bc, br, width, height)
+            .expect("oracle accepts grid");
+        assert!(t.hl.iter().all(|&v| v == 0), "y-only plane produced HL detail");
+        assert!(t.hh.iter().all(|&v| v == 0), "y-only plane produced HH detail");
+    }
+}
