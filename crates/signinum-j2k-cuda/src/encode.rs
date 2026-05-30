@@ -2110,8 +2110,21 @@ fn cuda_encode_htj2k_tile_body(
     {
         return Ok(None);
     }
-    if job.use_mct && job.num_components != 3 {
-        return Ok(None);
+    // Native treats `use_mct = options.use_mct && num_components >= 3`, applying the
+    // color transform to component planes 0,1,2 and passing any 4th plane through
+    // unchanged. The resident path mirrors this: RCT/ICT runs on the first three
+    // planes (see `j2k_forward_rct_resident`/`j2k_forward_ict_resident`), and every
+    // component — including the passthrough 4th — still flows through the per-component
+    // DWT → quantize → HT code-block → packetization loop below.
+    //
+    // Only `{1, 3, 4}` component counts are in scope. Reject any other count with a
+    // typed hard error rather than `Ok(None)` (a silent CPU fallback is forbidden for
+    // in-scope inputs).
+    if !matches!(job.num_components, 1 | 3 | 4) {
+        return Err("CUDA HTJ2K tile encode supports 1, 3, or 4 components");
+    }
+    if job.use_mct && job.num_components < 3 {
+        return Err("CUDA HTJ2K tile encode requires at least three components for MCT");
     }
     if job.code_block_width == 0 || job.code_block_height == 0 {
         return Err("CUDA HTJ2K tile encode job has invalid code-block dimensions");

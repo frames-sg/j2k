@@ -2473,13 +2473,19 @@ impl CudaContext {
     }
 
     /// Run the reversible color transform in place on resident component planes.
+    ///
+    /// The transform is applied to the first three planes (R, G, B → Y, Cb, Cr).
+    /// Any additional plane (e.g. a 4th alpha/auxiliary component) is left
+    /// untouched, matching the native reference which applies RCT to the first
+    /// three of `&mut [Vec<f32>]` and passes the remainder through unchanged.
     pub fn j2k_forward_rct_resident(
         &self,
         components: &mut CudaJ2kResidentComponents,
     ) -> Result<CudaExecutionStats, CudaError> {
-        if components.num_components != 3 {
+        if components.num_components < 3 {
             return Err(CudaError::InvalidArgument {
-                message: "forward RCT requires exactly three resident component planes".to_string(),
+                message: "forward RCT requires at least three resident component planes"
+                    .to_string(),
             });
         }
         if components.num_pixels == 0 {
@@ -2501,13 +2507,19 @@ impl CudaContext {
     }
 
     /// Run the irreversible color transform in place on resident component planes.
+    ///
+    /// The transform is applied to the first three planes (R, G, B → Y, Cb, Cr).
+    /// Any additional plane is left untouched, matching the native reference
+    /// which applies ICT to the first three of `&mut [Vec<f32>]` and passes the
+    /// remainder through unchanged.
     pub fn j2k_forward_ict_resident(
         &self,
         components: &mut CudaJ2kResidentComponents,
     ) -> Result<CudaExecutionStats, CudaError> {
-        if components.num_components != 3 {
+        if components.num_components < 3 {
             return Err(CudaError::InvalidArgument {
-                message: "forward ICT requires exactly three resident component planes".to_string(),
+                message: "forward ICT requires at least three resident component planes"
+                    .to_string(),
             });
         }
         if components.num_pixels == 0 {
