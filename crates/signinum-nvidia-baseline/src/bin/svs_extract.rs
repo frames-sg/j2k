@@ -36,11 +36,15 @@ fn main() {
     let mut limit = 256usize;
     let mut stride = 7usize;
     let mut quality = 85u8;
+    let mut min_tissue = 0.5f64;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--limit" => limit = args.next().and_then(|v| v.parse().ok()).unwrap_or(limit),
             "--stride" => stride = args.next().and_then(|v| v.parse().ok()).unwrap_or(stride).max(1),
             "--quality" => quality = args.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
+            "--min-tissue" => {
+                min_tissue = args.next().and_then(|v| v.parse().ok()).unwrap_or(min_tissue);
+            }
             other => {
                 eprintln!("unknown flag: {other}");
                 std::process::exit(2);
@@ -48,13 +52,20 @@ fn main() {
         }
     }
 
-    if let Err(error) = run(&svs_path, &out_dir, limit, stride, quality) {
+    if let Err(error) = run(&svs_path, &out_dir, limit, stride, quality, min_tissue) {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
 }
 
-fn run(svs_path: &str, out_dir: &str, limit: usize, stride: usize, quality: u8) -> Result<(), String> {
+fn run(
+    svs_path: &str,
+    out_dir: &str,
+    limit: usize,
+    stride: usize,
+    quality: u8,
+    min_tissue: f64,
+) -> Result<(), String> {
     let bytes = std::fs::read(svs_path).map_err(|e| format!("read {svs_path}: {e}"))?;
     let ifd0 = parse_first_ifd(&bytes)?;
     println!(
@@ -74,6 +85,8 @@ fn run(svs_path: &str, out_dir: &str, limit: usize, stride: usize, quality: u8) 
     let mut attempted = 0usize;
     let mut skipped_blank = 0usize;
     let mut decode_failures = 0usize;
+    let mut min_seen_fraction = 1.0f64;
+    let mut sum_fraction = 0.0f64;
 
     let mut index = 0usize;
     while index < ifd0.tile_offsets.len() && written < limit {
@@ -90,7 +103,11 @@ fn run(svs_path: &str, out_dir: &str, limit: usize, stride: usize, quality: u8) 
             decode_failures += 1;
             continue;
         };
-        if is_background(&rgb) {
+        let fraction = tissue_fraction(&rgb);
+        // Require both real tissue coverage and visible structure (texture), so
+        // flat homogeneous stroma/background is rejected in favour of cellular
+        // tissue with nuclei and edges.
+        if fraction < min_tissue || luma_stddev(&rgb) < 12.0 {
             skipped_blank += 1;
             continue;
         }
@@ -104,27 +121,85 @@ fn run(svs_path: &str, out_dir: &str, limit: usize, stride: usize, quality: u8) 
         let path = Path::new(out_dir).join(format!("tile_{written:05}.jpg"));
         std::fs::write(&path, &encoded.data).map_err(|e| format!("write {}: {e}", path.display()))?;
         written += 1;
+        min_seen_fraction = min_seen_fraction.min(fraction);
+        sum_fraction += fraction;
     }
 
+    let mean_fraction = if written > 0 { sum_fraction / written as f64 } else { 0.0 };
     println!(
-        "wrote {written} JPEG tiles to {out_dir} (attempted {attempted}, skipped {skipped_blank} blank, {decode_failures} decode failures)"
+        "wrote {written} JPEG tiles to {out_dir} (attempted {attempted}, skipped {skipped_blank} below {:.0}% tissue, {decode_failures} decode failures)",
+        min_tissue * 100.0
+    );
+    println!(
+        "tissue coverage of written tiles: min {:.0}%, mean {:.0}%",
+        min_seen_fraction * 100.0,
+        mean_fraction * 100.0
     );
     if written == 0 {
-        return Err("no tiles written — decode may be unsupported for this compression".to_string());
+        return Err("no tiles written — decode may be unsupported, or all tiles below the tissue threshold".to_string());
     }
     Ok(())
 }
 
+/// Fraction of pixels that look like stained tissue rather than bright glass /
+/// background. A pixel is tissue when it has meaningful absorption (its darkest
+/// channel is well below white) or visible stain saturation (channel spread).
+fn tissue_fraction(rgb: &[u8]) -> f64 {
+    if rgb.is_empty() {
+        return 0.0;
+    }
+    let mut tissue = 0usize;
+    let total = rgb.len() / 3;
+    for px in rgb.chunks_exact(3) {
+        let min_c = px[0].min(px[1]).min(px[2]);
+        let max_c = px[0].max(px[1]).max(px[2]);
+        let absorbs = min_c < 210; // not near-white on every channel
+        let saturated = u16::from(max_c) - u16::from(min_c) > 25; // visible stain color
+        if absorbs || saturated {
+            tissue += 1;
+        }
+    }
+    tissue as f64 / total as f64
+}
+
+/// Standard deviation of per-pixel luma, a cheap proxy for spatial structure.
+/// Flat regions (uniform stain, glass) score near zero; cellular tissue is high.
+fn luma_stddev(rgb: &[u8]) -> f64 {
+    let total = rgb.len() / 3;
+    if total == 0 {
+        return 0.0;
+    }
+    let luma: Vec<f64> = rgb
+        .chunks_exact(3)
+        .map(|px| 0.299 * f64::from(px[0]) + 0.587 * f64::from(px[1]) + 0.114 * f64::from(px[2]))
+        .collect();
+    let mean = luma.iter().sum::<f64>() / total as f64;
+    let variance = luma.iter().map(|&l| (l - mean) * (l - mean)).sum::<f64>() / total as f64;
+    variance.sqrt()
+}
+
+// Aperio JPEG 2000 with YCbCr components (the codestream stores Y/Cb/Cr planes
+// directly rather than using J2K's in-stream color transform).
+const APERIO_J2K_YCBCR: u16 = 33003;
+
 /// Decode one tile to interleaved RGB. JPEG 2000 / HTJ2K codestreams and JPEG
-/// tiles are both handled by the native parser via `Image`.
-fn decode_tile_rgb(tile: &[u8], _compression: u16) -> Option<(Vec<u8>, u32, u32)> {
+/// tiles are both handled by the native parser via `Image`. Aperio's J2K-YCbCr
+/// tiles decode to YCbCr component values, which are converted to RGB here.
+fn decode_tile_rgb(tile: &[u8], compression: u16) -> Option<(Vec<u8>, u32, u32)> {
     let image = Image::new(tile, &DecodeSettings::default()).ok()?;
     let bitmap = image.decode_native().ok()?;
     if bitmap.bytes_per_sample != 1 {
         return None;
     }
     match bitmap.num_components {
-        3 => Some((bitmap.data, bitmap.width, bitmap.height)),
+        3 => {
+            let rgb = if compression == APERIO_J2K_YCBCR {
+                ycbcr_to_rgb(&bitmap.data)
+            } else {
+                bitmap.data
+            };
+            Some((rgb, bitmap.width, bitmap.height))
+        }
         1 => {
             // Expand grayscale to RGB so the encoder path is uniform.
             let rgb = bitmap.data.iter().flat_map(|&g| [g, g, g]).collect();
@@ -134,14 +209,18 @@ fn decode_tile_rgb(tile: &[u8], _compression: u16) -> Option<(Vec<u8>, u32, u32)
     }
 }
 
-/// Skip near-white background tiles (mean luma over the whole tile > 235).
-fn is_background(rgb: &[u8]) -> bool {
-    if rgb.is_empty() {
-        return true;
+/// JFIF full-range YCbCr -> RGB, interleaved.
+fn ycbcr_to_rgb(ycbcr: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(ycbcr.len());
+    for px in ycbcr.chunks_exact(3) {
+        let y = f32::from(px[0]);
+        let cb = f32::from(px[1]) - 128.0;
+        let cr = f32::from(px[2]) - 128.0;
+        rgb.push((y + 1.402 * cr).clamp(0.0, 255.0) as u8);
+        rgb.push((y - 0.344_136 * cb - 0.714_136 * cr).clamp(0.0, 255.0) as u8);
+        rgb.push((y + 1.772 * cb).clamp(0.0, 255.0) as u8);
     }
-    let sum: u64 = rgb.iter().map(|&v| u64::from(v)).sum();
-    let mean = sum as f64 / rgb.len() as f64;
-    mean > 235.0
+    rgb
 }
 
 struct Ifd {
