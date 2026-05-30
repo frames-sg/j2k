@@ -582,4 +582,278 @@ mod tests {
             assert_all_close(&transformed.hh, 0.0, 0.001);
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Independent CDF 9/7 ground truth.
+    //
+    // The CUDA 9/7 kernel is parity-tested against `forward_lift_97` /
+    // `linearized_97_2d_from_plane`, so a bug in the lifting would be faithfully
+    // reproduced by the kernel and pass that parity test unnoticed. These tests
+    // close that gap by validating the lifting against an *independent*
+    // implementation: a direct FIR filter bank using the canonical, fully
+    // normalized CDF 9/7 analysis taps and JPEG2000 whole-sample symmetric
+    // extension. Different arithmetic, same transform.
+    //
+    // The taps themselves are checked against their defining mathematical
+    // properties (DC gains and high-pass vanishing moments) so they cannot
+    // silently drift to "match" a buggy lifting.
+
+    /// Canonical CDF 9/7 analysis low-pass filter (9 taps, even-symmetric).
+    /// Fully normalized so its DC gain is 1 (a constant maps unchanged into the
+    /// low band, matching the lifting's `INV_KAPPA` scaling).
+    const REF_LP: [f64; 9] = [
+        0.026_748_757_410_810,
+        -0.016_864_118_442_875,
+        -0.078_223_266_528_990,
+        0.266_864_118_442_875,
+        0.602_949_018_236_360,
+        0.266_864_118_442_875,
+        -0.078_223_266_528_990,
+        -0.016_864_118_442_875,
+        0.026_748_757_410_810,
+    ];
+
+    /// Canonical CDF 9/7 analysis high-pass filter (7 taps, even-symmetric).
+    /// Fully normalized so its DC gain is 0 (matching the lifting's `KAPPA`
+    /// scaling); it has four vanishing moments.
+    const REF_HP: [f64; 7] = [
+        0.091_271_763_114_250,
+        -0.057_543_526_228_500,
+        -0.591_271_763_114_247,
+        1.115_087_052_456_994,
+        -0.591_271_763_114_247,
+        -0.057_543_526_228_500,
+        0.091_271_763_114_250,
+    ];
+
+    /// Whole-sample symmetric reflection: mirror about index 0 and `n - 1`
+    /// without repeating the endpoints. This is the boundary extension
+    /// `forward_lift_97` implements at the array edges.
+    fn ws_reflect(i: isize, n: usize) -> usize {
+        debug_assert!(n >= 1);
+        if n == 1 {
+            return 0;
+        }
+        let n = isize::try_from(n).expect("signal length fits in isize");
+        let period = 2 * (n - 1);
+        let mut k = i.rem_euclid(period);
+        if k >= n {
+            k = period - k;
+        }
+        usize::try_from(k).expect("reflected index is non-negative")
+    }
+
+    /// Independent single-level forward 9/7 analysis via direct convolution.
+    /// Returns `(low, high)` interleaved-position bands matching `forward_lift_97`
+    /// (`low[m]` centered at sample `2m`, `high[m]` centered at sample `2m + 1`).
+    fn ref_analysis_1d(signal: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = signal.len();
+        if n < 2 {
+            // The lifting leaves <2-length signals unchanged (low = the sample).
+            return (signal.to_vec(), Vec::new());
+        }
+        let mut low = vec![0.0; low_len(n)];
+        let mut high = vec![0.0; high_len(n)];
+        for (m, out) in low.iter_mut().enumerate() {
+            let center = 2 * isize::try_from(m).unwrap();
+            *out = REF_LP
+                .iter()
+                .enumerate()
+                .map(|(t, &tap)| tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 4, n)])
+                .sum();
+        }
+        for (m, out) in high.iter_mut().enumerate() {
+            let center = 2 * isize::try_from(m).unwrap() + 1;
+            *out = REF_HP
+                .iter()
+                .enumerate()
+                .map(|(t, &tap)| tap * signal[ws_reflect(center + isize::try_from(t).unwrap() - 3, n)])
+                .sum();
+        }
+        (low, high)
+    }
+
+    /// Independent separable 2D forward 9/7 (rows then columns) producing the
+    /// same four-band layout as `linearized_97_2d_from_plane`.
+    fn ref_analysis_2d(samples: &[f64], width: usize, height: usize) -> Dwt97TwoDimensional<f64> {
+        let low_width = low_len(width);
+        let high_width = high_len(width);
+        let low_height = low_len(height);
+        let high_height = high_len(height);
+
+        let mut row_low = vec![0.0; height * low_width];
+        let mut row_high = vec![0.0; height * high_width];
+        for y in 0..height {
+            let (lo, hi) = ref_analysis_1d(&samples[y * width..y * width + width]);
+            row_low[y * low_width..y * low_width + low_width].copy_from_slice(&lo);
+            row_high[y * high_width..y * high_width + high_width].copy_from_slice(&hi);
+        }
+
+        let vertical_split = |source: &[f64], band_width: usize| -> (Vec<f64>, Vec<f64>) {
+            let mut low = vec![0.0; band_width * low_height];
+            let mut high = vec![0.0; band_width * high_height];
+            for x in 0..band_width {
+                let column: Vec<f64> = (0..height).map(|y| source[y * band_width + x]).collect();
+                let (lo, hi) = ref_analysis_1d(&column);
+                for (vy, &value) in lo.iter().enumerate() {
+                    low[vy * band_width + x] = value;
+                }
+                for (vy, &value) in hi.iter().enumerate() {
+                    high[vy * band_width + x] = value;
+                }
+            }
+            (low, high)
+        };
+
+        let (ll, lh) = vertical_split(&row_low, low_width);
+        let (hl, hh) = vertical_split(&row_high, high_width);
+
+        Dwt97TwoDimensional {
+            ll,
+            hl,
+            lh,
+            hh,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        }
+    }
+
+    /// Small deterministic PRNG (LCG) for reproducible test signals in [-1, 1).
+    fn next_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64).mul_add(2.0, -1.0)
+    }
+
+    fn assert_bands_close(actual: &[f64], expected: &[f64], label: &str, epsilon: f64) {
+        assert_eq!(actual.len(), expected.len(), "{label} band length");
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= epsilon,
+                "{label}[{i}] diverged: lifting={a} reference={b} (diff {})",
+                (a - b).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn reference_cdf97_taps_satisfy_their_defining_properties() {
+        // Low-pass DC gain 1, high-pass DC gain 0 — the normalization the
+        // lifting's KAPPA scaling targets.
+        let lp_dc: f64 = REF_LP.iter().sum();
+        assert!((lp_dc - 1.0).abs() < 1e-9, "low-pass DC gain = {lp_dc}");
+        let hp_dc: f64 = REF_HP.iter().sum();
+        assert!(hp_dc.abs() < 1e-9, "high-pass DC gain = {hp_dc}");
+
+        // Even symmetry.
+        for k in 0..4 {
+            assert!((REF_LP[k] - REF_LP[8 - k]).abs() < 1e-15, "low-pass asymmetric at {k}");
+        }
+        for k in 0..3 {
+            assert!((REF_HP[k] - REF_HP[6 - k]).abs() < 1e-15, "high-pass asymmetric at {k}");
+        }
+
+        // Four vanishing moments: the high-pass annihilates polynomials of
+        // degree <= 3 (so a wrong predict coefficient or sign cannot pass).
+        for m in 1..=3 {
+            let moment: f64 = REF_HP
+                .iter()
+                .enumerate()
+                .map(|(k, &tap)| (k as f64 - 3.0).powi(m) * tap)
+                .sum();
+            assert!(moment.abs() < 1e-9, "high-pass moment {m} = {moment}");
+        }
+    }
+
+    #[test]
+    fn forward_lift_97_matches_independent_filter_bank_1d() {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        for n in [2usize, 3, 4, 5, 8, 9, 12, 15, 16, 23, 32, 33, 64, 65] {
+            let signal: Vec<f64> = (0..n).map(|_| next_unit(&mut state) * 100.0).collect();
+            let lifted = linearized_97_from_sample_slice(&signal);
+            let (low, high) = ref_analysis_1d(&signal);
+            assert_bands_close(&lifted.low, &low, &format!("n={n} low"), 1e-9);
+            assert_bands_close(&lifted.high, &high, &format!("n={n} high"), 1e-9);
+        }
+    }
+
+    #[test]
+    fn forward_lift_97_annihilates_low_degree_polynomials() {
+        // Independent of the filter bank: a correct 9/7 high-pass kills cubics in
+        // the interior (boundary coefficients use symmetric extension). This pins
+        // the predict-step coefficients and signs directly from wavelet theory.
+        let n = 40usize;
+        let polynomials: [[f64; 4]; 4] = [
+            [5.0, 0.0, 0.0, 0.0],
+            [0.0, 2.5, 0.0, 0.0],
+            [1.0, -0.7, 0.3, 0.0],
+            [0.0, 0.0, 0.0, 0.05],
+        ];
+        for coeffs in polynomials {
+            let signal: Vec<f64> = (0..n)
+                .map(|i| {
+                    let x = i as f64;
+                    coeffs[3].mul_add(x * x * x, coeffs[2].mul_add(x * x, coeffs[1].mul_add(x, coeffs[0])))
+                })
+                .collect();
+            let lifted = linearized_97_from_sample_slice(&signal);
+            // Skip the first/last high-pass coefficients (boundary support).
+            let interior = &lifted.high[3..lifted.high.len() - 3];
+            assert_all_close(interior, 0.0, 1e-6);
+        }
+    }
+
+    #[test]
+    fn linearized_97_2d_matches_independent_separable_filter_bank() {
+        let mut state = 0xfeed_face_dead_beefu64;
+        for (width, height) in [
+            (8usize, 8usize),
+            (16, 16),
+            (24, 16),
+            (15, 13),
+            (16, 23),
+            (9, 7),
+            (32, 32),
+        ] {
+            let samples: Vec<f64> = (0..width * height)
+                .map(|_| next_unit(&mut state) * 100.0)
+                .collect();
+            let got = linearized_97_2d_from_plane(&samples, width, height);
+            let want = ref_analysis_2d(&samples, width, height);
+            assert_eq!(
+                (got.low_width, got.low_height, got.high_width, got.high_height),
+                (want.low_width, want.low_height, want.high_width, want.high_height),
+                "band dimensions for {width}x{height}"
+            );
+            assert_bands_close(&got.ll, &want.ll, &format!("{width}x{height} ll"), 1e-9);
+            assert_bands_close(&got.hl, &want.hl, &format!("{width}x{height} hl"), 1e-9);
+            assert_bands_close(&got.lh, &want.lh, &format!("{width}x{height} lh"), 1e-9);
+            assert_bands_close(&got.hh, &want.hh, &format!("{width}x{height} hh"), 1e-9);
+        }
+    }
+
+    #[test]
+    fn linearized_97_2d_separates_horizontal_and_vertical_detail() {
+        // Catches an HL/LH swap or a row/column transpose independently of the
+        // filter bank: a plane that varies only along x has no vertical detail
+        // (LH and HH must vanish), and vice versa.
+        let (width, height) = (16usize, 16usize);
+
+        let varies_in_x: Vec<f64> = (0..width * height)
+            .map(|i| ((i % width) as f64).sin().mul_add(30.0, 5.0))
+            .collect();
+        let t = linearized_97_2d_from_plane(&varies_in_x, width, height);
+        assert_all_close(&t.lh, 0.0, 1e-9);
+        assert_all_close(&t.hh, 0.0, 1e-9);
+
+        let varies_in_y: Vec<f64> = (0..width * height)
+            .map(|i| ((i / width) as f64).cos().mul_add(30.0, 5.0))
+            .collect();
+        let t = linearized_97_2d_from_plane(&varies_in_y, width, height);
+        assert_all_close(&t.hl, 0.0, 1e-9);
+        assert_all_close(&t.hh, 0.0, 1e-9);
+    }
 }
