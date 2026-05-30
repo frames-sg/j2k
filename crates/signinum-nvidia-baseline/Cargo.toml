@@ -29,6 +29,11 @@ signinum-transcode-cuda = { path = "../signinum-transcode-cuda", version = "=0.4
 signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
 signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 
+# Metal backend for the signinum side of the comparison on macOS (the runner is
+# Linux/CUDA, so this is target-gated to keep the runner build untouched).
+[target.'cfg(target_os = "macos")'.dependencies]
+signinum-transcode-metal = { path = "../signinum-transcode-metal", version = "=0.4.4" }
+
 [lints.rust]
 unsafe_code = "allow"
 unsafe_op_in_unsafe_fn = "deny"
