@@ -1210,6 +1210,89 @@ pub fn collect_ht_cleanup_encode_distribution(
     j2c::ht_block_encode::collect_encode_distribution(coefficients, width, height, total_bitplanes)
 }
 
+/// Adapter scalar forward 5/3 DWT reference for CUDA stage parity.
+///
+/// Runs the native CPU reversible 5/3 forward DWT on `samples` and returns
+/// the decomposed subbands packed into the public `J2kForwardDwt53Output`
+/// type.  The returned layout matches what the encoder feeds to Tier-1.
+pub fn forward_dwt53_reference(
+    samples: &[f32],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+) -> J2kForwardDwt53Output {
+    let decomp = j2c::fdwt::forward_dwt(samples, width, height, num_levels, true);
+    let levels = decomp
+        .levels
+        .into_iter()
+        .map(|lvl| J2kForwardDwt53Level {
+            hl: lvl.hl,
+            lh: lvl.lh,
+            hh: lvl.hh,
+            width: lvl.low_width + lvl.high_width,
+            height: lvl.low_height + lvl.high_height,
+            low_width: lvl.low_width,
+            low_height: lvl.low_height,
+            high_width: lvl.high_width,
+            high_height: lvl.high_height,
+        })
+        .collect();
+    J2kForwardDwt53Output {
+        ll: decomp.ll,
+        ll_width: decomp.ll_width,
+        ll_height: decomp.ll_height,
+        levels,
+    }
+}
+
+/// Adapter scalar forward RCT reference for CUDA stage parity.
+///
+/// Applies the native CPU forward Reversible Color Transform to three
+/// component planes supplied as owned `Vec<f32>` arrays.  The transform is
+/// applied in place and the mutated planes are returned, so callers do not
+/// need to pass a mutable slice.
+pub fn forward_rct_reference(mut planes: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    j2c::forward_mct::forward_rct(&mut planes);
+    planes
+}
+
+/// Adapter scalar reversible sub-band quantization reference for CUDA stage parity.
+///
+/// Quantizes `coefficients` using the reversible (lossless) integer path of
+/// the native CPU quantizer.  `step_exponent` and `step_mantissa` encode the
+/// JPEG 2000 `QuantStepSize` for the sub-band; `range_bits` is the nominal
+/// bit depth for the sub-band.  When `reversible` is `true` the step-size
+/// parameters are ignored and each coefficient is rounded to the nearest
+/// integer.
+pub fn quantize_reversible_reference(
+    coefficients: &[f32],
+    step_exponent: u16,
+    step_mantissa: u16,
+    range_bits: u8,
+    reversible: bool,
+) -> Vec<i32> {
+    let step = j2c::quantize::QuantStepSize {
+        exponent: step_exponent,
+        mantissa: step_mantissa,
+    };
+    j2c::quantize::quantize_subband(coefficients, &step, range_bits, reversible)
+}
+
+/// Adapter scalar pixel deinterleave/level-shift reference for CUDA stage parity.
+///
+/// Converts interleaved pixel bytes to per-component f32 planes with the
+/// same level-shift logic as the native CPU encode path.  The result is one
+/// `Vec<f32>` per component, each of length `num_pixels`.
+pub fn deinterleave_reference(
+    pixels: &[u8],
+    num_pixels: usize,
+    num_components: u8,
+    bit_depth: u8,
+    signed: bool,
+) -> Vec<Vec<f32>> {
+    j2c::encode::deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed)
+}
+
 /// Adapter scalar Tier-2 packetization helper for backend experimentation.
 pub fn encode_j2k_packetization_scalar(
     job: J2kPacketizationEncodeJob<'_>,
@@ -4030,5 +4113,91 @@ mod tests {
             error,
             DecodeError::Decoding(DecodingError::CodeBlockDecodeFailure)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sanity tests for the four scalar-reference exports
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn forward_dwt53_reference_matches_internal_path() {
+        // 4×4 constant-ramp input; 1 decomposition level.
+        let samples: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let out = forward_dwt53_reference(&samples, 4, 4, 1);
+
+        // Internal path
+        let internal = j2c::fdwt::forward_dwt(&samples, 4, 4, 1, true);
+
+        assert_eq!(out.ll, internal.ll, "LL subband mismatch");
+        assert_eq!(out.ll_width, internal.ll_width, "LL width mismatch");
+        assert_eq!(out.ll_height, internal.ll_height, "LL height mismatch");
+        assert_eq!(out.levels.len(), internal.levels.len(), "level count");
+        for (pub_lvl, int_lvl) in out.levels.iter().zip(internal.levels.iter()) {
+            assert_eq!(pub_lvl.hl, int_lvl.hl, "HL mismatch");
+            assert_eq!(pub_lvl.lh, int_lvl.lh, "LH mismatch");
+            assert_eq!(pub_lvl.hh, int_lvl.hh, "HH mismatch");
+        }
+    }
+
+    #[test]
+    fn forward_rct_reference_matches_internal_path() {
+        // Single pixel: R=100, G=150, B=200
+        let planes = vec![vec![100.0f32], vec![150.0f32], vec![200.0f32]];
+        let result = forward_rct_reference(planes.clone());
+
+        // Internal path
+        let mut internal = planes;
+        j2c::forward_mct::forward_rct(&mut internal);
+
+        assert_eq!(result, internal, "RCT output mismatch");
+        // Y = floor((100 + 300 + 200) / 4) = 150
+        assert_eq!(result[0][0], 150.0, "Y component");
+        assert_eq!(result[1][0], 50.0, "Cb component");
+        assert_eq!(result[2][0], -50.0, "Cr component");
+    }
+
+    #[test]
+    fn quantize_reversible_reference_matches_internal_path() {
+        let coefficients = vec![3.7f32, -8.2, 0.5, -0.5, 10.0];
+        let exponent = 8u16;
+        let mantissa = 0u16;
+        let range_bits = 8u8;
+
+        let result = quantize_reversible_reference(
+            &coefficients,
+            exponent,
+            mantissa,
+            range_bits,
+            true,
+        );
+
+        // Internal path
+        let step = j2c::quantize::QuantStepSize {
+            exponent,
+            mantissa,
+        };
+        let internal = j2c::quantize::quantize_subband(&coefficients, &step, range_bits, true);
+
+        assert_eq!(result, internal, "quantize output mismatch");
+        // reversible: round to nearest
+        assert_eq!(result[0], 4, "3.7 rounds to 4");
+        assert_eq!(result[1], -8, "-8.2 rounds to -8");
+    }
+
+    #[test]
+    fn deinterleave_reference_matches_internal_path() {
+        // 2-pixel RGB8 unsigned: [R0,G0,B0, R1,G1,B1]
+        let pixels: Vec<u8> = vec![128, 64, 200, 10, 20, 30];
+        let result = deinterleave_reference(&pixels, 2, 3, 8, false);
+
+        let internal = j2c::encode::deinterleave_to_f32(&pixels, 2, 3, 8, false);
+
+        assert_eq!(result, internal, "deinterleave output mismatch");
+        assert_eq!(result.len(), 3, "three component planes");
+        assert_eq!(result[0].len(), 2, "two pixels per plane");
+        // unsigned 8-bit with level shift: val - 128
+        assert!((result[0][0] - 0.0f32).abs() < 1e-6, "R0 level-shifted");
+        assert!((result[1][0] - (-64.0f32)).abs() < 1e-6, "G0 level-shifted");
+        assert!((result[2][0] - 72.0f32).abs() < 1e-6, "B0 level-shifted");
     }
 }
