@@ -56,8 +56,11 @@ fn compile_or_copy_ptx(
     ptx: &Path,
     require_kernel_build: bool,
 ) -> bool {
+    // --fmad=false: native (Rust/LLVM) does not contract a*b+c into a single-rounding
+    // FMA; nvcc does by default. Disabling it keeps the f32 DWT/RCT lossless path
+    // bit-identical to the native reference (byte-parity requirement).
     let compiled = Command::new(nvcc)
-        .args(["--ptx", "-O3", "--std=c++14"])
+        .args(["--ptx", "-O3", "--std=c++14", "--fmad=false"])
         .arg(source)
         .arg("-o")
         .arg(ptx)
