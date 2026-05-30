@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // NVIDIA GPU baseline for the JPEG -> HTJ2K transcode comparison: nvJPEG decodes
-// the JPEG to planar RGB on the GPU, then nvJPEG2000 encodes it to a
-// High-Throughput JPEG 2000 (HTJ2K) codestream on the GPU. This is the
-// apples-to-apples NVIDIA path against signinum's coefficient-domain transcode
-// (which skips the pixel round-trip). Exposes a single C ABI entry point so the
-// Rust side keeps a tiny FFI surface.
+// the JPEG to RGB on the GPU, then nvJPEG2000 encodes it to a High-Throughput
+// JPEG 2000 (HTJ2K) codestream on the GPU. This is the apples-to-apples NVIDIA
+// path against signinum's coefficient-domain transcode (which skips the pixel
+// round-trip). Exposes a single C ABI entry point so the Rust side keeps a tiny
+// FFI surface.
 //
 // Compiled by build.rs with nvcc only when the `nvjpeg2000` feature is on and
 // the libraries are present. nvJPEG2000 ships separately from the CUDA toolkit.
+//
+// All locals are declared up front: the cleanup paths use `goto`, and C++
+// forbids a goto from jumping over a variable's initialization.
 
 #include <cstring>
 #include <cuda_runtime.h>
@@ -55,27 +58,29 @@ int nvb_decode_jpeg_rgb(
     nvjpegHandle_t handle = nullptr;
     nvjpegJpegState_t state = nullptr;
     unsigned char* dev = nullptr;
+    int comps = 0;
+    nvjpegChromaSubsampling_t subsampling;
+    int widths[NVJPEG_MAX_COMPONENT] = {0};
+    int heights[NVJPEG_MAX_COMPONENT] = {0};
+    int w = 0;
+    int h = 0;
+    size_t rgb_bytes = 0;
+    nvjpegImage_t dest;
 
     if (cudaStreamCreate(&stream) != cudaSuccess) { return 901; }
     if (nvjpegCreateSimple(&handle) != NVJPEG_STATUS_SUCCESS) { rc = 101; goto cleanup; }
     if (nvjpegJpegStateCreate(handle, &state) != NVJPEG_STATUS_SUCCESS) { rc = 102; goto cleanup; }
-
-    int comps;
-    nvjpegChromaSubsampling_t subsampling;
-    int widths[NVJPEG_MAX_COMPONENT];
-    int heights[NVJPEG_MAX_COMPONENT];
     if (nvjpegGetImageInfo(handle, jpeg, jpeg_len, &comps, &subsampling, widths, heights)
         != NVJPEG_STATUS_SUCCESS) { rc = 103; goto cleanup; }
 
-    int w = widths[0];
-    int h = heights[0];
+    w = widths[0];
+    h = heights[0];
     *width = w;
     *height = h;
-    size_t rgb_bytes = (size_t)w * (size_t)h * 3;
+    rgb_bytes = (size_t)w * (size_t)h * 3;
     if (rgb_bytes > out_cap) { rc = 120; goto cleanup; }
     if (cudaMalloc((void**)&dev, rgb_bytes) != cudaSuccess) { rc = 902; goto cleanup; }
 
-    nvjpegImage_t dest;
     memset(&dest, 0, sizeof(dest));
     dest.channel[0] = dev;          // interleaved RGB lands in channel[0]
     dest.pitch[0] = (size_t)w * 3;
@@ -112,6 +117,24 @@ int nvb_transcode_jpeg_to_htj2k(
     nvjpeg2kEncodeState_t enc_state = nullptr;
     nvjpeg2kEncodeParams_t enc_params = nullptr;
     unsigned char* planes[3] = {nullptr, nullptr, nullptr};
+    int comps = 0;
+    nvjpegChromaSubsampling_t subsampling;
+    int widths[NVJPEG_MAX_COMPONENT] = {0};
+    int heights[NVJPEG_MAX_COMPONENT] = {0};
+    int w = 0;
+    int h = 0;
+    size_t plane_bytes = 0;
+    nvjpegImage_t dest;
+    nvjpeg2kImageComponentInfo_t comp_info[3];
+    int levels = 0;
+    int axis = 0;
+    nvjpeg2kEncodeConfig_t config;
+    void* plane_ptrs[3] = {nullptr, nullptr, nullptr};
+    size_t pitches[3] = {0, 0, 0};
+    nvjpeg2kImage_t input;
+    size_t length = 0;
+    float decode_elapsed = 0.0f;
+    float encode_elapsed = 0.0f;
 
     if (cudaStreamCreate(&stream) != cudaSuccess) { return 901; }
     cudaEventCreate(&start);
@@ -120,26 +143,20 @@ int nvb_transcode_jpeg_to_htj2k(
 
     if (nvjpegCreateSimple(&jpeg_handle) != NVJPEG_STATUS_SUCCESS) { rc = 101; goto cleanup; }
     if (nvjpegJpegStateCreate(jpeg_handle, &jpeg_state) != NVJPEG_STATUS_SUCCESS) { rc = 102; goto cleanup; }
-
-    int comps;
-    nvjpegChromaSubsampling_t subsampling;
-    int widths[NVJPEG_MAX_COMPONENT];
-    int heights[NVJPEG_MAX_COMPONENT];
     if (nvjpegGetImageInfo(jpeg_handle, jpeg, jpeg_len, &comps, &subsampling, widths, heights)
         != NVJPEG_STATUS_SUCCESS) { rc = 103; goto cleanup; }
 
-    int w = widths[0];
-    int h = heights[0];
+    w = widths[0];
+    h = heights[0];
     *width = w;
     *height = h;
     *num_components = 3;
 
     // Planar RGB destination (one plane per channel, tightly packed).
-    size_t plane_bytes = (size_t)w * (size_t)h;
+    plane_bytes = (size_t)w * (size_t)h;
     for (int c = 0; c < 3; ++c) {
         if (cudaMalloc((void**)&planes[c], plane_bytes) != cudaSuccess) { rc = 902; goto cleanup; }
     }
-    nvjpegImage_t dest;
     memset(&dest, 0, sizeof(dest));
     for (int c = 0; c < 3; ++c) {
         dest.channel[c] = planes[c];
@@ -156,7 +173,6 @@ int nvb_transcode_jpeg_to_htj2k(
     if (nvjpeg2kEncodeStateCreate(enc, &enc_state) != NVJPEG2K_STATUS_SUCCESS) { rc = 202; goto cleanup; }
     if (nvjpeg2kEncodeParamsCreate(&enc_params) != NVJPEG2K_STATUS_SUCCESS) { rc = 203; goto cleanup; }
 
-    nvjpeg2kImageComponentInfo_t comp_info[3];
     for (int c = 0; c < 3; ++c) {
         comp_info[c].component_width = (uint32_t)w;
         comp_info[c].component_height = (uint32_t)h;
@@ -165,11 +181,9 @@ int nvb_transcode_jpeg_to_htj2k(
     }
 
     // Resolutions: cap decomposition levels so the LL band stays >= 1 sample.
-    int levels = 0;
-    int axis = (w < h) ? w : h;
+    axis = (w < h) ? w : h;
     while (axis > 1 && levels < 5) { axis >>= 1; ++levels; }
 
-    nvjpeg2kEncodeConfig_t config;
     memset(&config, 0, sizeof(config));
     config.stream_type = NVJPEG2K_STREAM_J2K;
     config.color_space = NVJPEG2K_COLORSPACE_SRGB;
@@ -192,9 +206,12 @@ int nvb_transcode_jpeg_to_htj2k(
         rc = 204; goto cleanup;
     }
 
-    void* plane_ptrs[3] = {planes[0], planes[1], planes[2]};
-    size_t pitches[3] = {(size_t)w, (size_t)w, (size_t)w};
-    nvjpeg2kImage_t input;
+    plane_ptrs[0] = planes[0];
+    plane_ptrs[1] = planes[1];
+    plane_ptrs[2] = planes[2];
+    pitches[0] = (size_t)w;
+    pitches[1] = (size_t)w;
+    pitches[2] = (size_t)w;
     memset(&input, 0, sizeof(input));
     input.pixel_data = plane_ptrs;
     input.pitch_in_bytes = pitches;
@@ -207,7 +224,6 @@ int nvb_transcode_jpeg_to_htj2k(
     cudaEventRecord(stop, stream);
     cudaStreamSynchronize(stream);
 
-    size_t length = 0;
     if (nvjpeg2kEncodeRetrieveBitstream(enc, enc_state, nullptr, &length, stream)
         != NVJPEG2K_STATUS_SUCCESS) { rc = 211; goto cleanup; }
     if (length > out_cap) { rc = 212; goto cleanup; }
@@ -216,7 +232,6 @@ int nvb_transcode_jpeg_to_htj2k(
     cudaStreamSynchronize(stream);
     *out_len = length;
 
-    float decode_elapsed = 0.0f, encode_elapsed = 0.0f;
     cudaEventElapsedTime(&decode_elapsed, start, mid);
     cudaEventElapsedTime(&encode_elapsed, mid, stop);
     *decode_ms = (double)decode_elapsed;
