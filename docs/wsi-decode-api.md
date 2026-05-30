@@ -130,10 +130,10 @@ Backend selection uses `BackendRequest`:
   requests return CUDA-backed surfaces. `signinum-jpeg-cuda` uses nvJPEG for
   full-frame RGB8 JPEG decode when `libnvjpeg` is available; unsupported JPEG
   shapes use explicit CPU-staged upload APIs where exposed. `signinum-j2k-cuda`
-  reserves this request for CUDA-resident HTJ2K codestream decode and rejects
-  unsupported classic JPEG 2000 or unsupported HTJ2K shapes instead of
-  CPU-decoding and uploading pixels. Hosts without CUDA return unavailable.
-  `Cpu` and `Auto` remain CPU-backed host surfaces.
+  reserves this request for CUDA-resident HTJ2K codestream decode and lossless
+  encode; it rejects unsupported classic JPEG 2000 or unsupported HTJ2K shapes
+  instead of CPU-decoding and uploading pixels. Hosts without CUDA return
+  unavailable. `Cpu` and `Auto` remain CPU-backed host surfaces.
 
 For Metal adapters, `BackendRequest::Auto` is a routing hint and may fall back
 to host-backed CPU output when the request shape is not on the Metal-supported
@@ -154,6 +154,46 @@ too-small buffers, too-small strides, unavailable explicit backends, and row
 sink aborts are returned as errors. Callers should handle `CodecError`
 predicates for broad policy decisions and preserve detailed errors for logging.
 
+## CUDA HTJ2K Lossless Encode
+
+`signinum-j2k-cuda` exposes `encode_j2k_lossless_with_cuda` for on-device
+HTJ2K lossless encode. The function targets a codestream byte-identical to
+`signinum_j2k_native::encode_htj2k` (the native CPU lossless path).
+
+**Supported inputs:** reversible 5/3 DWT, HT cleanup-pass-only, single tile /
+single quality layer / single precinct, 1-component (grayscale), 3-component
+(RGB — MCT/RCT on all three planes), or 4-component (RGBA/CMYK — MCT/RCT on
+the first three planes; 4th component passed through), bit depths 8–16 signed
+or unsigned, multi-level DWT, multi-codeblock. Component subsampling must be
+(1,1).
+
+**Parity contract:** byte-parity against the CPU reference is the contract
+enforced by the `cuda-x86_64-compatibility` job in
+`.github/workflows/gpu-validation.yml`. That job sets
+`SIGNINUM_REQUIRE_CUDA_RUNTIME` and runs the `htj2k_encode_parity` tests on the
+self-hosted CUDA runner with a fail-closed executed-count floor, so parity tests
+cannot silently skip. This job is the authoritative gate before merging changes
+to the CUDA encode path.
+
+**No silent fallback:** out-of-scope or unavailable requests return a typed
+error. The accelerator never silently falls back to the CPU path for an
+in-scope input.
+
+**Non-goals** (explicitly out of scope):
+
+- Classic/tier-1 EBCOT coding — HTJ2K-only path.
+- Lossy 9/7 DWT — never byte-exact.
+- Multiple quality layers — native reference is single-layer.
+- Multi-tile within one codestream — native reference is single-tile; tiling is
+  done at the caller/per-codestream level.
+- 2-component images — the native decoder rejects 2-component with
+  `TooManyChannels`, so round-trip validation is not possible.
+- Component subsampling != (1,1) — changes block geometry the strict kernel
+  does not handle.
+- HT SigProp/MagRef refinement passes — experimental; beyond the native
+  cleanup-pass-only path and not round-trip-validated against the native
+  reference.
+
 ## Current Validation Scope
 
 Hosted CI validates CPU behavior, adapter fallback behavior, rustdoc, and
@@ -163,6 +203,7 @@ benchmark compilation. Runtime GPU validation is available through the manual
 - Apple Silicon runners labeled `self-hosted`, `macOS`, `ARM64`, `metal`
   validate Metal tests and optionally timed Metal benchmarks.
 - x86_64 CUDA runners labeled `self-hosted`, `Linux`, `X64`, `cuda` validate
-  CUDA device-memory output with `cuda-runtime` and the nvJPEG full-frame RGB8
-  JPEG path when `libnvjpeg` is installed. Timed NVIDIA performance claims
+  CUDA device-memory output with `cuda-runtime`, the nvJPEG full-frame RGB8
+  JPEG path when `libnvjpeg` is installed, and the `htj2k_encode_parity` suite
+  for the CUDA HTJ2K lossless encode path. Timed NVIDIA performance claims
   require the workflow's timed benchmark mode and recorded output.
