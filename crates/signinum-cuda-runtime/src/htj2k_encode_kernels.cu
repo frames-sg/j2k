@@ -14,8 +14,13 @@ typedef unsigned long long j2k_ulong;
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #endif
 
+__device__ inline uint j2k_unsigned_magnitude(int value) {
+    const uint bits = uint(value);
+    return value < 0 ? ~bits + 1u : bits;
+}
+
 __device__ inline uint j2k_classic_magnitude(int value) {
-    return value < 0 ? uint(-value) : uint(value);
+    return j2k_unsigned_magnitude(value);
 }
 
 static constexpr uint J2K_ENCODE_STATUS_OK = 0u;
@@ -29,6 +34,8 @@ static constexpr uint J2K_HT_MS_SIZE = ((16384u * 16u) + 14u) / 15u;
 static constexpr uint J2K_HT_MEL_OFFSET = J2K_HT_MS_SIZE;
 static constexpr uint J2K_HT_VLC_OFFSET = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
 static constexpr uint J2K_HT_SIGPROP_SCRATCH = 513u;
+static constexpr uint J2K_HT_MAX_CODEBLOCK_WIDTH = 1024u;
+static constexpr uint J2K_HT_MAX_CODEBLOCK_SAMPLES = 4096u;
 
 struct J2kHtEncodeParams {
     uint width;
@@ -138,8 +145,7 @@ __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total
         return 0u;
     }
     const uint sign = coefficient < 0 ? 0x80000000u : 0u;
-    const uint magnitude = (coefficient < 0 ? uint(-coefficient) : uint(coefficient))
-        << (31u - total_bitplanes);
+    const uint magnitude = j2k_unsigned_magnitude(coefficient) << (31u - total_bitplanes);
     return sign | magnitude;
 }
 
@@ -1123,6 +1129,8 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_FAIL, 0u, 0u, 0u, 0u);
 
     if (params.width == 0u || params.height == 0u || params.coefficient_stride < params.width ||
+        params.width > J2K_HT_MAX_CODEBLOCK_WIDTH ||
+        params.height > J2K_HT_MAX_CODEBLOCK_SAMPLES / params.width ||
         params.total_bitplanes == 0u || params.total_bitplanes > J2K_HT_MAX_BITPLANES ||
         params.output_capacity < J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE + J2K_HT_VLC_SIZE) {
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 1u, 0u, 0u, 0u);

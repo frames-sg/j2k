@@ -248,9 +248,9 @@ fn subband_from_codeblock_slice(
     height: usize,
     sub_band_type: J2kSubBandType,
     options: Htj2k97CodeBlockOptions,
-) -> PrequantizedHtj2k97Subband {
-    let cb_width = 1usize << (options.code_block_width_exp + 2);
-    let cb_height = 1usize << (options.code_block_height_exp + 2);
+) -> Result<PrequantizedHtj2k97Subband, CudaTranscodeError> {
+    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp)?;
+    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp)?;
     let num_cbs_x = width.div_ceil(cb_width);
     let num_cbs_y = height.div_ceil(cb_height);
     let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
@@ -260,21 +260,34 @@ fn subband_from_codeblock_slice(
             let block_width = (width - cbx * cb_width).min(cb_width);
             let block_height = (height - cby * cb_height).min(cb_height);
             let len = block_width * block_height;
+            let end = offset.checked_add(len).ok_or(CudaTranscodeError::Kernel(
+                "CUDA 9/7 code-block band length overflow",
+            ))?;
+            if end > data.len() {
+                return Err(CudaTranscodeError::Kernel(
+                    "CUDA 9/7 code-block band output is shorter than expected",
+                ));
+            }
             code_blocks.push(PrequantizedHtj2k97CodeBlock {
-                coefficients: data[offset..offset + len].to_vec(),
+                coefficients: data[offset..end].to_vec(),
                 width: block_width as u32,
                 height: block_height as u32,
             });
-            offset += len;
+            offset = end;
         }
     }
-    PrequantizedHtj2k97Subband {
+    if offset != data.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA 9/7 code-block band output has trailing data",
+        ));
+    }
+    Ok(PrequantizedHtj2k97Subband {
         sub_band_type,
         num_cbs_x: num_cbs_x as u32,
         num_cbs_y: num_cbs_y as u32,
         total_bitplanes: htj2k97_subband_total_bitplanes(options, sub_band_type),
         code_blocks,
-    }
+    })
 }
 
 /// Reslice the per-item code-block bands into prequantized HTJ2K components,
@@ -284,11 +297,20 @@ fn codeblock_bands_to_components(
     bands: &CudaHtj2k97CodeblockBands,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
     options: Htj2k97CodeBlockOptions,
-) -> Vec<PrequantizedHtj2k97Component> {
+) -> Result<Vec<PrequantizedHtj2k97Component>, CudaTranscodeError> {
+    if bands.item_count != jobs.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA 9/7 code-block band item count mismatch",
+        ));
+    }
     let ll_size = bands.low_width * bands.low_height;
     let hl_size = bands.high_width * bands.low_height;
     let lh_size = bands.low_width * bands.high_height;
     let hh_size = bands.high_width * bands.high_height;
+    validate_band_len(&bands.ll, bands.item_count, ll_size)?;
+    validate_band_len(&bands.hl, bands.item_count, hl_size)?;
+    validate_band_len(&bands.lh, bands.item_count, lh_size)?;
+    validate_band_len(&bands.hh, bands.item_count, hh_size)?;
     jobs.iter()
         .enumerate()
         .map(|(item, job)| {
@@ -296,7 +318,7 @@ fn codeblock_bands_to_components(
             let hl = &bands.hl[item * hl_size..(item + 1) * hl_size];
             let lh = &bands.lh[item * lh_size..(item + 1) * lh_size];
             let hh = &bands.hh[item * hh_size..(item + 1) * hh_size];
-            PrequantizedHtj2k97Component {
+            Ok(PrequantizedHtj2k97Component {
                 x_rsiz: job.x_rsiz,
                 y_rsiz: job.y_rsiz,
                 resolutions: vec![
@@ -307,7 +329,7 @@ fn codeblock_bands_to_components(
                             bands.low_height,
                             J2kSubBandType::LowLow,
                             options,
-                        )],
+                        )?],
                     },
                     PrequantizedHtj2k97Resolution {
                         subbands: vec![
@@ -317,25 +339,25 @@ fn codeblock_bands_to_components(
                                 bands.low_height,
                                 J2kSubBandType::HighLow,
                                 options,
-                            ),
+                            )?,
                             subband_from_codeblock_slice(
                                 lh,
                                 bands.low_width,
                                 bands.high_height,
                                 J2kSubBandType::LowHigh,
                                 options,
-                            ),
+                            )?,
                             subband_from_codeblock_slice(
                                 hh,
                                 bands.high_width,
                                 bands.high_height,
                                 J2kSubBandType::HighHigh,
                                 options,
-                            ),
+                            )?,
                         ],
                     },
                 ],
-            }
+            })
         })
         .collect()
 }
@@ -347,6 +369,7 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
     if !transcode_kernels_built() {
         return Err(CudaTranscodeError::CudaUnavailable);
     }
+    let (cb_width, cb_height) = validate_htj2k97_codeblock_options(options)?;
     let context = shared_context()?;
 
     let Some(first) = jobs.first() else {
@@ -375,8 +398,8 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
         inv_delta_hl: inv_delta(J2kSubBandType::HighLow),
         inv_delta_lh: inv_delta(J2kSubBandType::LowHigh),
         inv_delta_hh: inv_delta(J2kSubBandType::HighHigh),
-        cb_width: 1usize << (options.code_block_width_exp + 2),
-        cb_height: 1usize << (options.code_block_height_exp + 2),
+        cb_width,
+        cb_height,
     };
 
     let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
@@ -395,6 +418,79 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 code-block batch dispatch failed"))?;
 
-    let components = codeblock_bands_to_components(&codeblock_bands, jobs, options);
+    let components = codeblock_bands_to_components(&codeblock_bands, jobs, options)?;
     Ok((components, map_batch_timings(timings)))
+}
+
+fn validate_band_len(
+    band: &[i32],
+    item_count: usize,
+    item_size: usize,
+) -> Result<(), CudaTranscodeError> {
+    let expected = item_count
+        .checked_mul(item_size)
+        .ok_or(CudaTranscodeError::Kernel(
+            "CUDA 9/7 code-block band length overflow",
+        ))?;
+    if band.len() != expected {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA 9/7 code-block band output length mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_htj2k97_codeblock_options(
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(usize, usize), CudaTranscodeError> {
+    if options.bit_depth == 0
+        || options.bit_depth > 30
+        || options.guard_bits > 30
+        || !options.irreversible_quantization_scale.is_finite()
+        || options.irreversible_quantization_scale <= 0.0
+    {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 code-block options are outside supported numeric range",
+        ));
+    }
+
+    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp)?;
+    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp)?;
+    if cb_width > 1024
+        || cb_height > 1024
+        || cb_width
+            .checked_mul(cb_height)
+            .is_none_or(|area| area > 4096)
+    {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 code-block dimensions exceed HTJ2K limits",
+        ));
+    }
+
+    for subband in [
+        J2kSubBandType::LowLow,
+        J2kSubBandType::HighLow,
+        J2kSubBandType::LowHigh,
+        J2kSubBandType::HighHigh,
+    ] {
+        let delta = htj2k97_subband_delta(options, subband);
+        if !delta.is_finite()
+            || delta <= 0.0
+            || htj2k97_subband_total_bitplanes(options, subband) > 30
+        {
+            return Err(CudaTranscodeError::UnsupportedJob(
+                "CUDA 9/7 code-block quantization options are outside supported range",
+            ));
+        }
+    }
+
+    Ok((cb_width, cb_height))
+}
+
+fn htj2k97_code_block_dim(exp_minus_two: u8) -> Result<usize, CudaTranscodeError> {
+    1usize
+        .checked_shl(u32::from(exp_minus_two) + 2)
+        .ok_or(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 code-block exponent is too large",
+        ))
 }

@@ -71,6 +71,7 @@ void nvb_session_destroy(NvbSession* session) {
     if (!session) {
         return;
     }
+    if (session->stream) { cudaStreamSynchronize(session->stream); }
     nvb_session_release_planes(session);
     if (session->enc_params) { nvjpeg2kEncodeParamsDestroy(session->enc_params); }
     if (session->enc_state) { nvjpeg2kEncodeStateDestroy(session->enc_state); }
@@ -162,6 +163,7 @@ int nvb_decode_jpeg_rgb(
     }
 
 cleanup:
+    if (stream) { cudaStreamSynchronize(stream); }
     if (dev) { cudaFree(dev); }
     if (state) { nvjpegJpegStateDestroy(state); }
     if (handle) { nvjpegDestroy(handle); }
@@ -222,7 +224,7 @@ int nvb_session_transcode_jpeg_to_htj2k(
 
     cudaEventRecord(session->start, session->stream);
     if (nvjpegDecode(session->jpeg_handle, session->jpeg_state, jpeg, jpeg_len, NVJPEG_OUTPUT_RGB, &dest, session->stream)
-        != NVJPEG_STATUS_SUCCESS) { return 110; }
+        != NVJPEG_STATUS_SUCCESS) { rc = 110; goto drain; }
     cudaEventRecord(session->mid, session->stream);
 
     // --- nvJPEG2000 HTJ2K encode of the planar RGB ---
@@ -256,7 +258,7 @@ int nvb_session_transcode_jpeg_to_htj2k(
     config.irreversible = 1; // 9/7 irreversible path.
 
     if (nvjpeg2kEncodeParamsSetEncodeConfig(session->enc_params, &config) != NVJPEG2K_STATUS_SUCCESS) {
-        return 204;
+        rc = 204; goto drain;
     }
 
     plane_ptrs[0] = session->planes[0];
@@ -272,17 +274,16 @@ int nvb_session_transcode_jpeg_to_htj2k(
     input.num_components = 3;
 
     if (nvjpeg2kEncode(session->enc, session->enc_state, session->enc_params, &input, session->stream) != NVJPEG2K_STATUS_SUCCESS) {
-        return 210;
+        rc = 210; goto drain;
     }
-    cudaEventRecord(session->stop, session->stream);
-    cudaStreamSynchronize(session->stream);
 
     if (nvjpeg2kEncodeRetrieveBitstream(session->enc, session->enc_state, nullptr, &length, session->stream)
-        != NVJPEG2K_STATUS_SUCCESS) { return 211; }
-    if (length > out_cap) { return 212; }
+        != NVJPEG2K_STATUS_SUCCESS) { rc = 211; goto drain; }
+    if (length > out_cap) { rc = 212; goto drain; }
     if (nvjpeg2kEncodeRetrieveBitstream(session->enc, session->enc_state, out, &length, session->stream)
-        != NVJPEG2K_STATUS_SUCCESS) { return 213; }
-    cudaStreamSynchronize(session->stream);
+        != NVJPEG2K_STATUS_SUCCESS) { rc = 213; goto drain; }
+    cudaEventRecord(session->stop, session->stream);
+    if (cudaStreamSynchronize(session->stream) != cudaSuccess) { return 906; }
     *out_len = length;
 
     cudaEventElapsedTime(&decode_elapsed, session->start, session->mid);
@@ -290,6 +291,10 @@ int nvb_session_transcode_jpeg_to_htj2k(
     *decode_ms = (double)decode_elapsed;
     *encode_ms = (double)encode_elapsed;
     return 0;
+
+drain:
+    cudaStreamSynchronize(session->stream);
+    return rc;
 }
 
 // Compatibility one-shot wrapper.

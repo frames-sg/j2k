@@ -423,6 +423,7 @@ impl ContextInner {
     }
 
     fn kernel_function(&self, kernel: CudaKernel) -> Result<CuFunction, CudaError> {
+        ensure_kernel_ptx_built(kernel)?;
         self.set_current()?;
         let mut modules = self
             .modules
@@ -438,6 +439,54 @@ impl ContextInner {
         let function = compiled.function;
         modules.insert(kernel, compiled);
         Ok(function)
+    }
+}
+
+fn ensure_kernel_ptx_built(kernel: CudaKernel) -> Result<(), CudaError> {
+    let message = match kernel {
+        CudaKernel::J2kDeinterleaveToF32
+        | CudaKernel::J2kForwardRct
+        | CudaKernel::J2kForwardIct
+        | CudaKernel::J2kForwardDwt53Horizontal
+        | CudaKernel::J2kForwardDwt53Vertical
+        | CudaKernel::J2kForwardDwt97Horizontal
+        | CudaKernel::J2kForwardDwt97Vertical
+        | CudaKernel::J2kQuantizeSubband
+        | CudaKernel::J2kQuantizeSubbandStrided
+            if !J2K_ENCODE_PTX_BUILT_FROM_CUDA =>
+        {
+            Some("JPEG 2000 encode CUDA PTX was not built from j2k_encode_kernels.cu")
+        }
+        CudaKernel::Htj2kEncodeCodeblock
+        | CudaKernel::Htj2kEncodeCodeblocks
+        | CudaKernel::Htj2kPacketizeCleanup
+            if !HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA =>
+        {
+            Some("HTJ2K encode CUDA PTX was not built from htj2k_encode_kernels.cu")
+        }
+        CudaKernel::TranscodeReversible53Idct
+        | CudaKernel::TranscodeReversible53VerticalLow
+        | CudaKernel::TranscodeReversible53VerticalHigh
+        | CudaKernel::TranscodeReversible53HorizontalLow
+        | CudaKernel::TranscodeReversible53HorizontalHigh
+        | CudaKernel::TranscodeDwt97Idct
+        | CudaKernel::TranscodeDwt97RowLift
+        | CudaKernel::TranscodeDwt97ColumnLift
+        | CudaKernel::TranscodeDwt97IdctBatch
+        | CudaKernel::TranscodeDwt97RowLiftBatch
+        | CudaKernel::TranscodeDwt97ColumnLiftBatch
+        | CudaKernel::TranscodeDwt97QuantizeCodeblocks
+            if !TRANSCODE_PTX_BUILT_FROM_CUDA =>
+        {
+            Some("transcode CUDA PTX was not built from transcode_kernels.cu")
+        }
+        _ => None,
+    };
+    match message {
+        Some(message) => Err(CudaError::InvalidArgument {
+            message: message.to_string(),
+        }),
+        None => Ok(()),
     }
 }
 
@@ -658,7 +707,10 @@ pub struct CudaHtj2kEncodeResources {
 
 const HTJ2K_STATUS_OK: u32 = 0;
 const HTJ2K_STATUS_UNSUPPORTED: u32 = 2;
+const J2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_j2k_encode_ptx_built);
 const HTJ2K_ENCODE_PTX_BUILT_FROM_CUDA: bool = cfg!(signinum_cuda_htj2k_encode_ptx_built);
+const HTJ2K_ENCODE_MAX_CODEBLOCK_WIDTH: u32 = 1024;
+const HTJ2K_ENCODE_MAX_CODEBLOCK_SAMPLES: usize = 4096;
 /// True when the coefficient-domain transcode kernels were compiled by nvcc
 /// (the runner). When false, build.rs wrote a placeholder PTX, so dispatch
 /// returns a typed error instead of loading a non-existent kernel.
@@ -4954,6 +5006,7 @@ fn htj2k_encode_kernel_jobs(
     let mut output_offset = 0usize;
     let mut kernel_jobs = Vec::with_capacity(jobs.len());
     for job in jobs {
+        validate_htj2k_encode_codeblock_shape(job.width, job.height)?;
         let coefficient_offset = job.coefficient_offset as usize;
         let coefficient_len = checked_image_words(job.width, job.height, 1)?;
         let coefficient_end =
@@ -5001,6 +5054,7 @@ fn htj2k_encode_region_kernel_jobs(
     let mut output_offset = 0usize;
     let mut kernel_jobs = Vec::with_capacity(jobs.len());
     for job in jobs {
+        validate_htj2k_encode_codeblock_shape(job.width, job.height)?;
         if job.width == 0 || job.height == 0 || job.coefficient_stride < job.width {
             return Err(CudaError::LengthTooLarge {
                 len: coefficient_words,
@@ -5050,6 +5104,23 @@ fn htj2k_encode_region_kernel_jobs(
         output_offset = output_end;
     }
     Ok(kernel_jobs)
+}
+
+fn validate_htj2k_encode_codeblock_shape(width: u32, height: u32) -> Result<(), CudaError> {
+    let samples = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+        .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+    if width == 0
+        || height == 0
+        || width > HTJ2K_ENCODE_MAX_CODEBLOCK_WIDTH
+        || samples > HTJ2K_ENCODE_MAX_CODEBLOCK_SAMPLES
+    {
+        return Err(CudaError::InvalidArgument {
+            message: "HTJ2K encode code-block dimensions exceed CUDA kernel limits".to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl CudaKernelOutput {

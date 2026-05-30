@@ -90,7 +90,7 @@ impl NvBaselineSession {
             let mut raw = std::ptr::null_mut();
             // SAFETY: `raw` is a valid out pointer. On success the C side
             // returns an owned session pointer that `Drop` releases.
-            let rc = unsafe { ffi::nvb_session_create(&mut raw) };
+            let rc = unsafe { ffi::nvb_session_create(std::ptr::addr_of_mut!(raw)) };
             if rc != 0 {
                 return Err(NvBaselineError::Stage(rc));
             }
@@ -170,8 +170,8 @@ pub fn nvidia_decode_jpeg_rgb(jpeg: &[u8]) -> Result<(Vec<u8>, u32, u32), NvBase
                 jpeg.len(),
                 out.as_mut_ptr(),
                 out.len(),
-                &mut width,
-                &mut height,
+                std::ptr::addr_of_mut!(width),
+                std::ptr::addr_of_mut!(height),
             )
         };
         if rc != 0 {
@@ -220,12 +220,12 @@ fn nvidia_transcode_with_session(
                 jpeg.len(),
                 out.as_mut_ptr(),
                 out.len(),
-                &mut out_len,
-                &mut decode_ms,
-                &mut encode_ms,
-                &mut width,
-                &mut height,
-                &mut num_components,
+                std::ptr::addr_of_mut!(out_len),
+                std::ptr::addr_of_mut!(decode_ms),
+                std::ptr::addr_of_mut!(encode_ms),
+                std::ptr::addr_of_mut!(width),
+                std::ptr::addr_of_mut!(height),
+                std::ptr::addr_of_mut!(num_components),
             )
         };
         // rc 212 == output buffer too small; double and retry once more.
