@@ -3800,6 +3800,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
 
+    #[cfg(target_os = "macos")]
     macro_rules! lossless_options {
         ($($field:ident: $value:expr),+ $(,)?) => {{
             let mut options = J2kLosslessEncodeOptions::default();
