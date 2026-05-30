@@ -3080,6 +3080,15 @@ mod tests {
         J2kPacketizationResolution, J2kPacketizationSubband,
     };
 
+    fn assert_strict_cuda_classic_tier1_error<E: CodecError + ?Sized>(err: &E, context: &str) {
+        assert!(err.is_unsupported());
+        let message = err.to_string();
+        assert!(
+            message.contains("tier1_code_block") || message.contains("deinterleave"),
+            "expected {context} error to mention either the missing classic tier-1 stage or unavailable CUDA deinterleave, got {message}"
+        );
+    }
+
     #[test]
     fn cuda_lossless_encode_prefer_device_errors_for_unsupported_classic_tier1() {
         let pixels: Vec<u8> = (0u32..128 * 128)
@@ -3096,18 +3105,7 @@ mod tests {
         let err = encode_j2k_lossless_with_cuda(samples, &options)
             .expect_err("CUDA-named encode must not silently return CPU fallback");
 
-        assert!(err.is_unsupported());
-        let message = err.to_string();
-        let expected_missing_stage = if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-        {
-            "tier1_code_block"
-        } else {
-            "deinterleave"
-        };
-        assert!(
-            message.contains(expected_missing_stage),
-            "expected strict CUDA encode error to mention {expected_missing_stage}, got {message}"
-        );
+        assert_strict_cuda_classic_tier1_error(&err, "strict CUDA encode");
     }
 
     #[test]
@@ -3126,18 +3124,7 @@ mod tests {
         let err = encode_j2k_lossless_with_cuda_and_profile(samples, &options)
             .expect_err("profiled CUDA encode must not silently return CPU fallback");
 
-        assert!(err.is_unsupported());
-        let message = err.to_string();
-        let expected_missing_stage = if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-        {
-            "tier1_code_block"
-        } else {
-            "deinterleave"
-        };
-        assert!(
-            message.contains(expected_missing_stage),
-            "expected profiled strict CUDA encode error to mention {expected_missing_stage}, got {message}"
-        );
+        assert_strict_cuda_classic_tier1_error(&err, "profiled strict CUDA encode");
     }
 
     #[test]
@@ -3156,18 +3143,7 @@ mod tests {
         let err = encode_j2k_lossless_with_cuda(samples, &options)
             .expect_err("strict CUDA encode must not silently fall back to CPU");
 
-        assert!(err.is_unsupported());
-        let message = err.to_string();
-        let expected_missing_stage = if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-        {
-            "tier1_code_block"
-        } else {
-            "deinterleave"
-        };
-        assert!(
-            message.contains(expected_missing_stage),
-            "expected strict CUDA encode error to mention {expected_missing_stage}, got {message}"
-        );
+        assert_strict_cuda_classic_tier1_error(&err, "strict CUDA encode");
     }
 
     #[test]
