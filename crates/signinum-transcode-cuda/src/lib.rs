@@ -403,6 +403,9 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+        // The code-block path is a staged 9/7 batch plus quantization, so it
+        // counts as both a 9/7 batch and a code-block batch (matching Metal).
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
         self.htj2k97_codeblock_batch_attempts =
             self.htj2k97_codeblock_batch_attempts.saturating_add(1);
         self.last_dwt97_batch_stage_timings = None;
@@ -421,6 +424,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         {
             match cuda::dispatch_htj2k97_codeblock_batch(jobs, options) {
                 Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
                         self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
                     self.last_dwt97_batch_stage_timings = Some(timings);

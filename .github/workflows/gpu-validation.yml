@@ -131,11 +131,11 @@ jobs:
       - run: cargo test -p signinum-transcode-cuda --all-targets --features cuda-runtime
       - name: Run JPEG->HTJ2K transcode parity tests with executed-count floor
         run: |
-          out=$(cargo test -p signinum-transcode-cuda --features cuda-runtime --test reversible_dwt53_parity --test dwt97_parity --test dwt97_batch_parity --test htj2k97_codeblock_parity -- --nocapture 2>&1)
+          out=$(cargo test -p signinum-transcode-cuda --features cuda-runtime --test reversible_dwt53_parity --test dwt97_parity --test dwt97_batch_parity --test htj2k97_codeblock_parity --test jpeg_to_htj2k -- --nocapture 2>&1)
           echo "$out"
           passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')
           echo "transcode parity tests passed: ${passed:-0}"
-          test "${passed:-0}" -ge 4 || { echo "Expected at least 4 executed transcode parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
+          test "${passed:-0}" -ge 7 || { echo "Expected at least 7 executed transcode parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
       - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-profiling
       - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
