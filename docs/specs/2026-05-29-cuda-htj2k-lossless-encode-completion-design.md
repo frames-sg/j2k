@@ -1,7 +1,9 @@
 # CUDA HTJ2K Lossless Encode — Completion to Native Parity (Approach C)
 
 - **Date:** 2026-05-29 (revised after adversarial review)
-- **Status:** Design approved with review fixes applied; → implementation plan.
+- **Status:** Design approved with review fixes applied. **Phase 1 complete and
+  validated on the GPU runner (2026-05-30).** Phase 2 decisions locked
+  2026-05-30 (see §3, §8, §10); → Phase 2 implementation plan.
 - **Approach:** C — Coverage-maximal (chosen over A/B).
 - **Implementation base branch:** `codex/cuda-htj2k-runner` (the only branch that
   carries the CUDA encode pipeline; current `codex/maturity-hardening` does not).
@@ -69,15 +71,29 @@ producible lossless set** — and only inputs native is *proven* to round-trip.
   by GPU tag-tree capacity** (next bullet).
 
 ### Bounded dimension — tag-tree capacity
-The CUDA packetizer uses fixed tag-tree buffers (≤2048 nodes, ≤16 levels) and
-**hard-errors** on subbands exceeding them; native is unbounded
-(`tag_tree_encode.rs`). At the default 64×64 code block a component wider/taller
-than ~5120 px produces an over-capacity subband that native encodes but CUDA
-aborts. **Default plan: grow/segment the GPU tag-tree buffers to remove the
-ceiling** (true coverage-maximal). If growing proves infeasible within budget,
-the documented fallback is a **typed `UnsupportedCudaRequest`** with the capacity
-reason (§6) plus a logged bound — never a silent abort. This is characterized by a
-dedicated boundary test (§7).
+The CUDA packetizer uses fixed **per-thread** tag-tree buffers and **hard-errors**
+on subbands exceeding them; native is unbounded (`tag_tree_encode.rs`). The buffers
+are kernel-local stack arrays — `struct J2kPacketTagTree { uint values[N]; uint
+current[N]; uint known[N]; … }` — and **two are live at once** (inclusion +
+zero-bitplane) in the single thread that builds each packet header. At the default
+64×64 code block a component large enough to produce an over-capacity subband is
+encoded by native but aborted by CUDA. The cap is enforced per-subband-tree and
+mirrored in three sites that must stay in lockstep: kernel
+`htj2k_encode_kernels.cu`, `signinum-cuda-runtime/src/lib.rs`, and
+`signinum-j2k-cuda/src/encode.rs`.
+
+**Phase 2 decision (2026-05-30): grow by raising the fixed node cap, `2048 → 8192`.**
+The level cap stays `16` (node count binds first; 16 levels covers >32k code-blocks
+per dimension). Per-thread local memory for the two live trees is
+`2 × 3 × N × 4 B ≈ 24·N` ≈ **197 KB at N=8192**, well under the 512 KB/thread CUDA
+limit (the hard ceiling on this mechanism is ~21k nodes). This was chosen over a
+device-global-buffer refactor (mirroring Metal's dynamic per-subband sizing) and
+over segmentation — both remove the ceiling entirely but carry refactor risk to the
+already-green kernel and cannot be validated locally. Because the buffers stay
+fixed-size, the capacity guard is **retained at the new bound**: an over-8192-node
+subband still returns a typed `UnsupportedCudaRequest` (§6) with the capacity reason
+and a logged bound — never a silent overflow. Characterized by a dedicated boundary
+test (just-under passes; just-over → typed error) (§7).
 
 ### Out of scope (with rationale)
 - **Classic/tier-1 EBCOT** — not HTJ2K; `encode_tier1_code_block` stays
@@ -189,7 +205,7 @@ in-scope input; it returns typed, non-sensitive errors:
 | Lossy 9/7 | `UnsupportedCudaRequest` — "lossless-only" |
 | `num_layers != 1` | `UnsupportedCudaRequest` — "single-layer only" |
 | Subsampling ≠ (1,1) | `UnsupportedCudaRequest` — "subsampling unsupported" |
-| Subband exceeds GPU tag-tree capacity (if ceiling retained) | `UnsupportedCudaRequest` — capacity reason + logged bound |
+| Subband exceeds GPU tag-tree capacity (>8192 nodes/subband-tree) | `UnsupportedCudaRequest` — capacity reason + logged bound |
 | 4-component MCT | **handled on GPU (`Some`)**, not rejected |
 | CUDA runtime unavailable | existing unavailable error |
 
@@ -234,12 +250,19 @@ for the wrong reason off-GPU, §12).
   exports) + the fail-closed CI gates (§7) + the native 2-/4-component round-trip
   precondition tests. **This satisfies the full Definition of Done** (host
   assembly retained — framing is already byte-identical to native).
-- **Phase 2 — Maximal coverage + hardening.** C5 (full bit-depth/component sweep)
-  + C6 (fuzz harness) + the tag-tree boundary: grow/segment the GPU buffers to
-  remove the ceiling (preferred), else land the typed rejection + boundary test.
-- **Phase 3 — Optional residency purity.** C4 GPU assembly kernel **only if** a
-  measured residency requirement appears; otherwise drop and document host
-  assembly as intentional.
+- **Phase 2 — Maximal coverage + hardening.** C5 (full sweep: all depths 8–16 ×
+  comps {1,3,4} × signed × representative code-block sizes/DWT levels + the tag-tree
+  boundary cell) + C6 (seeded, deterministic property/fuzz parity harness, bounded
+  runner budget, logs skipped configs) + the native-determinism oracle
+  (`encode_htj2k(x) == encode_htj2k(x)` under varied `RAYON_NUM_THREADS`) + the
+  tag-tree node-cap raise `2048 → 8192` (constant bump, guard retained at new bound,
+  boundary test). Raise the CI executed-count floor to the new parity-test count.
+  (Carries forward the Phase-1 signed scoping: codestream byte-parity asserted for
+  all cells; byte-exact pixel round-trip for unsigned cells, sized-decode for signed.)
+- **Phase 3 — Optional residency purity. RESOLVED: dropped (2026-05-30).** No
+  measured residency need exists; host codestream assembly stays the intentional
+  final step, documented as such in `docs/architecture.md` / `docs/wsi-decode-api.md`.
+  C4 is not built.
 
 ## 9. Risks
 
@@ -255,15 +278,24 @@ for the wrong reason off-GPU, §12).
 - **C4 (if built)** introduces a new parity surface with no native byte-vs-native
   assembler precedent (Metal tests only round-trip) — hence demoted/optional.
 
-## 10. Open items to resolve in the implementation plan
+## 10. Open items — resolution status
 
-- Tag-tree ceiling: **grow GPU buffers vs typed-reject** — pick during Phase 2 by
-  feasibility/budget; default is grow.
+- Tag-tree ceiling: **RESOLVED (2026-05-30) — grow by raising the node cap to 8192**
+  (constant bump across the three mirrored sites; 16 levels unchanged), guard
+  retained at the new bound + boundary test. Device-global-buffer refactor and
+  segmentation were considered and declined (refactor risk / not locally testable).
+- C4 GPU codestream-assembly kernel: **RESOLVED — dropped**; host assembly documented
+  as intentional.
+- CI trigger: **RESOLVED — retain `workflow_dispatch`-only** for the GPU parity job
+  (cost/policy call); a `push`/merge-queue trigger may be revisited separately.
 - Confirm native round-trips 2- and 4-component HTJ2K lossless (precondition).
+  [Phase 1 established 4-component round-trip; 2-component is out of scope.]
 - Native 4-component behavior is now characterized (RCT planes 0–2 + passthrough
   3, `guard_bits.max(2)`); lock it with a native fixture before the CUDA path.
 - Base-branch/merge logistics: encode pipeline on `codex/cuda-htj2k-runner`;
-  reconcile with the in-flight test fixes on `codex/maturity-hardening`.
+  reconcile with the in-flight test fixes on `codex/maturity-hardening` — the latter's
+  CUDA test-expectation fixes are **not** required here (this branch is green on the
+  GPU runner), but the branches should be reconciled eventually.
 
 ## 11. Key code references (evidence)
 
