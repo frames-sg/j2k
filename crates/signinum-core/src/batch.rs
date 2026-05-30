@@ -11,6 +11,7 @@ pub struct TileBatchOptions {
 }
 
 impl TileBatchOptions {
+    /// Construct tile-batch options with an optional fixed worker count.
     pub const fn new(workers: Option<NonZeroUsize>) -> Self {
         Self { workers }
     }

@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
+/// Integer sample width used by a pixel format or row sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SampleType {
+    /// Unsigned 8-bit samples.
     U8,
+    /// Unsigned 16-bit samples.
     U16,
 }
 
+/// Supported integer sample type for row-oriented APIs.
 pub trait Sample: Copy + Default + Send + Sync + 'static {
+    /// Runtime sample type tag.
     const TYPE: SampleType;
+    /// Number of significant bits in the sample type.
     const BITS: u8;
 }
 
