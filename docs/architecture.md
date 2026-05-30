@@ -303,12 +303,66 @@ There are three target backends. Selection is explicit in the public API.
   CUDA as unavailable. JPEG full-frame RGB8 can decode through nvJPEG when
   `libnvjpeg` is available; unsupported JPEG shapes use explicit CPU-staged
   upload APIs where exposed. J2K CUDA reserves explicit CUDA requests for
-  CUDA-resident HTJ2K codestream decode.
+  CUDA-resident HTJ2K codestream decode and lossless encode (see
+  [CUDA HTJ2K lossless encode](#cuda-htj2k-lossless-encode) below).
 
 `BackendRequest::Auto` stays conservative: small or low-yield decodes are
 served from CPU; larger batches with supported shapes can be routed to a
 device backend. Public routing behavior is documented in the crate-level
 READMEs, benchmark notes, and release notes.
+
+## CUDA HTJ2K lossless encode
+
+`signinum-j2k-cuda` exposes `encode_j2k_lossless_with_cuda`, a strict
+on-device HTJ2K lossless encode path. Its design goal is a codestream
+byte-identical to the native CPU reference (`signinum_j2k_native::encode_htj2k`
+/ the CPU lossless path). Byte-parity is the contract enforced by the
+`cuda-x86_64-compatibility` job in `.github/workflows/gpu-validation.yml`: that
+job sets `SIGNINUM_REQUIRE_CUDA_RUNTIME` and runs the `htj2k_encode_parity` test
+suite with a fail-closed executed-count floor (at least 8 parity tests must
+execute, not merely compile). The job runs on the self-hosted CUDA runner via
+`workflow_dispatch` and is the authoritative gate before merging changes to the
+CUDA encode path.
+
+### Supported matrix
+
+| Dimension | Supported values |
+|-----------|-----------------|
+| Wavelet | Reversible 5/3 DWT, multi-level |
+| Coding passes | HT cleanup-pass-only |
+| Tile / layer / precinct | Single tile, single quality layer, single precinct |
+| Components | 1 (grayscale), 3 (RGB — MCT/RCT applied to all three planes), 4 (RGBA/CMYK — MCT/RCT on the first three planes; 4th component passed through) |
+| Bit depth | 8–16, signed and unsigned |
+| Code-block sizes | Multi-codeblock layouts |
+| Component subsampling | (1,1) only — equal subsampling for all components |
+
+### Non-goals (explicitly out of scope)
+
+The following are outside the strict CUDA encode path. Each is excluded for the
+stated reason.
+
+- **Classic/tier-1 EBCOT coding** — this path is HTJ2K-only; EBCOT codestreams
+  cannot be byte-identical to the HTJ2K native reference.
+- **Lossy 9/7 DWT (irreversible)** — lossy paths are never byte-exact.
+- **Multiple quality layers** — the native CPU reference is single-layer; no
+  multi-layer target exists to compare against.
+- **Multi-tile within one codestream** — the native CPU reference is
+  single-tile; tiling across codestreams is done at the caller/per-codestream
+  level.
+- **2-component images** — the native decoder rejects 2-component input with
+  `TooManyChannels`, so a 2-component round-trip cannot be validated.
+- **Component subsampling != (1,1)** — unequal subsampling changes block
+  geometry in ways the strict encode kernel does not handle.
+- **HT SigProp/MagRef refinement passes** — these are experimental and go
+  beyond what the native cleanup-pass-only path produces; round-trip validation
+  against the native reference is not established.
+
+### No silent fallback
+
+Out-of-scope or unavailable requests from `encode_j2k_lossless_with_cuda`
+return a typed error. The accelerator never silently falls back to the CPU
+encoder for an in-scope input — if the CUDA path is requested, the caller
+receives either a CUDA-produced codestream or an explicit error.
 
 ## Lifecycle and ownership
 
