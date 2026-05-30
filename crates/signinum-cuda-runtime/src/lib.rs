@@ -5372,6 +5372,235 @@ impl CudaContext {
     }
 }
 
+/// Irreversible single-level 9/7 transcode bands downloaded from the device.
+/// Device math is f32; callers widen to f64 (parity is within tolerance).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CudaTranscodeDwt97Bands {
+    /// Low-horizontal, low-vertical band (`low_width * low_height`).
+    pub ll: Vec<f32>,
+    /// High-horizontal, low-vertical band (`high_width * low_height`).
+    pub hl: Vec<f32>,
+    /// Low-horizontal, high-vertical band (`low_width * high_height`).
+    pub lh: Vec<f32>,
+    /// High-horizontal, high-vertical band (`high_width * high_height`).
+    pub hh: Vec<f32>,
+    /// Width of horizontally low-pass bands.
+    pub low_width: usize,
+    /// Height of vertically low-pass bands.
+    pub low_height: usize,
+    /// Width of horizontally high-pass bands.
+    pub high_width: usize,
+    /// Height of vertically high-pass bands.
+    pub high_height: usize,
+}
+
+impl CudaContext {
+    /// Compute one irreversible single-level 9/7 transform directly from
+    /// dequantized 8x8 DCT blocks (`block_cols * block_rows` blocks of 64 `f32`
+    /// natural-order coefficients), matching the `signinum-transcode` scalar
+    /// oracle within f32 tolerance.
+    #[allow(clippy::too_many_lines)]
+    pub fn j2k_transcode_dwt97(
+        &self,
+        blocks: &[f32],
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<CudaTranscodeDwt97Bands, CudaError> {
+        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
+            return Err(CudaError::InvalidArgument {
+                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
+                    .to_string(),
+            });
+        }
+        let block_count = block_cols
+            .checked_mul(block_rows)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_w = block_cols
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_h = block_rows
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_rows })?;
+        let expected_coeffs = block_count
+            .checked_mul(64)
+            .ok_or(CudaError::LengthTooLarge { len: block_count })?;
+        if width == 0
+            || height == 0
+            || width > covered_w
+            || height > covered_h
+            || blocks.len() != expected_coeffs
+        {
+            return Err(CudaError::InvalidArgument {
+                message: "9/7 transcode job has unsupported grid geometry".to_string(),
+            });
+        }
+
+        let low_width = width.div_ceil(2);
+        let low_height = height.div_ceil(2);
+        let high_width = width / 2;
+        let high_height = height / 2;
+
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let dims = Reversible53Dims {
+            block_cols: to_i32(block_cols)?,
+            width: to_i32(width)?,
+            height: to_i32(height)?,
+            low_width: to_i32(low_width)?,
+            high_width: to_i32(high_width)?,
+        };
+
+        self.inner.set_current()?;
+
+        let alloc_f32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
+            self.allocate(bytes)
+        };
+        let spatial = alloc_f32(width * height)?;
+        let row_low = alloc_f32(height * low_width)?;
+        let row_high = alloc_f32(height * high_width)?;
+        let ll = alloc_f32(low_width * low_height)?;
+        let lh = alloc_f32(low_width * high_height)?;
+        let hl = alloc_f32(high_width * low_height)?;
+        let hh = alloc_f32(high_width * high_height)?;
+
+        let blocks_dev = self.upload_f32(blocks)?;
+
+        self.launch_transcode_dwt97_idct(dims, &blocks_dev, &spatial)?;
+        self.launch_transcode_dwt97_row_lift(dims, &spatial, &row_low, &row_high)?;
+        if dims.low_width > 0 {
+            self.launch_transcode_dwt97_column_lift(&row_low, dims.low_width, dims.height, &ll, &lh)?;
+        }
+        if dims.high_width > 0 {
+            self.launch_transcode_dwt97_column_lift(
+                &row_high,
+                dims.high_width,
+                dims.height,
+                &hl,
+                &hh,
+            )?;
+        }
+
+        Ok(CudaTranscodeDwt97Bands {
+            ll: Self::download_f32_band(&ll, low_width * low_height)?,
+            hl: Self::download_f32_band(&hl, high_width * low_height)?,
+            lh: Self::download_f32_band(&lh, low_width * high_height)?,
+            hh: Self::download_f32_band(&hh, high_width * high_height)?,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        })
+    }
+
+    fn download_f32_band(
+        buffer: &CudaDeviceBuffer,
+        count: usize,
+    ) -> Result<Vec<f32>, CudaError> {
+        let mut out = vec![0f32; count];
+        if count != 0 {
+            buffer.copy_to_host(f32_slice_as_bytes_mut(&mut out))?;
+        }
+        Ok(out)
+    }
+
+    fn launch_transcode_dwt97_idct(
+        &self,
+        dims: Reversible53Dims,
+        blocks: &CudaDeviceBuffer,
+        spatial: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(CudaKernel::TranscodeDwt97Idct)?;
+        let mut blocks_ptr = blocks.device_ptr();
+        let mut block_cols = dims.block_cols;
+        let mut width = dims.width;
+        let mut height = dims.height;
+        let mut spatial_ptr = spatial.device_ptr();
+        let mut params = [
+            (&raw mut blocks_ptr).cast::<c_void>(),
+            (&raw mut block_cols).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut height).cast::<c_void>(),
+            (&raw mut spatial_ptr).cast::<c_void>(),
+        ];
+        let grid_w =
+            u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_h =
+            u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let geometry = j2k_dwt53_launch_geometry(grid_w, grid_h)
+            .ok_or(CudaError::LengthTooLarge { len: 0 })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_dwt97_row_lift(
+        &self,
+        dims: Reversible53Dims,
+        spatial: &CudaDeviceBuffer,
+        row_low: &CudaDeviceBuffer,
+        row_high: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(CudaKernel::TranscodeDwt97RowLift)?;
+        let mut spatial_ptr = spatial.device_ptr();
+        let mut width = dims.width;
+        let mut height = dims.height;
+        let mut low_width = dims.low_width;
+        let mut high_width = dims.high_width;
+        let mut low_ptr = row_low.device_ptr();
+        let mut high_ptr = row_high.device_ptr();
+        let mut params = [
+            (&raw mut spatial_ptr).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut height).cast::<c_void>(),
+            (&raw mut low_width).cast::<c_void>(),
+            (&raw mut high_width).cast::<c_void>(),
+            (&raw mut low_ptr).cast::<c_void>(),
+            (&raw mut high_ptr).cast::<c_void>(),
+        ];
+        let rows = usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let geometry =
+            copy_u8_launch_geometry(rows).ok_or(CudaError::LengthTooLarge { len: rows })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_dwt97_column_lift(
+        &self,
+        rows_buffer: &CudaDeviceBuffer,
+        band_width: i32,
+        height: i32,
+        low_out: &CudaDeviceBuffer,
+        high_out: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let columns =
+            usize::try_from(band_width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        if columns == 0 {
+            return Ok(());
+        }
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeDwt97ColumnLift)?;
+        let mut rows_ptr = rows_buffer.device_ptr();
+        let mut band = band_width;
+        let mut rows = height;
+        let mut low_ptr = low_out.device_ptr();
+        let mut high_ptr = high_out.device_ptr();
+        let mut params = [
+            (&raw mut rows_ptr).cast::<c_void>(),
+            (&raw mut band).cast::<c_void>(),
+            (&raw mut rows).cast::<c_void>(),
+            (&raw mut low_ptr).cast::<c_void>(),
+            (&raw mut high_ptr).cast::<c_void>(),
+        ];
+        let geometry =
+            copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+}
+
 #[derive(Debug)]
 struct CompiledKernel {
     module: CuModule,

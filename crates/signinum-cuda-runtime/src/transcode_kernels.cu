@@ -341,3 +341,134 @@ extern "C" __global__ void transcode_reversible53_horizontal_high(
         hh[(size_t)yh * high_width + i] = row[i * 2 + 1];
     }
 }
+
+// ===========================================================================
+// Irreversible 9/7 path: faithful f32 port of the signinum-transcode scalar
+// oracle (dct97_2d.rs). Separable float IDCT (idct8x8_sample) into a spatial
+// plane, then the separable single-level 9/7 transform (forward_lift_97):
+// rows -> {row_low, row_high}; columns of row_low -> {LL, LH}; columns of
+// row_high -> {HL, HH}. Device math is f32 (Metal uses f32 here too); parity
+// is asserted within the 2e-2 band tolerance. --fmad=false keeps the lift
+// operation ordering close to the scalar reference.
+// ===========================================================================
+
+typedef float f32;
+
+#define J2K_PI 3.14159265358979323846
+#define DWT97_ALPHA (-1.586134342059924f)
+#define DWT97_BETA  (-0.052980118572961f)
+#define DWT97_GAMMA (0.882911075530934f)
+#define DWT97_DELTA (0.443506852043971f)
+#define DWT97_KAPPA (1.230174104914001f)
+#define DWT97_INV_KAPPA (1.0f / DWT97_KAPPA)
+
+// idct8_basis(sample_idx, freq): scale * cos((s+0.5)*f*pi/8), scale = sqrt(1/8)
+// for freq 0 else sqrt(2/8). Matches idct8_basis_uncached in dct97_2d.rs.
+__device__ __forceinline__ f32 idct8_basis(int sample_idx, int freq) {
+    const f32 scale = (freq == 0) ? sqrtf(1.0f / 8.0f) : sqrtf(2.0f / 8.0f);
+    const f32 angle = (((f32)sample_idx + 0.5f) * (f32)freq * (f32)J2K_PI) / 8.0f;
+    return scale * cosf(angle);
+}
+
+// One IDCT sample, matching idct8x8_sample's accumulation order
+// (freq_y outer, freq_x inner; coeff * y_basis * x_basis).
+__device__ f32 idct8x8_sample(const f32* block, int local_x, int local_y) {
+    f32 sample = 0.0f;
+    for (int freq_y = 0; freq_y < 8; ++freq_y) {
+        const f32 y_basis = idct8_basis(local_y, freq_y);
+        const f32* brow = block + freq_y * 8;
+        for (int freq_x = 0; freq_x < 8; ++freq_x) {
+            sample += brow[freq_x] * y_basis * idct8_basis(local_x, freq_x);
+        }
+    }
+    return sample;
+}
+
+// forward_lift_97 applied with element stride `s` (1 for rows, band width for
+// columns), in place over `n` logical samples. Matches forward_lift_97.
+__device__ void forward_lift_97(f32* d, int n, int s) {
+    if (n < 2) {
+        return;
+    }
+    const int last_even = (n % 2 == 0) ? (n - 2) : (n - 1);
+    for (int i = 1; i < n; i += 2) {
+        const f32 left = d[(i - 1) * s];
+        const f32 right = (i + 1 < n) ? d[(i + 1) * s] : d[last_even * s];
+        d[i * s] += DWT97_ALPHA * (left + right);
+    }
+    for (int i = 0; i < n; i += 2) {
+        const f32 left = (i > 0) ? d[(i - 1) * s] : d[1 * s];
+        const f32 right = (i + 1 < n) ? d[(i + 1) * s] : left;
+        d[i * s] += DWT97_BETA * (left + right);
+    }
+    for (int i = 1; i < n; i += 2) {
+        const f32 left = d[(i - 1) * s];
+        const f32 right = (i + 1 < n) ? d[(i + 1) * s] : d[last_even * s];
+        d[i * s] += DWT97_GAMMA * (left + right);
+    }
+    for (int i = 0; i < n; i += 2) {
+        const f32 left = (i > 0) ? d[(i - 1) * s] : d[1 * s];
+        const f32 right = (i + 1 < n) ? d[(i + 1) * s] : left;
+        d[i * s] += DWT97_DELTA * (left + right);
+    }
+    for (int i = 0; i < n; i += 2) {
+        d[i * s] *= DWT97_INV_KAPPA;
+    }
+    for (int i = 1; i < n; i += 2) {
+        d[i * s] *= DWT97_KAPPA;
+    }
+}
+
+// Kernel: separable float IDCT into a width*height spatial plane.
+// One thread per (x, y).
+extern "C" __global__ void transcode_dwt97_idct(
+    const f32* blocks, int block_cols, int width, int height, f32* spatial) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const int block_idx = (y >> 3) * block_cols + (x >> 3);
+    const f32* block = blocks + (size_t)block_idx * 64;
+    spatial[(size_t)y * width + x] = idct8x8_sample(block, x & 7, y & 7);
+}
+
+// Kernel: horizontal 9/7 lift per row, then split even -> row_low, odd ->
+// row_high. One thread per row.
+extern "C" __global__ void transcode_dwt97_row_lift(
+    f32* spatial, int width, int height, int low_width, int high_width,
+    f32* row_low, f32* row_high) {
+    const int y = blockIdx.x * blockDim.x + threadIdx.x;
+    if (y >= height) {
+        return;
+    }
+    f32* row = spatial + (size_t)y * width;
+    forward_lift_97(row, width, 1);
+    for (int i = 0; i < low_width; ++i) {
+        row_low[(size_t)y * low_width + i] = row[i * 2];
+    }
+    for (int i = 0; i < high_width; ++i) {
+        row_high[(size_t)y * high_width + i] = row[i * 2 + 1];
+    }
+}
+
+// Kernel: vertical 9/7 lift per column (strided) of a band buffer, then split
+// even rows -> low_out, odd rows -> high_out. Used for row_low -> {LL, LH} and
+// row_high -> {HL, HH}. One thread per column. `band_width` is the column count
+// (= the in-place stride).
+extern "C" __global__ void transcode_dwt97_column_lift(
+    f32* rows, int band_width, int height, f32* low_out, f32* high_out) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= band_width) {
+        return;
+    }
+    forward_lift_97(rows + x, height, band_width);
+    for (int i = 0; i < height; ++i) {
+        const f32 value = rows[(size_t)i * band_width + x];
+        if ((i & 1) == 0) {
+            low_out[(size_t)(i / 2) * band_width + x] = value;
+        } else {
+            high_out[(size_t)(i / 2) * band_width + x] = value;
+        }
+    }
+}

@@ -17,7 +17,9 @@ use signinum_transcode::accelerator::{
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
 
-use signinum_cuda_runtime::{transcode_kernels_built, CudaContext, CudaTranscodeReversible53Bands};
+use signinum_cuda_runtime::{
+    transcode_kernels_built, CudaContext, CudaTranscodeDwt97Bands, CudaTranscodeReversible53Bands,
+};
 
 use crate::CudaTranscodeError;
 
@@ -92,16 +94,67 @@ pub(crate) fn dispatch_dwt53(
     Err(NOT_WIRED)
 }
 
-pub(crate) fn dispatch_dwt97(
-    _job: DctGridToDwt97Job<'_>,
+/// Flatten the job's `[[f64; 8]; 8]` natural-order DCT blocks into the contiguous
+/// `f32` coefficient buffer the runtime kernels consume (row-major within block).
+fn flatten_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(blocks.len() * 64);
+    for block in blocks {
+        for row in block {
+            for &coeff in row {
+                out.push(coeff as f32);
+            }
+        }
+    }
+    out
+}
+
+fn dwt97_bands_to_f64(bands: CudaTranscodeDwt97Bands) -> Dwt97TwoDimensional<f64> {
+    let widen = |band: Vec<f32>| -> Vec<f64> { band.into_iter().map(f64::from).collect() };
+    Dwt97TwoDimensional {
+        ll: widen(bands.ll),
+        hl: widen(bands.hl),
+        lh: widen(bands.lh),
+        hh: widen(bands.hh),
+        low_width: bands.low_width,
+        low_height: bands.low_height,
+        high_width: bands.high_width,
+        high_height: bands.high_height,
+    }
+}
+
+fn run_dwt97(
+    context: &CudaContext,
+    job: DctGridToDwt97Job<'_>,
 ) -> Result<Dwt97TwoDimensional<f64>, CudaTranscodeError> {
-    Err(NOT_WIRED)
+    let coeffs = flatten_f64_blocks_to_f32(job.blocks);
+    let bands = context
+        .j2k_transcode_dwt97(&coeffs, job.block_cols, job.block_rows, job.width, job.height)
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 transcode dispatch failed"))?;
+    Ok(dwt97_bands_to_f64(bands))
+}
+
+pub(crate) fn dispatch_dwt97(
+    job: DctGridToDwt97Job<'_>,
+) -> Result<Dwt97TwoDimensional<f64>, CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    run_dwt97(&context, job)
 }
 
 pub(crate) fn dispatch_dwt97_batch(
-    _jobs: &[DctGridToDwt97Job<'_>],
+    jobs: &[DctGridToDwt97Job<'_>],
 ) -> Result<(Vec<Dwt97TwoDimensional<f64>>, Dwt97BatchStageTimings), CudaTranscodeError> {
-    Err(NOT_WIRED)
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    let context = CudaContext::system_default().map_err(|_| CudaTranscodeError::CudaUnavailable)?;
+    let mut outputs = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        outputs.push(run_dwt97(&context, *job)?);
+    }
+    Ok((outputs, Dwt97BatchStageTimings::default()))
 }
 
 pub(crate) fn dispatch_htj2k97_codeblock_batch(
