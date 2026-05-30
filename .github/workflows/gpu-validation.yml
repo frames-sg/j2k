@@ -12,7 +12,10 @@ on:
         description: "Run Apple Silicon Metal validation jobs"
         type: boolean
         required: false
-        default: true
+        # Default off: with no Metal runner online the job sits queued forever,
+        # which holds the whole run "in progress" and locks every job's logs
+        # (including the CUDA gate). Opt in explicitly when a Metal runner is up.
+        default: false
       run-linux-ci:
         description: "Run the Linux CI gate on the self-hosted CUDA runner"
         type: boolean
