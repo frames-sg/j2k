@@ -5884,7 +5884,9 @@ mod tests {
             .expect("resource-backed single HTJ2K encode");
 
         assert_eq!(encoded.execution().kernel_dispatches(), 1);
-        assert_eq!(encoded.num_coding_passes(), 1);
+        // An all-zero codeblock has no significant bitplanes, so the encoder emits zero
+        // coding passes (matches native ht_block_encode::encode_code_block).
+        assert_eq!(encoded.num_coding_passes(), 0);
     }
 
     #[test]
@@ -6264,12 +6266,16 @@ mod tests {
         let actual = components
             .download_components()
             .expect("download resident components");
+        // Forward ICT on the deinterleaved planes after the -128 DC level shift.
+        // Chroma coeffs are identical to native forward_ict. Cb differs by ~3e-4 between
+        // the two pixels because the uniform +30 offset times the (non-zero) Cb coeff sum
+        // is not fully cancelled, whereas Cr's coeffs sum to exactly 0 so it is identical.
         assert!((actual[0][0] - -109.850_006).abs() < 0.000_1);
-        assert!((actual[1][0] - 5.625).abs() < 0.000_1);
-        assert!((actual[2][0] - -7.687_5).abs() < 0.000_1);
+        assert!((actual[1][0] - 6.688_58).abs() < 0.000_1);
+        assert!((actual[2][0] - -5.813_1).abs() < 0.000_1);
         assert!((actual[0][1] - -79.85).abs() < 0.000_1);
-        assert!((actual[1][1] - 5.625).abs() < 0.000_1);
-        assert!((actual[2][1] - -7.687_5).abs() < 0.000_1);
+        assert!((actual[1][1] - 6.688_28).abs() < 0.000_1);
+        assert!((actual[2][1] - -5.813_1).abs() < 0.000_1);
     }
 
     #[test]
@@ -6480,7 +6486,9 @@ mod tests {
             )
             .expect("CUDA irreversible quantize");
         assert_eq!(irreversible.execution().kernel_dispatches(), 1);
-        assert_eq!(irreversible.coefficients(), &[-1, -1, 0, 0, 0, 0, 1, 4]);
+        // delta = 2^(range_bits - step_exponent) = 2^(8-9) = 0.5, so q = sign*floor(|s|/0.5).
+        // Matches native QuantStepSize::delta and JPEG2000 (T.800, Annex E).
+        assert_eq!(irreversible.coefficients(), &[-7, -5, 0, 0, 0, 3, 6, 19]);
     }
 
     #[test]
