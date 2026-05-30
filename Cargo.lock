@@ -1026,6 +1026,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signinum-nvidia-baseline"
+version = "0.4.4"
+dependencies = [
+ "signinum-j2k-native",
+ "signinum-jpeg",
+ "signinum-transcode",
+ "signinum-transcode-cuda",
+]
+
+[[package]]
 name = "signinum-profile"
 version = "0.4.4"
 
@@ -1054,6 +1064,16 @@ dependencies = [
  "rayon",
  "signinum-j2k-native",
  "signinum-jpeg",
+]
+
+[[package]]
+name = "signinum-transcode-cuda"
+version = "0.4.4"
+dependencies = [
+ "signinum-cuda-runtime",
+ "signinum-j2k-native",
+ "signinum-jpeg",
+ "signinum-transcode",
 ]
 
 [[package]]
