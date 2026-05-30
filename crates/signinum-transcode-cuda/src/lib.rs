@@ -240,8 +240,11 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         true
     }
 
+    // The fused DCT->9/7->prequantized-codeblock path is a future optimization;
+    // the float 9/7 band path (`dct_grid_to_dwt97`) is the complete irreversible
+    // transcode the pipeline uses, so we do not offer the codeblock hook.
     fn supports_htj2k97_codeblock_batch(&self) -> bool {
-        true
+        false
     }
 
     fn dct_grid_to_reversible_dwt53(

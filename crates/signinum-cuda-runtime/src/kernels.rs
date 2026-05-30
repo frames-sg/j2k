@@ -36,6 +36,9 @@ pub(crate) enum CudaKernel {
     TranscodeReversible53VerticalHigh,
     TranscodeReversible53HorizontalLow,
     TranscodeReversible53HorizontalHigh,
+    TranscodeDwt97Idct,
+    TranscodeDwt97RowLift,
+    TranscodeDwt97ColumnLift,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,7 +82,10 @@ impl CudaKernel {
             | Self::TranscodeReversible53VerticalLow
             | Self::TranscodeReversible53VerticalHigh
             | Self::TranscodeReversible53HorizontalLow
-            | Self::TranscodeReversible53HorizontalHigh => TRANSCODE_PTX,
+            | Self::TranscodeReversible53HorizontalHigh
+            | Self::TranscodeDwt97Idct
+            | Self::TranscodeDwt97RowLift
+            | Self::TranscodeDwt97ColumnLift => TRANSCODE_PTX,
         }
     }
 
@@ -118,6 +124,9 @@ impl CudaKernel {
             Self::TranscodeReversible53VerticalHigh => b"transcode_reversible53_vertical_high\0",
             Self::TranscodeReversible53HorizontalLow => b"transcode_reversible53_horizontal_low\0",
             Self::TranscodeReversible53HorizontalHigh => b"transcode_reversible53_horizontal_high\0",
+            Self::TranscodeDwt97Idct => b"transcode_dwt97_idct\0",
+            Self::TranscodeDwt97RowLift => b"transcode_dwt97_row_lift\0",
+            Self::TranscodeDwt97ColumnLift => b"transcode_dwt97_column_lift\0",
         }
     }
 }
