@@ -87,7 +87,9 @@ pub struct CudaHtj2kProfileReport {
     pub mct_us: u128,
     /// Store/format conversion kernel time.
     pub store_us: u128,
-    /// Total wall time for the measured operation.
+    /// Sum of measured decode stages.
+    ///
+    /// End-to-end wall time is reported in `detail.wall_total_us`.
     pub total_us: u128,
     /// Number of HTJ2K code blocks in the flat plan.
     pub block_count: usize,

@@ -1035,9 +1035,17 @@ fn decode_grayscale_cuda_resident_region_surface(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let (plan, mut report) =
         decoder.build_cuda_htj2k_grayscale_region_plan_with_profile(fmt, roi)?;
-    decode_grayscale_cuda_resident_surface_with_plan(session, fmt, &plan, &mut report)
+    decode_grayscale_cuda_resident_surface_with_plan_profile(
+        session,
+        fmt,
+        &plan,
+        &mut report,
+        wall_started,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1047,9 +1055,17 @@ fn decode_grayscale_cuda_resident_scaled_surface(
     fmt: PixelFormat,
     output_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let (plan, mut report) =
         decoder.build_cuda_htj2k_grayscale_scaled_plan_with_profile(fmt, output_dimensions)?;
-    decode_grayscale_cuda_resident_surface_with_plan(session, fmt, &plan, &mut report)
+    decode_grayscale_cuda_resident_surface_with_plan_profile(
+        session,
+        fmt,
+        &plan,
+        &mut report,
+        wall_started,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1060,23 +1076,20 @@ fn decode_grayscale_cuda_resident_region_scaled_surface(
     scaled_roi: Rect,
     scaled_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let (plan, mut report) = decoder.build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
         fmt,
         scaled_roi,
         scaled_dimensions,
     )?;
-    decode_grayscale_cuda_resident_surface_with_plan(session, fmt, &plan, &mut report)
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn decode_grayscale_cuda_resident_surface_with_plan(
-    session: &mut CudaSession,
-    fmt: PixelFormat,
-    plan: &CudaHtj2kDecodePlan,
-    report: &mut CudaHtj2kProfileReport,
-) -> Result<Surface, Error> {
-    decode_grayscale_cuda_resident_surface_with_plan_profile(session, fmt, plan, report, None)
-        .map(|(surface, _report)| surface)
+    decode_grayscale_cuda_resident_surface_with_plan_profile(
+        session,
+        fmt,
+        &plan,
+        &mut report,
+        wall_started,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1202,8 +1215,10 @@ fn decode_color_cuda_resident_scaled_surface(
     fmt: PixelFormat,
     output_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let color = decoder.build_cuda_htj2k_color_scaled_plans_with_profile(fmt, output_dimensions)?;
-    decode_color_cuda_resident_surface_with_plans(session, fmt, color)
+    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
+        .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1213,8 +1228,10 @@ fn decode_color_cuda_resident_region_surface(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let color = decoder.build_cuda_htj2k_color_region_plans_with_profile(fmt, roi)?;
-    decode_color_cuda_resident_surface_with_plans(session, fmt, color)
+    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
+        .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1225,21 +1242,13 @@ fn decode_color_cuda_resident_region_scaled_surface(
     scaled_roi: Rect,
     scaled_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
+    let wall_started = profile::profile_now(true);
     let color = decoder.build_cuda_htj2k_color_region_scaled_plans_with_profile(
         fmt,
         scaled_roi,
         scaled_dimensions,
     )?;
-    decode_color_cuda_resident_surface_with_plans(session, fmt, color)
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn decode_color_cuda_resident_surface_with_plans(
-    session: &mut CudaSession,
-    fmt: PixelFormat,
-    color: CudaHtj2kColorDecodePlans,
-) -> Result<Surface, Error> {
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, None)
+    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
         .map(|(surface, _report)| surface)
 }
 
