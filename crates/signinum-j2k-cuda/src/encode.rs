@@ -3940,11 +3940,11 @@ mod tests {
             return;
         }
 
-        let pixels: Vec<u8> = (0u32..32 * 32)
+        let pixels: Vec<u8> = (0u32..64 * 64)
             .map(|value| u8::try_from((value * 41 + 17) & 0xFF).expect("masked value fits in u8"))
             .collect();
         let samples =
-            J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).expect("valid gray8 samples");
+            J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray8 samples");
         let options = J2kLossyEncodeOptions::default()
             .with_backend(EncodeBackendPreference::RequireDevice)
             .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
@@ -3965,8 +3965,8 @@ mod tests {
             .expect("codestream decodes");
 
         assert_eq!(encoded.backend, BackendKind::Cuda);
-        assert_eq!(decoded.width, 32);
-        assert_eq!(decoded.height, 32);
+        assert_eq!(decoded.width, 64);
+        assert_eq!(decoded.height, 64);
         assert_eq!(decoded.num_components, 1);
         assert_eq!(accelerator.deinterleave_dispatches(), 1);
         assert!(accelerator.forward_dwt97_dispatches() > 0);
