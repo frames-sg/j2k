@@ -11,12 +11,19 @@ pub(crate) struct CpuCheckpointCache {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Entropy decoder resume point for device-side JPEG decode.
 pub struct DeviceCheckpoint {
+    /// MCU index where decoding can resume.
     pub mcu_index: u32,
+    /// Byte offset into scan entropy data.
     pub scan_offset: usize,
+    /// Buffered entropy bits at the checkpoint.
     pub bit_accumulator: u64,
+    /// Number of valid bits in `bit_accumulator`.
     pub bits_buffered: u8,
+    /// Previous DC predictor per component.
     pub prev_dc: [i32; 4],
+    /// Next expected restart marker index.
     pub expected_rst: u8,
 }
 

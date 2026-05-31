@@ -8,6 +8,7 @@ use crate::{
 use signinum_core::TileDecompress;
 use weezl::{decode::Decoder, BitOrder};
 
+/// Decoder for TIFF-style LZW tile payloads.
 pub struct LzwCodec;
 
 impl TileDecompress for LzwCodec {
