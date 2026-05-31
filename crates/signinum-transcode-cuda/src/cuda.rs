@@ -9,11 +9,13 @@
 //! [`CudaTranscodeError::UnsupportedJob`], which Auto mode treats as a scalar
 //! fallback and Explicit mode surfaces as an error.
 
+use signinum_j2k_native::EncodedHtJ2kCodeBlock;
 use signinum_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
     DctGridToReversibleDwt53Job, Dwt97BatchStageTimings, Htj2k97CodeBlockOptions, J2kSubBandType,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
+    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -25,7 +27,9 @@ use std::sync::OnceLock;
 
 use signinum_cuda_runtime::{
     transcode_kernels_built, CudaContext, CudaDwt97BatchStageTimings, CudaHtj2k97CodeblockBands,
-    CudaHtj2k97QuantizeParams, CudaTranscodeDwt97Bands, CudaTranscodeReversible53Bands,
+    CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97QuantizeParams, CudaHtj2kEncodeCodeBlockJob,
+    CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaTranscodeDwt97Bands,
+    CudaTranscodeReversible53Bands,
 };
 
 use crate::CudaTranscodeError;
@@ -148,6 +152,8 @@ fn map_batch_timings(timings: CudaDwt97BatchStageTimings) -> Dwt97BatchStageTimi
         idct_row_lift_us: timings.idct_row_lift_us,
         column_lift_us: timings.column_lift_us,
         quantize_codeblock_us: timings.quantize_codeblock_us,
+        ht_encode_us: timings.ht_encode_us,
+        ht_codeblock_dispatches: timings.ht_codeblock_dispatches,
         readback_us: timings.readback_us,
     }
 }
@@ -422,6 +428,354 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
     Ok((components, map_batch_timings(timings)))
 }
 
+pub(crate) fn dispatch_htj2k97_preencoded_batch(
+    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(Vec<PreencodedHtj2k97Component>, Dwt97BatchStageTimings), CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    validate_htj2k97_codeblock_options(options)?;
+    let context = shared_context()?;
+
+    let Some(first) = jobs.first() else {
+        return Ok((Vec::new(), Dwt97BatchStageTimings::default()));
+    };
+
+    let uniform = jobs.iter().all(|job| {
+        job.block_cols == first.block_cols
+            && job.block_rows == first.block_rows
+            && job.width == first.width
+            && job.height == first.height
+    });
+    if !uniform {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 resident HT batch requires uniform job geometry",
+        ));
+    }
+
+    let params = htj2k97_quantize_params(options)?;
+    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        append_f64_blocks_to_f32(job.blocks, &mut blocks);
+    }
+    let (device_bands, mut timings) = context
+        .j2k_transcode_htj2k97_codeblock_batch_resident(
+            &blocks,
+            jobs.len(),
+            first.block_cols,
+            first.block_rows,
+            first.width,
+            first.height,
+            params,
+        )
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident batch dispatch failed"))?;
+
+    let resources = shared_encode_resources(&context)?;
+    let (components, ht_encode_us, ht_dispatches) =
+        device_bands_to_preencoded_components(&context, resources, &device_bands, jobs, options)?;
+    timings.ht_encode_us = ht_encode_us;
+    timings.ht_codeblock_dispatches = ht_dispatches;
+    Ok((components, map_batch_timings(timings)))
+}
+
+fn htj2k97_quantize_params(
+    options: Htj2k97CodeBlockOptions,
+) -> Result<CudaHtj2k97QuantizeParams, CudaTranscodeError> {
+    let (cb_width, cb_height) = validate_htj2k97_codeblock_options(options)?;
+    let inv_delta =
+        |sub: J2kSubBandType| -> f32 { (1.0 / htj2k97_subband_delta(options, sub)) as f32 };
+    Ok(CudaHtj2k97QuantizeParams {
+        inv_delta_ll: inv_delta(J2kSubBandType::LowLow),
+        inv_delta_hl: inv_delta(J2kSubBandType::HighLow),
+        inv_delta_lh: inv_delta(J2kSubBandType::LowHigh),
+        inv_delta_hh: inv_delta(J2kSubBandType::HighHigh),
+        cb_width,
+        cb_height,
+    })
+}
+
+#[allow(clippy::similar_names, clippy::too_many_lines)]
+fn device_bands_to_preencoded_components(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    bands: &CudaHtj2k97DeviceCodeblockBands,
+    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(Vec<PreencodedHtj2k97Component>, u128, usize), CudaTranscodeError> {
+    if bands.item_count != jobs.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident 9/7 band item count mismatch",
+        ));
+    }
+
+    let (ll_subbands, mut ht_encode_us, mut dispatches) = encode_resident_subband(
+        context,
+        resources,
+        &bands.ll,
+        bands.item_count,
+        bands.low_width,
+        bands.low_height,
+        J2kSubBandType::LowLow,
+        options,
+    )?;
+    let (hl_subbands, hl_us, hl_dispatches) = encode_resident_subband(
+        context,
+        resources,
+        &bands.hl,
+        bands.item_count,
+        bands.high_width,
+        bands.low_height,
+        J2kSubBandType::HighLow,
+        options,
+    )?;
+    ht_encode_us = ht_encode_us.saturating_add(hl_us);
+    dispatches = dispatches.saturating_add(hl_dispatches);
+    let (lh_subbands, lh_us, lh_dispatches) = encode_resident_subband(
+        context,
+        resources,
+        &bands.lh,
+        bands.item_count,
+        bands.low_width,
+        bands.high_height,
+        J2kSubBandType::LowHigh,
+        options,
+    )?;
+    ht_encode_us = ht_encode_us.saturating_add(lh_us);
+    dispatches = dispatches.saturating_add(lh_dispatches);
+    let (hh_subbands, hh_us, hh_dispatches) = encode_resident_subband(
+        context,
+        resources,
+        &bands.hh,
+        bands.item_count,
+        bands.high_width,
+        bands.high_height,
+        J2kSubBandType::HighHigh,
+        options,
+    )?;
+    ht_encode_us = ht_encode_us.saturating_add(hh_us);
+    dispatches = dispatches.saturating_add(hh_dispatches);
+
+    let components = jobs
+        .iter()
+        .enumerate()
+        .map(|(idx, job)| PreencodedHtj2k97Component {
+            x_rsiz: job.x_rsiz,
+            y_rsiz: job.y_rsiz,
+            resolutions: vec![
+                PreencodedHtj2k97Resolution {
+                    subbands: vec![ll_subbands[idx].clone()],
+                },
+                PreencodedHtj2k97Resolution {
+                    subbands: vec![
+                        hl_subbands[idx].clone(),
+                        lh_subbands[idx].clone(),
+                        hh_subbands[idx].clone(),
+                    ],
+                },
+            ],
+        })
+        .collect();
+
+    Ok((components, ht_encode_us, dispatches))
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn encode_resident_subband(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    coefficients: &signinum_cuda_runtime::CudaDeviceBuffer,
+    item_count: usize,
+    width: usize,
+    height: usize,
+    sub_band_type: J2kSubBandType,
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(Vec<PreencodedHtj2k97Subband>, u128, usize), CudaTranscodeError> {
+    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp)?;
+    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp)?;
+    let num_cbs_x = if width == 0 {
+        0
+    } else {
+        width.div_ceil(cb_width)
+    };
+    let num_cbs_y = if height == 0 {
+        0
+    } else {
+        height.div_ceil(cb_height)
+    };
+    if width == 0 || height == 0 {
+        return Ok((
+            (0..item_count)
+                .map(|_| PreencodedHtj2k97Subband {
+                    sub_band_type,
+                    num_cbs_x: 0,
+                    num_cbs_y: 0,
+                    total_bitplanes: 0,
+                    code_blocks: Vec::new(),
+                })
+                .collect(),
+            0,
+            0,
+        ));
+    }
+
+    let total_bitplanes = htj2k97_subband_total_bitplanes(options, sub_band_type);
+    let item_stride = width.checked_mul(height).ok_or(CudaTranscodeError::Kernel(
+        "CUDA resident 9/7 band dimensions overflow",
+    ))?;
+    let coefficient_count =
+        item_stride
+            .checked_mul(item_count)
+            .ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident 9/7 band item count overflow",
+            ))?;
+    let mut encode_jobs = Vec::with_capacity(item_count * num_cbs_x * num_cbs_y);
+    let mut shapes = Vec::with_capacity(item_count * num_cbs_x * num_cbs_y);
+    for item in 0..item_count {
+        let item_offset = item
+            .checked_mul(item_stride)
+            .ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident 9/7 band item offset overflow",
+            ))?;
+        for cby in 0..num_cbs_y {
+            for cbx in 0..num_cbs_x {
+                let block_width = (width - cbx * cb_width).min(cb_width);
+                let block_height = (height - cby * cb_height).min(cb_height);
+                let block_offset = cby
+                    .checked_mul(cb_height)
+                    .and_then(|value| value.checked_mul(width))
+                    .and_then(|value| {
+                        value.checked_add(cbx.checked_mul(cb_width)?.checked_mul(block_height)?)
+                    })
+                    .and_then(|value| value.checked_add(item_offset))
+                    .ok_or(CudaTranscodeError::Kernel(
+                        "CUDA resident 9/7 code-block offset overflow",
+                    ))?;
+                encode_jobs.push(CudaHtj2kEncodeCodeBlockJob {
+                    coefficient_offset: to_u32(block_offset)?,
+                    width: to_u32(block_width)?,
+                    height: to_u32(block_height)?,
+                    total_bitplanes,
+                    target_coding_passes: 1,
+                });
+                shapes.push((to_u32(block_width)?, to_u32(block_height)?));
+            }
+        }
+    }
+
+    let encoded = context
+        .encode_htj2k_codeblocks_resident_with_resources(
+            coefficients,
+            coefficient_count,
+            &encode_jobs,
+            resources,
+        )
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA resident HTJ2K encode failed"))?;
+    if encoded.code_blocks().len() != encode_jobs.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K encode returned wrong block count",
+        ));
+    }
+
+    let blocks_per_item = num_cbs_x
+        .checked_mul(num_cbs_y)
+        .ok_or(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K code-block count overflow",
+        ))?;
+    let mut encoded_iter = encoded.code_blocks().iter();
+    let mut shape_iter = shapes.into_iter();
+    let mut subbands = Vec::with_capacity(item_count);
+    for _ in 0..item_count {
+        let mut code_blocks = Vec::with_capacity(blocks_per_item);
+        for _ in 0..blocks_per_item {
+            let (width, height) = shape_iter.next().ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident HTJ2K shape count mismatch",
+            ))?;
+            let encoded = encoded_iter.next().ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident HTJ2K output count mismatch",
+            ))?;
+            code_blocks.push(PreencodedHtj2k97CodeBlock {
+                width,
+                height,
+                encoded: EncodedHtJ2kCodeBlock {
+                    data: encoded.data().to_vec(),
+                    cleanup_length: encoded.cleanup_length(),
+                    refinement_length: encoded.refinement_length(),
+                    num_coding_passes: encoded.num_coding_passes(),
+                    num_zero_bitplanes: encoded.num_zero_bitplanes(),
+                },
+            });
+        }
+        subbands.push(PreencodedHtj2k97Subband {
+            sub_band_type,
+            num_cbs_x: to_u32(num_cbs_x)?,
+            num_cbs_y: to_u32(num_cbs_y)?,
+            total_bitplanes,
+            code_blocks,
+        });
+    }
+    if encoded_iter.next().is_some() || shape_iter.next().is_some() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K output count mismatch",
+        ));
+    }
+
+    Ok((
+        subbands,
+        encoded.stage_timings().ht_encode_us,
+        encoded.execution().kernel_dispatches(),
+    ))
+}
+
+fn to_u32(value: usize) -> Result<u32, CudaTranscodeError> {
+    u32::try_from(value).map_err(|_| CudaTranscodeError::Kernel("CUDA value exceeds u32"))
+}
+
+fn cuda_htj2k_encode_tables() -> CudaHtj2kEncodeTables<'static> {
+    CudaHtj2kEncodeTables {
+        vlc_table0: signinum_j2k_native::ht_vlc_encode_table0(),
+        vlc_table1: signinum_j2k_native::ht_vlc_encode_table1(),
+        uvlc_table: ht_uvlc_encode_table_bytes(),
+    }
+}
+
+fn shared_encode_resources(
+    context: &CudaContext,
+) -> Result<&'static CudaHtj2kEncodeResources, CudaTranscodeError> {
+    static RESOURCES: OnceLock<CudaHtj2kEncodeResources> = OnceLock::new();
+    if let Some(resources) = RESOURCES.get() {
+        return Ok(resources);
+    }
+    let resources = context
+        .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA HTJ2K encode resource upload failed"))?;
+    let _ = RESOURCES.set(resources);
+    RESOURCES.get().ok_or(CudaTranscodeError::Kernel(
+        "CUDA HTJ2K encode resources unavailable",
+    ))
+}
+
+fn ht_uvlc_encode_table_bytes() -> &'static [u8] {
+    static TABLE: OnceLock<Vec<u8>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            signinum_j2k_native::ht_uvlc_encode_table()
+                .iter()
+                .flat_map(|entry| {
+                    [
+                        entry.pre,
+                        entry.pre_len,
+                        entry.suf,
+                        entry.suf_len,
+                        entry.ext,
+                        entry.ext_len,
+                    ]
+                })
+                .collect()
+        })
+        .as_slice()
+}
+
 fn validate_band_len(
     band: &[i32],
     item_count: usize,
@@ -451,6 +805,20 @@ fn validate_htj2k97_codeblock_options(
     {
         return Err(CudaTranscodeError::UnsupportedJob(
             "CUDA 9/7 code-block options are outside supported numeric range",
+        ));
+    }
+    let subband_scales = options.irreversible_quantization_subband_scales;
+    if [
+        subband_scales.low_low,
+        subband_scales.high_low,
+        subband_scales.low_high,
+        subband_scales.high_high,
+    ]
+    .iter()
+    .any(|scale| !scale.is_finite() || *scale <= 0.0)
+    {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 code-block quantization options are outside supported range",
         ));
     }
 

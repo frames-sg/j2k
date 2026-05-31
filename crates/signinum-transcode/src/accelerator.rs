@@ -10,8 +10,10 @@ use crate::dct53_2d::Dwt53TwoDimensional;
 use crate::dct97_2d::Dwt97TwoDimensional;
 use rayon::prelude::*;
 pub use signinum_j2k_native::{
-    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    IrreversibleQuantizationSubbandScales, J2kSubBandType, PreencodedHtj2k97CodeBlock,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use signinum_jpeg::transcode::idct_islow_block;
 
@@ -117,6 +119,9 @@ pub struct Htj2k97CodeBlockOptions {
     pub code_block_height_exp: u8,
     /// Multiplier applied to irreversible 9/7 scalar quantization step sizes.
     pub irreversible_quantization_scale: f32,
+    /// Per-subband multipliers applied on top of
+    /// [`irreversible_quantization_scale`](Self::irreversible_quantization_scale).
+    pub irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
 }
 
 /// Backend-specific timing breakdown for a same-geometry 9/7 batch.
@@ -130,6 +135,10 @@ pub struct Dwt97BatchStageTimings {
     pub column_lift_us: u128,
     /// Time spent quantizing 9/7 bands into HTJ2K code-block layout.
     pub quantize_codeblock_us: u128,
+    /// Time spent HT-encoding resident code-block coefficients.
+    pub ht_encode_us: u128,
+    /// Number of HT code-block encode kernel dispatches in this batch.
+    pub ht_codeblock_dispatches: usize,
     /// Time spent reading and unpacking Metal band buffers into host outputs.
     pub readback_us: u128,
 }
@@ -220,6 +229,19 @@ pub trait DctToWaveletStageAccelerator {
         _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute same-geometry DCT-grid 9/7 jobs directly into
+    /// preencoded HTJ2K code-block payloads.
+    ///
+    /// Backends should return one component per input job in the same order as
+    /// `jobs`. Return `Ok(None)` to use the prequantized or float-band path.
+    fn dct_grid_to_htj2k97_preencoded_batch(
+        &mut self,
+        _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
         Ok(None)
     }
 

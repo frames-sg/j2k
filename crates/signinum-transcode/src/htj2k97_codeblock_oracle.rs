@@ -137,23 +137,21 @@ pub fn htj2k97_subband_delta(
         J2kSubBandType::HighHigh => 2,
     };
     let range_bits = i32::from(options.bit_depth) + log_gain;
-    let (exponent, mantissa) = htj2k97_step(options);
+    let (exponent, mantissa) = htj2k97_step(options, sub_band_type);
     pow2i_f64(range_bits - i32::from(exponent)) * (1.0 + f64::from(mantissa) / 2048.0)
 }
 
 /// Total declared bitplanes for every code-block in a subband.
 ///
-/// `saturating(guard_bits + exponent − 1)`. The exponent is subband-independent
-/// for the quality-first single-step quantizer, so the result does not vary by
-/// `sub_band_type`; the parameter is kept for call-site symmetry with
-/// `htj2k97_subband_delta`.
+/// `saturating(guard_bits + exponent - 1)`. The exponent is derived from the
+/// effective global plus per-subband quantization profile, so callers must pass
+/// the actual subband kind.
 #[must_use]
 pub fn htj2k97_subband_total_bitplanes(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
 ) -> u8 {
-    let _ = sub_band_type;
-    let (exponent, _) = htj2k97_step(options);
+    let (exponent, _) = htj2k97_step(options, sub_band_type);
     options
         .guard_bits
         .saturating_add(exponent)
@@ -182,9 +180,10 @@ fn quantize_subband_coefficients(
 ///
 /// Mirrors native `QuantStepSize::from_delta` applied to
 /// `base_step.delta · scale`, where `base_step.delta = 2^(−guard_bits)`.
-fn htj2k97_step(options: Htj2k97CodeBlockOptions) -> (u8, u16) {
+fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> (u8, u16) {
     let base_delta = pow2i_f64(-i32::from(options.guard_bits))
-        * f64::from(options.irreversible_quantization_scale);
+        * f64::from(options.irreversible_quantization_scale)
+        * f64::from(htj2k97_subband_scale(options, sub_band_type));
     let floor_log2 = base_delta.log2().floor() as i32;
     let mut exponent = i32::from(options.bit_depth) - floor_log2;
     let normalized = base_delta / pow2i_f64(floor_log2);
@@ -199,6 +198,15 @@ fn htj2k97_step(options: Htj2k97CodeBlockOptions) -> (u8, u16) {
         u8::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u8"),
         u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
     )
+}
+
+fn htj2k97_subband_scale(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> f32 {
+    match sub_band_type {
+        J2kSubBandType::LowLow => options.irreversible_quantization_subband_scales.low_low,
+        J2kSubBandType::HighLow => options.irreversible_quantization_subband_scales.high_low,
+        J2kSubBandType::LowHigh => options.irreversible_quantization_subband_scales.low_high,
+        J2kSubBandType::HighHigh => options.irreversible_quantization_subband_scales.high_high,
+    }
 }
 
 fn pow2i_f64(exp: i32) -> f64 {
@@ -298,6 +306,8 @@ mod tests {
             code_block_width_exp: 2,
             code_block_height_exp: 2,
             irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                signinum_j2k_native::IrreversibleQuantizationSubbandScales::default(),
         };
         let component = prequantized_component_from_dwt97(&dwt, codeblock_options, 1, 1);
         let prequantized_image = PrequantizedHtj2k97Image {
@@ -316,6 +326,35 @@ mod tests {
         assert_eq!(
             actual, expected,
             "oracle prequantized component must reproduce the native precomputed-DWT codestream"
+        );
+    }
+
+    #[test]
+    fn oracle_subband_profile_changes_only_selected_delta_and_bitplanes() {
+        let mut options = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            irreversible_quantization_scale: 1.9,
+            irreversible_quantization_subband_scales:
+                signinum_j2k_native::IrreversibleQuantizationSubbandScales::default(),
+        };
+        let high_low_delta = htj2k97_subband_delta(options, J2kSubBandType::HighLow);
+        let high_high_delta = htj2k97_subband_delta(options, J2kSubBandType::HighHigh);
+        let default_hh_bitplanes =
+            htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh);
+
+        options.irreversible_quantization_subband_scales.high_high = 1.5;
+
+        assert_eq!(
+            htj2k97_subband_delta(options, J2kSubBandType::HighLow).to_bits(),
+            high_low_delta.to_bits()
+        );
+        assert!(htj2k97_subband_delta(options, J2kSubBandType::HighHigh) > high_high_delta);
+        assert_ne!(
+            htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh),
+            default_hh_bitplanes
         );
     }
 }

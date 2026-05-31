@@ -22,7 +22,8 @@ use core::fmt;
 use signinum_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
     DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
-    Htj2k97CodeBlockOptions, PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
+    Htj2k97CodeBlockOptions, PreencodedHtj2k97Component, PrequantizedHtj2k97Component,
+    ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -98,6 +99,7 @@ pub struct CudaDctToWaveletStageAccelerator {
     htj2k97_codeblock_batch_attempts: usize,
     htj2k97_codeblock_batch_dispatches: usize,
     last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
+    resident_ht_encode: bool,
 }
 
 impl CudaDctToWaveletStageAccelerator {
@@ -106,6 +108,17 @@ impl CudaDctToWaveletStageAccelerator {
     #[must_use]
     pub const fn new_explicit() -> Self {
         Self::with_mode(CudaDispatchMode::Explicit, 0)
+    }
+
+    /// Create an explicit accelerator that keeps 9/7 code-block coefficients
+    /// resident and HT-encodes them on the same CUDA context before CPU
+    /// packetization.
+    #[must_use]
+    pub const fn new_explicit_resident_ht_encode() -> Self {
+        Self {
+            resident_ht_encode: true,
+            ..Self::with_mode(CudaDispatchMode::Explicit, 0)
+        }
     }
 
     /// Create an accelerator that falls back to the scalar oracle for small or
@@ -132,6 +145,7 @@ impl CudaDctToWaveletStageAccelerator {
             htj2k97_codeblock_batch_attempts: 0,
             htj2k97_codeblock_batch_dispatches: 0,
             last_dwt97_batch_stage_timings: None,
+            resident_ht_encode: false,
         }
     }
 
@@ -437,6 +451,45 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         #[cfg(feature = "cuda-runtime")]
         {
             match cuda::dispatch_htj2k97_codeblock_batch(jobs, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.htj2k97_codeblock_batch_dispatches =
+                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(error) => self.recover(error),
+            }
+        }
+    }
+
+    fn dct_grid_to_htj2k97_preencoded_batch(
+        &mut self,
+        jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        if !self.resident_ht_encode {
+            return Ok(None);
+        }
+
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.htj2k97_codeblock_batch_attempts =
+            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.last_dwt97_batch_stage_timings = None;
+
+        if jobs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = (jobs, options);
+            self.unavailable()
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        {
+            match cuda::dispatch_htj2k97_preencoded_batch(jobs, options) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =

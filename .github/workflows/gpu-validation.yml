@@ -152,6 +152,8 @@ jobs:
       - name: NVIDIA baseline comparison (nvJPEG + nvJPEG2000)
         if: ${{ inputs.run-nvidia-baseline }}
         env:
+          SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
+          SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
           SIGNINUM_REQUIRE_NV_BASELINE_BUILD: "1"
           SIGNINUM_BENCH_SVS: ${{ vars.SIGNINUM_BENCH_SVS }}
           SIGNINUM_BENCH_JPEG_DIR: ${{ vars.SIGNINUM_BENCH_JPEG_DIR }}
@@ -173,7 +175,22 @@ jobs:
           echo "benchmark JPEG dir: ${SIGNINUM_BENCH_JPEG_DIR}"
           cargo test -p signinum-nvidia-baseline --features nvjpeg2000 --all-targets
           cargo clippy -p signinum-nvidia-baseline --features nvjpeg2000 --all-targets -- -D warnings
-          cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin transcode_compare
+          cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin transcode_compare -- \
+            --quant-scales 1.55,1.70,1.85,1.90,2.05,2.25 \
+            --match-nvidia-bytes \
+            --match-tolerance 0.02 \
+            --min-tiles 100 \
+            --json target/transcode_compare.json \
+            --csv target/transcode_compare.csv
+      - name: Upload NVIDIA baseline comparison artifacts
+        if: ${{ inputs.run-nvidia-baseline && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvidia-baseline-comparison
+          path: |
+            target/transcode_compare.json
+            target/transcode_compare.csv
+          if-no-files-found: warn
       - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
       - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
       - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-runtime -- -D warnings

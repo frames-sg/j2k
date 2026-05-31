@@ -10,10 +10,53 @@ use alloc::vec::Vec;
 use crate::math::{floor_f32, log2_f32, pow2i, round_f32};
 
 /// Quantization parameters for a single subband.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuantStepSize {
     pub(crate) exponent: u16,
     pub(crate) mantissa: u16,
+}
+
+/// Multipliers applied to irreversible 9/7 quantization step sizes by subband.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IrreversibleQuantizationSubbandScales {
+    /// Multiplier for the LL subband.
+    pub low_low: f32,
+    /// Multiplier for HL subbands.
+    pub high_low: f32,
+    /// Multiplier for LH subbands.
+    pub low_high: f32,
+    /// Multiplier for HH subbands.
+    pub high_high: f32,
+}
+
+impl Default for IrreversibleQuantizationSubbandScales {
+    fn default() -> Self {
+        Self {
+            low_low: 1.0,
+            high_low: 1.0,
+            low_high: 1.0,
+            high_high: 1.0,
+        }
+    }
+}
+
+impl IrreversibleQuantizationSubbandScales {
+    pub(crate) fn all_valid(self) -> bool {
+        [self.low_low, self.high_low, self.low_high, self.high_high]
+            .iter()
+            .all(|scale| scale.is_finite() && *scale > 0.0)
+    }
+
+    fn for_step_index(self, index: usize) -> f32 {
+        if index == 0 {
+            return self.low_low;
+        }
+        match (index - 1) % 3 {
+            0 => self.high_low,
+            1 => self.low_high,
+            _ => self.high_high,
+        }
+    }
 }
 
 impl QuantStepSize {
@@ -69,12 +112,33 @@ pub(crate) fn compute_step_sizes(
 ///
 /// A scale of 1.0 preserves the quality-first default. Larger scales coarsen
 /// the irreversible quantizer while keeping the same subband gain relationship.
+#[cfg(test)]
 pub(crate) fn compute_step_sizes_with_irreversible_scale(
     bit_depth: u8,
     num_decompositions: u8,
     reversible: bool,
     guard_bits: u8,
     irreversible_quantization_scale: f32,
+) -> Vec<QuantStepSize> {
+    compute_step_sizes_with_irreversible_profile(
+        bit_depth,
+        num_decompositions,
+        reversible,
+        guard_bits,
+        irreversible_quantization_scale,
+        IrreversibleQuantizationSubbandScales::default(),
+    )
+}
+
+/// Compute quantization step sizes with global and per-subband irreversible
+/// 9/7 scale multipliers.
+pub(crate) fn compute_step_sizes_with_irreversible_profile(
+    bit_depth: u8,
+    num_decompositions: u8,
+    reversible: bool,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
 ) -> Vec<QuantStepSize> {
     let mut step_sizes = Vec::new();
 
@@ -122,14 +186,19 @@ pub(crate) fn compute_step_sizes_with_irreversible_scale(
         } else {
             1.0
         };
-        let step = QuantStepSize::from_delta(bit_depth, base_step.delta(bit_depth) * scale);
+        let subband_scales = if irreversible_quantization_subband_scales.all_valid() {
+            irreversible_quantization_subband_scales
+        } else {
+            IrreversibleQuantizationSubbandScales::default()
+        };
+        let step_count = 1usize + usize::from(num_decompositions) * 3;
 
-        step_sizes.push(step);
-
-        for _ in 0..num_decompositions {
-            step_sizes.push(step);
-            step_sizes.push(step);
-            step_sizes.push(step);
+        for index in 0..step_count {
+            let subband_scale = subband_scales.for_step_index(index);
+            step_sizes.push(QuantStepSize::from_delta(
+                bit_depth,
+                base_step.delta(bit_depth) * scale * subband_scale,
+            ));
         }
     }
 
@@ -274,6 +343,32 @@ mod tests {
         assert!((deltas[1] - 2.5).abs() < 0.001);
         assert!((deltas[2] - 2.5).abs() < 0.001);
         assert!((deltas[3] - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn irreversible_subband_scales_change_only_selected_97_steps() {
+        let subband_scales = IrreversibleQuantizationSubbandScales {
+            low_low: 1.0,
+            high_low: 1.0,
+            low_high: 1.0,
+            high_high: 1.5,
+        };
+
+        let default_steps = compute_step_sizes_with_irreversible_profile(
+            8,
+            1,
+            false,
+            2,
+            1.9,
+            IrreversibleQuantizationSubbandScales::default(),
+        );
+        let shaped_steps =
+            compute_step_sizes_with_irreversible_profile(8, 1, false, 2, 1.9, subband_scales);
+
+        assert_eq!(shaped_steps[0], default_steps[0]);
+        assert_eq!(shaped_steps[1], default_steps[1]);
+        assert_eq!(shaped_steps[2], default_steps[2]);
+        assert!(shaped_steps[3].delta(10) > default_steps[3].delta(10));
     }
 
     #[test]

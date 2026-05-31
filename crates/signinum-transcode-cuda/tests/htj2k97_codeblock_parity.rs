@@ -10,10 +10,11 @@
 
 use signinum_transcode::accelerator::{
     DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
-    PrequantizedHtj2k97Component,
+    IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Component,
 };
 use signinum_transcode::dct97_2d::dct8x8_blocks_then_dwt97_float;
 use signinum_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97;
+use signinum_transcode::{JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
 fn runtime_required() -> bool {
@@ -134,6 +135,12 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
         code_block_width_exp: 2,
         code_block_height_exp: 2,
         irreversible_quantization_scale: 2.5,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales {
+            low_low: 0.9,
+            high_low: 1.1,
+            low_high: 1.2,
+            high_high: 1.5,
+        },
     };
 
     let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
@@ -213,6 +220,7 @@ fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
         code_block_width_exp: 2,
         code_block_height_exp: 2,
         irreversible_quantization_scale: 2.5,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales::default(),
     };
 
     let result = CudaDctToWaveletStageAccelerator::new_explicit()
@@ -221,4 +229,55 @@ fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
         result.is_err(),
         "explicit CUDA code-block batch must reject non-uniform geometry, got {result:?}"
     );
+}
+
+#[test]
+fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    let jpeg = include_bytes!("fixtures/conformance/baseline_420_16x16.jpg");
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 2];
+    let options = JpegToHtj2kOptions::lossy_97();
+
+    let mut host_transcoder = JpegToHtj2kTranscoder::default();
+    let mut host_accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
+    let host_batch = host_transcoder
+        .transcode_batch_with_accelerator(&inputs, &options, &mut host_accelerator)
+        .expect("host-bounce CUDA 9/7 batch succeeds");
+
+    let mut resident_transcoder = JpegToHtj2kTranscoder::default();
+    let mut resident_accelerator =
+        CudaDctToWaveletStageAccelerator::new_explicit_resident_ht_encode();
+    let resident_batch = resident_transcoder
+        .transcode_batch_with_accelerator(&inputs, &options, &mut resident_accelerator)
+        .expect("resident CUDA 9/7 + HT batch succeeds");
+
+    assert_eq!(resident_batch.report.failed_tiles, 0);
+    assert_eq!(resident_batch.report.timings.cpu_fallback_jobs, 0);
+    assert!(
+        resident_batch
+            .report
+            .timings
+            .dwt97_batch_ht_codeblock_dispatches
+            > 0,
+        "resident path must dispatch CUDA HT code-block encode"
+    );
+    assert_eq!(
+        resident_batch.report.timings.dwt97_batch_readback_us, 0,
+        "resident path must avoid quantized coefficient readback"
+    );
+
+    let host_codestreams = host_batch
+        .tiles
+        .into_iter()
+        .map(|tile| tile.expect("host tile succeeds").codestream)
+        .collect::<Vec<_>>();
+    let resident_codestreams = resident_batch
+        .tiles
+        .into_iter()
+        .map(|tile| tile.expect("resident tile succeeds").codestream)
+        .collect::<Vec<_>>();
+    assert_eq!(resident_codestreams, host_codestreams);
 }

@@ -1966,6 +1966,20 @@ fn validate_htj2k97_codeblock_options(
             METAL_DCT97_UNSUPPORTED_GRID,
         ));
     }
+    let subband_scales = options.irreversible_quantization_subband_scales;
+    if [
+        subband_scales.low_low,
+        subband_scales.high_low,
+        subband_scales.low_high,
+        subband_scales.high_high,
+    ]
+    .iter()
+    .any(|scale| !scale.is_finite() || *scale <= 0.0)
+    {
+        return Err(MetalTranscodeError::UnsupportedJob(
+            METAL_DCT97_UNSUPPORTED_GRID,
+        ));
+    }
     let _ = code_block_len_from_exp(options.code_block_width_exp)?;
     let _ = code_block_len_from_exp(options.code_block_height_exp)?;
     Ok(())
@@ -2003,11 +2017,21 @@ struct Dwt97QuantStep {
 
 fn dwt97_quant_step(
     options: Htj2k97CodeBlockOptions,
-    _sub_band_type: J2kSubBandType,
+    sub_band_type: J2kSubBandType,
 ) -> Dwt97QuantStep {
-    let base_delta =
-        dwt97_pow2i(-i32::from(options.guard_bits)) * options.irreversible_quantization_scale;
+    let base_delta = dwt97_pow2i(-i32::from(options.guard_bits))
+        * options.irreversible_quantization_scale
+        * dwt97_subband_scale(options, sub_band_type);
     dwt97_quant_step_from_delta(options.bit_depth, base_delta)
+}
+
+fn dwt97_subband_scale(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> f32 {
+    match sub_band_type {
+        J2kSubBandType::LowLow => options.irreversible_quantization_subband_scales.low_low,
+        J2kSubBandType::HighLow => options.irreversible_quantization_subband_scales.high_low,
+        J2kSubBandType::LowHigh => options.irreversible_quantization_subband_scales.low_high,
+        J2kSubBandType::HighHigh => options.irreversible_quantization_subband_scales.high_high,
+    }
 }
 
 fn dwt97_quant_step_from_delta(range_bits: u8, delta: f32) -> Dwt97QuantStep {

@@ -5496,6 +5496,10 @@ pub struct CudaDwt97BatchStageTimings {
     pub column_lift_us: u128,
     /// Code-block quantization stage time, microseconds (0 for the band path).
     pub quantize_codeblock_us: u128,
+    /// Resident HT code-block encode time, microseconds.
+    pub ht_encode_us: u128,
+    /// Resident HT code-block encode dispatches.
+    pub ht_codeblock_dispatches: usize,
     /// Device-to-host readback and unpack time, microseconds.
     pub readback_us: u128,
 }
@@ -5535,6 +5539,30 @@ pub struct CudaHtj2k97CodeblockBands {
     pub lh: Vec<i32>,
     /// HH subband (`item_count * high_width * high_height`).
     pub hh: Vec<i32>,
+    /// Number of items in the batch.
+    pub item_count: usize,
+    /// Width of horizontally low-pass bands.
+    pub low_width: usize,
+    /// Height of vertically low-pass bands.
+    pub low_height: usize,
+    /// Width of horizontally high-pass bands.
+    pub high_width: usize,
+    /// Height of vertically high-pass bands.
+    pub high_height: usize,
+}
+
+/// Device-resident per-item raw code-block-major quantized 9/7 bands from the
+/// fused transcode batch.
+#[derive(Debug)]
+pub struct CudaHtj2k97DeviceCodeblockBands {
+    /// LL subband (`item_count * low_width * low_height`).
+    pub ll: CudaDeviceBuffer,
+    /// HL subband (`item_count * high_width * low_height`).
+    pub hl: CudaDeviceBuffer,
+    /// LH subband (`item_count * low_width * high_height`).
+    pub lh: CudaDeviceBuffer,
+    /// HH subband (`item_count * high_width * high_height`).
+    pub hh: CudaDeviceBuffer,
     /// Number of items in the batch.
     pub item_count: usize,
     /// Width of horizontally low-pass bands.
@@ -5836,7 +5864,138 @@ impl CudaContext {
                 idct_row_lift_us,
                 column_lift_us,
                 quantize_codeblock_us: 0,
+                ht_encode_us: 0,
+                ht_codeblock_dispatches: 0,
                 readback_us,
+            },
+        ))
+    }
+
+    /// Compute a same-geometry batch directly into device-resident
+    /// prequantized HTJ2K code-block coefficients: staged 9/7 followed by
+    /// per-subband deadzone quantization into code-block-major `i32` layout.
+    /// `params` carries the per-subband inverse step sizes (derived by the
+    /// caller from the `signinum-transcode` code-block oracle) and the
+    /// code-block geometry.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    pub fn j2k_transcode_htj2k97_codeblock_batch_resident(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        params: CudaHtj2k97QuantizeParams,
+    ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
+            .transcode_dwt97_batch_to_device(
+                blocks, item_count, block_cols, block_rows, width, height,
+            )?;
+        let Dwt97BatchDeviceBands {
+            ll,
+            lh,
+            hl,
+            hh,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        } = bands;
+
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let items =
+            u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
+        let cb_w = to_i32(params.cb_width)?;
+        let cb_h = to_i32(params.cb_height)?;
+
+        let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
+            self.allocate(bytes)
+        };
+        let ll_size = low_width * low_height;
+        let lh_size = low_width * high_height;
+        let hl_size = high_width * low_height;
+        let hh_size = high_width * high_height;
+
+        let ll_q = alloc_i32(item_count * ll_size)?;
+        let lh_q = alloc_i32(item_count * lh_size)?;
+        let hl_q = alloc_i32(item_count * hl_size)?;
+        let hh_q = alloc_i32(item_count * hh_size)?;
+
+        let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
+            // One launch per subband, each with its own dims and inverse delta.
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                &ll,
+                &ll_q,
+                to_i32(low_width)?,
+                to_i32(low_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_ll,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                &hl,
+                &hl_q,
+                to_i32(high_width)?,
+                to_i32(low_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_hl,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                &lh,
+                &lh_q,
+                to_i32(low_width)?,
+                to_i32(high_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_lh,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                &hh,
+                &hh_q,
+                to_i32(high_width)?,
+                to_i32(high_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_hh,
+                items,
+            )?;
+            Ok(())
+        })?;
+
+        Ok((
+            CudaHtj2k97DeviceCodeblockBands {
+                ll: ll_q,
+                hl: hl_q,
+                lh: lh_q,
+                hh: hh_q,
+                item_count,
+                low_width,
+                low_height,
+                high_width,
+                high_height,
+            },
+            CudaDwt97BatchStageTimings {
+                pack_upload_us,
+                idct_row_lift_us,
+                column_lift_us,
+                quantize_codeblock_us,
+                ht_encode_us: 0,
+                ht_codeblock_dispatches: 0,
+                readback_us: 0,
             },
         ))
     }
@@ -5966,6 +6125,8 @@ impl CudaContext {
                 idct_row_lift_us,
                 column_lift_us,
                 quantize_codeblock_us,
+                ht_encode_us: 0,
+                ht_codeblock_dispatches: 0,
                 readback_us,
             },
         ))
