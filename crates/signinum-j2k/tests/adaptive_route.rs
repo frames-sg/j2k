@@ -238,6 +238,24 @@ fn rca_reclassification_is_exact_to_stage_and_backend() {
     assert_eq!(dwt.gate_status, J2kAdaptiveStageGateStatus::BlockedNeedsRca);
     assert_eq!(dwt.selected_backend, BackendKind::Cpu);
     assert!(report.has_unresolved_rca());
+
+    let report = J2kAdaptiveRoutePlanner::new(metal_caps())
+        .with_rca_finding(J2kAdaptiveRcaFinding::reclassify_cpu(
+            J2kAdaptiveStage::Dwt,
+            BackendKind::Cuda,
+            J2kAdaptiveRcaReason::TransferSyncOverhead,
+        ))
+        .plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+        .expect("route should plan with backend-mismatched RCA");
+
+    let dwt = report.stage(J2kAdaptiveStage::Dwt).expect("DWT decision");
+    assert_eq!(dwt.gate_status, J2kAdaptiveStageGateStatus::BlockedNeedsRca);
+    assert_eq!(dwt.selected_backend, BackendKind::Cpu);
+    assert!(report.has_unresolved_rca());
 }
 
 #[test]
