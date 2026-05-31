@@ -5,6 +5,7 @@
 use core::fmt;
 use std::time::Instant;
 
+use rayon::prelude::*;
 use signinum_j2k_native::{
     encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_97_with_accelerator,
     encode_prequantized_htj2k_97_with_accelerator, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
@@ -673,17 +674,27 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<
         }
     }
 
+    let extract_start = Instant::now();
+    let prepared_results = tiles
+        .par_iter()
+        .enumerate()
+        .map(|(tile_index, tile)| {
+            (
+                tile_index,
+                prepare_integer_batch_tile(tile_index, tile.bytes, options),
+            )
+        })
+        .collect::<Vec<_>>();
+    let extract_us = extract_start.elapsed().as_micros();
     let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
         (0..tiles.len()).map(|_| None).collect();
     let mut prepared_tiles = Vec::new();
-    let extract_start = Instant::now();
-    for (tile_index, tile) in tiles.iter().enumerate() {
-        match prepare_integer_batch_tile(tile_index, tile.bytes, options) {
+    for (tile_index, result) in prepared_results {
+        match result {
             Ok(prepared) => prepared_tiles.push(prepared),
             Err(error) => tile_results[tile_index] = Some(Err(error)),
         }
     }
-    let extract_us = extract_start.elapsed().as_micros();
 
     let transform_start = Instant::now();
     let mut timings = TranscodeTimingReport::default();
@@ -745,17 +756,27 @@ fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
     accelerator: &mut A,
     encode_accelerator: &mut E,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
+    let extract_start = Instant::now();
+    let prepared_results = tiles
+        .par_iter()
+        .enumerate()
+        .map(|(tile_index, tile)| {
+            (
+                tile_index,
+                prepare_float97_batch_tile(tile_index, tile.bytes, options),
+            )
+        })
+        .collect::<Vec<_>>();
+    let extract_us = extract_start.elapsed().as_micros();
     let mut tile_results: Vec<Option<Result<EncodedTranscode, JpegToHtj2kError>>> =
         (0..tiles.len()).map(|_| None).collect();
     let mut prepared_tiles = Vec::new();
-    let extract_start = Instant::now();
-    for (tile_index, tile) in tiles.iter().enumerate() {
-        match prepare_float97_batch_tile(tile_index, tile.bytes, options) {
+    for (tile_index, result) in prepared_results {
+        match result {
             Ok(prepared) => prepared_tiles.push(prepared),
             Err(error) => tile_results[tile_index] = Some(Err(error)),
         }
     }
-    let extract_us = extract_start.elapsed().as_micros();
 
     let transform_start = Instant::now();
     let mut timings = TranscodeTimingReport::default();
@@ -1256,7 +1277,7 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
 
     let repack_start = Instant::now();
     let block_storage = group
-        .iter()
+        .par_iter()
         .map(|component_ref| {
             dct_blocks_to_8x8_f64(
                 &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index]

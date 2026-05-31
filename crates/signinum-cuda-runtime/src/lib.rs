@@ -1738,9 +1738,8 @@ impl CudaContext {
         if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
             return Err(CudaError::LengthTooLarge { len: data_len });
         }
-        let mut data = vec![0u8; HTJ2K_ENCODE_OUTPUT_CAPACITY];
-        output_buffer.copy_to_host(&mut data)?;
-        data.truncate(data_len);
+        let mut data = vec![0u8; data_len];
+        output_buffer.copy_range_to_host(0, &mut data)?;
 
         Ok(CudaHtj2kEncodedCodeBlock {
             data,
@@ -1960,8 +1959,6 @@ impl CudaContext {
             });
         }
 
-        let mut output = vec![0u8; output_bytes];
-        output_buffer.copy_to_host(&mut output)?;
         let code_blocks = statuses
             .into_iter()
             .zip(kernel_jobs.iter())
@@ -1975,11 +1972,13 @@ impl CudaContext {
                 let end = start
                     .checked_add(data_len)
                     .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-                if end > output.len() {
+                if end > output_bytes {
                     return Err(CudaError::LengthTooLarge { len: end });
                 }
+                let mut data = vec![0u8; data_len];
+                output_buffer.copy_range_to_host(start, &mut data)?;
                 Ok(CudaHtj2kEncodedCodeBlock {
-                    data: output[start..end].to_vec(),
+                    data,
                     status,
                     execution: CudaExecutionStats {
                         kernel_dispatches: 1,

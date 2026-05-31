@@ -119,6 +119,7 @@ pub struct CudaEncodeStageAccelerator {
     tier1_code_block_attempts: usize,
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
+    prefer_cpu_packetization: bool,
     deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
     forward_ict_dispatches: usize,
@@ -146,6 +147,17 @@ impl CudaEncodeStageAccelerator {
             collect_profile,
             ..Self::default()
         }
+    }
+
+    /// Prefer scalar CPU Tier-2 packetization while keeping CUDA Tier-1/HT block coding enabled.
+    ///
+    /// This is useful for batches of many small tiles where launching a CUDA
+    /// packetization kernel and copying several tiny descriptor buffers per tile
+    /// costs more than forming the packet body on the host.
+    #[must_use]
+    pub fn prefer_cpu_packetization(mut self, prefer_cpu_packetization: bool) -> Self {
+        self.prefer_cpu_packetization = prefer_cpu_packetization;
+        self
     }
 
     /// Return cumulative CUDA encode stage timings collected by this accelerator.
@@ -1871,6 +1883,22 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         job: J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
+        if self.prefer_cpu_packetization {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_packetization"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "prefer_cpu_packetization"),
+                    ],
+                );
+            }
+            let _ = job;
+            return Ok(None);
+        }
         let plan = match flatten_cuda_htj2k_packetization_job(job) {
             Ok(plan) => plan,
             Err(reason) => {
