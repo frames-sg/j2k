@@ -287,6 +287,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                             .wait()
                             .expect("wait resident Metal HTJ2K RPCL batch");
                         assert_eq!(outcome.outcomes.len(), count);
+                        emit_resident_stats("htj2k_rpcl_rgb8_512_batch", outcome.stats);
                         black_box(outcome.stats)
                     });
                 },
@@ -294,6 +295,24 @@ fn bench_encode_stages(c: &mut Criterion) {
         }
         htj2k_batch.finish();
     }
+}
+
+fn emit_resident_stats(label: &str, stats: signinum_j2k_metal::MetalLosslessEncodeBatchStats) {
+    if std::env::var_os("SIGNINUM_J2K_METAL_PROFILE_STAGES").is_none() {
+        return;
+    }
+    eprintln!(
+        "signinum_profile codec=j2k op=encode path=metal_resident label={label} plan_us={} prepare_submit_us={} ht_block_encode_us={} packet_block_prep_us={} packetization_us={} codestream_assembly_us={} sync_wait_us={} tile_count={} code_block_count={}",
+        stats.stage_stats.plan_duration.as_micros(),
+        stats.stage_stats.prepare_submit_duration.as_micros(),
+        stats.stage_stats.ht_block_encode_duration.as_micros(),
+        stats.stage_stats.packet_block_prep_duration.as_micros(),
+        stats.stage_stats.packetization_duration.as_micros(),
+        stats.stage_stats.codestream_assembly_duration.as_micros(),
+        stats.stage_stats.sync_wait_duration.as_micros(),
+        stats.stage_stats.tile_count,
+        stats.stage_stats.code_block_count,
+    );
 }
 
 fn metal_encode_available() -> bool {

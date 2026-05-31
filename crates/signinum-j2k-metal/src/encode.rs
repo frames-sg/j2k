@@ -561,15 +561,28 @@ impl MetalEncodedJ2k {
 
     /// Materialize the buffer-backed codestream into the compatibility `Vec` API shape.
     pub fn to_encoded_j2k(&self) -> Result<EncodedJ2k, crate::Error> {
-        Ok(EncodedJ2k {
-            codestream: self.codestream_bytes()?.to_vec(),
-            backend: BackendKind::Metal,
-            width: self.width,
-            height: self.height,
-            components: self.components,
-            bit_depth: self.bit_depth,
-            signed: self.signed,
-        })
+        let (encoded, _host_readback_duration) = self.to_encoded_j2k_with_readback_duration()?;
+        Ok(encoded)
+    }
+
+    fn to_encoded_j2k_with_readback_duration(
+        &self,
+    ) -> Result<(EncodedJ2k, Duration), crate::Error> {
+        let readback_started = Instant::now();
+        let codestream = self.codestream_bytes()?.to_vec();
+        let host_readback_duration = readback_started.elapsed();
+        Ok((
+            EncodedJ2k {
+                codestream,
+                backend: BackendKind::Metal,
+                width: self.width,
+                height: self.height,
+                components: self.components,
+                bit_depth: self.bit_depth,
+                signed: self.signed,
+            },
+            host_readback_duration,
+        ))
     }
 }
 
@@ -618,14 +631,34 @@ pub struct MetalLosslessEncodeStageStats {
     pub plan_duration: Duration,
     /// Time spent preparing and submitting Metal work.
     pub prepare_submit_duration: Duration,
+    /// Time spent preparing resident encode coefficients.
+    pub coefficient_prep_duration: Duration,
+    /// Time spent in fused deinterleave plus RCT work when used.
+    pub deinterleave_rct_duration: Duration,
+    /// Time spent in forward 5/3 DWT work.
+    pub dwt53_duration: Duration,
+    /// Time spent extracting coefficient buffers for resident encode.
+    pub coefficient_extract_duration: Duration,
     /// Time spent building HT lookup tables.
     pub ht_table_build_duration: Duration,
     /// Time spent allocating HT output buffers.
     pub ht_buffer_allocation_duration: Duration,
     /// Time spent encoding HT command buffers.
     pub ht_command_encode_duration: Duration,
+    /// Time spent encoding HT code blocks.
+    pub ht_block_encode_duration: Duration,
+    /// Time spent preparing packet block metadata.
+    pub packet_block_prep_duration: Duration,
+    /// Time spent encoding packet bodies.
+    pub packetization_duration: Duration,
+    /// Time spent assembling codestream bytes.
+    pub codestream_assembly_duration: Duration,
     /// Time spent waiting for codestream buffers.
     pub codestream_wait_duration: Duration,
+    /// Time spent waiting for resident codestream completion.
+    pub sync_wait_duration: Duration,
+    /// Time spent materializing buffer-backed codestream bytes into host bytes.
+    pub host_readback_duration: Duration,
     /// Number of resident encode chunks.
     pub chunk_count: usize,
     /// Number of encoded tiles.
@@ -639,10 +672,20 @@ impl MetalLosslessEncodeStageStats {
     pub fn has_timings(&self) -> bool {
         self.plan_duration > Duration::ZERO
             || self.prepare_submit_duration > Duration::ZERO
+            || self.coefficient_prep_duration > Duration::ZERO
+            || self.deinterleave_rct_duration > Duration::ZERO
+            || self.dwt53_duration > Duration::ZERO
+            || self.coefficient_extract_duration > Duration::ZERO
             || self.ht_table_build_duration > Duration::ZERO
             || self.ht_buffer_allocation_duration > Duration::ZERO
             || self.ht_command_encode_duration > Duration::ZERO
+            || self.ht_block_encode_duration > Duration::ZERO
+            || self.packet_block_prep_duration > Duration::ZERO
+            || self.packetization_duration > Duration::ZERO
+            || self.codestream_assembly_duration > Duration::ZERO
             || self.codestream_wait_duration > Duration::ZERO
+            || self.sync_wait_duration > Duration::ZERO
+            || self.host_readback_duration > Duration::ZERO
     }
 
     #[cfg(target_os = "macos")]
@@ -651,6 +694,16 @@ impl MetalLosslessEncodeStageStats {
         self.prepare_submit_duration = self
             .prepare_submit_duration
             .saturating_add(other.prepare_submit_duration);
+        self.coefficient_prep_duration = self
+            .coefficient_prep_duration
+            .saturating_add(other.coefficient_prep_duration);
+        self.deinterleave_rct_duration = self
+            .deinterleave_rct_duration
+            .saturating_add(other.deinterleave_rct_duration);
+        self.dwt53_duration = self.dwt53_duration.saturating_add(other.dwt53_duration);
+        self.coefficient_extract_duration = self
+            .coefficient_extract_duration
+            .saturating_add(other.coefficient_extract_duration);
         self.ht_table_build_duration = self
             .ht_table_build_duration
             .saturating_add(other.ht_table_build_duration);
@@ -660,9 +713,27 @@ impl MetalLosslessEncodeStageStats {
         self.ht_command_encode_duration = self
             .ht_command_encode_duration
             .saturating_add(other.ht_command_encode_duration);
+        self.ht_block_encode_duration = self
+            .ht_block_encode_duration
+            .saturating_add(other.ht_block_encode_duration);
+        self.packet_block_prep_duration = self
+            .packet_block_prep_duration
+            .saturating_add(other.packet_block_prep_duration);
+        self.packetization_duration = self
+            .packetization_duration
+            .saturating_add(other.packetization_duration);
+        self.codestream_assembly_duration = self
+            .codestream_assembly_duration
+            .saturating_add(other.codestream_assembly_duration);
         self.codestream_wait_duration = self
             .codestream_wait_duration
             .saturating_add(other.codestream_wait_duration);
+        self.sync_wait_duration = self
+            .sync_wait_duration
+            .saturating_add(other.sync_wait_duration);
+        self.host_readback_duration = self
+            .host_readback_duration
+            .saturating_add(other.host_readback_duration);
         self.chunk_count = self.chunk_count.saturating_add(other.chunk_count);
         self.tile_count = self.tile_count.saturating_add(other.tile_count);
         self.code_block_count = self.code_block_count.saturating_add(other.code_block_count);
@@ -673,9 +744,17 @@ impl MetalLosslessEncodeStageStats {
 impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStats {
     fn from(stats: compute::J2kResidentEncodeStageStats) -> Self {
         Self {
+            coefficient_prep_duration: stats.coefficient_prep_duration,
+            deinterleave_rct_duration: stats.deinterleave_rct_duration,
+            dwt53_duration: stats.dwt53_duration,
+            coefficient_extract_duration: stats.coefficient_extract_duration,
             ht_table_build_duration: stats.ht_table_build_duration,
             ht_buffer_allocation_duration: stats.ht_buffer_allocation_duration,
             ht_command_encode_duration: stats.ht_command_encode_duration,
+            ht_block_encode_duration: stats.ht_block_encode_duration,
+            packet_block_prep_duration: stats.packet_block_prep_duration,
+            packetization_duration: stats.packetization_duration,
+            codestream_assembly_duration: stats.codestream_assembly_duration,
             code_block_count: stats.code_block_count,
             ..Self::default()
         }
@@ -2478,11 +2557,17 @@ fn wait_submitted_resident_lossless_buffer_encode_batch(
                 let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
                 let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
                 if let Some(started) = wait_started {
+                    let elapsed = started.elapsed();
                     submitted.stats.stage_stats.codestream_wait_duration = submitted
                         .stats
                         .stage_stats
                         .codestream_wait_duration
-                        .saturating_add(started.elapsed());
+                        .saturating_add(elapsed);
+                    submitted.stats.stage_stats.sync_wait_duration = submitted
+                        .stats
+                        .stage_stats
+                        .sync_wait_duration
+                        .saturating_add(elapsed);
                     submitted
                         .stats
                         .stage_stats
@@ -3998,6 +4083,7 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
+    use std::time::Duration;
 
     #[cfg(target_os = "macos")]
     macro_rules! lossless_options {
@@ -4178,6 +4264,22 @@ mod tests {
             stats.stage_stats,
             super::MetalLosslessEncodeStageStats::default()
         );
+        assert_eq!(stats.stage_stats.coefficient_prep_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.deinterleave_rct_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.dwt53_duration, Duration::ZERO);
+        assert_eq!(
+            stats.stage_stats.coefficient_extract_duration,
+            Duration::ZERO
+        );
+        assert_eq!(stats.stage_stats.ht_block_encode_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.packet_block_prep_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.packetization_duration, Duration::ZERO);
+        assert_eq!(
+            stats.stage_stats.codestream_assembly_duration,
+            Duration::ZERO
+        );
+        assert_eq!(stats.stage_stats.sync_wait_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.host_readback_duration, Duration::ZERO);
         assert!(!stats.stage_stats.has_timings());
     }
 
