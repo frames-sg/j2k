@@ -18,10 +18,23 @@ pub enum EncodeBackendPreference {
     Auto,
     /// Require the pure Rust CPU encoder.
     CpuOnly,
-    /// Prefer a device encoder, but fall back to CPU when unavailable.
+    /// Legacy name for adaptive accelerated routing.
+    ///
+    /// Prefer [`EncodeBackendPreference::ACCELERATED`] or
+    /// [`J2kLosslessEncodeOptions::with_accelerated_backend`].
     PreferDevice,
     /// Require a device encoder and fail if unavailable or unsupported.
     RequireDevice,
+}
+
+impl EncodeBackendPreference {
+    /// Adaptive accelerated route: CPU-only stages stay on CPU and device-shaped
+    /// stages run on Metal/CUDA only after benchmark gates approve that shape.
+    pub const ACCELERATED: Self = Self::Auto;
+    /// Explicit portable CPU route.
+    pub const CPU_ONLY: Self = Self::CpuOnly;
+    /// Strict device diagnostic/conformance route.
+    pub const STRICT_DEVICE: Self = Self::RequireDevice;
 }
 
 /// Supported JPEG 2000 progression orders for the lossless encode facade.
@@ -130,6 +143,24 @@ impl J2kLosslessEncodeOptions {
     pub const fn with_backend(mut self, backend: EncodeBackendPreference) -> Self {
         self.backend = backend;
         self
+    }
+
+    /// Return options using adaptive accelerated routing.
+    #[must_use]
+    pub const fn with_accelerated_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::ACCELERATED)
+    }
+
+    /// Return options using the portable CPU route.
+    #[must_use]
+    pub const fn with_cpu_only_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::CPU_ONLY)
+    }
+
+    /// Return options requiring a strict device route.
+    #[must_use]
+    pub const fn with_strict_device_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::STRICT_DEVICE)
     }
 
     /// Return options with a different code-block coding mode.
@@ -270,6 +301,24 @@ impl J2kLossyEncodeOptions {
     pub fn with_backend(mut self, backend: EncodeBackendPreference) -> Self {
         self.backend = backend;
         self
+    }
+
+    /// Return options using adaptive accelerated routing.
+    #[must_use]
+    pub fn with_accelerated_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::ACCELERATED)
+    }
+
+    /// Return options using the portable CPU route.
+    #[must_use]
+    pub fn with_cpu_only_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::CPU_ONLY)
+    }
+
+    /// Return options requiring a strict device route.
+    #[must_use]
+    pub fn with_strict_device_backend(self) -> Self {
+        self.with_backend(EncodeBackendPreference::STRICT_DEVICE)
     }
 
     /// Return options with a different code-block coding mode.

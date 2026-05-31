@@ -76,15 +76,19 @@ unless the change is semver-compatible for third-party implementations.
 
 ## GPU Contract
 
-`BackendRequest::Cpu` never uses GPU.
+`BackendRequest::Cpu` / `BackendRequest::CPU_ONLY` never uses GPU.
 
-`BackendRequest::Auto` may use GPU for supported shapes. CPU fallback is allowed and observable
-through surface residency, backend kind, dispatch reports, or typed outcome
+`BackendRequest::Auto` / `BackendRequest::ACCELERATED` is adaptive
+accelerated routing. GPU-shaped stages may use Metal/CUDA only when
+workload-specific stage and end-to-end gates prove the split is faster than
+optimized CPU. CPU fallback is allowed and observable through surface
+residency, backend kind, dispatch reports, route reports, or typed outcome
 metadata.
 
-`BackendRequest::Metal` and `BackendRequest::Cuda` are strict requests. They
-must return device-backed output or a typed unsupported/unavailable error with
-no silent CPU fallback.
+`BackendRequest::Metal` / `BackendRequest::STRICT_METAL` and
+`BackendRequest::Cuda` / `BackendRequest::STRICT_CUDA` are strict requests.
+They must return device-backed output or a typed unsupported/unavailable error
+with no silent CPU fallback.
 
 Hybrid encode/decode paths must report which backend and stages ran when that
 affects user expectations. Dispatch-sensitive APIs expose dispatch reports.

@@ -83,6 +83,30 @@ JPEG 2000 comparator behavior:
   `SIGNINUM_GROK_ROOT` point to a local Grok build with headers and shared
   libraries.
 
+JPEG 2000 / HTJ2K adaptive backend behavior:
+
+- Production `Auto` / `ACCELERATED` means adaptive accelerated routing, not
+  strict all-device execution. CPU-shaped stages stay on CPU; device-shaped
+  stages use Metal or CUDA only after both their stage gate and the end-to-end
+  gate pass for the measured workload shape.
+- Explicit CPU rows use `CPU_ONLY`.
+- Explicit Metal/CUDA rows are strict capability-proof rows. They are labeled
+  `strict_metal_*` and `strict_cuda_*`, and unsupported strict rows must skip or
+  fail loudly when the matching `SIGNINUM_REQUIRE_*_BENCH` variable is set.
+- Adaptive rows are the performance gates and public-speed evidence. A device
+  stage can become part of the default route only when the optimized device
+  stage beats optimized CPU by at least `10% + Criterion noise`, and the full
+  adaptive route also beats CPU-only for the same shape.
+- Logical GPU-shaped stages that lose their gate are RCA work, not an automatic
+  CPU-policy win. Record the reason as algorithmic mismatch, transfer/sync
+  overhead, missing batching, missing residency, too-small workload, benchmark
+  mismatch, or genuinely-better CPU for that exact shape.
+- The release-blocking matrix must include representative Gray/RGB/RGBA,
+  8/16-bit, 512/1024 tiles, batch 16/64, encode/decode/transcode, and
+  lossless/lossy rows where supported. The publication matrix extends this to
+  512/1024/4096 tiles, batch 1/16/64, full/ROI/scaled/ROI+scaled, CPU,
+  strict Metal, strict CUDA, and adaptive rows.
+
 ## Compared operations
 
 - `inspect`

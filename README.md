@@ -29,7 +29,7 @@ expose CUDA device memory through `cuda-runtime` when a CUDA driver is
 available. JPEG full-frame RGB8 CUDA requests can use nvJPEG; NVIDIA performance
 claims require self-hosted GPU benchmark evidence.
 
-The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto`: CPU decode remains the portable fallback, and device adapters are additive for supported compiled workloads.
+The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto` / `ACCELERATED`: CPU remains the portable fallback, and device stages become defaults only for benchmark-approved workload shapes.
 
 ## Why It Exists
 
@@ -241,13 +241,18 @@ These codecs implement the shared `TileDecompress` trait from `signinum-core`.
 The public API uses `BackendRequest` so callers state what kind of output they
 need:
 
-- `BackendRequest::Cpu` requires host-backed output.
-- `BackendRequest::Auto` lets an adapter use a validated device path for
-  supported workloads and otherwise fall back to CPU.
-- `BackendRequest::Metal` requires resident Metal execution on macOS and
-  reports unsupported or unavailable requests as errors.
-- `BackendRequest::Cuda` requires CUDA device-memory output when the
-  `cuda-runtime` feature and a CUDA driver are available.
+- `BackendRequest::Auto` / `BackendRequest::ACCELERATED` means adaptive
+  accelerated routing. The codec may split work across CPU and Metal/CUDA, but
+  device stages become defaults only after workload-specific benchmark gates
+  prove they are faster than optimized CPU.
+- `BackendRequest::Cpu` / `BackendRequest::CPU_ONLY` requires host-backed CPU
+  output.
+- `BackendRequest::Metal` / `BackendRequest::STRICT_METAL` requires resident
+  Metal execution on macOS and reports unsupported or unavailable requests as
+  errors.
+- `BackendRequest::Cuda` / `BackendRequest::STRICT_CUDA` requires CUDA
+  device-memory output when the `cuda-runtime` feature and a CUDA driver are
+  available.
 
 CPU decode is the portability baseline on native `x86_64` and `aarch64`
 hosts. Device adapters are additive: removing Metal and CUDA crates leaves the
