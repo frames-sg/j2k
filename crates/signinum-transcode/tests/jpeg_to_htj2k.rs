@@ -793,17 +793,17 @@ fn float97_batch_transcode_groups_components_across_tiles() {
         BatchFixture {
             name: "ycbcr_444",
             jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
-            expected_batch_sizes: &[4, 4, 4],
+            expected_batch_sizes: &[12],
         },
         BatchFixture {
             name: "ycbcr_422",
             jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
-            expected_batch_sizes: &[4, 4, 4],
+            expected_batch_sizes: &[4, 8],
         },
         BatchFixture {
             name: "ycbcr_420",
             jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
-            expected_batch_sizes: &[4, 4, 4],
+            expected_batch_sizes: &[4, 8],
         },
     ] {
         let options = JpegToHtj2kOptions::lossy_97();
@@ -1012,6 +1012,30 @@ fn float97_preencoded_batch_skips_encode_codeblock_hooks() {
     assert_eq!(encode_accelerator.batches, 0);
     assert_eq!(encode_accelerator.jobs, 0);
     assert_eq!(batch.report.timings.dwt97_batch_ht_codeblock_dispatches, 1);
+}
+
+#[test]
+fn float97_preencoded_batch_groups_compatible_color_components() {
+    let jpeg = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossy_97();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut transform_accelerator = Preencoded97Accelerator::default();
+    let mut encode_accelerator = CountingHtEncodeAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerators(
+            &inputs,
+            &options,
+            &mut transform_accelerator,
+            &mut encode_accelerator,
+        )
+        .expect("9/7 preencoded batch groups compatible color components");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(transform_accelerator.preencoded_batch_sizes, vec![12]);
+    assert_eq!(encode_accelerator.batches, 0);
+    assert_eq!(encode_accelerator.jobs, 0);
 }
 
 #[test]
