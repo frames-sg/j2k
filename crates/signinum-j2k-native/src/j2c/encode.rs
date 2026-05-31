@@ -1002,6 +1002,10 @@ impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator for PrecomputedDwtA
             .prefer_parallel_cpu_code_block_fallback()
     }
 
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        self.encode_accelerator.prefer_parallel_cpu_tile_encode()
+    }
+
     fn encode_packetization(
         &mut self,
         job: J2kPacketizationEncodeJob<'_>,
@@ -1066,6 +1070,10 @@ impl<A: J2kEncodeStageAccelerator> J2kEncodeStageAccelerator
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
         self.encode_accelerator
             .prefer_parallel_cpu_code_block_fallback()
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        self.encode_accelerator.prefer_parallel_cpu_tile_encode()
     }
 
     fn encode_packetization(
