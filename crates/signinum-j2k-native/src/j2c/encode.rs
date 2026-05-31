@@ -67,7 +67,7 @@ pub struct EncodeOptions {
     /// produce smaller codestreams by coarsening quantization.
     pub irreversible_quantization_scale: f32,
     /// Per-subband multipliers applied on top of
-    /// [`irreversible_quantization_scale`].
+    /// `irreversible_quantization_scale`.
     pub irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
     /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
     ///
