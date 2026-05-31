@@ -310,9 +310,10 @@ fn emit_resident_stats(label: &str, stats: signinum_j2k_metal::MetalLosslessEnco
         return;
     }
     eprintln!(
-        "signinum_profile codec=j2k op=encode path=metal_resident label={label} plan_us={} prepare_submit_us={} ht_block_command_encode_us={} packet_block_prep_command_encode_us={} packetization_command_encode_us={} codestream_assembly_command_encode_us={} sync_wait_us={} tile_count={} code_block_count={}",
+        "signinum_profile codec=j2k op=encode path=metal_resident label={label} plan_us={} prepare_submit_us={} coefficient_prep_us={} ht_block_command_encode_us={} packet_block_prep_command_encode_us={} packetization_command_encode_us={} codestream_assembly_command_encode_us={} sync_wait_us={} tile_count={} code_block_count={}",
         stats.stage_stats.plan_duration.as_micros(),
         stats.stage_stats.prepare_submit_duration.as_micros(),
+        stats.stage_stats.coefficient_prep_duration.as_micros(),
         stats.stage_stats.ht_block_encode_duration.as_micros(),
         stats.stage_stats.packet_block_prep_duration.as_micros(),
         stats.stage_stats.packetization_duration.as_micros(),
