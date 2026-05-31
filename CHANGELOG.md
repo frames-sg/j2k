@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- Documented that J2K Metal resident encode diagnostic report structs are
+  crate-constructed API surfaces that may grow diagnostic fields in adapter
+  releases, and clarified that resident RCA split buckets measure host-side
+  Metal command encoding rather than GPU kernel elapsed time.
+
 ## [0.4.4] - 2026-05-26
 
 ### Added

@@ -487,6 +487,10 @@ pub struct MetalLosslessEncodeResidency {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Lossless Metal encode output with host codestream bytes and timings.
+///
+/// API note: this diagnostic report is constructed by this crate. It is not
+/// `#[non_exhaustive]`, but adapter releases may add diagnostic fields as the
+/// resident encode path gains more profiling detail.
 pub struct MetalLosslessEncodeOutcome {
     /// Encoded J2K codestream.
     pub encoded: EncodedJ2k,
@@ -627,6 +631,14 @@ pub struct MetalLosslessEncodeConfig {
 }
 
 /// Optional resident Metal encode stage timings.
+///
+/// API note: this diagnostic report is constructed by this crate. It is not
+/// `#[non_exhaustive]`, but adapter releases may add diagnostic fields as the
+/// resident encode path gains more profiling detail.
+///
+/// Unless a field explicitly says otherwise, timing fields are host-side
+/// `Instant` buckets for RCA and should not be read as exact GPU execution
+/// elapsed time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeStageStats {
     /// Time spent planning the resident encode batch.
@@ -651,19 +663,24 @@ pub struct MetalLosslessEncodeStageStats {
     pub ht_table_build_duration: Duration,
     /// Time spent allocating HT output buffers.
     pub ht_buffer_allocation_duration: Duration,
-    /// Time spent encoding HT command buffers.
+    /// Host-side Metal command encoding time for HT resident command buffers.
+    ///
+    /// This is the sum of the split command-encode buckets below and is not GPU
+    /// kernel execution elapsed time.
     pub ht_command_encode_duration: Duration,
-    /// Time spent encoding HT code blocks.
+    /// Host-side Metal command encoding time for HT code-block dispatch setup.
     pub ht_block_encode_duration: Duration,
-    /// Time spent preparing packet block metadata.
+    /// Host-side Metal command encoding time for packet block metadata dispatch setup.
     pub packet_block_prep_duration: Duration,
-    /// Time spent encoding packet bodies.
+    /// Host-side Metal command encoding time for packet body dispatch setup.
     pub packetization_duration: Duration,
-    /// Time spent assembling codestream bytes.
+    /// Host-side Metal command encoding time for codestream assembly dispatch setup.
     pub codestream_assembly_duration: Duration,
     /// Time spent waiting for codestream buffers.
     pub codestream_wait_duration: Duration,
-    /// Time spent waiting for resident codestream completion.
+    /// Alias of `codestream_wait_duration` using RCA naming.
+    ///
+    /// Do not sum this with `codestream_wait_duration` as an independent bucket.
     pub sync_wait_duration: Duration,
     /// Time spent materializing buffer-backed codestream bytes into host bytes.
     pub host_readback_duration: Duration,
