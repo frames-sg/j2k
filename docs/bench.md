@@ -357,6 +357,18 @@ Run the facade dispatch benches:
 cargo bench -p signinum --bench facade
 ```
 
+The facade bench includes
+`facade_j2k_htj2k_encode_backend_speed_matrix`, which compares the same
+512x512 RGB8 HTJ2K encode workload across CPU, Metal, and CUDA when those
+features are compiled. Use `SIGNINUM_REQUIRE_CUDA_BENCH=1` on a CUDA signoff
+host to fail instead of skipping the CUDA row when no CUDA encode stage
+dispatches:
+
+```sh
+SIGNINUM_REQUIRE_CUDA_BENCH=1 \
+  cargo bench -p signinum --bench facade --features "metal cuda-runtime" -- --noplot
+```
+
 Run against local extracted WSI JPEG tiles:
 
 ```sh

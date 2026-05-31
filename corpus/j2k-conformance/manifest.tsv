@@ -1,11 +1,11 @@
 # id	path	classification	features	reason
-part1_core_lossless_53	part1/core-lossless-5x3.j2k	blocking	part1-core;lossless-5-3	Part 1 reversible core codestream support is shipped by the release scope.
-part1_core_lossy_97_layers	part1/core-lossy-9x7-layers.j2k	blocking	part1-core;lossy-9-7;quality-layers	Part 1 irreversible lossy multi-layer codestream support is shipped by the release scope.
-part1_poc_progression	part1/poc-progression.j2k	blocking	part1-core;poc;progression-orders	POC packet iteration and all progression-order support are shipped by the release scope.
-part1_precinct_progression	part1/precinct-progression-orders.j2k	blocking	part1-core;precincts;progression-orders	Precinct-aware packetization and progression-order support are shipped by the release scope.
-part1_random_access_markers	part1/tlm-plt-plm-sop-eph.j2k	blocking	part1-core;tlm;plt;plm;sop;eph	TLM/PLT/PLM random-access metadata and SOP/EPH packet markers are shipped by the release scope.
-openhtj2k_ds0_ht_12_b11	ds0_ht_12_b11.j2k	blocking	part15-core;ht-refinement	HTJ2K core refinement-pass conformance vector shipped by the release scope.
-openhtj2k_ds0_ht_09_b11	ds0_ht_09_b11.j2k	blocking	part15-core;ht-refinement	HTJ2K core refinement-pass conformance vector shipped by the release scope.
+part1_core_lossless_53	codestreams_profile0/p0_01.j2k	blocking	part1-core;lossless-5-3	Part 1 reversible core codestream support is shipped by the release scope.
+part1_core_lossy_97_layers_precincts	codestreams_profile0/p0_04.j2k	blocking	part1-core;lossy-9-7;quality-layers;precincts;progression-orders	Part 1 irreversible lossy multi-layer codestream support, precincts, and progression-order support are shipped by the release scope.
+part1_poc_tlm_sop	codestreams_profile0/p0_03.j2k	blocking	part1-core;poc;progression-orders;tlm;sop	POC packet iteration, TLM metadata, SOP markers, and progression-order support are shipped by the release scope.
+part1_plt_sop_eph	codestreams_profile0/p0_07.j2k	blocking	part1-core;poc;progression-orders;plt;sop;eph	PLT packet-length metadata, SOP/EPH packet markers, and POC progression changes are shipped by the release scope.
+openhtj2k_ds0_ht_12_b11	htj2k_bsets_profile0/p0_12_bset/ds0_ht_12_b11.j2k	blocking	part15-core;ht-refinement	HTJ2K core refinement-pass conformance vector shipped by the release scope.
+openhtj2k_ds0_ht_09_b11	htj2k_bsets_profile0/p0_09_bset/ds0_ht_09_b11.j2k	blocking	part15-core;ht-refinement	HTJ2K core refinement-pass conformance vector shipped by the release scope.
+plm_iso_vector_absent	known-limitations/no-plm-vector-in-t803v3.txt	known-limitation	plm;conformance-coverage-gap	The available T.803v3 extraction has no described PLM-bearing vector; PLM behavior is covered by unit and encode round-trip tests.
 jpx_part2_deferred	known-limitations/jpx-part2-placeholder.jp2	known-limitation	jpx;part2	JPX and JPEG 2000 Part 2 extensions are explicitly deferred.
 icc_roundtrip_deferred	known-limitations/icc-roundtrip-placeholder.jp2	known-limitation	icc-roundtrip	ICC round-trip on encode is explicitly deferred.
 encode_gt16_deferred	known-limitations/gt16-placeholder.j2k	known-limitation	encode-17-38-bit	17-38 bit encode is explicitly unsupported in this release.

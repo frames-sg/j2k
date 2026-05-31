@@ -17,6 +17,8 @@ const PLAN_BLOCK_LENGTH_MISMATCH: &str =
     "strict CUDA HTJ2K plan block lengths do not match payload bytes";
 const PLAN_OUTPUT_RECT_MISMATCH: &str =
     "strict CUDA HTJ2K plan store does not fit the requested output rectangle";
+const ROI_MAXSHIFT_UNSUPPORTED: &str =
+    "strict CUDA HTJ2K plan does not support ROI maxshift decode";
 
 /// CUDA-side DWT transform selector for a flat HTJ2K plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +263,11 @@ impl CudaHtj2kDecodePlan {
                             })
                         {
                             continue;
+                        }
+                        if job.roi_shift != 0 {
+                            return Err(Error::UnsupportedCudaRequest {
+                                reason: ROI_MAXSHIFT_UNSUPPORTED,
+                            });
                         }
                         payload.extend_from_slice(&job.data);
                         code_blocks.push(CudaHtj2kCodeBlock {
@@ -756,6 +763,7 @@ mod tests {
                         missing_bit_planes: 0,
                         number_of_coding_passes: 1,
                         num_bitplanes: 8,
+                        roi_shift: 0,
                         stripe_causal: false,
                         strict: true,
                         dequantization_step: 1.0,

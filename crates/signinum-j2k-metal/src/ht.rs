@@ -88,6 +88,9 @@ fn supports_metal_ht_kernel(job: &HtCodeBlockDecodeJob<'_>) -> bool {
     if !supports_metal_ht_geometry(job.width, job.height) {
         return false;
     }
+    if job.roi_shift != 0 {
+        return false;
+    }
     if job.num_bitplanes == 0 || job.num_bitplanes > 31 || job.missing_bit_planes >= 30 {
         return false;
     }
@@ -187,6 +190,7 @@ mod tests {
         missing_bit_planes: u8,
         number_of_coding_passes: u8,
         num_bitplanes: u8,
+        roi_shift: u8,
         stripe_causal: bool,
         strict: bool,
         dequantization_step: f32,
@@ -204,6 +208,7 @@ mod tests {
                 missing_bit_planes: self.missing_bit_planes,
                 number_of_coding_passes: self.number_of_coding_passes,
                 num_bitplanes: self.num_bitplanes,
+                roi_shift: self.roi_shift,
                 stripe_causal: self.stripe_causal,
                 strict: self.strict,
                 dequantization_step: self.dequantization_step,
@@ -237,6 +242,7 @@ mod tests {
                     missing_bit_planes: job.missing_bit_planes,
                     number_of_coding_passes: job.number_of_coding_passes,
                     num_bitplanes: job.num_bitplanes,
+                    roi_shift: job.roi_shift,
                     stripe_causal: job.stripe_causal,
                     strict: job.strict,
                     dequantization_step: job.dequantization_step,

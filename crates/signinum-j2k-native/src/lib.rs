@@ -152,6 +152,8 @@ mod jp2;
 pub(crate) mod reader;
 pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 
+const MAX_CLASSIC_DECODE_BITPLANES: u8 = 32;
+
 /// Adapter HTJ2K code-block job description for backend experimentation.
 #[derive(Debug, Clone, Copy)]
 pub struct HtCodeBlockDecodeJob<'a> {
@@ -173,6 +175,8 @@ pub struct HtCodeBlockDecodeJob<'a> {
     pub number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
     pub num_bitplanes: u8,
+    /// Region-of-interest maxshift value from RGN marker metadata.
+    pub roi_shift: u8,
     /// Whether vertically causal context was enabled.
     pub stripe_causal: bool,
     /// Whether strict decode validation is enabled for the parent image.
@@ -276,6 +280,8 @@ pub struct J2kCodeBlockDecodeJob<'a> {
     pub number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
     pub total_bitplanes: u8,
+    /// Region-of-interest maxshift value from RGN marker metadata.
+    pub roi_shift: u8,
     /// The sub-band type containing this code block.
     pub sub_band_type: J2kSubBandType,
     /// The code-block style flags.
@@ -1168,6 +1174,40 @@ fn internal_j2k_code_block_style(style: J2kCodeBlockStyle) -> j2c::codestream::C
     }
 }
 
+pub(crate) fn add_roi_shift_to_bitplanes(
+    bitplanes: u8,
+    roi_shift: u8,
+    max_bitplanes: u8,
+) -> Result<u8> {
+    let Some(coded_bitplanes) = bitplanes.checked_add(roi_shift) else {
+        bail!(DecodingError::TooManyBitplanes);
+    };
+    if coded_bitplanes > max_bitplanes {
+        bail!(DecodingError::TooManyBitplanes);
+    }
+    Ok(coded_bitplanes)
+}
+
+pub(crate) fn apply_roi_maxshift_inverse_i32(coefficient: i32, roi_shift: u8) -> i32 {
+    if roi_shift == 0 || coefficient == 0 {
+        return coefficient;
+    }
+
+    let magnitude = i64::from(coefficient).abs();
+    let threshold = 1_i64.checked_shl(roi_shift as u32).unwrap_or(i64::MAX);
+    if magnitude < threshold {
+        return coefficient;
+    }
+
+    let shifted = magnitude >> roi_shift;
+    let shifted = shifted.min(i64::from(i32::MAX)) as i32;
+    if coefficient < 0 {
+        -shifted
+    } else {
+        shifted
+    }
+}
+
 /// Adapter scalar classic J2K encoder helper for backend experimentation.
 pub fn encode_j2k_code_block_scalar_with_style(
     coefficients: &[i32],
@@ -1406,6 +1446,11 @@ pub fn decode_j2k_code_block_scalar(
     let code_block_stride =
         usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
     let mut bit_plane_decode_context = j2c::bitplane::BitPlaneDecodeContext::default();
+    let coded_bitplanes = add_roi_shift_to_bitplanes(
+        job.total_bitplanes,
+        job.roi_shift,
+        MAX_CLASSIC_DECODE_BITPLANES,
+    )?;
 
     j2c::bitplane::decode_code_block_segments_validated(
         job.data,
@@ -1414,7 +1459,7 @@ pub fn decode_j2k_code_block_scalar(
         job.height,
         job.missing_bit_planes,
         job.number_of_coding_passes,
-        job.total_bitplanes,
+        coded_bitplanes,
         sub_band_type,
         &style,
         job.strict,
@@ -1429,7 +1474,8 @@ pub fn decode_j2k_code_block_scalar(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + code_block_stride];
         for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            *sample = coefficient.get() as f32 * job.dequantization_step;
+            let coefficient = apply_roi_maxshift_inverse_i32(coefficient.get(), job.roi_shift);
+            *sample = coefficient as f32 * job.dequantization_step;
         }
     }
 
@@ -1590,12 +1636,13 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         job.cleanup_length,
         job.refinement_length,
     )?;
+    let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
     workspace.coefficients.clear();
     workspace.coefficients.resize(code_block_len, 0);
     j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
         &segments,
         job.missing_bit_planes,
-        job.num_bitplanes,
+        coded_bitplanes,
         job.number_of_coding_passes,
         job.stripe_causal,
         job.strict,
@@ -1617,9 +1664,10 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + code_block_stride];
         for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
-            *sample = j2c::ht_block_decode::coefficient_to_i32(coefficient, job.num_bitplanes)
-                as f32
-                * job.dequantization_step;
+            let coefficient =
+                j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
+            let coefficient = apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift);
+            *sample = coefficient as f32 * job.dequantization_step;
         }
     }
 
@@ -2971,6 +3019,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn roi_maxshift_inverse_preserves_background_and_unshifts_roi_coefficients() {
+        assert_eq!(apply_roi_maxshift_inverse_i32(127, 7), 127);
+        assert_eq!(apply_roi_maxshift_inverse_i32(-127, 7), -127);
+        assert_eq!(apply_roi_maxshift_inverse_i32(128, 7), 1);
+        assert_eq!(apply_roi_maxshift_inverse_i32(-128, 7), -1);
+        assert_eq!(apply_roi_maxshift_inverse_i32(255, 7), 1);
+        assert_eq!(apply_roi_maxshift_inverse_i32(-255, 7), -1);
+        assert_eq!(apply_roi_maxshift_inverse_i32(256, 7), 2);
+        assert_eq!(apply_roi_maxshift_inverse_i32(-256, 7), -2);
+        assert_eq!(apply_roi_maxshift_inverse_i32(42, 0), 42);
+    }
+
+    #[test]
     fn scalar_packetization_rejects_overflowing_ht_refinement_lengths_without_panic() {
         let payload = [0x12];
         let block = J2kPacketizationCodeBlock {
@@ -3103,6 +3164,7 @@ mod tests {
         missing_bit_planes: u8,
         number_of_coding_passes: u8,
         num_bitplanes: u8,
+        roi_shift: u8,
         stripe_causal: bool,
         strict: bool,
         dequantization_step: f32,
@@ -3120,6 +3182,7 @@ mod tests {
                 missing_bit_planes: job.missing_bit_planes,
                 number_of_coding_passes: job.number_of_coding_passes,
                 num_bitplanes: job.num_bitplanes,
+                roi_shift: job.roi_shift,
                 stripe_causal: job.stripe_causal,
                 strict: job.strict,
                 dequantization_step: job.dequantization_step,
@@ -3137,6 +3200,7 @@ mod tests {
                 missing_bit_planes: self.missing_bit_planes,
                 number_of_coding_passes: self.number_of_coding_passes,
                 num_bitplanes: self.num_bitplanes,
+                roi_shift: self.roi_shift,
                 stripe_causal: self.stripe_causal,
                 strict: self.strict,
                 dequantization_step: self.dequantization_step,

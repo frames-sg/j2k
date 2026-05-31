@@ -12,6 +12,7 @@ struct J2kClassicCleanupBatchJob {
     uint output_offset;
     uint missing_msbs;
     uint total_bitplanes;
+    uint roi_shift;
     uint number_of_coding_passes;
     uint sub_band_type;
     uint style_flags;
