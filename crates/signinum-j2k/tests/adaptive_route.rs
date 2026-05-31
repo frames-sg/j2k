@@ -64,6 +64,18 @@ fn approved_metal_benchmarks_for(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBe
     benchmarks
 }
 
+fn metal_stage_candidate_benchmarks_for(stage: J2kAdaptiveStage) -> J2kAdaptiveBenchmarks {
+    let mut benchmarks = J2kAdaptiveBenchmarks::default();
+    benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+        stage,
+        BackendKind::Metal,
+        100_000,
+        70_000,
+        1.0,
+    ));
+    benchmarks
+}
+
 #[test]
 fn encode_backend_preference_exposes_clear_adaptive_aliases() {
     assert_eq!(
@@ -135,6 +147,97 @@ fn adaptive_planner_keeps_small_workloads_on_cpu_without_benchmark_gate() {
             .all(|stage| stage.selected_backend == BackendKind::Cpu),
         "small ungated workload must stay CPU-only"
     );
+}
+
+#[test]
+fn stage_candidate_remains_cpu_when_end_to_end_gate_is_missing() {
+    let workload = rgb_wsi_htj2k_encode();
+    let benchmarks = metal_stage_candidate_benchmarks_for(J2kAdaptiveStage::Dwt);
+
+    let report = J2kAdaptiveRoutePlanner::new(metal_caps())
+        .plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+        .expect("route should plan with stage evidence only");
+
+    let dwt = report.stage(J2kAdaptiveStage::Dwt).expect("DWT decision");
+    assert_eq!(report.route_kind, J2kAdaptiveRouteKind::CpuOnly);
+    assert_eq!(report.selected_device, None);
+    assert_eq!(dwt.logical_owner, J2kAdaptiveStageOwner::Gpu);
+    assert_eq!(dwt.selected_backend, BackendKind::Cpu);
+    assert_eq!(
+        dwt.gate_status,
+        J2kAdaptiveStageGateStatus::EndToEndGateBlocked
+    );
+    assert!(
+        dwt.improvement_percent.is_some(),
+        "stage candidate evidence should remain visible for RCA"
+    );
+}
+
+#[test]
+fn stage_candidate_remains_cpu_when_end_to_end_gate_fails() {
+    let workload = rgb_wsi_htj2k_encode();
+    let mut benchmarks = metal_stage_candidate_benchmarks_for(J2kAdaptiveStage::HtBlockCoding);
+    benchmarks.push_end_to_end(J2kAdaptiveBenchmarkEvidence::end_to_end(
+        BackendKind::Metal,
+        2_000_000,
+        1_950_000,
+        1.0,
+    ));
+
+    let report = J2kAdaptiveRoutePlanner::new(metal_caps())
+        .plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+        .expect("route should plan with a failing end-to-end gate");
+
+    let ht = report
+        .stage(J2kAdaptiveStage::HtBlockCoding)
+        .expect("HT block decision");
+    assert_eq!(report.route_kind, J2kAdaptiveRouteKind::CpuOnly);
+    assert_eq!(report.selected_device, None);
+    assert_eq!(ht.selected_backend, BackendKind::Cpu);
+    assert_eq!(
+        ht.gate_status,
+        J2kAdaptiveStageGateStatus::EndToEndGateBlocked
+    );
+    assert!(ht.improvement_percent.is_some());
+}
+
+#[test]
+fn rca_reclassification_is_exact_to_stage_and_backend() {
+    let workload = rgb_wsi_htj2k_encode();
+    let mut benchmarks = approved_metal_benchmarks_for(workload);
+    benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+        J2kAdaptiveStage::Dwt,
+        BackendKind::Metal,
+        100_000,
+        96_000,
+        1.0,
+    ));
+
+    let report = J2kAdaptiveRoutePlanner::new(metal_caps())
+        .with_rca_finding(J2kAdaptiveRcaFinding::reclassify_cpu(
+            J2kAdaptiveStage::HtBlockCoding,
+            BackendKind::Metal,
+            J2kAdaptiveRcaReason::TransferSyncOverhead,
+        ))
+        .plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+        .expect("route should plan with non-matching RCA");
+
+    let dwt = report.stage(J2kAdaptiveStage::Dwt).expect("DWT decision");
+    assert_eq!(dwt.gate_status, J2kAdaptiveStageGateStatus::BlockedNeedsRca);
+    assert_eq!(dwt.selected_backend, BackendKind::Cpu);
+    assert!(report.has_unresolved_rca());
 }
 
 #[test]
