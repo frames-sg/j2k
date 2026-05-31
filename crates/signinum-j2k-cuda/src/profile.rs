@@ -31,6 +31,35 @@ where
     signinum_profile::emit_gpu_route_profile(codec, path, fields);
 }
 
+/// Detailed route-overhead timings for strict CUDA HTJ2K decode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CudaHtj2kDecodeProfileDetail {
+    /// End-to-end profiled decode wall time.
+    pub wall_total_us: u128,
+    /// Sum of the reported decode stage timings.
+    pub stage_sum_us: u128,
+    /// CUDA table/resource upload time.
+    pub table_upload_us: u128,
+    /// CUDA compressed payload upload time.
+    pub payload_upload_us: u128,
+    /// CUDA decode job upload time.
+    pub job_upload_us: u128,
+    /// CUDA status download time.
+    pub status_d2h_us: u128,
+    /// CUDA output download time.
+    pub output_d2h_us: u128,
+    /// HT cleanup/refinement CUDA dispatch count.
+    pub ht_dispatch_count: usize,
+    /// Dequantization CUDA dispatch count.
+    pub dequant_dispatch_count: usize,
+    /// Inverse DWT CUDA dispatch count.
+    pub idwt_dispatch_count: usize,
+    /// Inverse MCT CUDA dispatch count.
+    pub mct_dispatch_count: usize,
+    /// Store/format conversion CUDA dispatch count.
+    pub store_dispatch_count: usize,
+}
+
 /// Structured stage timings for a strict CUDA HTJ2K operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CudaHtj2kProfileReport {
@@ -64,6 +93,8 @@ pub struct CudaHtj2kProfileReport {
     pub dispatch_count: usize,
     /// Surface residency represented by this profile.
     pub residency: SurfaceResidency,
+    /// Detailed route-overhead profile for RCA.
+    pub detail: CudaHtj2kDecodeProfileDetail,
 }
 
 impl CudaHtj2kProfileReport {
@@ -157,7 +188,6 @@ pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
         report.flatten_us,
         report.h2d_us,
         report.ht_cleanup_us,
-        report.ht_refine_us,
         report.dequant_us,
         report.idwt_us,
         report.mct_us,
@@ -165,6 +195,7 @@ pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
     ]
     .into_iter()
     .fold(0u128, u128::saturating_add);
+    report.detail.stage_sum_us = report.total_us;
 }
 
 pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport) {
@@ -183,6 +214,18 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
     let payload_bytes = report.payload_bytes.to_string();
     let dispatch_count = report.dispatch_count.to_string();
     let residency = format!("{:?}", report.residency);
+    let wall_total_us = report.detail.wall_total_us.to_string();
+    let stage_sum_us = report.detail.stage_sum_us.to_string();
+    let table_upload_us = report.detail.table_upload_us.to_string();
+    let payload_upload_us = report.detail.payload_upload_us.to_string();
+    let job_upload_us = report.detail.job_upload_us.to_string();
+    let status_d2h_us = report.detail.status_d2h_us.to_string();
+    let output_d2h_us = report.detail.output_d2h_us.to_string();
+    let ht_dispatch_count = report.detail.ht_dispatch_count.to_string();
+    let dequant_dispatch_count = report.detail.dequant_dispatch_count.to_string();
+    let idwt_dispatch_count = report.detail.idwt_dispatch_count.to_string();
+    let mct_dispatch_count = report.detail.mct_dispatch_count.to_string();
+    let store_dispatch_count = report.detail.store_dispatch_count.to_string();
 
     signinum_profile::emit_profile_row(
         profile_stage_mode(),
@@ -206,6 +249,18 @@ pub(crate) fn emit_htj2k_profile_row(path: &str, report: &CudaHtj2kProfileReport
             ("payload_bytes", payload_bytes.as_str()),
             ("dispatch_count", dispatch_count.as_str()),
             ("residency", residency.as_str()),
+            ("wall_total_us", wall_total_us.as_str()),
+            ("stage_sum_us", stage_sum_us.as_str()),
+            ("table_upload_us", table_upload_us.as_str()),
+            ("payload_upload_us", payload_upload_us.as_str()),
+            ("job_upload_us", job_upload_us.as_str()),
+            ("status_d2h_us", status_d2h_us.as_str()),
+            ("output_d2h_us", output_d2h_us.as_str()),
+            ("ht_dispatch_count", ht_dispatch_count.as_str()),
+            ("dequant_dispatch_count", dequant_dispatch_count.as_str()),
+            ("idwt_dispatch_count", idwt_dispatch_count.as_str()),
+            ("mct_dispatch_count", mct_dispatch_count.as_str()),
+            ("store_dispatch_count", store_dispatch_count.as_str()),
         ],
     );
 }
@@ -329,7 +384,7 @@ fn chrome_encode_trace_json(path: &str, report: &CudaHtj2kEncodeProfileReport) -
 mod tests {
     use super::{
         chrome_encode_trace_json, chrome_trace_json, finalize_decode_total_us,
-        CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
+        CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
     };
     use signinum_core::BackendKind;
 
@@ -353,11 +408,44 @@ mod tests {
             payload_bytes: 2,
             dispatch_count: 3,
             residency: SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
         };
 
         finalize_decode_total_us(&mut report);
 
-        assert_eq!(report.total_us, 55);
+        assert_eq!(report.total_us, 49);
+        assert_eq!(report.detail.stage_sum_us, 49);
+    }
+
+    #[test]
+    fn detailed_decode_profile_separates_wall_and_stage_sum() {
+        let mut report = CudaHtj2kProfileReport {
+            parse_us: 1,
+            plan_us: 2,
+            flatten_us: 3,
+            h2d_us: 4,
+            ht_cleanup_us: 5,
+            ht_refine_us: 5,
+            dequant_us: 6,
+            idwt_us: 7,
+            mct_us: 8,
+            store_us: 9,
+            total_us: 0,
+            block_count: 10,
+            payload_bytes: 11,
+            dispatch_count: 12,
+            residency: SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
+        };
+        report.detail.wall_total_us = 100;
+        report.detail.table_upload_us = 13;
+        report.detail.payload_upload_us = 17;
+        report.detail.ht_dispatch_count = 2;
+        finalize_decode_total_us(&mut report);
+
+        assert_eq!(report.detail.wall_total_us, 100);
+        assert_eq!(report.detail.stage_sum_us, report.total_us);
+        assert_eq!(report.detail.ht_dispatch_count, 2);
     }
 
     #[test]
@@ -378,6 +466,7 @@ mod tests {
             payload_bytes: 2,
             dispatch_count: 3,
             residency: SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
         };
 
         let trace = chrome_trace_json("decode", &report);
