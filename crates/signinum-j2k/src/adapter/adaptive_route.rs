@@ -467,6 +467,27 @@ impl J2kAdaptiveBenchmarks {
             .copied()
             .find(|evidence| evidence.backend == backend)
     }
+
+    fn has_evidence_for(&self, backend: BackendKind) -> bool {
+        self.end_to_end_for(backend).is_some()
+            || self
+                .stage
+                .iter()
+                .any(|evidence| evidence.backend == backend)
+    }
+
+    fn best_observed_ns_for(&self, backend: BackendKind) -> Option<u64> {
+        let end_to_end = self
+            .end_to_end_for(backend)
+            .map(|evidence| evidence.accelerated_ns);
+        let stage = self
+            .stage
+            .iter()
+            .rev()
+            .find(|evidence| evidence.backend == backend)
+            .map(|evidence| evidence.accelerated_ns);
+        end_to_end.or(stage)
+    }
 }
 
 /// Adaptive route gate policy.
@@ -705,7 +726,7 @@ impl J2kAdaptiveRoutePlanner {
         request: J2kAdaptiveBackendRequest,
         benchmarks: &J2kAdaptiveBenchmarks,
     ) -> J2kAdaptiveRouteReport {
-        let Some(backend) = self.best_approved_device(benchmarks) else {
+        let Some(backend) = self.best_candidate_device(benchmarks) else {
             return self.gated_cpu_report(workload, request, None, benchmarks);
         };
 
@@ -867,18 +888,16 @@ impl J2kAdaptiveRoutePlanner {
         }
     }
 
-    fn best_approved_device(&self, benchmarks: &J2kAdaptiveBenchmarks) -> Option<BackendKind> {
+    fn best_candidate_device(&self, benchmarks: &J2kAdaptiveBenchmarks) -> Option<BackendKind> {
         [BackendKind::Metal, BackendKind::Cuda]
             .into_iter()
             .filter(|backend| self.supports_backend(*backend))
-            .filter_map(|backend| {
+            .filter(|backend| benchmarks.has_evidence_for(*backend))
+            .min_by_key(|backend| {
                 benchmarks
-                    .end_to_end_for(backend)
-                    .map(|evidence| (backend, evidence))
+                    .best_observed_ns_for(*backend)
+                    .unwrap_or(u64::MAX)
             })
-            .filter(|(_, evidence)| evidence.passes(self.policy))
-            .min_by_key(|(_, evidence)| evidence.accelerated_ns)
-            .map(|(backend, _)| backend)
     }
 
     fn supports_backend(&self, backend: BackendKind) -> bool {
