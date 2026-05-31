@@ -7,6 +7,7 @@ use crate::{
 };
 use signinum_core::TileDecompress;
 
+/// Decoder for Zstandard-compressed tile payloads.
 pub struct ZstdCodec;
 
 impl TileDecompress for ZstdCodec {

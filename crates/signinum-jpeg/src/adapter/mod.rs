@@ -7,6 +7,7 @@
 
 mod baseline_encode;
 mod device_plan;
+/// Metal fast-path packet builders and packet types.
 pub mod metal_fast420;
 
 use crate::Decoder;
@@ -32,6 +33,7 @@ pub use metal_fast420::{
     MetalFast420PacketError, MetalHuffmanTable,
 };
 
+/// Return the original JPEG byte stream owned by a decoder.
 pub fn decoder_bytes<'a>(decoder: &'a Decoder<'a>) -> &'a [u8] {
     decoder.bytes
 }

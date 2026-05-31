@@ -29,10 +29,15 @@ pub enum SofKind {
 /// Declared input color space after APP14 detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
+    /// Single-component grayscale.
     Grayscale,
+    /// Three-component luma/chroma JPEG data.
     YCbCr,
+    /// Three-component RGB JPEG data.
     Rgb,
+    /// Four-component CMYK JPEG data.
     Cmyk,
+    /// Four-component YCCK JPEG data.
     Ycck,
 }
 
@@ -48,6 +53,7 @@ pub struct SamplingFactors {
 }
 
 impl SamplingFactors {
+    /// Build sampling metadata from component `(H, V)` factors.
     pub fn from_components(components: &[(u8, u8)]) -> Self {
         assert!(
             components.len() <= 4,
@@ -69,18 +75,22 @@ impl SamplingFactors {
         }
     }
 
+    /// Number of declared components.
     pub fn len(&self) -> usize {
         self.component_count as usize
     }
 
+    /// True when no components were declared.
     pub fn is_empty(&self) -> bool {
         self.component_count == 0
     }
 
+    /// Sampling factors for a component by declaration index.
     pub fn component(&self, index: usize) -> Option<(u8, u8)> {
         self.components().get(index).copied()
     }
 
+    /// Sampling factors in component declaration order.
     pub fn components(&self) -> &[(u8, u8)] {
         &self.components[..self.component_count as usize]
     }
@@ -148,9 +158,13 @@ impl McuGeometry {
 /// Inclusive axis-aligned rectangle in image coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
+    /// Left coordinate in pixels.
     pub x: u32,
+    /// Top coordinate in pixels.
     pub y: u32,
+    /// Width in pixels.
     pub w: u32,
+    /// Height in pixels.
     pub h: u32,
 }
 
@@ -256,8 +270,11 @@ impl DownscaleFactor {
 /// Override for APP14 color-transform detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorTransform {
+    /// Detect the transform from APP14 metadata and component layout.
     Auto,
+    /// Treat three-component data as RGB regardless of APP14 metadata.
     ForceRgb,
+    /// Treat three-component data as YCbCr regardless of APP14 metadata.
     ForceYCbCr,
 }
 
@@ -309,17 +326,26 @@ impl DecodeOptions {
 /// count of refinement passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
+    /// Image dimensions as `(width, height)` in pixels.
     pub dimensions: (u32, u32),
+    /// Header-derived color space after APP14 transform handling.
     pub color_space: ColorSpace,
+    /// Per-component sampling factors from the SOF marker.
     pub sampling: SamplingFactors,
+    /// Start-of-frame variant that selects the decode pipeline.
     pub sof_kind: SofKind,
+    /// Sample precision in bits.
     pub bit_depth: u8,
+    /// Restart interval in MCUs, if a DRI marker was present.
     pub restart_interval: Option<u16>,
+    /// Derived MCU geometry for the image.
     pub mcu_geometry: McuGeometry,
+    /// Number of SOS markers observed in the stream.
     pub scan_count: u16,
 }
 
 impl Info {
+    /// Convert JPEG metadata into the codec-neutral core metadata type.
     pub fn to_core_info(&self) -> signinum_core::Info {
         signinum_core::Info {
             dimensions: self.dimensions,

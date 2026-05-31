@@ -9,35 +9,57 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Component metadata needed by device-side JPEG decoders.
 pub struct DeviceComponentPlan {
+    /// Horizontal sampling factor.
     pub h: u8,
+    /// Vertical sampling factor.
     pub v: u8,
+    /// Output component index in decoded pixel/component order.
     pub output_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Validated decode plan and entropy payload for device-side decoders.
 pub struct DeviceDecodePlan<'a> {
+    /// Image dimensions as `(width, height)` in pixels.
     pub dimensions: (u32, u32),
+    /// Header-derived JPEG color space.
     pub color_space: ColorSpace,
+    /// Restart interval in MCUs, if restart markers are present.
     pub restart_interval: Option<u16>,
+    /// Non-fatal warnings collected while building the plan.
     pub warnings: Vec<Warning>,
+    /// Entropy scan bytes with device-compatible marker handling.
     pub scan_bytes: Cow<'a, [u8]>,
+    /// Component sampling and output placement.
     pub components: Vec<DeviceComponentPlan>,
+    /// Entropy checkpoints for restart or synthetic resume points.
     pub checkpoints: Vec<DeviceCheckpoint>,
+    /// True when the tile matches the Metal/CUDA fast 4:2:0 path.
     pub matches_fast_420: bool,
+    /// True when the tile matches the Metal/CUDA fast 4:2:2 path.
     pub matches_fast_422: bool,
+    /// True when the tile matches the Metal/CUDA fast 4:4:4 path.
     pub matches_fast_444: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Lightweight summary used for batching without materializing scan bytes.
 pub struct DeviceBatchSummary {
+    /// Restart interval in MCUs, if restart markers are present.
     pub restart_interval: Option<u16>,
+    /// Number of checkpoints the full device plan would contain.
     pub checkpoint_count: usize,
+    /// True when the tile matches the fast 4:2:0 device path.
     pub matches_fast_420: bool,
+    /// True when the tile matches the fast 4:2:2 device path.
     pub matches_fast_422: bool,
+    /// True when the tile matches the fast 4:4:4 device path.
     pub matches_fast_444: bool,
 }
 
+/// Build a full device decode plan for an inspected decoder.
 pub fn build_device_plan<'a>(
     decoder: &'a Decoder<'a>,
     cadence_mcus: u32,
@@ -82,6 +104,7 @@ pub fn build_device_plan<'a>(
     })
 }
 
+/// Summarize device planning properties without copying entropy data.
 pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> DeviceBatchSummary {
     if !matches!(
         decoder.info().sof_kind,

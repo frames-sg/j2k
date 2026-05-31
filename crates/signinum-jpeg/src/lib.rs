@@ -53,6 +53,7 @@ pub(crate) mod output;
 
 pub(crate) mod profile;
 
+/// Baseline JPEG encoder API.
 pub mod encoder;
 pub use encoder::{
     encode_jpeg_baseline, EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions,
@@ -78,6 +79,7 @@ pub use decoder::{
 pub use internal::scratch::ScratchPool;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// JPEG codec marker type for `signinum-core` trait integrations.
 pub struct JpegCodec;
 
 #[doc(hidden)]

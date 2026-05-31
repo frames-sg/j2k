@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! TIFF-style tile decompression codecs used by image container adapters.
+
 mod bounded;
 mod deflate;
 mod error;

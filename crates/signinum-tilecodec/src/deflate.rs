@@ -8,6 +8,7 @@ use crate::{
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use signinum_core::TileDecompress;
 
+/// Decoder for zlib-wrapped or raw DEFLATE tile payloads.
 pub struct DeflateCodec;
 
 impl TileDecompress for DeflateCodec {
