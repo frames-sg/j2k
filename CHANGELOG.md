@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Documented that J2K Metal resident encode diagnostic report structs are
-  crate-constructed API surfaces that may grow diagnostic fields in adapter
-  releases, and clarified that resident RCA split buckets measure host-side
-  Metal command encoding rather than GPU kernel elapsed time.
+- Added diagnostic fields to the public J2K Metal resident encode report/stats
+  structs `MetalLosslessEncodeOutcome` and `MetalLosslessEncodeStageStats`.
+  External struct literals for these crate-constructed diagnostic reports may
+  need updates, and future adapter releases may add more diagnostic fields.
+- Clarified that J2K Metal resident RCA split buckets measure host-side Metal
+  command encoding rather than GPU kernel elapsed time.
 
 ## [0.4.4] - 2026-05-26
 

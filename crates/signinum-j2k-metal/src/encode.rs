@@ -683,6 +683,11 @@ pub struct MetalLosslessEncodeStageStats {
     /// Do not sum this with `codestream_wait_duration` as an independent bucket.
     pub sync_wait_duration: Duration,
     /// Time spent materializing buffer-backed codestream bytes into host bytes.
+    ///
+    /// Current batch stats paths may leave this at zero. Host byte
+    /// materialization timing is surfaced on `MetalLosslessEncodeOutcome` where
+    /// applicable; this stage-stats bucket is reserved for stats-bearing
+    /// host-output paths.
     pub host_readback_duration: Duration,
     /// Number of resident encode chunks.
     pub chunk_count: usize,
