@@ -1194,8 +1194,7 @@ fn same_float97_batch_component_key(
 ) -> bool {
     let left = &left_tile.jpeg.components[left_component_index];
     let right = &right_tile.jpeg.components[right_component_index];
-    left.component_index == right.component_index
-        && left.width == right.width
+    left.width == right.width
         && left.height == right.height
         && left.block_cols == right.block_cols
         && left.block_rows == right.block_rows
