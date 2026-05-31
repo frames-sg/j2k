@@ -818,8 +818,11 @@ fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: Encode
             batch.report.failed_tiles, 0,
             "signinum: CUDA benchmark produced failed tiles under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
         );
+        let ht_code_block_dispatches = encode
+            .ht_code_block_dispatches
+            .saturating_add(batch.report.timings.dwt97_batch_ht_codeblock_dispatches);
         assert!(
-            encode.ht_code_block_dispatches != 0,
+            ht_code_block_dispatches != 0,
             "signinum: CUDA HT encode dispatched zero code-block batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
         );
     }
