@@ -81,7 +81,7 @@ foundation / helper crates  →  codec engines  →  codecs  →  adapters / tra
 | codec engines | `signinum-j2k-native` | helper crates. Internal only. Not re-exported. |
 | codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | foundation, codec engines, helper crates. Must not depend on each other. Must not depend on adapters or `cli`. |
 | adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | foundation, helper crates, exactly one matching codec, optional engine for the matching codec. Adapters in different format families must not depend on each other. |
-| experimental transcode | `signinum-transcode`, `signinum-transcode-cuda`, `signinum-transcode-metal` | `signinum-transcode` may depend on foundation and codec crates once integration begins. `signinum-transcode-cuda` may depend on `signinum-transcode` and `signinum-cuda-runtime`; `signinum-transcode-metal` may depend on `signinum-transcode` and platform GPU APIs only. Neither crate may create codec-to-codec dependencies. |
+| experimental transcode | `signinum-transcode`, `signinum-transcode-cuda`, `signinum-transcode-metal` | `signinum-transcode` may depend on foundation and codec crates once integration begins. `signinum-transcode-cuda` may depend on `signinum-transcode`, `signinum-j2k-native`, and `signinum-cuda-runtime`; `signinum-transcode-metal` may depend on `signinum-transcode` and platform GPU APIs only. Neither crate may create codec-to-codec dependencies. |
 | facade | `signinum` | foundation, codecs, tilecodec, optional adapters behind feature gates. |
 | binary | `signinum-cli` | codecs. Must not depend on adapters (kept host-neutral). |
 | dev-only | `signinum-j2k-compare`, `signinum-nvidia-baseline` | Foundation, codecs under test, optional adapter crates, and comparator libraries needed for tests/benches. Never runtime dependencies of public crates. |
@@ -132,7 +132,7 @@ signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-profile, si
 signinum-j2k-cuda     -> signinum-j2k, signinum-j2k-native, signinum-cuda-runtime, signinum-profile, signinum-core
 
 signinum-transcode    -> signinum-jpeg, signinum-j2k-native
-signinum-transcode-cuda -> signinum-transcode, signinum-cuda-runtime
+signinum-transcode-cuda -> signinum-transcode, signinum-j2k-native, signinum-cuda-runtime
 signinum-transcode-metal -> signinum-transcode
 
 signinum-nvidia-baseline -> signinum-jpeg, signinum-j2k-native, signinum-j2k-cuda, signinum-transcode, signinum-transcode-cuda, signinum-transcode-metal
