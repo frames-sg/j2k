@@ -1587,7 +1587,7 @@ fn encode_integer_prepared_tiles<E: J2kEncodeStageAccelerator>(
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
 ) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
-    if encode_accelerator.prefer_parallel_cpu_code_block_fallback() {
+    if encode_accelerator.prefer_parallel_cpu_tile_encode() {
         return prepared_tiles
             .into_par_iter()
             .map(|prepared| {
@@ -1618,7 +1618,7 @@ fn encode_float97_prepared_tiles<E: J2kEncodeStageAccelerator>(
     options: &JpegToHtj2kOptions,
     encode_accelerator: &mut E,
 ) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
-    if encode_accelerator.prefer_parallel_cpu_code_block_fallback() {
+    if encode_accelerator.prefer_parallel_cpu_tile_encode() {
         return prepared_tiles
             .into_par_iter()
             .map(|prepared| {

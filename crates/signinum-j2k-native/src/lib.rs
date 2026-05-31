@@ -895,6 +895,15 @@ pub trait J2kEncodeStageAccelerator {
         false
     }
 
+    /// Return whether whole-tile CPU-only batch encode may be parallelized by callers.
+    ///
+    /// This is narrower than [`Self::prefer_parallel_cpu_code_block_fallback`]:
+    /// callers must only bypass the supplied accelerator when it is known to
+    /// have no observable hooks.
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        false
+    }
+
     /// Optionally packetize prepared packet contributions.
     ///
     /// Return `Ok(Some(bytes))` with the complete tile bitstream. Return
@@ -913,6 +922,10 @@ pub struct CpuOnlyJ2kEncodeStageAccelerator;
 
 impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        true
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
         true
     }
 }

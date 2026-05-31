@@ -897,6 +897,33 @@ fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
 }
 
 #[test]
+fn batch_transcode_preserves_encode_hooks_when_parallel_cpu_fallback_requested() {
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossless_53();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut transform_accelerator = RayonReversibleDwt53Accelerator::default();
+    let mut encode_accelerator = CountingHtEncodeAccelerator {
+        parallel_cpu_code_block_fallback: true,
+        ..CountingHtEncodeAccelerator::default()
+    };
+
+    let batch = transcoder
+        .transcode_batch_with_accelerators(
+            &inputs,
+            &options,
+            &mut transform_accelerator,
+            &mut encode_accelerator,
+        )
+        .expect("batch transcode preserves encode accelerator hooks");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(encode_accelerator.batches, inputs.len());
+    assert!(encode_accelerator.jobs > 0);
+    assert_eq!(encode_accelerator.single_blocks, 0);
+}
+
+#[test]
 fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::lossy_97();
@@ -1098,6 +1125,7 @@ struct CountingHtEncodeAccelerator {
     batches: usize,
     jobs: usize,
     single_blocks: usize,
+    parallel_cpu_code_block_fallback: bool,
 }
 
 impl J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
@@ -1116,6 +1144,10 @@ impl J2kEncodeStageAccelerator for CountingHtEncodeAccelerator {
     ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
         self.single_blocks += 1;
         Ok(None)
+    }
+
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.parallel_cpu_code_block_fallback
     }
 }
 

@@ -3997,7 +3997,18 @@ impl CudaContext {
         let start = self.create_event()?;
         let end = self.create_event()?;
         start.record_default_stream()?;
-        let output = work()?;
+        let output = match work() {
+            Ok(output) => output,
+            Err(error) => {
+                // Timed closures may submit asynchronous default-stream work.
+                // On a later host-side error, wait before dropping any device
+                // buffers captured by the closure.
+                // SAFETY: a CUDA context is current for this `CudaContext`.
+                let sync_status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
+                self.inner.driver.check("cuCtxSynchronize", sync_status)?;
+                return Err(error);
+            }
+        };
         end.record_default_stream()?;
         end.synchronize()?;
         Ok((output, elapsed_event_us_ceil(&start, &end)?))
