@@ -37,13 +37,13 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
         .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
         .expect("explicit CUDA 9/7 code-block batch transcode should succeed on the runner");
 
-    // Pipeline-level accounting: 4 tiles x 3 components = 12 jobs, grouped into 3
-    // same-geometry code-block dispatches, no scalar fallback.
+    // Pipeline-level accounting: 4 tiles x 3 components = 12 jobs, grouped into
+    // luma plus the compatible chroma pair, no scalar fallback.
     assert_eq!(batch.report.tile_count, inputs.len());
     assert_eq!(batch.report.successful_tiles, inputs.len());
     assert_eq!(batch.report.failed_tiles, 0);
     assert_eq!(batch.report.timings.batch_jobs, 12);
-    assert_eq!(batch.report.timings.accelerator_dispatches, 3);
+    assert_eq!(batch.report.timings.accelerator_dispatches, 2);
     assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 12);
     assert_eq!(batch.report.timings.cpu_fallback_jobs, 0);
 
@@ -57,10 +57,10 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
     // The code-block path is a staged 9/7 batch plus quantize, so it registers as
     // both (single-job 9/7 never used).
     assert_eq!(accelerator.dwt97_attempts(), 0);
-    assert_eq!(accelerator.dwt97_batch_attempts(), 3);
-    assert_eq!(accelerator.dwt97_batch_dispatches(), 3);
-    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 3);
-    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 3);
+    assert_eq!(accelerator.dwt97_batch_attempts(), 2);
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 2);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 2);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 2);
 
     for tile in batch.tiles {
         let tile = tile.expect("valid 9/7 code-block tile transcodes");
