@@ -46,8 +46,12 @@ decode surfaces report `SurfaceResidency::CudaResidentDecode`.
 parse/validation/direct-plan flattening boundary and returns a
 `CudaHtj2kProfileReport`. `SIGNINUM_J2K_PROFILE_STAGES=1` emits profile rows,
 and `SIGNINUM_J2K_CUDA_TRACE=/path/trace.json` writes Chrome-trace-compatible
-stage spans for the plan/dispatch schema. Build with `cuda-profiling` to add
-NVTX ranges around CUDA HTJ2K stages for Nsight Systems/Compute; NVTX is loaded
-dynamically and is not required by normal builds.
+stage spans for the plan/dispatch schema. The detailed decode profile's
+`payload_upload_us` field includes measured compressed payload/resource uploads;
+`job_upload_us`, `status_d2h_us`, and `output_d2h_us` remain zero until the CUDA
+runtime exposes those transfers as separately timed stages. Build with
+`cuda-profiling` to add NVTX ranges around CUDA HTJ2K stages for Nsight
+Systems/Compute; NVTX is loaded dynamically and is not required by normal
+builds.
 
 The stable CPU decode API lives in `signinum-j2k`.

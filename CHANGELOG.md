@@ -12,8 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   structs `MetalLosslessEncodeOutcome` and `MetalLosslessEncodeStageStats`.
   External struct literals for these crate-constructed diagnostic reports may
   need updates, and future adapter releases may add more diagnostic fields.
+- Added the public CUDA HTJ2K decode profile detail struct
+  `CudaHtj2kDecodeProfileDetail` and the `CudaHtj2kProfileReport::detail` field.
+  This is source-incompatible for downstream `CudaHtj2kProfileReport` struct
+  literals, but keeps the report fields explicit for diagnostic consumers.
 - Clarified that J2K Metal resident RCA split buckets measure host-side Metal
   command encoding rather than GPU kernel elapsed time.
+- Clarified CUDA HTJ2K profile detail semantics: `payload_upload_us` includes
+  measured compressed payload/resource uploads, while `job_upload_us`,
+  `status_d2h_us`, and `output_d2h_us` remain zero until the CUDA runtime
+  exposes split transfer timings.
 
 ## [0.4.4] - 2026-05-26
 
