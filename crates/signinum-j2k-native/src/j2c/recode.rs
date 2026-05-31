@@ -1,20 +1,11 @@
 //! Coefficient-domain JPEG 2000 family recode helpers.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::build::{self, Decomposition, SubBand};
-use super::codestream::{
-    ComponentInfo, Header, ProgressionOrder, QuantizationStyle, WaveletTransform,
-};
+use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::decode::{decode_component_tile_bit_planes, DecoderContext, DecompositionStorage};
-use super::progression::{
-    component_position_resolution_layer_progression,
-    layer_resolution_component_position_progression,
-    position_component_resolution_layer_progression,
-    resolution_layer_component_position_progression,
-    resolution_position_component_layer_progression, IteratorInput, ProgressionData,
-};
+use super::progression::progression_iterator;
 use super::segment;
 use super::tile::{self, Tile};
 use crate::error::{bail, DecodingError, Result, TileError};
@@ -61,9 +52,7 @@ pub(crate) fn extract_reversible_53_coefficients<'a>(
     ctx.storage.reset();
 
     build::build(tile, &mut ctx.storage)?;
-    let iter_input = IteratorInput::new(tile);
-    let progression_iterator = progression_iterator(tile.progression_order, iter_input)?;
-    segment::parse(tile, progression_iterator, header, &mut ctx.storage)?;
+    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 
     let mut no_ht_decoder = None;
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism();
@@ -182,33 +171,6 @@ fn validate_component_for_reversible_53_recode(component: &ComponentInfo) -> Res
         ));
     }
     Ok(())
-}
-
-fn progression_iterator<'a>(
-    progression_order: ProgressionOrder,
-    iter_input: IteratorInput<'a>,
-) -> Result<Box<dyn Iterator<Item = ProgressionData> + 'a>> {
-    let iterator: Box<dyn Iterator<Item = ProgressionData>> = match progression_order {
-        ProgressionOrder::LayerResolutionComponentPosition => {
-            Box::new(layer_resolution_component_position_progression(iter_input))
-        }
-        ProgressionOrder::ResolutionLayerComponentPosition => {
-            Box::new(resolution_layer_component_position_progression(iter_input))
-        }
-        ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-            resolution_position_component_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
-        ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-            position_component_resolution_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
-        ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-            component_position_resolution_layer_progression(iter_input)
-                .ok_or(DecodingError::InvalidProgressionIterator)?,
-        ),
-    };
-    Ok(iterator)
 }
 
 fn precomputed_image_from_storage(

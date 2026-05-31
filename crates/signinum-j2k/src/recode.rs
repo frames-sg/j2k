@@ -273,7 +273,10 @@ fn native_encode_options(
 fn native_progression(progression: J2kProgressionOrder) -> EncodeProgressionOrder {
     match progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
+        J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
         J2kProgressionOrder::Rpcl => EncodeProgressionOrder::Rpcl,
+        J2kProgressionOrder::Pcrl => EncodeProgressionOrder::Pcrl,
+        J2kProgressionOrder::Cprl => EncodeProgressionOrder::Cprl,
     }
 }
 

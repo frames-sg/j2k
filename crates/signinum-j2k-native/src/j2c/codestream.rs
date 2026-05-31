@@ -18,6 +18,8 @@ pub(crate) struct Header<'a> {
     pub(crate) size_data: SizeData,
     pub(crate) global_coding_style: CodingStyleDefault,
     pub(crate) component_infos: Vec<ComponentInfo>,
+    pub(crate) progression_changes: Vec<ProgressionChange>,
+    pub(crate) plm_packet_lengths: Vec<u32>,
     pub(crate) ppm_packets: Vec<PpmPacket<'a>>,
     pub(crate) skipped_resolution_levels: u8,
     /// Whether strict mode is enabled for decoding.
@@ -33,6 +35,12 @@ pub(crate) struct PpmMarkerData<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct PpmPacket<'a> {
     pub(crate) data: &'a [u8],
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PacketLengthMarker {
+    pub(crate) sequence_idx: u8,
+    pub(crate) packet_lengths: Vec<u32>,
 }
 
 pub(crate) fn read_header<'a>(
@@ -51,6 +59,8 @@ pub(crate) fn read_header<'a>(
     let num_components = size_data.component_sizes.len() as u16;
     let mut cod_components = vec![None; num_components as usize];
     let mut qcd_components = vec![None; num_components as usize];
+    let mut progression_changes = vec![];
+    let mut plm_markers = vec![];
     let mut ppm_markers = vec![];
 
     loop {
@@ -84,6 +94,17 @@ pub(crate) fn read_header<'a>(
                     .get_mut(component_index as usize)
                     .ok_or(MarkerError::ParseFailure("QCC"))? = Some(qcc);
             }
+            markers::POC => {
+                reader.read_marker()?;
+                let num_layers = cod
+                    .as_ref()
+                    .ok_or(MarkerError::ParseFailure("POC"))?
+                    .num_layers;
+                progression_changes.extend(
+                    poc_marker(reader, num_components, num_layers)
+                        .ok_or(MarkerError::ParseFailure("POC"))?,
+                );
+            }
             markers::RGN => {
                 reader.read_marker()?;
                 rgn_marker(reader).ok_or(MarkerError::ParseFailure("RGN"))?;
@@ -91,6 +112,10 @@ pub(crate) fn read_header<'a>(
             markers::TLM => {
                 reader.read_marker()?;
                 tlm_marker(reader).ok_or(MarkerError::ParseFailure("TLM"))?;
+            }
+            markers::PLM => {
+                reader.read_marker()?;
+                plm_markers.push(plm_marker(reader).ok_or(MarkerError::ParseFailure("PLM"))?);
             }
             markers::COM => {
                 reader.read_marker()?;
@@ -170,11 +195,17 @@ pub(crate) fn read_header<'a>(
     size_data.y_resolution_shrink_factor *= 1 << skipped_resolution_levels;
 
     ppm_markers.sort_by_key(|ppm_marker| ppm_marker.sequence_idx);
+    plm_markers.sort_by_key(|plm_marker| plm_marker.sequence_idx);
 
     let header = Header {
         size_data,
         global_coding_style: cod.clone(),
         component_infos,
+        progression_changes,
+        plm_packet_lengths: plm_markers
+            .into_iter()
+            .flat_map(|marker| marker.packet_lengths)
+            .collect(),
         ppm_packets: ppm_markers
             .into_iter()
             .flat_map(|i| i.packets)
@@ -317,6 +348,16 @@ pub(crate) enum ProgressionOrder {
     ResolutionPositionComponentLayer,
     PositionComponentResolutionLayer,
     ComponentPositionResolutionLayer,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProgressionChange {
+    pub(crate) resolution_start: u8,
+    pub(crate) component_start: u8,
+    pub(crate) layer_end: u8,
+    pub(crate) resolution_end: u8,
+    pub(crate) component_end: u8,
+    pub(crate) progression_order: ProgressionOrder,
 }
 
 impl ProgressionOrder {
@@ -761,6 +802,65 @@ fn tlm_marker(reader: &mut BitReader<'_>) -> Option<()> {
     skip_marker_segment(reader)
 }
 
+/// PLM marker (A.7.2).
+fn plm_marker(reader: &mut BitReader<'_>) -> Option<PacketLengthMarker> {
+    let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
+    let segment = reader.read_bytes(segment_len)?;
+    let mut reader = BitReader::new(segment);
+
+    let sequence_idx = reader.read_byte()?;
+    let mut packet_lengths = vec![];
+
+    while !reader.at_end() {
+        let length_data_len = reader.read_u32()? as usize;
+        let length_data = reader.read_bytes(length_data_len)?;
+        packet_lengths.extend(decode_packet_lengths(length_data)?);
+    }
+
+    Some(PacketLengthMarker {
+        sequence_idx,
+        packet_lengths,
+    })
+}
+
+/// PLT marker (A.7.3).
+pub(crate) fn plt_marker(reader: &mut BitReader<'_>) -> Option<PacketLengthMarker> {
+    let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
+    let segment = reader.read_bytes(segment_len)?;
+    let mut reader = BitReader::new(segment);
+
+    let sequence_idx = reader.read_byte()?;
+    let packet_lengths = decode_packet_lengths(reader.tail()?)?;
+
+    Some(PacketLengthMarker {
+        sequence_idx,
+        packet_lengths,
+    })
+}
+
+pub(crate) fn decode_packet_lengths(data: &[u8]) -> Option<Vec<u32>> {
+    let mut packet_lengths = vec![];
+    let mut value = 0_u32;
+    let mut in_progress = false;
+
+    for byte in data {
+        value = value.checked_shl(7)?.checked_add(u32::from(byte & 0x7F))?;
+        in_progress = true;
+
+        if byte & 0x80 == 0 {
+            packet_lengths.push(value);
+            value = 0;
+            in_progress = false;
+        }
+    }
+
+    if in_progress {
+        return None;
+    }
+
+    Some(packet_lengths)
+}
+
 /// PPM marker (A.7.4).
 fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     let segment_len = reader.read_u16()?.checked_sub(2)? as usize;
@@ -893,6 +993,62 @@ pub(crate) fn qcc_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<(u16, 
     parameters.guard_bits = guard_bits;
 
     Some((component_index, parameters))
+}
+
+/// POC marker (A.6.6).
+pub(crate) fn poc_marker(
+    reader: &mut BitReader<'_>,
+    csiz: u16,
+    num_layers: u8,
+) -> Option<Vec<ProgressionChange>> {
+    let length = reader.read_u16()?;
+    let remaining_bytes = length.checked_sub(2)?;
+    let component_index_size = if csiz < 257 { 1u16 } else { 2u16 };
+    let change_size = 1 + component_index_size + 2 + 1 + component_index_size + 1;
+    if remaining_bytes == 0 || remaining_bytes % change_size != 0 {
+        return None;
+    }
+
+    let change_count = remaining_bytes / change_size;
+    let mut changes = Vec::with_capacity(change_count as usize);
+    for _ in 0..change_count {
+        let resolution_start = reader.read_byte()?;
+        let component_start = read_component_index(reader, csiz)?;
+        let layer_end = reader.read_u16()?;
+        let resolution_end = reader.read_byte()?;
+        let component_end = read_component_index(reader, csiz)?;
+        let progression_order = ProgressionOrder::from_u8(reader.read_byte()?).ok()?;
+
+        if resolution_start >= resolution_end
+            || component_start >= component_end
+            || component_end > csiz
+            || layer_end == 0
+            || layer_end > u16::from(num_layers)
+            || layer_end > u16::from(u8::MAX)
+            || component_end > u16::from(u8::MAX)
+        {
+            return None;
+        }
+
+        changes.push(ProgressionChange {
+            resolution_start,
+            component_start: component_start as u8,
+            layer_end: layer_end as u8,
+            resolution_end,
+            component_end: component_end as u8,
+            progression_order,
+        });
+    }
+
+    Some(changes)
+}
+
+fn read_component_index(reader: &mut BitReader<'_>, csiz: u16) -> Option<u16> {
+    if csiz < 257 {
+        Some(u16::from(reader.read_byte()?))
+    } else {
+        reader.read_u16()
+    }
 }
 
 fn quantization_parameters(

@@ -9,7 +9,7 @@ use super::decode::DecompositionStorage;
 use super::progression::ProgressionData;
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePart};
-use crate::error::{bail, DecodingError, Result, TileError};
+use crate::error::{bail, Result, TileError};
 use crate::reader::BitReader;
 
 pub(crate) const MAX_BITPLANE_COUNT: u8 = 32;
@@ -20,20 +20,6 @@ pub(crate) fn parse<'a, 'b>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
-    if tile.num_layers > 1
-        && tile.component_infos.iter().any(|component_info| {
-            component_info
-                .coding_style
-                .parameters
-                .code_block_style
-                .uses_high_throughput_block_coding()
-        })
-    {
-        bail!(DecodingError::UnsupportedFeature(
-            "multi-layer HTJ2K packet assembly"
-        ));
-    }
-
     for tile_part in &tile.tile_parts {
         if parse_inner(
             tile_part.clone(),
@@ -65,6 +51,7 @@ fn parse_inner<'a>(
             &mut storage.tile_decompositions[progression_data.component as usize];
         let sub_band_iter = tile_decompositions.sub_band_iter(resolution, &storage.decompositions);
 
+        let packet_start = tile_part.packet_start_offset();
         let body_reader = tile_part.body();
 
         if component_info.coding_style.flags.may_use_sop_markers()
@@ -135,7 +122,11 @@ fn parse_inner<'a>(
                 }
             }
         }
+
+        tile_part.validate_packet_length(packet_start)?;
     }
+
+    tile_part.validate_all_packet_lengths_consumed()?;
 
     Some(())
 }

@@ -627,8 +627,14 @@ pub enum J2kPacketizationBlockCodingMode {
 pub enum J2kPacketizationProgressionOrder {
     /// Layer-resolution-component-position progression.
     Lrcp,
+    /// Resolution-layer-component-position progression.
+    Rlcp,
     /// Resolution-position-component-layer progression.
     Rpcl,
+    /// Position-component-resolution-layer progression.
+    Pcrl,
+    /// Component-position-resolution-layer progression.
+    Cprl,
 }
 
 /// Adapter LRCP packetization subband precinct for backend experimentation.
@@ -1330,6 +1336,7 @@ pub fn encode_j2k_packetization_scalar(
                             ht_cleanup_length: code_block.ht_cleanup_length,
                             ht_refinement_length: code_block.ht_refinement_length,
                             num_coding_passes: code_block.num_coding_passes,
+                            classic_segment_lengths: Vec::new(),
                             num_zero_bitplanes: code_block.num_zero_bitplanes,
                             previously_included: code_block.previously_included,
                             l_block: code_block.l_block,

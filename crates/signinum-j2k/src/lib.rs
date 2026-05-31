@@ -40,11 +40,13 @@ pub use batch::{
 pub use signinum_j2k_native::CpuDecodeParallelism;
 
 pub use encode::{
-    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,
+    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, encode_j2k_lossy,
+    encode_j2k_lossy_with_accelerator, j2k_lossless_decomposition_levels,
     j2k_lossless_decomposition_levels_for_options,
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference, EncodedJ2k,
-    J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
-    J2kProgressionOrder, ReversibleTransform,
+    EncodedLossyJ2k, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
+    J2kLosslessSamples, J2kLossyEncodeOptions, J2kLossyEncodeReport, J2kLossySamples,
+    J2kMarkerSegment, J2kProgressionOrder, J2kQualityLayer, J2kRateTarget, ReversibleTransform,
 };
 
 pub use recode::{
