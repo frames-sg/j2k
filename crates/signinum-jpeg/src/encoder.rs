@@ -24,25 +24,39 @@ use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_sta
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// JPEG encoder backend selector.
 pub enum JpegBackend {
+    /// Choose the best available backend for the platform.
     Auto,
+    /// Use the portable CPU encoder.
     Cpu,
+    /// Use a Metal encoder when called through the Metal integration.
     Metal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// JPEG baseline chroma subsampling mode.
 pub enum JpegSubsampling {
+    /// Single-component grayscale.
     Gray,
+    /// Three-component YBR/RGB 4:4:4 sampling.
     Ybr444,
+    /// Three-component YBR/RGB 4:2:2 sampling.
     Ybr422,
+    /// Three-component YBR/RGB 4:2:0 sampling.
     Ybr420,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Options controlling baseline JPEG encoding.
 pub struct JpegEncodeOptions {
+    /// JPEG quality in the conventional 1..=100 range.
     pub quality: u8,
+    /// Output component sampling.
     pub subsampling: JpegSubsampling,
+    /// Optional restart interval in MCUs.
     pub restart_interval: Option<u16>,
+    /// Requested encoder backend.
     pub backend: JpegBackend,
 }
 
@@ -58,47 +72,90 @@ impl Default for JpegEncodeOptions {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Borrowed input samples for baseline JPEG encoding.
 pub enum JpegSamples<'a> {
+    /// Interleaved 8-bit grayscale samples.
     Gray8 {
+        /// Pixel data, one byte per pixel.
         data: &'a [u8],
+        /// Image width in pixels.
         width: u32,
+        /// Image height in pixels.
         height: u32,
     },
+    /// Interleaved 8-bit RGB samples.
     Rgb8 {
+        /// Pixel data, three bytes per pixel.
         data: &'a [u8],
+        /// Image width in pixels.
         width: u32,
+        /// Image height in pixels.
         height: u32,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Encoded baseline JPEG bytes and the backend that produced them.
 pub struct EncodedJpeg {
+    /// Complete JPEG codestream.
     pub data: Vec<u8>,
+    /// Backend used to encode the codestream.
     pub backend: JpegBackend,
 }
 
 #[derive(Debug, Error)]
+/// Errors produced by baseline JPEG encoding.
 pub enum JpegEncodeError {
     #[error("JPEG encode requires nonzero dimensions")]
+    /// Width or height was zero.
     EmptyDimensions,
     #[error("JPEG baseline dimensions must fit in u16, got {width}x{height}")]
-    DimensionsTooLarge { width: u32, height: u32 },
+    /// JPEG baseline SOF dimensions exceed the 16-bit marker fields.
+    DimensionsTooLarge {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+    },
     #[error("JPEG sample buffer length mismatch: expected {expected}, got {actual}")]
-    SampleLength { expected: usize, actual: usize },
+    /// Input sample buffer length does not match width, height, and format.
+    SampleLength {
+        /// Required byte count.
+        expected: usize,
+        /// Supplied byte count.
+        actual: usize,
+    },
     #[error("JPEG subsampling {subsampling:?} is incompatible with {samples}")]
+    /// Requested subsampling is incompatible with the supplied sample format.
     IncompatibleSubsampling {
+        /// Requested output sampling.
         subsampling: JpegSubsampling,
+        /// Human-readable sample format name.
         samples: &'static str,
     },
     #[error("JPEG restart interval must be nonzero when provided")]
+    /// Restart interval was explicitly set to zero.
     InvalidRestartInterval,
     #[error("JPEG encode backend {backend:?} is unavailable in signinum-jpeg CPU crate")]
-    UnsupportedBackend { backend: JpegBackend },
+    /// Requested backend is not available in this crate.
+    UnsupportedBackend {
+        /// Requested backend.
+        backend: JpegBackend,
+    },
     #[error("JPEG encoded marker segment is too large: {name}")]
-    SegmentTooLarge { name: &'static str },
+    /// A marker segment would exceed the JPEG 16-bit length field.
+    SegmentTooLarge {
+        /// Marker segment name.
+        name: &'static str,
+    },
     #[error("JPEG entropy symbol has no Huffman code: {symbol}")]
-    MissingHuffmanCode { symbol: u8 },
+    /// Encoder attempted to emit a symbol absent from the active Huffman table.
+    MissingHuffmanCode {
+        /// Missing entropy symbol.
+        symbol: u8,
+    },
     #[error("JPEG encode failed: {0}")]
+    /// Internal encoder failure with diagnostic text.
     Internal(String),
 }
 
@@ -170,6 +227,7 @@ impl BitWriter {
     }
 }
 
+/// Encode grayscale or RGB samples as a baseline JPEG codestream.
 pub fn encode_jpeg_baseline(
     samples: JpegSamples<'_>,
     options: JpegEncodeOptions,
