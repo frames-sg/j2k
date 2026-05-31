@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // JPEG -> HTJ2K transcode throughput comparison:
-//   signinum  — coefficient-domain batch transcode (transform + optional CUDA HT encode)
+//   signinum  — coefficient-domain batch transcode (CUDA transform with CPU or CUDA HT encode)
 //   NVIDIA    — reused-session serial nvJPEG decode + nvJPEG2000 HT encode
 //
 // Reports the four metric families requested: end-to-end throughput (MP/s),
@@ -68,11 +68,18 @@ fn main() {
         megapixels
     );
 
-    let signinum = run_signinum(&jpegs);
+    let signinum_cpu_ht = run_signinum_transform_cpu_encode(&jpegs);
+    let signinum_cuda_ht = run_signinum(&jpegs);
     let nvidia = run_nvidia(&jpegs);
 
-    print_report(&jpegs, megapixels, &signinum, &nvidia);
-    enforce_required_results(&signinum, &nvidia);
+    print_report(
+        &jpegs,
+        megapixels,
+        &signinum_cpu_ht,
+        &signinum_cuda_ht,
+        &nvidia,
+    );
+    enforce_required_results(&signinum_cuda_ht, &nvidia);
 }
 
 struct JpegInput {
@@ -168,6 +175,10 @@ struct SigninumResult {
     ran: bool,
     used_gpu: bool,
     best_wall_s: f64,
+    extract_us: u128,
+    repack_us: u128,
+    transform_wall_us: u128,
+    encode_wall_us: u128,
     transform_gpu_stage_us: u128,
     encode_cuda_stage_us: u128,
     pack_upload_us: u128,
@@ -242,44 +253,129 @@ fn run_signinum(jpegs: &[JpegInput]) -> SigninumResult {
         validate_signinum_cuda_dispatch(&batch, encode_metrics);
         if elapsed < best_wall_s {
             best_wall_s = elapsed;
-            let t = &batch.report.timings;
-            last = SigninumResult {
-                ran: true,
-                used_gpu,
-                best_wall_s: elapsed,
-                pack_upload_us: t.dwt97_batch_pack_upload_us,
-                idct_row_lift_us: t.dwt97_batch_idct_row_lift_us,
-                column_lift_us: t.dwt97_batch_column_lift_us,
-                quantize_us: t.dwt97_batch_quantize_codeblock_us,
-                readback_us: t.dwt97_batch_readback_us,
-                transform_gpu_stage_us: t.dwt97_batch_pack_upload_us
-                    + t.dwt97_batch_idct_row_lift_us
-                    + t.dwt97_batch_column_lift_us
-                    + t.dwt97_batch_quantize_codeblock_us
-                    + t.dwt97_batch_readback_us,
-                encode_cuda_stage_us: encode_metrics.cuda_stage_us,
-                transform_dispatches: t.accelerator_dispatches,
-                transform_dispatched_jobs: t.accelerator_dispatched_jobs,
-                transform_cpu_fallback_jobs: t.cpu_fallback_jobs,
-                encode_dispatches: encode_metrics.total_dispatches,
-                encode_ht_code_block_dispatches: encode_metrics.ht_code_block_dispatches,
-                encode_packetization_dispatches: encode_metrics.packetization_dispatches,
-                output_bytes: batch
-                    .tiles
-                    .iter()
-                    .flatten()
-                    .map(|tile| tile.codestream.len())
-                    .sum(),
-                codestreams: batch
-                    .tiles
-                    .iter()
-                    .flatten()
-                    .map(|tile| tile.codestream.clone())
-                    .collect(),
-            };
+            last = signinum_result_from_batch(&batch, used_gpu, elapsed, encode_metrics);
         }
     }
     last
+}
+
+fn run_signinum_transform_cpu_encode(jpegs: &[JpegInput]) -> SigninumResult {
+    let inputs: Vec<JpegTileBatchInput<'_>> = jpegs
+        .iter()
+        .map(|j| JpegTileBatchInput { bytes: &j.bytes })
+        .collect();
+    let options = JpegToHtj2kOptions::lossy_97();
+
+    let mut used_gpu = true;
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = BenchAccelerator::new_explicit();
+    for iteration in 0..WARMUP.max(1) {
+        match transcoder
+            .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+            .and_then(reject_failed_signinum_tiles)
+        {
+            Ok(batch) => validate_signinum_transform_dispatch(&batch),
+            Err(error) => {
+                assert!(
+                    !signinum_cuda_required(),
+                    "signinum: explicit {BACKEND_NAME} transform path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                );
+                used_gpu = false;
+                if iteration == 0 {
+                    eprintln!(
+                        "signinum: explicit {BACKEND_NAME} transform unavailable; measuring scalar CPU fallback"
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    let mut best_wall_s = f64::INFINITY;
+    let mut last = SigninumResult::default();
+    for _ in 0..ITERATIONS {
+        let start = Instant::now();
+        let batch = if used_gpu {
+            transcoder
+                .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+                .and_then(reject_failed_signinum_tiles)
+        } else {
+            transcoder
+                .transcode_batch(&inputs, &options)
+                .and_then(reject_failed_signinum_tiles)
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(error) => {
+                assert!(
+                    !signinum_cuda_required(),
+                    "signinum: explicit {BACKEND_NAME} transform path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                );
+                return SigninumResult::default();
+            }
+        };
+        if used_gpu {
+            validate_signinum_transform_dispatch(&batch);
+        }
+        if elapsed < best_wall_s {
+            best_wall_s = elapsed;
+            last = signinum_result_from_batch(
+                &batch,
+                used_gpu,
+                elapsed,
+                EncodeBenchMetrics::default(),
+            );
+        }
+    }
+    last
+}
+
+fn signinum_result_from_batch(
+    batch: &EncodedTranscodeBatch,
+    used_gpu: bool,
+    elapsed: f64,
+    encode_metrics: EncodeBenchMetrics,
+) -> SigninumResult {
+    let t = &batch.report.timings;
+    SigninumResult {
+        ran: true,
+        used_gpu,
+        best_wall_s: elapsed,
+        extract_us: batch.report.extract_us,
+        repack_us: t.jpeg_dct_repack_us,
+        transform_wall_us: batch.report.transform_us,
+        encode_wall_us: batch.report.encode_us,
+        pack_upload_us: t.dwt97_batch_pack_upload_us,
+        idct_row_lift_us: t.dwt97_batch_idct_row_lift_us,
+        column_lift_us: t.dwt97_batch_column_lift_us,
+        quantize_us: t.dwt97_batch_quantize_codeblock_us,
+        readback_us: t.dwt97_batch_readback_us,
+        transform_gpu_stage_us: t.dwt97_batch_pack_upload_us
+            + t.dwt97_batch_idct_row_lift_us
+            + t.dwt97_batch_column_lift_us
+            + t.dwt97_batch_quantize_codeblock_us
+            + t.dwt97_batch_readback_us,
+        encode_cuda_stage_us: encode_metrics.cuda_stage_us,
+        transform_dispatches: t.accelerator_dispatches,
+        transform_dispatched_jobs: t.accelerator_dispatched_jobs,
+        transform_cpu_fallback_jobs: t.cpu_fallback_jobs,
+        encode_dispatches: encode_metrics.total_dispatches,
+        encode_ht_code_block_dispatches: encode_metrics.ht_code_block_dispatches,
+        encode_packetization_dispatches: encode_metrics.packetization_dispatches,
+        output_bytes: batch
+            .tiles
+            .iter()
+            .flatten()
+            .map(|tile| tile.codestream.len())
+            .sum(),
+        codestreams: batch
+            .tiles
+            .iter()
+            .flatten()
+            .map(|tile| tile.codestream.clone())
+            .collect(),
+    }
 }
 
 struct SigninumBenchSession {
@@ -432,13 +528,10 @@ fn enforce_required_results(signinum: &SigninumResult, nvidia: &NvidiaResult) {
 fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: EncodeBenchMetrics) {
     #[cfg(not(target_os = "macos"))]
     {
+        validate_signinum_transform_dispatch(batch);
         if !signinum_cuda_required() {
             return;
         }
-        assert!(
-            batch.report.timings.accelerator_dispatches != 0,
-            "signinum: CUDA transform dispatched zero batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
-        );
         assert!(
             encode.ht_code_block_dispatches != 0,
             "signinum: CUDA HT encode dispatched zero code-block batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
@@ -447,6 +540,22 @@ fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: Encode
 
     #[cfg(target_os = "macos")]
     let _ = (batch, encode);
+}
+
+fn validate_signinum_transform_dispatch(batch: &EncodedTranscodeBatch) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !signinum_cuda_required() {
+            return;
+        }
+        assert!(
+            batch.report.timings.accelerator_dispatches != 0,
+            "signinum: CUDA transform dispatched zero batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    let _ = batch;
 }
 
 #[derive(Default)]
@@ -588,7 +697,8 @@ fn ycbcr_to_rgb(ycbcr: &[u8]) -> Vec<u8> {
 fn print_report(
     jpegs: &[JpegInput],
     megapixels: f64,
-    signinum: &SigninumResult,
+    signinum_cpu_ht: &SigninumResult,
+    signinum_cuda_ht: &SigninumResult,
     nvidia: &NvidiaResult,
 ) {
     let labels: Vec<&str> = jpegs.iter().map(|j| j.label.as_str()).take(4).collect();
@@ -599,12 +709,20 @@ fn print_report(
     );
     println!("iterations: {ITERATIONS} (best wall-clock reported)\n");
 
-    println!("{:<22}{:>16}{:>16}", "metric", "signinum", "NVIDIA reused");
-    println!("{}", "-".repeat(54));
+    println!(
+        "{:<24}{:>18}{:>18}{:>16}",
+        "metric", "sig xform+CPU HT", "sig xform+CUDA HT", "NVIDIA reused"
+    );
+    println!("{}", "-".repeat(76));
 
     // End-to-end throughput.
-    let sig_mps = if signinum.ran && signinum.best_wall_s > 0.0 {
-        megapixels / signinum.best_wall_s
+    let sig_cpu_mps = if signinum_cpu_ht.ran && signinum_cpu_ht.best_wall_s > 0.0 {
+        megapixels / signinum_cpu_ht.best_wall_s
+    } else {
+        0.0
+    };
+    let sig_cuda_mps = if signinum_cuda_ht.ran && signinum_cuda_ht.best_wall_s > 0.0 {
+        megapixels / signinum_cuda_ht.best_wall_s
     } else {
         0.0
     };
@@ -613,38 +731,97 @@ fn print_report(
     } else {
         0.0
     };
-    let sig_role = if signinum.used_gpu { "GPU" } else { "CPU" };
     println!(
-        "{:<22}{:>13.1} ({}){:>16}",
+        "{:<24}{:>18}{:>18}{:>16}",
         "end-to-end MP/s",
-        sig_mps,
-        sig_role,
+        fmt_mps_ran(signinum_cpu_ht.ran, sig_cpu_mps),
+        fmt_mps_ran(signinum_cuda_ht.ran, sig_cuda_mps),
         fmt_mps(nvidia, nv_mps),
     );
 
     // Wall-clock totals.
     println!(
-        "{:<22}{:>16}{:>16}",
+        "{:<24}{:>18}{:>18}{:>16}",
         "wall-clock (ms)",
-        fmt_ms(signinum.ran, signinum.best_wall_s * 1000.0),
+        fmt_ms(signinum_cpu_ht.ran, signinum_cpu_ht.best_wall_s * 1000.0),
+        fmt_ms(signinum_cuda_ht.ran, signinum_cuda_ht.best_wall_s * 1000.0),
         fmt_ms(nvidia.ran, nvidia.best_wall_s * 1000.0),
     );
 
     // GPU-only.
-    let sig_gpu_ms =
-        (signinum.transform_gpu_stage_us + signinum.encode_cuda_stage_us) as f64 / 1000.0;
+    let sig_cpu_gpu_ms = (signinum_cpu_ht.transform_gpu_stage_us
+        + signinum_cpu_ht.encode_cuda_stage_us) as f64
+        / 1000.0;
+    let sig_cuda_gpu_ms = (signinum_cuda_ht.transform_gpu_stage_us
+        + signinum_cuda_ht.encode_cuda_stage_us) as f64
+        / 1000.0;
     let nv_gpu_ms = nvidia.decode_ms + nvidia.encode_ms;
     println!(
-        "{:<22}{:>16}{:>16}",
+        "{:<24}{:>18}{:>18}{:>16}",
         "GPU-only (ms)",
-        fmt_ms(signinum.ran && signinum.used_gpu, sig_gpu_ms),
+        fmt_ms(
+            signinum_cpu_ht.ran && signinum_cpu_ht.used_gpu,
+            sig_cpu_gpu_ms
+        ),
+        fmt_ms(
+            signinum_cuda_ht.ran && signinum_cuda_ht.used_gpu,
+            sig_cuda_gpu_ms,
+        ),
         fmt_ms(nvidia.ran, nv_gpu_ms),
     );
 
     // Per-stage breakdown.
     println!("\nper-stage (ms):");
+    print_signinum_stages("signinum CUDA transform + CPU HT encode", signinum_cpu_ht);
+    print_signinum_stages("signinum CUDA transform + CUDA HT encode", signinum_cuda_ht);
+    if nvidia.ran {
+        println!(
+            "  NVIDIA reused-session serial: nvJPEG decode {:.3}  nvJPEG2000 HT encode {:.3}",
+            nvidia.decode_ms, nvidia.encode_ms
+        );
+    } else {
+        println!("  NVIDIA reused-session serial: {}", nv_status(nvidia));
+    }
+
+    // Output size.
+    println!("\noutput size + quality:");
     println!(
-        "  signinum {BACKEND_NAME} transform: pack/upload {:.3}  idct+row {:.3}  column {:.3}  quantize {:.3}  readback {:.3}",
+        "  bytes:  sig CPU HT {}   sig CUDA HT {}   NVIDIA {}",
+        signinum_cpu_ht.output_bytes,
+        signinum_cuda_ht.output_bytes,
+        if nvidia.ran {
+            nvidia.output_bytes.to_string()
+        } else {
+            nv_status(nvidia)
+        },
+    );
+
+    // PSNR vs the nvJPEG-decoded source (best-effort; needs the NVIDIA baseline).
+    let sig_cpu_psnr = mean_psnr(jpegs, &signinum_cpu_ht.codestreams);
+    let sig_cuda_psnr = mean_psnr(jpegs, &signinum_cuda_ht.codestreams);
+    let nv_psnr = if nvidia.ran {
+        mean_psnr(jpegs, &nvidia.codestreams)
+    } else {
+        None
+    };
+    println!(
+        "  PSNR vs source (dB, best color interp, not rate matched):  sig CPU HT {}   sig CUDA HT {}   NVIDIA {}",
+        fmt_psnr(sig_cpu_psnr),
+        fmt_psnr(sig_cuda_psnr),
+        fmt_psnr(nv_psnr),
+    );
+}
+
+fn print_signinum_stages(label: &str, signinum: &SigninumResult) {
+    println!(
+        "  {label}: extract {:.3}  repack {:.3}  transform wall {:.3}  encode wall {:.3}",
+        us_ms(signinum.extract_us),
+        us_ms(signinum.repack_us),
+        us_ms(signinum.transform_wall_us),
+        us_ms(signinum.encode_wall_us),
+    );
+    println!(
+        "    GPU transform: pack/upload {:.3}  idct+row {:.3}  column {:.3}  quantize {:.3}  readback {:.3}",
         us_ms(signinum.pack_upload_us),
         us_ms(signinum.idct_row_lift_us),
         us_ms(signinum.column_lift_us),
@@ -659,48 +836,15 @@ fn print_report(
     );
     if signinum.encode_dispatches > 0 {
         println!(
-            "  signinum CUDA HT encode: total {:.3}  dispatches {}  HT code-block {}  packetization {}",
+            "    CUDA HT encode: total {:.3}  dispatches {}  HT code-block {}  packetization {}",
             us_ms(signinum.encode_cuda_stage_us),
             signinum.encode_dispatches,
             signinum.encode_ht_code_block_dispatches,
             signinum.encode_packetization_dispatches,
         );
     } else {
-        println!("  signinum CUDA HT encode: n/a (CPU encode path)");
+        println!("    CUDA HT encode: n/a (CPU encode path)");
     }
-    if nvidia.ran {
-        println!(
-            "  NVIDIA reused-session serial: nvJPEG decode {:.3}  nvJPEG2000 HT encode {:.3}",
-            nvidia.decode_ms, nvidia.encode_ms
-        );
-    } else {
-        println!("  NVIDIA reused-session serial: {}", nv_status(nvidia));
-    }
-
-    // Output size.
-    println!("\noutput size + quality:");
-    println!(
-        "  bytes:  signinum {}   NVIDIA {}",
-        signinum.output_bytes,
-        if nvidia.ran {
-            nvidia.output_bytes.to_string()
-        } else {
-            nv_status(nvidia)
-        },
-    );
-
-    // PSNR vs the nvJPEG-decoded source (best-effort; needs the NVIDIA baseline).
-    let sig_psnr = mean_psnr(jpegs, &signinum.codestreams);
-    let nv_psnr = if nvidia.ran {
-        mean_psnr(jpegs, &nvidia.codestreams)
-    } else {
-        None
-    };
-    println!(
-        "  PSNR vs source (dB, best color interp, not rate matched):  signinum {}   NVIDIA {}",
-        fmt_psnr(sig_psnr),
-        fmt_psnr(nv_psnr),
-    );
 }
 
 fn fmt_mps(nvidia: &NvidiaResult, mps: f64) -> String {
@@ -708,6 +852,14 @@ fn fmt_mps(nvidia: &NvidiaResult, mps: f64) -> String {
         format!("{mps:>16.1}")
     } else {
         format!("{:>16}", nv_status(nvidia))
+    }
+}
+
+fn fmt_mps_ran(ran: bool, mps: f64) -> String {
+    if ran {
+        format!("{mps:.1}")
+    } else {
+        "n/a".to_string()
     }
 }
 
