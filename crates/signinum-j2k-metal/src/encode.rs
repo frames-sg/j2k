@@ -1770,7 +1770,10 @@ struct FinishedResidentLosslessBufferEncode {
 #[cfg(target_os = "macos")]
 fn lossless_device_encode_levels(width: u32, height: u32, options: J2kLosslessEncodeOptions) -> u8 {
     const MIN_LOSSLESS_DWT_DIMENSION: u32 = 64;
-    let levels = if options.progression == J2kProgressionOrder::Rpcl {
+    let levels = if matches!(
+        options.progression,
+        J2kProgressionOrder::Rpcl | J2kProgressionOrder::Pcrl | J2kProgressionOrder::Cprl
+    ) {
         let mut levels = 0u8;
         let mut w = width;
         let mut h = height;
@@ -1926,7 +1929,10 @@ fn lossless_device_encode_plan(
     let num_decomposition_levels = lossless_device_encode_levels(width, height, options);
     let progression_order = match options.progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
+        J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
         J2kProgressionOrder::Rpcl => EncodeProgressionOrder::Rpcl,
+        J2kProgressionOrder::Pcrl => EncodeProgressionOrder::Pcrl,
+        J2kProgressionOrder::Cprl => EncodeProgressionOrder::Cprl,
     };
     let use_mct = components >= 3;
     let guard_bits: u8 = if use_mct { 2 } else { 1 };
@@ -2130,9 +2136,10 @@ fn host_output_encode_options(mut options: J2kLosslessEncodeOptions) -> J2kLossl
 fn packet_descriptors_for_lossless_device_order(
     packet_count: usize,
     num_components: u8,
+    progression_order: EncodeProgressionOrder,
 ) -> Result<Vec<J2kPacketizationPacketDescriptor>, crate::Error> {
     let component_count = usize::from(num_components).max(1);
-    (0..packet_count)
+    let mut descriptors = (0..packet_count)
         .map(|packet_index| {
             Ok(J2kPacketizationPacketDescriptor {
                 packet_index: u32::try_from(packet_index).map_err(|_| {
@@ -2162,7 +2169,58 @@ fn packet_descriptors_for_lossless_device_order(
                 precinct: 0,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, crate::Error>>()?;
+    sort_lossless_device_packet_descriptors(&mut descriptors, progression_order);
+    Ok(descriptors)
+}
+
+#[cfg(target_os = "macos")]
+fn sort_lossless_device_packet_descriptors(
+    descriptors: &mut [J2kPacketizationPacketDescriptor],
+    progression_order: EncodeProgressionOrder,
+) {
+    match progression_order {
+        EncodeProgressionOrder::Lrcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.layer,
+                descriptor.resolution,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        EncodeProgressionOrder::Rlcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.layer,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        EncodeProgressionOrder::Rpcl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.layer,
+            )
+        }),
+        EncodeProgressionOrder::Pcrl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+        EncodeProgressionOrder::Cprl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.component,
+                descriptor.precinct,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2269,8 +2327,11 @@ fn plan_resident_lossless_buffer_encode(
     let coefficient_count = lossless_device_coefficient_count(&plan.code_blocks)?;
     let packetization_resolutions =
         resident_packetization_resolutions_from_lossless_device_plan(&plan)?;
-    let packet_descriptors =
-        packet_descriptors_for_lossless_device_order(plan.resolutions.len(), plan.components)?;
+    let packet_descriptors = packet_descriptors_for_lossless_device_order(
+        plan.resolutions.len(),
+        plan.components,
+        plan.progression_order,
+    )?;
     let metadata = ResidentLosslessBufferEncodeMetadata {
         tile: OwnedMetalLosslessEncodeTile::from_tile(tile),
         components,
@@ -3168,8 +3229,11 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
     )?;
     let packetization_resolutions =
         resident_packetization_resolutions_from_lossless_device_plan(&plan)?;
-    let packet_descriptors =
-        packet_descriptors_for_lossless_device_order(plan.resolutions.len(), plan.components)?;
+    let packet_descriptors = packet_descriptors_for_lossless_device_order(
+        plan.resolutions.len(),
+        plan.components,
+        plan.progression_order,
+    )?;
     let packetization_job = compute::J2kResidentPacketizationEncodeJob {
         resolution_count: u32::try_from(plan.resolutions.len()).map_err(|_| {
             crate::Error::MetalKernel {
@@ -3923,8 +3987,9 @@ mod tests {
     use signinum_core::{BackendKind, PixelFormat};
     #[cfg(target_os = "macos")]
     use signinum_j2k::{
-        encode_j2k_lossless_with_accelerator, EncodeBackendPreference, J2kBlockCodingMode,
-        J2kEncodeValidation, J2kLosslessSamples, J2kProgressionOrder,
+        encode_j2k_lossless_with_accelerator, encode_j2k_lossy_with_accelerator,
+        EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessSamples,
+        J2kLossyEncodeOptions, J2kLossySamples, J2kProgressionOrder,
     };
     use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
     use signinum_j2k_native::{
@@ -5790,6 +5855,35 @@ mod tests {
             &mut accelerator,
         )
         .expect("Metal-accelerated HTJ2K lossless encode");
+
+        assert_eq!(encoded.backend, BackendKind::Metal);
+        assert!(accelerator.ht_code_block_attempts() > 0);
+        assert!(accelerator.ht_code_block_dispatches() > 0);
+        assert_eq!(accelerator.packetization_attempts(), 1);
+        assert_eq!(accelerator.packetization_dispatches(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_htj2k_lossy_facade_require_device_dispatches_supported_stages() {
+        let pixels: Vec<u8> = (0..16 * 16)
+            .map(|idx| ((idx * 17 + idx / 3) & 0xFF) as u8)
+            .collect();
+        let samples =
+            J2kLossySamples::new(&pixels, 16, 16, 1, 8, false).expect("valid gray samples");
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+
+        let encoded = encode_j2k_lossy_with_accelerator(
+            samples,
+            &J2kLossyEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+                .with_max_decomposition_levels(Some(0))
+                .with_validation(J2kEncodeValidation::CpuRoundTrip),
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("Metal-accelerated HTJ2K lossy encode");
 
         assert_eq!(encoded.backend, BackendKind::Metal);
         assert!(accelerator.ht_code_block_attempts() > 0);

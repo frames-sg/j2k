@@ -22,6 +22,8 @@ pub(crate) enum BlockCodingMode {
 pub(crate) struct EncodeParams {
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) tile_width: u32,
+    pub(crate) tile_height: u32,
     pub(crate) num_components: u8,
     pub(crate) bit_depth: u8,
     pub(crate) signed: bool,
@@ -35,7 +37,13 @@ pub(crate) struct EncodeParams {
     pub(crate) block_coding_mode: BlockCodingMode,
     pub(crate) progression_order: EncodeProgressionOrder,
     pub(crate) write_tlm: bool,
+    pub(crate) write_plt: bool,
+    pub(crate) write_plm: bool,
+    pub(crate) write_sop: bool,
+    pub(crate) write_eph: bool,
+    pub(crate) terminate_coding_passes: bool,
     pub(crate) component_sampling: Vec<(u8, u8)>,
+    pub(crate) precinct_exponents: Vec<(u8, u8)>,
 }
 
 impl Default for EncodeParams {
@@ -43,6 +51,8 @@ impl Default for EncodeParams {
         Self {
             width: 0,
             height: 0,
+            tile_width: 0,
+            tile_height: 0,
             num_components: 1,
             bit_depth: 8,
             signed: false,
@@ -56,9 +66,21 @@ impl Default for EncodeParams {
             block_coding_mode: BlockCodingMode::Classic,
             progression_order: EncodeProgressionOrder::Lrcp,
             write_tlm: false,
+            write_plt: false,
+            write_plm: false,
+            write_sop: false,
+            write_eph: false,
+            terminate_coding_passes: false,
             component_sampling: Vec::new(),
+            precinct_exponents: Vec::new(),
         }
     }
+}
+
+pub(crate) struct TilePartData<'a> {
+    pub(crate) tile_index: u16,
+    pub(crate) data: &'a [u8],
+    pub(crate) packet_lengths: &'a [u32],
 }
 
 /// Write the complete JPEG 2000 codestream.
@@ -67,7 +89,62 @@ pub(crate) fn write_codestream(
     tile_data: &[u8],
     quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(tile_data.len() + 256);
+    write_codestream_with_packet_lengths(params, tile_data, quantization_step_sizes, &[])
+}
+
+pub(crate) fn write_codestream_with_packet_lengths(
+    params: &EncodeParams,
+    tile_data: &[u8],
+    quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
+    packet_lengths: &[u32],
+) -> Vec<u8> {
+    let tile = TilePartData {
+        tile_index: 0,
+        data: tile_data,
+        packet_lengths,
+    };
+    write_codestream_tiles(params, &[tile], quantization_step_sizes)
+}
+
+pub(crate) fn write_codestream_tiles(
+    params: &EncodeParams,
+    tiles: &[TilePartData<'_>],
+    quantization_step_sizes: &[(u16, u16)], // (exponent, mantissa)
+) -> Vec<u8> {
+    struct PreparedTilePart<'a> {
+        tile_index: u16,
+        data: &'a [u8],
+        markers: Vec<u8>,
+        tile_part_len: u32,
+    }
+
+    let mut prepared_tiles = Vec::with_capacity(tiles.len());
+    let mut main_header_packet_lengths = Vec::new();
+    let mut total_tile_bytes = 0usize;
+    for tile in tiles {
+        let mut markers = Vec::new();
+        if params.write_plt && !tile.packet_lengths.is_empty() {
+            write_plt_markers(&mut markers, tile.packet_lengths);
+        }
+        if params.write_plm {
+            main_header_packet_lengths.extend_from_slice(tile.packet_lengths);
+        }
+        let tile_part_len = 14
+            + u32::try_from(markers.len()).unwrap_or(u32::MAX)
+            + u32::try_from(tile.data.len()).unwrap_or(u32::MAX);
+        total_tile_bytes = total_tile_bytes
+            .saturating_add(markers.len())
+            .saturating_add(tile.data.len())
+            .saturating_add(14);
+        prepared_tiles.push(PreparedTilePart {
+            tile_index: tile.tile_index,
+            data: tile.data,
+            markers,
+            tile_part_len,
+        });
+    }
+
+    let mut out = Vec::with_capacity(total_tile_bytes + 256);
 
     // SOC (Start of codestream)
     write_marker(&mut out, markers::SOC);
@@ -85,20 +162,22 @@ pub(crate) fn write_codestream(
     // QCD (Quantization defaults)
     write_qcd_marker(&mut out, params, quantization_step_sizes);
 
-    // TLM (Tile-part lengths), required by DICOM HTJ2K RPCL.
-    let tile_part_len = 14 + tile_data.len() as u32; // SOT marker+segment(12) + SOD(2) + tile data
-    if params.write_tlm {
-        write_tlm_marker(&mut out, 0, tile_part_len);
+    if params.write_plm && !main_header_packet_lengths.is_empty() {
+        write_plm_markers(&mut out, &main_header_packet_lengths);
     }
 
-    // SOT (Start of tile-part) — single tile covering entire image
-    write_sot_marker(&mut out, 0, tile_part_len - 2);
+    if params.write_tlm {
+        for tile in &prepared_tiles {
+            write_tlm_marker(&mut out, tile.tile_index, tile.tile_part_len);
+        }
+    }
 
-    // SOD (Start of data)
-    write_marker(&mut out, markers::SOD);
-
-    // Tile bitstream data
-    out.extend_from_slice(tile_data);
+    for tile in prepared_tiles {
+        write_sot_marker(&mut out, tile.tile_index, tile.tile_part_len - 2);
+        out.extend_from_slice(&tile.markers);
+        write_marker(&mut out, markers::SOD);
+        out.extend_from_slice(tile.data);
+    }
 
     // EOC (End of codestream)
     write_marker(&mut out, markers::EOC);
@@ -130,10 +209,20 @@ fn write_siz_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     out.extend_from_slice(&0u32.to_be_bytes());
     // YOsiz (image area y offset)
     out.extend_from_slice(&0u32.to_be_bytes());
-    // XTsiz (tile width = image width, single tile)
-    out.extend_from_slice(&params.width.to_be_bytes());
-    // YTsiz (tile height = image height, single tile)
-    out.extend_from_slice(&params.height.to_be_bytes());
+    let tile_width = if params.tile_width == 0 {
+        params.width
+    } else {
+        params.tile_width
+    };
+    let tile_height = if params.tile_height == 0 {
+        params.height
+    } else {
+        params.tile_height
+    };
+    // XTsiz (tile width)
+    out.extend_from_slice(&tile_width.to_be_bytes());
+    // YTsiz (tile height)
+    out.extend_from_slice(&tile_height.to_be_bytes());
     // XTOsiz (tile x offset)
     out.extend_from_slice(&0u32.to_be_bytes());
     // YTOsiz (tile y offset)
@@ -188,11 +277,23 @@ fn ht_capability_word(params: &EncodeParams) -> u16 {
 fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     write_marker(out, markers::COD);
 
-    let marker_len = 12u16; // Fixed length for no precincts
+    let marker_len = 12u16
+        + u16::try_from(params.precinct_exponents.len())
+            .expect("precinct exponent count fits in COD marker length");
     out.extend_from_slice(&marker_len.to_be_bytes());
 
-    // Scod (coding style flags) — no precincts, no SOP, no EPH
-    out.push(0x00);
+    // Scod (coding style flags)
+    let mut scod = 0u8;
+    if !params.precinct_exponents.is_empty() {
+        scod |= 0x01;
+    }
+    if params.write_sop {
+        scod |= 0x02;
+    }
+    if params.write_eph {
+        scod |= 0x04;
+    }
+    out.push(scod);
 
     // SGcod: Progression order
     out.push(progression_order_byte(params.progression_order));
@@ -208,18 +309,27 @@ fn write_cod_marker(out: &mut Vec<u8>, params: &EncodeParams) {
     // Code-block height exponent - 2
     out.push(params.code_block_height_exp);
     // Code-block style
-    out.push(match params.block_coding_mode {
-        BlockCodingMode::Classic => 0x00,
-        BlockCodingMode::HighThroughput => 0x40,
-    });
+    let code_block_style = u8::from(params.terminate_coding_passes) << 2
+        | match params.block_coding_mode {
+            BlockCodingMode::Classic => 0x00,
+            BlockCodingMode::HighThroughput => 0x40,
+        };
+    out.push(code_block_style);
     // Wavelet transform: 0 = irreversible 9-7, 1 = reversible 5-3
     out.push(if params.reversible { 1 } else { 0 });
+
+    for &(ppx, ppy) in &params.precinct_exponents {
+        out.push((ppy << 4) | ppx);
+    }
 }
 
 fn progression_order_byte(progression_order: EncodeProgressionOrder) -> u8 {
     match progression_order {
         EncodeProgressionOrder::Lrcp => 0x00,
+        EncodeProgressionOrder::Rlcp => 0x01,
         EncodeProgressionOrder::Rpcl => 0x02,
+        EncodeProgressionOrder::Pcrl => 0x03,
+        EncodeProgressionOrder::Cprl => 0x04,
     }
 }
 
@@ -231,6 +341,52 @@ fn write_tlm_marker(out: &mut Vec<u8>, tile_index: u16, tile_part_length: u32) {
     out.push(0x22);
     out.extend_from_slice(&tile_index.to_be_bytes());
     out.extend_from_slice(&tile_part_length.to_be_bytes());
+}
+
+fn write_plt_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
+    let data = packet_length_bytes(packet_lengths);
+    for (sequence_idx, chunk) in data.chunks(usize::from(u16::MAX) - 3).enumerate() {
+        write_marker(out, markers::PLT);
+        let marker_len = u16::try_from(3 + chunk.len()).expect("PLT marker chunk length fits");
+        out.extend_from_slice(&marker_len.to_be_bytes());
+        out.push(sequence_idx as u8);
+        out.extend_from_slice(chunk);
+    }
+}
+
+fn write_plm_markers(out: &mut Vec<u8>, packet_lengths: &[u32]) {
+    let data = packet_length_bytes(packet_lengths);
+    for (sequence_idx, chunk) in data.chunks(usize::from(u16::MAX) - 7).enumerate() {
+        write_marker(out, markers::PLM);
+        let marker_len = u16::try_from(7 + chunk.len()).expect("PLM marker chunk length fits");
+        out.extend_from_slice(&marker_len.to_be_bytes());
+        out.push(sequence_idx as u8);
+        out.extend_from_slice(&u32::try_from(chunk.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(chunk);
+    }
+}
+
+fn packet_length_bytes(packet_lengths: &[u32]) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    for &packet_length in packet_lengths {
+        let mut value = packet_length;
+        let mut groups = Vec::new();
+        groups.push((value & 0x7F) as u8);
+        value >>= 7;
+
+        while value > 0 {
+            groups.push((value & 0x7F) as u8);
+            value >>= 7;
+        }
+
+        for (idx, group) in groups.iter().rev().enumerate() {
+            let continuation = idx + 1 != groups.len();
+            out.push(if continuation { *group | 0x80 } else { *group });
+        }
+    }
+
+    out
 }
 
 /// Write QCD marker segment (A.6.4).

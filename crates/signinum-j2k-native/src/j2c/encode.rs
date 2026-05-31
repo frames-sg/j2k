@@ -7,12 +7,14 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use super::bitplane_encode;
 use super::build::SubBandType;
+use super::codestream::CodeBlockStyle;
 use super::codestream_write::{self, BlockCodingMode, EncodeParams};
 use super::fdwt::{self, DwtDecomposition};
 use super::forward_mct;
@@ -57,8 +59,20 @@ pub struct EncodeOptions {
     pub progression_order: EncodeProgressionOrder,
     /// Write a TLM marker segment for the single tile-part.
     pub write_tlm: bool,
+    /// Write PLT packet-length marker segments in the tile-part header.
+    pub write_plt: bool,
+    /// Write PLM packet-length marker segments in the main header.
+    pub write_plm: bool,
+    /// Write SOP marker segments before packets.
+    pub write_sop: bool,
+    /// Write EPH markers after packet headers.
+    pub write_eph: bool,
     /// Apply the JPEG 2000 multi-component color transform for 3+ component inputs.
     pub use_mct: bool,
+    /// Number of cumulative quality layers to emit.
+    pub num_layers: u8,
+    /// Optional cumulative packet-body byte targets for each quality layer.
+    pub quality_layer_byte_targets: Vec<u64>,
     /// Decode and verify HTJ2K codestreams inside the native encoder.
     pub validate_high_throughput_codestream: bool,
     /// Multiplier applied to irreversible 9/7 scalar quantization step sizes.
@@ -75,6 +89,10 @@ pub struct EncodeOptions {
     /// resolution. This is experimental and primarily intended for precomputed
     /// coefficient encoders that preserve JPEG-native chroma subsampling.
     pub component_sampling: Option<Vec<(u8, u8)>>,
+    /// Optional tile width and height for multi-tile codestream output.
+    pub tile_size: Option<(u32, u32)>,
+    /// Optional precinct exponents in COD order, one per resolution level.
+    pub precinct_exponents: Vec<(u8, u8)>,
 }
 
 impl Default for EncodeOptions {
@@ -88,12 +106,20 @@ impl Default for EncodeOptions {
             use_ht_block_coding: false,
             progression_order: EncodeProgressionOrder::Lrcp,
             write_tlm: false,
+            write_plt: false,
+            write_plm: false,
+            write_sop: false,
+            write_eph: false,
             use_mct: true,
+            num_layers: 1,
+            quality_layer_byte_targets: Vec::new(),
             validate_high_throughput_codestream: true,
             irreversible_quantization_scale: 1.0,
             irreversible_quantization_subband_scales:
                 IrreversibleQuantizationSubbandScales::default(),
             component_sampling: None,
+            tile_size: None,
+            precinct_exponents: Vec::new(),
         }
     }
 }
@@ -104,8 +130,14 @@ pub enum EncodeProgressionOrder {
     /// Layer-resolution-component-position progression.
     #[default]
     Lrcp,
+    /// Resolution-layer-component-position progression.
+    Rlcp,
     /// Resolution-position-component-layer progression.
     Rpcl,
+    /// Position-component-resolution-layer progression.
+    Pcrl,
+    /// Component-position-resolution-layer progression.
+    Cprl,
 }
 
 /// Encode pixel data into a JPEG 2000 codestream.
@@ -641,15 +673,21 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
     let component_resolution_packets = image
         .components
         .iter()
-        .map(prepared_resolution_packets_from_prequantized_component)
-        .collect::<Result<Vec<_>, _>>()?;
+        .enumerate()
+        .map(|(component_idx, component)| {
+            prepared_resolution_packets_from_prequantized_component(component_idx, component)
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
     let prepared_resolution_packets =
         ordered_prepared_resolution_packets(component_resolution_packets, &prequantized_options)?;
+    let packet_descriptors = packet_descriptors_for_order(
+        &prepared_resolution_packets,
+        1,
+        prequantized_options.progression_order,
+    )?;
     let mut resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
     let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packet_descriptors =
-        packet_descriptors_for_order(resolution_packets.len(), 1, num_components)?;
     let packetization_job = J2kPacketizationEncodeJob {
         resolution_count: resolution_packets.len() as u32,
         num_layers: 1,
@@ -674,6 +712,8 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
     let params = EncodeParams {
         width: image.width,
         height: image.height,
+        tile_width: image.width,
+        tile_height: image.height,
         num_components,
         bit_depth: image.bit_depth,
         signed: image.signed,
@@ -687,10 +727,16 @@ pub fn encode_prequantized_htj2k_97_with_accelerator(
         block_coding_mode: BlockCodingMode::HighThroughput,
         progression_order: prequantized_options.progression_order,
         write_tlm: prequantized_options.write_tlm,
+        write_plt: prequantized_options.write_plt,
+        write_plm: prequantized_options.write_plm,
+        write_sop: prequantized_options.write_sop,
+        write_eph: prequantized_options.write_eph,
+        terminate_coding_passes: false,
         component_sampling: prequantized_options
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        precinct_exponents: precinct_exponents_for_options(&prequantized_options, num_levels)?,
     };
 
     Ok(codestream_write::write_codestream(
@@ -766,15 +812,21 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     let component_resolution_packets = image
         .components
         .iter()
-        .map(prepared_resolution_packets_from_preencoded_component)
-        .collect::<Result<Vec<_>, _>>()?;
+        .enumerate()
+        .map(|(component_idx, component)| {
+            prepared_resolution_packets_from_preencoded_component(component_idx, component)
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
     let prepared_resolution_packets =
         ordered_prepared_resolution_packets(component_resolution_packets, &preencoded_options)?;
+    let packet_descriptors = packet_descriptors_for_order(
+        &prepared_resolution_packets,
+        1,
+        preencoded_options.progression_order,
+    )?;
     let mut resolution_packets =
         encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
     let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packet_descriptors =
-        packet_descriptors_for_order(resolution_packets.len(), 1, num_components)?;
     let packetization_job = J2kPacketizationEncodeJob {
         resolution_count: resolution_packets.len() as u32,
         num_layers: 1,
@@ -799,6 +851,8 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     let params = EncodeParams {
         width: image.width,
         height: image.height,
+        tile_width: image.width,
+        tile_height: image.height,
         num_components,
         bit_depth: image.bit_depth,
         signed: image.signed,
@@ -812,10 +866,16 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
         block_coding_mode: BlockCodingMode::HighThroughput,
         progression_order: preencoded_options.progression_order,
         write_tlm: preencoded_options.write_tlm,
+        write_plt: preencoded_options.write_plt,
+        write_plm: preencoded_options.write_plm,
+        write_sop: preencoded_options.write_sop,
+        write_eph: preencoded_options.write_eph,
+        terminate_coding_passes: false,
         component_sampling: preencoded_options
             .component_sampling
             .clone()
             .ok_or("component sampling missing")?,
+        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
     };
 
     Ok(codestream_write::write_codestream(
@@ -1208,18 +1268,25 @@ fn validate_preencoded_code_block_payload(
 }
 
 fn prepared_resolution_packets_from_prequantized_component(
+    component_idx: usize,
     component: &PrequantizedHtj2k97Component,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
     component
         .resolutions
         .iter()
-        .map(|resolution| {
+        .enumerate()
+        .map(|(resolution_idx, resolution)| {
             Ok(PreparedResolutionPacket {
+                component: component_idx,
+                resolution: u32::try_from(resolution_idx)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
                 subbands: resolution
                     .subbands
                     .iter()
                     .map(prepared_subband_from_prequantized)
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<Vec<_>, &'static str>>()?,
             })
         })
         .collect()
@@ -1241,25 +1308,76 @@ fn prepared_subband_from_prequantized(
         preencoded_ht_code_blocks: None,
         num_cbs_x: subband.num_cbs_x,
         num_cbs_y: subband.num_cbs_y,
+        code_block_width: subband
+            .code_blocks
+            .iter()
+            .map(|block| block.width)
+            .max()
+            .unwrap_or(0),
+        code_block_height: subband
+            .code_blocks
+            .iter()
+            .map(|block| block.height)
+            .max()
+            .unwrap_or(0),
+        width: precomputed_subband_width(
+            subband.num_cbs_x,
+            subband.code_blocks.iter().map(|block| block.width),
+        ),
+        height: precomputed_subband_height(
+            subband.num_cbs_x,
+            subband.num_cbs_y,
+            subband.code_blocks.iter().map(|block| block.height),
+        ),
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
     })
 }
 
+fn precomputed_subband_width(width_in_blocks: u32, widths: impl Iterator<Item = u32>) -> u32 {
+    if width_in_blocks == 0 {
+        return 0;
+    }
+
+    widths.take(width_in_blocks as usize).sum()
+}
+
+fn precomputed_subband_height(
+    width_in_blocks: u32,
+    height_in_blocks: u32,
+    heights: impl Iterator<Item = u32>,
+) -> u32 {
+    if width_in_blocks == 0 || height_in_blocks == 0 {
+        return 0;
+    }
+
+    heights
+        .step_by(width_in_blocks as usize)
+        .take(height_in_blocks as usize)
+        .sum()
+}
+
 fn prepared_resolution_packets_from_preencoded_component(
+    component_idx: usize,
     component: &PreencodedHtj2k97Component,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
     component
         .resolutions
         .iter()
-        .map(|resolution| {
+        .enumerate()
+        .map(|(resolution_idx, resolution)| {
             Ok(PreparedResolutionPacket {
+                component: component_idx,
+                resolution: u32::try_from(resolution_idx)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
                 subbands: resolution
                     .subbands
                     .iter()
                     .map(prepared_subband_from_preencoded)
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<Vec<_>, &'static str>>()?,
             })
         })
         .collect()
@@ -1287,6 +1405,27 @@ fn prepared_subband_from_preencoded(
         ),
         num_cbs_x: subband.num_cbs_x,
         num_cbs_y: subband.num_cbs_y,
+        code_block_width: subband
+            .code_blocks
+            .iter()
+            .map(|block| block.width)
+            .max()
+            .unwrap_or(0),
+        code_block_height: subband
+            .code_blocks
+            .iter()
+            .map(|block| block.height)
+            .max()
+            .unwrap_or(0),
+        width: precomputed_subband_width(
+            subband.num_cbs_x,
+            subband.code_blocks.iter().map(|block| block.width),
+        ),
+        height: precomputed_subband_height(
+            subband.num_cbs_x,
+            subband.num_cbs_y,
+            subband.code_blocks.iter().map(|block| block.height),
+        ),
         sub_band_type: internal_sub_band_type(subband.sub_band_type),
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
@@ -1566,6 +1705,14 @@ fn encode_impl(
     if bit_depth == 0 || bit_depth > 16 {
         return Err("unsupported bit depth");
     }
+    if options.num_layers == 0 || options.num_layers > 32 {
+        return Err("unsupported quality layer count");
+    }
+    if !options.quality_layer_byte_targets.is_empty()
+        && options.quality_layer_byte_targets.len() != usize::from(options.num_layers)
+    {
+        return Err("quality layer byte target count must match quality layer count");
+    }
     if !options.reversible {
         validate_irreversible_quantization_profile(options)?;
     }
@@ -1582,6 +1729,32 @@ fn encode_impl(
         return Err("pixel data too short");
     }
     let component_sampling = component_sampling_for_options(options, num_components)?;
+    if let Some((tile_width, tile_height)) = options.tile_size {
+        if tile_width == 0 || tile_height == 0 {
+            return Err("invalid tile dimensions");
+        }
+        if component_sampling
+            .iter()
+            .any(|sampling| *sampling != (1, 1))
+        {
+            return Err("multi-tile encode with component sampling is not implemented");
+        }
+        if tile_width < width || tile_height < height {
+            return encode_multitile_impl(
+                pixels,
+                width,
+                height,
+                num_components,
+                bit_depth,
+                signed,
+                options,
+                block_coding_mode,
+                accelerator,
+                tile_width,
+                tile_height,
+            );
+        }
+    }
 
     let profile_enabled = profile::profile_stages_enabled();
     let total_start = profile::profile_now(profile_enabled);
@@ -1614,9 +1787,16 @@ fn encode_impl(
         .collect();
     let cb_width = 1u32 << (options.code_block_width_exp + 2);
     let cb_height = 1u32 << (options.code_block_height_exp + 2);
+    let precinct_exponents = precinct_exponents_for_options(options, num_levels)?;
     let params = EncodeParams {
         width,
         height,
+        tile_width: options
+            .tile_size
+            .map_or(width, |(tile_width, _)| tile_width),
+        tile_height: options
+            .tile_size
+            .map_or(height, |(_, tile_height)| tile_height),
         num_components,
         bit_depth,
         signed,
@@ -1624,17 +1804,26 @@ fn encode_impl(
         reversible: options.reversible,
         code_block_width_exp: options.code_block_width_exp,
         code_block_height_exp: options.code_block_height_exp,
-        num_layers: 1,
+        num_layers: options.num_layers,
         use_mct,
         guard_bits,
         block_coding_mode,
         progression_order: options.progression_order,
         write_tlm: options.write_tlm,
+        write_plt: options.write_plt,
+        write_plm: options.write_plm,
+        write_sop: options.write_sop,
+        write_eph: options.write_eph,
+        terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
+            && options.num_layers > 1,
         component_sampling,
+        precinct_exponents,
     };
 
     let stage_start = profile::profile_now(profile_enabled);
-    if block_coding_mode == BlockCodingMode::HighThroughput {
+    if block_coding_mode == BlockCodingMode::HighThroughput
+        && !(params.write_plt || params.write_plm || params.write_sop || params.write_eph)
+    {
         if let Some(tile_data) = accelerator.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
             pixels,
             width,
@@ -1714,7 +1903,7 @@ fn encode_impl(
                 accelerator,
             )
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, &'static str>>()?;
     let dwt_us = profile::elapsed_us(stage_start);
 
     // Step 5: Quantize and encode code-blocks for each component
@@ -1722,7 +1911,12 @@ fn encode_impl(
         Vec::with_capacity(num_components as usize);
 
     let stage_start = profile::profile_now(profile_enabled);
-    for decomp in decompositions.iter().take(num_components as usize) {
+    for (component_idx, decomp) in decompositions
+        .iter()
+        .take(num_components as usize)
+        .enumerate()
+    {
+        let component = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
         let mut packets = Vec::with_capacity(num_levels as usize + 1);
 
         // LL subband (resolution 0)
@@ -1741,6 +1935,9 @@ fn encode_impl(
             accelerator,
         )?;
         packets.push(PreparedResolutionPacket {
+            component,
+            resolution: 0,
+            precinct: 0,
             subbands: vec![ll_subband],
         });
 
@@ -1797,6 +1994,10 @@ fn encode_impl(
             )?;
 
             packets.push(PreparedResolutionPacket {
+                component,
+                resolution: u32::try_from(level_idx + 1)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
                 subbands: vec![hl_subband, lh_subband, hh_subband],
             });
         }
@@ -1805,38 +2006,85 @@ fn encode_impl(
     }
     let subband_prepare_us = profile::elapsed_us(stage_start);
 
+    let component_resolution_packets = split_component_resolution_packets_by_precinct(
+        component_resolution_packets,
+        width,
+        height,
+        num_levels,
+        &params.precinct_exponents,
+    )?;
     let prepared_resolution_packets =
         ordered_prepared_resolution_packets(component_resolution_packets, options)?;
     let stage_start = profile::profile_now(profile_enabled);
-    let resolution_packets =
-        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+    let (resolution_packets, packet_descriptors, allow_packetization_accelerator) =
+        if options.num_layers > 1 {
+            let (resolution_packets, packet_descriptors) =
+                encode_prepared_resolution_packets_layered(
+                    prepared_resolution_packets,
+                    options.num_layers,
+                    options.progression_order,
+                    &options.quality_layer_byte_targets,
+                    accelerator,
+                )?;
+            (resolution_packets, packet_descriptors, false)
+        } else {
+            let packet_descriptors = packet_descriptors_for_order(
+                &prepared_resolution_packets,
+                1,
+                options.progression_order,
+            )?;
+            let resolution_packets =
+                encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+            (resolution_packets, packet_descriptors, true)
+        };
     let block_encode_us = profile::elapsed_us(stage_start);
 
     // Step 6: Form tile bitstream (T2)
     let stage_start = profile::profile_now(profile_enabled);
     let mut resolution_packets = resolution_packets;
     let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
-    let packet_descriptors =
-        packet_descriptors_for_order(resolution_packets.len(), 1, num_components)?;
+    let scalar_packet_descriptors = scalar_packet_descriptors(&packet_descriptors);
     let packetization_job = J2kPacketizationEncodeJob {
         resolution_count: resolution_packets.len() as u32,
-        num_layers: 1,
+        num_layers: options.num_layers,
         num_components,
         code_block_count: count_code_blocks(&resolution_packets)?,
         progression_order: public_packetization_progression_order(options.progression_order),
         packet_descriptors: &packet_descriptors,
         resolutions: &packetization_resolutions,
     };
-    let tile_data = accelerator
-        .encode_packetization(packetization_job)?
-        .unwrap_or_else(|| {
-            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
-        });
+    let needs_scalar_packetization =
+        params.write_plt || params.write_plm || params.write_sop || params.write_eph;
+    let accelerated_tile_data = if allow_packetization_accelerator && !needs_scalar_packetization {
+        accelerator.encode_packetization(packetization_job)?
+    } else {
+        None
+    };
+    let packetized_tile = if let Some(data) = accelerated_tile_data {
+        packet_encode::PacketizedTileData {
+            data,
+            packet_lengths: Vec::new(),
+        }
+    } else {
+        packet_encode::form_tile_bitstream_with_descriptors_lengths_and_markers(
+            &mut resolution_packets,
+            &scalar_packet_descriptors,
+            packet_encode::PacketMarkerOptions {
+                write_sop: params.write_sop,
+                write_eph: params.write_eph,
+            },
+        )?
+    };
     let packetize_us = profile::elapsed_us(stage_start);
 
     // Step 7: Write codestream
     let stage_start = profile::profile_now(profile_enabled);
-    let codestream = codestream_write::write_codestream(&params, &tile_data, &quant_params);
+    let codestream = codestream_write::write_codestream_with_packet_lengths(
+        &params,
+        &packetized_tile.data,
+        &quant_params,
+        &packetized_tile.packet_lengths,
+    );
     let codestream_us = profile::elapsed_us(stage_start);
 
     if profile_enabled {
@@ -1857,6 +2105,271 @@ fn encode_impl(
     }
 
     Ok(codestream)
+}
+
+fn encode_multitile_impl(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    num_components: u8,
+    bit_depth: u8,
+    signed: bool,
+    options: &EncodeOptions,
+    block_coding_mode: BlockCodingMode,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+    tile_width: u32,
+    tile_height: u32,
+) -> Result<Vec<u8>, &'static str> {
+    let num_x_tiles = width.div_ceil(tile_width);
+    let num_y_tiles = height.div_ceil(tile_height);
+    let num_tiles = num_x_tiles
+        .checked_mul(num_y_tiles)
+        .ok_or("tile count overflow")?;
+    if num_tiles > u32::from(u16::MAX) + 1 {
+        return Err("multi-tile encode supports at most 65536 tiles");
+    }
+
+    let min_tile_width = if width.is_multiple_of(tile_width) {
+        tile_width
+    } else {
+        width % tile_width
+    };
+    let min_tile_height = if height.is_multiple_of(tile_height) {
+        tile_height
+    } else {
+        height % tile_height
+    };
+    let num_levels = options
+        .num_decomposition_levels
+        .min(max_decomposition_levels(min_tile_width, min_tile_height));
+    let use_mct = options.use_mct && num_components >= 3;
+    let guard_bits = if options.reversible {
+        if use_mct {
+            options.guard_bits.max(2)
+        } else {
+            options.guard_bits
+        }
+    } else {
+        options.guard_bits.max(2)
+    };
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        bit_depth,
+        num_levels,
+        options.reversible,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+
+    let mut child_options = options.clone();
+    child_options.num_decomposition_levels = num_levels;
+    child_options.tile_size = None;
+    child_options.write_tlm = false;
+    child_options.write_plt = options.write_plt || options.write_plm;
+    child_options.write_plm = false;
+
+    struct EncodedTilePart {
+        data: Vec<u8>,
+        packet_lengths: Vec<u32>,
+    }
+
+    let mut tile_bodies = Vec::with_capacity(num_tiles as usize);
+    for tile_y in 0..num_y_tiles {
+        for tile_x in 0..num_x_tiles {
+            let x0 = tile_x * tile_width;
+            let y0 = tile_y * tile_height;
+            let actual_width = (width - x0).min(tile_width);
+            let actual_height = (height - y0).min(tile_height);
+            let tile_pixels = extract_interleaved_tile(
+                pixels,
+                width,
+                x0,
+                y0,
+                actual_width,
+                actual_height,
+                num_components,
+                bit_depth,
+            )?;
+            let tile_codestream = encode_impl(
+                &tile_pixels,
+                actual_width,
+                actual_height,
+                num_components,
+                bit_depth,
+                signed,
+                &child_options,
+                block_coding_mode,
+                accelerator,
+            )?;
+            let packet_lengths = if options.write_plt || options.write_plm {
+                extract_single_tile_plt_packet_lengths(&tile_codestream)?
+            } else {
+                Vec::new()
+            };
+            tile_bodies.push(EncodedTilePart {
+                data: extract_single_tile_body(&tile_codestream)?.to_vec(),
+                packet_lengths,
+            });
+        }
+    }
+
+    let component_sampling = component_sampling_for_options(options, num_components)?;
+    let precinct_exponents = precinct_exponents_for_options(options, num_levels)?;
+    let params = EncodeParams {
+        width,
+        height,
+        tile_width,
+        tile_height,
+        num_components,
+        bit_depth,
+        signed,
+        num_decomposition_levels: num_levels,
+        reversible: options.reversible,
+        code_block_width_exp: options.code_block_width_exp,
+        code_block_height_exp: options.code_block_height_exp,
+        num_layers: options.num_layers,
+        use_mct,
+        guard_bits,
+        block_coding_mode,
+        progression_order: options.progression_order,
+        write_tlm: options.write_tlm,
+        write_plt: options.write_plt,
+        write_plm: options.write_plm,
+        write_sop: options.write_sop,
+        write_eph: options.write_eph,
+        terminate_coding_passes: block_coding_mode == BlockCodingMode::Classic
+            && options.num_layers > 1,
+        component_sampling,
+        precinct_exponents,
+    };
+    let tile_parts = tile_bodies
+        .iter()
+        .enumerate()
+        .map(|(tile_index, tile)| {
+            Ok(codestream_write::TilePartData {
+                tile_index: u16::try_from(tile_index).map_err(|_| "tile index exceeds u16")?,
+                data: &tile.data,
+                packet_lengths: &tile.packet_lengths,
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+
+    Ok(codestream_write::write_codestream_tiles(
+        &params,
+        &tile_parts,
+        &quant_params,
+    ))
+}
+
+fn extract_interleaved_tile(
+    pixels: &[u8],
+    image_width: u32,
+    x0: u32,
+    y0: u32,
+    tile_width: u32,
+    tile_height: u32,
+    num_components: u8,
+    bit_depth: u8,
+) -> Result<Vec<u8>, &'static str> {
+    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let bytes_per_pixel = usize::from(num_components)
+        .checked_mul(bytes_per_sample)
+        .ok_or("pixel stride overflow")?;
+    let row_bytes = usize::try_from(tile_width)
+        .map_err(|_| "tile width exceeds usize")?
+        .checked_mul(bytes_per_pixel)
+        .ok_or("tile row byte count overflow")?;
+    let out_len = row_bytes
+        .checked_mul(usize::try_from(tile_height).map_err(|_| "tile height exceeds usize")?)
+        .ok_or("tile byte count overflow")?;
+    let mut tile = Vec::with_capacity(out_len);
+    let image_row_bytes = usize::try_from(image_width)
+        .map_err(|_| "image width exceeds usize")?
+        .checked_mul(bytes_per_pixel)
+        .ok_or("image row byte count overflow")?;
+    let x_byte_offset = usize::try_from(x0)
+        .map_err(|_| "tile x offset exceeds usize")?
+        .checked_mul(bytes_per_pixel)
+        .ok_or("tile x byte offset overflow")?;
+
+    for y in y0..y0 + tile_height {
+        let row_start = usize::try_from(y)
+            .map_err(|_| "tile y offset exceeds usize")?
+            .checked_mul(image_row_bytes)
+            .and_then(|offset| offset.checked_add(x_byte_offset))
+            .ok_or("tile row offset overflow")?;
+        let row_end = row_start
+            .checked_add(row_bytes)
+            .ok_or("tile row range overflow")?;
+        tile.extend_from_slice(
+            pixels
+                .get(row_start..row_end)
+                .ok_or("tile row range outside source pixels")?,
+        );
+    }
+
+    Ok(tile)
+}
+
+fn extract_single_tile_body(codestream: &[u8]) -> Result<&[u8], &'static str> {
+    let sod = codestream
+        .windows(2)
+        .position(|marker| marker == [0xFF, super::codestream::markers::SOD])
+        .ok_or("encoded tile codestream missing SOD")?;
+    let eoc = codestream
+        .windows(2)
+        .rposition(|marker| marker == [0xFF, super::codestream::markers::EOC])
+        .ok_or("encoded tile codestream missing EOC")?;
+    if eoc < sod + 2 {
+        return Err("encoded tile codestream marker order invalid");
+    }
+    Ok(&codestream[sod + 2..eoc])
+}
+
+fn extract_single_tile_plt_packet_lengths(codestream: &[u8]) -> Result<Vec<u32>, &'static str> {
+    let sod = codestream
+        .windows(2)
+        .position(|marker| marker == [0xFF, super::codestream::markers::SOD])
+        .ok_or("encoded tile codestream missing SOD")?;
+    let mut packet_lengths = Vec::new();
+    let mut offset = 0usize;
+
+    while offset + 4 <= sod {
+        if codestream[offset] == 0xFF && codestream[offset + 1] == super::codestream::markers::PLT {
+            let marker_len =
+                u16::from_be_bytes([codestream[offset + 2], codestream[offset + 3]]) as usize;
+            if marker_len < 3 {
+                return Err("encoded tile codestream has invalid PLT length");
+            }
+            let marker_end = offset
+                .checked_add(2)
+                .and_then(|value| value.checked_add(marker_len))
+                .ok_or("encoded tile codestream PLT length overflow")?;
+            if marker_end > sod {
+                return Err("encoded tile codestream PLT extends past SOD");
+            }
+            let length_bytes = codestream
+                .get(offset + 5..marker_end)
+                .ok_or("encoded tile codestream PLT payload out of range")?;
+            packet_lengths.extend(
+                super::codestream::decode_packet_lengths(length_bytes)
+                    .ok_or("encoded tile codestream has invalid PLT packet lengths")?,
+            );
+            offset = marker_end;
+        } else {
+            offset += 1;
+        }
+    }
+
+    if packet_lengths.is_empty() {
+        return Err("encoded tile codestream missing PLT packet lengths");
+    }
+
+    Ok(packet_lengths)
 }
 
 fn try_encode_forward_rct(
@@ -2030,6 +2543,45 @@ fn component_sampling_for_options(
     }
 }
 
+fn precinct_exponents_for_options(
+    options: &EncodeOptions,
+    num_decomposition_levels: u8,
+) -> Result<Vec<(u8, u8)>, &'static str> {
+    if options.precinct_exponents.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let expected = usize::from(num_decomposition_levels) + 1;
+    if options.precinct_exponents.len() != expected {
+        return Err("precinct exponent count must match resolution level count");
+    }
+    if options
+        .precinct_exponents
+        .iter()
+        .any(|&(ppx, ppy)| ppx > 15 || ppy > 15)
+    {
+        return Err("precinct exponents must fit in COD marker nybbles");
+    }
+    let code_block_width_exp = options.code_block_width_exp + 2;
+    let code_block_height_exp = options.code_block_height_exp + 2;
+    for (resolution, &(ppx, ppy)) in options.precinct_exponents.iter().enumerate() {
+        let min_ppx = if resolution == 0 {
+            code_block_width_exp
+        } else {
+            code_block_width_exp + 1
+        };
+        let min_ppy = if resolution == 0 {
+            code_block_height_exp
+        } else {
+            code_block_height_exp + 1
+        };
+        if ppx < min_ppx || ppy < min_ppy {
+            return Err("precinct exponents must not reduce encoder code-block dimensions");
+        }
+    }
+    Ok(options.precinct_exponents.clone())
+}
+
 fn count_code_blocks(resolution_packets: &[ResolutionPacket]) -> Result<u32, &'static str> {
     let count = resolution_packets
         .iter()
@@ -2041,31 +2593,287 @@ fn count_code_blocks(resolution_packets: &[ResolutionPacket]) -> Result<u32, &'s
     u32::try_from(count).map_err(|_| "packetization code-block count exceeds u32")
 }
 
+fn split_component_resolution_packets_by_precinct(
+    component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
+    width: u32,
+    height: u32,
+    num_decomposition_levels: u8,
+    precinct_exponents: &[(u8, u8)],
+) -> Result<Vec<Vec<PreparedResolutionPacket>>, &'static str> {
+    if precinct_exponents.is_empty() {
+        return Ok(component_resolution_packets);
+    }
+
+    component_resolution_packets
+        .into_iter()
+        .map(|component_packets| {
+            let mut split_packets = Vec::new();
+            for packet in component_packets {
+                split_packets.extend(split_prepared_resolution_packet_by_precinct(
+                    packet,
+                    width,
+                    height,
+                    num_decomposition_levels,
+                    precinct_exponents,
+                )?);
+            }
+            Ok(split_packets)
+        })
+        .collect()
+}
+
+fn split_prepared_resolution_packet_by_precinct(
+    packet: PreparedResolutionPacket,
+    width: u32,
+    height: u32,
+    num_decomposition_levels: u8,
+    precinct_exponents: &[(u8, u8)],
+) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let resolution =
+        usize::try_from(packet.resolution).map_err(|_| "resolution index exceeds usize")?;
+    let &(ppx, ppy) = precinct_exponents
+        .get(resolution)
+        .ok_or("missing precinct exponents for resolution")?;
+    let (precincts_x, precincts_y) = resolution_precinct_grid(
+        width,
+        height,
+        num_decomposition_levels,
+        packet.resolution,
+        ppx,
+        ppy,
+    )?;
+    let packet_count = (precincts_x as usize)
+        .checked_mul(precincts_y as usize)
+        .ok_or("precinct packet count overflow")?;
+    let component = packet.component;
+    let resolution = packet.resolution;
+    let subbands = packet.subbands;
+    let mut packets = Vec::with_capacity(packet_count);
+
+    for precinct_y in 0..precincts_y {
+        for precinct_x in 0..precincts_x {
+            let precinct = u64::from(precinct_y)
+                .checked_mul(u64::from(precincts_x))
+                .and_then(|value| value.checked_add(u64::from(precinct_x)))
+                .ok_or("precinct index overflow")?;
+            let split_subbands = subbands
+                .iter()
+                .map(|subband| {
+                    split_prepared_subband_by_precinct(
+                        subband, resolution, ppx, ppy, precinct_x, precinct_y,
+                    )
+                })
+                .collect::<Result<Vec<_>, &'static str>>()?;
+            packets.push(PreparedResolutionPacket {
+                component,
+                resolution,
+                precinct,
+                subbands: split_subbands,
+            });
+        }
+    }
+
+    Ok(packets)
+}
+
+fn resolution_precinct_grid(
+    width: u32,
+    height: u32,
+    num_decomposition_levels: u8,
+    resolution: u32,
+    ppx: u8,
+    ppy: u8,
+) -> Result<(u32, u32), &'static str> {
+    let resolution_shift = u32::from(num_decomposition_levels)
+        .checked_sub(resolution)
+        .ok_or("resolution exceeds decomposition level count")?;
+    let resolution_scale = pow2_u32(resolution_shift)?;
+    let resolution_width = width.div_ceil(resolution_scale);
+    let resolution_height = height.div_ceil(resolution_scale);
+    let precinct_width = pow2_u32(u32::from(ppx))?;
+    let precinct_height = pow2_u32(u32::from(ppy))?;
+
+    Ok((
+        if resolution_width == 0 {
+            0
+        } else {
+            resolution_width.div_ceil(precinct_width)
+        },
+        if resolution_height == 0 {
+            0
+        } else {
+            resolution_height.div_ceil(precinct_height)
+        },
+    ))
+}
+
+fn split_prepared_subband_by_precinct(
+    subband: &PreparedEncodeSubband,
+    resolution: u32,
+    ppx: u8,
+    ppy: u8,
+    precinct_x: u32,
+    precinct_y: u32,
+) -> Result<PreparedEncodeSubband, &'static str> {
+    if subband.code_blocks.is_empty() || subband.width == 0 || subband.height == 0 {
+        return Ok(empty_prepared_subband_precinct(subband));
+    }
+
+    let subband_ppx = if resolution > 0 {
+        ppx.checked_sub(1)
+            .ok_or("nonzero resolution precinct exponent underflow")?
+    } else {
+        ppx
+    };
+    let subband_ppy = if resolution > 0 {
+        ppy.checked_sub(1)
+            .ok_or("nonzero resolution precinct exponent underflow")?
+    } else {
+        ppy
+    };
+    let precinct_width = pow2_u32(u32::from(subband_ppx))?;
+    let precinct_height = pow2_u32(u32::from(subband_ppy))?;
+    let precinct_x0 = precinct_x
+        .checked_mul(precinct_width)
+        .ok_or("precinct x coordinate overflow")?;
+    let precinct_y0 = precinct_y
+        .checked_mul(precinct_height)
+        .ok_or("precinct y coordinate overflow")?;
+    let x0 = precinct_x0.min(subband.width);
+    let y0 = precinct_y0.min(subband.height);
+    let x1 = precinct_x0
+        .checked_add(precinct_width)
+        .ok_or("precinct x extent overflow")?
+        .min(subband.width);
+    let y1 = precinct_y0
+        .checked_add(precinct_height)
+        .ok_or("precinct y extent overflow")?
+        .min(subband.height);
+
+    if x0 >= x1 || y0 >= y1 {
+        return Ok(empty_prepared_subband_precinct(subband));
+    }
+
+    let cb_width = subband.code_block_width;
+    let cb_height = subband.code_block_height;
+    if cb_width == 0 || cb_height == 0 {
+        return Ok(empty_prepared_subband_precinct(subband));
+    }
+
+    let cb_x0 = (x0 / cb_width) * cb_width;
+    let cb_y0 = (y0 / cb_height) * cb_height;
+    let cb_x1 = x1.div_ceil(cb_width) * cb_width;
+    let cb_y1 = y1.div_ceil(cb_height) * cb_height;
+    let cbx_start = cb_x0 / cb_width;
+    let cby_start = cb_y0 / cb_height;
+    let cbx_end = cb_x1 / cb_width;
+    let cby_end = cb_y1 / cb_height;
+    let num_cbs_x = cbx_end.saturating_sub(cbx_start);
+    let num_cbs_y = cby_end.saturating_sub(cby_start);
+    let mut indices = Vec::with_capacity((num_cbs_x as usize).saturating_mul(num_cbs_y as usize));
+
+    for cby in cby_start..cby_end {
+        for cbx in cbx_start..cbx_end {
+            let index = cby
+                .checked_mul(subband.num_cbs_x)
+                .and_then(|value| value.checked_add(cbx))
+                .ok_or("precinct code-block index overflow")?;
+            indices.push(usize::try_from(index).map_err(|_| "code-block index exceeds usize")?);
+        }
+    }
+
+    let code_blocks = indices
+        .iter()
+        .map(|&idx| {
+            subband
+                .code_blocks
+                .get(idx)
+                .cloned()
+                .ok_or("precinct code-block index out of range")
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let preencoded_ht_code_blocks = subband
+        .preencoded_ht_code_blocks
+        .as_ref()
+        .map(|blocks| {
+            indices
+                .iter()
+                .map(|&idx| {
+                    blocks
+                        .get(idx)
+                        .cloned()
+                        .ok_or("precinct preencoded code-block index out of range")
+                })
+                .collect::<Result<Vec<_>, &'static str>>()
+        })
+        .transpose()?;
+
+    Ok(PreparedEncodeSubband {
+        code_blocks,
+        preencoded_ht_code_blocks,
+        num_cbs_x,
+        num_cbs_y,
+        code_block_width: cb_width,
+        code_block_height: cb_height,
+        width: x1 - x0,
+        height: y1 - y0,
+        sub_band_type: subband.sub_band_type,
+        total_bitplanes: subband.total_bitplanes,
+        block_coding_mode: subband.block_coding_mode,
+    })
+}
+
+fn empty_prepared_subband_precinct(subband: &PreparedEncodeSubband) -> PreparedEncodeSubband {
+    PreparedEncodeSubband {
+        code_blocks: Vec::new(),
+        preencoded_ht_code_blocks: subband
+            .preencoded_ht_code_blocks
+            .as_ref()
+            .map(|_| Vec::new()),
+        num_cbs_x: 0,
+        num_cbs_y: 0,
+        code_block_width: subband.code_block_width,
+        code_block_height: subband.code_block_height,
+        width: 0,
+        height: 0,
+        sub_band_type: subband.sub_band_type,
+        total_bitplanes: subband.total_bitplanes,
+        block_coding_mode: subband.block_coding_mode,
+    }
+}
+
+fn pow2_u32(exponent: u32) -> Result<u32, &'static str> {
+    1_u32
+        .checked_shl(exponent)
+        .ok_or("precinct exponent exceeds u32 shift width")
+}
+
 fn packet_descriptors_for_order(
-    packet_count: usize,
+    packets: &[PreparedResolutionPacket],
     num_layers: u8,
-    num_components: u8,
+    progression_order: EncodeProgressionOrder,
 ) -> Result<Vec<J2kPacketizationPacketDescriptor>, &'static str> {
     if num_layers != 1 {
         return Err("encode currently prepares one packet contribution layer");
     }
-    let component_count = usize::from(num_components).max(1);
-    (0..packet_count)
-        .map(|packet_index| {
+    let mut descriptors = packets
+        .iter()
+        .enumerate()
+        .map(|(packet_index, packet)| {
             Ok(J2kPacketizationPacketDescriptor {
                 packet_index: u32::try_from(packet_index)
                     .map_err(|_| "packet descriptor index exceeds u32")?,
                 state_index: u32::try_from(packet_index)
                     .map_err(|_| "packet descriptor state index exceeds u32")?,
                 layer: 0,
-                resolution: u32::try_from(packet_index / component_count)
-                    .map_err(|_| "packet descriptor resolution exceeds u32")?,
-                component: u8::try_from(packet_index % component_count)
-                    .map_err(|_| "packet descriptor component exceeds u8")?,
-                precinct: 0,
+                resolution: packet.resolution,
+                component: packet.component,
+                precinct: packet.precinct,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    sort_packet_descriptors_for_progression(&mut descriptors, progression_order);
+    Ok(descriptors)
 }
 
 fn ordered_prepared_resolution_packets(
@@ -2073,8 +2881,13 @@ fn ordered_prepared_resolution_packets(
     options: &EncodeOptions,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
     match options.progression_order {
-        EncodeProgressionOrder::Lrcp | EncodeProgressionOrder::Rpcl => {
+        EncodeProgressionOrder::Lrcp
+        | EncodeProgressionOrder::Rlcp
+        | EncodeProgressionOrder::Rpcl => {
             lrcp_ordered_prepared_resolution_packets(component_resolution_packets)
+        }
+        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
+            component_ordered_prepared_resolution_packets(component_resolution_packets)
         }
     }
 }
@@ -2112,13 +2925,51 @@ fn lrcp_ordered_prepared_resolution_packets(
     Ok(resolution_packets)
 }
 
+fn component_ordered_prepared_resolution_packets(
+    component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
+) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let resolution_count = component_resolution_packets
+        .first()
+        .map_or(0usize, alloc::vec::Vec::len);
+    let mut resolution_packets =
+        Vec::with_capacity(resolution_count.saturating_mul(component_resolution_packets.len()));
+
+    for component in component_resolution_packets {
+        if component.len() != resolution_count {
+            return Err("component packet resolution count mismatch");
+        }
+        resolution_packets.extend(component);
+    }
+
+    Ok(resolution_packets)
+}
+
 fn public_packetization_progression_order(
     progression_order: EncodeProgressionOrder,
 ) -> crate::J2kPacketizationProgressionOrder {
     match progression_order {
         EncodeProgressionOrder::Lrcp => crate::J2kPacketizationProgressionOrder::Lrcp,
+        EncodeProgressionOrder::Rlcp => crate::J2kPacketizationProgressionOrder::Rlcp,
         EncodeProgressionOrder::Rpcl => crate::J2kPacketizationProgressionOrder::Rpcl,
+        EncodeProgressionOrder::Pcrl => crate::J2kPacketizationProgressionOrder::Pcrl,
+        EncodeProgressionOrder::Cprl => crate::J2kPacketizationProgressionOrder::Cprl,
     }
+}
+
+fn scalar_packet_descriptors(
+    descriptors: &[J2kPacketizationPacketDescriptor],
+) -> Vec<packet_encode::PacketDescriptor> {
+    descriptors
+        .iter()
+        .map(|descriptor| packet_encode::PacketDescriptor {
+            packet_index: descriptor.packet_index,
+            state_index: descriptor.state_index,
+            layer: descriptor.layer,
+            resolution: descriptor.resolution,
+            component: descriptor.component,
+            precinct: descriptor.precinct,
+        })
+        .collect()
 }
 
 fn public_packetization_resolutions(
@@ -2164,23 +3015,32 @@ fn public_packetization_block_coding_mode(
     }
 }
 
+#[derive(Clone)]
 struct PreparedEncodeCodeBlock {
     coefficients: Vec<i32>,
     width: u32,
     height: u32,
 }
 
+#[derive(Clone)]
 struct PreparedEncodeSubband {
     code_blocks: Vec<PreparedEncodeCodeBlock>,
     preencoded_ht_code_blocks: Option<Vec<EncodedHtJ2kCodeBlock>>,
     num_cbs_x: u32,
     num_cbs_y: u32,
+    code_block_width: u32,
+    code_block_height: u32,
+    width: u32,
+    height: u32,
     sub_band_type: SubBandType,
     total_bitplanes: u8,
     block_coding_mode: BlockCodingMode,
 }
 
 struct PreparedResolutionPacket {
+    component: u8,
+    resolution: u32,
+    precinct: u64,
     subbands: Vec<PreparedEncodeSubband>,
 }
 
@@ -2226,6 +3086,10 @@ fn prepare_subband(
             preencoded_ht_code_blocks: None,
             num_cbs_x: 0,
             num_cbs_y: 0,
+            code_block_width: cb_width,
+            code_block_height: cb_height,
+            width,
+            height,
             sub_band_type,
             total_bitplanes: 0,
             block_coding_mode,
@@ -2264,6 +3128,10 @@ fn prepare_subband(
                 preencoded_ht_code_blocks: Some(encoded),
                 num_cbs_x,
                 num_cbs_y,
+                code_block_width: cb_width,
+                code_block_height: cb_height,
+                width,
+                height,
                 sub_band_type,
                 total_bitplanes,
                 block_coding_mode,
@@ -2321,6 +3189,10 @@ fn prepare_subband(
         preencoded_ht_code_blocks: None,
         num_cbs_x,
         num_cbs_y,
+        code_block_width: cb_width,
+        code_block_height: cb_height,
+        width,
+        height,
         sub_band_type,
         total_bitplanes,
         block_coding_mode,
@@ -2396,6 +3268,742 @@ fn encode_prepared_resolution_packets(
         .collect()
 }
 
+fn encode_prepared_resolution_packets_layered(
+    prepared_packets: Vec<PreparedResolutionPacket>,
+    num_layers: u8,
+    progression_order: EncodeProgressionOrder,
+    quality_layer_byte_targets: &[u64],
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<(Vec<ResolutionPacket>, Vec<J2kPacketizationPacketDescriptor>), &'static str> {
+    let layer_count = usize::from(num_layers);
+    let mut layered_packets = Vec::with_capacity(prepared_packets.len());
+    let mut classic_candidates = Vec::new();
+    let mut classic_locations = Vec::new();
+    let mut classic_block_index = 0usize;
+    let mut ht_candidates = Vec::new();
+    let mut ht_locations = Vec::new();
+    let mut ht_block_index = 0usize;
+
+    for prepared_packet in prepared_packets {
+        let packet_idx = layered_packets.len();
+        let mut layered_packet = LayeredPreparedPacket {
+            component: prepared_packet.component,
+            resolution: prepared_packet.resolution,
+            precinct: prepared_packet.precinct,
+            subbands: Vec::with_capacity(prepared_packet.subbands.len()),
+        };
+
+        for subband in prepared_packet.subbands {
+            let subband_idx = layered_packet.subbands.len();
+            let mut layered_subband = LayeredPreparedSubband {
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+                blocks: Vec::with_capacity(subband.code_blocks.len()),
+            };
+
+            match subband.block_coding_mode {
+                BlockCodingMode::Classic => {
+                    for block in subband.code_blocks {
+                        let block_idx = layered_subband.blocks.len();
+                        let encoded = bitplane_encode::encode_code_block_segments_with_style(
+                            &block.coefficients,
+                            block.width,
+                            block.height,
+                            subband.sub_band_type,
+                            subband.total_bitplanes,
+                            &classic_multilayer_code_block_style(),
+                        );
+                        let segment_layers = if quality_layer_byte_targets.is_empty() {
+                            classic_unbudgeted_segment_layers(&encoded, num_layers)?
+                        } else {
+                            for (segment_idx, segment) in encoded.segments.iter().enumerate() {
+                                classic_candidates.push(ClassicSegmentAssignmentCandidate {
+                                    block_index: classic_block_index,
+                                    segment_index: segment_idx,
+                                    rate: u64::from(segment.data_length),
+                                    distortion_delta: segment.distortion_delta,
+                                });
+                                classic_locations.push(ClassicSegmentLocation {
+                                    packet_idx,
+                                    subband_idx,
+                                    block_idx,
+                                    segment_idx,
+                                });
+                            }
+                            vec![layer_count.saturating_sub(1); encoded.segments.len()]
+                        };
+                        layered_subband.blocks.push(LayeredPreparedBlock::Classic {
+                            encoded,
+                            segment_layers,
+                        });
+                        classic_block_index = classic_block_index
+                            .checked_add(1)
+                            .ok_or("classic PCRD block index overflow")?;
+                    }
+                }
+                BlockCodingMode::HighThroughput => {
+                    let encoded_blocks =
+                        encode_all_ht_code_blocks(core::slice::from_ref(&subband), accelerator)?;
+                    let block_count = encoded_blocks.len();
+                    for (block_idx, encoded) in encoded_blocks.into_iter().enumerate() {
+                        let target_layer = if quality_layer_byte_targets.is_empty() {
+                            ht_target_layer(block_idx, block_count, layer_count)?
+                        } else {
+                            ht_candidates.push(HtSegmentAssignmentCandidate {
+                                block_index: ht_block_index,
+                                rate: u64::try_from(encoded.data.len())
+                                    .map_err(|_| "HTJ2K packet contribution length exceeds u64")?,
+                            });
+                            ht_locations.push(HtSegmentLocation {
+                                packet_idx,
+                                subband_idx,
+                                block_idx: layered_subband.blocks.len(),
+                            });
+                            layer_count.saturating_sub(1)
+                        };
+                        layered_subband
+                            .blocks
+                            .push(LayeredPreparedBlock::HighThroughput {
+                                encoded,
+                                target_layer,
+                            });
+                        ht_block_index = ht_block_index
+                            .checked_add(1)
+                            .ok_or("HTJ2K segment block index overflow")?;
+                    }
+                }
+            }
+
+            layered_packet.subbands.push(layered_subband);
+        }
+
+        layered_packets.push(layered_packet);
+    }
+
+    if !quality_layer_byte_targets.is_empty() {
+        let assignments = assign_classic_segment_layers_by_slope(
+            &classic_candidates,
+            layer_count,
+            quality_layer_byte_targets,
+        )?;
+        for (assignment_idx, layer) in assignments.into_iter().enumerate() {
+            let location = classic_locations
+                .get(assignment_idx)
+                .ok_or("classic PCRD assignment location mismatch")?;
+            let LayeredPreparedBlock::Classic { segment_layers, .. } = &mut layered_packets
+                .get_mut(location.packet_idx)
+                .ok_or("classic PCRD packet index mismatch")?
+                .subbands
+                .get_mut(location.subband_idx)
+                .ok_or("classic PCRD subband index mismatch")?
+                .blocks
+                .get_mut(location.block_idx)
+                .ok_or("classic PCRD block index mismatch")?
+            else {
+                return Err("classic PCRD assignment referenced HT block");
+            };
+            let segment_layer = segment_layers
+                .get_mut(location.segment_idx)
+                .ok_or("classic PCRD segment index mismatch")?;
+            *segment_layer = layer;
+        }
+        enforce_classic_segment_layer_monotonicity(&mut layered_packets);
+    }
+    if !quality_layer_byte_targets.is_empty() {
+        let assignments = assign_ht_segment_layers_by_budget(
+            &ht_candidates,
+            layer_count,
+            quality_layer_byte_targets,
+        )?;
+        for (assignment_idx, layer) in assignments.into_iter().enumerate() {
+            let location = ht_locations
+                .get(assignment_idx)
+                .ok_or("HTJ2K segment assignment location mismatch")?;
+            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = &mut layered_packets
+                .get_mut(location.packet_idx)
+                .ok_or("HTJ2K packet index mismatch")?
+                .subbands
+                .get_mut(location.subband_idx)
+                .ok_or("HTJ2K subband index mismatch")?
+                .blocks
+                .get_mut(location.block_idx)
+                .ok_or("HTJ2K block index mismatch")?
+            else {
+                return Err("HTJ2K segment assignment referenced classic block");
+            };
+            *target_layer = layer;
+        }
+    }
+
+    let mut resolution_packets = Vec::with_capacity(layered_packets.len() * layer_count);
+    let mut descriptors = Vec::with_capacity(layered_packets.len() * layer_count);
+    for (state_index, layered_packet) in layered_packets.into_iter().enumerate() {
+        let mut layer_packets: Vec<_> = (0..layer_count)
+            .map(|_| ResolutionPacket {
+                subbands: Vec::with_capacity(layered_packet.subbands.len()),
+            })
+            .collect();
+
+        for subband in layered_packet.subbands {
+            let mut layer_subbands: Vec<_> = (0..layer_count)
+                .map(|_| SubbandPrecinct {
+                    code_blocks: Vec::with_capacity(subband.blocks.len()),
+                    num_cbs_x: subband.num_cbs_x,
+                    num_cbs_y: subband.num_cbs_y,
+                })
+                .collect();
+
+            for block in subband.blocks {
+                let contributions = match block {
+                    LayeredPreparedBlock::Classic {
+                        encoded,
+                        segment_layers,
+                    } => classic_layer_contributions(encoded, num_layers, &segment_layers)?,
+                    LayeredPreparedBlock::HighThroughput {
+                        encoded,
+                        target_layer,
+                    } => ht_layer_contributions(encoded, num_layers, target_layer)?,
+                };
+                for (layer_idx, contribution) in contributions.into_iter().enumerate() {
+                    layer_subbands[layer_idx].code_blocks.push(contribution);
+                }
+            }
+
+            for (layer_packet, layer_subband) in layer_packets.iter_mut().zip(layer_subbands) {
+                layer_packet.subbands.push(layer_subband);
+            }
+        }
+
+        let state_index =
+            u32::try_from(state_index).map_err(|_| "packet descriptor state index exceeds u32")?;
+        for (layer_idx, layer_packet) in layer_packets.into_iter().enumerate() {
+            let packet_index = u32::try_from(resolution_packets.len())
+                .map_err(|_| "packet descriptor index exceeds u32")?;
+            resolution_packets.push(layer_packet);
+            descriptors.push(J2kPacketizationPacketDescriptor {
+                packet_index,
+                state_index,
+                layer: u8::try_from(layer_idx).map_err(|_| "quality layer index exceeds u8")?,
+                resolution: layered_packet.resolution,
+                component: layered_packet.component,
+                precinct: layered_packet.precinct,
+            });
+        }
+    }
+
+    sort_packet_descriptors_for_progression(&mut descriptors, progression_order);
+
+    Ok((resolution_packets, descriptors))
+}
+
+fn sort_packet_descriptors_for_progression(
+    descriptors: &mut [J2kPacketizationPacketDescriptor],
+    progression_order: EncodeProgressionOrder,
+) {
+    match progression_order {
+        EncodeProgressionOrder::Lrcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.layer,
+                descriptor.resolution,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        EncodeProgressionOrder::Rlcp => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.layer,
+                descriptor.component,
+                descriptor.precinct,
+            )
+        }),
+        EncodeProgressionOrder::Rpcl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.resolution,
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.layer,
+            )
+        }),
+        EncodeProgressionOrder::Pcrl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.precinct,
+                descriptor.component,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+        EncodeProgressionOrder::Cprl => descriptors.sort_by_key(|descriptor| {
+            (
+                descriptor.component,
+                descriptor.precinct,
+                descriptor.resolution,
+                descriptor.layer,
+            )
+        }),
+    }
+}
+
+fn classic_multilayer_code_block_style() -> CodeBlockStyle {
+    CodeBlockStyle {
+        termination_on_each_pass: true,
+        ..CodeBlockStyle::default()
+    }
+}
+
+struct LayeredPreparedPacket {
+    component: u8,
+    resolution: u32,
+    precinct: u64,
+    subbands: Vec<LayeredPreparedSubband>,
+}
+
+struct LayeredPreparedSubband {
+    num_cbs_x: u32,
+    num_cbs_y: u32,
+    blocks: Vec<LayeredPreparedBlock>,
+}
+
+enum LayeredPreparedBlock {
+    Classic {
+        encoded: bitplane_encode::EncodedCodeBlockWithSegments,
+        segment_layers: Vec<usize>,
+    },
+    HighThroughput {
+        encoded: bitplane_encode::EncodedCodeBlock,
+        target_layer: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClassicSegmentAssignmentCandidate {
+    block_index: usize,
+    segment_index: usize,
+    rate: u64,
+    distortion_delta: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClassicSegmentLocation {
+    packet_idx: usize,
+    subband_idx: usize,
+    block_idx: usize,
+    segment_idx: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HtSegmentAssignmentCandidate {
+    block_index: usize,
+    rate: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HtSegmentLocation {
+    packet_idx: usize,
+    subband_idx: usize,
+    block_idx: usize,
+}
+
+struct ClassicLayerBudgetAllocator {
+    cumulative_targets: Vec<u64>,
+    cumulative_used: Vec<u64>,
+}
+
+impl ClassicLayerBudgetAllocator {
+    fn new(cumulative_targets: &[u64], layer_count: usize) -> Result<Self, &'static str> {
+        if cumulative_targets.is_empty() {
+            return Ok(Self {
+                cumulative_targets: Vec::new(),
+                cumulative_used: Vec::new(),
+            });
+        }
+        if cumulative_targets.len() != layer_count {
+            return Err("quality layer byte target count must match quality layer count");
+        }
+        if cumulative_targets.windows(2).any(|pair| pair[0] > pair[1]) {
+            return Err("quality layer byte targets must be cumulative and monotonic");
+        }
+        Ok(Self {
+            cumulative_targets: cumulative_targets
+                .iter()
+                .map(|&target| target.saturating_add(classic_rate_target_tolerance(target)))
+                .collect(),
+            cumulative_used: vec![0; layer_count],
+        })
+    }
+
+    fn is_budgeted(&self) -> bool {
+        !self.cumulative_targets.is_empty()
+    }
+
+    fn assign_segment(
+        &mut self,
+        min_layer: usize,
+        data_length: u64,
+    ) -> Result<usize, &'static str> {
+        if !self.is_budgeted() {
+            return Ok(min_layer);
+        }
+
+        let rate = data_length;
+        let last_layer = self
+            .cumulative_targets
+            .len()
+            .checked_sub(1)
+            .ok_or("quality layer target count underflow")?;
+        for layer_idx in min_layer..last_layer {
+            if self.layer_can_accept(layer_idx, rate)? {
+                self.record_segment(layer_idx, rate)?;
+                return Ok(layer_idx);
+            }
+        }
+        self.record_segment(last_layer, rate)?;
+        Ok(last_layer)
+    }
+
+    fn layer_can_accept(&self, layer_idx: usize, rate: u64) -> Result<bool, &'static str> {
+        for cumulative_idx in layer_idx..self.cumulative_targets.len() {
+            let used = self.cumulative_used[cumulative_idx]
+                .checked_add(rate)
+                .ok_or("quality layer byte budget overflow")?;
+            if used > self.cumulative_targets[cumulative_idx] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn record_segment(&mut self, layer_idx: usize, rate: u64) -> Result<(), &'static str> {
+        for used in &mut self.cumulative_used[layer_idx..] {
+            *used = used
+                .checked_add(rate)
+                .ok_or("quality layer byte budget overflow")?;
+        }
+        Ok(())
+    }
+}
+
+fn classic_rate_target_tolerance(target: u64) -> u64 {
+    (target / 100).max(512)
+}
+
+fn assign_classic_segment_layers_by_slope(
+    candidates: &[ClassicSegmentAssignmentCandidate],
+    layer_count: usize,
+    cumulative_targets: &[u64],
+) -> Result<Vec<usize>, &'static str> {
+    let mut allocator = ClassicLayerBudgetAllocator::new(cumulative_targets, layer_count)?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let block_count = candidates
+        .iter()
+        .map(|candidate| candidate.block_index)
+        .max()
+        .and_then(|max| max.checked_add(1))
+        .ok_or("classic PCRD block count overflow")?;
+    let mut block_candidates = vec![Vec::new(); block_count];
+    for (candidate_idx, candidate) in candidates.iter().enumerate() {
+        block_candidates
+            .get_mut(candidate.block_index)
+            .ok_or("classic PCRD block index mismatch")?
+            .push(candidate_idx);
+    }
+    for block in &mut block_candidates {
+        block.sort_by_key(|&idx| candidates[idx].segment_index);
+    }
+
+    let mut block_min_layers = vec![0usize; block_count];
+    let mut assignments = vec![layer_count.saturating_sub(1); candidates.len()];
+    let mut next_block_segment = vec![0usize; block_count];
+    let mut remaining = candidates.len();
+    while remaining > 0 {
+        let candidate_idx = block_candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(block_idx, block)| block.get(next_block_segment[block_idx]).copied())
+            .min_by(|&left, &right| compare_classic_segment_candidates(candidates, left, right))
+            .ok_or("classic PCRD candidate queue underflow")?;
+        let candidate = candidates[candidate_idx];
+        let min_layer = *block_min_layers
+            .get(candidate.block_index)
+            .ok_or("classic PCRD block index mismatch")?;
+        let layer = allocator.assign_segment(min_layer, candidate.rate)?;
+        assignments[candidate_idx] = layer;
+        if let Some(block_layer) = block_min_layers.get_mut(candidate.block_index) {
+            *block_layer = layer;
+        }
+        if let Some(next) = next_block_segment.get_mut(candidate.block_index) {
+            *next = next
+                .checked_add(1)
+                .ok_or("classic PCRD segment index overflow")?;
+        }
+        remaining -= 1;
+    }
+
+    enforce_classic_assignment_monotonicity(candidates, &mut assignments);
+    Ok(assignments)
+}
+
+fn compare_classic_segment_candidates(
+    candidates: &[ClassicSegmentAssignmentCandidate],
+    left: usize,
+    right: usize,
+) -> Ordering {
+    let left_candidate = candidates[left];
+    let right_candidate = candidates[right];
+    pcrd_slope(right_candidate)
+        .partial_cmp(&pcrd_slope(left_candidate))
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| left_candidate.block_index.cmp(&right_candidate.block_index))
+        .then_with(|| {
+            left_candidate
+                .segment_index
+                .cmp(&right_candidate.segment_index)
+        })
+}
+
+fn pcrd_slope(candidate: ClassicSegmentAssignmentCandidate) -> f64 {
+    if candidate.rate == 0 {
+        return f64::INFINITY;
+    }
+    candidate.distortion_delta / candidate.rate as f64
+}
+
+fn enforce_classic_assignment_monotonicity(
+    candidates: &[ClassicSegmentAssignmentCandidate],
+    assignments: &mut [usize],
+) {
+    let mut order: Vec<_> = (0..candidates.len()).collect();
+    order.sort_by_key(|&idx| (candidates[idx].block_index, candidates[idx].segment_index));
+    let mut current_block = None;
+    let mut min_layer = 0usize;
+    for idx in order {
+        if current_block != Some(candidates[idx].block_index) {
+            current_block = Some(candidates[idx].block_index);
+            min_layer = 0;
+        }
+        if assignments[idx] < min_layer {
+            assignments[idx] = min_layer;
+        }
+        min_layer = assignments[idx];
+    }
+}
+
+fn enforce_classic_segment_layer_monotonicity(layered_packets: &mut [LayeredPreparedPacket]) {
+    for packet in layered_packets {
+        for subband in &mut packet.subbands {
+            for block in &mut subband.blocks {
+                if let LayeredPreparedBlock::Classic { segment_layers, .. } = block {
+                    let mut min_layer = 0usize;
+                    for layer in segment_layers {
+                        if *layer < min_layer {
+                            *layer = min_layer;
+                        }
+                        min_layer = *layer;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assign_ht_segment_layers_by_budget(
+    candidates: &[HtSegmentAssignmentCandidate],
+    layer_count: usize,
+    cumulative_targets: &[u64],
+) -> Result<Vec<usize>, &'static str> {
+    let mut allocator = ClassicLayerBudgetAllocator::new(cumulative_targets, layer_count)?;
+    let mut assignments = vec![layer_count.saturating_sub(1); candidates.len()];
+    let mut candidate_order: Vec<_> = (0..candidates.len()).collect();
+    candidate_order.sort_by_key(|&idx| candidates[idx].block_index);
+
+    for candidate_idx in candidate_order {
+        let candidate = candidates
+            .get(candidate_idx)
+            .ok_or("HTJ2K segment candidate index mismatch")?;
+        assignments[candidate_idx] = allocator.assign_segment(0, candidate.rate)?;
+    }
+
+    Ok(assignments)
+}
+
+fn classic_unbudgeted_segment_layers(
+    encoded: &bitplane_encode::EncodedCodeBlockWithSegments,
+    num_layers: u8,
+) -> Result<Vec<usize>, &'static str> {
+    let mut segment_layers = Vec::with_capacity(encoded.segments.len());
+    for segment in &encoded.segments {
+        let mut assigned = None;
+        for layer_idx in 0..usize::from(num_layers) {
+            let previous_pass =
+                previous_layer_pass_count(encoded.num_coding_passes, layer_idx, num_layers)?;
+            let cumulative_passes = if layer_idx + 1 == usize::from(num_layers) {
+                encoded.num_coding_passes
+            } else {
+                layer_pass_count(encoded.num_coding_passes, layer_idx + 1, num_layers)?
+            };
+            if segment.start_coding_pass >= previous_pass
+                && segment.end_coding_pass <= cumulative_passes
+            {
+                assigned = Some(layer_idx);
+                break;
+            }
+        }
+        segment_layers.push(
+            assigned.ok_or("classic quality layer split must align to terminated coding passes")?,
+        );
+    }
+    Ok(segment_layers)
+}
+
+fn classic_layer_contributions(
+    encoded: bitplane_encode::EncodedCodeBlockWithSegments,
+    num_layers: u8,
+    segment_layers: &[usize],
+) -> Result<Vec<CodeBlockPacketData>, &'static str> {
+    let layer_count = usize::from(num_layers);
+    if segment_layers.len() != encoded.segments.len() {
+        return Err("classic PCRD segment assignment count mismatch");
+    }
+    if segment_layers.iter().any(|&layer| layer >= layer_count) {
+        return Err("classic PCRD segment layer exceeds layer count");
+    }
+    let mut contributions = Vec::with_capacity(layer_count);
+
+    for layer_idx in 0..layer_count {
+        let mut data = Vec::new();
+        let mut classic_segment_lengths = Vec::new();
+        let mut contribution_passes = 0u8;
+
+        for (segment_idx, segment) in encoded.segments.iter().enumerate() {
+            if segment_layers[segment_idx] != layer_idx {
+                continue;
+            }
+            let start = usize::try_from(segment.data_offset)
+                .map_err(|_| "classic code-block segment offset overflow")?;
+            let len = usize::try_from(segment.data_length)
+                .map_err(|_| "classic code-block segment length overflow")?;
+            let end = start
+                .checked_add(len)
+                .ok_or("classic code-block segment range overflow")?;
+            data.extend_from_slice(
+                encoded
+                    .data
+                    .get(start..end)
+                    .ok_or("classic code-block segment range invalid")?,
+            );
+            classic_segment_lengths.push(segment.data_length);
+            contribution_passes = contribution_passes
+                .checked_add(segment.end_coding_pass - segment.start_coding_pass)
+                .ok_or("classic code-block contribution pass count overflow")?;
+        }
+
+        contributions.push(CodeBlockPacketData {
+            data,
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
+            num_coding_passes: contribution_passes,
+            classic_segment_lengths,
+            num_zero_bitplanes: encoded.num_zero_bitplanes,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: BlockCodingMode::Classic,
+        });
+    }
+
+    Ok(contributions)
+}
+
+fn layer_pass_count(
+    num_coding_passes: u8,
+    layer_count: usize,
+    num_layers: u8,
+) -> Result<u8, &'static str> {
+    let numerator = u32::from(num_coding_passes)
+        .checked_mul(u32::try_from(layer_count).map_err(|_| "layer index overflow")?)
+        .ok_or("quality layer pass allocation overflow")?;
+    numerator
+        .div_ceil(u32::from(num_layers))
+        .try_into()
+        .map_err(|_| "quality layer pass allocation overflow")
+}
+
+fn previous_layer_pass_count(
+    num_coding_passes: u8,
+    layer_idx: usize,
+    num_layers: u8,
+) -> Result<u8, &'static str> {
+    if layer_idx == 0 {
+        Ok(0)
+    } else {
+        layer_pass_count(num_coding_passes, layer_idx, num_layers)
+    }
+}
+
+fn ht_target_layer(
+    block_idx: usize,
+    block_count: usize,
+    layer_count: usize,
+) -> Result<usize, &'static str> {
+    if block_count == 0 || layer_count == 0 {
+        return Err("HTJ2K layer allocation requires non-empty inputs");
+    }
+    Ok(block_idx
+        .checked_mul(layer_count)
+        .ok_or("HTJ2K layer allocation overflow")?
+        / block_count)
+}
+
+fn ht_layer_contributions(
+    encoded: bitplane_encode::EncodedCodeBlock,
+    num_layers: u8,
+    target_layer: usize,
+) -> Result<Vec<CodeBlockPacketData>, &'static str> {
+    let layer_count = usize::from(num_layers);
+    if target_layer >= layer_count {
+        return Err("HTJ2K target layer out of range");
+    }
+
+    let mut data = Some(encoded.data);
+    let mut contributions = Vec::with_capacity(layer_count);
+    for layer_idx in 0..layer_count {
+        let include = layer_idx == target_layer && encoded.num_coding_passes > 0;
+        let layer_data = if include {
+            data.take()
+                .ok_or("HTJ2K layer contribution data was already consumed")?
+        } else {
+            Vec::new()
+        };
+        contributions.push(CodeBlockPacketData {
+            data: layer_data,
+            ht_cleanup_length: if include {
+                encoded.ht_cleanup_length
+            } else {
+                0
+            },
+            ht_refinement_length: if include {
+                encoded.ht_refinement_length
+            } else {
+                0
+            },
+            num_coding_passes: if include {
+                encoded.num_coding_passes
+            } else {
+                0
+            },
+            classic_segment_lengths: Vec::new(),
+            num_zero_bitplanes: encoded.num_zero_bitplanes,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: BlockCodingMode::HighThroughput,
+        });
+    }
+
+    Ok(contributions)
+}
+
 fn encode_prepared_subbands(
     prepared_subbands: Vec<PreparedEncodeSubband>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -2437,6 +4045,7 @@ fn encode_prepared_subbands(
                     0
                 },
                 num_coding_passes: encoded.num_coding_passes,
+                classic_segment_lengths: Vec::new(),
                 num_zero_bitplanes: encoded.num_zero_bitplanes,
                 previously_included: false,
                 l_block: 3,
@@ -3755,13 +5364,13 @@ mod tests {
                                     .subbands
                                     .iter()
                                     .map(preencoded_subband_from_prequantized_for_test)
-                                    .collect::<Result<Vec<_>, _>>()?,
+                                    .collect::<Result<Vec<_>, &'static str>>()?,
                             })
                         })
-                        .collect::<Result<Vec<_>, _>>()?,
+                        .collect::<Result<Vec<_>, &'static str>>()?,
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, &'static str>>()?;
 
         Ok(PreencodedHtj2k97Image {
             width: image.width,
@@ -3814,7 +5423,7 @@ mod tests {
                     },
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, &'static str>>()?;
 
         Ok(PreencodedHtj2k97Subband {
             sub_band_type: subband.sub_band_type,
@@ -4329,14 +5938,8 @@ mod tests {
     }
 
     /// Precondition gate: prove native encode_htj2k round-trips 2-component
-    /// (e.g. Y+A or YCbCr-420-placeholder) 8-bit lossless images exactly.
-    ///
-    /// SCOPE FINDING: native's decoder raises `Validation(TooManyChannels)` when
-    /// asked to decode a 2-component codestream it produced itself. Native cannot
-    /// serve as a parity oracle for 2-component HTJ2K lossless; this component
-    /// count is OUT OF SCOPE for CUDA parity verification.
+    /// 8-bit lossless images exactly with independent component channels.
     #[test]
-    #[ignore = "native does not round-trip 2-component HTJ2K lossless; out of scope"]
     fn native_htj2k_roundtrips_two_component_lossless() {
         const WIDTH: u32 = 32;
         const HEIGHT: u32 = 24;
@@ -4449,6 +6052,114 @@ mod tests {
             "native_htj2k_roundtrips_four_component_lossless: {} bytes codestream, {} pixel bytes",
             codestream.len(),
             pixels.len()
+        );
+    }
+
+    #[test]
+    fn classic_pcrd_assigns_limited_budget_by_distortion_slope() {
+        let candidates = vec![
+            ClassicSegmentAssignmentCandidate {
+                block_index: 0,
+                segment_index: 0,
+                rate: 500,
+                distortion_delta: 500.0,
+            },
+            ClassicSegmentAssignmentCandidate {
+                block_index: 1,
+                segment_index: 0,
+                rate: 700,
+                distortion_delta: 7_000.0,
+            },
+            ClassicSegmentAssignmentCandidate {
+                block_index: 2,
+                segment_index: 0,
+                rate: 600,
+                distortion_delta: 3_000.0,
+            },
+        ];
+
+        let assignments = assign_classic_segment_layers_by_slope(&candidates, 2, &[256, 3_000])
+            .expect("PCRD assignment");
+
+        assert_eq!(
+            assignments,
+            vec![1, 0, 1],
+            "the highest slope contribution should consume the constrained first-layer budget"
+        );
+    }
+
+    #[test]
+    fn classic_pcrd_allows_byte_target_tolerance_for_first_legal_truncation() {
+        let candidates = vec![ClassicSegmentAssignmentCandidate {
+            block_index: 0,
+            segment_index: 0,
+            rate: 300,
+            distortion_delta: 1_000.0,
+        }];
+
+        let assignments = assign_classic_segment_layers_by_slope(&candidates, 2, &[256, 1_000])
+            .expect("PCRD assignment");
+
+        assert_eq!(assignments, vec![0]);
+    }
+
+    #[test]
+    fn classic_pcrd_does_not_spend_budget_on_non_prefix_segments() {
+        let candidates = vec![
+            ClassicSegmentAssignmentCandidate {
+                block_index: 0,
+                segment_index: 0,
+                rate: 1_000,
+                distortion_delta: 1_000.0,
+            },
+            ClassicSegmentAssignmentCandidate {
+                block_index: 0,
+                segment_index: 1,
+                rate: 500,
+                distortion_delta: 10_000.0,
+            },
+            ClassicSegmentAssignmentCandidate {
+                block_index: 1,
+                segment_index: 0,
+                rate: 300,
+                distortion_delta: 600.0,
+            },
+        ];
+
+        let assignments = assign_classic_segment_layers_by_slope(&candidates, 2, &[256, 2_000])
+            .expect("PCRD assignment");
+
+        assert_eq!(
+            assignments,
+            vec![1, 1, 0],
+            "first-layer budget must go to the best legal prefix contribution"
+        );
+    }
+
+    #[test]
+    fn ht_layer_assignment_uses_segment_budget_before_block_index() {
+        let candidates = vec![
+            HtSegmentAssignmentCandidate {
+                block_index: 0,
+                rate: 900,
+            },
+            HtSegmentAssignmentCandidate {
+                block_index: 1,
+                rate: 200,
+            },
+            HtSegmentAssignmentCandidate {
+                block_index: 2,
+                rate: 200,
+            },
+        ];
+
+        let assignments = assign_ht_segment_layers_by_budget(&candidates, 2, &[256, 2_000])
+            .expect("HTJ2K segment assignment");
+
+        assert_eq!(
+            assignments,
+            vec![1, 0, 0],
+            "HTJ2K early layers should be filled by segment byte budget, not block index"
         );
     }
 }

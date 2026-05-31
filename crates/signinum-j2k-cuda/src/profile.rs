@@ -149,6 +149,7 @@ pub(crate) fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
     start.map_or(0, |start| start.elapsed().as_micros())
 }
 
+#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
 pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
     report.total_us = [
         report.parse_us,

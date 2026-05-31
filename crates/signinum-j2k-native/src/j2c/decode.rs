@@ -10,16 +10,10 @@ use alloc::vec::Vec;
 
 use super::bitplane::{BitPlaneDecodeBuffers, BitPlaneDecodeContext};
 use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SubBandType};
-use super::codestream::{ComponentInfo, Header, ProgressionOrder, QuantizationStyle};
+use super::codestream::{ComponentInfo, Header, QuantizationStyle};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
-use super::progression::{
-    component_position_resolution_layer_progression,
-    layer_resolution_component_position_progression,
-    position_component_resolution_layer_progression,
-    resolution_layer_component_position_progression,
-    resolution_position_component_layer_progression, IteratorInput, ProgressionData,
-};
+use super::progression::{progression_iterator, ProgressionData};
 use super::roi::RoiPlan;
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
@@ -73,34 +67,10 @@ pub(crate) fn decode<'a>(
             tile.rect.height(),
         );
 
-        let iter_input = IteratorInput::new(tile);
-
-        let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
-            match tile.progression_order {
-                ProgressionOrder::LayerResolutionComponentPosition => {
-                    Box::new(layer_resolution_component_position_progression(iter_input))
-                }
-                ProgressionOrder::ResolutionLayerComponentPosition => {
-                    Box::new(resolution_layer_component_position_progression(iter_input))
-                }
-                ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-                    resolution_position_component_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-                ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-                    position_component_resolution_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-                ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-                    component_position_resolution_layer_progression(iter_input)
-                        .ok_or(DecodingError::InvalidProgressionIterator)?,
-                ),
-            };
-
         decode_tile(
             tile,
             header,
-            progression_iterator,
+            progression_iterator(tile)?,
             tile_ctx,
             storage,
             ht_decoder,
@@ -155,29 +125,7 @@ pub(crate) fn build_direct_grayscale_plan<'a>(
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region);
     }
 
-    let iter_input = IteratorInput::new(tile);
-    let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
-        match tile.progression_order {
-            ProgressionOrder::LayerResolutionComponentPosition => {
-                Box::new(layer_resolution_component_position_progression(iter_input))
-            }
-            ProgressionOrder::ResolutionLayerComponentPosition => {
-                Box::new(resolution_layer_component_position_progression(iter_input))
-            }
-            ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-                resolution_position_component_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-            ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-                position_component_resolution_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-            ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-                component_position_resolution_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-        };
-    segment::parse(tile, progression_iterator, header, &mut ctx.storage)?;
+    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 
     let component_info = &tile.component_infos[0];
     build_component_plan_from_storage(
@@ -225,29 +173,7 @@ pub(crate) fn build_direct_color_plan<'a>(
         ctx.storage.roi_plan = RoiPlan::build(tile, header, &ctx.storage, output_region);
     }
 
-    let iter_input = IteratorInput::new(tile);
-    let progression_iterator: Box<dyn Iterator<Item = ProgressionData>> =
-        match tile.progression_order {
-            ProgressionOrder::LayerResolutionComponentPosition => {
-                Box::new(layer_resolution_component_position_progression(iter_input))
-            }
-            ProgressionOrder::ResolutionLayerComponentPosition => {
-                Box::new(resolution_layer_component_position_progression(iter_input))
-            }
-            ProgressionOrder::ResolutionPositionComponentLayer => Box::new(
-                resolution_position_component_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-            ProgressionOrder::PositionComponentResolutionLayer => Box::new(
-                position_component_resolution_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-            ProgressionOrder::ComponentPositionResolutionLayer => Box::new(
-                component_position_resolution_layer_progression(iter_input)
-                    .ok_or(DecodingError::InvalidProgressionIterator)?,
-            ),
-        };
-    segment::parse(tile, progression_iterator, header, &mut ctx.storage)?;
+    segment::parse(tile, progression_iterator(tile)?, header, &mut ctx.storage)?;
 
     let mut bit_depths = [0_u8; 3];
     let mut component_plans = Vec::with_capacity(3);

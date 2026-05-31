@@ -57,12 +57,14 @@ pub(crate) fn parse<'a>(stream: &'a [u8], settings: &DecodeSettings) -> Result<I
     let header = &parsed_codestream.header;
     let mut boxes = ImageBoxes::default();
 
-    // If we are just decoding a raw codestream, we assume greyscale or
-    // RGB.
-    let cs = if header.component_infos.len() < 3 {
-        ColorSpace::Enumerated(EnumeratedColorspace::Greyscale)
-    } else {
-        ColorSpace::Enumerated(EnumeratedColorspace::Srgb)
+    // Raw codestreams do not carry JP2 channel definitions. Keep the
+    // conventional grayscale/RGB assumptions for 1- and 3-component images,
+    // but preserve two-component data as independent channels instead of
+    // forcing it through grayscale validation.
+    let cs = match header.component_infos.len() {
+        1 => ColorSpace::Enumerated(EnumeratedColorspace::Greyscale),
+        2 => ColorSpace::Unknown,
+        _ => ColorSpace::Enumerated(EnumeratedColorspace::Srgb),
     };
 
     boxes.color_specification = Some(ColorSpecificationBox { color_space: cs });

@@ -15,9 +15,12 @@ use signinum_j2k_native::{
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
     J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
     J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kPacketizationResolution, J2kPacketizationSubband, J2kQuantizeSubbandJob,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
     J2kTier1CodeBlockEncodeJob,
+};
+#[cfg(feature = "cuda-runtime")]
+use signinum_j2k_native::{
+    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
 };
 #[cfg(feature = "cuda-runtime")]
 use std::sync::{Arc, OnceLock};
@@ -107,6 +110,7 @@ pub struct CudaEncodeStageAccelerator {
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     encode_resources: Option<Arc<CudaHtj2kEncodeResources>>,
+    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
     collect_profile: bool,
     deinterleave_attempts: usize,
     forward_rct_attempts: usize,
@@ -125,8 +129,10 @@ pub struct CudaEncodeStageAccelerator {
     forward_ict_dispatches: usize,
     forward_dwt53_dispatches: usize,
     forward_dwt97_dispatches: usize,
+    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
     htj2k_tile_dispatches: usize,
     quantize_subband_dispatches: usize,
+    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
     ht_subband_dispatches: usize,
     tier1_code_block_dispatches: usize,
     ht_code_block_dispatches: usize,
@@ -3089,12 +3095,16 @@ mod tests {
         flatten_cuda_htj2k_packetization_job, CudaEncodeStageAccelerator,
         CudaHtj2kPacketizationPlanTagNodeState,
     };
-    use signinum_core::{BackendKind, CodecError};
+    #[cfg(feature = "cuda-runtime")]
+    use signinum_core::BackendKind;
+    use signinum_core::CodecError;
     #[cfg(feature = "cuda-runtime")]
     use signinum_cuda_runtime::{
         CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
         CudaJ2kQuantizeJob,
     };
+    #[cfg(feature = "cuda-runtime")]
+    use signinum_j2k::{encode_j2k_lossy_with_accelerator, J2kLossyEncodeOptions, J2kLossySamples};
     use signinum_j2k::{
         EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
         J2kLosslessSamples,
@@ -3921,6 +3931,48 @@ mod tests {
 
         assert_eq!(encoded.backend, BackendKind::Cuda);
         assert_eq!(decoded.data, pixels);
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn cuda_lossy_htj2k_facade_require_device_dispatches_supported_stages_when_runtime_required() {
+        if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_none() {
+            return;
+        }
+
+        let pixels: Vec<u8> = (0u32..32 * 32)
+            .map(|value| u8::try_from((value * 41 + 17) & 0xFF).expect("masked value fits in u8"))
+            .collect();
+        let samples =
+            J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).expect("valid gray8 samples");
+        let options = J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+            .with_max_decomposition_levels(Some(1))
+            .with_validation(J2kEncodeValidation::CpuRoundTrip);
+        let mut accelerator = CudaEncodeStageAccelerator::default();
+
+        let encoded = encode_j2k_lossy_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Cuda,
+            &mut accelerator,
+        )
+        .expect("strict CUDA HTJ2K lossy facade encode should dispatch supported stages");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+
+        assert_eq!(encoded.backend, BackendKind::Cuda);
+        assert_eq!(decoded.width, 32);
+        assert_eq!(decoded.height, 32);
+        assert_eq!(decoded.num_components, 1);
+        assert_eq!(accelerator.deinterleave_dispatches(), 1);
+        assert!(accelerator.forward_dwt97_dispatches() > 0);
+        assert_eq!(accelerator.quantize_subband_dispatches(), 4);
+        assert_eq!(accelerator.ht_code_block_dispatches(), 4);
+        assert_eq!(accelerator.packetization_dispatches(), 1);
     }
 
     #[test]

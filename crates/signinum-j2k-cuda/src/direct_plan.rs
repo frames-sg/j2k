@@ -374,6 +374,7 @@ impl CudaHtj2kDecodePlan {
         &self.payload
     }
 
+    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
     pub(crate) fn append_payload_to_shared(
         &mut self,
         shared_payload: &mut Vec<u8>,

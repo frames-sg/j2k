@@ -13177,7 +13177,10 @@ fn lossless_codestream_assembly_capacity(
 fn codestream_progression_order_code(order: EncodeProgressionOrder) -> u32 {
     match order {
         EncodeProgressionOrder::Lrcp => 0x00,
+        EncodeProgressionOrder::Rlcp => 0x01,
         EncodeProgressionOrder::Rpcl => 0x02,
+        EncodeProgressionOrder::Pcrl => 0x03,
+        EncodeProgressionOrder::Cprl => 0x04,
     }
 }
 

@@ -4,7 +4,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::build::{PrecinctData, SubBandType};
-use super::codestream::{markers, skip_marker_segment, ComponentInfo, Header, ProgressionOrder};
+use super::codestream::{
+    markers, skip_marker_segment, ComponentInfo, Header, ProgressionChange, ProgressionOrder,
+};
 use super::rect::IntRect;
 use crate::error::{bail, err, MarkerError, Result, TileError, ValidationError};
 use crate::j2c::codestream;
@@ -26,6 +28,7 @@ pub(crate) struct Tile<'a> {
     /// exclusive.
     pub(crate) rect: IntRect,
     pub(crate) progression_order: ProgressionOrder,
+    pub(crate) progression_changes: Vec<ProgressionChange>,
     pub(crate) num_layers: u8,
     pub(crate) mct: bool,
 }
@@ -34,6 +37,7 @@ pub(crate) struct Tile<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct MergedTilePart<'a> {
     pub(crate) data: BitReader<'a>,
+    packet_lengths: PacketLengthMetadata,
 }
 
 /// A tile part where packet headers and packet data are separated.
@@ -42,12 +46,48 @@ pub(crate) struct SeparatedTilePart<'a> {
     pub(crate) headers: Vec<BitReader<'a>>,
     pub(crate) active_header_reader: usize,
     pub(crate) body: BitReader<'a>,
+    packet_lengths: PacketLengthMetadata,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum TilePart<'a> {
     Merged(MergedTilePart<'a>),
     Separated(SeparatedTilePart<'a>),
+}
+
+#[derive(Clone, Debug, Default)]
+struct PacketLengthMetadata {
+    present: bool,
+    lengths: Vec<u32>,
+    next: usize,
+}
+
+impl PacketLengthMetadata {
+    fn new(present: bool, lengths: Vec<u32>) -> Self {
+        Self {
+            present,
+            lengths,
+            next: 0,
+        }
+    }
+
+    fn is_present(&self) -> bool {
+        self.present
+    }
+
+    fn next(&mut self) -> Option<Option<u32>> {
+        if !self.present {
+            return Some(None);
+        }
+
+        let packet_length = self.lengths.get(self.next).copied()?;
+        self.next += 1;
+        Some(Some(packet_length))
+    }
+
+    fn fully_consumed(&self) -> bool {
+        !self.present || self.next == self.lengths.len()
+    }
 }
 
 impl<'a> TilePart<'a> {
@@ -70,6 +110,43 @@ impl<'a> TilePart<'a> {
         match self {
             TilePart::Merged(m) => &mut m.data,
             TilePart::Separated(s) => &mut s.body,
+        }
+    }
+
+    pub(crate) fn packet_start_offset(&self) -> Option<usize> {
+        match self {
+            TilePart::Merged(m) if m.packet_lengths.is_present() => Some(m.data.offset()),
+            TilePart::Separated(_) => None,
+            TilePart::Merged(_) => None,
+        }
+    }
+
+    pub(crate) fn validate_packet_length(&mut self, packet_start: Option<usize>) -> Option<()> {
+        let expected = match self {
+            TilePart::Merged(m) => m.packet_lengths.next()?,
+            TilePart::Separated(s) => s.packet_lengths.next()?,
+        };
+
+        let Some(expected) = expected else {
+            return Some(());
+        };
+
+        let packet_start = packet_start?;
+        let actual = match self {
+            TilePart::Merged(m) => m.data.offset().checked_sub(packet_start)?,
+            TilePart::Separated(_) => return Some(()),
+        };
+
+        if actual != expected as usize {
+            return None;
+        }
+        Some(())
+    }
+
+    pub(crate) fn validate_all_packet_lengths_consumed(&self) -> Option<()> {
+        match self {
+            TilePart::Merged(m) => m.packet_lengths.fully_consumed().then_some(()),
+            TilePart::Separated(s) => s.packet_lengths.fully_consumed().then_some(()),
         }
     }
 }
@@ -115,6 +192,7 @@ impl<'a> Tile<'a> {
             // might be overridden.
             component_infos: header.component_infos.clone(),
             progression_order: header.global_coding_style.progression_order,
+            progression_changes: header.progression_changes.clone(),
             mct: header.global_coding_style.mct,
             num_layers: header.global_coding_style.num_layers,
         }
@@ -184,6 +262,8 @@ fn parse_tile_part<'a>(
     let tile = &mut tiles[tile_part_header.tile_index as usize];
     let num_components = tile.component_infos.len();
 
+    let mut packet_length_markers = vec![];
+    let mut packet_lengths_present = false;
     let mut ppt_headers = vec![];
 
     loop {
@@ -247,6 +327,13 @@ fn parse_tile_part<'a>(
                     .ok_or(ValidationError::InvalidComponentMetadata)?
                     .quantization_info = qcc.clone();
             }
+            markers::POC => {
+                reader.read_marker()?;
+                tile.progression_changes.extend(
+                    codestream::poc_marker(reader, num_components as u16, tile.num_layers)
+                        .ok_or(MarkerError::ParseFailure("POC"))?,
+                );
+            }
             markers::EOC => break,
             markers::PPT => {
                 if !main_header.ppm_packets.is_empty() {
@@ -257,9 +344,10 @@ fn parse_tile_part<'a>(
                 ppt_headers.push(ppt_marker(reader).ok_or(MarkerError::ParseFailure("PPT"))?);
             }
             markers::PLT => {
-                // Can be inferred ourselves.
                 reader.read_marker()?;
-                skip_marker_segment(reader).ok_or(MarkerError::ParseFailure("PLT"))?;
+                packet_lengths_present = true;
+                packet_length_markers
+                    .push(codestream::plt_marker(reader).ok_or(MarkerError::ParseFailure("PLT"))?);
             }
             markers::COM => {
                 reader.read_marker()?;
@@ -290,6 +378,23 @@ fn parse_tile_part<'a>(
 
     ppt_headers.sort_by_key(|ppt_header| ppt_header.sequence_idx);
     let mut headers: Vec<_> = ppt_headers.iter().map(|i| BitReader::new(i.data)).collect();
+    packet_length_markers.sort_by_key(|marker| marker.sequence_idx);
+    let use_main_header_packet_lengths = !packet_lengths_present
+        && !main_header.plm_packet_lengths.is_empty()
+        && main_header.size_data.num_tiles() == 1
+        && tile_part_header.tile_part_index == 0
+        && tile_part_header.num_tile_parts == 1;
+    let packet_lengths = if use_main_header_packet_lengths {
+        PacketLengthMetadata::new(true, main_header.plm_packet_lengths.clone())
+    } else {
+        PacketLengthMetadata::new(
+            packet_lengths_present,
+            packet_length_markers
+                .into_iter()
+                .flat_map(|marker| marker.packet_lengths)
+                .collect(),
+        )
+    };
 
     if let Some(ppm_marker) = main_header.ppm_packets.get(tile_part_idx) {
         headers.push(BitReader::new(ppm_marker.data));
@@ -304,10 +409,12 @@ fn parse_tile_part<'a>(
             headers,
             active_header_reader: 0,
             body: BitReader::new(data),
+            packet_lengths,
         })
     } else {
         TilePart::Merged(MergedTilePart {
             data: BitReader::new(data),
+            packet_lengths,
         })
     };
 
@@ -687,6 +794,8 @@ impl<'a> ResolutionTile<'a> {
 struct TilePartHeader {
     tile_index: u16,
     tile_part_length: u32,
+    tile_part_index: u8,
+    num_tile_parts: u8,
 }
 
 struct PptMarkerData<'a> {
@@ -714,12 +823,14 @@ fn sot_marker(reader: &mut BitReader<'_>) -> Option<TilePartHeader> {
     let tile_part_length = reader.read_u32()?;
 
     // We infer those ourselves.
-    let _tile_part_index = reader.read_byte()? as u16;
-    let _num_tile_parts = reader.read_byte()?;
+    let tile_part_index = reader.read_byte()?;
+    let num_tile_parts = reader.read_byte()?;
 
     Some(TilePartHeader {
         tile_index,
         tile_part_length,
+        tile_part_index,
+        num_tile_parts,
     })
 }
 
@@ -822,6 +933,8 @@ mod tests {
                 },
             },
             component_infos: vec![],
+            progression_changes: vec![],
+            plm_packet_lengths: vec![],
             ppm_packets: vec![],
             skipped_resolution_levels: 0,
             strict: false,

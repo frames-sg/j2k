@@ -41,6 +41,7 @@ pub(crate) struct EncodedCodeBlockSegment {
     pub(crate) data_length: u32,
     pub(crate) start_coding_pass: u8,
     pub(crate) end_coding_pass: u8,
+    pub(crate) distortion_delta: f64,
     pub(crate) use_arithmetic: bool,
 }
 
@@ -357,6 +358,12 @@ pub(crate) fn encode_code_block_segments_with_style(
                     .expect("classic code-block payload length fits in u32"),
                 start_coding_pass: 0,
                 end_coding_pass: encoded.num_coding_passes,
+                distortion_delta: segment_distortion_delta(
+                    coefficients,
+                    0,
+                    encoded.num_coding_passes,
+                    total_bitplanes,
+                ),
                 use_arithmetic: true,
             }]
         };
@@ -431,6 +438,12 @@ pub(crate) fn encode_code_block_segments_with_style(
                             .take()
                             .expect("arithmetic segment encoder exists")
                             .finish(),
+                        segment_distortion_delta(
+                            coefficients,
+                            current_segment_start_pass,
+                            coding_pass,
+                            num_bitplanes as u8,
+                        ),
                         true,
                     );
                 } else {
@@ -443,6 +456,12 @@ pub(crate) fn encode_code_block_segments_with_style(
                             .take()
                             .expect("bypass segment writer exists")
                             .finish(),
+                        segment_distortion_delta(
+                            coefficients,
+                            current_segment_start_pass,
+                            coding_pass,
+                            num_bitplanes as u8,
+                        ),
                         false,
                     );
                 }
@@ -572,6 +591,12 @@ pub(crate) fn encode_code_block_segments_with_style(
                     .take()
                     .expect("final arithmetic segment encoder exists")
                     .finish(),
+                segment_distortion_delta(
+                    coefficients,
+                    current_segment_start_pass,
+                    total_passes,
+                    num_bitplanes as u8,
+                ),
                 true,
             );
         } else {
@@ -584,6 +609,12 @@ pub(crate) fn encode_code_block_segments_with_style(
                     .take()
                     .expect("final bypass segment writer exists")
                     .finish(),
+                segment_distortion_delta(
+                    coefficients,
+                    current_segment_start_pass,
+                    total_passes,
+                    num_bitplanes as u8,
+                ),
                 false,
             );
         }
@@ -638,6 +669,7 @@ fn push_segment(
     start_coding_pass: u8,
     end_coding_pass: u8,
     segment_data: Vec<u8>,
+    distortion_delta: f64,
     use_arithmetic: bool,
 ) {
     let data_offset =
@@ -650,8 +682,61 @@ fn push_segment(
         data_length,
         start_coding_pass,
         end_coding_pass,
+        distortion_delta,
         use_arithmetic,
     });
+}
+
+fn segment_distortion_delta(
+    coefficients: &[i32],
+    start_coding_pass: u8,
+    end_coding_pass: u8,
+    num_bitplanes: u8,
+) -> f64 {
+    let before =
+        coefficient_distortion_after_passes(coefficients, start_coding_pass, num_bitplanes);
+    let after = coefficient_distortion_after_passes(coefficients, end_coding_pass, num_bitplanes);
+    (before - after).max(f64::EPSILON)
+}
+
+fn coefficient_distortion_after_passes(
+    coefficients: &[i32],
+    completed_passes: u8,
+    num_bitplanes: u8,
+) -> f64 {
+    coefficients
+        .iter()
+        .map(|coefficient| {
+            let magnitude = coefficient.unsigned_abs();
+            let reconstructed =
+                reconstructed_magnitude_after_passes(magnitude, completed_passes, num_bitplanes);
+            let error = f64::from(magnitude.saturating_sub(reconstructed));
+            error * error
+        })
+        .sum()
+}
+
+fn reconstructed_magnitude_after_passes(
+    magnitude: u32,
+    completed_passes: u8,
+    num_bitplanes: u8,
+) -> u32 {
+    if magnitude == 0 || completed_passes == 0 || num_bitplanes == 0 {
+        return 0;
+    }
+
+    let deepest_coded_bitplane = completed_passes
+        .saturating_sub(1)
+        .div_ceil(3)
+        .min(num_bitplanes.saturating_sub(1));
+    let retained_bitplanes = deepest_coded_bitplane.saturating_add(1);
+    if retained_bitplanes >= num_bitplanes {
+        return magnitude;
+    }
+
+    let lower_bits = u32::from(num_bitplanes - retained_bitplanes);
+    let mask = !((1u32 << lower_bits) - 1);
+    magnitude & mask
 }
 
 fn mark_coded_in_current_pass(idx: usize, states: &mut [u8], coded_indices: &mut Vec<usize>) {
@@ -1273,5 +1358,16 @@ mod tests {
         assert_eq!(states[5] & CODED_IN_CURRENT_PASS, 0);
         assert_eq!(states[6], SIGNIFICANT);
         assert!(coded_indices.is_empty());
+    }
+
+    #[test]
+    fn pcrd_distortion_delta_reflects_residual_error_reduction() {
+        let sparse_delta = segment_distortion_delta(&[8], 0, 1, 4);
+        let dense_delta = segment_distortion_delta(&[15], 0, 1, 4);
+
+        assert!(
+            dense_delta > sparse_delta,
+            "coefficients with the same MSB but larger residual error should have larger PCRD distortion reduction"
+        );
     }
 }

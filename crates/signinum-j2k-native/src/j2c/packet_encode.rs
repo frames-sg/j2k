@@ -13,6 +13,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use super::codestream::markers;
 use super::codestream_write::BlockCodingMode;
 use super::tag_tree_encode::TagTreeEncoder;
 use crate::writer::BitWriter;
@@ -29,6 +30,8 @@ pub(crate) struct CodeBlockPacketData {
     pub(crate) ht_refinement_length: u32,
     /// Number of coding passes in this contribution.
     pub(crate) num_coding_passes: u8,
+    /// Per-pass classic segment lengths when code-block pass termination is enabled.
+    pub(crate) classic_segment_lengths: Vec<u32>,
     /// Number of zero bitplanes (only relevant for first inclusion).
     pub(crate) num_zero_bitplanes: u8,
     /// Whether this code-block has been included in a previous packet.
@@ -88,6 +91,17 @@ struct PacketState {
     subbands: Vec<PacketSubbandState>,
 }
 
+pub(crate) struct PacketizedTileData {
+    pub(crate) data: Vec<u8>,
+    pub(crate) packet_lengths: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PacketMarkerOptions {
+    pub(crate) write_sop: bool,
+    pub(crate) write_eph: bool,
+}
+
 /// Form a packet from a resolution-level packet (possibly multiple subbands).
 ///
 /// Returns the packet bytes (header + body).
@@ -104,7 +118,7 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
     if !any_data {
         // Empty packet: just write 0 bit
         header_writer.write_bit(0);
-        return header_writer.finish();
+        return finish_packet(header_writer, Vec::new(), PacketMarkerOptions::default(), 0);
     }
 
     // Non-empty packet indicator
@@ -159,9 +173,9 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
             let data_len = cb.data.len() as u32;
             match cb.block_coding_mode {
                 BlockCodingMode::Classic => {
-                    let num_bits = bits_for_length(cb.l_block, cb.num_coding_passes);
                     encode_num_coding_passes(cb.num_coding_passes, &mut header_writer);
-                    encode_length(data_len, &mut cb.l_block, num_bits, &mut header_writer);
+                    encode_classic_segment_lengths(cb, data_len, &mut header_writer)
+                        .expect("encoder prepared valid classic segment lengths");
                 }
                 BlockCodingMode::HighThroughput => {
                     encode_num_ht_coding_passes(cb.num_coding_passes, &mut header_writer);
@@ -176,15 +190,7 @@ pub(crate) fn form_packet(resolution: &mut ResolutionPacket) -> Vec<u8> {
         }
     }
 
-    // Assemble: header (byte-aligned) + body. Packet headers use JPEG 2000
-    // bit stuffing; if the final header byte is 0xff, the following byte must
-    // carry the stuffed zero bit before any packet body bytes.
-    let mut packet = header_writer.finish();
-    if packet.last().copied() == Some(0xff) {
-        packet.push(0x00);
-    }
-    packet.extend_from_slice(&body);
-    packet
+    finish_packet(header_writer, body, PacketMarkerOptions::default(), 0)
 }
 
 fn packet_state_seed(packet: &ResolutionPacket) -> Result<PacketStateSeed, &'static str> {
@@ -331,10 +337,12 @@ fn build_packet_states(
         .collect()
 }
 
-fn form_packet_with_state(
+fn form_packet_with_state_and_options(
     packet_data: &ResolutionPacket,
     state: &mut PacketState,
     layer: u8,
+    marker_options: PacketMarkerOptions,
+    packet_sequence: u16,
 ) -> Result<Vec<u8>, &'static str> {
     if state.subbands.len() != packet_data.subbands.len() {
         return Err("packet descriptor state layout mismatch");
@@ -349,7 +357,12 @@ fn form_packet_with_state(
 
     if !any_data {
         header_writer.write_bit(0);
-        return Ok(header_writer.finish());
+        return Ok(finish_packet(
+            header_writer,
+            Vec::new(),
+            marker_options,
+            packet_sequence,
+        ));
     }
 
     header_writer.write_bit(1);
@@ -393,15 +406,13 @@ fn form_packet_with_state(
             let data_len = packet_block.data.len() as u32;
             match packet_block.block_coding_mode {
                 BlockCodingMode::Classic => {
-                    let num_bits =
-                        bits_for_length(state_block.l_block, packet_block.num_coding_passes);
                     encode_num_coding_passes(packet_block.num_coding_passes, &mut header_writer);
-                    encode_length(
+                    encode_classic_segment_lengths_with_lblock(
+                        packet_block,
                         data_len,
                         &mut state_block.l_block,
-                        num_bits,
                         &mut header_writer,
-                    );
+                    )?;
                 }
                 BlockCodingMode::HighThroughput => {
                     encode_num_ht_coding_passes(packet_block.num_coding_passes, &mut header_writer);
@@ -417,12 +428,41 @@ fn form_packet_with_state(
         }
     }
 
-    let mut packet = header_writer.finish();
-    if packet.last().copied() == Some(0xff) {
-        packet.push(0x00);
+    Ok(finish_packet(
+        header_writer,
+        body,
+        marker_options,
+        packet_sequence,
+    ))
+}
+
+fn finish_packet(
+    header_writer: BitWriter,
+    body: Vec<u8>,
+    marker_options: PacketMarkerOptions,
+    packet_sequence: u16,
+) -> Vec<u8> {
+    let mut packet = Vec::new();
+    if marker_options.write_sop {
+        packet.push(0xFF);
+        packet.push(markers::SOP);
+        packet.extend_from_slice(&4u16.to_be_bytes());
+        packet.extend_from_slice(&packet_sequence.to_be_bytes());
     }
+
+    let mut header = header_writer.finish();
+    if header.last().copied() == Some(0xff) {
+        header.push(0x00);
+    }
+    packet.extend_from_slice(&header);
+
+    if marker_options.write_eph {
+        packet.push(0xFF);
+        packet.push(markers::EPH);
+    }
+
     packet.extend_from_slice(&body);
-    Ok(packet)
+    packet
 }
 
 /// Encode the number of coding passes using the variable-length code from Table B.4.
@@ -476,6 +516,61 @@ fn encode_length(length: u32, l_block: &mut u32, mut num_bits: u32, writer: &mut
     }
     writer.write_bit(0);
     writer.write_bits(length, num_bits as u8);
+}
+
+fn encode_classic_segment_lengths(
+    code_block: &mut CodeBlockPacketData,
+    data_len: u32,
+    writer: &mut BitWriter,
+) -> Result<(), &'static str> {
+    let mut l_block = code_block.l_block;
+    encode_classic_segment_lengths_with_lblock(code_block, data_len, &mut l_block, writer)?;
+    code_block.l_block = l_block;
+    Ok(())
+}
+
+fn encode_classic_segment_lengths_with_lblock(
+    code_block: &CodeBlockPacketData,
+    data_len: u32,
+    l_block: &mut u32,
+    writer: &mut BitWriter,
+) -> Result<(), &'static str> {
+    if code_block.classic_segment_lengths.is_empty() {
+        let num_bits = bits_for_length(*l_block, code_block.num_coding_passes);
+        encode_length(data_len, l_block, num_bits, writer);
+        return Ok(());
+    }
+
+    if code_block.classic_segment_lengths.len() != usize::from(code_block.num_coding_passes) {
+        return Err("classic pass-terminated contribution segment count mismatch");
+    }
+    let segment_sum = code_block
+        .classic_segment_lengths
+        .iter()
+        .try_fold(0u32, |acc, segment_len| acc.checked_add(*segment_len))
+        .ok_or("classic packet contribution segment length overflow")?;
+    if segment_sum != data_len {
+        return Err("classic packet contribution segment length mismatch");
+    }
+
+    let mut required_l_block = *l_block;
+    while code_block
+        .classic_segment_lengths
+        .iter()
+        .any(|&segment_len| !value_fits_in_bits(segment_len, bits_for_length(required_l_block, 1)))
+    {
+        writer.write_bit(1);
+        required_l_block += 1;
+    }
+    writer.write_bit(0);
+    *l_block = required_l_block;
+
+    let length_bits = bits_for_length(*l_block, 1);
+    for &segment_len in &code_block.classic_segment_lengths {
+        writer.write_bits(segment_len, length_bits as u8);
+    }
+
+    Ok(())
 }
 
 fn encode_ht_segment_lengths(
@@ -613,22 +708,57 @@ pub(crate) fn form_tile_bitstream_with_descriptors(
     resolution_packets: &mut [ResolutionPacket],
     descriptors: &[PacketDescriptor],
 ) -> Result<Vec<u8>, &'static str> {
+    Ok(form_tile_bitstream_with_descriptors_and_lengths(resolution_packets, descriptors)?.data)
+}
+
+pub(crate) fn form_tile_bitstream_with_descriptors_and_lengths(
+    resolution_packets: &mut [ResolutionPacket],
+    descriptors: &[PacketDescriptor],
+) -> Result<PacketizedTileData, &'static str> {
+    form_tile_bitstream_with_descriptors_lengths_and_markers(
+        resolution_packets,
+        descriptors,
+        PacketMarkerOptions::default(),
+    )
+}
+
+pub(crate) fn form_tile_bitstream_with_descriptors_lengths_and_markers(
+    resolution_packets: &mut [ResolutionPacket],
+    descriptors: &[PacketDescriptor],
+    marker_options: PacketMarkerOptions,
+) -> Result<PacketizedTileData, &'static str> {
     if descriptors.is_empty() {
-        return Ok(Vec::new());
+        return Ok(PacketizedTileData {
+            data: Vec::new(),
+            packet_lengths: Vec::new(),
+        });
     }
 
     let mut states = build_packet_states(resolution_packets, descriptors)?;
     let mut tile_data = Vec::new();
-    for descriptor in descriptors {
+    let mut packet_lengths = Vec::with_capacity(descriptors.len());
+    for (packet_sequence, descriptor) in descriptors.iter().enumerate() {
         let packet = resolution_packets
             .get(descriptor.packet_index as usize)
             .ok_or("packet descriptor packet index out of range")?;
         let state = states
             .get_mut(descriptor.state_index as usize)
             .ok_or("packet descriptor state index out of range")?;
-        tile_data.extend_from_slice(&form_packet_with_state(packet, state, descriptor.layer)?);
+        let packet = form_packet_with_state_and_options(
+            packet,
+            state,
+            descriptor.layer,
+            marker_options,
+            u16::try_from(packet_sequence % (usize::from(u16::MAX) + 1))
+                .expect("SOP packet sequence modulo 65536 fits u16"),
+        )?;
+        packet_lengths.push(u32::try_from(packet.len()).map_err(|_| "packet length exceeds u32")?);
+        tile_data.extend_from_slice(&packet);
     }
-    Ok(tile_data)
+    Ok(PacketizedTileData {
+        data: tile_data,
+        packet_lengths,
+    })
 }
 
 pub(crate) fn form_tile_bitstream_for_progression(
@@ -638,7 +768,11 @@ pub(crate) fn form_tile_bitstream_for_progression(
     progression_order: J2kPacketizationProgressionOrder,
 ) -> Vec<u8> {
     match progression_order {
-        J2kPacketizationProgressionOrder::Lrcp | J2kPacketizationProgressionOrder::Rpcl => {
+        J2kPacketizationProgressionOrder::Lrcp
+        | J2kPacketizationProgressionOrder::Rlcp
+        | J2kPacketizationProgressionOrder::Rpcl
+        | J2kPacketizationProgressionOrder::Pcrl
+        | J2kPacketizationProgressionOrder::Cprl => {
             form_tile_bitstream(resolution_packets, num_layers, num_components)
         }
     }
@@ -736,6 +870,7 @@ mod tests {
                     ht_cleanup_length: 0,
                     ht_refinement_length: 0,
                     num_coding_passes: 0,
+                    classic_segment_lengths: Vec::new(),
                     num_zero_bitplanes: 31,
                     previously_included: false,
                     l_block: 3,
@@ -759,6 +894,7 @@ mod tests {
                     ht_cleanup_length: 0,
                     ht_refinement_length: 0,
                     num_coding_passes: 1,
+                    classic_segment_lengths: Vec::new(),
                     num_zero_bitplanes: 20,
                     previously_included: false,
                     l_block: 3,
@@ -798,6 +934,7 @@ mod tests {
                         ht_cleanup_length: 0,
                         ht_refinement_length: 0,
                         num_coding_passes: 1 + 3 * (8 - num_zero_bitplanes) - 2,
+                        classic_segment_lengths: Vec::new(),
                         num_zero_bitplanes,
                         previously_included: false,
                         l_block: 3,
@@ -860,6 +997,7 @@ mod tests {
                         ht_cleanup_length: 0,
                         ht_refinement_length: 0,
                         num_coding_passes: 1,
+                        classic_segment_lengths: Vec::new(),
                         num_zero_bitplanes: 0,
                         previously_included: false,
                         l_block: 3,
@@ -925,6 +1063,49 @@ mod tests {
     }
 
     #[test]
+    fn classic_pass_terminated_lengths_share_one_lblock_increment() {
+        let lengths = [1u32, 9, 17];
+        let mut code_block = CodeBlockPacketData {
+            data: vec![0; lengths.iter().sum::<u32>() as usize],
+            ht_cleanup_length: 0,
+            ht_refinement_length: 0,
+            num_coding_passes: lengths.len() as u8,
+            classic_segment_lengths: lengths.to_vec(),
+            num_zero_bitplanes: 0,
+            previously_included: false,
+            l_block: 3,
+            block_coding_mode: BlockCodingMode::Classic,
+        };
+        let mut writer = BitWriter::new();
+        let data_len = u32::try_from(code_block.data.len()).expect("test payload length fits u32");
+
+        encode_num_coding_passes(code_block.num_coding_passes, &mut writer);
+        encode_classic_segment_lengths(&mut code_block, data_len, &mut writer)
+            .expect("classic segment lengths encode");
+
+        let bytes = writer.finish();
+        let mut reader = BitReader::new(&bytes);
+        let passes = decode_num_coding_passes_from_reader_for_test(&mut reader)
+            .expect("number of coding passes");
+        assert_eq!(passes, lengths.len() as u8);
+
+        let mut l_block = 3u32;
+        while reader.read_bits_with_stuffing(1).expect("lblock increment") == 1 {
+            l_block += 1;
+        }
+
+        let decoded_lengths: Vec<_> = lengths
+            .iter()
+            .map(|_| {
+                reader
+                    .read_bits_with_stuffing(l_block as u8)
+                    .expect("terminated pass segment length")
+            })
+            .collect();
+        assert_eq!(decoded_lengths, lengths);
+    }
+
+    #[test]
     fn test_multi_subband_packet() {
         let mut resolution = ResolutionPacket {
             subbands: vec![
@@ -934,6 +1115,7 @@ mod tests {
                         ht_cleanup_length: 0,
                         ht_refinement_length: 0,
                         num_coding_passes: 1,
+                        classic_segment_lengths: Vec::new(),
                         num_zero_bitplanes: 20,
                         previously_included: false,
                         l_block: 3,
@@ -948,6 +1130,7 @@ mod tests {
                         ht_cleanup_length: 0,
                         ht_refinement_length: 0,
                         num_coding_passes: 1,
+                        classic_segment_lengths: Vec::new(),
                         num_zero_bitplanes: 22,
                         previously_included: false,
                         l_block: 3,
@@ -962,6 +1145,7 @@ mod tests {
                         ht_cleanup_length: 0,
                         ht_refinement_length: 0,
                         num_coding_passes: 1,
+                        classic_segment_lengths: Vec::new(),
                         num_zero_bitplanes: 24,
                         previously_included: false,
                         l_block: 3,
@@ -1018,6 +1202,7 @@ mod tests {
                     ht_cleanup_length: 3,
                     ht_refinement_length: 0,
                     num_coding_passes: 1,
+                    classic_segment_lengths: Vec::new(),
                     num_zero_bitplanes: 20,
                     previously_included: false,
                     l_block: 3,
@@ -1042,6 +1227,7 @@ mod tests {
                     ht_cleanup_length: 3,
                     ht_refinement_length: 2,
                     num_coding_passes: 3,
+                    classic_segment_lengths: Vec::new(),
                     num_zero_bitplanes: 2,
                     previously_included: false,
                     l_block: 3,
@@ -1097,6 +1283,7 @@ mod tests {
             ht_cleanup_length: u32::MAX,
             ht_refinement_length: 1,
             num_coding_passes: 3,
+            classic_segment_lengths: Vec::new(),
             num_zero_bitplanes: 2,
             previously_included: false,
             l_block: 3,
@@ -1116,6 +1303,7 @@ mod tests {
                     ht_cleanup_length: 0,
                     ht_refinement_length: 0,
                     num_coding_passes: 1,
+                    classic_segment_lengths: Vec::new(),
                     num_zero_bitplanes: 0,
                     previously_included,
                     l_block: 3,

@@ -142,6 +142,43 @@ fn cpu_htj2k_rpcl_writes_cod_rpcl_and_tlm() {
 }
 
 #[test]
+fn cpu_lossless_all_progression_orders_write_cod_marker_and_round_trip() {
+    let mut pixels = Vec::with_capacity(64 * 64 * 3);
+    for y in 0..64u8 {
+        for x in 0..64u8 {
+            pixels.push(x.wrapping_mul(3).wrapping_add(y));
+            pixels.push(y.wrapping_mul(5).wrapping_add(x / 2));
+            pixels.push(x.wrapping_mul(7).wrapping_sub(y.wrapping_mul(2)));
+        }
+    }
+
+    for (progression, marker_byte) in [
+        (J2kProgressionOrder::Lrcp, 0x00),
+        (J2kProgressionOrder::Rlcp, 0x01),
+        (J2kProgressionOrder::Rpcl, 0x02),
+        (J2kProgressionOrder::Pcrl, 0x03),
+        (J2kProgressionOrder::Cprl, 0x04),
+    ] {
+        let samples = J2kLosslessSamples::new(&pixels, 64, 64, 3, 8, false).unwrap();
+        let encoded = encode_j2k_lossless(
+            samples,
+            &cpu_options()
+                .with_progression(progression)
+                .with_reversible_transform(ReversibleTransform::None53),
+        )
+        .unwrap_or_else(|err| panic!("{progression:?} encode failed: {err}"));
+
+        let cod_offset = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
+        assert_eq!(encoded.codestream[cod_offset + 5], marker_byte);
+        assert_eq!(
+            decode_native(&encoded.codestream).data,
+            pixels,
+            "{progression:?} round trip"
+        );
+    }
+}
+
+#[test]
 fn default_lossless_policy_enables_one_reversible_dwt_level_for_wsi_tiles() {
     let gray = vec![0; 64 * 64];
     let gray_samples = J2kLosslessSamples::new(&gray, 64, 64, 1, 8, false).unwrap();
@@ -222,6 +259,51 @@ fn cpu_lossless_round_trips_gray8() {
     assert_eq!(decoded.width, 7);
     assert_eq!(decoded.height, 5);
     assert_eq!(decoded.num_components, 1);
+    assert_eq!(decoded.bit_depth, 8);
+    assert_eq!(decoded.data, pixels);
+}
+
+#[test]
+fn cpu_lossless_round_trips_two_component_no_mct_with_strict_decode() {
+    let mut pixels = Vec::with_capacity(11 * 7 * 2);
+    for y in 0..7u8 {
+        for x in 0..11u8 {
+            pixels.push(x.wrapping_mul(17).wrapping_add(y.wrapping_mul(3)));
+            pixels.push(255u8.wrapping_sub(x.wrapping_mul(5).wrapping_add(y.wrapping_mul(11))));
+        }
+    }
+    let samples =
+        J2kLosslessSamples::new(&pixels, 11, 7, 2, 8, false).expect("2-component samples");
+
+    let encoded = encode_j2k_lossless(
+        samples,
+        &cpu_options().with_reversible_transform(ReversibleTransform::None53),
+    )
+    .expect("2-component lossless encode");
+
+    let cod_offset = marker_offset(&encoded.codestream, 0x52).expect("COD marker");
+    assert_eq!(
+        encoded.codestream[cod_offset + 8],
+        0,
+        "2-component output must not use MCT"
+    );
+
+    let image = Image::new(
+        &encoded.codestream,
+        &DecodeSettings {
+            resolve_palette_indices: true,
+            strict: true,
+            target_resolution: None,
+        },
+    )
+    .expect("strict parse of 2-component codestream");
+    let decoded = image
+        .decode_native()
+        .expect("strict decode of 2-component codestream");
+
+    assert_eq!(decoded.width, 11);
+    assert_eq!(decoded.height, 7);
+    assert_eq!(decoded.num_components, 2);
     assert_eq!(decoded.bit_depth, 8);
     assert_eq!(decoded.data, pixels);
 }
