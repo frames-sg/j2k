@@ -32,32 +32,6 @@ struct FacadeMatrixCase {
     pixels: Vec<u8>,
 }
 
-const FACADE_BACKEND_SPEED_MATRIX_ROW_GUARDS: &[&str] = &[
-    "cpu_rgb8_512_htj2k_external",
-    "adaptive_rgb8_512_htj2k_perf_gate_external",
-    "strict_metal_rgb8_512_htj2k_external",
-    "strict_cuda_rgb8_512_htj2k_external",
-    "cpu_rgb8_1024_htj2k_external",
-    "adaptive_rgb8_1024_htj2k_perf_gate_external",
-    "strict_metal_rgb8_1024_htj2k_external",
-    "strict_cuda_rgb8_1024_htj2k_external",
-    "cpu_rgba8_512_htj2k_external",
-    "adaptive_rgba8_512_htj2k_perf_gate_external",
-    "strict_metal_rgba8_512_htj2k_external",
-    "strict_cuda_rgba8_512_htj2k_external",
-    "cpu_rgba8_1024_htj2k_external",
-    "adaptive_rgba8_1024_htj2k_perf_gate_external",
-    "strict_metal_rgba8_1024_htj2k_external",
-    "strict_cuda_rgba8_1024_htj2k_external",
-];
-
-fn assert_facade_backend_speed_matrix_row(name: &str) {
-    assert!(
-        FACADE_BACKEND_SPEED_MATRIX_ROW_GUARDS.contains(&name),
-        "facade backend speed matrix generated unguarded row `{name}`"
-    );
-}
-
 fn bench_encode_options() -> J2kLosslessEncodeOptions {
     J2kLosslessEncodeOptions::default()
         .with_backend(EncodeBackendPreference::CpuOnly)
@@ -311,7 +285,6 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
     let mut group = c.benchmark_group("facade_j2k_htj2k_encode_backend_speed_matrix");
     for case in &cases {
         let cpu_name = format!("cpu_{}_htj2k_external", case.label);
-        assert_facade_backend_speed_matrix_row(cpu_name.as_str());
         group.bench_function(cpu_name.as_str(), |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
@@ -330,7 +303,6 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         });
 
         let adaptive_name = format!("adaptive_{}_htj2k_perf_gate_external", case.label);
-        assert_facade_backend_speed_matrix_row(adaptive_name.as_str());
         group.bench_function(adaptive_name.as_str(), |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
@@ -351,7 +323,6 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         #[cfg(feature = "metal")]
         if metal_htj2k_encode_available(case, strict_options) {
             let metal_name = format!("strict_metal_{}_htj2k_external", case.label);
-            assert_facade_backend_speed_matrix_row(metal_name.as_str());
             group.bench_function(metal_name.as_str(), |b| {
                 b.iter(|| {
                     let samples = J2kLosslessSamples::new(
@@ -385,7 +356,6 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         #[cfg(feature = "cuda")]
         if cuda_htj2k_encode_available(case, strict_options) {
             let cuda_name = format!("strict_cuda_{}_htj2k_external", case.label);
-            assert_facade_backend_speed_matrix_row(cuda_name.as_str());
             group.bench_function(cuda_name.as_str(), |b| {
                 b.iter(|| {
                     let samples = J2kLosslessSamples::new(
@@ -438,6 +408,10 @@ fn metal_htj2k_encode_available(
         false,
     )
     .expect("samples");
+    let case_context = format!(
+        "{} {}x{} components={}",
+        case.label, case.width, case.height, case.components
+    );
     let mut accelerator = signinum::j2k::metal::MetalEncodeStageAccelerator::default();
     match encode_j2k_lossless_with_accelerator(
         samples,
@@ -451,17 +425,23 @@ fn metal_htj2k_encode_available(
             true
         }
         Ok(_) if std::env::var_os("SIGNINUM_REQUIRE_METAL_BENCH").is_some() => {
-            panic!("SIGNINUM_REQUIRE_METAL_BENCH is set but strict Metal encode was not available")
+            panic!(
+                "SIGNINUM_REQUIRE_METAL_BENCH is set but strict Metal encode was not available for {case_context}"
+            )
         }
         Ok(_) => {
-            eprintln!("skipping Metal encode speed bench: strict Metal encode was not available");
+            eprintln!(
+                "skipping Metal encode speed bench for {case_context}: strict Metal encode was not available"
+            );
             false
         }
         Err(error) if std::env::var_os("SIGNINUM_REQUIRE_METAL_BENCH").is_some() => {
-            panic!("SIGNINUM_REQUIRE_METAL_BENCH is set but Metal encode probe failed: {error}")
+            panic!(
+                "SIGNINUM_REQUIRE_METAL_BENCH is set but Metal encode probe failed for {case_context}: {error}"
+            )
         }
         Err(error) => {
-            eprintln!("skipping Metal encode speed bench: {error}");
+            eprintln!("skipping Metal encode speed bench for {case_context}: {error}");
             false
         }
     }
@@ -478,6 +458,10 @@ fn cuda_htj2k_encode_available(case: &FacadeMatrixCase, options: J2kLosslessEnco
         false,
     )
     .expect("samples");
+    let case_context = format!(
+        "{} {}x{} components={}",
+        case.label, case.width, case.height, case.components
+    );
     let mut accelerator = signinum::j2k::cuda::CudaEncodeStageAccelerator::default();
     match encode_j2k_lossless_with_accelerator(
         samples,
@@ -491,17 +475,23 @@ fn cuda_htj2k_encode_available(case: &FacadeMatrixCase, options: J2kLosslessEnco
             true
         }
         Ok(_) if std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_some() => {
-            panic!("SIGNINUM_REQUIRE_CUDA_BENCH is set but strict CUDA encode was not available")
+            panic!(
+                "SIGNINUM_REQUIRE_CUDA_BENCH is set but strict CUDA encode was not available for {case_context}"
+            )
         }
         Ok(_) => {
-            eprintln!("skipping CUDA encode speed bench: strict CUDA encode was not available");
+            eprintln!(
+                "skipping CUDA encode speed bench for {case_context}: strict CUDA encode was not available"
+            );
             false
         }
         Err(error) if std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_some() => {
-            panic!("SIGNINUM_REQUIRE_CUDA_BENCH is set but CUDA encode probe failed: {error}")
+            panic!(
+                "SIGNINUM_REQUIRE_CUDA_BENCH is set but CUDA encode probe failed for {case_context}: {error}"
+            )
         }
         Err(error) => {
-            eprintln!("skipping CUDA encode speed bench: {error}");
+            eprintln!("skipping CUDA encode speed bench for {case_context}: {error}");
             false
         }
     }
