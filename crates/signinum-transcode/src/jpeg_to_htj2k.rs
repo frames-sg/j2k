@@ -711,9 +711,8 @@ fn jpeg_tile_batch_to_htj2k_with_scratch<
     timings.tile_count = prepared_tiles.len();
 
     let encode_start = Instant::now();
-    for prepared in prepared_tiles {
-        let tile_index = prepared.tile_index;
-        let encoded = encode_integer_batch_tile(prepared, options, encode_accelerator);
+    let encoded_tiles = encode_integer_prepared_tiles(prepared_tiles, options, encode_accelerator);
+    for (tile_index, encoded) in encoded_tiles {
         add_encode_timing_counters_from_result(&mut timings, &encoded);
         tile_results[tile_index] = Some(encoded);
     }
@@ -793,9 +792,8 @@ fn jpeg_float97_tile_batch_to_htj2k_with_scratch<
     timings.tile_count = prepared_tiles.len();
 
     let encode_start = Instant::now();
-    for prepared in prepared_tiles {
-        let tile_index = prepared.tile_index;
-        let encoded = encode_float97_batch_tile(prepared, options, encode_accelerator);
+    let encoded_tiles = encode_float97_prepared_tiles(prepared_tiles, options, encode_accelerator);
+    for (tile_index, encoded) in encoded_tiles {
         add_encode_timing_counters_from_result(&mut timings, &encoded);
         tile_results[tile_index] = Some(encoded);
     }
@@ -1582,6 +1580,68 @@ fn add_encode_timing_counters_from_result(
     timings.htj2k_encode_packetization_dispatches = timings
         .htj2k_encode_packetization_dispatches
         .saturating_add(tile.report.timings.htj2k_encode_packetization_dispatches);
+}
+
+fn encode_integer_prepared_tiles<E: J2kEncodeStageAccelerator>(
+    prepared_tiles: Vec<IntegerBatchTile>,
+    options: &JpegToHtj2kOptions,
+    encode_accelerator: &mut E,
+) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
+    if encode_accelerator.prefer_parallel_cpu_code_block_fallback() {
+        return prepared_tiles
+            .into_par_iter()
+            .map(|prepared| {
+                let tile_index = prepared.tile_index;
+                let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+                (
+                    tile_index,
+                    encode_integer_batch_tile(prepared, options, &mut cpu_accelerator),
+                )
+            })
+            .collect();
+    }
+
+    prepared_tiles
+        .into_iter()
+        .map(|prepared| {
+            let tile_index = prepared.tile_index;
+            (
+                tile_index,
+                encode_integer_batch_tile(prepared, options, encode_accelerator),
+            )
+        })
+        .collect()
+}
+
+fn encode_float97_prepared_tiles<E: J2kEncodeStageAccelerator>(
+    prepared_tiles: Vec<Float97BatchTile>,
+    options: &JpegToHtj2kOptions,
+    encode_accelerator: &mut E,
+) -> Vec<(usize, Result<EncodedTranscode, JpegToHtj2kError>)> {
+    if encode_accelerator.prefer_parallel_cpu_code_block_fallback() {
+        return prepared_tiles
+            .into_par_iter()
+            .map(|prepared| {
+                let tile_index = prepared.tile_index;
+                let mut cpu_accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+                (
+                    tile_index,
+                    encode_float97_batch_tile(prepared, options, &mut cpu_accelerator),
+                )
+            })
+            .collect();
+    }
+
+    prepared_tiles
+        .into_iter()
+        .map(|prepared| {
+            let tile_index = prepared.tile_index;
+            (
+                tile_index,
+                encode_float97_batch_tile(prepared, options, encode_accelerator),
+            )
+        })
+        .collect()
 }
 
 fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
