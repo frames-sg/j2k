@@ -101,6 +101,9 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
   CPU-policy win. Record the reason as algorithmic mismatch, transfer/sync
   overhead, missing batching, missing residency, too-small workload, benchmark
   mismatch, or genuinely-better CPU for that exact shape.
+- Gate documentation may include internal RCA evidence, but it is not a public
+  speed claim. Public claims still require `cargo xtask bench-report` and the
+  raw benchmark output bundle.
 - The release-blocking matrix must include representative Gray/RGB/RGBA,
   8/16-bit, 512/1024 tiles, batch 16/64, encode/decode/transcode, and
   lossless/lossy rows where supported. The publication matrix extends this to

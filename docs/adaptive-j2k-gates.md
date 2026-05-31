@@ -15,6 +15,24 @@ per `docs/bench.md`.
 - A logical GPU stage that loses its gate remains blocked until RCA either
   fixes optimization debt or reclassifies that exact shape as CPU-shaped.
 
+## Evidence Recording Template
+
+New adaptive gate reruns must record:
+
+- Commit SHA.
+- Host, OS, architecture, CPU/GPU, memory, driver/runtime versions.
+- Rust compiler version.
+- Exact command and required environment variables.
+- CPU-only Criterion interval.
+- Adaptive Criterion interval.
+- Strict device Criterion interval when available.
+- Stage Criterion intervals for every device-shaped stage under consideration.
+- Gate decision: `approved`, `candidate`, `blocked`, or `reclassified-cpu`.
+- RCA reason for every blocked logical GPU-shaped stage.
+
+Do not copy numbers into this file from a different host class. Apple Metal
+numbers and CUDA runner numbers are separate evidence sets.
+
 ## 2026-05-31 Metal RGB8 HTJ2K Encode
 
 Evidence:
