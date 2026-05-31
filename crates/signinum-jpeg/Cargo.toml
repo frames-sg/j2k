@@ -53,6 +53,10 @@ harness = false
 name = "corpus_report"
 harness = false
 
+[[bench]]
+name = "encode_cpu"
+harness = false
+
 [lints.rust]
 # SIMD backends use tightly-scoped intrinsics in `src/backend/`; keep unsafe
 # explicit there while the rest of the crate remains safe Rust.
