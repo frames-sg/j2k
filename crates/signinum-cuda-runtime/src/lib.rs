@@ -1964,6 +1964,11 @@ impl CudaContext {
                     });
                 }
 
+                let mut output = vec![0u8; output_bytes];
+                if output_bytes != 0 {
+                    output_buffer.copy_to_host(&mut output)?;
+                }
+
                 statuses
                     .into_iter()
                     .zip(kernel_jobs.iter())
@@ -1980,8 +1985,7 @@ impl CudaContext {
                         if end > output_bytes {
                             return Err(CudaError::LengthTooLarge { len: end });
                         }
-                        let mut data = vec![0u8; data_len];
-                        output_buffer.copy_range_to_host(start, &mut data)?;
+                        let data = output[start..end].to_vec();
                         Ok(CudaHtj2kEncodedCodeBlock {
                             data,
                             status,
