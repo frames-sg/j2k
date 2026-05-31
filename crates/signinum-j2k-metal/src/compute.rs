@@ -8388,9 +8388,17 @@ pub(crate) struct J2kResidentClassicBatchEncodeItem {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct J2kResidentEncodeStageStats {
+    pub(crate) coefficient_prep_duration: Duration,
+    pub(crate) deinterleave_rct_duration: Duration,
+    pub(crate) dwt53_duration: Duration,
+    pub(crate) coefficient_extract_duration: Duration,
     pub(crate) ht_table_build_duration: Duration,
     pub(crate) ht_buffer_allocation_duration: Duration,
     pub(crate) ht_command_encode_duration: Duration,
+    pub(crate) ht_block_encode_duration: Duration,
+    pub(crate) packet_block_prep_duration: Duration,
+    pub(crate) packetization_duration: Duration,
+    pub(crate) codestream_assembly_duration: Duration,
     pub(crate) code_block_count: usize,
 }
 
@@ -14565,7 +14573,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         let profile_stages = metal_profile_stages_enabled();
         let mut stage_stats = J2kResidentEncodeStageStats::default();
         let mut ht_table_build_duration = Duration::ZERO;
-        let mut ht_command_encode_duration = Duration::ZERO;
+        let mut ht_block_encode_duration = Duration::ZERO;
+        let mut packet_block_prep_duration = Duration::ZERO;
+        let mut packetization_duration = Duration::ZERO;
+        let mut codestream_assembly_duration = Duration::ZERO;
         let mut ht_table_build_started = profile_stages.then(Instant::now);
         let command_buffer = runtime.queue.new_command_buffer();
         label_command_buffer(command_buffer, "signinum-j2k htj2k resident encode batch");
@@ -14716,8 +14727,8 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             kernel.dispatch(encoder, pipeline, tier1_job_count);
             encoder.end_encoding();
             if let Some(started) = command_encode_started {
-                ht_command_encode_duration =
-                    ht_command_encode_duration.saturating_add(started.elapsed());
+                ht_block_encode_duration =
+                    ht_block_encode_duration.saturating_add(started.elapsed());
             }
         }
 
@@ -15144,7 +15155,6 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             stage_stats.ht_buffer_allocation_duration = started.elapsed();
         }
 
-        let command_encode_started = profile_stages.then(Instant::now);
         let resident_block_params = J2kResidentPacketBlockParams {
             block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
                 message: "HTJ2K Metal batch resident block count exceeds u32".to_string(),
@@ -15152,6 +15162,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             tier1_job_count,
         };
         if !resident_blocks.is_empty() {
+            let command_encode_started = profile_stages.then(Instant::now);
             let encoder = command_buffer.new_compute_command_encoder();
             label_compute_encoder(encoder, "HTJ2K packet block prep");
             encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
@@ -15180,11 +15191,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 },
             );
             encoder.end_encoding();
+            if let Some(started) = command_encode_started {
+                packet_block_prep_duration =
+                    packet_block_prep_duration.saturating_add(started.elapsed());
+            }
         }
 
         let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K Metal batch tile count exceeds u64".to_string(),
         })?;
+        let command_encode_started = profile_stages.then(Instant::now);
         let encoder = command_buffer.new_compute_command_encoder();
         label_compute_encoder(encoder, "HTJ2K packetization");
         encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
@@ -15215,7 +15231,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             },
         );
         encoder.end_encoding();
+        if let Some(started) = command_encode_started {
+            packetization_duration = packetization_duration.saturating_add(started.elapsed());
+        }
 
+        let command_encode_started = profile_stages.then(Instant::now);
         let encoder = command_buffer.new_compute_command_encoder();
         label_compute_encoder(encoder, "HTJ2K codestream assembly");
         encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
@@ -15240,11 +15260,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             },
         );
         encoder.end_encoding();
-        command_buffer.commit();
         if let Some(started) = command_encode_started {
-            ht_command_encode_duration =
-                ht_command_encode_duration.saturating_add(started.elapsed());
+            codestream_assembly_duration =
+                codestream_assembly_duration.saturating_add(started.elapsed());
         }
+        command_buffer.commit();
 
         for tile in prepared_tiles {
             retained_command_buffers.push(tile.prepare_command_buffer);
@@ -15273,7 +15293,14 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         retained_buffers.push(codestream_job_buffer);
 
         stage_stats.ht_table_build_duration = ht_table_build_duration;
-        stage_stats.ht_command_encode_duration = ht_command_encode_duration;
+        stage_stats.ht_block_encode_duration = ht_block_encode_duration;
+        stage_stats.packet_block_prep_duration = packet_block_prep_duration;
+        stage_stats.packetization_duration = packetization_duration;
+        stage_stats.codestream_assembly_duration = codestream_assembly_duration;
+        stage_stats.ht_command_encode_duration = ht_block_encode_duration
+            .saturating_add(packet_block_prep_duration)
+            .saturating_add(packetization_duration)
+            .saturating_add(codestream_assembly_duration);
         stage_stats.code_block_count = tier1_jobs.len();
 
         Ok(J2kPendingResidentLosslessCodestreamBatch {
