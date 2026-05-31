@@ -147,8 +147,8 @@ jobs:
       # libnvjpeg2k (set NVJPEG2K_LIB_DIR / NVJPEG2K_INCLUDE_DIR if it is not under
       # /usr/local/cuda). Set the repo variable SIGNINUM_BENCH_SVS to an .svs on
       # the runner to extract real WSI tiles; or SIGNINUM_BENCH_JPEG_DIR to a
-      # pre-extracted tile directory. With neither, it runs the bundled 16x16
-      # fixture as a build/link/run smoke test of the FFI.
+      # pre-extracted tile directory. With neither, it runs the committed pancreas
+      # tile corpus and requires at least 100 benchmark tiles.
       - name: NVIDIA baseline comparison (nvJPEG + nvJPEG2000)
         if: ${{ inputs.run-nvidia-baseline }}
         env:
@@ -160,7 +160,11 @@ jobs:
         run: |
           set -e
           DIR="${SIGNINUM_BENCH_JPEG_DIR:-}"
-          if [ -z "$DIR" ] && [ -n "${SIGNINUM_BENCH_SVS:-}" ] && [ -f "${SIGNINUM_BENCH_SVS}" ]; then
+          if [ -z "$DIR" ] && [ -n "${SIGNINUM_BENCH_SVS:-}" ]; then
+            if [ ! -f "${SIGNINUM_BENCH_SVS}" ]; then
+              echo "Configured SIGNINUM_BENCH_SVS does not exist: ${SIGNINUM_BENCH_SVS}" >&2
+              exit 1
+            fi
             echo "extracting benchmark tiles from ${SIGNINUM_BENCH_SVS}"
             cargo run --release -p signinum-nvidia-baseline --bin svs_extract -- \
               "${SIGNINUM_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" \
@@ -182,6 +186,7 @@ jobs:
             --min-tiles 100 \
             --json target/transcode_compare.json \
             --csv target/transcode_compare.csv
+          jq -e . target/transcode_compare.json >/dev/null
       - name: Upload NVIDIA baseline comparison artifacts
         if: ${{ inputs.run-nvidia-baseline && always() }}
         uses: actions/upload-artifact@v4

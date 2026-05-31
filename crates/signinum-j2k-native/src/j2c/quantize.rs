@@ -8,6 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::math::{floor_f32, log2_f32, pow2i, round_f32};
+use crate::J2kSubBandType;
 
 /// Quantization parameters for a single subband.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,15 @@ pub struct IrreversibleQuantizationSubbandScales {
     pub low_high: f32,
     /// Multiplier for HH subbands.
     pub high_high: f32,
+}
+
+/// Public JPEG 2000 irreversible quantization step-size tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrreversibleQuantizationStep {
+    /// Quantization step-size exponent.
+    pub exponent: u8,
+    /// Quantization step-size mantissa.
+    pub mantissa: u16,
 }
 
 impl Default for IrreversibleQuantizationSubbandScales {
@@ -57,6 +67,15 @@ impl IrreversibleQuantizationSubbandScales {
             _ => self.high_high,
         }
     }
+
+    fn for_subband(self, subband: J2kSubBandType) -> f32 {
+        match subband {
+            J2kSubBandType::LowLow => self.low_low,
+            J2kSubBandType::HighLow => self.high_low,
+            J2kSubBandType::LowHigh => self.low_high,
+            J2kSubBandType::HighHigh => self.high_high,
+        }
+    }
 }
 
 impl QuantStepSize {
@@ -85,6 +104,41 @@ impl QuantStepSize {
             exponent: u16::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u16"),
             mantissa: u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
         }
+    }
+}
+
+/// Compute the exact irreversible 9/7 quantization step tuple the native encoder
+/// writes for one subband under a global plus per-subband profile.
+#[must_use]
+pub fn irreversible_quantization_step_for_subband(
+    bit_depth: u8,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    subband: J2kSubBandType,
+) -> IrreversibleQuantizationStep {
+    let base_step = QuantStepSize {
+        exponent: bit_depth as u16 + guard_bits as u16,
+        mantissa: 0,
+    };
+    let scale =
+        if irreversible_quantization_scale.is_finite() && irreversible_quantization_scale > 0.0 {
+            irreversible_quantization_scale
+        } else {
+            1.0
+        };
+    let subband_scales = if irreversible_quantization_subband_scales.all_valid() {
+        irreversible_quantization_subband_scales
+    } else {
+        IrreversibleQuantizationSubbandScales::default()
+    };
+    let step_size = QuantStepSize::from_delta(
+        bit_depth,
+        base_step.delta(bit_depth) * scale * subband_scales.for_subband(subband),
+    );
+    IrreversibleQuantizationStep {
+        exponent: u8::try_from(step_size.exponent).expect("step exponent is clamped to u8 range"),
+        mantissa: step_size.mantissa,
     }
 }
 

@@ -2,12 +2,10 @@
 
 //! Shared scalar oracle: float 9/7 bands into prequantized HTJ2K code-blocks.
 //!
-//! This module re-derives the native encoder's irreversible 9/7 scalar
-//! quantization and code-block layout (see
-//! `signinum-j2k-native/src/j2c/quantize.rs` and the `prepare_subband` /
-//! `subband_range_bits` helpers in `.../j2c/encode.rs`) in `f64`, so both GPU
-//! backends can compare their fused code-block kernels against one
-//! authoritative CPU reference instead of each re-deriving the math.
+//! This module uses the native encoder's public irreversible 9/7 quantization
+//! step helper plus the native code-block layout rules, so both GPU backends can
+//! compare their fused code-block kernels against one authoritative CPU
+//! reference instead of each re-deriving the math.
 //!
 //! The re-derivation is anchored to native truth by a codestream pin test (see
 //! the module tests): encoding the oracle's prequantized output reproduces the
@@ -16,8 +14,8 @@
 use crate::accelerator::Htj2k97CodeBlockOptions;
 use crate::dct97_2d::Dwt97TwoDimensional;
 use signinum_j2k_native::{
-    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    irreversible_quantization_step_for_subband, J2kSubBandType, PrequantizedHtj2k97CodeBlock,
+    PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 
 /// Quantize one level of float 9/7 bands into a prequantized HTJ2K component.
@@ -177,36 +175,15 @@ fn quantize_subband_coefficients(
 }
 
 /// Shared `(exponent, mantissa)` for the irreversible 9/7 quantizer.
-///
-/// Mirrors native `QuantStepSize::from_delta` applied to
-/// `base_step.delta · scale`, where `base_step.delta = 2^(−guard_bits)`.
 fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> (u8, u16) {
-    let base_delta = pow2i_f64(-i32::from(options.guard_bits))
-        * f64::from(options.irreversible_quantization_scale)
-        * f64::from(htj2k97_subband_scale(options, sub_band_type));
-    let floor_log2 = base_delta.log2().floor() as i32;
-    let mut exponent = i32::from(options.bit_depth) - floor_log2;
-    let normalized = base_delta / pow2i_f64(floor_log2);
-    let mut mantissa = ((normalized - 1.0) * 2048.0).round() as i32;
-
-    if mantissa >= 2048 {
-        exponent -= 1;
-        mantissa = 0;
-    }
-
-    (
-        u8::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u8"),
-        u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
-    )
-}
-
-fn htj2k97_subband_scale(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> f32 {
-    match sub_band_type {
-        J2kSubBandType::LowLow => options.irreversible_quantization_subband_scales.low_low,
-        J2kSubBandType::HighLow => options.irreversible_quantization_subband_scales.high_low,
-        J2kSubBandType::LowHigh => options.irreversible_quantization_subband_scales.low_high,
-        J2kSubBandType::HighHigh => options.irreversible_quantization_subband_scales.high_high,
-    }
+    let step = irreversible_quantization_step_for_subband(
+        options.bit_depth,
+        options.guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+        sub_band_type,
+    );
+    (step.exponent, step.mantissa)
 }
 
 fn pow2i_f64(exp: i32) -> f64 {
