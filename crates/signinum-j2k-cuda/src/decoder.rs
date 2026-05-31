@@ -833,6 +833,7 @@ struct CudaDecodeStageTimings {
     ht_cleanup: u128,
     ht_refine: u128,
     dequant: u128,
+    ht_dispatch_count: usize,
     idwt: u128,
     dequant_dispatch_count: usize,
     idwt_dispatch_count: usize,
@@ -847,6 +848,10 @@ impl CudaDecodeStageTimings {
         report.ht_refine_us = report.ht_refine_us.saturating_add(self.ht_refine);
         report.dequant_us = report.dequant_us.saturating_add(self.dequant);
         report.idwt_us = report.idwt_us.saturating_add(self.idwt);
+        report.detail.ht_dispatch_count = report
+            .detail
+            .ht_dispatch_count
+            .saturating_add(self.ht_dispatch_count);
         report.detail.dequant_dispatch_count = report
             .detail
             .dequant_dispatch_count
@@ -1150,10 +1155,6 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
         .saturating_add(store_stats.decode_kernel_dispatches());
     report.dispatch_count = dispatches;
     component.timings.add_to_report(report);
-    report.detail.ht_dispatch_count = report
-        .detail
-        .ht_dispatch_count
-        .saturating_add(component.decode_dispatches);
     report.store_us = report.store_us.saturating_add(store_us);
     report.detail.store_dispatch_count = report
         .detail
@@ -1308,11 +1309,6 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .sum::<usize>();
     for component in &decoded_components {
         component.timings.add_to_report(&mut color.report);
-        color.report.detail.ht_dispatch_count = color
-            .report
-            .detail
-            .ht_dispatch_count
-            .saturating_add(component.decode_dispatches);
     }
     let addends = if color.mct {
         let mct_len = u32::try_from(checked_area(
@@ -1538,6 +1534,19 @@ fn decode_cuda_component_plan(
     Ok(component)
 }
 
+#[cfg(any(feature = "cuda-runtime", test))]
+fn split_htj2k_subband_decode_dispatches(kernel_dispatches: usize) -> (usize, usize) {
+    if kernel_dispatches == 0 {
+        return (0, 0);
+    }
+
+    let dequant_dispatches = usize::from(kernel_dispatches > 1);
+    (
+        kernel_dispatches.saturating_sub(dequant_dispatches),
+        dequant_dispatches,
+    )
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn decode_cuda_component_plan_with_resources(
     context: &signinum_cuda_runtime::CudaContext,
@@ -1574,12 +1583,15 @@ fn decode_cuda_component_plan_with_resources(
             .saturating_add(stage_timings.ht_cleanup_us);
         timings.ht_refine = timings.ht_refine.saturating_add(stage_timings.ht_refine_us);
         timings.dequant = timings.dequant.saturating_add(stage_timings.dequant_us);
-        if stage_timings.dequant_us > 0 {
-            timings.dequant_dispatch_count = timings.dequant_dispatch_count.saturating_add(1);
-        }
-        dispatches = dispatches.saturating_add(output.execution().kernel_dispatches());
-        decode_dispatches =
-            decode_dispatches.saturating_add(output.execution().decode_kernel_dispatches());
+        let execution = output.execution();
+        let (ht_dispatches, dequant_dispatches) =
+            split_htj2k_subband_decode_dispatches(execution.kernel_dispatches());
+        timings.ht_dispatch_count = timings.ht_dispatch_count.saturating_add(ht_dispatches);
+        timings.dequant_dispatch_count = timings
+            .dequant_dispatch_count
+            .saturating_add(dequant_dispatches);
+        dispatches = dispatches.saturating_add(execution.kernel_dispatches());
+        decode_dispatches = decode_dispatches.saturating_add(execution.decode_kernel_dispatches());
         let (buffer, _, _) = output.into_parts();
         bands.push(CudaCoefficientBand {
             band_id: subband.band_id,
@@ -1971,5 +1983,18 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         Ok(ReadySubmission::from_result(
             self.decode_region_scaled_to_surface_impl(session, fmt, roi, scale, backend),
         ))
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::split_htj2k_subband_decode_dispatches;
+
+    #[test]
+    fn htj2k_decode_dispatch_split_separates_ht_and_dequant_counts() {
+        assert_eq!(split_htj2k_subband_decode_dispatches(0), (0, 0));
+        assert_eq!(split_htj2k_subband_decode_dispatches(1), (1, 0));
+        assert_eq!(split_htj2k_subband_decode_dispatches(2), (1, 1));
+        assert_eq!(split_htj2k_subband_decode_dispatches(3), (2, 1));
     }
 }
