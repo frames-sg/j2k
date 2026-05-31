@@ -3547,7 +3547,7 @@ impl CudaContext {
         ];
         let geometry = htj2k_encode_codeblock_launch_geometry(1)
             .ok_or(CudaError::LengthTooLarge { len: 1 })?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3586,7 +3586,7 @@ impl CudaContext {
         ];
         let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     #[allow(clippy::too_many_arguments)]
