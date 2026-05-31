@@ -48,7 +48,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: ${{ matrix.package }}
-          release-type: patch
+          release-type: major
 
   docs:
     runs-on: ubuntu-latest
