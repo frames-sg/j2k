@@ -36,10 +36,11 @@ use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 
 /// Default irreversible quantization multiplier for JPEG direct 9/7 HTJ2K.
 ///
-/// This is intentionally coarser than the native encoder's near-lossless
-/// `1.0` default so the JPEG transcode profile behaves as a distribution
-/// profile rather than paying irreversible loss without file-size benefit.
-pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 5.0;
+/// Empirically rate-match the explicit lossy comparison profile near the
+/// nvJPEG2000 default output size on the bundled WSI tiles. Lower values
+/// produce larger/higher-quality codestreams; `1.0` matches the native encoder
+/// default but overshoots the NVIDIA baseline size for this transcode path.
+pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 1.9;
 
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
