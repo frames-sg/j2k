@@ -1313,10 +1313,14 @@ fn fmt_psnr(psnr: Option<f64>) -> String {
 }
 
 fn nv_status(nvidia: &NvidiaResult) -> String {
-    match nvidia.error {
-        Some(NvBaselineError::NotBuilt) => "n/a (not built)".to_string(),
-        Some(NvBaselineError::Stage(code)) => format!("n/a (err {code})"),
-        None => "n/a".to_string(),
+    if nvidia.ran {
+        "ok".to_string()
+    } else {
+        match nvidia.error {
+            Some(NvBaselineError::NotBuilt) => "n/a (not built)".to_string(),
+            Some(NvBaselineError::Stage(code)) => format!("n/a (err {code})"),
+            None => "n/a".to_string(),
+        }
     }
 }
 
@@ -1810,5 +1814,23 @@ mod tests {
             "signinum_cuda_transform_cpu_ht,true,true,true,false,n/a (not built),1.900000,123,"
         ));
         assert!(!csv.contains(",123,0.00000000,"));
+    }
+
+    #[test]
+    fn csv_report_marks_successful_nvidia_status_as_ok() {
+        let csv = csv_report(
+            &[],
+            0.0,
+            &[],
+            0,
+            &SigninumResult::default(),
+            &NvidiaResult {
+                ran: true,
+                output_bytes: 623,
+                ..NvidiaResult::default()
+            },
+        );
+
+        assert!(csv.contains("nvidia_reused_session_serial,false,true,true,true,ok,,623,"));
     }
 }

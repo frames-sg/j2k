@@ -186,7 +186,7 @@ jobs:
             --min-tiles 100 \
             --json target/transcode_compare.json \
             --csv target/transcode_compare.csv
-          jq -e . target/transcode_compare.json >/dev/null
+          python3 -m json.tool target/transcode_compare.json >/dev/null
       - name: Upload NVIDIA baseline comparison artifacts
         if: ${{ inputs.run-nvidia-baseline && always() }}
         uses: actions/upload-artifact@v4
