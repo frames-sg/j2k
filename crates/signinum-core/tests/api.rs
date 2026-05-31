@@ -307,6 +307,14 @@ fn backend_capabilities_resolve_auto_and_explicit_requests() {
     assert!(!caps.supports(BackendRequest::Cuda));
 }
 
+#[test]
+fn backend_request_exposes_adaptive_cpu_and_strict_aliases() {
+    assert_eq!(BackendRequest::ACCELERATED, BackendRequest::Auto);
+    assert_eq!(BackendRequest::CPU_ONLY, BackendRequest::Cpu);
+    assert_eq!(BackendRequest::STRICT_METAL, BackendRequest::Metal);
+    assert_eq!(BackendRequest::STRICT_CUDA, BackendRequest::Cuda);
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DummySurface {
     backend: BackendKind,

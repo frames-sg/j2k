@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "metal", feature = "cuda"))]
 use signinum::j2k::J2kEncodeStageAccelerator;
 use signinum::j2k::{
     encode_j2k_lossless as facade_encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode,
@@ -9,7 +9,7 @@ use signinum::j2k::{
 };
 #[cfg(any(feature = "metal", feature = "cuda"))]
 use signinum::j2k::{encode_j2k_lossless_with_accelerator, BackendKind};
-use signinum_test_support::{patterned_gray8, patterned_rgb8};
+use signinum_test_support::patterned_rgb8;
 
 const TILE_SIDE: u32 = 128;
 const MATRIX_SIDE: u32 = 512;
@@ -119,17 +119,19 @@ fn bench_facade_cpu_matrix(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_facade_hybrid_matrix(c: &mut Criterion) {
+fn bench_facade_adaptive_matrix(c: &mut Criterion) {
     let pixels = patterned_rgb8(MATRIX_SIDE, MATRIX_SIDE);
-    let auto_classic =
-        matrix_encode_options(EncodeBackendPreference::Auto, J2kBlockCodingMode::Classic);
+    let auto_classic = matrix_encode_options(
+        EncodeBackendPreference::ACCELERATED,
+        J2kBlockCodingMode::Classic,
+    );
     let auto_htj2k = matrix_encode_options(
-        EncodeBackendPreference::Auto,
+        EncodeBackendPreference::ACCELERATED,
         J2kBlockCodingMode::HighThroughput,
     );
 
-    let mut group = c.benchmark_group("facade_j2k_lossless_encode_hybrid_matrix");
-    group.bench_function("facade_auto_rgb8_512_classic_external", |b| {
+    let mut group = c.benchmark_group("facade_j2k_lossless_encode_adaptive_matrix");
+    group.bench_function("adaptive_rgb8_512_classic_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
                 black_box(pixels.as_slice()),
@@ -141,12 +143,12 @@ fn bench_facade_hybrid_matrix(c: &mut Criterion) {
             )
             .expect("valid rgb8 samples");
             let encoded =
-                facade_encode_j2k_lossless(samples, &auto_classic).expect("facade Auto encode");
+                facade_encode_j2k_lossless(samples, &auto_classic).expect("facade adaptive encode");
             black_box((encoded.backend, encoded.codestream.len()));
         });
     });
 
-    group.bench_function("facade_auto_rgb8_512_htj2k_external", |b| {
+    group.bench_function("adaptive_rgb8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
                 black_box(pixels.as_slice()),
@@ -157,8 +159,8 @@ fn bench_facade_hybrid_matrix(c: &mut Criterion) {
                 false,
             )
             .expect("valid rgb8 samples");
-            let encoded =
-                facade_encode_j2k_lossless(samples, &auto_htj2k).expect("facade Auto HTJ2K encode");
+            let encoded = facade_encode_j2k_lossless(samples, &auto_htj2k)
+                .expect("facade adaptive HTJ2K encode");
             black_box((encoded.backend, encoded.codestream.len()));
         });
     });
@@ -217,52 +219,75 @@ fn bench_facade_hybrid_matrix(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
-    let pixels = patterned_gray8(MATRIX_SIDE, MATRIX_SIDE);
+    let pixels = patterned_rgb8(MATRIX_SIDE, MATRIX_SIDE);
     let cpu_options = matrix_encode_options(
-        EncodeBackendPreference::CpuOnly,
+        EncodeBackendPreference::CPU_ONLY,
         J2kBlockCodingMode::HighThroughput,
     );
-    let device_options = matrix_encode_options(
-        EncodeBackendPreference::RequireDevice,
+    let adaptive_options = matrix_encode_options(
+        EncodeBackendPreference::ACCELERATED,
+        J2kBlockCodingMode::HighThroughput,
+    );
+    #[cfg(any(feature = "metal", feature = "cuda"))]
+    let strict_options = matrix_encode_options(
+        EncodeBackendPreference::STRICT_DEVICE,
         J2kBlockCodingMode::HighThroughput,
     );
 
     let mut group = c.benchmark_group("facade_j2k_htj2k_encode_backend_speed_matrix");
-    group.bench_function("cpu_gray8_512_htj2k_external", |b| {
+    group.bench_function("cpu_rgb8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
                 black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
-                1,
+                3,
                 8,
                 false,
             )
-            .expect("valid gray8 samples");
+            .expect("valid rgb8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &cpu_options).expect("CPU HTJ2K encode");
             black_box(encoded.codestream.len());
         });
     });
 
+    group.bench_function("adaptive_rgb8_512_htj2k_perf_gate_external", |b| {
+        b.iter(|| {
+            let samples = J2kLosslessSamples::new(
+                black_box(pixels.as_slice()),
+                MATRIX_SIDE,
+                MATRIX_SIDE,
+                3,
+                8,
+                false,
+            )
+            .expect("valid rgb8 samples");
+            let encoded = facade_encode_j2k_lossless(samples, &adaptive_options)
+                .expect("adaptive HTJ2K encode");
+            black_box((encoded.backend, encoded.codestream.len()));
+        });
+    });
+
     #[cfg(feature = "metal")]
-    {
-        group.bench_function("metal_gray8_512_htj2k_require_device_external", |b| {
+    if metal_htj2k_encode_available(&pixels, strict_options) {
+        group.bench_function("strict_metal_rgb8_512_htj2k_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
                     black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
-                    1,
+                    3,
                     8,
                     false,
                 )
-                .expect("valid gray8 samples");
+                .expect("valid rgb8 samples");
                 let mut accelerator = signinum::j2k::metal::MetalEncodeStageAccelerator::default();
                 let encoded = encode_j2k_lossless_with_accelerator(
                     samples,
-                    &device_options,
+                    &strict_options,
                     BackendKind::Metal,
                     &mut accelerator,
                 )
@@ -278,22 +303,22 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
     }
 
     #[cfg(feature = "cuda")]
-    if cuda_htj2k_encode_available(&pixels, device_options) {
-        group.bench_function("cuda_gray8_512_htj2k_require_device_external", |b| {
+    if cuda_htj2k_encode_available(&pixels, strict_options) {
+        group.bench_function("strict_cuda_rgb8_512_htj2k_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
                     black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
-                    1,
+                    3,
                     8,
                     false,
                 )
-                .expect("valid gray8 samples");
+                .expect("valid rgb8 samples");
                 let mut accelerator = signinum::j2k::cuda::CudaEncodeStageAccelerator::default();
                 let encoded = encode_j2k_lossless_with_accelerator(
                     samples,
-                    &device_options,
+                    &strict_options,
                     BackendKind::Cuda,
                     &mut accelerator,
                 )
@@ -315,10 +340,43 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "metal")]
+fn metal_htj2k_encode_available(pixels: &[u8], options: J2kLosslessEncodeOptions) -> bool {
+    let samples =
+        J2kLosslessSamples::new(pixels, MATRIX_SIDE, MATRIX_SIDE, 3, 8, false).expect("samples");
+    let mut accelerator = signinum::j2k::metal::MetalEncodeStageAccelerator::default();
+    match encode_j2k_lossless_with_accelerator(
+        samples,
+        &options,
+        BackendKind::Metal,
+        &mut accelerator,
+    ) {
+        Ok(encoded)
+            if encoded.backend == BackendKind::Metal && accelerator.dispatch_report().any() =>
+        {
+            true
+        }
+        Ok(_) if std::env::var_os("SIGNINUM_REQUIRE_METAL_BENCH").is_some() => {
+            panic!("SIGNINUM_REQUIRE_METAL_BENCH is set but strict Metal encode was not available")
+        }
+        Ok(_) => {
+            eprintln!("skipping Metal encode speed bench: strict Metal encode was not available");
+            false
+        }
+        Err(error) if std::env::var_os("SIGNINUM_REQUIRE_METAL_BENCH").is_some() => {
+            panic!("SIGNINUM_REQUIRE_METAL_BENCH is set but Metal encode probe failed: {error}")
+        }
+        Err(error) => {
+            eprintln!("skipping Metal encode speed bench: {error}");
+            false
+        }
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn cuda_htj2k_encode_available(pixels: &[u8], options: J2kLosslessEncodeOptions) -> bool {
     let samples =
-        J2kLosslessSamples::new(pixels, MATRIX_SIDE, MATRIX_SIDE, 1, 8, false).expect("samples");
+        J2kLosslessSamples::new(pixels, MATRIX_SIDE, MATRIX_SIDE, 3, 8, false).expect("samples");
     let mut accelerator = signinum::j2k::cuda::CudaEncodeStageAccelerator::default();
     match encode_j2k_lossless_with_accelerator(
         samples,
@@ -352,7 +410,7 @@ criterion_group!(
     benches,
     bench_facade_j2k_encode,
     bench_facade_cpu_matrix,
-    bench_facade_hybrid_matrix,
+    bench_facade_adaptive_matrix,
     bench_facade_backend_speed_matrix
 );
 criterion_main!(benches);

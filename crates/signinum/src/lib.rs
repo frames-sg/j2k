@@ -84,11 +84,17 @@ pub mod j2k {
         recode_j2k_to_htj2k_lossless, scratch, view, BackendKind, BackendRequest, BufferError,
         CodecError, CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome,
         DecodeRowsError, DecoderContext, Downscale, EncodeBackendPreference, EncodedJ2k,
-        ImageCodec, ImageDecode, ImageDecodeRows, J2kBlockCodingMode, J2kCodec, J2kContext,
-        J2kDecoder, J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kEncodeValidation,
-        J2kError, J2kLosslessEncodeOptions, J2kLosslessSamples, J2kProgressionOrder,
-        J2kScratchPool, J2kToHtj2kMode, J2kToHtj2kOptions, J2kToHtj2kReport, J2kView,
-        PassthroughCandidate, PassthroughDecision, PassthroughRejectReason,
+        ImageCodec, ImageDecode, ImageDecodeRows, J2kAdaptiveBackendRequest,
+        J2kAdaptiveBenchmarkEvidence, J2kAdaptiveBenchmarkScope, J2kAdaptiveBenchmarks,
+        J2kAdaptiveCodecMode, J2kAdaptiveGatePolicy, J2kAdaptiveOperation,
+        J2kAdaptiveOutputResidency, J2kAdaptiveQualityMode, J2kAdaptiveRcaFinding,
+        J2kAdaptiveRcaReason, J2kAdaptiveRouteKind, J2kAdaptiveRoutePlanner,
+        J2kAdaptiveRouteReport, J2kAdaptiveStage, J2kAdaptiveStageDecision,
+        J2kAdaptiveStageGateStatus, J2kAdaptiveStageOwner, J2kAdaptiveWorkload, J2kBlockCodingMode,
+        J2kCodec, J2kContext, J2kDecoder, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+        J2kEncodeValidation, J2kError, J2kLosslessEncodeOptions, J2kLosslessSamples,
+        J2kProgressionOrder, J2kScratchPool, J2kToHtj2kMode, J2kToHtj2kOptions, J2kToHtj2kReport,
+        J2kView, PassthroughCandidate, PassthroughDecision, PassthroughRejectReason,
         PassthroughRequirements, PixelFormat, Rect, ReencodedHtj2k, ReversibleTransform, RowSink,
         TileBatchDecode,
     };
@@ -109,17 +115,27 @@ pub mod j2k {
 
     /// Encode interleaved samples into a raw JPEG 2000 lossless codestream.
     ///
-    /// With [`EncodeBackendPreference::Auto`] or
-    /// [`EncodeBackendPreference::PreferDevice`], the facade tries compiled
-    /// device encode-stage accelerators first and falls back to CPU only when
-    /// no device stage dispatches. Device kernel and validation failures are
-    /// returned to the caller.
+    /// With [`EncodeBackendPreference::Auto`], the facade uses adaptive
+    /// accelerated routing: CPU-shaped stages stay on CPU and device-shaped
+    /// stages run on Metal/CUDA only for benchmark-approved workload shapes.
+    /// [`EncodeBackendPreference::RequireDevice`] keeps the strict diagnostic
+    /// path and fails instead of silently falling back when required device
+    /// stages do not dispatch.
     pub fn encode_j2k_lossless(
         samples: J2kLosslessSamples<'_>,
         options: &J2kLosslessEncodeOptions,
     ) -> Result<EncodedJ2k, J2kError> {
         if options.backend == EncodeBackendPreference::CpuOnly {
             return signinum_j2k::encode_j2k_lossless(samples, options);
+        }
+        if matches!(
+            options.backend,
+            EncodeBackendPreference::Auto | EncodeBackendPreference::PreferDevice
+        ) {
+            let route = adaptive_lossless_encode_route(samples, *options)?;
+            if route.route_kind == J2kAdaptiveRouteKind::CpuOnly {
+                return signinum_j2k::encode_j2k_lossless(samples, options);
+            }
         }
 
         if let Some(encoded) = try_metal_encode(samples, *options)? {
@@ -130,6 +146,30 @@ pub mod j2k {
         }
 
         signinum_j2k::encode_j2k_lossless(samples, options)
+    }
+
+    fn adaptive_lossless_encode_route(
+        samples: J2kLosslessSamples<'_>,
+        options: J2kLosslessEncodeOptions,
+    ) -> Result<J2kAdaptiveRouteReport, J2kError> {
+        let codec_mode = match options.block_coding_mode {
+            J2kBlockCodingMode::Classic => J2kAdaptiveCodecMode::ClassicJ2k,
+            J2kBlockCodingMode::HighThroughput => J2kAdaptiveCodecMode::Htj2k,
+        };
+        let workload = J2kAdaptiveWorkload::new(
+            J2kAdaptiveOperation::Encode,
+            codec_mode,
+            J2kAdaptiveQualityMode::Lossless,
+            samples.components,
+            samples.bit_depth,
+            (samples.width, samples.height),
+            1,
+        );
+        J2kAdaptiveRoutePlanner::detected().plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &J2kAdaptiveBenchmarks::default(),
+        )
     }
 
     #[cfg(feature = "metal")]
@@ -180,7 +220,7 @@ pub mod j2k {
         accelerator: &mut impl J2kEncodeStageAccelerator,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
         let requested_backend = options.backend;
-        let device_options = options.with_backend(EncodeBackendPreference::PreferDevice);
+        let device_options = options.with_backend(EncodeBackendPreference::ACCELERATED);
         let before = accelerator.dispatch_report();
         let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
             samples,

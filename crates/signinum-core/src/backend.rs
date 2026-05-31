@@ -30,6 +30,18 @@ pub enum BackendRequest {
     Cuda,
 }
 
+impl BackendRequest {
+    /// Adaptive accelerated route: let the codec choose CPU and device stages
+    /// for benchmark-approved workload shapes.
+    pub const ACCELERATED: Self = Self::Auto;
+    /// Explicit portable CPU route.
+    pub const CPU_ONLY: Self = Self::Cpu;
+    /// Strict Metal route; fail when Metal is unavailable or unsupported.
+    pub const STRICT_METAL: Self = Self::Metal;
+    /// Strict CUDA route; fail when CUDA is unavailable or unsupported.
+    pub const STRICT_CUDA: Self = Self::Cuda;
+}
+
 /// CPU SIMD feature flags detected for the current host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CpuFeatures {

@@ -37,6 +37,15 @@ pub use batch::{
     TileRegionScaledDecodeJob,
 };
 
+pub use adapter::adaptive_route::{
+    J2kAdaptiveBackendRequest, J2kAdaptiveBenchmarkEvidence, J2kAdaptiveBenchmarkScope,
+    J2kAdaptiveBenchmarks, J2kAdaptiveCodecMode, J2kAdaptiveGatePolicy, J2kAdaptiveOperation,
+    J2kAdaptiveOutputResidency, J2kAdaptiveQualityMode, J2kAdaptiveRcaFinding,
+    J2kAdaptiveRcaReason, J2kAdaptiveRouteKind, J2kAdaptiveRoutePlanner, J2kAdaptiveRouteReport,
+    J2kAdaptiveStage, J2kAdaptiveStageDecision, J2kAdaptiveStageGateStatus, J2kAdaptiveStageOwner,
+    J2kAdaptiveWorkload,
+};
+
 pub use signinum_j2k_native::CpuDecodeParallelism;
 
 pub use encode::{
