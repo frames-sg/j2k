@@ -9,7 +9,7 @@ use signinum::j2k::{
 };
 #[cfg(any(feature = "metal", feature = "cuda"))]
 use signinum::j2k::{encode_j2k_lossless_with_accelerator, BackendKind};
-use signinum_test_support::patterned_rgb8;
+use signinum_test_support::{patterned_gray8, patterned_rgb8};
 
 const TILE_SIDE: u32 = 128;
 const MATRIX_SIDE: u32 = 512;
@@ -218,28 +218,28 @@ fn bench_facade_hybrid_matrix(c: &mut Criterion) {
 }
 
 fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
-    let pixels = patterned_rgb8(MATRIX_SIDE, MATRIX_SIDE);
+    let pixels = patterned_gray8(MATRIX_SIDE, MATRIX_SIDE);
     let cpu_options = matrix_encode_options(
         EncodeBackendPreference::CpuOnly,
         J2kBlockCodingMode::HighThroughput,
     );
     let device_options = matrix_encode_options(
-        EncodeBackendPreference::PreferDevice,
+        EncodeBackendPreference::RequireDevice,
         J2kBlockCodingMode::HighThroughput,
     );
 
     let mut group = c.benchmark_group("facade_j2k_htj2k_encode_backend_speed_matrix");
-    group.bench_function("cpu_rgb8_512_htj2k_external", |b| {
+    group.bench_function("cpu_gray8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
                 black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
-                3,
+                1,
                 8,
                 false,
             )
-            .expect("valid rgb8 samples");
+            .expect("valid gray8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &cpu_options).expect("CPU HTJ2K encode");
             black_box(encoded.codestream.len());
@@ -248,26 +248,30 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
 
     #[cfg(feature = "metal")]
     {
-        group.bench_function("metal_rgb8_512_htj2k_external", |b| {
+        group.bench_function("metal_gray8_512_htj2k_require_device_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
                     black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
-                    3,
+                    1,
                     8,
                     false,
                 )
-                .expect("valid rgb8 samples");
-                let mut accelerator =
-                    signinum::j2k::metal::MetalEncodeStageAccelerator::with_cpu_forward_rct();
+                .expect("valid gray8 samples");
+                let mut accelerator = signinum::j2k::metal::MetalEncodeStageAccelerator::default();
                 let encoded = encode_j2k_lossless_with_accelerator(
                     samples,
                     &device_options,
                     BackendKind::Metal,
                     &mut accelerator,
                 )
-                .expect("Metal HTJ2K encode");
+                .expect("strict Metal HTJ2K encode");
+                assert_eq!(
+                    encoded.backend,
+                    BackendKind::Metal,
+                    "Metal speed bench must report a strict Metal backend"
+                );
                 black_box((encoded.backend, encoded.codestream.len()));
             });
         });
@@ -275,17 +279,17 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
 
     #[cfg(feature = "cuda")]
     if cuda_htj2k_encode_available(&pixels, device_options) {
-        group.bench_function("cuda_rgb8_512_htj2k_external", |b| {
+        group.bench_function("cuda_gray8_512_htj2k_require_device_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
                     black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
-                    3,
+                    1,
                     8,
                     false,
                 )
-                .expect("valid rgb8 samples");
+                .expect("valid gray8 samples");
                 let mut accelerator = signinum::j2k::cuda::CudaEncodeStageAccelerator::default();
                 let encoded = encode_j2k_lossless_with_accelerator(
                     samples,
@@ -294,6 +298,11 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
                     &mut accelerator,
                 )
                 .expect("CUDA HTJ2K encode");
+                assert_eq!(
+                    encoded.backend,
+                    BackendKind::Cuda,
+                    "CUDA speed bench must report a strict CUDA backend"
+                );
                 assert!(
                     accelerator.dispatch_report().any(),
                     "CUDA speed bench must dispatch at least one CUDA stage"
@@ -309,7 +318,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
 #[cfg(feature = "cuda")]
 fn cuda_htj2k_encode_available(pixels: &[u8], options: J2kLosslessEncodeOptions) -> bool {
     let samples =
-        J2kLosslessSamples::new(pixels, MATRIX_SIDE, MATRIX_SIDE, 3, 8, false).expect("samples");
+        J2kLosslessSamples::new(pixels, MATRIX_SIDE, MATRIX_SIDE, 1, 8, false).expect("samples");
     let mut accelerator = signinum::j2k::cuda::CudaEncodeStageAccelerator::default();
     match encode_j2k_lossless_with_accelerator(
         samples,
@@ -317,12 +326,16 @@ fn cuda_htj2k_encode_available(pixels: &[u8], options: J2kLosslessEncodeOptions)
         BackendKind::Cuda,
         &mut accelerator,
     ) {
-        Ok(_) if accelerator.dispatch_report().any() => true,
+        Ok(encoded)
+            if encoded.backend == BackendKind::Cuda && accelerator.dispatch_report().any() =>
+        {
+            true
+        }
         Ok(_) if std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_some() => {
-            panic!("SIGNINUM_REQUIRE_CUDA_BENCH is set but no CUDA encode stage dispatched")
+            panic!("SIGNINUM_REQUIRE_CUDA_BENCH is set but strict CUDA encode was not available")
         }
         Ok(_) => {
-            eprintln!("skipping CUDA encode speed bench: no CUDA encode stage dispatched");
+            eprintln!("skipping CUDA encode speed bench: strict CUDA encode was not available");
             false
         }
         Err(error) if std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_some() => {
