@@ -106,6 +106,8 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
   lossless/lossy rows where supported. The publication matrix extends this to
   512/1024/4096 tiles, batch 1/16/64, full/ROI/scaled/ROI+scaled, CPU,
   strict Metal, strict CUDA, and adaptive rows.
+- Checked-in adaptive gate decisions and RCA records live in
+  `docs/adaptive-j2k-gates.md`.
 
 ## Compared operations
 
