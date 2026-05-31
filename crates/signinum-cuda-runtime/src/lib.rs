@@ -3828,6 +3828,20 @@ impl CudaContext {
         geometry: kernels::CudaLaunchGeometry,
         params: &mut [*mut c_void],
     ) -> Result<(), CudaError> {
+        self.launch_kernel_async(function, geometry, params)?;
+        // SAFETY: `function` was loaded from a live module in this context, and
+        // the kernel was launched on the current context; synchronize waits for
+        // completion before callers inspect outputs.
+        let sync_status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
+        self.inner.driver.check("cuCtxSynchronize", sync_status)
+    }
+
+    fn launch_kernel_async(
+        &self,
+        function: CuFunction,
+        geometry: kernels::CudaLaunchGeometry,
+        params: &mut [*mut c_void],
+    ) -> Result<(), CudaError> {
         // SAFETY: `function` was loaded from a live module in this context, and
         // `params` contains kernel argument pointers valid for the launch call.
         let launch_status = unsafe {
@@ -3845,11 +3859,7 @@ impl CudaContext {
                 std::ptr::null_mut(),
             )
         };
-        self.inner.driver.check("cuLaunchKernel", launch_status)?;
-        // SAFETY: The kernel was launched on the current context; synchronize
-        // waits for completion before callers inspect outputs.
-        let sync_status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
-        self.inner.driver.check("cuCtxSynchronize", sync_status)
+        self.inner.driver.check("cuLaunchKernel", launch_status)
     }
 
     /// Copy one device buffer to another through a CUDA kernel.
@@ -6136,7 +6146,7 @@ impl CudaContext {
             grid: (base.grid.0, base.grid.1, items),
             block: base.block,
         };
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     fn launch_transcode_dwt97_row_lift_batch(
@@ -6173,7 +6183,7 @@ impl CudaContext {
             grid: (base.grid.0, items, 1),
             block: base.block,
         };
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6218,7 +6228,7 @@ impl CudaContext {
             grid: (base.grid.0, items, 1),
             block: base.block,
         };
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6263,7 +6273,7 @@ impl CudaContext {
             grid: (base.grid.0, base.grid.1, items),
             block: base.block,
         };
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 }
 
