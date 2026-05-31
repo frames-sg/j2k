@@ -275,29 +275,50 @@ pub enum WaveletValidationError {
     /// Image has no components.
     NoComponents,
     /// Component has no decomposition levels.
-    NoLevels { component: usize },
+    NoLevels {
+        /// Component index.
+        component: usize,
+    },
     /// Component bit depth is outside JPEG 2000's representable precision.
-    InvalidBitDepth { component: usize, bit_depth: u8 },
+    InvalidBitDepth {
+        /// Component index.
+        component: usize,
+        /// Reported component bit depth.
+        bit_depth: u8,
+    },
     /// Component sampling factor is zero.
     InvalidSampling {
+        /// Component index.
         component: usize,
+        /// Horizontal sampling factor.
         x_rsiz: u16,
+        /// Vertical sampling factor.
         y_rsiz: u16,
     },
     /// A band length does not equal `width * height`.
     BandLength {
+        /// Component index.
         component: usize,
+        /// Band name.
         band: &'static str,
+        /// Expected coefficient count.
         expected: usize,
+        /// Actual coefficient count.
         actual: usize,
     },
     /// A band's declared geometry does not match recursive 5/3 expectations.
     BandGeometry {
+        /// Component index.
         component: usize,
+        /// Band name.
         band: &'static str,
+        /// Expected band width.
         expected_width: usize,
+        /// Expected band height.
         expected_height: usize,
+        /// Actual band width.
         actual_width: usize,
+        /// Actual band height.
         actual_height: usize,
     },
 }
@@ -354,41 +375,63 @@ pub enum WaveletToPrecomputedError {
     /// Wavelet descriptor validation failed.
     Validation(WaveletValidationError),
     /// Reference-grid dimensions cannot be zero.
-    InvalidReferenceDimensions { width: u32, height: u32 },
+    InvalidReferenceDimensions {
+        /// Reference-grid width.
+        width: u32,
+        /// Reference-grid height.
+        height: u32,
+    },
     /// Component sampling factors exceed the native encoder's current SIZ
     /// representation.
     SamplingTooLarge {
+        /// Component index.
         component: usize,
+        /// Horizontal sampling factor.
         x_rsiz: u16,
+        /// Vertical sampling factor.
         y_rsiz: u16,
     },
     /// Component dimensions do not match the provided reference grid and SIZ
     /// sampling factors.
     ComponentGeometry {
+        /// Component index.
         component: usize,
+        /// Expected component width.
         expected_width: u32,
+        /// Expected component height.
         expected_height: u32,
+        /// Actual component width.
         actual_width: u32,
+        /// Actual component height.
         actual_height: u32,
     },
     /// Components use different bit depths, but the native precomputed encoder
     /// currently stores one precision for the image.
     MixedBitDepth {
+        /// Component index.
         component: usize,
+        /// Expected shared bit depth.
         expected: u8,
+        /// Actual component bit depth.
         actual: u8,
     },
     /// Components use mixed signedness, but the native precomputed encoder
     /// currently stores one signedness flag for the image.
     MixedSignedness {
+        /// Component index.
         component: usize,
+        /// Expected shared signedness.
         expected: bool,
+        /// Actual component signedness.
         actual: bool,
     },
     /// A wavelet dimension exceeds the native encoder's current u32 geometry.
     DimensionTooLarge {
+        /// Component index.
         component: usize,
+        /// Field whose value was too large.
         field: &'static str,
+        /// Oversized value.
         value: usize,
     },
 }

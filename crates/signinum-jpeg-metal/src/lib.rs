@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! Metal-backed JPEG decode and encode adapters.
+//!
+//! The crate exposes the same CPU-visible JPEG decode surface as
+//! `signinum-jpeg`, with optional Metal-resident surfaces and batch submission
+//! helpers on macOS. Non-macOS builds keep the public API available but return
+//! `Error::MetalUnavailable` for explicit Metal-only work.
+
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
 
@@ -10,6 +17,7 @@ mod encode;
 mod profile;
 mod routing;
 mod session;
+/// Viewport planning and composition helpers for JPEG decode surfaces.
 pub mod viewport;
 
 use std::sync::Arc;
@@ -42,21 +50,38 @@ pub use encode::{
 use metal::{Buffer, CommandBuffer, Device, MTLResourceOptions};
 
 #[derive(Debug, thiserror::Error)]
+/// Errors returned by the Metal JPEG backend.
 pub enum Error {
+    /// Error returned by the CPU JPEG parser or fallback decoder.
     #[error(transparent)]
     Decode(#[from] JpegError),
+    /// Error returned while assembling a baseline JPEG encode result.
     #[error(transparent)]
     Encode(#[from] signinum_jpeg::JpegEncodeError),
+    /// Output buffer validation failed.
     #[error(transparent)]
     Buffer(#[from] BufferError),
+    /// The requested backend is not supported by this crate.
     #[error("backend request {request:?} is not supported by signinum-jpeg-metal")]
-    UnsupportedBackend { request: BackendRequest },
+    UnsupportedBackend {
+        /// Backend requested by the caller.
+        request: BackendRequest,
+    },
+    /// A Metal-specific request is structurally unsupported.
     #[error("unsupported JPEG Metal request: {reason}")]
-    UnsupportedMetalRequest { reason: &'static str },
+    UnsupportedMetalRequest {
+        /// Static reason describing the rejected request.
+        reason: &'static str,
+    },
+    /// Metal is not available on the current host.
     #[error("Metal is unavailable on this host")]
     MetalUnavailable,
+    /// Metal kernel launch, validation, or completion failed.
     #[error("Metal kernel error: {message}")]
-    MetalKernel { message: String },
+    MetalKernel {
+        /// Kernel error message.
+        message: String,
+    },
 }
 
 impl CodecError for Error {
@@ -95,13 +120,18 @@ pub(crate) enum Storage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a decoded surface is currently resident.
 pub enum SurfaceResidency {
+    /// Pixel bytes are resident in host memory.
     Host,
+    /// Pixel bytes were produced directly by a Metal decode kernel.
     MetalResidentDecode,
+    /// Pixel bytes were decoded on CPU and uploaded into a Metal buffer.
     CpuStagedMetalUpload,
 }
 
 #[derive(Clone)]
+/// Decoded image surface returned by the JPEG Metal backend.
 pub struct Surface {
     backend: BackendKind,
     residency: SurfaceResidency,
@@ -112,14 +142,17 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Number of bytes between consecutive rows.
     pub fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
     }
 
+    /// Current residency for the surface bytes.
     pub fn residency(&self) -> SurfaceResidency {
         self.residency
     }
 
+    /// Return the tightly packed surface bytes.
     pub fn as_bytes(&self) -> &[u8] {
         match &self.storage {
             Storage::Host(bytes) => bytes,
@@ -133,12 +166,14 @@ impl Surface {
         }
     }
 
+    /// Copy the tightly packed surface into a caller-provided strided buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
         copy_tight_pixels_to_strided_output(self.as_bytes(), self.dimensions, self.fmt, out, stride)
             .map_err(Error::from)
     }
 
     #[cfg(target_os = "macos")]
+    /// Return the Metal buffer and byte offset when the surface is Metal-backed.
     pub fn metal_buffer(&self) -> Option<(&Buffer, usize)> {
         match &self.storage {
             Storage::Metal { buffer, offset } => Some((buffer, *offset)),
@@ -232,6 +267,7 @@ pub struct ResidentPrivateJpegTile {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
+/// Reusable Metal device session for decode and encode submissions.
 pub struct MetalBackendSession {
     device: Device,
     runtime: Arc<OnceLock<Result<compute::MetalRuntime, String>>>,
@@ -239,6 +275,7 @@ pub struct MetalBackendSession {
 
 #[cfg(target_os = "macos")]
 impl MetalBackendSession {
+    /// Create a session bound to an existing Metal device.
     pub fn new(device: Device) -> Self {
         Self {
             device,
@@ -246,12 +283,14 @@ impl MetalBackendSession {
         }
     }
 
+    /// Create a session from the system default Metal device.
     pub fn system_default() -> Result<Self, Error> {
         Device::system_default()
             .map(Self::new)
             .ok_or(Error::MetalUnavailable)
     }
 
+    /// Metal device used by this session.
     pub fn device(&self) -> &metal::DeviceRef {
         self.device.as_ref()
     }
@@ -269,23 +308,27 @@ impl core::fmt::Debug for MetalBackendSession {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default)]
+/// Placeholder Metal session for non-macOS builds.
 pub struct MetalBackendSession {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
 impl MetalBackendSession {
+    /// Return `Error::MetalUnavailable` on hosts without Metal support.
     pub fn system_default() -> Result<Self, Error> {
         Err(Error::MetalUnavailable)
     }
 }
 
 #[derive(Default)]
+/// Shared batching session used by `JpegTileBatch` and submit APIs.
 pub struct MetalSession {
     shared: session::SharedSession,
 }
 
 impl MetalSession {
+    /// Number of Metal or emulated submissions flushed through this session.
     pub fn submissions(&self) -> u64 {
         self.shared.0.lock().expect("metal session").submissions
     }
@@ -481,6 +524,7 @@ impl JpegTileBatch {
     }
 }
 
+/// JPEG decoder that can return host or Metal-resident surfaces.
 pub struct Decoder<'a> {
     inner: CpuDecoder<'a>,
     source: Arc<[u8]>,
@@ -490,6 +534,7 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
+    /// Parse a JPEG byte slice into a decoder with any available Metal packets.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         let inner = CpuDecoder::new(input)?;
         Ok(Self {
@@ -501,6 +546,7 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// Create a decoder from an already parsed JPEG view.
     pub fn from_view(view: JpegView<'a>) -> Result<Self, Error> {
         let inner = CpuDecoder::from_view(view)?;
         let source = Arc::<[u8]>::from(decoder_bytes(&inner));
@@ -522,14 +568,17 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// Borrow the underlying CPU JPEG decoder.
     pub fn inner(&self) -> &CpuDecoder<'a> {
         &self.inner
     }
 
+    /// Consume this wrapper and return the underlying CPU JPEG decoder.
     pub fn into_inner(self) -> CpuDecoder<'a> {
         self.inner
     }
 
+    /// Decode a region at the requested scale into a device surface when possible.
     pub fn decode_region_scaled_to_device(
         &mut self,
         fmt: PixelFormat,
@@ -551,6 +600,7 @@ impl<'a> Decoder<'a> {
         )
     }
 
+    /// Decode a full image into a device surface using a reusable Metal session.
     pub fn decode_to_device_with_session(
         &mut self,
         fmt: PixelFormat,
@@ -734,6 +784,7 @@ impl<'a> ImageDecodeDevice<'a> for Decoder<'a> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// JPEG codec marker used by Signinum's generic decode traits.
 pub struct Codec;
 
 impl ImageCodec for Codec {
@@ -744,6 +795,7 @@ impl ImageCodec for Codec {
 
 impl Codec {
     #[allow(clippy::too_many_arguments)]
+    /// Submit a scaled region tile decode into a reusable Metal session.
     pub fn submit_tile_region_scaled_to_device(
         ctx: &mut signinum_core::DecoderContext<CpuDecoderContext>,
         session: &mut MetalSession,

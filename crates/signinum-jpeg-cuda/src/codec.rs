@@ -23,6 +23,7 @@ use crate::surface::{CudaSurfaceStats, Storage};
 use crate::{profile, CudaSession, Error, Surface};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// JPEG codec marker used by Signinum's generic CUDA decode traits.
 pub struct Codec;
 
 impl ImageCodec for Codec {
