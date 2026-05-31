@@ -829,7 +829,7 @@ struct CudaDecodedComponent {
 #[derive(Clone, Copy, Debug, Default)]
 struct CudaDecodeStageTimings {
     h2d: u128,
-    job_upload: u128,
+    payload_upload: u128,
     ht_cleanup: u128,
     ht_refine: u128,
     dequant: u128,
@@ -843,7 +843,10 @@ struct CudaDecodeStageTimings {
 impl CudaDecodeStageTimings {
     fn add_to_report(self, report: &mut CudaHtj2kProfileReport) {
         report.h2d_us = report.h2d_us.saturating_add(self.h2d);
-        report.detail.job_upload_us = report.detail.job_upload_us.saturating_add(self.job_upload);
+        report.detail.payload_upload_us = report
+            .detail
+            .payload_upload_us
+            .saturating_add(self.payload_upload);
         report.ht_cleanup_us = report.ht_cleanup_us.saturating_add(self.ht_cleanup);
         report.ht_refine_us = report.ht_refine_us.saturating_add(self.ht_refine);
         report.dequant_us = report.dequant_us.saturating_add(self.dequant);
@@ -1275,12 +1278,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .upload_htj2k_decode_resources_with_tables(&color.payload, &table_resources)
         .map_err(cuda_error)?;
     let payload_upload_us = profile::elapsed_us(payload_upload_start);
-    color.report.h2d_us = color.report.h2d_us.saturating_add(payload_upload_us);
-    color.report.detail.payload_upload_us = color
-        .report
-        .detail
-        .payload_upload_us
-        .saturating_add(payload_upload_us);
+    profile::add_payload_resource_upload_us(&mut color.report, payload_upload_us);
     let mut decoded_components = Vec::with_capacity(3);
     for plan in &color.components {
         decoded_components.push(decode_cuda_component_plan_with_resources(
@@ -1527,9 +1525,9 @@ fn decode_cuda_component_plan(
     let mut component =
         decode_cuda_component_plan_with_resources(context, plan, &decode_resources)?;
     component.timings.h2d = component.timings.h2d.saturating_add(resource_upload_us);
-    component.timings.job_upload = component
+    component.timings.payload_upload = component
         .timings
-        .job_upload
+        .payload_upload
         .saturating_add(resource_upload_us);
     Ok(component)
 }

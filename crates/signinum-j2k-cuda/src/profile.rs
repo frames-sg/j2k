@@ -40,13 +40,17 @@ pub struct CudaHtj2kDecodeProfileDetail {
     pub stage_sum_us: u128,
     /// CUDA table/resource upload time.
     pub table_upload_us: u128,
-    /// CUDA compressed payload upload time.
+    /// CUDA compressed payload/resource upload time.
+    ///
+    /// This includes mixed resource upload calls that contain compressed
+    /// payload bytes plus decode metadata. Metadata-only job upload is not
+    /// split out until the CUDA runtime exposes separate timings.
     pub payload_upload_us: u128,
-    /// CUDA decode job upload time.
+    /// CUDA decode job upload time, reserved as zero until split runtime timings exist.
     pub job_upload_us: u128,
-    /// CUDA status download time.
+    /// CUDA status download time, reserved as zero until split runtime timings exist.
     pub status_d2h_us: u128,
-    /// CUDA output download time.
+    /// CUDA output download time, reserved as zero until split runtime timings exist.
     pub output_d2h_us: u128,
     /// HT cleanup/refinement CUDA dispatch count.
     pub ht_dispatch_count: usize,
@@ -178,6 +182,15 @@ pub(crate) fn profile_now(enabled: bool) -> Option<ProfileInstant> {
 
 pub(crate) fn elapsed_us(start: Option<ProfileInstant>) -> u128 {
     start.map_or(0, |start| start.elapsed().as_micros())
+}
+
+#[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+pub(crate) fn add_payload_resource_upload_us(
+    report: &mut CudaHtj2kProfileReport,
+    elapsed_us: u128,
+) {
+    report.h2d_us = report.h2d_us.saturating_add(elapsed_us);
+    report.detail.payload_upload_us = report.detail.payload_upload_us.saturating_add(elapsed_us);
 }
 
 #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
@@ -331,12 +344,19 @@ fn chrome_trace_json(path: &str, report: &CudaHtj2kProfileReport) -> String {
         if index != 0 {
             trace.push(',');
         }
+        let event_ts = if *name == "ht_refine" {
+            ts.saturating_sub(report.ht_cleanup_us)
+        } else {
+            ts
+        };
         write!(
             trace,
-            "{{\"name\":\"{name}\",\"cat\":\"{path}\",\"ph\":\"X\",\"pid\":1,\"tid\":1,\"ts\":{ts},\"dur\":{dur}}}"
+            "{{\"name\":\"{name}\",\"cat\":\"{path}\",\"ph\":\"X\",\"pid\":1,\"tid\":1,\"ts\":{event_ts},\"dur\":{dur}}}"
         )
         .expect("writing trace JSON to String failed");
-        ts = ts.saturating_add(*dur);
+        if *name != "ht_refine" {
+            ts = ts.saturating_add(*dur);
+        }
     }
     trace.push_str("]}");
     trace
@@ -383,8 +403,9 @@ fn chrome_encode_trace_json(path: &str, report: &CudaHtj2kEncodeProfileReport) -
 #[cfg(test)]
 mod tests {
     use super::{
-        chrome_encode_trace_json, chrome_trace_json, finalize_decode_total_us,
-        CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
+        add_payload_resource_upload_us, chrome_encode_trace_json, chrome_trace_json,
+        finalize_decode_total_us, CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport,
+        CudaHtj2kProfileReport,
     };
     use signinum_core::BackendKind;
 
@@ -449,6 +470,19 @@ mod tests {
     }
 
     #[test]
+    fn payload_resource_upload_detail_does_not_claim_job_status_split() {
+        let mut report = CudaHtj2kProfileReport::default();
+
+        add_payload_resource_upload_us(&mut report, 23);
+
+        assert_eq!(report.h2d_us, 23);
+        assert_eq!(report.detail.payload_upload_us, 23);
+        assert_eq!(report.detail.job_upload_us, 0);
+        assert_eq!(report.detail.status_d2h_us, 0);
+        assert_eq!(report.detail.output_d2h_us, 0);
+    }
+
+    #[test]
     fn decode_trace_json_contains_ordered_stage_spans() {
         let report = CudaHtj2kProfileReport {
             parse_us: 1,
@@ -476,8 +510,37 @@ mod tests {
         assert!(trace.contains("\"name\":\"ht_cleanup\",\"cat\":\"decode\",\"ph\":\"X\""));
         assert!(trace.contains("\"name\":\"store\",\"cat\":\"decode\",\"ph\":\"X\""));
         assert!(trace.contains("\"ts\":0,\"dur\":1"));
-        assert!(trace.contains("\"ts\":45,\"dur\":10"));
+        assert!(trace.contains("\"ts\":39,\"dur\":10"));
         assert!(trace.ends_with("]}"));
+    }
+
+    #[test]
+    fn decode_trace_json_does_not_advance_time_for_fused_refinement() {
+        let report = CudaHtj2kProfileReport {
+            parse_us: 1,
+            plan_us: 2,
+            flatten_us: 3,
+            h2d_us: 4,
+            ht_cleanup_us: 5,
+            ht_refine_us: 5,
+            dequant_us: 6,
+            idwt_us: 7,
+            mct_us: 8,
+            store_us: 9,
+            total_us: 45,
+            block_count: 1,
+            payload_bytes: 2,
+            dispatch_count: 3,
+            residency: SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
+        };
+
+        let trace = chrome_trace_json("decode", &report);
+
+        assert!(trace.contains("\"name\":\"ht_refine\",\"cat\":\"decode\",\"ph\":\"X\""));
+        assert!(trace.contains("\"name\":\"ht_refine\",\"cat\":\"decode\",\"ph\":\"X\",\"pid\":1,\"tid\":1,\"ts\":10,\"dur\":5"));
+        assert!(trace.contains("\"name\":\"dequant\",\"cat\":\"decode\",\"ph\":\"X\",\"pid\":1,\"tid\":1,\"ts\":15,\"dur\":6"));
+        assert!(trace.contains("\"name\":\"store\",\"cat\":\"decode\",\"ph\":\"X\",\"pid\":1,\"tid\":1,\"ts\":36,\"dur\":9"));
     }
 
     #[test]
