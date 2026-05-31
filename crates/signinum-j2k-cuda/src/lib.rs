@@ -34,7 +34,9 @@ pub use encode::{
     CudaEncodeStageAccelerator, CudaEncodeStageTimings,
 };
 pub use error::Error;
-pub use profile::{CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport};
+pub use profile::{
+    CudaHtj2kDecodeProfileDetail, CudaHtj2kEncodeProfileReport, CudaHtj2kProfileReport,
+};
 pub use session::CudaSession;
 pub use signinum_j2k::{J2kContext, J2kScratchPool};
 pub use surface::{CudaSurface, CudaSurfaceStats, Surface, SurfaceResidency};

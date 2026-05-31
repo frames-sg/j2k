@@ -136,6 +136,13 @@ impl Surface {
         }
     }
 
+    /// Download the surface and return elapsed host copy time in microseconds.
+    pub fn download_into_profiled(&self, out: &mut [u8], stride: usize) -> Result<u128, Error> {
+        let started = std::time::Instant::now();
+        self.download_into(out, stride)?;
+        Ok(started.elapsed().as_micros())
+    }
+
     /// Borrow CUDA metadata when the surface is CUDA-backed.
     pub fn cuda_surface(&self) -> Option<CudaSurface<'_>> {
         #[cfg(feature = "cuda-runtime")]

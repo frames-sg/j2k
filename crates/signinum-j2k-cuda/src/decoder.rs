@@ -32,7 +32,10 @@ use crate::runtime::cuda_error;
 use crate::runtime::{validate_surface_request, wrap_cpu_staged_cuda_surface, wrap_surface};
 #[cfg(feature = "cuda-runtime")]
 use crate::surface::Storage;
-use crate::{profile, CudaHtj2kDecodePlan, CudaHtj2kProfileReport, CudaSession, Error, Surface};
+use crate::{
+    profile, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport,
+    CudaSession, Error, Surface,
+};
 #[cfg(feature = "cuda-runtime")]
 use crate::{CudaHtj2kStoreStep, CudaHtj2kTransform, CudaSurfaceStats, SurfaceResidency};
 
@@ -303,6 +306,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes: cuda_plan.payload().len(),
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -350,6 +354,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes: cuda_plan.payload().len(),
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -395,6 +400,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes: cuda_plan.payload().len(),
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -449,6 +455,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes: cuda_plan.payload().len(),
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -499,6 +506,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes,
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -565,6 +573,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes,
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -629,6 +638,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes,
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -700,6 +710,7 @@ impl<'a> J2kDecoder<'a> {
             payload_bytes,
             dispatch_count: 0,
             residency: crate::SurfaceResidency::CudaResidentDecode,
+            detail: CudaHtj2kDecodeProfileDetail::default(),
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
@@ -818,20 +829,32 @@ struct CudaDecodedComponent {
 #[derive(Clone, Copy, Debug, Default)]
 struct CudaDecodeStageTimings {
     h2d: u128,
+    job_upload: u128,
     ht_cleanup: u128,
     ht_refine: u128,
     dequant: u128,
     idwt: u128,
+    dequant_dispatch_count: usize,
+    idwt_dispatch_count: usize,
 }
 
 #[cfg(feature = "cuda-runtime")]
 impl CudaDecodeStageTimings {
     fn add_to_report(self, report: &mut CudaHtj2kProfileReport) {
         report.h2d_us = report.h2d_us.saturating_add(self.h2d);
+        report.detail.job_upload_us = report.detail.job_upload_us.saturating_add(self.job_upload);
         report.ht_cleanup_us = report.ht_cleanup_us.saturating_add(self.ht_cleanup);
         report.ht_refine_us = report.ht_refine_us.saturating_add(self.ht_refine);
         report.dequant_us = report.dequant_us.saturating_add(self.dequant);
         report.idwt_us = report.idwt_us.saturating_add(self.idwt);
+        report.detail.dequant_dispatch_count = report
+            .detail
+            .dequant_dispatch_count
+            .saturating_add(self.dequant_dispatch_count);
+        report.detail.idwt_dispatch_count = report
+            .detail
+            .idwt_dispatch_count
+            .saturating_add(self.idwt_dispatch_count);
     }
 }
 
@@ -863,12 +886,13 @@ fn decode_to_cuda_resident_surface_with_profile_impl(
     session: &mut CudaSession,
     fmt: PixelFormat,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
+    let wall_started = profile::profile_now(true);
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 => {
-            decode_grayscale_cuda_resident_surface_with_profile(decoder, session, fmt)
+            decode_grayscale_cuda_resident_surface_with_profile(decoder, session, fmt, wall_started)
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
-            decode_color_cuda_resident_surface_with_profile(decoder, session, fmt)
+            decode_color_cuda_resident_surface_with_profile(decoder, session, fmt, wall_started)
         }
         _ => Err(Error::UnsupportedCudaRequest {
             reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
@@ -984,9 +1008,16 @@ fn decode_grayscale_cuda_resident_surface_with_profile(
     decoder: &mut J2kDecoder<'_>,
     session: &mut CudaSession,
     fmt: PixelFormat,
+    wall_started: Option<profile::ProfileInstant>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let (plan, mut report) = decoder.build_cuda_htj2k_grayscale_plan_with_profile(fmt)?;
-    decode_grayscale_cuda_resident_surface_with_plan_profile(session, fmt, &plan, &mut report)
+    decode_grayscale_cuda_resident_surface_with_plan_profile(
+        session,
+        fmt,
+        &plan,
+        &mut report,
+        wall_started,
+    )
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1036,7 +1067,7 @@ fn decode_grayscale_cuda_resident_surface_with_plan(
     plan: &CudaHtj2kDecodePlan,
     report: &mut CudaHtj2kProfileReport,
 ) -> Result<Surface, Error> {
-    decode_grayscale_cuda_resident_surface_with_plan_profile(session, fmt, plan, report)
+    decode_grayscale_cuda_resident_surface_with_plan_profile(session, fmt, plan, report, None)
         .map(|(surface, _report)| surface)
 }
 
@@ -1046,6 +1077,7 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     fmt: PixelFormat,
     plan: &CudaHtj2kDecodePlan,
     report: &mut CudaHtj2kProfileReport,
+    wall_started: Option<profile::ProfileInstant>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let context = session.cuda_context()?;
     let tables = CudaHtj2kDecodeTables {
@@ -1058,9 +1090,12 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     let table_resources = context
         .upload_htj2k_decode_table_resources(tables)
         .map_err(cuda_error)?;
-    report.h2d_us = report
-        .h2d_us
-        .saturating_add(profile::elapsed_us(table_upload_start));
+    let table_upload_us = profile::elapsed_us(table_upload_start);
+    report.h2d_us = report.h2d_us.saturating_add(table_upload_us);
+    report.detail.table_upload_us = report
+        .detail
+        .table_upload_us
+        .saturating_add(table_upload_us);
     let component = decode_cuda_component_plan(&context, plan, &table_resources)?;
     let input_width = component
         .store
@@ -1115,7 +1150,16 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
         .saturating_add(store_stats.decode_kernel_dispatches());
     report.dispatch_count = dispatches;
     component.timings.add_to_report(report);
+    report.detail.ht_dispatch_count = report
+        .detail
+        .ht_dispatch_count
+        .saturating_add(component.decode_dispatches);
     report.store_us = report.store_us.saturating_add(store_us);
+    report.detail.store_dispatch_count = report
+        .detail
+        .store_dispatch_count
+        .saturating_add(store_stats.kernel_dispatches());
+    report.detail.wall_total_us = profile::elapsed_us(wall_started);
     profile::finalize_decode_total_us(report);
     report.emit("decode");
 
@@ -1141,9 +1185,10 @@ fn decode_color_cuda_resident_surface_with_profile(
     decoder: &mut J2kDecoder<'_>,
     session: &mut CudaSession,
     fmt: PixelFormat,
+    wall_started: Option<profile::ProfileInstant>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let color = decoder.build_cuda_htj2k_color_plans_with_profile(fmt)?;
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color)
+    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1190,7 +1235,7 @@ fn decode_color_cuda_resident_surface_with_plans(
     fmt: PixelFormat,
     color: CudaHtj2kColorDecodePlans,
 ) -> Result<Surface, Error> {
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color)
+    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, None)
         .map(|(surface, _report)| surface)
 }
 
@@ -1199,6 +1244,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
     session: &mut CudaSession,
     fmt: PixelFormat,
     mut color: CudaHtj2kColorDecodePlans,
+    wall_started: Option<profile::ProfileInstant>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     if color.components.len() != 3 {
         return Err(Error::UnsupportedCudaRequest {
@@ -1216,18 +1262,24 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
     let table_resources = context
         .upload_htj2k_decode_table_resources(tables)
         .map_err(cuda_error)?;
-    color.report.h2d_us = color
+    let table_upload_us = profile::elapsed_us(table_upload_start);
+    color.report.h2d_us = color.report.h2d_us.saturating_add(table_upload_us);
+    color.report.detail.table_upload_us = color
         .report
-        .h2d_us
-        .saturating_add(profile::elapsed_us(table_upload_start));
+        .detail
+        .table_upload_us
+        .saturating_add(table_upload_us);
     let payload_upload_start = profile::profile_now(true);
     let decode_resources = context
         .upload_htj2k_decode_resources_with_tables(&color.payload, &table_resources)
         .map_err(cuda_error)?;
-    color.report.h2d_us = color
+    let payload_upload_us = profile::elapsed_us(payload_upload_start);
+    color.report.h2d_us = color.report.h2d_us.saturating_add(payload_upload_us);
+    color.report.detail.payload_upload_us = color
         .report
-        .h2d_us
-        .saturating_add(profile::elapsed_us(payload_upload_start));
+        .detail
+        .payload_upload_us
+        .saturating_add(payload_upload_us);
     let mut decoded_components = Vec::with_capacity(3);
     for plan in &color.components {
         decoded_components.push(decode_cuda_component_plan_with_resources(
@@ -1256,6 +1308,11 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .sum::<usize>();
     for component in &decoded_components {
         component.timings.add_to_report(&mut color.report);
+        color.report.detail.ht_dispatch_count = color
+            .report
+            .detail
+            .ht_dispatch_count
+            .saturating_add(component.decode_dispatches);
     }
     let addends = if color.mct {
         let mct_len = u32::try_from(checked_area(
@@ -1287,6 +1344,11 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         dispatches = dispatches.saturating_add(stats.kernel_dispatches());
         decode_dispatches = decode_dispatches.saturating_add(stats.decode_kernel_dispatches());
         color.report.mct_us = color.report.mct_us.saturating_add(mct_us);
+        color.report.detail.mct_dispatch_count = color
+            .report
+            .detail
+            .mct_dispatch_count
+            .saturating_add(stats.kernel_dispatches());
         [0.0, 0.0, 0.0]
     } else {
         [
@@ -1381,6 +1443,12 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
     decode_dispatches = decode_dispatches.saturating_add(store_stats.decode_kernel_dispatches());
     color.report.dispatch_count = dispatches;
     color.report.store_us = color.report.store_us.saturating_add(store_us);
+    color.report.detail.store_dispatch_count = color
+        .report
+        .detail
+        .store_dispatch_count
+        .saturating_add(store_stats.kernel_dispatches());
+    color.report.detail.wall_total_us = profile::elapsed_us(wall_started);
     profile::finalize_decode_total_us(&mut color.report);
     color.report.emit("decode");
 
@@ -1459,12 +1527,14 @@ fn decode_cuda_component_plan(
     let decode_resources = context
         .upload_htj2k_decode_resources_with_tables(plan.payload(), tables)
         .map_err(cuda_error)?;
+    let resource_upload_us = profile::elapsed_us(resource_upload_start);
     let mut component =
         decode_cuda_component_plan_with_resources(context, plan, &decode_resources)?;
-    component.timings.h2d = component
+    component.timings.h2d = component.timings.h2d.saturating_add(resource_upload_us);
+    component.timings.job_upload = component
         .timings
-        .h2d
-        .saturating_add(profile::elapsed_us(resource_upload_start));
+        .job_upload
+        .saturating_add(resource_upload_us);
     Ok(component)
 }
 
@@ -1504,6 +1574,9 @@ fn decode_cuda_component_plan_with_resources(
             .saturating_add(stage_timings.ht_cleanup_us);
         timings.ht_refine = timings.ht_refine.saturating_add(stage_timings.ht_refine_us);
         timings.dequant = timings.dequant.saturating_add(stage_timings.dequant_us);
+        if stage_timings.dequant_us > 0 {
+            timings.dequant_dispatch_count = timings.dequant_dispatch_count.saturating_add(1);
+        }
         dispatches = dispatches.saturating_add(output.execution().kernel_dispatches());
         decode_dispatches =
             decode_dispatches.saturating_add(output.execution().decode_kernel_dispatches());
@@ -1543,6 +1616,9 @@ fn decode_cuda_component_plan_with_resources(
         let (buffer, stats) = output.into_parts();
         dispatches = dispatches.saturating_add(stats.kernel_dispatches());
         decode_dispatches = decode_dispatches.saturating_add(stats.decode_kernel_dispatches());
+        timings.idwt_dispatch_count = timings
+            .idwt_dispatch_count
+            .saturating_add(stats.kernel_dispatches());
         bands.push(CudaCoefficientBand {
             band_id: step.output_band_id,
             buffer,
