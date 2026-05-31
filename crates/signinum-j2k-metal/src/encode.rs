@@ -502,6 +502,8 @@ pub struct MetalLosslessEncodeOutcome {
     pub gpu_duration: Option<Duration>,
     /// Time spent validating the encoded output.
     pub validation_duration: Duration,
+    /// Time spent materializing buffer-backed codestream bytes into host bytes.
+    pub host_readback_duration: Duration,
 }
 
 #[cfg(target_os = "macos")]
@@ -631,13 +633,19 @@ pub struct MetalLosslessEncodeStageStats {
     pub plan_duration: Duration,
     /// Time spent preparing and submitting Metal work.
     pub prepare_submit_duration: Duration,
-    /// Time spent preparing resident encode coefficients.
+    /// Host-side wall time spent preparing resident encode coefficients.
     pub coefficient_prep_duration: Duration,
-    /// Time spent in fused deinterleave plus RCT work when used.
+    /// Reserved for future finer-grained deinterleave plus RCT profiling.
+    ///
+    /// Current resident prep timing is reported in `coefficient_prep_duration`.
     pub deinterleave_rct_duration: Duration,
-    /// Time spent in forward 5/3 DWT work.
+    /// Reserved for future finer-grained forward 5/3 DWT profiling.
+    ///
+    /// Current resident prep timing is reported in `coefficient_prep_duration`.
     pub dwt53_duration: Duration,
-    /// Time spent extracting coefficient buffers for resident encode.
+    /// Reserved for future finer-grained coefficient extraction profiling.
+    ///
+    /// Current resident prep timing is reported in `coefficient_prep_duration`.
     pub coefficient_extract_duration: Duration,
     /// Time spent building HT lookup tables.
     pub ht_table_build_duration: Duration,
@@ -759,6 +767,20 @@ impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStat
             ..Self::default()
         }
     }
+}
+
+fn add_resident_prep_duration(
+    stats: &mut MetalLosslessEncodeBatchStats,
+    duration: Duration,
+    profile_stages: bool,
+) {
+    if !profile_stages {
+        return;
+    }
+    stats.stage_stats.coefficient_prep_duration = stats
+        .stage_stats
+        .coefficient_prep_duration
+        .saturating_add(duration);
 }
 
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
@@ -1358,6 +1380,24 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+fn host_outcome_from_buffer_outcome(
+    outcome: MetalLosslessBufferEncodeOutcome,
+) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
+    let (encoded, host_readback_duration) =
+        outcome.encoded.to_encoded_j2k_with_readback_duration()?;
+    Ok(MetalLosslessEncodeOutcome {
+        encoded,
+        input_copy_used: outcome.input_copy_used,
+        resident: outcome.resident,
+        input_copy_duration: outcome.input_copy_duration,
+        encode_duration: outcome.encode_duration,
+        gpu_duration: outcome.gpu_duration,
+        validation_duration: outcome.validation_duration,
+        host_readback_duration,
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn encode_lossless_tiles_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: J2kLosslessEncodeOptions,
@@ -1376,17 +1416,7 @@ fn encode_lossless_tiles_with_report(
             return outcomes
                 .outcomes
                 .into_iter()
-                .map(|outcome| {
-                    Ok(MetalLosslessEncodeOutcome {
-                        encoded: outcome.encoded.to_encoded_j2k()?,
-                        input_copy_used: outcome.input_copy_used,
-                        resident: outcome.resident,
-                        input_copy_duration: outcome.input_copy_duration,
-                        encode_duration: outcome.encode_duration,
-                        gpu_duration: outcome.gpu_duration,
-                        validation_duration: outcome.validation_duration,
-                    })
-                })
+                .map(host_outcome_from_buffer_outcome)
                 .collect();
         }
     }
@@ -1420,17 +1450,7 @@ fn encode_lossless_owned_tiles_with_report(
             return outcomes
                 .outcomes
                 .into_iter()
-                .map(|outcome| {
-                    Ok(MetalLosslessEncodeOutcome {
-                        encoded: outcome.encoded.to_encoded_j2k()?,
-                        input_copy_used: outcome.input_copy_used,
-                        resident: outcome.resident,
-                        input_copy_duration: outcome.input_copy_duration,
-                        encode_duration: outcome.encode_duration,
-                        gpu_duration: outcome.gpu_duration,
-                        validation_duration: outcome.validation_duration,
-                    })
-                })
+                .map(host_outcome_from_buffer_outcome)
                 .collect();
         }
     }
@@ -2907,6 +2927,13 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
             .map_err(|err| crate::Error::MetalKernel {
                 message: format!("J2K Metal resident HT batch encode failed: {err}"),
             })?;
+        add_resident_prep_duration(
+            stats,
+            prepared.iter().fold(Duration::ZERO, |total, item| {
+                total.saturating_add(item.prepare_duration)
+            }),
+            profile_stages,
+        );
 
         let mut metadatas = Vec::with_capacity(prepared.len());
         let mut prepare_durations = Vec::with_capacity(prepared.len());
@@ -2985,6 +3012,7 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
+    let profile_stages = compute::metal_profile_stages_enabled();
     let prepared = collect_inflight_limited_ordered(planned, inflight_tiles, |_, planned| {
         let index = planned.index;
         let started = Instant::now();
@@ -3000,6 +3028,13 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     stats.max_observed_inflight_tiles = stats
         .max_observed_inflight_tiles
         .max(prepared.max_observed_inflight_items);
+    add_resident_prep_duration(
+        stats,
+        prepared.items.iter().fold(Duration::ZERO, |total, item| {
+            total.saturating_add(item.prepare_duration)
+        }),
+        profile_stages,
+    );
 
     let mut metadatas = Vec::with_capacity(prepared.items.len());
     let mut prepare_durations = Vec::with_capacity(prepared.items.len());
@@ -3251,15 +3286,7 @@ fn try_encode_lossless_tile_device_resident_with_report(
     else {
         return Ok(None);
     };
-    Ok(Some(MetalLosslessEncodeOutcome {
-        encoded: outcome.encoded.to_encoded_j2k()?,
-        input_copy_used: outcome.input_copy_used,
-        resident: outcome.resident,
-        input_copy_duration: outcome.input_copy_duration,
-        encode_duration: outcome.encode_duration,
-        gpu_duration: outcome.gpu_duration,
-        validation_duration: outcome.validation_duration,
-    }))
+    host_outcome_from_buffer_outcome(outcome).map(Some)
 }
 
 #[cfg(target_os = "macos")]
@@ -3570,6 +3597,7 @@ fn encode_lossless_tile_with_report(
         encode_duration,
         gpu_duration: None,
         validation_duration,
+        host_readback_duration: Duration::ZERO,
     })
 }
 
@@ -4281,6 +4309,50 @@ mod tests {
         assert_eq!(stats.stage_stats.sync_wait_duration, Duration::ZERO);
         assert_eq!(stats.stage_stats.host_readback_duration, Duration::ZERO);
         assert!(!stats.stage_stats.has_timings());
+    }
+
+    #[test]
+    fn resident_lossless_prep_duration_only_records_when_profiled() {
+        let mut stats = super::MetalLosslessEncodeBatchStats::default();
+
+        super::add_resident_prep_duration(&mut stats, Duration::from_micros(7), false);
+        assert_eq!(stats.stage_stats.coefficient_prep_duration, Duration::ZERO);
+        assert!(!stats.stage_stats.has_timings());
+
+        super::add_resident_prep_duration(&mut stats, Duration::from_micros(7), true);
+        assert_eq!(
+            stats.stage_stats.coefficient_prep_duration,
+            Duration::from_micros(7)
+        );
+        assert!(stats.stage_stats.has_timings());
+    }
+
+    #[test]
+    fn lossless_encode_outcome_exposes_host_readback_duration() {
+        let outcome = super::MetalLosslessEncodeOutcome {
+            encoded: EncodedJ2k {
+                codestream: Vec::new(),
+                backend: signinum_core::BackendKind::Metal,
+                width: 0,
+                height: 0,
+                components: 1,
+                bit_depth: 8,
+                signed: false,
+            },
+            input_copy_used: false,
+            resident: super::MetalLosslessEncodeResidency {
+                coefficient_prep_used: false,
+                packetization_used: false,
+                codestream_assembly_used: false,
+            },
+            input_copy_duration: Duration::ZERO,
+            encode_duration: Duration::ZERO,
+            gpu_duration: None,
+            validation_duration: Duration::ZERO,
+            host_readback_duration: Duration::from_micros(3),
+        };
+
+        assert_eq!(outcome.host_readback_duration, Duration::from_micros(3));
     }
 
     #[test]
