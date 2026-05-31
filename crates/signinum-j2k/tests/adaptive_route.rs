@@ -21,6 +21,18 @@ fn metal_caps() -> BackendCapabilities {
     }
 }
 
+fn metal_cuda_caps() -> BackendCapabilities {
+    BackendCapabilities {
+        cpu: CpuFeatures {
+            avx2: false,
+            sse41: false,
+            neon: true,
+        },
+        metal: true,
+        cuda: true,
+    }
+}
+
 fn cpu_caps() -> BackendCapabilities {
     BackendCapabilities {
         cpu: CpuFeatures::default(),
@@ -59,6 +71,28 @@ fn approved_metal_benchmarks_for(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBe
         BackendKind::Metal,
         2_000_000,
         1_600_000,
+        1.0,
+    ));
+    benchmarks
+}
+
+fn approved_cuda_benchmarks_for(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBenchmarks {
+    let mut benchmarks = J2kAdaptiveBenchmarks::default();
+    for stage in J2kAdaptiveStage::ALL {
+        if workload.logical_owner_for(stage) == J2kAdaptiveStageOwner::Gpu {
+            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+                stage,
+                BackendKind::Cuda,
+                100_000,
+                80_000,
+                1.0,
+            ));
+        }
+    }
+    benchmarks.push_end_to_end(J2kAdaptiveBenchmarkEvidence::end_to_end(
+        BackendKind::Cuda,
+        2_000_000,
+        1_500_000,
         1.0,
     ));
     benchmarks
@@ -171,10 +205,10 @@ fn stage_candidate_remains_cpu_when_end_to_end_gate_is_missing() {
         dwt.gate_status,
         J2kAdaptiveStageGateStatus::EndToEndGateBlocked
     );
-    assert!(
-        dwt.improvement_percent.is_some(),
-        "stage candidate evidence should remain visible for RCA"
-    );
+    let improvement = dwt
+        .improvement_percent
+        .expect("stage candidate evidence should remain visible for RCA");
+    assert!((improvement - 42.857_142_857_142_854).abs() < 1e-12);
 }
 
 #[test]
@@ -207,6 +241,44 @@ fn stage_candidate_remains_cpu_when_end_to_end_gate_fails() {
         J2kAdaptiveStageGateStatus::EndToEndGateBlocked
     );
     assert!(ht.improvement_percent.is_some());
+}
+
+#[test]
+fn approved_backend_is_not_masked_by_faster_stage_only_candidate() {
+    let workload = rgb_wsi_htj2k_encode();
+    let mut benchmarks = approved_cuda_benchmarks_for(workload);
+    benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+        J2kAdaptiveStage::Dwt,
+        BackendKind::Metal,
+        100_000,
+        70_000,
+        1.0,
+    ));
+
+    let report = J2kAdaptiveRoutePlanner::new(metal_cuda_caps())
+        .plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+        .expect("route should plan with mixed backend evidence");
+
+    assert_eq!(report.route_kind, J2kAdaptiveRouteKind::Hybrid);
+    assert_eq!(report.selected_device, Some(BackendKind::Cuda));
+    assert_eq!(
+        report
+            .stage(J2kAdaptiveStage::Dwt)
+            .expect("DWT decision")
+            .selected_backend,
+        BackendKind::Cuda
+    );
+    assert_eq!(
+        report
+            .stage(J2kAdaptiveStage::HtBlockCoding)
+            .expect("HT block decision")
+            .selected_backend,
+        BackendKind::Cuda
+    );
 }
 
 #[test]

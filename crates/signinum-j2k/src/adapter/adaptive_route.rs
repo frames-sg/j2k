@@ -726,16 +726,16 @@ impl J2kAdaptiveRoutePlanner {
         request: J2kAdaptiveBackendRequest,
         benchmarks: &J2kAdaptiveBenchmarks,
     ) -> J2kAdaptiveRouteReport {
-        let Some(backend) = self.best_candidate_device(benchmarks) else {
-            return self.gated_cpu_report(workload, request, None, benchmarks);
+        let backend = if let Some(backend) = self.best_approved_device(workload, benchmarks) {
+            backend
+        } else {
+            return self.gated_cpu_report(
+                workload,
+                request,
+                self.best_candidate_device(benchmarks),
+                benchmarks,
+            );
         };
-
-        let end_to_end_passed = benchmarks
-            .end_to_end_for(backend)
-            .is_some_and(|evidence| evidence.passes(self.policy));
-        if !end_to_end_passed {
-            return self.gated_cpu_report(workload, request, Some(backend), benchmarks);
-        }
 
         let mut stages = Vec::with_capacity(J2kAdaptiveStage::ALL.len());
         let mut unresolved = false;
@@ -783,7 +783,10 @@ impl J2kAdaptiveRoutePlanner {
             .into_iter()
             .map(|stage| {
                 let mut decision = if let Some(backend) = backend {
-                    self.stage_decision(workload, stage, backend, benchmarks, false)
+                    let end_to_end_passed = benchmarks
+                        .end_to_end_for(backend)
+                        .is_some_and(|evidence| evidence.passes(self.policy));
+                    self.stage_decision(workload, stage, backend, benchmarks, end_to_end_passed)
                 } else {
                     let logical_owner = workload.logical_owner_for(stage);
                     J2kAdaptiveStageDecision {
@@ -886,6 +889,31 @@ impl J2kAdaptiveRoutePlanner {
                 }
             }
         }
+    }
+
+    fn best_approved_device(
+        &self,
+        workload: J2kAdaptiveWorkload,
+        benchmarks: &J2kAdaptiveBenchmarks,
+    ) -> Option<BackendKind> {
+        [BackendKind::Metal, BackendKind::Cuda]
+            .into_iter()
+            .filter(|backend| self.supports_backend(*backend))
+            .filter_map(|backend| {
+                benchmarks
+                    .end_to_end_for(backend)
+                    .filter(|evidence| evidence.passes(self.policy))
+                    .map(|evidence| (backend, evidence.accelerated_ns))
+            })
+            .filter(|(backend, _)| {
+                J2kAdaptiveStage::ALL.into_iter().all(|stage| {
+                    !self
+                        .stage_decision(workload, stage, *backend, benchmarks, true)
+                        .requires_rca()
+                })
+            })
+            .min_by_key(|(_, accelerated_ns)| *accelerated_ns)
+            .map(|(backend, _)| backend)
     }
 
     fn best_candidate_device(&self, benchmarks: &J2kAdaptiveBenchmarks) -> Option<BackendKind> {
