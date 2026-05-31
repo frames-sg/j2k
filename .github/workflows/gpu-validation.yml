@@ -74,6 +74,7 @@ jobs:
       - run: cargo bench -p signinum-jpeg-metal --no-run
       - run: cargo bench -p signinum-j2k-metal --no-run
       - run: cargo bench -p signinum-j2k-metal --bench encode_stages --no-run
+      - run: cargo bench -p signinum --bench facade --features metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_GPU_BENCH_DIM: "1024"
@@ -88,6 +89,8 @@ jobs:
         env:
           SIGNINUM_REQUIRE_METAL_BENCH: "1"
         run: cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+      - if: ${{ inputs.run-timed-benchmarks }}
+        run: cargo bench -p signinum --bench facade --features metal -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
 
   # cuda-x86_64-compatibility is THE authoritative CUDA parity gate.
   # It must be run (via workflow_dispatch) before merging any change to the
@@ -205,6 +208,7 @@ jobs:
       - run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime --no-run
       - run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
       - run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
+      - run: cargo bench -p signinum --bench facade --features cuda-runtime --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
@@ -224,3 +228,7 @@ jobs:
         env:
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
         run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+      - if: ${{ inputs.run-timed-benchmarks }}
+        env:
+          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p signinum --bench facade --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
