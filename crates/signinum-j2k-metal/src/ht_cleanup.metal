@@ -25,6 +25,7 @@ struct J2kHtCleanupBatchJob {
     uint refinement_length;
     uint missing_msbs;
     uint num_bitplanes;
+    uint roi_shift;
     uint number_of_coding_passes;
     uint output_stride;
     uint output_offset;

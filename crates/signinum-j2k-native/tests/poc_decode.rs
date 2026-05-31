@@ -76,6 +76,34 @@ fn force_cod_lrcp_and_insert_tile_header_cprl_poc(mut codestream: Vec<u8>) -> Ve
     codestream
 }
 
+fn force_cod_lrcp_and_insert_main_header_cprl_poc_with_sentinel_ends(
+    mut codestream: Vec<u8>,
+) -> Vec<u8> {
+    let cod_offset = marker_offset(&codestream, 0x52);
+    assert_eq!(
+        codestream[cod_offset + 5],
+        0x04,
+        "fixture must start as CPRL"
+    );
+    codestream[cod_offset + 5] = 0x00;
+
+    let poc = [
+        0xFF, 0x5F, // POC
+        0x00, 0x09, // Lpoc
+        0x00, // RSpoc
+        0x00, // CSpoc
+        0x00, 0x02, // LYEpoc: clamp to actual layer count
+        0x21, // REpoc: official vectors use 33 as an all-resolutions bound
+        0xFF, // CEpoc: official profile 0 vectors use 255 as an all-components bound
+        0x04, // Ppoc: CPRL
+    ];
+    codestream.splice(
+        cod_marker_end(&codestream)..cod_marker_end(&codestream),
+        poc,
+    );
+    codestream
+}
+
 fn cprl_fixture(pixels: &[u8]) -> Vec<u8> {
     encode(
         pixels,
@@ -104,6 +132,23 @@ fn fixture_pixels() -> Vec<u8> {
         }
     }
     pixels
+}
+
+#[test]
+fn main_header_poc_sentinel_end_bounds_are_clamped_to_tile_shape() {
+    let pixels = fixture_pixels();
+    let cprl = cprl_fixture(&pixels);
+    let with_poc = force_cod_lrcp_and_insert_main_header_cprl_poc_with_sentinel_ends(cprl);
+
+    let decoded = Image::new(&with_poc, &DecodeSettings::default())
+        .expect("POC codestream with sentinel end bounds parses")
+        .decode_native()
+        .expect("POC codestream with sentinel end bounds decodes");
+
+    assert_eq!(decoded.width, 64);
+    assert_eq!(decoded.height, 64);
+    assert_eq!(decoded.num_components, 3);
+    assert_eq!(decoded.data, pixels);
 }
 
 #[test]

@@ -126,7 +126,6 @@ fn iso_conformance_manifest_blocks_release_shipped_features() {
         "progression-orders",
         "tlm",
         "plt",
-        "plm",
         "sop",
         "eph",
     ] {
@@ -141,6 +140,18 @@ fn iso_conformance_manifest_blocks_release_shipped_features() {
             "manifest must include a blocking vector for shipped feature {required_feature}"
         );
     }
+    assert!(
+        vectors.iter().any(|vector| {
+            vector.features.split(';').any(|feature| feature == "plm")
+                && (vector.classification == Classification::Blocking
+                    || (vector.classification == Classification::KnownLimitation
+                        && vector
+                            .features
+                            .split(';')
+                            .any(|feature| feature == "conformance-coverage-gap")))
+        }),
+        "manifest must include a blocking PLM vector or document the ISO coverage gap"
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ use super::codestream::{
     markers, skip_marker_segment, ComponentInfo, Header, ProgressionChange, ProgressionOrder,
 };
 use super::rect::IntRect;
-use crate::error::{bail, err, MarkerError, Result, TileError, ValidationError};
+use crate::error::{bail, err, DecodingError, MarkerError, Result, TileError, ValidationError};
 use crate::j2c::codestream;
 use crate::reader::BitReader;
 
@@ -333,6 +333,18 @@ fn parse_tile_part<'a>(
                     codestream::poc_marker(reader, num_components as u16, tile.num_layers)
                         .ok_or(MarkerError::ParseFailure("POC"))?,
                 );
+            }
+            markers::RGN => {
+                reader.read_marker()?;
+                let rgn = codestream::rgn_marker(reader, num_components as u16)
+                    .ok_or(MarkerError::ParseFailure("RGN"))?;
+                if rgn.style != 0 {
+                    bail!(DecodingError::UnsupportedFeature("explicit ROI coding"));
+                }
+                tile.component_infos
+                    .get_mut(rgn.component_index as usize)
+                    .ok_or(ValidationError::InvalidComponentMetadata)?
+                    .roi_shift = rgn.shift;
             }
             markers::EOC => break,
             markers::PPT => {
@@ -875,6 +887,7 @@ mod tests {
             size_info: component_size_info_0,
             coding_style: dummy_component_coding_style.clone(),
             quantization_info: dummy_quantization_info.clone(),
+            roi_shift: 0,
         };
 
         let component_size_info_1 = ComponentSizeInfo {
@@ -887,6 +900,7 @@ mod tests {
             size_info: component_size_info_1,
             coding_style: dummy_component_coding_style.clone(),
             quantization_info: dummy_quantization_info.clone(),
+            roi_shift: 0,
         };
 
         let size_data = SizeData {

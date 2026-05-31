@@ -89,6 +89,7 @@ fn one_block_ht_plan(
                     missing_bit_planes: 0,
                     number_of_coding_passes: 1,
                     num_bitplanes: 8,
+                    roi_shift: 0,
                     stripe_causal: false,
                     strict: true,
                     dequantization_step: 1.0,
@@ -223,6 +224,25 @@ fn flat_htj2k_plan_rejects_block_length_mismatch() {
         error
             .to_string()
             .contains("block lengths do not match payload bytes"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn flat_htj2k_plan_rejects_roi_maxshift_jobs() {
+    let mut native_plan = one_block_ht_plan(1, 0, vec![0xAA], 1);
+    let J2kDirectGrayscaleStep::HtSubBand(subband) = &mut native_plan.steps[0] else {
+        panic!("fixture starts with one HT sub-band");
+    };
+    subband.jobs[0].roi_shift = 7;
+
+    let error =
+        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, PixelFormat::Gray8, (0, 0))
+            .expect_err("ROI maxshift jobs must not be silently accepted by CUDA kernels");
+
+    assert!(error.is_unsupported());
+    assert!(
+        error.to_string().contains("ROI maxshift decode"),
         "unexpected error: {error}"
     );
 }

@@ -24,6 +24,11 @@ default = []
 gpu = ["metal", "cuda"]
 metal = ["dep:signinum-jpeg-metal", "dep:signinum-j2k-metal"]
 cuda = ["dep:signinum-jpeg-cuda", "dep:signinum-j2k-cuda"]
+cuda-runtime = [
+    "cuda",
+    "signinum-jpeg-cuda/cuda-runtime",
+    "signinum-j2k-cuda/cuda-runtime",
+]
 
 [dependencies]
 signinum-core = { path = "../signinum-core", version = "=0.4.4" }

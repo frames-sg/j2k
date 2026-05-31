@@ -109,6 +109,9 @@ fn supports_metal_classic_kernel(job: &J2kCodeBlockDecodeJob<'_>) -> bool {
     if job.number_of_coding_passes == 0 {
         return false;
     }
+    if job.roi_shift != 0 {
+        return false;
+    }
     if job.data.is_empty() {
         return false;
     }
@@ -201,6 +204,7 @@ mod tests {
         missing_bit_planes: u8,
         number_of_coding_passes: u8,
         total_bitplanes: u8,
+        roi_shift: u8,
         sub_band_type: signinum_j2k_native::J2kSubBandType,
         style: signinum_j2k_native::J2kCodeBlockStyle,
         strict: bool,
@@ -218,6 +222,7 @@ mod tests {
                 missing_bit_planes: self.missing_bit_planes,
                 number_of_coding_passes: self.number_of_coding_passes,
                 total_bitplanes: self.total_bitplanes,
+                roi_shift: self.roi_shift,
                 sub_band_type: self.sub_band_type,
                 style: self.style,
                 strict: self.strict,
@@ -290,6 +295,7 @@ mod tests {
                     missing_bit_planes: job.missing_bit_planes,
                     number_of_coding_passes: job.number_of_coding_passes,
                     total_bitplanes: job.total_bitplanes,
+                    roi_shift: job.roi_shift,
                     sub_band_type: job.sub_band_type,
                     style: job.style,
                     strict: job.strict,

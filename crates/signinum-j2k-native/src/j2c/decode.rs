@@ -23,16 +23,17 @@ use crate::j2c::segment::MAX_BITPLANE_COUNT;
 use crate::math::SimdBuffer;
 use crate::profile;
 use crate::reader::BitReader;
+use crate::{
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, decode_j2k_code_block_scalar,
+    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob,
+    HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob,
+    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob,
+    J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
+};
 #[cfg(feature = "parallel")]
 use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
-use crate::{
-    decode_j2k_code_block_scalar, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
-    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob,
-    J2kCodeBlockDecodeJob, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId,
-    J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep,
-    J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
-    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
-};
 use core::ops::{DerefMut, Range};
 
 pub(crate) fn decode<'a>(
@@ -389,6 +390,8 @@ fn build_grayscale_sub_band_step(
         .code_block_style
         .uses_high_throughput_block_coding()
     {
+        let coded_bitplanes =
+            add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
         let stripe_causal = component_info
             .coding_style
             .parameters
@@ -409,11 +412,11 @@ fn build_grayscale_sub_band_step(
                     continue;
                 }
                 let actual_bitplanes = if header.strict {
-                    num_bitplanes
+                    coded_bitplanes
                         .checked_sub(code_block.missing_bit_planes)
                         .ok_or(DecodingError::InvalidBitplaneCount)?
                 } else {
-                    num_bitplanes.saturating_sub(code_block.missing_bit_planes)
+                    coded_bitplanes.saturating_sub(code_block.missing_bit_planes)
                 };
                 let max_coding_passes = if actual_bitplanes == 0 {
                     0
@@ -440,6 +443,7 @@ fn build_grayscale_sub_band_step(
                     missing_bit_planes: code_block.missing_bit_planes,
                     number_of_coding_passes: code_block.number_of_coding_passes,
                     num_bitplanes,
+                    roi_shift: component_info.roi_shift,
                     stripe_causal,
                     strict: header.strict,
                     dequantization_step,
@@ -522,6 +526,7 @@ fn build_grayscale_sub_band_step(
                 missing_bit_planes: code_block.missing_bit_planes,
                 number_of_coding_passes: code_block.number_of_coding_passes,
                 total_bitplanes: num_bitplanes,
+                roi_shift: component_info.roi_shift,
                 sub_band_type: classic_job_sub_band_type,
                 style: classic_job_style,
                 strict: header.strict,
@@ -1115,6 +1120,9 @@ fn decode_sub_band_bitplanes(
         return Ok(());
     }
 
+    let coded_bitplanes =
+        add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, MAX_BITPLANE_COUNT)?;
+
     let classic_job_sub_band_type = match sub_band.sub_band_type {
         SubBandType::LowLow => J2kSubBandType::LowLow,
         SubBandType::HighLow => J2kSubBandType::HighLow,
@@ -1167,6 +1175,7 @@ fn decode_sub_band_bitplanes(
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     total_bitplanes: num_bitplanes,
+                    roi_shift: component_info.roi_shift,
                     sub_band_type: classic_job_sub_band_type,
                     style: classic_job_style,
                     strict: header.strict,
@@ -1222,6 +1231,7 @@ fn decode_sub_band_bitplanes(
                 classic_job_style,
                 header.strict,
                 num_bitplanes,
+                component_info.roi_shift,
                 dequantization_step,
             )?;
             tile_ctx.debug_counters.decoded_code_blocks += decoded_blocks.len();
@@ -1253,7 +1263,7 @@ fn decode_sub_band_bitplanes(
             bitplane::decode(
                 code_block,
                 sub_band.sub_band_type,
-                num_bitplanes,
+                coded_bitplanes,
                 &component_info.coding_style.parameters.code_block_style,
                 tile_ctx,
                 storage,
@@ -1267,7 +1277,9 @@ fn decode_sub_band_bitplanes(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output = coefficient.get() as f32;
+                    let coefficient =
+                        apply_roi_maxshift_inverse_i32(coefficient.get(), component_info.roi_shift);
+                    *output = coefficient as f32;
                     *output *= dequantization_step;
                 }
 
@@ -1422,7 +1434,9 @@ fn collect_pending_ht_blocks(
     storage: &DecompositionStorage<'_>,
     header: &Header<'_>,
     num_bitplanes: u8,
+    roi_shift: u8,
 ) -> Result<Vec<PendingHtBlock>> {
+    let coded_bitplanes = add_roi_shift_to_bitplanes(num_bitplanes, roi_shift, 31)?;
     let mut pending_blocks =
         Vec::with_capacity(count_ht_code_blocks(sub_band_idx, sub_band, storage));
     for precinct in sub_band
@@ -1439,11 +1453,11 @@ fn collect_pending_ht_blocks(
                 continue;
             }
             let actual_bitplanes = if header.strict {
-                num_bitplanes
+                coded_bitplanes
                     .checked_sub(code_block.missing_bit_planes)
                     .ok_or(DecodingError::InvalidBitplaneCount)?
             } else {
-                num_bitplanes.saturating_sub(code_block.missing_bit_planes)
+                coded_bitplanes.saturating_sub(code_block.missing_bit_planes)
             };
             let max_coding_passes = if actual_bitplanes == 0 {
                 0
@@ -1492,6 +1506,7 @@ fn decode_classic_sub_band_blocks_parallel(
     style: J2kCodeBlockStyle,
     strict: bool,
     total_bitplanes: u8,
+    roi_shift: u8,
     dequantization_step: f32,
 ) -> Result<Vec<DecodedClassicBlock>> {
     use rayon::prelude::*;
@@ -1514,6 +1529,7 @@ fn decode_classic_sub_band_blocks_parallel(
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     total_bitplanes,
+                    roi_shift,
                     sub_band_type,
                     style,
                     strict,
@@ -1580,6 +1596,7 @@ fn decode_ht_sub_band_blocks_parallel(
     pending_blocks: &[PendingHtBlock],
     strict: bool,
     num_bitplanes: u8,
+    roi_shift: u8,
     stripe_causal: bool,
     dequantization_step: f32,
 ) -> Result<Vec<DecodedHtBlock>> {
@@ -1605,6 +1622,7 @@ fn decode_ht_sub_band_blocks_parallel(
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     num_bitplanes,
+                    roi_shift,
                     stripe_causal,
                     strict,
                     dequantization_step,
@@ -1679,6 +1697,7 @@ fn decode_sub_band_ht_blocks(
     dequantization_step: f32,
     profile_enabled: bool,
 ) -> Result<()> {
+    let coded_bitplanes = add_roi_shift_to_bitplanes(num_bitplanes, component_info.roi_shift, 31)?;
     let stripe_causal = component_info
         .coding_style
         .parameters
@@ -1701,11 +1720,11 @@ fn decode_sub_band_ht_blocks(
                     continue;
                 }
                 let actual_bitplanes = if header.strict {
-                    num_bitplanes
+                    coded_bitplanes
                         .checked_sub(code_block.missing_bit_planes)
                         .ok_or(DecodingError::InvalidBitplaneCount)?
                 } else {
-                    num_bitplanes.saturating_sub(code_block.missing_bit_planes)
+                    coded_bitplanes.saturating_sub(code_block.missing_bit_planes)
                 };
                 let max_coding_passes = if actual_bitplanes == 0 {
                     0
@@ -1746,6 +1765,7 @@ fn decode_sub_band_ht_blocks(
                     missing_bit_planes: pending.missing_bit_planes,
                     number_of_coding_passes: pending.number_of_coding_passes,
                     num_bitplanes,
+                    roi_shift: component_info.roi_shift,
                     stripe_causal,
                     strict: header.strict,
                     dequantization_step,
@@ -1790,12 +1810,19 @@ fn decode_sub_band_ht_blocks(
     {
         #[cfg(feature = "parallel")]
         {
-            let pending_blocks =
-                collect_pending_ht_blocks(sub_band_idx, sub_band, storage, header, num_bitplanes)?;
+            let pending_blocks = collect_pending_ht_blocks(
+                sub_band_idx,
+                sub_band,
+                storage,
+                header,
+                num_bitplanes,
+                component_info.roi_shift,
+            )?;
             let decoded_blocks = decode_ht_sub_band_blocks_parallel(
                 &pending_blocks,
                 header.strict,
                 num_bitplanes,
+                component_info.roi_shift,
                 stripe_causal,
                 dequantization_step,
             )?;
@@ -1822,7 +1849,7 @@ fn decode_sub_band_ht_blocks(
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             ht_block_decode::decode_with_stats(
                 code_block,
-                num_bitplanes,
+                coded_bitplanes,
                 stripe_causal,
                 &mut tile_ctx.ht_block_decode_context,
                 storage,
@@ -1841,8 +1868,11 @@ fn decode_sub_band_ht_blocks(
                 let out_row = &mut base_store[base_idx..];
 
                 for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output =
-                        ht_block_decode::coefficient_to_i32(coefficient, num_bitplanes) as f32;
+                    let coefficient =
+                        ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
+                    let coefficient =
+                        apply_roi_maxshift_inverse_i32(coefficient, component_info.roi_shift);
+                    *output = coefficient as f32;
                     *output *= dequantization_step;
                 }
 

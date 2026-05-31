@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use super::bitplane::BITPLANE_BIT_SIZE;
 use super::build::SubBandType;
 use super::DecodeSettings;
-use crate::error::{bail, err, MarkerError, Result, ValidationError};
+use crate::error::{bail, err, DecodingError, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
 
 const MAX_LAYER_COUNT: u8 = 32;
@@ -59,6 +59,7 @@ pub(crate) fn read_header<'a>(
     let num_components = size_data.component_sizes.len() as u16;
     let mut cod_components = vec![None; num_components as usize];
     let mut qcd_components = vec![None; num_components as usize];
+    let mut rgn_components = vec![None; num_components as usize];
     let mut progression_changes = vec![];
     let mut plm_markers = vec![];
     let mut ppm_markers = vec![];
@@ -107,7 +108,14 @@ pub(crate) fn read_header<'a>(
             }
             markers::RGN => {
                 reader.read_marker()?;
-                rgn_marker(reader).ok_or(MarkerError::ParseFailure("RGN"))?;
+                let rgn =
+                    rgn_marker(reader, num_components).ok_or(MarkerError::ParseFailure("RGN"))?;
+                if rgn.style != 0 {
+                    bail!(DecodingError::UnsupportedFeature("explicit ROI coding"));
+                }
+                *rgn_components
+                    .get_mut(rgn.component_index as usize)
+                    .ok_or(MarkerError::ParseFailure("RGN"))? = Some(rgn.shift);
             }
             markers::TLM => {
                 reader.read_marker()?;
@@ -160,6 +168,7 @@ pub(crate) fn read_header<'a>(
                 })
                 .unwrap_or(cod.component_parameters.clone()),
             quantization_info: qcd_components[idx].clone().unwrap_or(qcd.clone()),
+            roi_shift: rgn_components[idx].unwrap_or(0),
         })
         .collect();
 
@@ -253,6 +262,7 @@ pub(crate) struct ComponentInfo {
     pub(crate) size_info: ComponentSizeInfo,
     pub(crate) coding_style: CodingStyleComponent,
     pub(crate) quantization_info: QuantizationInfo,
+    pub(crate) roi_shift: u8,
 }
 
 impl ComponentInfo {
@@ -886,8 +896,33 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
 }
 
 /// RGN marker (A.6.3).
-fn rgn_marker(reader: &mut BitReader<'_>) -> Option<()> {
-    skip_marker_segment(reader)
+pub(crate) fn rgn_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<RgnMarkerData> {
+    let length = reader.read_u16()?;
+    let component_index_bytes = if csiz < 257 { 1 } else { 2 };
+    if length != 4 + component_index_bytes {
+        return None;
+    }
+
+    let component_index = read_component_index(reader, csiz)?;
+    if component_index >= csiz {
+        return None;
+    }
+
+    let style = reader.read_byte()?;
+    let shift = reader.read_byte()?;
+
+    Some(RgnMarkerData {
+        component_index,
+        style,
+        shift,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RgnMarkerData {
+    pub(crate) component_index: u16,
+    pub(crate) style: u8,
+    pub(crate) shift: u8,
 }
 
 pub(crate) fn skip_marker_segment(reader: &mut BitReader<'_>) -> Option<()> {
@@ -999,7 +1034,7 @@ pub(crate) fn qcc_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<(u16, 
 pub(crate) fn poc_marker(
     reader: &mut BitReader<'_>,
     csiz: u16,
-    num_layers: u8,
+    _num_layers: u8,
 ) -> Option<Vec<ProgressionChange>> {
     let length = reader.read_u16()?;
     let remaining_bytes = length.checked_sub(2)?;
@@ -1021,9 +1056,8 @@ pub(crate) fn poc_marker(
 
         if resolution_start >= resolution_end
             || component_start >= component_end
-            || component_end > csiz
+            || component_start >= csiz
             || layer_end == 0
-            || layer_end > u16::from(num_layers)
             || layer_end > u16::from(u8::MAX)
             || component_end > u16::from(u8::MAX)
         {

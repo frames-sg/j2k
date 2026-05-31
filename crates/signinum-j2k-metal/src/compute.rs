@@ -63,9 +63,8 @@ static HYBRID_CPU_DECODE_INPUTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static FLATTENED_HYBRID_CPU_DECODE_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
-static DIRECT_TIER1_INPUT_BUFFER_PREPARES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(target_os = "macos", test))]
 std::thread_local! {
+    static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
     static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static HT_SIMD_PROTOTYPE_DISPATCHES: Cell<usize> = const { Cell::new(0) };
@@ -84,12 +83,12 @@ pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_direct_tier1_input_buffer_prepares_for_test() {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.store(0, Ordering::Relaxed);
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn direct_tier1_input_buffer_prepares_for_test() -> usize {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.load(Ordering::Relaxed)
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -946,6 +945,7 @@ struct J2kClassicCleanupBatchJob {
     output_offset: u32,
     missing_msbs: u32,
     total_bitplanes: u32,
+    roi_shift: u32,
     number_of_coding_passes: u32,
     sub_band_type: u32,
     style_flags: u32,
@@ -1206,6 +1206,7 @@ struct J2kHtCleanupBatchJob {
     refinement_length: u32,
     missing_msbs: u32,
     num_bitplanes: u32,
+    roi_shift: u32,
     number_of_coding_passes: u32,
     output_stride: u32,
     output_offset: u32,
@@ -2313,7 +2314,7 @@ enum DirectTier1Mode {
 
 #[cfg(all(target_os = "macos", test))]
 fn record_direct_tier1_input_buffer_prepare() {
-    DIRECT_TIER1_INPUT_BUFFER_PREPARES.fetch_add(1, Ordering::Relaxed);
+    DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get() + 1));
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -2888,6 +2889,7 @@ fn prepare_classic_sub_band(
                 })?,
             missing_msbs: u32::from(block.missing_bit_planes),
             total_bitplanes: u32::from(block.total_bitplanes),
+            roi_shift: u32::from(block.roi_shift),
             number_of_coding_passes: u32::from(block.number_of_coding_passes),
             sub_band_type: match block.sub_band_type {
                 signinum_j2k_native::J2kSubBandType::LowLow => 0,
@@ -3080,6 +3082,7 @@ fn prepare_ht_sub_band(
             refinement_length: block.refinement_length,
             missing_msbs: u32::from(block.missing_bit_planes),
             num_bitplanes: u32::from(block.num_bitplanes),
+            roi_shift: u32::from(block.roi_shift),
             number_of_coding_passes: u32::from(block.number_of_coding_passes),
             output_stride: job.width,
             output_offset: block
@@ -4376,6 +4379,7 @@ fn prepared_classic_decode_job<'a>(
         missing_bit_planes: checked_u8(job.missing_msbs, "classic missing bit planes")?,
         number_of_coding_passes: checked_u8(job.number_of_coding_passes, "classic coding passes")?,
         total_bitplanes: checked_u8(job.total_bitplanes, "classic total bitplanes")?,
+        roi_shift: checked_u8(job.roi_shift, "classic ROI shift")?,
         sub_band_type: prepared_classic_sub_band_type(job.sub_band_type)?,
         style: prepared_classic_style(job.style_flags),
         strict: job.strict != 0,
@@ -5063,6 +5067,7 @@ fn prepared_ht_decode_job<'a>(
         missing_bit_planes: checked_u8(job.missing_msbs, "HTJ2K missing bit planes")?,
         number_of_coding_passes: checked_u8(job.number_of_coding_passes, "HTJ2K coding passes")?,
         num_bitplanes: checked_u8(job.num_bitplanes, "HTJ2K total bitplanes")?,
+        roi_shift: checked_u8(job.roi_shift, "HTJ2K ROI shift")?,
         stripe_causal: job.stripe_causal != 0,
         strict: true,
         dequantization_step: job.dequantization_step,
@@ -6285,6 +6290,9 @@ fn classic_prepared_job_supports_runtime(
     if job.output_stride < job.width {
         return false;
     }
+    if job.roi_shift != 0 {
+        return false;
+    }
     if job.total_bitplanes == 0 || job.total_bitplanes > 31 || job.missing_msbs >= 31 {
         return false;
     }
@@ -7009,7 +7017,9 @@ fn ht_prepared_job_supports_runtime(job: &J2kHtCleanupBatchJob) -> bool {
     if job.width == 0 || job.height == 0 {
         return true;
     }
-    job.output_stride >= job.width && crate::ht::supports_metal_ht_geometry(job.width, job.height)
+    job.roi_shift == 0
+        && job.output_stride >= job.width
+        && crate::ht::supports_metal_ht_geometry(job.width, job.height)
 }
 
 #[cfg(target_os = "macos")]
@@ -16404,6 +16414,7 @@ pub(crate) fn decode_classic_cleanup_code_block(
             output_offset: 0,
             missing_msbs: u32::from(job.missing_bit_planes),
             total_bitplanes: u32::from(job.total_bitplanes),
+            roi_shift: u32::from(job.roi_shift),
             number_of_coding_passes: u32::from(job.number_of_coding_passes),
             sub_band_type: match job.sub_band_type {
                 signinum_j2k_native::J2kSubBandType::LowLow => 0,
@@ -16523,6 +16534,7 @@ pub(crate) fn decode_classic_cleanup_sub_band(
                     })?,
                 missing_msbs: u32::from(block.code_block.missing_bit_planes),
                 total_bitplanes: u32::from(block.code_block.total_bitplanes),
+                roi_shift: u32::from(block.code_block.roi_shift),
                 number_of_coding_passes: u32::from(block.code_block.number_of_coding_passes),
                 sub_band_type: match block.code_block.sub_band_type {
                     signinum_j2k_native::J2kSubBandType::LowLow => 0,
@@ -16628,6 +16640,7 @@ pub(crate) fn decode_ht_cleanup_sub_band(
                 refinement_length: block.code_block.refinement_length,
                 missing_msbs: u32::from(block.code_block.missing_bit_planes),
                 num_bitplanes: u32::from(block.code_block.num_bitplanes),
+                roi_shift: u32::from(block.code_block.roi_shift),
                 number_of_coding_passes: u32::from(block.code_block.number_of_coding_passes),
                 output_stride: job.width,
                 output_offset: block
@@ -17026,6 +17039,7 @@ mod tests {
             missing_bit_planes: job.missing_bit_planes,
             number_of_coding_passes: job.number_of_coding_passes,
             total_bitplanes: job.total_bitplanes,
+            roi_shift: job.roi_shift,
             sub_band_type: job.sub_band_type,
             style: job.style,
             strict: job.strict,
@@ -17678,6 +17692,7 @@ mod tests {
             output_offset: 0,
             missing_msbs: 0,
             total_bitplanes: 8,
+            roi_shift: 0,
             number_of_coding_passes: 1,
             sub_band_type: 0,
             style_flags: 0,
@@ -17711,6 +17726,7 @@ mod tests {
             output_offset: 0,
             missing_msbs: 0,
             total_bitplanes: 8,
+            roi_shift: 0,
             number_of_coding_passes: 1,
             sub_band_type: 0,
             style_flags: 0,

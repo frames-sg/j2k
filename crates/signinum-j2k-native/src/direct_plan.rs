@@ -97,6 +97,8 @@ pub struct J2kOwnedCodeBlockBatchJob {
     pub number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
     pub total_bitplanes: u8,
+    /// Region-of-interest maxshift value from RGN marker metadata.
+    pub roi_shift: u8,
     /// The sub-band type containing this code block.
     pub sub_band_type: crate::J2kSubBandType,
     /// The code-block style flags.
@@ -132,6 +134,8 @@ pub struct HtOwnedCodeBlockBatchJob {
     pub number_of_coding_passes: u8,
     /// Total coded bitplanes for the parent sub-band.
     pub num_bitplanes: u8,
+    /// Region-of-interest maxshift value from RGN marker metadata.
+    pub roi_shift: u8,
     /// Whether vertically causal context was enabled.
     pub stripe_causal: bool,
     /// Whether strict decode validation is enabled for the parent image.
