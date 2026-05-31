@@ -55,7 +55,7 @@ jobs:
       - run: cargo xtask fuzz-build
       - name: Install CI helper tools
         run: |
-          cargo install typos-cli --locked
+          cargo install typos-cli --version 1.42.3 --locked
           cargo install cargo-deny --locked
           cargo install cargo-llvm-cov --locked
       - run: cargo xtask typos
