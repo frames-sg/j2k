@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Errors returned while extracting encapsulated DICOM frame payloads.
 pub enum DicomFrameExtractError {
+    /// The DICOM Pixel Data element was not present in the byte stream.
     #[error("DICOM Pixel Data element was not found")]
     PixelDataNotFound,
+    /// Pixel Data was present but did not use encapsulated item storage.
     #[error("DICOM Pixel Data is not encapsulated")]
     PixelDataNotEncapsulated,
+    /// The byte stream ended while reading a required structure.
     #[error("DICOM Pixel Data is truncated while reading {what}")]
-    Truncated { what: &'static str },
+    Truncated {
+        /// Structure being read when truncation was detected.
+        what: &'static str,
+    },
+    /// The Pixel Data item structure is invalid.
     #[error("DICOM Pixel Data is malformed: {what}")]
-    Malformed { what: &'static str },
+    Malformed {
+        /// Malformed structure or invariant.
+        what: &'static str,
+    },
 }
 
 const PIXEL_DATA_TAG: [u8; 4] = [0xE0, 0x7F, 0x10, 0x00];
@@ -19,12 +30,14 @@ const ITEM_TAG: [u8; 4] = [0xFE, 0xFF, 0x00, 0xE0];
 const SEQUENCE_DELIMITATION_TAG: [u8; 4] = [0xFE, 0xFF, 0xDD, 0xE0];
 const UNDEFINED_LENGTH: u32 = u32::MAX;
 
+/// Extract every encapsulated frame payload from a DICOM byte stream.
 pub fn extract_dicom_encapsulated_frames(
     input: &[u8],
 ) -> Result<Vec<Vec<u8>>, DicomFrameExtractError> {
     extract_dicom_encapsulated_frames_with_limit(input, usize::MAX)
 }
 
+/// Extract up to `limit` encapsulated frame payloads from a DICOM byte stream.
 pub fn extract_dicom_encapsulated_frames_with_limit(
     input: &[u8],
     limit: usize,

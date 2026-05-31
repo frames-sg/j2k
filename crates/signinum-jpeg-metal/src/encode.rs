@@ -20,24 +20,35 @@ use crate::compute;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
+/// Metal buffer and layout metadata for one baseline JPEG encode tile.
 pub struct JpegBaselineMetalEncodeTile<'a> {
+    /// Source Metal buffer containing RGB8 or Gray8 pixels.
     pub buffer: &'a Buffer,
+    /// Byte offset of the first source pixel in `buffer`.
     pub byte_offset: usize,
+    /// Width of the valid input region in pixels.
     pub width: u32,
+    /// Height of the valid input region in pixels.
     pub height: u32,
+    /// Number of bytes between consecutive input rows.
     pub pitch_bytes: usize,
+    /// Encoded frame width in pixels.
     pub output_width: u32,
+    /// Encoded frame height in pixels.
     pub output_height: u32,
+    /// Pixel format of the source buffer.
     pub format: PixelFormat,
 }
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
+/// Placeholder encode tile type for non-macOS builds.
 pub struct JpegBaselineMetalEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-resident tile as a baseline JPEG frame.
 pub fn encode_jpeg_baseline_from_metal_buffer(
     tile: JpegBaselineMetalEncodeTile<'_>,
     options: JpegEncodeOptions,
@@ -80,6 +91,11 @@ pub fn encode_jpeg_baseline_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-resident tiles as baseline JPEG frames.
+///
+/// Consecutive tiles that share a source Metal buffer are submitted through a
+/// single entropy-kernel batch where possible. The returned frames preserve the
+/// input order.
 pub fn encode_jpeg_baseline_batch_from_metal_buffers(
     tiles: &[JpegBaselineMetalEncodeTile<'_>],
     options: JpegEncodeOptions,
@@ -172,6 +188,7 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for batch Metal encode requests on non-macOS hosts.
 pub fn encode_jpeg_baseline_batch_from_metal_buffers(
     tiles: &[JpegBaselineMetalEncodeTile<'_>],
     options: JpegEncodeOptions,
@@ -182,6 +199,7 @@ pub fn encode_jpeg_baseline_batch_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal encode requests on non-macOS hosts.
 pub fn encode_jpeg_baseline_from_metal_buffer(
     tile: JpegBaselineMetalEncodeTile<'_>,
     options: JpegEncodeOptions,

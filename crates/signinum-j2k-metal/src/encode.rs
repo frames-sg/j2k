@@ -100,6 +100,7 @@ impl MetalEncodeDispatchStages {
 }
 
 impl MetalEncodeStageAccelerator {
+    /// Create an accelerator that leaves forward RCT on the CPU path.
     pub fn with_cpu_forward_rct() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::ALL
@@ -108,6 +109,7 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Create the conservative automatic accelerator for host codestream output.
     pub fn for_auto_host_output() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::FORWARD_DWT53,
@@ -116,6 +118,7 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Create an accelerator that only attempts the HT code-block stage on Metal.
     pub fn for_ht_code_block_encode() -> Self {
         Self {
             dispatch_stages: MetalEncodeDispatchStages::HT_CODE_BLOCK,
@@ -133,42 +136,52 @@ impl MetalEncodeStageAccelerator {
         }
     }
 
+    /// Number of forward RCT stage attempts.
     pub fn forward_rct_attempts(&self) -> usize {
         self.forward_rct_attempts
     }
 
+    /// Number of forward 5/3 DWT stage attempts.
     pub fn forward_dwt53_attempts(&self) -> usize {
         self.forward_dwt53_attempts
     }
 
+    /// Number of classic Tier-1 code-block encode attempts.
     pub fn tier1_code_block_attempts(&self) -> usize {
         self.tier1_code_block_attempts
     }
 
+    /// Number of HT code-block encode attempts.
     pub fn ht_code_block_attempts(&self) -> usize {
         self.ht_code_block_attempts
     }
 
+    /// Number of packetization stage attempts.
     pub fn packetization_attempts(&self) -> usize {
         self.packetization_attempts
     }
 
+    /// Number of forward RCT Metal dispatches.
     pub fn forward_rct_dispatches(&self) -> usize {
         self.forward_rct_dispatches
     }
 
+    /// Number of forward 5/3 DWT Metal dispatches.
     pub fn forward_dwt53_dispatches(&self) -> usize {
         self.forward_dwt53_dispatches
     }
 
+    /// Number of classic Tier-1 Metal dispatches.
     pub fn tier1_code_block_dispatches(&self) -> usize {
         self.tier1_code_block_dispatches
     }
 
+    /// Number of HT code-block Metal dispatches.
     pub fn ht_code_block_dispatches(&self) -> usize {
         self.ht_code_block_dispatches
     }
 
+    /// Number of packetization Metal dispatches.
     pub fn packetization_dispatches(&self) -> usize {
         self.packetization_dispatches
     }
@@ -434,38 +447,60 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
+/// Metal buffer and layout metadata for one lossless J2K encode tile.
 pub struct MetalLosslessEncodeTile<'a> {
+    /// Source Metal buffer containing Gray or RGB pixels.
     pub buffer: &'a Buffer,
+    /// Byte offset of the first source pixel in `buffer`.
     pub byte_offset: usize,
+    /// Width of the valid input region in pixels.
     pub width: u32,
+    /// Height of the valid input region in pixels.
     pub height: u32,
+    /// Number of bytes between consecutive input rows.
     pub pitch_bytes: usize,
+    /// Encoded image width in pixels.
     pub output_width: u32,
+    /// Encoded image height in pixels.
     pub output_height: u32,
+    /// Pixel format of the source buffer.
     pub format: PixelFormat,
 }
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone, Copy)]
+/// Placeholder lossless encode tile type for non-macOS builds.
 pub struct MetalLosslessEncodeTile<'a> {
     _private: core::marker::PhantomData<&'a ()>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Residency decisions used by a lossless Metal encode.
 pub struct MetalLosslessEncodeResidency {
+    /// Whether coefficient preparation ran on Metal.
     pub coefficient_prep_used: bool,
+    /// Whether packetization ran on Metal.
     pub packetization_used: bool,
+    /// Whether codestream assembly stayed resident on Metal.
     pub codestream_assembly_used: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Lossless Metal encode output with host codestream bytes and timings.
 pub struct MetalLosslessEncodeOutcome {
+    /// Encoded J2K codestream.
     pub encoded: EncodedJ2k,
+    /// Whether the input buffer had to be copied or padded.
     pub input_copy_used: bool,
+    /// Residency decisions for the encode stages.
     pub resident: MetalLosslessEncodeResidency,
+    /// Time spent copying or padding the input.
     pub input_copy_duration: Duration,
+    /// End-to-end encode duration for this tile.
     pub encode_duration: Duration,
+    /// GPU-only duration when timestamp data is available.
     pub gpu_duration: Option<Duration>,
+    /// Time spent validating the encoded output.
     pub validation_duration: Duration,
 }
 
@@ -476,14 +511,23 @@ pub struct MetalLosslessEncodeOutcome {
 /// callers can stream `codestream_bytes()` into file or network writers without
 /// first materializing an owned `Vec<u8>`.
 pub struct MetalEncodedJ2k {
+    /// Metal buffer containing the codestream bytes.
     pub codestream_buffer: Buffer,
+    /// Byte offset of the first codestream byte in `codestream_buffer`.
     pub byte_offset: usize,
+    /// Number of valid codestream bytes.
     pub byte_len: usize,
+    /// Allocated codestream capacity in bytes.
     pub capacity: usize,
+    /// Encoded image width in pixels.
     pub width: u32,
+    /// Encoded image height in pixels.
     pub height: u32,
+    /// Number of encoded components.
     pub components: u8,
+    /// Component bit depth.
     pub bit_depth: u8,
+    /// Whether components are signed.
     pub signed: bool,
 }
 
@@ -530,18 +574,26 @@ impl MetalEncodedJ2k {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder Metal codestream type for non-macOS builds.
 pub struct MetalEncodedJ2k {
     _private: (),
 }
 
 /// Metal lossless encode report for buffer-backed codestream output.
 pub struct MetalLosslessBufferEncodeOutcome {
+    /// Encoded codestream stored in a Metal buffer.
     pub encoded: MetalEncodedJ2k,
+    /// Whether the input buffer had to be copied or padded.
     pub input_copy_used: bool,
+    /// Residency decisions for the encode stages.
     pub resident: MetalLosslessEncodeResidency,
+    /// Time spent copying or padding the input.
     pub input_copy_duration: Duration,
+    /// End-to-end encode duration for this tile.
     pub encode_duration: Duration,
+    /// GPU-only duration when timestamp data is available.
     pub gpu_duration: Option<Duration>,
+    /// Time spent validating the encoded output.
     pub validation_duration: Duration,
 }
 
@@ -562,18 +614,28 @@ pub struct MetalLosslessEncodeConfig {
 /// Optional resident Metal encode stage timings.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeStageStats {
+    /// Time spent planning the resident encode batch.
     pub plan_duration: Duration,
+    /// Time spent preparing and submitting Metal work.
     pub prepare_submit_duration: Duration,
+    /// Time spent building HT lookup tables.
     pub ht_table_build_duration: Duration,
+    /// Time spent allocating HT output buffers.
     pub ht_buffer_allocation_duration: Duration,
+    /// Time spent encoding HT command buffers.
     pub ht_command_encode_duration: Duration,
+    /// Time spent waiting for codestream buffers.
     pub codestream_wait_duration: Duration,
+    /// Number of resident encode chunks.
     pub chunk_count: usize,
+    /// Number of encoded tiles.
     pub tile_count: usize,
+    /// Number of encoded code blocks.
     pub code_block_count: usize,
 }
 
 impl MetalLosslessEncodeStageStats {
+    /// Return whether any non-zero timing was recorded.
     pub fn has_timings(&self) -> bool {
         self.plan_duration > Duration::ZERO
             || self.prepare_submit_duration > Duration::ZERO
@@ -623,33 +685,46 @@ impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStat
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeBatchStats {
+    /// Caller-requested maximum number of in-flight tiles.
     pub configured_inflight_tiles: Option<usize>,
+    /// Effective maximum number of in-flight tiles after clamping.
     pub effective_inflight_tiles: usize,
+    /// Caller-requested resident encode memory budget in bytes.
     pub configured_memory_budget_bytes: Option<usize>,
+    /// Effective resident encode memory budget in bytes.
     pub effective_memory_budget_bytes: usize,
+    /// Estimated peak resident memory required per tile.
     pub estimated_peak_bytes_per_tile: usize,
+    /// Maximum observed in-flight tiles during the batch.
     pub max_observed_inflight_tiles: usize,
+    /// End-to-end wall time for the batch encode.
     pub encode_wall_duration: Duration,
+    /// Resident encode stage timing summary.
     pub stage_stats: MetalLosslessEncodeStageStats,
 }
 
 /// Resident Metal lossless J2K/HTJ2K tile batch output and batch-level metrics.
 pub struct MetalLosslessBufferEncodeBatchOutcome {
+    /// Per-tile buffer-backed encode outcomes.
     pub outcomes: Vec<MetalLosslessBufferEncodeOutcome>,
+    /// Batch-level resident encode metrics.
     pub stats: MetalLosslessEncodeBatchStats,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted single-tile Metal encode that resolves to host codestream bytes.
 pub struct SubmittedJ2kLosslessMetalEncode {
     inner: SubmittedJ2kLosslessMetalEncodeBatch,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted multi-tile Metal encode that resolves to host codestream bytes.
 pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     state: SubmittedJ2kLosslessMetalEncodeBatchState,
 }
 
 #[cfg(target_os = "macos")]
+/// Submitted multi-tile Metal encode that resolves to Metal-backed codestreams.
 pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
     state: SubmittedJ2kLosslessMetalBufferEncodeBatchState,
 }
@@ -719,16 +794,19 @@ impl OwnedMetalLosslessEncodeTile {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted single-tile encode for non-macOS builds.
 pub struct SubmittedJ2kLosslessMetalEncode {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted multi-tile encode for non-macOS builds.
 pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     _private: (),
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Placeholder submitted Metal-buffer encode for non-macOS builds.
 pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
     _private: (),
 }
@@ -833,6 +911,7 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-resident tile into host codestream bytes.
 pub fn encode_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -842,6 +921,7 @@ pub fn encode_lossless_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-resident tile into a Metal-backed codestream buffer.
 pub fn encode_lossless_from_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -851,6 +931,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit one Metal-resident tile encode for later host-byte collection.
 pub fn submit_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -861,6 +942,7 @@ pub fn submit_lossless_from_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-resident tile and return a host-byte timing report.
 pub fn encode_lossless_from_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -877,6 +959,7 @@ pub fn encode_lossless_from_metal_buffer_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one Metal-resident tile into a Metal buffer with timing data.
 pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -894,6 +977,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded Metal-resident tile into host codestream bytes.
 pub fn encode_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -903,6 +987,7 @@ pub fn encode_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded Metal-resident tile into a Metal-backed codestream.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -915,6 +1000,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit one already padded Metal-resident tile encode for host-byte collection.
 pub fn submit_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -925,6 +1011,7 @@ pub fn submit_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded tile and return a host-byte timing report.
 pub fn encode_lossless_from_padded_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -941,6 +1028,7 @@ pub fn encode_lossless_from_padded_metal_buffer_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode one already padded tile into a Metal buffer with timing data.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -958,6 +1046,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-resident tiles into host codestream bytes.
 pub fn encode_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -967,6 +1056,7 @@ pub fn encode_lossless_from_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-resident tiles into Metal-backed codestream buffers.
 pub fn encode_lossless_from_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -981,6 +1071,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit multiple Metal-resident tile encodes for later host-byte collection.
 pub fn submit_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -995,6 +1086,7 @@ pub fn submit_lossless_from_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit multiple Metal-resident tile encodes with explicit batch tuning.
 pub fn submit_lossless_from_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1011,6 +1103,7 @@ pub fn submit_lossless_from_metal_buffers_with_config(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-resident tiles and return host-byte timing reports.
 pub fn encode_lossless_from_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1025,6 +1118,7 @@ pub fn encode_lossless_from_metal_buffers_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple Metal-resident tiles into Metal buffers with timing data.
 pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1040,6 +1134,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit multiple tile encodes that resolve to Metal-backed codestream buffers.
 pub fn submit_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1056,6 +1151,7 @@ pub fn submit_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple tiles into Metal-backed codestream buffers with batch stats.
 pub fn encode_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1066,6 +1162,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple already padded Metal-resident tiles into host codestream bytes.
 pub fn encode_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1075,6 +1172,7 @@ pub fn encode_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple already padded tiles into Metal-backed codestream buffers.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1089,6 +1187,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded tile encodes for later host-byte collection.
 pub fn submit_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1103,6 +1202,7 @@ pub fn submit_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded tile encodes with explicit batch tuning.
 pub fn submit_lossless_from_padded_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1119,6 +1219,7 @@ pub fn submit_lossless_from_padded_metal_buffers_with_config(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple already padded tiles and return host-byte timing reports.
 pub fn encode_lossless_from_padded_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1133,6 +1234,7 @@ pub fn encode_lossless_from_padded_metal_buffers_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode multiple already padded tiles into Metal buffers with timing data.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1148,6 +1250,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Submit already padded tile encodes that resolve to Metal-backed codestreams.
 pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -1164,6 +1267,7 @@ pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(target_os = "macos")]
+/// Encode already padded tiles into Metal-backed codestreams with batch stats.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3321,6 +3425,7 @@ fn encode_lossless_tile_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for single-tile Metal encode on non-macOS.
 pub fn encode_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3330,6 +3435,7 @@ pub fn encode_lossless_from_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3340,6 +3446,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted Metal encode on non-macOS.
 pub fn submit_lossless_from_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3350,6 +3457,7 @@ pub fn submit_lossless_from_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported Metal encode on non-macOS.
 pub fn encode_lossless_from_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3360,6 +3468,7 @@ pub fn encode_lossless_from_metal_buffer_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3370,6 +3479,7 @@ pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded single-tile encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3379,6 +3489,7 @@ pub fn encode_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3389,6 +3500,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted padded encode on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffer(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3399,6 +3511,7 @@ pub fn submit_lossless_from_padded_metal_buffer(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported padded encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3409,6 +3522,7 @@ pub fn encode_lossless_from_padded_metal_buffer_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported padded Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -3419,6 +3533,7 @@ pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile Metal encode on non-macOS.
 pub fn encode_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3428,6 +3543,7 @@ pub fn encode_lossless_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for multi-tile Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3438,6 +3554,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted multi-tile encode on non-macOS.
 pub fn submit_lossless_from_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3448,6 +3565,7 @@ pub fn submit_lossless_from_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for configured multi-tile encode on non-macOS.
 pub fn submit_lossless_from_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3459,6 +3577,7 @@ pub fn submit_lossless_from_metal_buffers_with_config(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported multi-tile encode on non-macOS.
 pub fn encode_lossless_from_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3469,6 +3588,7 @@ pub fn encode_lossless_from_metal_buffers_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported multi-tile Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3479,6 +3599,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal-buffer batch output on non-macOS.
 pub fn encode_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3490,6 +3611,7 @@ pub fn encode_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted Metal-buffer batch output on non-macOS.
 pub fn submit_lossless_from_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3501,6 +3623,7 @@ pub fn submit_lossless_from_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded multi-tile encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3510,6 +3633,7 @@ pub fn encode_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded multi-tile Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3520,6 +3644,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted padded multi-tile encode on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3530,6 +3655,7 @@ pub fn submit_lossless_from_padded_metal_buffers(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for configured padded multi-tile encode on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers_with_config(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3541,6 +3667,7 @@ pub fn submit_lossless_from_padded_metal_buffers_with_config(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported padded multi-tile encode on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3551,6 +3678,7 @@ pub fn encode_lossless_from_padded_metal_buffers_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for padded Metal-buffer batch output on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3562,6 +3690,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for submitted padded Metal-buffer batch output on non-macOS.
 pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3573,6 +3702,7 @@ pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for reported padded Metal-buffer output on non-macOS.
 pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
     tiles: &[MetalLosslessEncodeTile<'_>],
     options: &J2kLosslessEncodeOptions,
@@ -3583,6 +3713,7 @@ pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
 }
 
 #[cfg(target_os = "macos")]
+/// Validate a lossless codestream by decoding it through the default Metal session.
 pub fn validate_lossless_roundtrip_on_metal(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3592,6 +3723,7 @@ pub fn validate_lossless_roundtrip_on_metal(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for Metal roundtrip validation on non-macOS.
 pub fn validate_lossless_roundtrip_on_metal(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3601,6 +3733,7 @@ pub fn validate_lossless_roundtrip_on_metal(
 }
 
 #[cfg(target_os = "macos")]
+/// Validate a lossless codestream by decoding it through a provided Metal session.
 pub fn validate_lossless_roundtrip_on_metal_with_session(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],
@@ -3659,6 +3792,7 @@ pub fn validate_lossless_roundtrip_on_metal_with_session(
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Return `Error::MetalUnavailable` for session validation on non-macOS.
 pub fn validate_lossless_roundtrip_on_metal_with_session(
     samples: J2kLosslessSamples<'_>,
     codestream: &[u8],

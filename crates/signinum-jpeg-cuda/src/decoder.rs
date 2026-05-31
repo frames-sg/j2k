@@ -21,11 +21,13 @@ use crate::runtime::{validate_surface_request, wrap_surface};
 use crate::surface::{CudaSurfaceStats, Storage};
 use crate::{profile, CudaSession, Error, Surface};
 
+/// JPEG decoder that can return host or CUDA-resident surfaces.
 pub struct Decoder<'a> {
     inner: CpuDecoder<'a>,
 }
 
 impl<'a> Decoder<'a> {
+    /// Parse a JPEG byte slice into a CUDA-capable decoder wrapper.
     pub fn new(input: &'a [u8]) -> Result<Self, Error> {
         Ok(Self {
             inner: CpuDecoder::new(input)?,

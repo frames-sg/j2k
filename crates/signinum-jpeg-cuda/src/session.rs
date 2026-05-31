@@ -9,6 +9,7 @@ use crate::runtime::cuda_error;
 use crate::Error;
 
 #[derive(Clone, Default)]
+/// Reusable CUDA JPEG decode session.
 pub struct CudaSession {
     submissions: u64,
     #[cfg(feature = "cuda-runtime")]
@@ -16,11 +17,13 @@ pub struct CudaSession {
 }
 
 impl CudaSession {
+    /// Number of decode submissions recorded through this session.
     pub fn submissions(&self) -> u64 {
         self.submissions
     }
 
     #[cfg(feature = "cuda-runtime")]
+    /// Whether a CUDA runtime context has been initialized successfully.
     pub fn is_runtime_initialized(&self) -> bool {
         self.context.is_some()
     }
