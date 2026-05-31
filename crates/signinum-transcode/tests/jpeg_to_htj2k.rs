@@ -134,7 +134,13 @@ fn option_constructors_select_consistent_default_codec_modes() {
             .to_bits(),
         JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE.to_bits()
     );
-    assert!(lossy.encode_options.irreversible_quantization_scale > 1.0);
+    assert_eq!(
+        lossy
+            .encode_options
+            .irreversible_quantization_scale
+            .to_bits(),
+        1.9f32.to_bits()
+    );
 }
 
 #[test]
