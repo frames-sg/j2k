@@ -783,6 +783,14 @@ fn add_resident_prep_duration(
         .saturating_add(duration);
 }
 
+fn add_resident_prep_wall_duration(
+    stats: &mut MetalLosslessEncodeBatchStats,
+    wall_duration: Duration,
+    profile_stages: bool,
+) {
+    add_resident_prep_duration(stats, wall_duration, profile_stages);
+}
+
 /// Resolved resident Metal lossless J2K/HTJ2K tile batch encode metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetalLosslessEncodeBatchStats {
@@ -2923,17 +2931,14 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
         let take = range.len();
         let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
         let prepare_submit_started = profile_stages.then(Instant::now);
+        let prep_wall_started = profile_stages.then(Instant::now);
         let prepared = prepare_planned_resident_ht_lossless_tiles_batch(chunk_planned, session)
             .map_err(|err| crate::Error::MetalKernel {
                 message: format!("J2K Metal resident HT batch encode failed: {err}"),
             })?;
-        add_resident_prep_duration(
-            stats,
-            prepared.iter().fold(Duration::ZERO, |total, item| {
-                total.saturating_add(item.prepare_duration)
-            }),
-            profile_stages,
-        );
+        if let Some(started) = prep_wall_started {
+            add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
+        }
 
         let mut metadatas = Vec::with_capacity(prepared.len());
         let mut prepare_durations = Vec::with_capacity(prepared.len());
@@ -3013,6 +3018,7 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
     let profile_stages = compute::metal_profile_stages_enabled();
+    let prep_wall_started = profile_stages.then(Instant::now);
     let prepared = collect_inflight_limited_ordered(planned, inflight_tiles, |_, planned| {
         let index = planned.index;
         let started = Instant::now();
@@ -3028,13 +3034,9 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
     stats.max_observed_inflight_tiles = stats
         .max_observed_inflight_tiles
         .max(prepared.max_observed_inflight_items);
-    add_resident_prep_duration(
-        stats,
-        prepared.items.iter().fold(Duration::ZERO, |total, item| {
-            total.saturating_add(item.prepare_duration)
-        }),
-        profile_stages,
-    );
+    if let Some(started) = prep_wall_started {
+        add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
+    }
 
     let mut metadatas = Vec::with_capacity(prepared.items.len());
     let mut prepare_durations = Vec::with_capacity(prepared.items.len());
@@ -4325,6 +4327,42 @@ mod tests {
             Duration::from_micros(7)
         );
         assert!(stats.stage_stats.has_timings());
+    }
+
+    #[test]
+    fn resident_lossless_prep_duration_uses_wall_time_not_per_tile_sum() {
+        let mut stats = super::MetalLosslessEncodeBatchStats::default();
+        let wall_duration = Duration::from_micros(11);
+        let per_tile_sum = Duration::from_micros(9).saturating_add(Duration::from_micros(10));
+        assert_ne!(wall_duration, per_tile_sum);
+
+        super::add_resident_prep_wall_duration(&mut stats, wall_duration, true);
+
+        assert_eq!(stats.stage_stats.coefficient_prep_duration, wall_duration);
+    }
+
+    #[test]
+    fn resident_lossless_ht_command_duration_matches_split_buckets() {
+        let stats = super::MetalLosslessEncodeStageStats {
+            ht_command_encode_duration: Duration::from_micros(2)
+                .saturating_add(Duration::from_micros(3))
+                .saturating_add(Duration::from_micros(5))
+                .saturating_add(Duration::from_micros(7)),
+            ht_block_encode_duration: Duration::from_micros(2),
+            packet_block_prep_duration: Duration::from_micros(3),
+            packetization_duration: Duration::from_micros(5),
+            codestream_assembly_duration: Duration::from_micros(7),
+            ..super::MetalLosslessEncodeStageStats::default()
+        };
+
+        assert_eq!(
+            stats.ht_command_encode_duration,
+            stats
+                .ht_block_encode_duration
+                .saturating_add(stats.packet_block_prep_duration)
+                .saturating_add(stats.packetization_duration)
+                .saturating_add(stats.codestream_assembly_duration)
+        );
     }
 
     #[test]
