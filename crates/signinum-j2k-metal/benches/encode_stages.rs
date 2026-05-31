@@ -116,6 +116,10 @@ fn bench_encode_stages(c: &mut Criterion) {
                 .with_validation(J2kEncodeValidation::External);
             let auto_ht_options =
                 auto_options.with_block_coding_mode(J2kBlockCodingMode::HighThroughput);
+            // This single-tile host-output report exposes per-tile residency flags
+            // but not MetalLosslessEncodeBatchStats. RCA stderr emission is
+            // intentionally limited to the resident batch row below, where the
+            // public API returns batch stage stats without changing routing.
             encode.bench_with_input(BenchmarkId::new("resident_metal", dim), &pixels, |b, _| {
                 b.iter(|| {
                     let encoded = encode_lossless_from_padded_metal_buffer_with_report(
@@ -287,6 +291,10 @@ fn bench_encode_stages(c: &mut Criterion) {
                             .wait()
                             .expect("wait resident Metal HTJ2K RPCL batch");
                         assert_eq!(outcome.outcomes.len(), count);
+                        // Only batch-output resident rows currently expose
+                        // MetalLosslessEncodeBatchStats; the RGB8 single-tile
+                        // row above uses host-output reports and cannot emit
+                        // RCA stage buckets without adding broader API plumbing.
                         emit_resident_stats("htj2k_rpcl_rgb8_512_batch", outcome.stats);
                         black_box(outcome.stats)
                     });
