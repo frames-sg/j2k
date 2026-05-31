@@ -696,8 +696,8 @@ impl MetalLosslessEncodeStageStats {
             || self.host_readback_duration > Duration::ZERO
     }
 
-    #[cfg(target_os = "macos")]
-    fn add_assign(&mut self, other: Self) {
+    /// Accumulate another stage-stats value using saturating duration and counter additions.
+    pub fn add_assign(&mut self, other: Self) {
         self.plan_duration = self.plan_duration.saturating_add(other.plan_duration);
         self.prepare_submit_duration = self
             .prepare_submit_duration
@@ -4311,6 +4311,28 @@ mod tests {
         assert_eq!(stats.stage_stats.sync_wait_duration, Duration::ZERO);
         assert_eq!(stats.stage_stats.host_readback_duration, Duration::ZERO);
         assert!(!stats.stage_stats.has_timings());
+    }
+
+    #[test]
+    fn resident_lossless_stage_stats_add_assign_saturates() {
+        let mut stats = super::MetalLosslessEncodeStageStats {
+            plan_duration: Duration::MAX,
+            tile_count: usize::MAX,
+            ..super::MetalLosslessEncodeStageStats::default()
+        };
+
+        stats.add_assign(super::MetalLosslessEncodeStageStats {
+            plan_duration: Duration::from_micros(1),
+            prepare_submit_duration: Duration::from_micros(2),
+            tile_count: 1,
+            code_block_count: 3,
+            ..super::MetalLosslessEncodeStageStats::default()
+        });
+
+        assert_eq!(stats.plan_duration, Duration::MAX);
+        assert_eq!(stats.prepare_submit_duration, Duration::from_micros(2));
+        assert_eq!(stats.tile_count, usize::MAX);
+        assert_eq!(stats.code_block_count, 3);
     }
 
     #[test]
