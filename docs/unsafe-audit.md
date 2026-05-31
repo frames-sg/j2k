@@ -20,6 +20,7 @@ moved, or removed.
 | `crates/signinum-j2k-metal/src/mct.rs` | SIMD-assisted color transform helpers. |
 | `crates/signinum-jpeg-metal/src/compute.rs` | Metal buffer pointer access, shader setup, and command submission. |
 | `crates/signinum-jpeg-metal/src/lib.rs` | Metal surface byte views and host/device transfer helpers. |
+| `crates/signinum-jpeg/benches/encode_cpu.rs` | Benchmark allocation-counting global allocator wrapper. |
 | `crates/signinum-jpeg/benches/common/libjpeg_turbo.rs` | libjpeg-turbo FFI benchmark harness. |
 | `crates/signinum-jpeg/src/backend/mod.rs` | Runtime backend dispatch and SIMD entry points. |
 | `crates/signinum-jpeg/src/backend/neon.rs` | AArch64 NEON SIMD kernels. |
