@@ -136,13 +136,14 @@ pub use j2c::encode::{
     encode_precomputed_htj2k_53_with_mct_and_accelerator, encode_precomputed_htj2k_97,
     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
-    encode_prequantized_htj2k_97_with_accelerator, encode_with_accelerator, EncodeOptions,
-    EncodeProgressionOrder, IrreversibleQuantizationSubbandScales, PrecomputedHtj2k53Component,
-    PrecomputedHtj2k53Image, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
-    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
-    PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock,
-    PrequantizedHtj2k97Component, PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution,
-    PrequantizedHtj2k97Subband,
+    encode_prequantized_htj2k_97_with_accelerator, encode_with_accelerator,
+    irreversible_quantization_step_for_subband, EncodeOptions, EncodeProgressionOrder,
+    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97Component,
+    PreencodedHtj2k97Image, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 

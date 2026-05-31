@@ -121,6 +121,10 @@ fn main() {
         eprintln!("failed to write benchmark artifacts: {error}");
         std::process::exit(2);
     }
+    if let Err(error) = validate_rate_match(&config, &signinum_cpu_ht, &signinum_cuda_ht, &nvidia) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
     enforce_required_results(&signinum_cuda_ht, &nvidia);
 }
 
@@ -460,6 +464,40 @@ fn select_rd_point(points: &[RdPoint], config: &BenchmarkConfig, nvidia: &Nvidia
     selected
 }
 
+fn validate_rate_match(
+    config: &BenchmarkConfig,
+    selected_cpu_ht: &SigninumResult,
+    cuda_ht: &SigninumResult,
+    nvidia: &NvidiaResult,
+) -> Result<(), String> {
+    if !(config.match_nvidia_bytes && nvidia.ran) {
+        return Ok(());
+    }
+
+    let selected_delta =
+        byte_delta_fraction(selected_cpu_ht.output_bytes, nvidia.output_bytes).abs();
+    if selected_delta > config.match_tolerance {
+        return Err(format!(
+            "selected Signinum RD point is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
+            selected_delta * 100.0,
+            config.match_tolerance * 100.0
+        ));
+    }
+
+    if cuda_ht.ran {
+        let cuda_delta = byte_delta_fraction(cuda_ht.output_bytes, nvidia.output_bytes).abs();
+        if cuda_delta > config.match_tolerance {
+            return Err(format!(
+                "Signinum CUDA HT row is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
+                cuda_delta * 100.0,
+                config.match_tolerance * 100.0
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn byte_delta_fraction(candidate: usize, target: usize) -> f64 {
     if target == 0 {
         return 0.0;
@@ -473,7 +511,7 @@ fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumRe
         .map(|j| JpegTileBatchInput { bytes: &j.bytes })
         .collect();
     // Warm up (and detect whether the GPU path is available).
-    let mut used_gpu = true;
+    let used_gpu = true;
     let mut session = SigninumBenchSession::new(true, true);
     for iteration in 0..WARMUP.max(1) {
         match session.transcode_batch(&inputs, options) {
@@ -483,14 +521,12 @@ fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumRe
                     !signinum_cuda_required(),
                     "signinum: explicit {BACKEND_NAME} path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
                 );
-                used_gpu = false;
                 if iteration == 0 {
                     eprintln!(
-                        "signinum: explicit {BACKEND_NAME} path unavailable; measuring scalar CPU fallback"
+                        "signinum: explicit {BACKEND_NAME} CUDA HT path unavailable; reporting CUDA HT row as n/a"
                     );
                 }
-                session = SigninumBenchSession::new(false, false);
-                break;
+                return SigninumResult::default();
             }
         }
     }
@@ -1355,7 +1391,7 @@ fn csv_report(
     nvidia: &NvidiaResult,
 ) -> String {
     let mut out = String::from(
-        "row,selected,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\n",
+        "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\n",
     );
     for (idx, point) in rd_points.iter().enumerate() {
         append_csv_result(
@@ -1378,20 +1414,27 @@ fn csv_report(
         cuda_quality.as_ref(),
         nvidia,
     );
-    let nvidia_wall = if nvidia.ran {
-        nvidia.best_wall_s * 1000.0
-    } else {
-        0.0
-    };
-    let nvidia_gpu = if nvidia.ran {
-        nvidia.decode_ms + nvidia.encode_ms
-    } else {
-        0.0
-    };
+    let nvidia_wall = nvidia
+        .ran
+        .then(|| format!("{:.6}", nvidia.best_wall_s * 1000.0));
+    let nvidia_gpu = nvidia
+        .ran
+        .then(|| format!("{:.6}", nvidia.decode_ms + nvidia.encode_ms));
     let _ = megapixels;
     out.push_str(&format!(
-        "nvidia_reused_session_serial,false,,{},0,{nvidia_wall:.6},{nvidia_gpu:.6},,,,,,,,\n",
-        nvidia.output_bytes
+        "nvidia_reused_session_serial,false,{},{},{},{},,{},{},{},{},,,,,,,,\n",
+        nvidia.ran,
+        nvidia.ran,
+        nvidia.ran,
+        csv_escape(&nv_status(nvidia)),
+        if nvidia.ran {
+            nvidia.output_bytes.to_string()
+        } else {
+            String::new()
+        },
+        "",
+        nvidia_wall.unwrap_or_default(),
+        nvidia_gpu.unwrap_or_default(),
     ));
     out
 }
@@ -1407,14 +1450,22 @@ fn append_csv_result(
     nvidia: &NvidiaResult,
 ) {
     let byte_delta = if nvidia.ran {
-        byte_delta_fraction(result.output_bytes, nvidia.output_bytes)
+        Some(byte_delta_fraction(
+            result.output_bytes,
+            nvidia.output_bytes,
+        ))
     } else {
-        0.0
+        None
     };
     out.push_str(&format!(
-        "{row},{selected},{},{},{byte_delta:.8},{:.6},{:.6},{},{},{},{},{},{},{},{}\n",
+        "{row},{selected},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{},{}\n",
+        result.ran,
+        result.used_gpu,
+        nvidia.ran,
+        csv_escape(&nv_status(nvidia)),
         scale.map_or_else(String::new, |scale| format!("{scale:.6}")),
         result.output_bytes,
+        byte_delta.map_or_else(String::new, |delta| format!("{delta:.8}")),
         result.best_wall_s * 1000.0,
         result_gpu_ms(result),
         quality
@@ -1557,21 +1608,36 @@ fn append_json_signinum_result(
 }
 
 fn json_optional_f64(value: Option<f64>) -> String {
-    value.map_or_else(|| "null".to_string(), |value| format!("{value:.8}"))
+    value
+        .filter(|value| value.is_finite())
+        .map_or_else(|| "null".to_string(), |value| format!("{value:.8}"))
 }
 
 fn json_escape(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|ch| match ch {
-            '"' => "\\\"".chars().collect::<Vec<_>>(),
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '\n' => "\\n".chars().collect::<Vec<_>>(),
-            '\r' => "\\r".chars().collect::<Vec<_>>(),
-            '\t' => "\\t".chars().collect::<Vec<_>>(),
-            _ => vec![ch],
-        })
-        .collect()
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch < ' ' => {
+                use std::fmt::Write as _;
+                let _ = write!(escaped, "\\u{:04x}", ch as u32);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1645,5 +1711,104 @@ mod tests {
         };
 
         assert_eq!(select_rd_point(&points, &config, &nvidia), 1);
+    }
+
+    #[test]
+    fn validate_rate_match_rejects_selected_rd_point_outside_tolerance() {
+        let config = BenchmarkConfig {
+            match_nvidia_bytes: true,
+            match_tolerance: 0.02,
+            ..BenchmarkConfig::default()
+        };
+        let nvidia = NvidiaResult {
+            ran: true,
+            output_bytes: 1_000,
+            ..NvidiaResult::default()
+        };
+        let selected = SigninumResult {
+            ran: true,
+            output_bytes: 900,
+            ..SigninumResult::default()
+        };
+        let cuda_ht = SigninumResult {
+            ran: true,
+            used_gpu: true,
+            output_bytes: 1_000,
+            ..SigninumResult::default()
+        };
+
+        let error = validate_rate_match(&config, &selected, &cuda_ht, &nvidia)
+            .expect_err("selected RD point outside tolerance must fail");
+        assert!(error.contains("selected Signinum RD point"));
+    }
+
+    #[test]
+    fn validate_rate_match_rejects_cuda_ht_row_outside_tolerance() {
+        let config = BenchmarkConfig {
+            match_nvidia_bytes: true,
+            match_tolerance: 0.02,
+            ..BenchmarkConfig::default()
+        };
+        let nvidia = NvidiaResult {
+            ran: true,
+            output_bytes: 1_000,
+            ..NvidiaResult::default()
+        };
+        let selected = SigninumResult {
+            ran: true,
+            output_bytes: 1_000,
+            ..SigninumResult::default()
+        };
+        let cuda_ht = SigninumResult {
+            ran: true,
+            used_gpu: true,
+            output_bytes: 950,
+            ..SigninumResult::default()
+        };
+
+        let error = validate_rate_match(&config, &selected, &cuda_ht, &nvidia)
+            .expect_err("CUDA HT row outside tolerance must fail");
+        assert!(error.contains("Signinum CUDA HT row"));
+    }
+
+    #[test]
+    fn json_optional_f64_emits_null_for_non_finite_values() {
+        assert_eq!(json_optional_f64(Some(f64::INFINITY)), "null");
+        assert_eq!(json_optional_f64(Some(f64::NEG_INFINITY)), "null");
+        assert_eq!(json_optional_f64(Some(f64::NAN)), "null");
+        assert_eq!(json_optional_f64(Some(42.25)), "42.25000000");
+    }
+
+    #[test]
+    fn csv_report_marks_missing_nvidia_status_without_zero_delta() {
+        let point = RdPoint {
+            scale: 1.9,
+            result: SigninumResult {
+                ran: true,
+                used_gpu: true,
+                output_bytes: 123,
+                ..SigninumResult::default()
+            },
+            quality: None,
+        };
+        let csv = csv_report(
+            &[],
+            0.0,
+            &[point],
+            0,
+            &SigninumResult::default(),
+            &NvidiaResult {
+                error: Some(NvBaselineError::NotBuilt),
+                ..NvidiaResult::default()
+            },
+        );
+
+        assert!(csv.starts_with(
+            "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia"
+        ));
+        assert!(csv.contains(
+            "signinum_cuda_transform_cpu_ht,true,true,true,false,n/a (not built),1.900000,123,"
+        ));
+        assert!(!csv.contains(",123,0.00000000,"));
     }
 }

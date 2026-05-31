@@ -18,8 +18,11 @@ use super::fdwt::{self, DwtDecomposition};
 use super::forward_mct;
 use super::ht_block_encode;
 use super::packet_encode::{self, CodeBlockPacketData, ResolutionPacket, SubbandPrecinct};
-pub use super::quantize::IrreversibleQuantizationSubbandScales;
 use super::quantize::{self, QuantStepSize};
+pub use super::quantize::{
+    irreversible_quantization_step_for_subband, IrreversibleQuantizationStep,
+    IrreversibleQuantizationSubbandScales,
+};
 use crate::math::{floor_f32, log2_f32};
 use crate::profile;
 use crate::{
@@ -1167,7 +1170,7 @@ fn validate_preencoded_resolution(
             if block.width == 0 || block.height == 0 {
                 return Err("preencoded code-block dimensions must be non-zero");
             }
-            validate_preencoded_code_block_payload(&block.encoded)?;
+            validate_preencoded_code_block_payload(&block.encoded, subband.total_bitplanes)?;
         }
     }
 
@@ -1176,13 +1179,23 @@ fn validate_preencoded_resolution(
 
 fn validate_preencoded_code_block_payload(
     block: &EncodedHtJ2kCodeBlock,
+    total_bitplanes: u8,
 ) -> Result<(), &'static str> {
     let data_len = u32::try_from(block.data.len()).map_err(|_| "HTJ2K payload too large")?;
     if block.num_coding_passes == 0 {
         if data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
             return Err("empty HTJ2K code-block payload metadata mismatch");
         }
+        if block.num_zero_bitplanes != total_bitplanes {
+            return Err("empty HTJ2K code-block zero-bitplane count mismatch");
+        }
         return Ok(());
+    }
+    if block.num_coding_passes > 164 {
+        return Err("HTJ2K code-block coding pass count out of range");
+    }
+    if block.num_zero_bitplanes >= total_bitplanes {
+        return Err("HTJ2K code-block zero-bitplane count out of range");
     }
     let segment_len = block
         .cleanup_length
@@ -3403,6 +3416,52 @@ mod tests {
     }
 
     #[test]
+    fn preencoded_htj2k97_rejects_empty_block_with_wrong_zero_bitplanes() {
+        let (mut image, options) = sample_preencoded_htj2k97_for_test();
+        let block = &mut image.components[0].resolutions[0].subbands[0].code_blocks[0];
+        block.encoded = EncodedHtJ2kCodeBlock {
+            data: Vec::new(),
+            cleanup_length: 0,
+            refinement_length: 0,
+            num_coding_passes: 0,
+            num_zero_bitplanes: 0,
+        };
+
+        let error = encode_preencoded_htj2k_97(&image, &options)
+            .expect_err("invalid all-zero block metadata must be rejected");
+
+        assert_eq!(error, "empty HTJ2K code-block zero-bitplane count mismatch");
+    }
+
+    #[test]
+    fn preencoded_htj2k97_rejects_coded_block_with_too_many_zero_bitplanes() {
+        let (mut image, options) = sample_preencoded_htj2k97_for_test();
+        let subband = &mut image.components[0].resolutions[0].subbands[0];
+        subband.code_blocks[0].encoded.num_zero_bitplanes = subband.total_bitplanes;
+
+        let error = encode_preencoded_htj2k_97(&image, &options)
+            .expect_err("coded block with no coded bitplanes must be rejected");
+
+        assert_eq!(error, "HTJ2K code-block zero-bitplane count out of range");
+    }
+
+    #[test]
+    fn preencoded_htj2k97_rejects_too_many_coding_passes_without_panic() {
+        let (mut image, options) = sample_preencoded_htj2k97_for_test();
+        image.components[0].resolutions[0].subbands[0].code_blocks[0]
+            .encoded
+            .num_coding_passes = 165;
+
+        let result = std::panic::catch_unwind(|| encode_preencoded_htj2k_97(&image, &options));
+
+        assert!(result.is_ok(), "invalid coding pass count must not panic");
+        assert_eq!(
+            result.expect("catch_unwind returned checked result"),
+            Err("HTJ2K code-block coding pass count out of range")
+        );
+    }
+
+    #[test]
     fn prequantized_htj2k97_accepts_empty_high_subbands() {
         let options = EncodeOptions {
             num_decomposition_levels: 1,
@@ -3711,6 +3770,23 @@ mod tests {
             signed: image.signed,
             components,
         })
+    }
+
+    fn sample_preencoded_htj2k97_for_test() -> (PreencodedHtj2k97Image, EncodeOptions) {
+        let image = sample_precomputed_htj2k97_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let prequantized = prequantized_htj2k97_image_from_precomputed_for_test(&image, &options)
+            .expect("test prequantized image");
+        let preencoded = preencoded_htj2k97_image_from_prequantized_for_test(&prequantized)
+            .expect("test preencoded image");
+        (preencoded, options)
     }
 
     fn preencoded_subband_from_prequantized_for_test(

@@ -818,7 +818,7 @@ impl CudaHtj2kEncodeStatus {
 /// CUDA event timings for HTJ2K cleanup-pass encode stages.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStageTimings {
-    /// HT cleanup-pass encode dispatch time, in microseconds.
+    /// HT cleanup-pass encode dispatch plus required result readback time, in microseconds.
     pub ht_encode_us: u128,
 }
 
@@ -1722,24 +1722,29 @@ impl CudaContext {
                     &status_buffer,
                 )
             })?;
-        let stage_timings = CudaHtj2kEncodeStageTimings { ht_encode_us };
-
-        let mut status = CudaHtj2kEncodeStatus::default();
-        status_buffer.copy_to_host(htj2k_encode_status_as_bytes_mut(&mut status))?;
-        if !status.is_ok() {
-            return Err(CudaError::KernelStatus {
-                kernel: "signinum_htj2k_encode_codeblock",
-                code: status.code,
-                detail: status.detail,
-            });
-        }
-        let data_len = usize::try_from(status.data_len)
-            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-        if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
-            return Err(CudaError::LengthTooLarge { len: data_len });
-        }
-        let mut data = vec![0u8; data_len];
-        output_buffer.copy_range_to_host(0, &mut data)?;
+        let ((status, data), readback_us) =
+            self.time_default_stream_named_us("signinum.htj2k.encode.codeblock.readback", || {
+                let mut status = CudaHtj2kEncodeStatus::default();
+                status_buffer.copy_to_host(htj2k_encode_status_as_bytes_mut(&mut status))?;
+                if !status.is_ok() {
+                    return Err(CudaError::KernelStatus {
+                        kernel: "signinum_htj2k_encode_codeblock",
+                        code: status.code,
+                        detail: status.detail,
+                    });
+                }
+                let data_len = usize::try_from(status.data_len)
+                    .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+                if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
+                    return Err(CudaError::LengthTooLarge { len: data_len });
+                }
+                let mut data = vec![0u8; data_len];
+                output_buffer.copy_range_to_host(0, &mut data)?;
+                Ok((status, data))
+            })?;
+        let stage_timings = CudaHtj2kEncodeStageTimings {
+            ht_encode_us: ht_encode_us.saturating_add(readback_us),
+        };
 
         Ok(CudaHtj2kEncodedCodeBlock {
             data,
@@ -1947,49 +1952,56 @@ impl CudaContext {
                     kernel_jobs.len(),
                 )
             })?;
-        let stage_timings = CudaHtj2kEncodeStageTimings { ht_encode_us };
+        let (mut code_blocks, readback_us) =
+            self.time_default_stream_named_us("signinum.htj2k.encode.codeblocks.readback", || {
+                let mut statuses = vec![CudaHtj2kEncodeStatus::default(); kernel_jobs.len()];
+                status_buffer.copy_to_host(htj2k_encode_statuses_as_bytes_mut(&mut statuses))?;
+                if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+                    return Err(CudaError::KernelStatus {
+                        kernel: "signinum_htj2k_encode_codeblocks",
+                        code: status.code,
+                        detail: status.detail,
+                    });
+                }
 
-        let mut statuses = vec![CudaHtj2kEncodeStatus::default(); kernel_jobs.len()];
-        status_buffer.copy_to_host(htj2k_encode_statuses_as_bytes_mut(&mut statuses))?;
-        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
-            return Err(CudaError::KernelStatus {
-                kernel: "signinum_htj2k_encode_codeblocks",
-                code: status.code,
-                detail: status.detail,
-            });
+                statuses
+                    .into_iter()
+                    .zip(kernel_jobs.iter())
+                    .map(|(status, job)| {
+                        let data_len = usize::try_from(status.data_len)
+                            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+                        if data_len > job.output_capacity as usize {
+                            return Err(CudaError::LengthTooLarge { len: data_len });
+                        }
+                        let start = job.output_offset as usize;
+                        let end = start
+                            .checked_add(data_len)
+                            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+                        if end > output_bytes {
+                            return Err(CudaError::LengthTooLarge { len: end });
+                        }
+                        let mut data = vec![0u8; data_len];
+                        output_buffer.copy_range_to_host(start, &mut data)?;
+                        Ok(CudaHtj2kEncodedCodeBlock {
+                            data,
+                            status,
+                            execution: CudaExecutionStats {
+                                kernel_dispatches: 1,
+                                copy_kernel_dispatches: 0,
+                                decode_kernel_dispatches: 0,
+                                hardware_decode: false,
+                            },
+                            stage_timings: CudaHtj2kEncodeStageTimings::default(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CudaError>>()
+            })?;
+        let stage_timings = CudaHtj2kEncodeStageTimings {
+            ht_encode_us: ht_encode_us.saturating_add(readback_us),
+        };
+        for block in &mut code_blocks {
+            block.stage_timings = stage_timings;
         }
-
-        let code_blocks = statuses
-            .into_iter()
-            .zip(kernel_jobs.iter())
-            .map(|(status, job)| {
-                let data_len = usize::try_from(status.data_len)
-                    .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-                if data_len > job.output_capacity as usize {
-                    return Err(CudaError::LengthTooLarge { len: data_len });
-                }
-                let start = job.output_offset as usize;
-                let end = start
-                    .checked_add(data_len)
-                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-                if end > output_bytes {
-                    return Err(CudaError::LengthTooLarge { len: end });
-                }
-                let mut data = vec![0u8; data_len];
-                output_buffer.copy_range_to_host(start, &mut data)?;
-                Ok(CudaHtj2kEncodedCodeBlock {
-                    data,
-                    status,
-                    execution: CudaExecutionStats {
-                        kernel_dispatches: 1,
-                        copy_kernel_dispatches: 0,
-                        decode_kernel_dispatches: 0,
-                        hardware_decode: false,
-                    },
-                    stage_timings,
-                })
-            })
-            .collect::<Result<Vec<_>, CudaError>>()?;
 
         Ok(CudaHtj2kEncodedCodeBlocks {
             code_blocks,

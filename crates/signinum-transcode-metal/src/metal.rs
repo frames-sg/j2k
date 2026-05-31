@@ -21,6 +21,9 @@ use signinum_transcode::accelerator::{
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
+use signinum_transcode::htj2k97_codeblock_oracle::{
+    htj2k97_subband_delta, htj2k97_subband_total_bitplanes,
+};
 
 use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;
@@ -1995,79 +1998,14 @@ fn code_block_len_from_exp(exp: u8) -> Result<usize, MetalTranscodeError> {
 }
 
 fn dwt97_total_bitplanes(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> u8 {
-    let step = dwt97_quant_step(options, sub_band_type);
-    options
-        .guard_bits
-        .saturating_add(step.exponent)
-        .saturating_sub(1)
+    htj2k97_subband_total_bitplanes(options, sub_band_type)
 }
 
 fn dwt97_quantize_inv_delta(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
 ) -> f32 {
-    1.0 / dwt97_quant_delta(options, sub_band_type)
-}
-
-#[derive(Clone, Copy)]
-struct Dwt97QuantStep {
-    exponent: u8,
-    mantissa: u16,
-}
-
-fn dwt97_quant_step(
-    options: Htj2k97CodeBlockOptions,
-    sub_band_type: J2kSubBandType,
-) -> Dwt97QuantStep {
-    let base_delta = dwt97_pow2i(-i32::from(options.guard_bits))
-        * options.irreversible_quantization_scale
-        * dwt97_subband_scale(options, sub_band_type);
-    dwt97_quant_step_from_delta(options.bit_depth, base_delta)
-}
-
-fn dwt97_subband_scale(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> f32 {
-    match sub_band_type {
-        J2kSubBandType::LowLow => options.irreversible_quantization_subband_scales.low_low,
-        J2kSubBandType::HighLow => options.irreversible_quantization_subband_scales.high_low,
-        J2kSubBandType::LowHigh => options.irreversible_quantization_subband_scales.low_high,
-        J2kSubBandType::HighHigh => options.irreversible_quantization_subband_scales.high_high,
-    }
-}
-
-fn dwt97_quant_step_from_delta(range_bits: u8, delta: f32) -> Dwt97QuantStep {
-    let floor_log2 = delta.log2().floor() as i32;
-    let mut exponent = i32::from(range_bits) - floor_log2;
-    let normalized = delta / dwt97_pow2i(floor_log2);
-    let mut mantissa = ((normalized - 1.0) * 2048.0).round() as i32;
-
-    if mantissa >= 2048 {
-        exponent -= 1;
-        mantissa = 0;
-    }
-
-    Dwt97QuantStep {
-        exponent: u8::try_from(exponent.clamp(0, 31)).expect("clamped exponent fits u8"),
-        mantissa: u16::try_from(mantissa.clamp(0, 2047)).expect("clamped mantissa fits u16"),
-    }
-}
-
-fn dwt97_quant_delta(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> f32 {
-    let log_gain = match sub_band_type {
-        J2kSubBandType::LowLow => 0,
-        J2kSubBandType::HighLow | J2kSubBandType::LowHigh => 1,
-        J2kSubBandType::HighHigh => 2,
-    };
-    let range_bits = i32::from(options.bit_depth) + log_gain;
-    let step = dwt97_quant_step(options, sub_band_type);
-    dwt97_pow2i(range_bits - i32::from(step.exponent)) * (1.0 + f32::from(step.mantissa) / 2048.0)
-}
-
-fn dwt97_pow2i(exp: i32) -> f32 {
-    if exp >= 0 {
-        (1u32 << exp.cast_unsigned()) as f32
-    } else {
-        1.0 / (1u32 << (-exp).cast_unsigned()) as f32
-    }
+    (1.0 / htj2k97_subband_delta(options, sub_band_type)) as f32
 }
 
 fn checked_batch_len(
