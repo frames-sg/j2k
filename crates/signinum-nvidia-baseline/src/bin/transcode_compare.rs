@@ -297,8 +297,10 @@ impl SigninumBenchSession {
             transcoder: JpegToHtj2kTranscoder::default(),
             transform_accelerator: use_gpu.then(BenchAccelerator::new_explicit),
             #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-            encode_accelerator: use_gpu
-                .then(|| CudaEncodeStageAccelerator::with_profile_collection(true)),
+            encode_accelerator: use_gpu.then(|| {
+                CudaEncodeStageAccelerator::with_profile_collection(true)
+                    .prefer_cpu_packetization(true)
+            }),
         }
     }
 
