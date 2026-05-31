@@ -9,10 +9,11 @@ use signinum_jpeg::{
 };
 use signinum_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
-    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
-    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, RayonReversibleDwt53Accelerator,
-    ReversibleDwt53FirstLevel,
+    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
+    Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97CodeBlock,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband, RayonReversibleDwt53Accelerator, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
@@ -140,6 +141,12 @@ fn option_constructors_select_consistent_default_codec_modes() {
             .irreversible_quantization_scale
             .to_bits(),
         1.9f32.to_bits()
+    );
+    assert_eq!(
+        lossy
+            .encode_options
+            .irreversible_quantization_subband_scales,
+        signinum_j2k_native::IrreversibleQuantizationSubbandScales::default()
     );
 }
 
@@ -879,6 +886,34 @@ fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
 }
 
 #[test]
+fn float97_prequantized_batch_receives_lossy_subband_profile() {
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let mut options = JpegToHtj2kOptions::lossy_97();
+    options
+        .encode_options
+        .irreversible_quantization_subband_scales
+        .high_high = 1.5;
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 2];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut accelerator = Prequantized97Accelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerator(&inputs, &options, &mut accelerator)
+        .expect("prequantized 9/7 batch transcode accepts subband profile");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(
+        accelerator
+            .last_options
+            .expect("accelerator received code-block options")
+            .irreversible_quantization_subband_scales
+            .high_high
+            .to_bits(),
+        1.5f32.to_bits()
+    );
+}
+
+#[test]
 fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
     let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
     let options = JpegToHtj2kOptions::lossless_53();
@@ -952,6 +987,31 @@ fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator()
     assert_eq!(encode_accelerator.batches, inputs.len());
     assert!(encode_accelerator.jobs > 0);
     assert_eq!(encode_accelerator.single_blocks, encode_accelerator.jobs);
+}
+
+#[test]
+fn float97_preencoded_batch_skips_encode_codeblock_hooks() {
+    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let options = JpegToHtj2kOptions::lossy_97();
+    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let mut transcoder = JpegToHtj2kTranscoder::default();
+    let mut transform_accelerator = Preencoded97Accelerator::default();
+    let mut encode_accelerator = CountingHtEncodeAccelerator::default();
+
+    let batch = transcoder
+        .transcode_batch_with_accelerators(
+            &inputs,
+            &options,
+            &mut transform_accelerator,
+            &mut encode_accelerator,
+        )
+        .expect("9/7 preencoded batch transcode accepts separate encode accelerator");
+
+    assert_eq!(batch.report.successful_tiles, inputs.len());
+    assert_eq!(transform_accelerator.preencoded_batch_sizes, vec![4]);
+    assert_eq!(encode_accelerator.batches, 0);
+    assert_eq!(encode_accelerator.jobs, 0);
+    assert_eq!(batch.report.timings.dwt97_batch_ht_codeblock_dispatches, 1);
 }
 
 #[test]
@@ -1124,6 +1184,13 @@ struct BatchFixture {
 struct Prequantized97Accelerator {
     prequantized_batch_sizes: Vec<usize>,
     dwt97_batch_calls: usize,
+    last_options: Option<Htj2k97CodeBlockOptions>,
+}
+
+#[derive(Default)]
+struct Preencoded97Accelerator {
+    preencoded_batch_sizes: Vec<usize>,
+    last_timings: Option<Dwt97BatchStageTimings>,
 }
 
 #[derive(Default)]
@@ -1168,6 +1235,7 @@ impl DctToWaveletStageAccelerator for Prequantized97Accelerator {
         options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
         self.prequantized_batch_sizes.push(jobs.len());
+        self.last_options = Some(options);
         Ok(Some(
             jobs.iter()
                 .map(|job| zero_prequantized_component(job, options))
@@ -1181,6 +1249,42 @@ impl DctToWaveletStageAccelerator for Prequantized97Accelerator {
     ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
         self.dwt97_batch_calls += 1;
         Ok(None)
+    }
+}
+
+impl DctToWaveletStageAccelerator for Preencoded97Accelerator {
+    fn supports_htj2k97_codeblock_batch(&self) -> bool {
+        true
+    }
+
+    fn dct_grid_to_htj2k97_preencoded_batch(
+        &mut self,
+        jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        self.preencoded_batch_sizes.push(jobs.len());
+        self.last_timings = Some(Dwt97BatchStageTimings {
+            ht_encode_us: 7,
+            ht_codeblock_dispatches: 1,
+            ..Dwt97BatchStageTimings::default()
+        });
+        Ok(Some(
+            jobs.iter()
+                .map(|job| zero_preencoded_component(job, options))
+                .collect(),
+        ))
+    }
+
+    fn dct_grid_to_htj2k97_codeblock_batch(
+        &mut self,
+        _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+        panic!("preencoded accelerator should be offered before prequantized fallback")
+    }
+
+    fn last_dwt97_batch_stage_timings(&self) -> Option<Dwt97BatchStageTimings> {
+        self.last_timings
     }
 }
 
@@ -1201,7 +1305,7 @@ fn zero_prequantized_component(
                     low_width,
                     low_height,
                     J2kSubBandType::LowLow,
-                    zero_prequantized_total_bitplanes(options),
+                    zero_prequantized_total_bitplanes(options, J2kSubBandType::LowLow),
                     options,
                 )],
             },
@@ -1211,21 +1315,21 @@ fn zero_prequantized_component(
                         high_width,
                         low_height,
                         J2kSubBandType::HighLow,
-                        zero_prequantized_total_bitplanes(options),
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::HighLow),
                         options,
                     ),
                     zero_prequantized_subband(
                         low_width,
                         high_height,
                         J2kSubBandType::LowHigh,
-                        zero_prequantized_total_bitplanes(options),
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::LowHigh),
                         options,
                     ),
                     zero_prequantized_subband(
                         high_width,
                         high_height,
                         J2kSubBandType::HighHigh,
-                        zero_prequantized_total_bitplanes(options),
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::HighHigh),
                         options,
                     ),
                 ],
@@ -1234,9 +1338,68 @@ fn zero_prequantized_component(
     }
 }
 
-fn zero_prequantized_total_bitplanes(options: Htj2k97CodeBlockOptions) -> u8 {
+fn zero_preencoded_component(
+    job: &DctGridToHtj2k97CodeBlockJob<'_>,
+    options: Htj2k97CodeBlockOptions,
+) -> PreencodedHtj2k97Component {
+    let low_width = job.width.div_ceil(2);
+    let low_height = job.height.div_ceil(2);
+    let high_width = job.width / 2;
+    let high_height = job.height / 2;
+    PreencodedHtj2k97Component {
+        x_rsiz: job.x_rsiz,
+        y_rsiz: job.y_rsiz,
+        resolutions: vec![
+            PreencodedHtj2k97Resolution {
+                subbands: vec![zero_preencoded_subband(
+                    low_width,
+                    low_height,
+                    J2kSubBandType::LowLow,
+                    zero_prequantized_total_bitplanes(options, J2kSubBandType::LowLow),
+                    options,
+                )],
+            },
+            PreencodedHtj2k97Resolution {
+                subbands: vec![
+                    zero_preencoded_subband(
+                        high_width,
+                        low_height,
+                        J2kSubBandType::HighLow,
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::HighLow),
+                        options,
+                    ),
+                    zero_preencoded_subband(
+                        low_width,
+                        high_height,
+                        J2kSubBandType::LowHigh,
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::LowHigh),
+                        options,
+                    ),
+                    zero_preencoded_subband(
+                        high_width,
+                        high_height,
+                        J2kSubBandType::HighHigh,
+                        zero_prequantized_total_bitplanes(options, J2kSubBandType::HighHigh),
+                        options,
+                    ),
+                ],
+            },
+        ],
+    }
+}
+
+fn zero_prequantized_total_bitplanes(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+) -> u8 {
     let base_delta = pow2i_f32_for_test(-i32::from(options.guard_bits))
-        * options.irreversible_quantization_scale;
+        * options.irreversible_quantization_scale
+        * match sub_band_type {
+            J2kSubBandType::LowLow => options.irreversible_quantization_subband_scales.low_low,
+            J2kSubBandType::HighLow => options.irreversible_quantization_subband_scales.high_low,
+            J2kSubBandType::LowHigh => options.irreversible_quantization_subband_scales.low_high,
+            J2kSubBandType::HighHigh => options.irreversible_quantization_subband_scales.high_high,
+        };
     let floor_log2 = base_delta.log2().floor() as i32;
     let mut exponent = i32::from(options.bit_depth) - floor_log2;
     let normalized = base_delta / pow2i_f32_for_test(floor_log2);
@@ -1257,6 +1420,47 @@ fn pow2i_f32_for_test(exp: i32) -> f32 {
         (1u32 << exp.cast_unsigned()) as f32
     } else {
         1.0 / (1u32 << (-exp).cast_unsigned()) as f32
+    }
+}
+
+fn zero_preencoded_subband(
+    width: usize,
+    height: usize,
+    sub_band_type: J2kSubBandType,
+    total_bitplanes: u8,
+    options: Htj2k97CodeBlockOptions,
+) -> PreencodedHtj2k97Subband {
+    let cb_width = 1usize << (options.code_block_width_exp + 2);
+    let cb_height = 1usize << (options.code_block_height_exp + 2);
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let block_width = (width - x0).min(cb_width);
+            let block_height = (height - y0).min(cb_height);
+            code_blocks.push(PreencodedHtj2k97CodeBlock {
+                width: block_width as u32,
+                height: block_height as u32,
+                encoded: EncodedHtJ2kCodeBlock {
+                    data: Vec::new(),
+                    cleanup_length: 0,
+                    refinement_length: 0,
+                    num_coding_passes: 0,
+                    num_zero_bitplanes: total_bitplanes,
+                },
+            });
+        }
+    }
+
+    PreencodedHtj2k97Subband {
+        sub_band_type,
+        num_cbs_x: num_cbs_x as u32,
+        num_cbs_y: num_cbs_y as u32,
+        total_bitplanes,
+        code_blocks,
     }
 }
 

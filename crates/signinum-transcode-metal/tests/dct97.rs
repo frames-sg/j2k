@@ -3,7 +3,8 @@
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 #[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::{
-    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, PrequantizedHtj2k97Component,
+    DctGridToHtj2k97CodeBlockJob, Htj2k97CodeBlockOptions, IrreversibleQuantizationSubbandScales,
+    PrequantizedHtj2k97Component,
 };
 #[cfg(target_os = "macos")]
 use signinum_transcode::dct97_2d::{
@@ -245,6 +246,12 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
         code_block_width_exp: 2,
         code_block_height_exp: 2,
         irreversible_quantization_scale: 2.5,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales {
+            low_low: 0.9,
+            high_low: 1.1,
+            low_high: 1.2,
+            high_high: 1.5,
+        },
     };
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 

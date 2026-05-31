@@ -26,9 +26,9 @@ cuda-profiling = ["cuda-runtime", "signinum-cuda-runtime/cuda-profiling"]
 [dependencies]
 signinum-transcode = { path = "../signinum-transcode", version = "=0.4.4" }
 signinum-cuda-runtime = { path = "../signinum-cuda-runtime", version = "=0.4.4", optional = true }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 
 [dev-dependencies]
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
 signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
 
 [lints.rust]
