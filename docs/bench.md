@@ -358,12 +358,16 @@ cargo bench -p signinum --bench facade
 ```
 
 The facade bench includes
-`facade_j2k_htj2k_encode_backend_speed_matrix`, which compares the same
-512x512 RGB8 HTJ2K encode workload across CPU, Metal, and CUDA when those
-features are compiled. Run the same group on each GPU signoff host and combine
-the CPU/Metal/CUDA rows from the Criterion output. Use
+`facade_j2k_htj2k_encode_backend_speed_matrix`, which measures the same
+512x512 Gray8 HTJ2K encode workload on CPU and strict `RequireDevice`
+Metal/CUDA rows when those features are compiled. The GPU rows assert that the
+reported backend is the requested device backend, so they are not CPU fallback
+rows. Because Metal and CUDA signoff normally run on different host hardware,
+compare each GPU row against the CPU row from the same host, then publish the
+two host-local speed ratios. Do not combine the Apple Silicon CPU row and the
+Linux CUDA-host CPU row as if they were one absolute CPU baseline. Use
 `SIGNINUM_REQUIRE_CUDA_BENCH=1` on the CUDA host to fail instead of skipping
-the CUDA row when no CUDA encode stage dispatches:
+the CUDA row when strict CUDA encode is unavailable:
 
 ```sh
 cargo bench -p signinum --bench facade --features metal -- --noplot

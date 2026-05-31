@@ -14,9 +14,10 @@ fn facade_bench_exposes_cpu_and_hybrid_encode_surfaces() {
         "direct_metal_auto_stage_rgb8_512_classic_external",
         "direct_metal_cpu_rct_stage_rgb8_512_htj2k_external",
         "facade_j2k_htj2k_encode_backend_speed_matrix",
-        "cpu_rgb8_512_htj2k_external",
-        "metal_rgb8_512_htj2k_external",
-        "cuda_rgb8_512_htj2k_external",
+        "cpu_gray8_512_htj2k_external",
+        "metal_gray8_512_htj2k_require_device_external",
+        "cuda_gray8_512_htj2k_require_device_external",
+        "EncodeBackendPreference::RequireDevice",
         "SIGNINUM_REQUIRE_CUDA_BENCH",
     ] {
         assert!(

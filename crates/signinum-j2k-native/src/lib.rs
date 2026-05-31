@@ -3032,6 +3032,49 @@ mod tests {
     }
 
     #[test]
+    fn classic_scalar_decode_applies_nonzero_roi_maxshift() {
+        let roi_shift = 3;
+        let total_bitplanes = 3;
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: false,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let coded_coefficients = [0, 5, 1 << roi_shift, -(2 << roi_shift)];
+        let encoded = encode_j2k_code_block_scalar_with_style(
+            &coded_coefficients,
+            2,
+            2,
+            J2kSubBandType::LowLow,
+            total_bitplanes + roi_shift,
+            style,
+        )
+        .expect("encode ROI-shifted code block");
+        let job = J2kCodeBlockDecodeJob {
+            data: &encoded.data,
+            segments: &encoded.segments,
+            width: 2,
+            height: 2,
+            output_stride: 2,
+            missing_bit_planes: encoded.missing_bit_planes,
+            number_of_coding_passes: encoded.number_of_coding_passes,
+            total_bitplanes,
+            roi_shift,
+            sub_band_type: J2kSubBandType::LowLow,
+            style,
+            strict: true,
+            dequantization_step: 1.0,
+        };
+        let mut output = [0.0; 4];
+
+        decode_j2k_code_block_scalar(job, &mut output).expect("decode ROI-shifted code block");
+
+        assert_eq!(output, [0.0, 5.0, 1.0, -2.0]);
+    }
+
+    #[test]
     fn scalar_packetization_rejects_overflowing_ht_refinement_lengths_without_panic() {
         let payload = [0x12];
         let block = J2kPacketizationCodeBlock {
