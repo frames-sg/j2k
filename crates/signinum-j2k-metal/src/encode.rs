@@ -82,6 +82,7 @@ impl MetalEncodeDispatchStages {
     const TIER1_CODE_BLOCK: Self = Self(1 << 2);
     const HT_CODE_BLOCK: Self = Self(1 << 3);
     const PACKETIZATION: Self = Self(1 << 4);
+    const AUTO_HOST_OUTPUT: Self = Self(Self::FORWARD_DWT53.0 | Self::HT_CODE_BLOCK.0);
     const ALL: Self = Self(
         Self::FORWARD_RCT.0
             | Self::FORWARD_DWT53.0
@@ -112,7 +113,7 @@ impl MetalEncodeStageAccelerator {
     /// Create the conservative automatic accelerator for host codestream output.
     pub fn for_auto_host_output() -> Self {
         Self {
-            dispatch_stages: MetalEncodeDispatchStages::FORWARD_DWT53,
+            dispatch_stages: MetalEncodeDispatchStages::AUTO_HOST_OUTPUT,
             parallel_cpu_code_block_fallback: true,
             ..Self::default()
         }
@@ -4860,6 +4861,46 @@ mod tests {
         assert_eq!(accelerator.tier1_code_block_dispatches(), 0);
         assert_eq!(accelerator.packetization_dispatches(), 0);
         assert!(accelerator.prefer_parallel_cpu_code_block_fallback());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn auto_htj2k_host_output_uses_metal_dwt_and_ht_with_cpu_packetization() {
+        let mut pixels = Vec::with_capacity(64 * 64 * 3);
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                pixels.push(((x * 3 + y * 5) & 0xff) as u8);
+                pixels.push(((x * 7 + y * 11) & 0xff) as u8);
+                pixels.push(((x * 13 + y * 17) & 0xff) as u8);
+            }
+        }
+        let samples =
+            J2kLosslessSamples::new(&pixels, 64, 64, 3, 8, false).expect("valid RGB samples");
+        let options = lossless_options! {
+            backend: EncodeBackendPreference::Auto,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::External,
+        };
+        let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("hybrid HTJ2K host-output encode");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+
+        assert_eq!(decoded.data, pixels);
+        assert_eq!(encoded.backend, BackendKind::Cpu);
+        assert_eq!(accelerator.forward_rct_dispatches(), 0);
+        assert_eq!(accelerator.forward_dwt53_dispatches(), 3);
+        assert!(accelerator.ht_code_block_dispatches() > 0);
+        assert_eq!(accelerator.packetization_dispatches(), 0);
     }
 
     #[cfg(target_os = "macos")]
