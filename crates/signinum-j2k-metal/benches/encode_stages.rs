@@ -126,9 +126,15 @@ fn bench_encode_stages(c: &mut Criterion) {
                             &mut accelerator,
                         )
                         .expect("Auto hybrid HTJ2K lossless encode");
-                        assert!(accelerator.forward_rct_dispatches() > 0);
-                        assert!(accelerator.forward_dwt53_dispatches() > 0);
-                        assert!(accelerator.ht_code_block_dispatches() > 0);
+                        if dim >= 1024 {
+                            assert!(accelerator.forward_rct_dispatches() > 0);
+                            assert!(accelerator.forward_dwt53_dispatches() > 0);
+                            assert!(accelerator.ht_code_block_dispatches() > 0);
+                        } else {
+                            assert_eq!(accelerator.forward_rct_dispatches(), 0);
+                            assert_eq!(accelerator.forward_dwt53_dispatches(), 0);
+                            assert_eq!(accelerator.ht_code_block_dispatches(), 0);
+                        }
                         assert_eq!(accelerator.packetization_dispatches(), 0);
                         encoded
                     });
