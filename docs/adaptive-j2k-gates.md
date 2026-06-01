@@ -71,10 +71,16 @@ full stage profile. The workflow uploads
 - `target/cuda_htj2k_decode_profile.log`
 - `target/cuda_htj2k_decode_trace.json`
 - `target/cuda_htj2k_decode_samply.json.gz`
+- `target/cuda_htj2k_decode_samply_status.txt`
 - `target/criterion`
 
 Upload runs under `always()`, so failed profile attempts still leave the log,
-Chrome trace, `samply` CPU profile, and partial Criterion evidence for triage.
+Chrome trace, `samply` status, and partial Criterion evidence for triage.
+When the runner cannot lower `/proc/sys/kernel/perf_event_paranoid` because
+passwordless sudo and direct sysctl writes are unavailable, the status file
+records `samply_status=blocked`; the step still runs the CUDA decode bench with
+stage summaries and CUDA trace export. A `samply` CPU profile is only present
+when the runner permits Linux perf sampling.
 Treat these artifacts as internal RCA evidence, not public speed claims.
 
 ## Direct NVIDIA nvJPEG2000 Decode Comparator Gate
