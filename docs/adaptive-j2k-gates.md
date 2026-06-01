@@ -56,7 +56,7 @@ SIGNINUM_REQUIRE_CUDA_RUNTIME=1 \
 SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT=1 \
 SIGNINUM_REQUIRE_CUDA_BENCH=1 \
 SIGNINUM_J2K_PROFILE_STAGES=summary \
-SIGNINUM_J2K_CUDA_TRACE=target/cuda_htj2k_decode_trace.json \
+SIGNINUM_J2K_CUDA_TRACE="$(pwd)/target/cuda_htj2k_decode_trace.json" \
 samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
   cargo bench -p signinum-j2k-cuda --bench htj2k_decode \
   --features cuda-runtime,cuda-profiling -- \
@@ -80,7 +80,8 @@ When the runner cannot lower `/proc/sys/kernel/perf_event_paranoid` because
 passwordless sudo and direct sysctl writes are unavailable, the status file
 records `samply_status=blocked`; the step still runs the CUDA decode bench with
 stage summaries and CUDA trace export. A `samply` CPU profile is only present
-when the runner permits Linux perf sampling.
+when the runner permits Linux perf sampling. Use an absolute trace path because
+Cargo may run the bench binary from the package directory.
 Treat these artifacts as internal RCA evidence, not public speed claims.
 
 ## Direct NVIDIA nvJPEG2000 Decode Comparator Gate

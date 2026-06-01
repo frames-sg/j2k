@@ -246,7 +246,7 @@ jobs:
           SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
           SIGNINUM_REQUIRE_CUDA_BENCH: "1"
           SIGNINUM_J2K_PROFILE_STAGES: summary
-          SIGNINUM_J2K_CUDA_TRACE: target/cuda_htj2k_decode_trace.json
+          SIGNINUM_J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json
         run: |
           set -o pipefail
           mkdir -p target
