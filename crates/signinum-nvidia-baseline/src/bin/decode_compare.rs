@@ -19,7 +19,7 @@ use std::{
 };
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_core::{BackendKind, BackendRequest, DeviceSurface, ImageDecodeDevice, PixelFormat};
+use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
 use signinum_j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
 use signinum_nvidia_baseline::{
     nvidia_j2k_decode_available, psnr_u8, NvBaselineError, NvBaselineSession, NvJ2kDecodeFormat,
@@ -87,6 +87,7 @@ struct Config {
     warmup: usize,
     iterations: usize,
     min_inputs: usize,
+    max_inputs: Option<usize>,
 }
 
 impl Config {
@@ -108,6 +109,7 @@ impl Config {
             warmup: DEFAULT_WARMUP,
             iterations: DEFAULT_ITERATIONS,
             min_inputs: 1,
+            max_inputs: None,
         };
         let mut iter = args.into_iter().map(Into::into);
         while let Some(arg) = iter.next() {
@@ -129,12 +131,22 @@ impl Config {
                     }
                 }
                 "--min-inputs" => config.min_inputs = next_parse(&mut iter, "--min-inputs")?,
+                "--max-inputs" => {
+                    let max_inputs = next_parse(&mut iter, "--max-inputs")?;
+                    if max_inputs == 0 {
+                        return Err("--max-inputs must be > 0".to_string());
+                    }
+                    config.max_inputs = Some(max_inputs);
+                }
                 "-h" | "--help" => return Err(usage()),
                 other if other.starts_with('-') => {
                     return Err(format!("unknown flag `{other}`\n{}", usage()))
                 }
                 path => config.inputs.push(PathBuf::from(path)),
             }
+        }
+        if config.min_inputs == 0 {
+            return Err("--min-inputs must be > 0".to_string());
         }
         Ok(config)
     }
@@ -159,7 +171,7 @@ where
 }
 
 fn usage() -> String {
-    "usage: decode_compare [--fixture-dim n] [--jpeg-dir path] [--warmup n] [--iterations n] [--min-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
+    "usage: decode_compare [--fixture-dim n] [--jpeg-dir path] [--warmup n] [--iterations n] [--min-inputs n] [--max-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,21 +222,21 @@ struct DecodeInput {
 
 fn load_inputs(config: &Config) -> Result<Vec<DecodeInput>, String> {
     if let Some(jpeg_dir) = &config.jpeg_dir {
-        return load_nvidia_htj2k_from_jpeg_dir(jpeg_dir, config.min_inputs.max(1));
+        return load_nvidia_htj2k_from_jpeg_dir(jpeg_dir, config.max_inputs);
     }
     if config.inputs.is_empty() {
         return generated_inputs(config.fixture_dim);
     }
-    config
+    let paths = config
         .inputs
         .iter()
-        .map(|path| load_input_path(path))
-        .collect()
+        .take(config.max_inputs.unwrap_or(usize::MAX));
+    paths.map(|path| load_input_path(path)).collect()
 }
 
 fn load_nvidia_htj2k_from_jpeg_dir(
     jpeg_dir: &Path,
-    target_count: usize,
+    max_inputs: Option<usize>,
 ) -> Result<Vec<DecodeInput>, String> {
     let mut jpeg_paths = fs::read_dir(jpeg_dir)
         .map_err(|error| format!("{}: {error}", jpeg_dir.display()))?
@@ -240,14 +252,17 @@ fn load_nvidia_htj2k_from_jpeg_dir(
         })
         .collect::<Vec<_>>();
     jpeg_paths.sort();
+    if let Some(max_inputs) = max_inputs {
+        jpeg_paths.truncate(max_inputs);
+    }
     if jpeg_paths.is_empty() {
         return Err(format!("{}: no JPEG inputs found", jpeg_dir.display()));
     }
 
     let mut session = NvBaselineSession::new()
         .map_err(|error| format!("NVIDIA baseline session required for --jpeg-dir: {error:?}"))?;
-    let mut inputs = Vec::with_capacity(target_count.min(jpeg_paths.len()));
-    for path in jpeg_paths.into_iter().take(target_count) {
+    let mut inputs = Vec::with_capacity(jpeg_paths.len());
+    for path in jpeg_paths {
         let jpeg = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let encoded = session
             .transcode_jpeg_to_htj2k(&jpeg)
@@ -358,6 +373,7 @@ fn load_input_path(path: &Path) -> Result<DecodeInput, String> {
 struct TimedPixels {
     wall_ms: f64,
     gpu_ms: Option<f64>,
+    stage_ms: Option<f64>,
     pixels: Vec<u8>,
 }
 
@@ -413,9 +429,16 @@ impl Row {
 
 fn run_comparison(inputs: &[DecodeInput], config: &Config) -> Vec<Row> {
     let mut rows = Vec::with_capacity(inputs.len());
+    #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+    let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
     let mut nvidia_session = NvBaselineSession::new().ok();
     for input in inputs {
         let cpu = timed_best(config, || decode_cpu(input));
+        #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+        let signinum_cuda = timed_best(config, || {
+            decode_signinum_cuda(&mut signinum_cuda_session, input)
+        });
+        #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
         let signinum_cuda = timed_best(config, || decode_signinum_cuda(input));
         let nvidia = match nvidia_session.as_mut() {
             Some(session) => timed_best(config, || decode_nvidia(session, input)),
@@ -477,6 +500,7 @@ where
                 {
                     result.wall_ms = round6(result.wall_ms);
                     result.gpu_ms = result.gpu_ms.map(round6);
+                    result.stage_ms = result.stage_ms.map(round6);
                     best = Some(result);
                 }
             }
@@ -503,17 +527,21 @@ fn decode_cpu(input: &DecodeInput) -> Result<TimedPixels, String> {
     Ok(TimedPixels {
         wall_ms: elapsed_ms(started),
         gpu_ms: None,
+        stage_ms: None,
         pixels: bitmap.data,
     })
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-fn decode_signinum_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
+fn decode_signinum_cuda(
+    session: &mut signinum_j2k_cuda::CudaSession,
+    input: &DecodeInput,
+) -> Result<TimedPixels, String> {
     let started = Instant::now();
     let mut decoder =
         signinum_j2k_cuda::J2kDecoder::new(&input.bytes).map_err(|error| error.to_string())?;
-    let surface = decoder
-        .decode_to_device(input.format.signinum(), BackendRequest::Cuda)
+    let (surface, report) = decoder
+        .decode_to_device_with_session_and_profile(input.format.signinum(), session)
         .map_err(|error| format!("signinum cuda decode: {error}"))?;
     if surface.backend_kind() != BackendKind::Cuda
         || surface.residency() != signinum_j2k_cuda::SurfaceResidency::CudaResidentDecode
@@ -527,7 +555,8 @@ fn decode_signinum_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
         .map_err(|error| format!("signinum cuda download: {error}"))?;
     Ok(TimedPixels {
         wall_ms: elapsed_ms(started),
-        gpu_ms: None,
+        gpu_ms: Some(us_to_ms(signinum_cuda_kernel_us(&report))),
+        stage_ms: Some(us_to_ms(report.total_us)),
         pixels,
     })
 }
@@ -536,6 +565,20 @@ fn decode_signinum_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
 fn decode_signinum_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
     let _ = input;
     Err("not-built".to_string())
+}
+
+#[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+fn signinum_cuda_kernel_us(report: &signinum_j2k_cuda::CudaHtj2kProfileReport) -> u128 {
+    [
+        report.ht_cleanup_us,
+        report.ht_refine_us,
+        report.dequant_us,
+        report.idwt_us,
+        report.mct_us,
+        report.store_us,
+    ]
+    .into_iter()
+    .fold(0u128, u128::saturating_add)
 }
 
 fn decode_nvidia(
@@ -556,12 +599,18 @@ fn decode_nvidia(
     Ok(TimedPixels {
         wall_ms: elapsed_ms(started),
         gpu_ms: Some(decoded.decode_ms),
+        stage_ms: None,
         pixels: decoded.pixels,
     })
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1_000.0
+}
+
+#[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
+fn us_to_ms(micros: u128) -> f64 {
+    micros as f64 / 1_000.0
 }
 
 fn round6(value: f64) -> f64 {
@@ -577,16 +626,26 @@ fn print_report(rows: &[Row], config: &Config) {
         config.iterations
     );
     println!(
-        "{:<24} {:>7} {:>10} {:>12} {:>14} {:>14} {:>12}",
-        "input", "format", "CPU ms", "sig CUDA ms", "NVIDIA wall", "NVIDIA gpu", "NV PSNR"
+        "{:<24} {:>7} {:>10} {:>12} {:>12} {:>12} {:>14} {:>14} {:>12}",
+        "input",
+        "format",
+        "CPU ms",
+        "sig wall",
+        "sig gpu",
+        "sig stage",
+        "NVIDIA wall",
+        "NVIDIA gpu",
+        "NV PSNR"
     );
     for row in rows {
         println!(
-            "{:<24} {:>7} {:>10} {:>12} {:>14} {:>14} {:>12}",
+            "{:<24} {:>7} {:>10} {:>12} {:>12} {:>12} {:>14} {:>14} {:>12}",
             row.label,
             row.format.label(),
             status_ms(&row.cpu),
             status_ms(&row.signinum_cuda),
+            status_gpu_ms(&row.signinum_cuda),
+            status_stage_ms(&row.signinum_cuda),
             status_ms(&row.nvidia),
             status_gpu_ms(&row.nvidia),
             fmt_optional(row.nvidia_psnr_vs_cpu)
@@ -606,6 +665,14 @@ fn status_gpu_ms(status: &TimedStatus) -> String {
         .result
         .as_ref()
         .and_then(|result| result.gpu_ms)
+        .map_or_else(|| "n/a".to_string(), |value| format!("{value:.3}"))
+}
+
+fn status_stage_ms(status: &TimedStatus) -> String {
+    status
+        .result
+        .as_ref()
+        .and_then(|result| result.stage_ms)
         .map_or_else(|| "n/a".to_string(), |value| format!("{value:.3}"))
 }
 
@@ -643,6 +710,12 @@ fn json_report(rows: &[Row], config: &Config) -> String {
     ));
     json.push_str(&format!("  \"warmup\": {},\n", config.warmup));
     json.push_str(&format!("  \"iterations\": {},\n", config.iterations));
+    json.push_str(&format!(
+        "  \"max_inputs\": {},\n",
+        config
+            .max_inputs
+            .map_or_else(|| "null".to_string(), |value| value.to_string())
+    ));
     json.push_str("  \"rows\": [\n");
     for (index, row) in rows.iter().enumerate() {
         if index > 0 {
@@ -688,6 +761,10 @@ fn json_status(name: &str, status: &TimedStatus, indent: bool) -> String {
     if let Some(result) = &status.result {
         json.push_str(&format!(", \"wall_ms\": {:.6}", result.wall_ms));
         json.push_str(&format!(", \"gpu_ms\": {}", json_optional(result.gpu_ms)));
+        json.push_str(&format!(
+            ", \"stage_ms\": {}",
+            json_optional(result.stage_ms)
+        ));
         json.push_str(&format!(", \"bytes\": {}", result.pixels.len()));
     }
     json.push('}');
@@ -709,11 +786,11 @@ fn json_optional(value: Option<f64>) -> String {
 
 fn csv_report(rows: &[Row]) -> String {
     let mut csv = String::from(
-        "label,format,width,height,codestream_bytes,cpu_status,cpu_wall_ms,signinum_cuda_status,signinum_cuda_wall_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,signinum_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu\n",
+        "label,format,width,height,codestream_bytes,cpu_status,cpu_wall_ms,signinum_cuda_status,signinum_cuda_wall_ms,signinum_cuda_gpu_ms,signinum_cuda_stage_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,signinum_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu\n",
     );
     for row in rows {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv(&row.label),
             row.format.label(),
             row.width,
@@ -723,6 +800,8 @@ fn csv_report(rows: &[Row]) -> String {
             csv_ms(&row.cpu),
             escape_csv(&row.signinum_cuda.status),
             csv_ms(&row.signinum_cuda),
+            csv_gpu_ms(&row.signinum_cuda),
+            csv_stage_ms(&row.signinum_cuda),
             escape_csv(&row.nvidia.status),
             csv_ms(&row.nvidia),
             csv_gpu_ms(&row.nvidia),
@@ -745,6 +824,14 @@ fn csv_gpu_ms(status: &TimedStatus) -> String {
         .result
         .as_ref()
         .and_then(|result| result.gpu_ms)
+        .map_or_else(String::new, |value| format!("{value:.6}"))
+}
+
+fn csv_stage_ms(status: &TimedStatus) -> String {
+    status
+        .result
+        .as_ref()
+        .and_then(|result| result.stage_ms)
         .map_or_else(String::new, |value| format!("{value:.6}"))
 }
 
@@ -816,8 +903,18 @@ mod tests {
         assert_eq!(config.warmup, 1);
         assert_eq!(config.iterations, 3);
         assert_eq!(config.min_inputs, 2);
+        assert_eq!(config.max_inputs, None);
         assert!(config.json.is_some());
         assert!(config.csv.is_some());
+    }
+
+    #[test]
+    fn config_parses_max_inputs_separately_from_minimum_floor() {
+        let config = Config::from_args(["--min-inputs", "100", "--max-inputs", "128"])
+            .expect("config parses");
+
+        assert_eq!(config.min_inputs, 100);
+        assert_eq!(config.max_inputs, Some(128));
     }
 
     #[test]
@@ -831,6 +928,7 @@ mod tests {
             cpu: TimedStatus::ok(TimedPixels {
                 wall_ms: 1.0,
                 gpu_ms: None,
+                stage_ms: None,
                 pixels: vec![0],
             }),
             signinum_cuda: TimedStatus::failed("not-built"),
@@ -840,6 +938,6 @@ mod tests {
         };
 
         let csv = csv_report(&[row]);
-        assert!(csv.contains("\"tile,1\",rgb8,512,512,100,ok,1.000000,not-built,,not-built,,"));
+        assert!(csv.contains("\"tile,1\",rgb8,512,512,100,ok,1.000000,not-built,,,,not-built,,"));
     }
 }

@@ -199,7 +199,8 @@ jobs:
             --jpeg-dir "${SIGNINUM_BENCH_JPEG_DIR}" \
             --warmup 2 \
             --iterations 10 \
-            --min-inputs 2 \
+            --min-inputs 100 \
+            --max-inputs 100 \
             --json target/decode_compare.json \
             --csv target/decode_compare.csv
           python3 -m json.tool target/decode_compare.json >/dev/null

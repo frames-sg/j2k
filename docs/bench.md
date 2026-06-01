@@ -182,15 +182,17 @@ cargo run --release -p signinum-nvidia-baseline \
   --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
   --warmup 2 \
   --iterations 10 \
-  --min-inputs 2 \
+  --min-inputs 100 \
+  --max-inputs 100 \
   --json target/decode_compare.json \
   --csv target/decode_compare.csv
 ```
 
 The JSON/CSV report includes signinum CPU decode, strict signinum CUDA decode
-with host download, and direct nvJPEG2000 decode wall/GPU timings for each
-fixture. This gate is an internal comparator against NVIDIA's library, not a
-replacement for the Criterion route gates above.
+with host download, signinum CUDA kernel/stage timings, and direct nvJPEG2000
+decode wall/GPU timings for each fixture. `--min-inputs` is the acceptance
+floor; `--max-inputs` is the workload cap. This gate is an internal comparator
+against NVIDIA's library, not a replacement for the Criterion route gates above.
 
 ## Compared operations
 

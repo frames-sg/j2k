@@ -203,6 +203,7 @@ pub(crate) fn finalize_decode_total_us(report: &mut CudaHtj2kProfileReport) {
         report.flatten_us,
         report.h2d_us,
         report.ht_cleanup_us,
+        report.ht_refine_us,
         report.dequant_us,
         report.idwt_us,
         report.mct_us,
@@ -436,8 +437,8 @@ mod tests {
 
         finalize_decode_total_us(&mut report);
 
-        assert_eq!(report.total_us, 49);
-        assert_eq!(report.detail.stage_sum_us, 49);
+        assert_eq!(report.total_us, 55);
+        assert_eq!(report.detail.stage_sum_us, 55);
     }
 
     #[test]

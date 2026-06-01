@@ -110,7 +110,8 @@ cargo run --release -p signinum-nvidia-baseline \
   --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
   --warmup 2 \
   --iterations 10 \
-  --min-inputs 2 \
+  --min-inputs 100 \
+  --max-inputs 100 \
   --json target/decode_compare.json \
   --csv target/decode_compare.csv
 ```
