@@ -196,7 +196,7 @@ jobs:
             --csv target/transcode_compare.csv
           python3 -m json.tool target/transcode_compare.json >/dev/null
           cargo run --release -p signinum-nvidia-baseline --features nvjpeg2000 --bin decode_compare -- \
-            --fixture-dim 512 \
+            --jpeg-dir "${SIGNINUM_BENCH_JPEG_DIR}" \
             --warmup 2 \
             --iterations 10 \
             --min-inputs 2 \
