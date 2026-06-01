@@ -12,16 +12,19 @@ use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
 #[cfg(target_os = "macos")]
 use signinum_j2k::{
     EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kProgressionOrder,
+    ReversibleTransform,
 };
 use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions, J2kLosslessSamples};
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::{
-    EncodeProgressionOrder, J2kPacketizationPacketDescriptor, J2kSubBandType,
+    EncodeProgressionOrder, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
+    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationSubband, J2kSubBandType,
 };
 use signinum_j2k_native::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
     J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
+    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(all(test, target_os = "macos"))]
 use std::cell::Cell;
@@ -411,6 +414,80 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = jobs;
+            Ok(None)
+        }
+    }
+
+    fn encode_htj2k_tile(
+        &mut self,
+        job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.dispatch_stages != MetalEncodeDispatchStages::AUTO_HOST_OUTPUT {
+                let _ = job;
+                return Ok(None);
+            }
+            let Some(options) = lossless_options_for_resident_htj2k_tile_job(job) else {
+                return Ok(None);
+            };
+            let session = match crate::MetalBackendSession::system_default() {
+                Ok(session) => session,
+                Err(crate::Error::MetalUnavailable) => return Ok(None),
+                Err(_) => return Err("Metal HTJ2K hybrid tile encode session creation failed"),
+            };
+            let source_buffer = match borrow_padded_metal_buffer_from_bytes(&session, job.pixels) {
+                Ok(buffer) => buffer,
+                Err(crate::Error::MetalUnavailable) => return Ok(None),
+                Err(_) => return Err("Metal HTJ2K hybrid tile input buffer creation failed"),
+            };
+            let pitch_bytes = (job.width as usize)
+                .checked_mul(usize::from(job.num_components))
+                .ok_or("Metal HTJ2K hybrid tile pitch overflow")?;
+            let tile = MetalLosslessEncodeTile {
+                buffer: &source_buffer,
+                byte_offset: 0,
+                width: job.width,
+                height: job.height,
+                pitch_bytes,
+                output_width: job.width,
+                output_height: job.height,
+                format: PixelFormat::Rgb8,
+            };
+            let encoded = match encode_resident_ht_tile_body_with_cpu_packetization(
+                tile,
+                options,
+                &session,
+                MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            ) {
+                Ok(Some(encoded)) => encoded,
+                Ok(None) | Err(crate::Error::MetalUnavailable) => return Ok(None),
+                Err(_) => return Err("Metal resident HTJ2K hybrid tile encode failed"),
+            };
+
+            self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
+            if encoded.used_fused_rct {
+                self.forward_rct_dispatches = self.forward_rct_dispatches.saturating_add(1);
+            }
+            if encoded.num_decomposition_levels > 0 {
+                let component_count = usize::from(job.num_components);
+                self.forward_dwt53_attempts =
+                    self.forward_dwt53_attempts.saturating_add(component_count);
+                self.forward_dwt53_dispatches = self
+                    .forward_dwt53_dispatches
+                    .saturating_add(encoded.forward_dwt53_dispatches);
+            }
+            self.ht_code_block_attempts = self
+                .ht_code_block_attempts
+                .saturating_add(encoded.code_block_count);
+            self.ht_code_block_dispatches = self
+                .ht_code_block_dispatches
+                .saturating_add(encoded.ht_code_block_dispatches);
+            Ok(Some(encoded.tile_data))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
             Ok(None)
         }
     }
@@ -2263,6 +2340,76 @@ fn host_output_encode_options(mut options: J2kLosslessEncodeOptions) -> J2kLossl
 }
 
 #[cfg(target_os = "macos")]
+fn lossless_progression_from_packetization_order(
+    order: J2kPacketizationProgressionOrder,
+) -> J2kProgressionOrder {
+    match order {
+        J2kPacketizationProgressionOrder::Lrcp => J2kProgressionOrder::Lrcp,
+        J2kPacketizationProgressionOrder::Rlcp => J2kProgressionOrder::Rlcp,
+        J2kPacketizationProgressionOrder::Rpcl => J2kProgressionOrder::Rpcl,
+        J2kPacketizationProgressionOrder::Pcrl => J2kProgressionOrder::Pcrl,
+        J2kPacketizationProgressionOrder::Cprl => J2kProgressionOrder::Cprl,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_options_for_resident_htj2k_tile_job(
+    job: J2kHtj2kTileEncodeJob<'_>,
+) -> Option<J2kLosslessEncodeOptions> {
+    if job.num_components != 3
+        || job.bit_depth != 8
+        || job.signed
+        || !job.reversible
+        || !job.use_mct
+        || job.guard_bits != 2
+        || job.code_block_width != 64
+        || job.code_block_height != 64
+    {
+        return None;
+    }
+    if job.component_sampling.len() != usize::from(job.num_components)
+        || job
+            .component_sampling
+            .iter()
+            .any(|&(x_sampling, y_sampling)| x_sampling != 1 || y_sampling != 1)
+    {
+        return None;
+    }
+    let expected_len = (job.width as usize)
+        .checked_mul(job.height as usize)?
+        .checked_mul(usize::from(job.num_components))?;
+    if expected_len != job.pixels.len() {
+        return None;
+    }
+    Some(J2kLosslessEncodeOptions::new(
+        EncodeBackendPreference::Auto,
+        J2kBlockCodingMode::HighThroughput,
+        lossless_progression_from_packetization_order(job.progression_order),
+        Some(job.num_decomposition_levels),
+        ReversibleTransform::Rct53,
+        J2kEncodeValidation::External,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn borrow_padded_metal_buffer_from_bytes(
+    session: &crate::MetalBackendSession,
+    bytes: &[u8],
+) -> Result<Buffer, crate::Error> {
+    if bytes.is_empty() {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal hybrid encode input is empty".to_string(),
+        });
+    }
+    Ok(session.device().new_buffer_with_bytes_no_copy(
+        bytes.as_ptr().cast(),
+        bytes.len() as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+        None,
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn packet_descriptors_for_lossless_device_order(
     packet_count: usize,
     num_components: u8,
@@ -2398,6 +2545,206 @@ fn resident_packetization_resolutions_from_lossless_device_plan(
             Ok(compute::J2kResidentPacketizationResolution { subbands })
         })
         .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn packetization_progression_order(
+    order: EncodeProgressionOrder,
+) -> J2kPacketizationProgressionOrder {
+    match order {
+        EncodeProgressionOrder::Lrcp => J2kPacketizationProgressionOrder::Lrcp,
+        EncodeProgressionOrder::Rlcp => J2kPacketizationProgressionOrder::Rlcp,
+        EncodeProgressionOrder::Rpcl => J2kPacketizationProgressionOrder::Rpcl,
+        EncodeProgressionOrder::Pcrl => J2kPacketizationProgressionOrder::Pcrl,
+        EncodeProgressionOrder::Cprl => J2kPacketizationProgressionOrder::Cprl,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cpu_packetization_resolutions_from_lossless_device_plan<'a>(
+    plan: &LosslessDeviceEncodePlan,
+    encoded_blocks: &'a [EncodedHtJ2kCodeBlock],
+) -> Result<Vec<J2kPacketizationResolution<'a>>, crate::Error> {
+    if encoded_blocks.len() != plan.code_blocks.len() {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal resident hybrid HT block count mismatch".to_string(),
+        });
+    }
+    plan.resolutions
+        .iter()
+        .map(|resolution| {
+            let subbands = resolution
+                .subbands
+                .iter()
+                .map(|subband| {
+                    let code_block_end = subband
+                        .code_block_start
+                        .checked_add(subband.code_block_count)
+                        .ok_or_else(|| crate::Error::MetalKernel {
+                            message: "J2K Metal resident hybrid code-block range overflow"
+                                .to_string(),
+                        })?;
+                    let encoded = encoded_blocks
+                        .get(subband.code_block_start..code_block_end)
+                        .ok_or_else(|| crate::Error::MetalKernel {
+                            message: "J2K Metal resident hybrid code-block range out of bounds"
+                                .to_string(),
+                        })?;
+                    let code_blocks = encoded
+                        .iter()
+                        .map(|block| J2kPacketizationCodeBlock {
+                            data: block.data.as_slice(),
+                            ht_cleanup_length: block.cleanup_length,
+                            ht_refinement_length: block.refinement_length,
+                            num_coding_passes: block.num_coding_passes,
+                            num_zero_bitplanes: block.num_zero_bitplanes,
+                            previously_included: false,
+                            l_block: 3,
+                            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+                        })
+                        .collect();
+                    Ok(J2kPacketizationSubband {
+                        code_blocks,
+                        num_cbs_x: subband.num_cbs_x,
+                        num_cbs_y: subband.num_cbs_y,
+                    })
+                })
+                .collect::<Result<Vec<_>, crate::Error>>()?;
+            Ok(J2kPacketizationResolution { subbands })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+struct ResidentHybridHtTileBody {
+    tile_data: Vec<u8>,
+    components: u8,
+    bit_depth: u8,
+    bytes_per_pixel: usize,
+    code_block_count: usize,
+    num_decomposition_levels: u8,
+    used_fused_rct: bool,
+    forward_dwt53_dispatches: usize,
+    ht_code_block_dispatches: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn encode_resident_ht_tile_body_with_cpu_packetization(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    staging: MetalEncodeInputStaging,
+) -> Result<Option<ResidentHybridHtTileBody>, crate::Error> {
+    if !should_try_resident_lossless_ht_cpu_packetization(tile, options, staging) {
+        return Ok(None);
+    }
+    validate_metal_encode_tile(tile)?;
+    let (components, bit_depth) = lossless_sample_shape(tile.format)?;
+    let bytes_per_pixel = tile.format.bytes_per_pixel();
+    let bytes_per_sample =
+        u8::try_from(tile.format.bytes_per_sample()).map_err(|_| crate::Error::MetalKernel {
+            message: "J2K Metal resident hybrid bytes per sample exceeds u8".to_string(),
+        })?;
+    validate_padded_contiguous_metal_encode_tile(tile, bytes_per_pixel)?;
+    let Some(plan) = lossless_device_encode_plan(
+        tile.output_width,
+        tile.output_height,
+        components,
+        bit_depth,
+        options,
+    )?
+    else {
+        return Ok(None);
+    };
+    if plan.block_coding_mode != J2kBlockCodingMode::HighThroughput {
+        return Ok(None);
+    }
+
+    let coefficient_count = lossless_device_coefficient_count(&plan.code_blocks)?;
+    let prepared = compute::prepare_lossless_device_code_blocks(
+        session,
+        compute::J2kLosslessDevicePrepareJob {
+            input: tile.buffer,
+            input_byte_offset: tile.byte_offset,
+            input_width: tile.width,
+            input_height: tile.height,
+            input_pitch_bytes: tile.pitch_bytes,
+            output_width: tile.output_width,
+            output_height: tile.output_height,
+            components,
+            bytes_per_sample,
+            bit_depth,
+            num_decomposition_levels: plan.num_decomposition_levels,
+            coefficient_count,
+        },
+        plan.code_blocks.clone(),
+    )?;
+    let resident_tier1 =
+        compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
+    let encoded_blocks = compute::read_resident_ht_tier1_code_blocks_for_cpu_packetization(
+        session,
+        &resident_tier1,
+    )?;
+    let packetization_resolutions =
+        cpu_packetization_resolutions_from_lossless_device_plan(&plan, &encoded_blocks)?;
+    let packet_descriptors = packet_descriptors_for_lossless_device_order(
+        plan.resolutions.len(),
+        plan.components,
+        plan.progression_order,
+    )?;
+    let packetization_job = J2kPacketizationEncodeJob {
+        resolution_count: u32::try_from(plan.resolutions.len()).map_err(|_| {
+            crate::Error::MetalKernel {
+                message: "J2K Metal resident hybrid resolution count exceeds u32".to_string(),
+            }
+        })?,
+        num_layers: 1,
+        num_components: plan.components,
+        code_block_count: u32::try_from(plan.code_blocks.len()).map_err(|_| {
+            crate::Error::MetalKernel {
+                message: "J2K Metal resident hybrid code-block count exceeds u32".to_string(),
+            }
+        })?,
+        progression_order: packetization_progression_order(plan.progression_order),
+        packet_descriptors: &packet_descriptors,
+        resolutions: &packetization_resolutions,
+    };
+    let tile_data = signinum_j2k_native::encode_j2k_packetization_scalar(packetization_job)
+        .map_err(|reason| crate::Error::MetalKernel {
+            message: format!("J2K Metal resident hybrid CPU packetization failed: {reason}"),
+        })?;
+
+    Ok(Some(ResidentHybridHtTileBody {
+        tile_data,
+        components,
+        bit_depth,
+        bytes_per_pixel,
+        code_block_count: plan.code_blocks.len(),
+        num_decomposition_levels: plan.num_decomposition_levels,
+        used_fused_rct: plan.use_mct && tile.format == PixelFormat::Rgb8,
+        forward_dwt53_dispatches: if plan.num_decomposition_levels > 0 {
+            usize::from(plan.components)
+        } else {
+            0
+        },
+        ht_code_block_dispatches: usize::from(!plan.code_blocks.is_empty()),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default)]
+struct PrepacketizedHtj2kTileAccelerator {
+    tile_data: Option<Vec<u8>>,
+}
+
+#[cfg(target_os = "macos")]
+impl J2kEncodeStageAccelerator for PrepacketizedHtj2kTileAccelerator {
+    fn encode_htj2k_tile(
+        &mut self,
+        _job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        Ok(self.tile_data.take())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3358,6 +3705,106 @@ fn validate_lossless_roundtrip_on_metal_region_with_session(
 }
 
 #[cfg(target_os = "macos")]
+fn should_try_resident_lossless_ht_cpu_packetization(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: J2kLosslessEncodeOptions,
+    staging: MetalEncodeInputStaging,
+) -> bool {
+    options.backend == EncodeBackendPreference::Auto
+        && options.block_coding_mode == J2kBlockCodingMode::HighThroughput
+        && options.reversible_transform == ReversibleTransform::Rct53
+        && matches!(staging, MetalEncodeInputStaging::AlreadyPaddedContiguous)
+        && tile.format == PixelFormat::Rgb8
+}
+
+#[cfg(target_os = "macos")]
+fn encode_cpu_codestream_from_prepacketized_ht_tile(
+    tile_data: Vec<u8>,
+    tile: MetalLosslessEncodeTile<'_>,
+    components: u8,
+    bit_depth: u8,
+    bytes_per_pixel: usize,
+    options: J2kLosslessEncodeOptions,
+) -> Result<EncodedJ2k, crate::Error> {
+    let dummy_len = checked_mul_bytes(
+        checked_mul_bytes(tile.output_width as usize, tile.output_height as usize),
+        bytes_per_pixel,
+    );
+    let dummy = vec![0u8; dummy_len];
+    let samples = J2kLosslessSamples::new(
+        &dummy,
+        tile.output_width,
+        tile.output_height,
+        components,
+        bit_depth,
+        false,
+    )
+    .map_err(crate::Error::Decode)?;
+    let mut wrapper = PrepacketizedHtj2kTileAccelerator {
+        tile_data: Some(tile_data),
+    };
+    let mut encode_options = host_output_encode_options(options);
+    encode_options.backend = EncodeBackendPreference::Auto;
+    signinum_j2k::encode_j2k_lossless_with_accelerator(
+        samples,
+        &encode_options,
+        BackendKind::Metal,
+        &mut wrapper,
+    )
+    .map_err(crate::Error::Decode)
+}
+
+#[cfg(target_os = "macos")]
+fn try_encode_lossless_tile_resident_ht_cpu_packetization_with_report(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    staging: MetalEncodeInputStaging,
+) -> Result<Option<MetalLosslessEncodeOutcome>, crate::Error> {
+    let encode_started = Instant::now();
+    let Some(tile_body) =
+        encode_resident_ht_tile_body_with_cpu_packetization(tile, options, session, staging)?
+    else {
+        return Ok(None);
+    };
+    let encoded = encode_cpu_codestream_from_prepacketized_ht_tile(
+        tile_body.tile_data,
+        tile,
+        tile_body.components,
+        tile_body.bit_depth,
+        tile_body.bytes_per_pixel,
+        options,
+    )?;
+    let encode_duration = encode_started.elapsed();
+    let validation_duration = if options.validation == J2kEncodeValidation::CpuRoundTrip {
+        let validation_started = Instant::now();
+        validate_lossless_roundtrip_on_metal_tile_with_session(
+            tile,
+            encoded.codestream.as_slice(),
+            session,
+        )?;
+        validation_started.elapsed()
+    } else {
+        Duration::ZERO
+    };
+
+    Ok(Some(MetalLosslessEncodeOutcome {
+        encoded,
+        input_copy_used: false,
+        resident: MetalLosslessEncodeResidency {
+            coefficient_prep_used: true,
+            packetization_used: false,
+            codestream_assembly_used: false,
+        },
+        input_copy_duration: Duration::ZERO,
+        encode_duration,
+        gpu_duration: None,
+        validation_duration,
+        host_readback_duration: Duration::ZERO,
+    }))
+}
+
+#[cfg(target_os = "macos")]
 fn try_encode_lossless_tile_device_resident_with_report(
     tile: MetalLosslessEncodeTile<'_>,
     options: J2kLosslessEncodeOptions,
@@ -3579,6 +4026,11 @@ fn encode_lossless_tile_with_report(
     validate_metal_encode_tile(tile)?;
     let (components, bit_depth) = lossless_sample_shape(tile.format)?;
     let bytes_per_pixel = tile.format.bytes_per_pixel();
+    if let Some(outcome) = try_encode_lossless_tile_resident_ht_cpu_packetization_with_report(
+        tile, options, session, staging,
+    )? {
+        return Ok(outcome);
+    }
     if should_try_resident_lossless_host_encode(options) {
         if let Some(outcome) =
             try_encode_lossless_tile_device_resident_with_report(tile, options, session, staging)?
@@ -4897,10 +5349,60 @@ mod tests {
 
         assert_eq!(decoded.data, pixels);
         assert_eq!(encoded.backend, BackendKind::Cpu);
-        assert_eq!(accelerator.forward_rct_dispatches(), 0);
+        assert!(accelerator.forward_rct_dispatches() > 0);
         assert_eq!(accelerator.forward_dwt53_dispatches(), 3);
         assert!(accelerator.ht_code_block_dispatches() > 0);
         assert_eq!(accelerator.packetization_dispatches(), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn auto_htj2k_padded_rgb8_uses_fused_metal_rct_with_cpu_packetization() {
+        let mut pixels = Vec::with_capacity(64 * 64 * 3);
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                pixels.push(((x * 19 + y * 3) & 0xff) as u8);
+                pixels.push(((x * 5 + y * 23) & 0xff) as u8);
+                pixels.push(((x * 11 + y * 13) & 0xff) as u8);
+            }
+        }
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+        compute::reset_lossless_deinterleave_rct_fused_dispatches_for_test();
+
+        let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 64,
+                height: 64,
+                pitch_bytes: 64 * 3,
+                output_width: 64,
+                output_height: 64,
+                format: PixelFormat::Rgb8,
+            },
+            &lossless_options! {
+                backend: EncodeBackendPreference::Auto,
+                block_coding_mode: J2kBlockCodingMode::HighThroughput,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+        )
+        .expect("Auto HTJ2K resident hybrid encode");
+        let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+
+        assert_eq!(decoded.data, pixels);
+        assert_eq!(encoded.encoded.backend, BackendKind::Cpu);
+        assert!(encoded.resident.coefficient_prep_used);
+        assert!(!encoded.resident.packetization_used);
+        assert!(!encoded.resident.codestream_assembly_used);
+        assert!(
+            compute::lossless_deinterleave_rct_fused_dispatches_for_test() > 0,
+            "Auto HTJ2K resident hybrid should use fused deinterleave + RCT"
+        );
     }
 
     #[cfg(target_os = "macos")]

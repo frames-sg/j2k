@@ -12789,6 +12789,80 @@ fn read_ht_encoded_code_block(
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
+    session: &crate::MetalBackendSession,
+    tier1: &J2kResidentLosslessHtCodeBlocks,
+) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
+    with_runtime_for_device(&session.device, |runtime| {
+        if tier1.batch_jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let output_bytes = tier1.output_capacity_total.max(1);
+        let status_bytes = tier1
+            .batch_jobs
+            .len()
+            .checked_mul(size_of::<J2kHtEncodeStatus>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K Metal resident status readback size overflow".to_string(),
+            })?;
+        let output = runtime
+            .device
+            .new_buffer(output_bytes as u64, MTLResourceOptions::StorageModeShared);
+        let status_buffer = runtime
+            .device
+            .new_buffer(status_bytes as u64, MTLResourceOptions::StorageModeShared);
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        label_command_buffer(
+            command_buffer,
+            "signinum-j2k htj2k resident tier1 cpu readback",
+        );
+        let blit = command_buffer.new_blit_command_encoder();
+        blit.copy_from_buffer(
+            &tier1.output_buffer,
+            0,
+            &output,
+            0,
+            tier1.output_capacity_total as u64,
+        );
+        blit.copy_from_buffer(
+            &tier1.status_buffer,
+            0,
+            &status_buffer,
+            0,
+            status_bytes as u64,
+        );
+        blit.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let statuses = unsafe {
+            core::slice::from_raw_parts(
+                status_buffer.contents().cast::<J2kHtEncodeStatus>(),
+                tier1.batch_jobs.len(),
+            )
+        };
+        tier1
+            .batch_jobs
+            .iter()
+            .zip(statuses.iter().copied())
+            .map(|(batch_job, status)| {
+                read_ht_encoded_code_block(
+                    status,
+                    &output,
+                    usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal resident output offset exceeds usize".to_string(),
+                    })?,
+                    usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
+                    })?,
+                )
+            })
+            .collect()
+    })
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum HtEncodeCodeBlocksKernel {
     Scalar,
