@@ -266,6 +266,56 @@ Decision:
   while `sync_wait_us` remains roughly `97 ms .. 166 ms` across after-change
   Criterion and `cargo-instruments` runs.
 
+## 2026-06-01 CUDA HTJ2K Decode Table-Cache Rerun
+
+Evidence:
+
+- Commit: `9673693`
+- Workflow:
+  <https://github.com/frames-sg/signinum/actions/runs/26736318698>
+- Result: success
+- Branch: `codex/cuda-quality-ht-rewrite`
+- Supersedes no CUDA decode gates; this rerun verifies the per-session HTJ2K
+  decode table cache and keeps the older RCA as the baseline comparison.
+- CUDA `samply` status: `blocked`, `perf_event_paranoid=2`, passwordless sudo
+  unavailable, and `/proc/sys/kernel/perf_event_paranoid` not writable.
+- Artifacts:
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_profile.log`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_trace.json`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_samply_status.txt`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/nvidia-baseline-comparison/decode_compare.csv`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/nvidia-baseline-comparison/decode_compare.json`
+
+CUDA HTJ2K decode rerun delta:
+
+| Check | Prior `7100366` / run `26733997559` | Rerun `9673693` / run `26736318698` | Gate |
+| --- | ---: | ---: | --- |
+| Full tile gray8 512, strict CUDA | `198.30 ms .. 201.11 ms` | `199.95 ms .. 202.18 ms` | `blocked` |
+| Full tile RGB8 512, strict CUDA | `205.15 ms .. 210.26 ms` | `212.17 ms .. 216.27 ms` | `blocked` |
+| Tile batch gray8 batch 8, strict CUDA | `253.64 ms .. 257.56 ms` | `251.26 ms .. 257.55 ms` | `blocked` |
+| Tile batch RGB8 batch 8, strict CUDA | `308.00 ms .. 310.91 ms` | `307.97 ms .. 314.51 ms` | `blocked` |
+| NVIDIA comparator tile 00000, Signinum strict CUDA | `167.037675 ms` | `166.064961 ms` | `blocked` |
+| NVIDIA comparator tile 00000, nvJPEG2000 wall | `0.840529 ms` | `0.780679 ms` | comparator still proves runner headroom |
+| NVIDIA comparator tile 00001, Signinum strict CUDA | `168.412187 ms` | `168.674478 ms` | `blocked` |
+| NVIDIA comparator tile 00001, nvJPEG2000 wall | `0.801779 ms` | `0.798889 ms` | comparator still proves runner headroom |
+
+CUDA profile summary delta:
+
+| Path | Prior | Rerun | RCA |
+| --- | --- | --- | --- |
+| CUDA HTJ2K decode | `count=665`, `stage_sum_us_avg=20680`, `wall_total_us_avg=80036`, `table_upload_us_avg=469` | `count=625`, `stage_sum_us_avg=20287`, `wall_total_us_avg=75628`, `table_upload_us_avg=364` | table uploads improved, but not enough to move the gate |
+| Stage hotspots | `ht_cleanup_us_avg=13713`, `h2d_us_avg=3634`, `idwt_us_avg=1658` | `ht_cleanup_us_avg=13303`, `h2d_us_avg=3583`, `idwt_us_avg=1681` | strict route/session/sync overhead still dominates |
+
+Decision:
+
+- Keep CUDA HTJ2K decode default routing `blocked` for every measured full,
+  ROI, scaled, ROI-scaled, and batch decode shape.
+- Keep the per-session HTJ2K table cache because it removes repeat setup work
+  without changing correctness, but treat it as an incremental cleanup rather
+  than the wall-time RCA fix.
+- A real CUDA `samply` CPU profile remains blocked until the self-hosted runner
+  can set `kernel.perf_event_paranoid <= 1` or use passwordless sudo.
+
 ## 2026-06-01 CUDA HTJ2K Decode RCA and NVIDIA Baseline Addendum
 
 Evidence:
