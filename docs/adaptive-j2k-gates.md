@@ -33,6 +33,112 @@ New adaptive gate reruns must record:
 Do not copy numbers into this file from a different host class. Apple Metal
 numbers and CUDA runner numbers are separate evidence sets.
 
+## 2026-05-31 Metal Resident HTJ2K Encode RCA Rerun
+
+Evidence:
+
+- Commit: `65b3921`
+- Host: MacBook Pro `Mac16,8`, macOS 26.5 build 25F71, Darwin 25.5.0,
+  arm64, Apple M4 Pro 12-core CPU, 16-core GPU, 48 GiB RAM, Metal 4.
+- Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
+- Commands:
+  - `SIGNINUM_REQUIRE_METAL_BENCH=1 SIGNINUM_J2K_METAL_PROFILE_STAGES=1 cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_REQUIRE_METAL_BENCH=1 cargo bench -p signinum --bench facade --features metal -- facade_j2k_htj2k_encode_backend_speed_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+
+End-to-end facade gate:
+
+| Shape | CPU-only | Adaptive | Strict Metal | Decision |
+| --- | ---: | ---: | ---: | --- |
+| RGB8 512 HTJ2K encode | `4.3245 ms .. 4.6258 ms` | `4.3713 ms .. 4.8654 ms` | `33.590 ms .. 33.780 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGB8 1024 HTJ2K encode | `19.664 ms .. 20.856 ms` | `19.600 ms .. 20.727 ms` | `125.84 ms .. 127.29 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGBA8 512 HTJ2K encode | `5.6062 ms .. 5.8995 ms` | `5.5989 ms .. 5.9073 ms` | `38.693 ms .. 39.058 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGBA8 1024 HTJ2K encode | `25.861 ms .. 27.024 ms` | `26.211 ms .. 27.613 ms` | `146.24 ms .. 146.90 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+
+Stage Criterion evidence:
+
+| Stage / Shape | CPU | Metal | Gate |
+| --- | ---: | ---: | --- |
+| RCT 512 | `88.956 us .. 92.536 us` | `211.84 us .. 241.96 us` | `blocked` |
+| RCT 1024 | `380.71 us .. 395.41 us` | `671.99 us .. 954.58 us` | `blocked` |
+| RCT 2048 | `1.6764 ms .. 1.7454 ms` | `2.0384 ms .. 2.4412 ms` | `blocked` |
+| DWT 512 | `1.0081 ms .. 1.0408 ms` | `233.08 us .. 250.68 us` | `candidate` |
+| DWT 1024 | `5.0448 ms .. 5.2933 ms` | `639.35 us .. 852.23 us` | `candidate` |
+| DWT 2048 | `25.844 ms .. 28.346 ms` | `2.9085 ms .. 3.3051 ms` | `candidate` |
+| HT code blocks, 192 | `7.0936 ms .. 7.3332 ms` | `2.9461 ms .. 2.9980 ms` | `candidate` |
+| HT code blocks, 768 | `28.695 ms .. 29.393 ms` | `5.9062 ms .. 6.1836 ms` | `candidate` |
+
+Encode-path evidence:
+
+| Route / Shape | Criterion interval | Gate |
+| --- | ---: | --- |
+| CPU classic RGB8 512 | `12.996 ms .. 15.587 ms` | Baseline for classic only |
+| CPU HTJ2K RGB8 512 | `4.6573 ms .. 5.2017 ms` | Baseline |
+| Auto host Metal-buffer HTJ2K RGB8 512 | `3.9372 ms .. 4.4751 ms` | `candidate` only; facade gate still required |
+| Resident strict Metal RGB8 512 | `181.32 ms .. 181.77 ms` | `blocked` |
+| CPU classic RGB8 1024 | `53.524 ms .. 61.601 ms` | Baseline for classic only |
+| CPU HTJ2K RGB8 1024 | `22.038 ms .. 24.093 ms` | Baseline |
+| Auto host Metal-buffer HTJ2K RGB8 1024 | `11.661 ms .. 12.877 ms` | `candidate` only; facade gate still required |
+| Resident strict Metal RGB8 1024 | `391.10 ms .. 392.37 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 16 | `101.03 ms .. 101.45 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 64 | `123.43 ms .. 124.06 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 128 | `139.15 ms .. 140.17 ms` | `blocked` |
+
+Resident RCA profile rows:
+
+| Tile count | Code blocks | Coefficient prep observed | Command encode observed | Sync wait observed | RCA |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 16 | 3072 | `226 us .. 740 us`, median `327 us` | HT median `8 us`, packet prep `3 us`, packetization `2 us`, assembly `1 us` | `99.872 ms .. 103.931 ms`, median `100.316 ms` | sync/wait dominates |
+| 64 | 12288 | `660 us .. 1.644 ms`, median `1.062 ms` | HT median `8 us`, packet prep `3 us`, packetization `2 us`, assembly `1 us` | `120.499 ms .. 136.677 ms`, median `121.361 ms` | sync/wait dominates |
+| 128 | 24576 | `1.337 ms .. 2.636 ms`, median `2.145 ms` | HT median `8 us`, packet prep `4 us`, packetization `2 us`, assembly `1 us` | `134.258 ms .. 161.596 ms`, median `135.291 ms` | sync/wait dominates |
+
+Decision:
+
+- Keep Metal HTJ2K encode default routing `blocked` for RGB8/RGBA8 512/1024.
+- Keep DWT and HT code-block Metal kernels as GPU-shaped `candidate` stages.
+- Reclassify standalone RGB RCT as CPU-shaped for the measured 512/1024/2048
+  rows until a fused path clears the stage gate.
+- Keep resident strict Metal codestream assembly `blocked`; the measured command
+  encode buckets are tiny compared with resident sync/wait time.
+
+RCA:
+
+- Root cause class: resident synchronization / route-composition overhead.
+- Evidence: isolated DWT and HT code-block rows are faster on Metal, but strict
+  resident end-to-end encode and the public facade rows lose badly.
+- The new resident profile rows narrow the loss: HT command encoding,
+  packet-block prep, packetization, and codestream assembly command encoding are
+  microsecond-scale, while `sync_wait_us` is roughly `100 ms .. 162 ms`.
+- Next optimization target: reduce resident sync boundaries and codestream
+  completion waits before reconsidering default Metal encode routing.
+
+## 2026-05-31 CUDA HTJ2K Decode RGB/RGBA Rerun Status
+
+Evidence:
+
+- Commit: `05ecdec`
+- Host: same Apple Metal host as the Metal rerun; this is not a CUDA runner.
+- CUDA runtime: `nvidia-smi` unavailable on this host.
+- Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
+- Commands:
+  - `command -v nvidia-smi && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader`
+  - `cargo check -p signinum-j2k-cuda --features cuda-runtime --benches --tests`
+  - `cargo clippy -p signinum-j2k-cuda --features cuda-runtime --all-targets -- -D warnings`
+  - `cargo bench -p signinum-j2k-cuda --features cuda-runtime --bench htj2k_decode --no-run`
+  - `cargo bench -p signinum --bench facade --features cuda-runtime --no-run`
+
+Decision:
+
+- No CUDA RGB/RGBA decode gate decision is recorded from this host.
+- The CUDA code compiles and lints with `cuda-runtime`, and both relevant bench
+  binaries build, but measured CUDA Criterion rows still require a self-hosted
+  NVIDIA CUDA runner.
+- Do not copy the earlier CUDA gray8 numbers below into the new RGB/RGBA gate.
+
+RCA:
+
+- Not measured in this rerun. Run the planned `SIGNINUM_REQUIRE_CUDA_BENCH=1`
+  commands on a CUDA runner before classifying the RGB/RGBA decode rows.
+
 ## 2026-05-31 Metal RGB8 HTJ2K Encode
 
 Evidence:
