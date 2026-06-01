@@ -6,8 +6,8 @@ use signinum_core::{DeviceSubmission, PixelFormat};
 #[cfg(target_os = "macos")]
 use signinum_j2k::J2kProgressionOrder;
 use signinum_j2k::{
-    encode_j2k_lossless, EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, J2kLosslessSamples,
+    encode_j2k_lossless, encode_j2k_lossless_with_accelerator, EncodeBackendPreference,
+    J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 use signinum_j2k_metal::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
@@ -106,16 +106,38 @@ fn bench_encode_stages(c: &mut Criterion) {
 
         #[cfg(target_os = "macos")]
         if metal_encode_available() {
-            let session = MetalBackendSession::system_default().expect("Metal session");
-            let buffer = private_buffer_with_bytes(&session, &pixels);
-            let metal_options = J2kLosslessEncodeOptions::default()
-                .with_backend(EncodeBackendPreference::RequireDevice)
-                .with_validation(J2kEncodeValidation::External);
             let auto_options = J2kLosslessEncodeOptions::default()
                 .with_backend(EncodeBackendPreference::Auto)
                 .with_validation(J2kEncodeValidation::External);
             let auto_ht_options =
                 auto_options.with_block_coding_mode(J2kBlockCodingMode::HighThroughput);
+            encode.bench_with_input(
+                BenchmarkId::new("auto_hybrid_htj2k", dim),
+                &pixels,
+                |b, pixels| {
+                    b.iter(|| {
+                        let samples = J2kLosslessSamples::new(pixels, dim, dim, 3, 8, false)
+                            .expect("valid RGB8 samples");
+                        let mut accelerator = MetalEncodeStageAccelerator::for_auto_host_output();
+                        let encoded = encode_j2k_lossless_with_accelerator(
+                            samples,
+                            &auto_ht_options,
+                            signinum_core::BackendKind::Metal,
+                            &mut accelerator,
+                        )
+                        .expect("Auto hybrid HTJ2K lossless encode");
+                        assert!(accelerator.forward_dwt53_dispatches() > 0);
+                        assert!(accelerator.ht_code_block_dispatches() > 0);
+                        assert_eq!(accelerator.packetization_dispatches(), 0);
+                        encoded
+                    });
+                },
+            );
+            let session = MetalBackendSession::system_default().expect("Metal session");
+            let buffer = private_buffer_with_bytes(&session, &pixels);
+            let metal_options = J2kLosslessEncodeOptions::default()
+                .with_backend(EncodeBackendPreference::RequireDevice)
+                .with_validation(J2kEncodeValidation::External);
             // This single-tile host-output report exposes per-tile residency flags
             // but not MetalLosslessEncodeBatchStats. RCA stderr emission is
             // intentionally limited to the resident batch row below, where the
