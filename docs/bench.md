@@ -132,7 +132,7 @@ SIGNINUM_REQUIRE_CUDA_RUNTIME=1 \
 SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT=1 \
 SIGNINUM_REQUIRE_CUDA_BENCH=1 \
 SIGNINUM_J2K_PROFILE_STAGES=summary \
-SIGNINUM_J2K_CUDA_TRACE=target/cuda_htj2k_decode_trace.json \
+SIGNINUM_J2K_CUDA_TRACE="$(pwd)/target/cuda_htj2k_decode_trace.json" \
 samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
   cargo bench -p signinum-j2k-cuda --bench htj2k_decode \
   --features cuda-runtime,cuda-profiling -- \
@@ -152,6 +152,8 @@ before invoking `samply` when the runner permits direct writes or passwordless
 sudo. If it cannot lower the setting, it records `samply_status=blocked` and
 still runs the decode bench with stage summaries and CUDA trace export. A local
 non-root run needs the same kernel setting for a real `samply` CPU profile.
+Use an absolute `SIGNINUM_J2K_CUDA_TRACE` path because Cargo may run the bench
+binary with the package directory as its working directory.
 
 Direct nvJPEG2000 decode comparison command:
 
