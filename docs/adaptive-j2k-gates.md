@@ -125,6 +125,212 @@ The `nvidia-baseline-comparison` artifact must include:
 Record the direct decode JSON/CSV rows alongside Criterion decode rows when
 reviewing CUDA HTJ2K decode gates.
 
+## 2026-06-01 Local CPU / Metal Profiling Checkpoint
+
+Evidence:
+
+- Base commit before this change set: `7100366`.
+- Scope: local working tree with Metal Auto ROI+scaled batch classification,
+  known-repeated hybrid color batching, resident timestamp-query dedupe, and
+  resident HTJ2K external-validation final-wait coalescing.
+- Supersedes the older `2026-05-31 Metal Resident HTJ2K Encode RCA Rerun`
+  rows below only for overlapping local Metal rows on this working tree.
+- Host: MacBook Pro `Mac16,8`, macOS 26.5 build 25F71, Darwin 25.5.0,
+  arm64, Apple M4 Pro 12-core CPU, 16-core GPU, 48 GiB RAM, Metal 4.
+- Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
+- Commands:
+  - `samply record --save-only -o target/j2k_cpu_public_api_samply.json.gz -- cargo bench -p signinum-j2k --bench public_api -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_facade_samply.json.gz -- cargo bench -p signinum --bench facade --features metal -- facade_j2k_htj2k_encode_backend_speed_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_htj2k_encode_samply.json.gz -- cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 2>&1 | tee target/metal_htj2k_encode_profile.log`
+  - `xcrun xctrace record --template 'Time Profiler' --output target/apple-traces/j2k_cpu_public_api_time_profile.trace --time-limit 45s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k --bench public_api -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `xcrun xctrace record --template 'Time Profiler' --output target/apple-traces/metal_htj2k_encode_time_profile.trace --time-limit 60s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `xcrun xctrace record --template 'Metal System Trace' --output target/apple-traces/metal_htj2k_encode_metal_system.trace --time-limit 60s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `cargo instruments -t time -p signinum-j2k --bench public_api --profile bench -o target/apple-traces/cargo_instruments_j2k_cpu_public_api_time.trace --time-limit 45000 --no-open -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `cargo instruments -t time -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_time.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `cargo instruments -t 'Metal System Trace' -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo instruments -t time -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_time_after_wait.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo instruments -t 'Metal System Trace' -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system_after_wait.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `cargo instruments -t time -p signinum-j2k --bench public_api --profile bench -o target/apple-traces/cargo_instruments_j2k_cpu_public_api_time_after_wait.trace --time-limit 45000 --no-open -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 2>&1 | tee target/metal_htj2k_encode_profile_after_wait.log`
+  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_htj2k_encode_after_wait_samply.json.gz -- cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+- Local artifacts:
+  - `target/j2k_cpu_public_api_samply.json.gz`
+  - `target/metal_facade_samply.json.gz`
+  - `target/metal_htj2k_encode_samply.json.gz`
+  - `target/metal_htj2k_encode_profile.log`
+  - `target/apple-traces/j2k_cpu_public_api_time_profile.trace`
+  - `target/apple-traces/metal_htj2k_encode_time_profile.trace`
+  - `target/apple-traces/metal_htj2k_encode_metal_system.trace`
+  - `target/apple-traces/cargo_instruments_j2k_cpu_public_api_time.trace`
+  - `target/apple-traces/cargo_instruments_metal_htj2k_encode_time.trace`
+  - `target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system.trace`
+  - `target/apple-traces/cargo_instruments_j2k_cpu_public_api_time_after_wait.trace`
+  - `target/apple-traces/cargo_instruments_metal_htj2k_encode_time_after_wait.trace`
+  - `target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system_after_wait.trace`
+  - `target/metal_htj2k_encode_profile_after_wait.log`
+  - `target/metal_htj2k_encode_after_wait_samply.json.gz`
+- CPU public API `samply` metadata has `symbolicated=false`; record the
+  artifact existence only, not hotspot conclusions.
+- `cargo-instruments` was installed after the direct `xctrace` run and
+  succeeded when invoked from a TTY. The non-TTY attempt failed because
+  `xctrace` could not write the launched target's stdout path.
+- CUDA runner profiling is intentionally last for this slice; the local CPU and
+  CPU/Metal gates above are the active evidence set before launching more CUDA
+  workflow work.
+
+End-to-end facade gate:
+
+| Shape | CPU-only | Adaptive | Strict Metal | Decision |
+| --- | ---: | ---: | ---: | --- |
+| RGB8 512 HTJ2K encode | `4.4459 ms .. 4.8904 ms` | `4.5165 ms .. 4.8961 ms` | `34.123 ms .. 34.444 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGB8 1024 HTJ2K encode | `20.365 ms .. 22.130 ms` | `20.352 ms .. 21.915 ms` | `128.410 ms .. 128.823 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGBA8 512 HTJ2K encode | `5.7268 ms .. 6.1588 ms` | `5.7657 ms .. 6.0689 ms` | `39.148 ms .. 39.746 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+| RGBA8 1024 HTJ2K encode | `26.998 ms .. 28.794 ms` | `26.820 ms .. 28.057 ms` | `150.024 ms .. 152.239 ms` | `blocked`: adaptive does not clear `10% + noise`; strict Metal loses |
+
+Stage Criterion evidence:
+
+| Stage / Shape | CPU | Metal | Gate |
+| --- | ---: | ---: | --- |
+| RCT 512 | `94.00 us .. 98.97 us` | `210.25 us .. 259.44 us` | `reclassified-cpu` |
+| RCT 1024 | `366.76 us .. 396.14 us` | `503.98 us .. 601.05 us` | `reclassified-cpu` |
+| RCT 2048 | `1.6281 ms .. 1.6972 ms` | `1.8508 ms .. 2.0250 ms` | `reclassified-cpu` |
+| DWT 512 | `1.0664 ms .. 1.1011 ms` | `238.00 us .. 272.89 us` | `candidate` |
+| DWT 1024 | `5.4354 ms .. 5.8022 ms` | `652.74 us .. 727.42 us` | `candidate` |
+| DWT 2048 | `26.650 ms .. 29.742 ms` | `2.7258 ms .. 2.9753 ms` | `candidate` |
+| HT code blocks, 192 | `7.6594 ms .. 8.4861 ms` | `3.0452 ms .. 3.1798 ms` | `candidate` |
+| HT code blocks, 768 | `30.101 ms .. 31.390 ms` | `6.3754 ms .. 7.0652 ms` | `candidate` |
+
+Encode-path evidence:
+
+| Route / Shape | Criterion interval | Gate |
+| --- | ---: | --- |
+| CPU classic RGB8 512 | `14.133 ms .. 28.089 ms` | Baseline for classic only |
+| CPU HTJ2K RGB8 512 | `5.0183 ms .. 5.3946 ms` | Baseline |
+| Auto host Metal-buffer HTJ2K RGB8 512 | `3.8664 ms .. 4.5909 ms` | `candidate` only; facade gate still required |
+| Resident strict Metal RGB8 512 | `180.400 ms .. 181.283 ms` | `blocked` |
+| CPU classic RGB8 1024 | `61.366 ms .. 73.021 ms` | Baseline for classic only |
+| CPU HTJ2K RGB8 1024 | `24.294 ms .. 27.732 ms` | Baseline |
+| Auto host Metal-buffer HTJ2K RGB8 1024 | `12.403 ms .. 14.262 ms` | `candidate` only; facade gate still required |
+| Resident strict Metal RGB8 1024 | `399.080 ms .. 407.915 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 16 | `103.246 ms .. 105.282 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 64 | `126.772 ms .. 130.034 ms` | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 128 | `142.631 ms .. 147.487 ms` | `blocked` |
+
+Post final-wait coalescing evidence:
+
+The external-validation resident HTJ2K batch path now waits once on the last
+chunk command buffer before harvesting all chunk status buffers in order. The
+CPU-roundtrip validation path deliberately keeps per-chunk waits so validation
+readback can overlap later GPU chunks.
+
+| Route / Shape | Criterion interval | Criterion comparison | Gate |
+| --- | ---: | --- | --- |
+| Resident strict Metal RPCL RGB8 512 batch 16 | `98.229 ms .. 98.496 ms` | `-1.3895%`, within noise | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 64 | `118.77 ms .. 119.85 ms` | `-3.2704%`, improved | `blocked` |
+| Resident strict Metal RPCL RGB8 512 batch 128 | `134.00 ms .. 138.49 ms` | `-2.1376%`, no statistically significant change | `blocked` |
+
+Resident RCA profile rows:
+
+Raw `sync_wait_us` profile fields are converted to milliseconds in this table.
+
+| Tile count | Code blocks | Coefficient prep observed | Command encode observed | Sync wait observed | RCA |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 16 | 3072 | `194 us .. 3.493 ms`, median `218 us` | HT median `6 us`, packet prep `2 us`, packetization `2 us`, assembly `1 us` | `101.071 ms .. 130.149 ms`, median `102.377 ms` | sync/wait dominates |
+| 64 | 12288 | `652 us .. 1.633 ms`, median `697 us` | HT median `6 us`, packet prep `2 us`, packetization `2 us`, assembly `1 us` | `123.365 ms .. 136.864 ms`, median `124.729 ms` | sync/wait dominates |
+| 128 | 24576 | `1.222 ms .. 2.395 ms`, median `1.331 ms` | HT median `6 us`, packet prep `2 us`, packetization `2 us`, assembly `1 us` | `137.544 ms .. 163.802 ms`, median `139.585 ms` | sync/wait dominates |
+
+Apple-native trace cross-check:
+
+| Tool / Template | Target slice | Trace artifact | Criterion interval observed during trace |
+| --- | --- | --- | --- |
+| `xctrace` / `Time Profiler` | CPU public encode matrix | `target/apple-traces/j2k_cpu_public_api_time_profile.trace` | RGB8 512 classic `9.5540 ms .. 11.605 ms`; HTJ2K `4.3153 ms .. 4.8038 ms`; classic roundtrip `17.714 ms .. 20.453 ms` |
+| `xctrace` / `Time Profiler` | Resident Metal RPCL RGB8 512 batch | `target/apple-traces/metal_htj2k_encode_time_profile.trace` | batch 16 `98.159 ms .. 99.739 ms`; batch 64 `118.99 ms .. 121.96 ms`; batch 128 `133.74 ms .. 137.27 ms` |
+| `xctrace` / `Metal System Trace` | Resident Metal RPCL RGB8 512 batch | `target/apple-traces/metal_htj2k_encode_metal_system.trace` | batch 16 `98.769 ms .. 100.82 ms`; batch 64 `121.70 ms .. 124.93 ms`; batch 128 `137.53 ms .. 141.23 ms` |
+| `cargo-instruments` / `Time Profiler` | CPU public encode matrix | `target/apple-traces/cargo_instruments_j2k_cpu_public_api_time.trace` | trace captured; wrapper reported all three filtered rows `Success` |
+| `cargo-instruments` / `Time Profiler` | Resident Metal RPCL RGB8 512 batch | `target/apple-traces/cargo_instruments_metal_htj2k_encode_time.trace` | trace captured; wrapper reported batch 16/64/128 rows `Success` |
+| `cargo-instruments` / `Metal System Trace` | Resident Metal RPCL RGB8 512 batch | `target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system.trace` | trace captured; wrapper reported batch 16/64/128 rows `Success` |
+| `cargo-instruments` / `Time Profiler` | CPU public encode matrix, after final-wait coalescing | `target/apple-traces/cargo_instruments_j2k_cpu_public_api_time_after_wait.trace` | trace captured; wrapper reported all three filtered rows `Success` |
+| `cargo-instruments` / `Time Profiler` | Resident Metal RPCL RGB8 512 batch, after final-wait coalescing | `target/apple-traces/cargo_instruments_metal_htj2k_encode_time_after_wait.trace` | trace captured; stage sync wait still dominates: 16 `112.444 ms`, 64 `134.916 ms`, 128 `155.133 ms` |
+| `cargo-instruments` / `Metal System Trace` | Resident Metal RPCL RGB8 512 batch, after final-wait coalescing | `target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system_after_wait.trace` | trace captured; stage sync wait still dominates: 16 `110.352 ms`, 64 `136.013 ms`, 128 `166.538 ms` |
+
+Decision:
+
+- Keep Metal HTJ2K encode default routing `blocked` for RGB8/RGBA8 512/1024.
+- Keep DWT and HT code-block Metal kernels as GPU-shaped `candidate` stages.
+- Reclassify standalone RGB RCT as CPU-shaped for the measured 512/1024/2048
+  rows until a fused path clears the stage gate.
+- Keep resident strict Metal codestream assembly `blocked`; final-wait
+  coalescing trims redundant host waits for external-validation chunks but does
+  not change the gate. The measured command encode buckets are microsecond-scale
+  while `sync_wait_us` remains roughly `97 ms .. 166 ms` across after-change
+  Criterion and `cargo-instruments` runs.
+
+## 2026-06-01 CUDA HTJ2K Decode RCA and NVIDIA Baseline Addendum
+
+Evidence:
+
+- Commit: `7100366`
+- Workflow:
+  <https://github.com/frames-sg/signinum/actions/runs/26733997559>
+- Result: success
+- Branch: `codex/cuda-quality-ht-rewrite`
+- Supersedes no encode rows; this is an RCA addendum to the CUDA decode and
+  NVIDIA baseline evidence.
+- CUDA `samply` status: `blocked`, `perf_event_paranoid=2`, passwordless sudo
+  unavailable, and `/proc/sys/kernel/perf_event_paranoid` not writable.
+- Artifacts:
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_profile.log`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_trace.json`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_samply_status.txt`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/nvidia-baseline-comparison/decode_compare.csv`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/nvidia-baseline-comparison/decode_compare.json`
+
+CUDA HTJ2K decode profile gate:
+
+| Decode Shape | CPU | CUDA | Gate |
+| --- | ---: | ---: | --- |
+| Full tile gray8 512 | `3.0688 ms .. 3.0862 ms` | `198.30 ms .. 201.11 ms` | `blocked` |
+| Full tile RGB8 512 | `8.7321 ms .. 8.8589 ms` | `205.15 ms .. 210.26 ms` | `blocked` |
+| Full tile RGBA8 512 | `10.896 ms .. 10.943 ms` | `211.20 ms .. 214.93 ms` | `blocked` |
+| ROI gray8 256 | `1.9687 ms .. 2.0143 ms` | `197.74 ms .. 201.99 ms` | `blocked` |
+| ROI RGB8 256 | `5.4650 ms .. 5.5199 ms` | `209.05 ms .. 214.01 ms` | `blocked` |
+| ROI RGBA8 256 | `5.4854 ms .. 5.5260 ms` | `208.73 ms .. 213.34 ms` | `blocked` |
+| Scaled gray8 256 | `652.04 us .. 653.83 us` | `192.99 ms .. 198.82 ms` | `blocked` |
+| Scaled RGB8 256 | `2.0228 ms .. 2.0470 ms` | `197.41 ms .. 200.20 ms` | `blocked` |
+| Scaled RGBA8 256 | `2.0675 ms .. 2.0862 ms` | `196.98 ms .. 200.12 ms` | `blocked` |
+| ROI-scaled gray8 128 | `331.89 us .. 332.94 us` | `199.34 ms .. 200.17 ms` | `blocked` |
+| ROI-scaled RGB8 128 | `975.39 us .. 988.13 us` | `200.83 ms .. 203.56 ms` | `blocked` |
+| ROI-scaled RGBA8 128 | `990.97 us .. 1.0121 ms` | `198.95 ms .. 200.73 ms` | `blocked` |
+| Tile batch gray8 batch 8 | `24.571 ms .. 24.609 ms` | `253.64 ms .. 257.56 ms` | `blocked` |
+| Tile batch RGB8 batch 8 | `87.860 ms .. 89.131 ms` | `308.00 ms .. 310.91 ms` | `blocked` |
+| Tile batch RGBA8 batch 8 | `91.525 ms .. 91.917 ms` | `298.31 ms .. 301.23 ms` | `blocked` |
+
+CUDA profile summary:
+
+| Path | Count | Internal timing summary | RCA |
+| --- | ---: | --- | --- |
+| CUDA HTJ2K decode | 665 | `stage_sum_us_avg=20680`, `wall_total_us_avg=80036`, `ht_cleanup_us_avg=13713`, `h2d_us_avg=3634`, `idwt_us_avg=1658` | device stages do not explain the full wall-time floor; route/session/sync overhead still dominates |
+| CPU decode | 31252 | `total_us_avg=1355`, `codeblock_us_avg=870`, `idwt_us_avg=278`, `store_us_avg=45` | CPU remains the active default route for measured shapes |
+
+Direct NVIDIA nvJPEG2000 comparator:
+
+| Fixture | Signinum CPU | Signinum strict CUDA | nvJPEG2000 wall | nvJPEG2000 GPU | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `nvidia_htj2k:tile_00000.jpg` | `4.006072 ms` | `167.037675 ms` | `0.840529 ms` | `0.720896 ms` | `blocked`: Signinum CUDA route loses to CPU and NVIDIA |
+| `nvidia_htj2k:tile_00001.jpg` | `3.801020 ms` | `168.412187 ms` | `0.801779 ms` | `0.691200 ms` | `blocked`: Signinum CUDA route loses to CPU and NVIDIA |
+
+Decision:
+
+- Keep CUDA HTJ2K decode default routing `blocked` for every measured full,
+  ROI, scaled, ROI-scaled, and batch decode shape.
+- Keep direct NVIDIA comparator evidence internal; it proves the RTX 4070
+  runner can decode the same generated HTJ2K inputs quickly through
+  nvJPEG2000, so the current Signinum CUDA loss is implementation/route debt,
+  not a runner capability limit.
+- A real CUDA `samply` CPU profile remains blocked until the runner can set
+  `kernel.perf_event_paranoid <= 1` or use passwordless sudo.
+
 ## 2026-05-31 Metal Resident HTJ2K Encode RCA Rerun
 
 Evidence:

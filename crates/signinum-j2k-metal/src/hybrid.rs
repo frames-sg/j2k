@@ -215,6 +215,33 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device(
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
 }
 
+pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device(
+    input: &[u8],
+    roi: Rect,
+    scale: Downscale,
+    fmt: PixelFormat,
+    count: usize,
+) -> Result<Vec<Surface>, Error> {
+    if count == 0 {
+        return Err(Error::MetalKernel {
+            message: "J2K MetalDirect repeated region-scaled color batch requires count > 0"
+                .to_string(),
+        });
+    }
+    if !matches!(
+        fmt,
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
+    ) {
+        return Err(Error::MetalKernel {
+            message: format!("J2K MetalDirect region-scaled color batch does not support {fmt:?}"),
+        });
+    }
+
+    let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
+    let plans = vec![plan; count];
+    crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
+}
+
 fn repeated_region_scaled_request(
     requests: &[(Arc<[u8]>, Rect, Downscale)],
 ) -> Option<(&Arc<[u8]>, Rect, Downscale)> {
@@ -373,4 +400,52 @@ fn build_region_scaled_native_image(
 
 fn is_direct_region_scaled_runtime_fallback_error(error: &Error) -> bool {
     crate::is_direct_runtime_fallback_error(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_repeated_region_scaled_color_batch_builds_one_plan() {
+        reset_region_scaled_color_plan_builds_for_test();
+        let input = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
+        let roi = Rect {
+            x: 0,
+            y: 0,
+            w: 64,
+            h: 64,
+        };
+
+        let result = decode_repeated_region_scaled_color_batch_direct_to_device(
+            input.as_ref(),
+            roi,
+            Downscale::Half,
+            PixelFormat::Rgb8,
+            4,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(region_scaled_color_plan_builds_for_test(), 1);
+    }
+
+    #[test]
+    fn known_repeated_region_scaled_color_batch_rejects_zero_count() {
+        reset_region_scaled_color_plan_builds_for_test();
+        let result = decode_repeated_region_scaled_color_batch_direct_to_device(
+            &[1_u8, 2, 3, 4],
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 64,
+            },
+            Downscale::Half,
+            PixelFormat::Rgb8,
+            0,
+        );
+
+        assert!(matches!(result, Err(Error::MetalKernel { .. })));
+        assert_eq!(region_scaled_color_plan_builds_for_test(), 0);
+    }
 }

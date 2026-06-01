@@ -2603,9 +2603,22 @@ fn wait_submitted_resident_lossless_buffer_encode_batch(
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => {}
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => {
             outcomes.reserve(chunks.iter().map(|chunk| chunk.metadatas.len()).sum());
-            for chunk in chunks {
+            if submitted.options.validation == J2kEncodeValidation::External
+                && submitted.options.block_coding_mode == J2kBlockCodingMode::HighThroughput
+                && chunks.len() > 1
+            {
                 let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
-                let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
+                let mut chunk_metadatas = Vec::with_capacity(chunks.len());
+                let mut pendings = Vec::with_capacity(chunks.len());
+                for chunk in chunks {
+                    chunk_metadatas.push((
+                        chunk.metadatas,
+                        chunk.prepare_durations,
+                        chunk.batch_started,
+                    ));
+                    pendings.push(chunk.pending);
+                }
+                let batches = compute::wait_resident_lossless_codestream_batches(pendings)?;
                 if let Some(started) = wait_started {
                     let elapsed = started.elapsed();
                     submitted.stats.stage_stats.codestream_wait_duration = submitted
@@ -2618,30 +2631,76 @@ fn wait_submitted_resident_lossless_buffer_encode_batch(
                         .stage_stats
                         .sync_wait_duration
                         .saturating_add(elapsed);
-                    submitted
-                        .stats
-                        .stage_stats
-                        .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
                 }
-                let codestreams = batch.codestreams;
-                let batch_duration =
-                    duration_share(chunk.batch_started.elapsed(), codestreams.len());
-                for ((metadata, prepare_duration), codestream) in chunk
-                    .metadatas
-                    .into_iter()
-                    .zip(chunk.prepare_durations)
-                    .zip(codestreams)
+                for ((metadatas, prepare_durations, batch_started), batch) in
+                    chunk_metadatas.into_iter().zip(batches)
                 {
-                    let finished = finished_resident_lossless_buffer_encode(
-                        metadata,
-                        codestream,
-                        prepare_duration.saturating_add(batch_duration),
-                    );
-                    outcomes.push(validate_finished_resident_lossless_buffer_encode(
-                        finished,
-                        submitted.options,
-                        &submitted.session,
-                    )?);
+                    if compute::metal_profile_stages_enabled() {
+                        submitted
+                            .stats
+                            .stage_stats
+                            .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
+                    }
+                    let codestreams = batch.codestreams;
+                    let batch_duration = duration_share(batch_started.elapsed(), codestreams.len());
+                    for ((metadata, prepare_duration), codestream) in metadatas
+                        .into_iter()
+                        .zip(prepare_durations)
+                        .zip(codestreams)
+                    {
+                        let finished = finished_resident_lossless_buffer_encode(
+                            metadata,
+                            codestream,
+                            prepare_duration.saturating_add(batch_duration),
+                        );
+                        outcomes.push(validate_finished_resident_lossless_buffer_encode(
+                            finished,
+                            submitted.options,
+                            &submitted.session,
+                        )?);
+                    }
+                }
+            } else {
+                for chunk in chunks {
+                    let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
+                    let batch = compute::wait_resident_lossless_codestream_batch(chunk.pending)?;
+                    if let Some(started) = wait_started {
+                        let elapsed = started.elapsed();
+                        submitted.stats.stage_stats.codestream_wait_duration = submitted
+                            .stats
+                            .stage_stats
+                            .codestream_wait_duration
+                            .saturating_add(elapsed);
+                        submitted.stats.stage_stats.sync_wait_duration = submitted
+                            .stats
+                            .stage_stats
+                            .sync_wait_duration
+                            .saturating_add(elapsed);
+                        submitted
+                            .stats
+                            .stage_stats
+                            .add_assign(MetalLosslessEncodeStageStats::from(batch.stage_stats));
+                    }
+                    let codestreams = batch.codestreams;
+                    let batch_duration =
+                        duration_share(chunk.batch_started.elapsed(), codestreams.len());
+                    for ((metadata, prepare_duration), codestream) in chunk
+                        .metadatas
+                        .into_iter()
+                        .zip(chunk.prepare_durations)
+                        .zip(codestreams)
+                    {
+                        let finished = finished_resident_lossless_buffer_encode(
+                            metadata,
+                            codestream,
+                            prepare_duration.saturating_add(batch_duration),
+                        );
+                        outcomes.push(validate_finished_resident_lossless_buffer_encode(
+                            finished,
+                            submitted.options,
+                            &submitted.session,
+                        )?);
+                    }
                 }
             }
         }
@@ -5551,6 +5610,7 @@ mod tests {
             },
         ];
 
+        compute::reset_resident_gpu_timestamp_queries_for_test();
         let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
             &tiles,
             &lossless_options! {
@@ -5566,6 +5626,11 @@ mod tests {
             compute::ht_batch_coefficient_copy_blits_for_test(),
             0,
             "HTJ2K resident batch prep should write directly into the batch coefficient buffer"
+        );
+        assert_eq!(
+            compute::resident_gpu_timestamp_queries_for_test(),
+            2,
+            "HTJ2K resident batch should query shared prepare command buffer timestamps once"
         );
         assert_eq!(
             encoded[0].encoded.codestream_buffer.as_ptr(),
@@ -5861,6 +5926,7 @@ mod tests {
             validation: J2kEncodeValidation::External,
         };
 
+        compute::reset_resident_codestream_command_buffer_waits_for_test();
         let serial = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
             &tiles,
             &options,
@@ -5871,6 +5937,35 @@ mod tests {
             },
         )
         .expect("serial Metal HTJ2K batch");
+        assert_eq!(
+            compute::resident_codestream_command_buffer_waits_for_test(),
+            1,
+            "multi-chunk HT batch should wait once before harvesting completed chunks"
+        );
+
+        let cpu_validated_options = lossless_options! {
+            backend: EncodeBackendPreference::RequireDevice,
+            block_coding_mode: J2kBlockCodingMode::HighThroughput,
+            validation: J2kEncodeValidation::CpuRoundTrip,
+        };
+        compute::reset_resident_codestream_command_buffer_waits_for_test();
+        let cpu_validated = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
+            &tiles,
+            &cpu_validated_options,
+            &session,
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: Some(1),
+                gpu_encode_memory_budget_bytes: Some(1024 * 1024 * 1024),
+            },
+        )
+        .expect("CPU-validated Metal HTJ2K batch");
+        assert_eq!(cpu_validated.outcomes.len(), inputs.len());
+        assert_eq!(
+            compute::resident_codestream_command_buffer_waits_for_test(),
+            inputs.len(),
+            "CPU roundtrip validation should keep per-chunk waits to preserve overlap"
+        );
+
         let parallel = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
             &tiles,
             &options,

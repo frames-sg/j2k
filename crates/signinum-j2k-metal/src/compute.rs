@@ -15,7 +15,7 @@ use std::{
 
 #[cfg(target_os = "macos")]
 use metal::{
-    foreign_types::ForeignType,
+    foreign_types::{ForeignType, ForeignTypeRef},
     objc::{runtime::Sel, Message},
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions,
     ComputeCommandEncoderRef, ComputePipelineState, Device, MTLCommandQueue, MTLResourceOptions,
@@ -63,6 +63,10 @@ static HYBRID_CPU_DECODE_INPUTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static FLATTENED_HYBRID_CPU_DECODE_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
+static RESIDENT_GPU_TIMESTAMP_QUERIES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(target_os = "macos", test))]
+static RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(target_os = "macos", test))]
 std::thread_local! {
     static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
@@ -79,6 +83,26 @@ pub(crate) fn reset_ht_batch_coefficient_copy_blits_for_test() {
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
     HT_BATCH_COEFFICIENT_COPY_BLITS.load(Ordering::Relaxed)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_resident_gpu_timestamp_queries_for_test() {
+    RESIDENT_GPU_TIMESTAMP_QUERIES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn resident_gpu_timestamp_queries_for_test() -> usize {
+    RESIDENT_GPU_TIMESTAMP_QUERIES.load(Ordering::Relaxed)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_resident_codestream_command_buffer_waits_for_test() {
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn resident_codestream_command_buffer_waits_for_test() -> usize {
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.load(Ordering::Relaxed)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -8455,7 +8479,7 @@ struct PreparedLosslessBatchTile {
 pub(crate) fn wait_resident_lossless_codestream(
     pending: J2kPendingResidentLosslessCodestream,
 ) -> Result<J2kResidentLosslessCodestream, Error> {
-    pending.command_buffer.wait_until_completed();
+    wait_resident_codestream_command_buffer(&pending.command_buffer);
     let gpu_duration = completed_command_buffers_gpu_duration(
         &pending.retained_command_buffers,
         &pending.command_buffer,
@@ -8495,7 +8519,36 @@ pub(crate) fn wait_resident_lossless_codestream(
 pub(crate) fn wait_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
-    pending.command_buffer.wait_until_completed();
+    wait_resident_codestream_command_buffer(&pending.command_buffer);
+    finish_completed_resident_lossless_codestream_batch(pending)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn wait_resident_lossless_codestream_batches(
+    pendings: Vec<J2kPendingResidentLosslessCodestreamBatch>,
+) -> Result<Vec<J2kResidentLosslessCodestreamBatchResult>, Error> {
+    if let Some(last) = pendings.last() {
+        // These command buffers are submitted on the same Metal queue before
+        // harvest, so completing the final one implies earlier chunks are done.
+        wait_resident_codestream_command_buffer(&last.command_buffer);
+    }
+    pendings
+        .into_iter()
+        .map(finish_completed_resident_lossless_codestream_batch)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn wait_resident_codestream_command_buffer(command_buffer: &CommandBufferRef) {
+    #[cfg(test)]
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.fetch_add(1, Ordering::Relaxed);
+    command_buffer.wait_until_completed();
+}
+
+#[cfg(target_os = "macos")]
+fn finish_completed_resident_lossless_codestream_batch(
+    pending: J2kPendingResidentLosslessCodestreamBatch,
+) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
     let gpu_duration = completed_command_buffers_gpu_duration(
         &pending.retained_command_buffers,
         &pending.command_buffer,
@@ -8564,15 +8617,27 @@ fn completed_command_buffers_gpu_duration(
     final_buffer: &CommandBufferRef,
 ) -> Option<Duration> {
     let mut total = Duration::ZERO;
+    let mut seen = Vec::with_capacity(retained.len().saturating_add(1));
     for command_buffer in retained {
+        let ptr = command_buffer.as_ptr();
+        if seen.contains(&ptr) {
+            continue;
+        }
+        seen.push(ptr);
         total = total.saturating_add(completed_command_buffer_gpu_duration(command_buffer)?);
     }
-    total = total.saturating_add(completed_command_buffer_gpu_duration(final_buffer)?);
+    let final_ptr = final_buffer.as_ptr();
+    if !seen.contains(&final_ptr) {
+        total = total.saturating_add(completed_command_buffer_gpu_duration(final_buffer)?);
+    }
     Some(total)
 }
 
 #[cfg(target_os = "macos")]
 fn completed_command_buffer_gpu_duration(command_buffer: &CommandBufferRef) -> Option<Duration> {
+    #[cfg(test)]
+    RESIDENT_GPU_TIMESTAMP_QUERIES.fetch_add(1, Ordering::Relaxed);
+
     let start: f64 = unsafe {
         command_buffer
             .send_message::<(), f64>(Sel::register("GPUStartTime"), ())

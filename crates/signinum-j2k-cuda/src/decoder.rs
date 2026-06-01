@@ -11,18 +11,15 @@ use signinum_core::{
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::{
     CudaDeviceBuffer, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeResources,
-    CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables, CudaJ2kIdwtJob, CudaJ2kInverseMctJob,
-    CudaJ2kRect, CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job,
-    CudaJ2kStoreRgb8Job,
+    CudaHtj2kDecodeTableResources, CudaJ2kIdwtJob, CudaJ2kInverseMctJob, CudaJ2kRect,
+    CudaJ2kStoreGray16Job, CudaJ2kStoreGray8Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
 };
 use signinum_j2k::{
     adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
     J2kDecoder as CpuDecoder, J2kError, J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_native::{
-    ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1, J2kDirectBandId,
-};
+use signinum_j2k_native::J2kDirectBandId;
 use signinum_j2k_native::{
     DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage,
 };
@@ -1101,16 +1098,8 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     wall_started: Option<profile::ProfileInstant>,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let context = session.cuda_context()?;
-    let tables = CudaHtj2kDecodeTables {
-        vlc_table0: ht_vlc_table0(),
-        vlc_table1: ht_vlc_table1(),
-        uvlc_table0: ht_uvlc_table0(),
-        uvlc_table1: ht_uvlc_table1(),
-    };
     let table_upload_start = profile::profile_now(true);
-    let table_resources = context
-        .upload_htj2k_decode_table_resources(tables)
-        .map_err(cuda_error)?;
+    let table_resources = session.htj2k_decode_table_resources()?;
     let table_upload_us = profile::elapsed_us(table_upload_start);
     report.h2d_us = report.h2d_us.saturating_add(table_upload_us);
     report.detail.table_upload_us = report
@@ -1265,16 +1254,8 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         });
     }
     let context = session.cuda_context()?;
-    let tables = CudaHtj2kDecodeTables {
-        vlc_table0: ht_vlc_table0(),
-        vlc_table1: ht_vlc_table1(),
-        uvlc_table0: ht_uvlc_table0(),
-        uvlc_table1: ht_uvlc_table1(),
-    };
     let table_upload_start = profile::profile_now(true);
-    let table_resources = context
-        .upload_htj2k_decode_table_resources(tables)
-        .map_err(cuda_error)?;
+    let table_resources = session.htj2k_decode_table_resources()?;
     let table_upload_us = profile::elapsed_us(table_upload_start);
     color.report.h2d_us = color.report.h2d_us.saturating_add(table_upload_us);
     color.report.detail.table_upload_us = color
