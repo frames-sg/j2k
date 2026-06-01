@@ -33,6 +33,91 @@ New adaptive gate reruns must record:
 Do not copy numbers into this file from a different host class. Apple Metal
 numbers and CUDA runner numbers are separate evidence sets.
 
+## CUDA HTJ2K Decode RCA Profile Gate
+
+Use the CUDA profile gate when decode rows are blocked and the next decision
+needs transfer, launch, stage, trace, or route-composition evidence. The
+profile gate is opt-in on the self-hosted CUDA workflow:
+
+```sh
+gh workflow run gpu-validation.yml \
+  --ref <branch> \
+  -f run-linux-ci=false \
+  -f run-metal-validation=false \
+  -f run-nvidia-baseline=false \
+  -f run-timed-benchmarks=false \
+  -f run-cuda-htj2k-decode-profile=true
+```
+
+The workflow step runs:
+
+```sh
+SIGNINUM_REQUIRE_CUDA_RUNTIME=1 \
+SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT=1 \
+SIGNINUM_REQUIRE_CUDA_BENCH=1 \
+SIGNINUM_J2K_PROFILE_STAGES=summary \
+SIGNINUM_J2K_CUDA_TRACE=target/cuda_htj2k_decode_trace.json \
+samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
+  cargo bench -p signinum-j2k-cuda --bench htj2k_decode \
+  --features cuda-runtime,cuda-profiling -- \
+  --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 \
+  2>&1 | tee target/cuda_htj2k_decode_profile.log
+```
+
+`SIGNINUM_J2K_PROFILE_STAGES=1` may replace `summary` when the RCA needs the
+full stage profile. The workflow uploads
+`cuda-htj2k-decode-rca-profile` with:
+
+- `target/cuda_htj2k_decode_profile.log`
+- `target/cuda_htj2k_decode_trace.json`
+- `target/cuda_htj2k_decode_samply.json.gz`
+- `target/criterion`
+
+Upload runs under `always()`, so failed profile attempts still leave the log,
+Chrome trace, `samply` CPU profile, and partial Criterion evidence for triage.
+Treat these artifacts as internal RCA evidence, not public speed claims.
+
+## Direct NVIDIA nvJPEG2000 Decode Comparator Gate
+
+Use `run-nvidia-baseline=true` when a CUDA decode decision needs direct
+comparison against NVIDIA's installed library rather than only signinum CPU vs
+signinum CUDA route timing. The workflow runs both the existing
+JPEG -> HTJ2K transcode comparator and direct HTJ2K decode comparator:
+
+```sh
+gh workflow run gpu-validation.yml \
+  --ref <branch> \
+  -f run-linux-ci=false \
+  -f run-metal-validation=false \
+  -f run-nvidia-baseline=true \
+  -f run-timed-benchmarks=false \
+  -f run-cuda-htj2k-decode-profile=false
+```
+
+The direct decode command is:
+
+```sh
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
+cargo run --release -p signinum-nvidia-baseline \
+  --features nvjpeg2000 --bin decode_compare -- \
+  --fixture-dim 512 \
+  --warmup 2 \
+  --iterations 10 \
+  --min-inputs 2 \
+  --json target/decode_compare.json \
+  --csv target/decode_compare.csv
+```
+
+The `nvidia-baseline-comparison` artifact must include:
+
+- `target/transcode_compare.json`
+- `target/transcode_compare.csv`
+- `target/decode_compare.json`
+- `target/decode_compare.csv`
+
+Record the direct decode JSON/CSV rows alongside Criterion decode rows when
+reviewing CUDA HTJ2K decode gates.
+
 ## 2026-05-31 Metal Resident HTJ2K Encode RCA Rerun
 
 Evidence:

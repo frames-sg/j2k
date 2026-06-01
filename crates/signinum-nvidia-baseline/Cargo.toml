@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "transcode_compare"
 path = "src/bin/transcode_compare.rs"
 
+[[bin]]
+name = "decode_compare"
+path = "src/bin/decode_compare.rs"
+
 [features]
 default = []
 # Compile + link the C++ nvJPEG/nvJPEG2000 baseline. Runner-only: requires nvcc,
@@ -28,6 +32,7 @@ nvjpeg2000 = [
 ]
 
 [dependencies]
+signinum-core = { path = "../signinum-core", version = "=0.4.4" }
 signinum-transcode = { path = "../signinum-transcode", version = "=0.4.4" }
 signinum-transcode-cuda = { path = "../signinum-transcode-cuda", version = "=0.4.4" }
 signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.4", optional = true }

@@ -500,6 +500,69 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
 }
 
 #[test]
+fn cuda_decode_profile_workflow_exports_rca_artifacts() {
+    let root = repo_root();
+    let workflow_path = root.join(".github/workflows/gpu-validation.yml");
+    let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
+    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+
+    for required in [
+        "run-cuda-htj2k-decode-profile",
+        "CUDA HTJ2K decode RCA profile",
+        "SIGNINUM_REQUIRE_CUDA_BENCH: \"1\"",
+        "SIGNINUM_J2K_PROFILE_STAGES: summary",
+        "SIGNINUM_J2K_CUDA_TRACE: target/cuda_htj2k_decode_trace.json",
+        "cargo install samply --version 0.13.1 --locked",
+        "samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz",
+        "--features cuda-runtime,cuda-profiling",
+        "2>&1 | tee target/cuda_htj2k_decode_profile.log",
+        "cuda-htj2k-decode-rca-profile",
+        "target/cuda_htj2k_decode_profile.log",
+        "target/cuda_htj2k_decode_trace.json",
+        "target/cuda_htj2k_decode_samply.json.gz",
+        "target/criterion",
+    ] {
+        assert!(
+            workflow.contains(required) || cuda_job.contains(required),
+            "{} CUDA decode profile gate must contain `{required}`",
+            workflow_path
+                .strip_prefix(root)
+                .unwrap_or(&workflow_path)
+                .display()
+        );
+    }
+}
+
+#[test]
+fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
+    let root = repo_root();
+    let workflow_path = root.join(".github/workflows/gpu-validation.yml");
+    let workflow = fs::read_to_string(&workflow_path).expect("read GPU validation workflow");
+    let cuda_job = workflow_job(&workflow, "cuda-x86_64-compatibility");
+
+    for required in [
+        "run-nvidia-baseline",
+        "--bin transcode_compare",
+        "--bin decode_compare",
+        "--fixture-dim 512",
+        "--min-inputs 2",
+        "target/decode_compare.json",
+        "target/decode_compare.csv",
+        "python3 -m json.tool target/decode_compare.json",
+        "nvidia-baseline-comparison",
+    ] {
+        assert!(
+            workflow.contains(required) || cuda_job.contains(required),
+            "{} NVIDIA baseline gate must contain `{required}`",
+            workflow_path
+                .strip_prefix(root)
+                .unwrap_or(&workflow_path)
+                .display()
+        );
+    }
+}
+
+#[test]
 fn crates_io_publish_policy_is_explicit() {
     let root = repo_root();
     let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");

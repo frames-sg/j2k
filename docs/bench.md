@@ -104,6 +104,17 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
 - Gate documentation may include internal RCA evidence, but it is not a public
   speed claim. Public claims still require `cargo xtask bench-report` and the
   raw benchmark output bundle.
+- CUDA HTJ2K decode RCA/profile evidence is collected through the
+  `gpu-validation.yml` workflow dispatch input
+  `run-cuda-htj2k-decode-profile`. It runs the strict CUDA decode bench with
+  `samply`, stage summaries, and CUDA trace export. The artifact contains a
+  tee'd console log, CUDA trace JSON, `samply` Firefox Profiler profile, and
+  Criterion output, including when the bench fails.
+- Direct NVIDIA decode comparison is part of `run-nvidia-baseline=true`.
+  The workflow runs `signinum-nvidia-baseline --bin decode_compare` against
+  generated 512-pixel Gray8/RGB8 HTJ2K codestreams and uploads
+  `target/decode_compare.json` plus `target/decode_compare.csv` next to the
+  JPEG -> HTJ2K transcode baseline artifacts.
 - The release-blocking matrix must include representative Gray/RGB/RGBA,
   8/16-bit, 512/1024 tiles, batch 16/64, encode/decode/transcode, and
   lossless/lossy rows where supported. The publication matrix extends this to
@@ -111,6 +122,47 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
   strict Metal, strict CUDA, and adaptive rows.
 - Checked-in adaptive gate decisions and RCA records live in
   `docs/adaptive-j2k-gates.md`.
+
+CUDA HTJ2K decode RCA/profile command:
+
+```sh
+SIGNINUM_REQUIRE_CUDA_RUNTIME=1 \
+SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT=1 \
+SIGNINUM_REQUIRE_CUDA_BENCH=1 \
+SIGNINUM_J2K_PROFILE_STAGES=summary \
+SIGNINUM_J2K_CUDA_TRACE=target/cuda_htj2k_decode_trace.json \
+samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
+  cargo bench -p signinum-j2k-cuda --bench htj2k_decode \
+  --features cuda-runtime,cuda-profiling -- \
+  --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 \
+  2>&1 | tee target/cuda_htj2k_decode_profile.log
+```
+
+`SIGNINUM_J2K_PROFILE_STAGES=1` is accepted for the same profile gate when a
+full stage dump is needed instead of summary output. Keep the generated
+`target/cuda_htj2k_decode_profile.log`,
+`target/cuda_htj2k_decode_trace.json`,
+`target/cuda_htj2k_decode_samply.json.gz`, and `target/criterion` together
+with the workflow run URL when updating checked-in gate records.
+
+Direct nvJPEG2000 decode comparison command:
+
+```sh
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
+cargo run --release -p signinum-nvidia-baseline \
+  --features nvjpeg2000 --bin decode_compare -- \
+  --fixture-dim 512 \
+  --warmup 2 \
+  --iterations 10 \
+  --min-inputs 2 \
+  --json target/decode_compare.json \
+  --csv target/decode_compare.csv
+```
+
+The JSON/CSV report includes signinum CPU decode, strict signinum CUDA decode
+with host download, and direct nvJPEG2000 decode wall/GPU timings for each
+fixture. This gate is an internal comparator against NVIDIA's library, not a
+replacement for the Criterion route gates above.
 
 ## Compared operations
 

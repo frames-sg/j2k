@@ -42,8 +42,19 @@ cargo run --release -p signinum-nvidia-baseline \
   --features nvjpeg2000 --bin transcode_compare -- tile0.jpg tile1.jpg ...
 ```
 
-With no file arguments and no `SIGNINUM_BENCH_JPEG_DIR`, it falls back to a tiny
-bundled 16×16 fixture (a build/link smoke test, not a representative benchmark).
+Direct nvJPEG2000 decode comparison uses HTJ2K/J2K codestream inputs. With no
+file arguments it generates 512-pixel Gray8 and RGB8 HTJ2K fixtures:
+
+```bash
+cargo run --release -p signinum-nvidia-baseline \
+  --features nvjpeg2000 --bin decode_compare -- \
+  --json target/decode_compare.json \
+  --csv target/decode_compare.csv
+```
+
+With no file arguments and no `SIGNINUM_BENCH_JPEG_DIR`, `transcode_compare`
+falls back to a tiny bundled 16×16 fixture (a build/link smoke test, not a
+representative benchmark).
 
 ## Reported metrics
 
@@ -55,6 +66,9 @@ bundled 16×16 fixture (a build/link smoke test, not a representative benchmark)
   nvJPEG decode and nvJPEG2000 HT encode.
 - **Output size + PSNR** — codestream bytes and reconstruction quality vs the
   nvJPEG-decoded source RGB. PSNR is reported as not rate-matched.
+- **Direct decode comparator** — signinum CPU decode, signinum strict CUDA
+  decode with host download, and NVIDIA nvJPEG2000 decode wall/GPU time for the
+  same HTJ2K/J2K codestreams.
 
 Throughput uses the best of `ITERATIONS` runs after warmup. signinum runs through
 the batch transform path and, on CUDA builds, the CUDA HT encode accelerator.
