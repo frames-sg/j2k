@@ -726,9 +726,7 @@ impl J2kAdaptiveRoutePlanner {
         request: J2kAdaptiveBackendRequest,
         benchmarks: &J2kAdaptiveBenchmarks,
     ) -> J2kAdaptiveRouteReport {
-        let backend = if let Some(backend) = self.best_approved_device(workload, benchmarks) {
-            backend
-        } else {
+        let Some(backend) = self.best_approved_device(workload, benchmarks) else {
             return self.gated_cpu_report(
                 workload,
                 request,
