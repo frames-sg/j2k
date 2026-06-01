@@ -1,4 +1,6 @@
 use std::env;
+use std::ffi::OsStr;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -33,13 +35,32 @@ fn main() {
     let object = out_dir.join("nv_baseline.o");
     let archive = out_dir.join("libnvbaseline.a");
 
+    let include_dir = env::var_os("NVJPEG2K_INCLUDE_DIR");
+    let stream_parse_define = match probe_nvjpeg2k_decode_api(
+        &nvcc,
+        include_dir.as_deref(),
+        &out_dir,
+    ) {
+        Ok(define) => define,
+        Err(message) => {
+            assert!(
+                !strict,
+                "SIGNINUM_REQUIRE_NV_BASELINE_BUILD set, but nvJPEG2000 decode APIs are unavailable: {message}"
+            );
+            return;
+        }
+    };
+
     let mut compile = Command::new(&nvcc);
     compile
         .args(["-c", "-O3", "--std=c++14", "-Xcompiler", "-fPIC"])
         .arg("cuda/nv_baseline.cu")
         .arg("-o")
         .arg(&object);
-    if let Some(include_dir) = env::var_os("NVJPEG2K_INCLUDE_DIR") {
+    if let Some(define) = stream_parse_define {
+        compile.arg(define);
+    }
+    if let Some(include_dir) = include_dir {
         compile.arg("-I").arg(include_dir);
     }
 
@@ -75,4 +96,81 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=stdc++");
     println!("cargo:rustc-cfg=nvbaseline_built");
+}
+
+fn probe_nvjpeg2k_decode_api(
+    nvcc: &OsStr,
+    include_dir: Option<&OsStr>,
+    out_dir: &std::path::Path,
+) -> Result<Option<&'static str>, String> {
+    let current = r"
+#include <cuda_runtime.h>
+#include <nvjpeg2k.h>
+int main() {
+    nvjpeg2kHandle_t handle = nullptr;
+    nvjpeg2kDecodeState_t decode_state = nullptr;
+    nvjpeg2kDecodeParams_t decode_params = nullptr;
+    nvjpeg2kStream_t stream = nullptr;
+    unsigned char data[4] = {0, 0, 0, 0};
+    nvjpeg2kImage_t image;
+    nvjpeg2kCreateSimple(&handle);
+    nvjpeg2kDecodeStateCreate(handle, &decode_state);
+    nvjpeg2kDecodeParamsCreate(&decode_params);
+    nvjpeg2kStreamCreate(&stream);
+    nvjpeg2kDecodeParamsSetOutputFormat(decode_params, NVJPEG2K_FORMAT_INTERLEAVED);
+    nvjpeg2kDecodeParamsSetRGBOutput(decode_params, 1);
+    nvjpeg2kStreamParse(handle, data, sizeof(data), 0, 0, stream);
+    nvjpeg2kDecodeImage(handle, decode_state, stream, decode_params, &image, 0);
+    return 0;
+}
+";
+    if compile_probe(
+        nvcc,
+        include_dir,
+        out_dir,
+        "nvjpeg2k_decode_current.cu",
+        current,
+    ) {
+        return Ok(None);
+    }
+
+    let legacy = current.replace(
+        "nvjpeg2kStreamParse(handle, data, sizeof(data), 0, 0, stream);",
+        "nvjpeg2kStreamParse(handle, data, sizeof(data), 0, 0, &stream);",
+    );
+    if compile_probe(
+        nvcc,
+        include_dir,
+        out_dir,
+        "nvjpeg2k_decode_legacy.cu",
+        &legacy,
+    ) {
+        return Ok(Some("-DNVB_STREAM_PARSE_USES_OUT_POINTER=1"));
+    }
+
+    Err("neither current nor legacy nvjpeg2kStreamParse decode probes compiled".to_string())
+}
+
+fn compile_probe(
+    nvcc: &OsStr,
+    include_dir: Option<&OsStr>,
+    out_dir: &std::path::Path,
+    name: &str,
+    source: &str,
+) -> bool {
+    let source_path = out_dir.join(name);
+    let object_path = out_dir.join(format!("{name}.o"));
+    if fs::write(&source_path, source).is_err() {
+        return false;
+    }
+    let mut command = Command::new(nvcc);
+    command
+        .args(["-c", "--std=c++14"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object_path);
+    if let Some(include_dir) = include_dir {
+        command.arg("-I").arg(include_dir);
+    }
+    command.status().is_ok_and(|status| status.success())
 }

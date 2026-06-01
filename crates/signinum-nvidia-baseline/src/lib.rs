@@ -40,6 +40,22 @@ mod ffi {
             num_components: *mut c_int,
         ) -> c_int;
 
+        pub fn nvb_session_decode_j2k_interleaved(
+            session: *mut NvbSession,
+            j2k: *const c_uchar,
+            j2k_len: usize,
+            requested_format: c_int,
+            out: *mut c_uchar,
+            out_cap: usize,
+            out_len: *mut usize,
+            decode_ms: *mut f64,
+            width: *mut c_int,
+            height: *mut c_int,
+            num_components: *mut c_int,
+            bit_depth: *mut c_int,
+            bytes_per_sample: *mut c_int,
+        ) -> c_int;
+
         pub fn nvb_decode_jpeg_rgb(
             jpeg: *const c_uchar,
             jpeg_len: usize,
@@ -50,6 +66,52 @@ mod ffi {
         ) -> c_int;
 
     }
+}
+
+/// Output pixel layout requested from direct nvJPEG2000 decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvJ2kDecodeFormat {
+    /// Interleaved 8-bit RGB output.
+    Rgb8,
+    /// 8-bit grayscale output.
+    Gray8,
+}
+
+impl NvJ2kDecodeFormat {
+    #[cfg(nvbaseline_built)]
+    const fn ffi_code(self) -> i32 {
+        match self {
+            Self::Rgb8 => 1,
+            Self::Gray8 => 2,
+        }
+    }
+
+    #[cfg(nvbaseline_built)]
+    const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgb8 => 3,
+            Self::Gray8 => 1,
+        }
+    }
+}
+
+/// Direct nvJPEG2000 decode result.
+#[derive(Debug, Clone)]
+pub struct NvJ2kDecodeResult {
+    /// Interleaved decoded host pixels in the requested format.
+    pub pixels: Vec<u8>,
+    /// nvJPEG2000 GPU decode time, milliseconds.
+    pub decode_ms: f64,
+    /// Decoded image width.
+    pub width: u32,
+    /// Decoded image height.
+    pub height: u32,
+    /// Component count in `pixels`.
+    pub num_components: u32,
+    /// Source codestream component bit depth.
+    pub bit_depth: u32,
+    /// Output bytes per sample.
+    pub bytes_per_sample: u32,
 }
 
 /// One NVIDIA transcode result: the HTJ2K codestream plus GPU stage timings.
@@ -114,6 +176,23 @@ impl NvBaselineSession {
             nvidia_transcode_with_session(self.raw.as_ptr(), jpeg)
         }
     }
+
+    /// Decode one JPEG 2000 / HTJ2K codestream to interleaved host pixels.
+    pub fn decode_j2k_interleaved(
+        &mut self,
+        codestream: &[u8],
+        format: NvJ2kDecodeFormat,
+    ) -> Result<NvJ2kDecodeResult, NvBaselineError> {
+        #[cfg(not(nvbaseline_built))]
+        {
+            let _ = (codestream, format);
+            Err(NvBaselineError::NotBuilt)
+        }
+        #[cfg(nvbaseline_built)]
+        {
+            nvidia_decode_j2k_with_session(self.raw.as_ptr(), codestream, format)
+        }
+    }
 }
 
 #[cfg(nvbaseline_built)]
@@ -137,6 +216,12 @@ pub fn nvidia_baseline_available() -> bool {
     {
         false
     }
+}
+
+/// Whether direct nvJPEG2000 decode is compiled in and initializes.
+#[must_use]
+pub fn nvidia_j2k_decode_available() -> bool {
+    nvidia_baseline_available()
 }
 
 /// Why the NVIDIA baseline could not run.
@@ -195,6 +280,23 @@ pub fn nvidia_transcode_jpeg_to_htj2k(jpeg: &[u8]) -> Result<NvTranscodeResult, 
     }
 }
 
+/// Decode a JPEG 2000 / HTJ2K codestream via nvJPEG2000.
+pub fn nvidia_decode_j2k_interleaved(
+    codestream: &[u8],
+    format: NvJ2kDecodeFormat,
+) -> Result<NvJ2kDecodeResult, NvBaselineError> {
+    #[cfg(not(nvbaseline_built))]
+    {
+        let _ = (codestream, format);
+        Err(NvBaselineError::NotBuilt)
+    }
+    #[cfg(nvbaseline_built)]
+    {
+        let mut session = NvBaselineSession::new()?;
+        session.decode_j2k_interleaved(codestream, format)
+    }
+}
+
 #[cfg(nvbaseline_built)]
 fn nvidia_transcode_with_session(
     session: *mut ffi::NvbSession,
@@ -244,6 +346,72 @@ fn nvidia_transcode_with_session(
             width: width as u32,
             height: height as u32,
             num_components: num_components as u32,
+        });
+    }
+}
+
+#[cfg(nvbaseline_built)]
+fn nvidia_decode_j2k_with_session(
+    session: *mut ffi::NvbSession,
+    codestream: &[u8],
+    format: NvJ2kDecodeFormat,
+) -> Result<NvJ2kDecodeResult, NvBaselineError> {
+    let image = signinum_j2k_native::Image::new(
+        codestream,
+        &signinum_j2k_native::DecodeSettings::default(),
+    )
+    .map_err(|_| NvBaselineError::Stage(241))?;
+    let dims = (image.width(), image.height());
+    let mut capacity = (dims.0 as usize)
+        .saturating_mul(dims.1 as usize)
+        .saturating_mul(format.bytes_per_pixel());
+    if capacity == 0 {
+        return Err(NvBaselineError::Stage(240));
+    }
+    loop {
+        let mut out = vec![0u8; capacity];
+        let mut out_len = 0usize;
+        let mut decode_ms = 0f64;
+        let mut width = 0i32;
+        let mut height = 0i32;
+        let mut num_components = 0i32;
+        let mut bit_depth = 0i32;
+        let mut bytes_per_sample = 0i32;
+        // SAFETY: all pointers reference live, correctly-sized Rust slices or
+        // out parameters. The C++ side writes at most `out.len()` bytes.
+        let rc = unsafe {
+            ffi::nvb_session_decode_j2k_interleaved(
+                session,
+                codestream.as_ptr(),
+                codestream.len(),
+                format.ffi_code(),
+                out.as_mut_ptr(),
+                out.len(),
+                std::ptr::addr_of_mut!(out_len),
+                std::ptr::addr_of_mut!(decode_ms),
+                std::ptr::addr_of_mut!(width),
+                std::ptr::addr_of_mut!(height),
+                std::ptr::addr_of_mut!(num_components),
+                std::ptr::addr_of_mut!(bit_depth),
+                std::ptr::addr_of_mut!(bytes_per_sample),
+            )
+        };
+        if rc == 234 && capacity < (1 << 30) {
+            capacity = capacity.saturating_mul(2);
+            continue;
+        }
+        if rc != 0 {
+            return Err(NvBaselineError::Stage(rc));
+        }
+        out.truncate(out_len);
+        return Ok(NvJ2kDecodeResult {
+            pixels: out,
+            decode_ms,
+            width: width as u32,
+            height: height as u32,
+            num_components: num_components as u32,
+            bit_depth: bit_depth as u32,
+            bytes_per_sample: bytes_per_sample as u32,
         });
     }
 }

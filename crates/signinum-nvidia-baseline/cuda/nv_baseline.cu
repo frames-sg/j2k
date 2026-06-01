@@ -33,11 +33,17 @@ struct NvbSession {
     cudaEvent_t stop = nullptr;
     nvjpegHandle_t jpeg_handle = nullptr;
     nvjpegJpegState_t jpeg_state = nullptr;
+    nvjpeg2kHandle_t dec_handle = nullptr;
+    nvjpeg2kDecodeState_t dec_state = nullptr;
+    nvjpeg2kDecodeParams_t dec_params = nullptr;
+    nvjpeg2kStream_t dec_stream = nullptr;
     nvjpeg2kEncoder_t enc = nullptr;
     nvjpeg2kEncodeState_t enc_state = nullptr;
     nvjpeg2kEncodeParams_t enc_params = nullptr;
     unsigned char* planes[3] = {nullptr, nullptr, nullptr};
     size_t plane_capacity = 0;
+    unsigned char* decode_interleaved = nullptr;
+    size_t decode_interleaved_capacity = 0;
 };
 
 static void nvb_session_release_planes(NvbSession* session) {
@@ -65,6 +71,26 @@ static int nvb_session_ensure_planes(NvbSession* session, size_t plane_bytes) {
     return 0;
 }
 
+static void nvb_session_release_decode_interleaved(NvbSession* session) {
+    if (session->decode_interleaved) {
+        cudaFree(session->decode_interleaved);
+        session->decode_interleaved = nullptr;
+    }
+    session->decode_interleaved_capacity = 0;
+}
+
+static int nvb_session_ensure_decode_interleaved(NvbSession* session, size_t bytes) {
+    if (session->decode_interleaved_capacity >= bytes) {
+        return 0;
+    }
+    nvb_session_release_decode_interleaved(session);
+    if (cudaMalloc((void**)&session->decode_interleaved, bytes) != cudaSuccess) {
+        return 902;
+    }
+    session->decode_interleaved_capacity = bytes;
+    return 0;
+}
+
 extern "C" {
 
 void nvb_session_destroy(NvbSession* session) {
@@ -72,10 +98,15 @@ void nvb_session_destroy(NvbSession* session) {
         return;
     }
     if (session->stream) { cudaStreamSynchronize(session->stream); }
+    nvb_session_release_decode_interleaved(session);
     nvb_session_release_planes(session);
     if (session->enc_params) { nvjpeg2kEncodeParamsDestroy(session->enc_params); }
     if (session->enc_state) { nvjpeg2kEncodeStateDestroy(session->enc_state); }
     if (session->enc) { nvjpeg2kEncoderDestroy(session->enc); }
+    if (session->dec_stream) { nvjpeg2kStreamDestroy(session->dec_stream); }
+    if (session->dec_params) { nvjpeg2kDecodeParamsDestroy(session->dec_params); }
+    if (session->dec_state) { nvjpeg2kDecodeStateDestroy(session->dec_state); }
+    if (session->dec_handle) { nvjpeg2kDestroy(session->dec_handle); }
     if (session->jpeg_state) { nvjpegJpegStateDestroy(session->jpeg_state); }
     if (session->jpeg_handle) { nvjpegDestroy(session->jpeg_handle); }
     if (session->start) { cudaEventDestroy(session->start); }
@@ -99,6 +130,10 @@ int nvb_session_create(NvbSession** out) {
     if (cudaEventCreate(&session->stop) != cudaSuccess) { rc = 905; goto cleanup; }
     if (nvjpegCreateSimple(&session->jpeg_handle) != NVJPEG_STATUS_SUCCESS) { rc = 101; goto cleanup; }
     if (nvjpegJpegStateCreate(session->jpeg_handle, &session->jpeg_state) != NVJPEG_STATUS_SUCCESS) { rc = 102; goto cleanup; }
+    if (nvjpeg2kCreateSimple(&session->dec_handle) != NVJPEG2K_STATUS_SUCCESS) { rc = 221; goto cleanup; }
+    if (nvjpeg2kDecodeStateCreate(session->dec_handle, &session->dec_state) != NVJPEG2K_STATUS_SUCCESS) { rc = 222; goto cleanup; }
+    if (nvjpeg2kDecodeParamsCreate(&session->dec_params) != NVJPEG2K_STATUS_SUCCESS) { rc = 223; goto cleanup; }
+    if (nvjpeg2kStreamCreate(&session->dec_stream) != NVJPEG2K_STATUS_SUCCESS) { rc = 224; goto cleanup; }
     if (nvjpeg2kEncoderCreateSimple(&session->enc) != NVJPEG2K_STATUS_SUCCESS) { rc = 201; goto cleanup; }
     if (nvjpeg2kEncodeStateCreate(session->enc, &session->enc_state) != NVJPEG2K_STATUS_SUCCESS) { rc = 202; goto cleanup; }
     if (nvjpeg2kEncodeParamsCreate(&session->enc_params) != NVJPEG2K_STATUS_SUCCESS) { rc = 203; goto cleanup; }
@@ -108,6 +143,101 @@ int nvb_session_create(NvbSession** out) {
 
 cleanup:
     nvb_session_destroy(session);
+    return rc;
+}
+
+int nvb_session_decode_j2k_interleaved(
+    NvbSession* session,
+    const unsigned char* j2k, size_t j2k_len,
+    int requested_format,
+    unsigned char* out, size_t out_cap, size_t* out_len,
+    double* decode_ms,
+    int* width, int* height, int* num_components,
+    int* bit_depth, int* bytes_per_sample) {
+    int rc = 0;
+    nvjpeg2kImageInfo_t image_info;
+    nvjpeg2kImageComponentInfo_t comp_info;
+    nvjpeg2kImage_t output;
+    size_t needed = 0;
+    size_t pitch = 0;
+    void* pixel_data[1] = {nullptr};
+    size_t pitch_in_bytes[1] = {0};
+    float decode_elapsed = 0.0f;
+
+    if (!session) { return 900; }
+    if (!j2k || j2k_len == 0 || !out || !out_len) { return 920; }
+
+#ifdef NVB_STREAM_PARSE_USES_OUT_POINTER
+    if (nvjpeg2kStreamParse(session->dec_handle, j2k, j2k_len, 0, 0, &session->dec_stream)
+        != NVJPEG2K_STATUS_SUCCESS) { return 225; }
+#else
+    if (nvjpeg2kStreamParse(session->dec_handle, j2k, j2k_len, 0, 0, session->dec_stream)
+        != NVJPEG2K_STATUS_SUCCESS) { return 225; }
+#endif
+
+    memset(&image_info, 0, sizeof(image_info));
+    if (nvjpeg2kStreamGetImageInfo(session->dec_stream, &image_info) != NVJPEG2K_STATUS_SUCCESS) {
+        return 226;
+    }
+    if (image_info.num_components == 0 || image_info.num_components > 4) { return 227; }
+    memset(&comp_info, 0, sizeof(comp_info));
+    if (nvjpeg2kStreamGetImageComponentInfo(session->dec_stream, &comp_info, 0)
+        != NVJPEG2K_STATUS_SUCCESS) { return 228; }
+
+    *width = (int)image_info.image_width;
+    *height = (int)image_info.image_height;
+    *num_components = (int)image_info.num_components;
+    *bit_depth = (int)comp_info.precision;
+    *bytes_per_sample = (comp_info.precision <= 8) ? 1 : 2;
+
+    if (requested_format == 1) {
+        if (image_info.num_components != 3) { return 229; }
+        *num_components = 3;
+        *bytes_per_sample = 1;
+        if (comp_info.precision > 8 || comp_info.sgn != 0) { return 230; }
+    } else if (requested_format == 2) {
+        if (image_info.num_components != 1) { return 229; }
+        *num_components = 1;
+        *bytes_per_sample = 1;
+        if (comp_info.precision > 8 || comp_info.sgn != 0) { return 230; }
+    } else {
+        return 231;
+    }
+
+    if (nvjpeg2kDecodeParamsSetOutputFormat(session->dec_params, NVJPEG2K_FORMAT_INTERLEAVED)
+        != NVJPEG2K_STATUS_SUCCESS) { return 232; }
+    if (nvjpeg2kDecodeParamsSetRGBOutput(session->dec_params, requested_format == 1 ? 1 : 0)
+        != NVJPEG2K_STATUS_SUCCESS) { return 233; }
+
+    needed = (size_t)(*width) * (size_t)(*height) * (size_t)(*num_components) * (size_t)(*bytes_per_sample);
+    pitch = (size_t)(*width) * (size_t)(*num_components) * (size_t)(*bytes_per_sample);
+    if (needed > out_cap) { return 234; }
+    rc = nvb_session_ensure_decode_interleaved(session, needed);
+    if (rc != 0) { return rc; }
+
+    pixel_data[0] = session->decode_interleaved;
+    pitch_in_bytes[0] = pitch;
+    memset(&output, 0, sizeof(output));
+    output.pixel_data = pixel_data;
+    output.pitch_in_bytes = pitch_in_bytes;
+    output.pixel_type = (*bytes_per_sample == 1) ? NVJPEG2K_UINT8 : NVJPEG2K_UINT16;
+    output.num_components = (uint32_t)(*num_components);
+
+    cudaEventRecord(session->start, session->stream);
+    if (nvjpeg2kDecodeImage(session->dec_handle, session->dec_state, session->dec_stream, session->dec_params, &output, session->stream)
+        != NVJPEG2K_STATUS_SUCCESS) { rc = 235; goto drain; }
+    cudaEventRecord(session->stop, session->stream);
+    if (cudaStreamSynchronize(session->stream) != cudaSuccess) { return 906; }
+    if (cudaMemcpy(out, session->decode_interleaved, needed, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return 903;
+    }
+    cudaEventElapsedTime(&decode_elapsed, session->start, session->stop);
+    *decode_ms = (double)decode_elapsed;
+    *out_len = needed;
+    return 0;
+
+drain:
+    cudaStreamSynchronize(session->stream);
     return rc;
 }
 
