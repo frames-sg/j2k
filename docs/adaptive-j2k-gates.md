@@ -115,33 +115,113 @@ RCA:
 - Next optimization target: reduce resident sync boundaries and codestream
   completion waits before reconsidering default Metal encode routing.
 
-## 2026-05-31 CUDA HTJ2K Decode RGB/RGBA Rerun Status
+## 2026-06-01 CUDA J2K / HTJ2K Measured Runner Rerun
 
 Evidence:
 
-- Commit: `05ecdec`
-- Host: same Apple Metal host as the Metal rerun; this is not a CUDA runner.
-- CUDA runtime: `nvidia-smi` unavailable on this host.
+- Commit: `47b8869`
+- Workflow:
+  <https://github.com/frames-sg/signinum/actions/runs/26729235302>
+- Result: success
+- Supersedes:
+  - `2026-05-31 CUDA HTJ2K Decode RGB/RGBA Rerun Status`
+  - `2026-05-31 CUDA J2K / HTJ2K` for overlapping CUDA rows
+- Runner: self-hosted `Cuda`, machine `PC`, Linux WSL2 x86_64,
+  NVIDIA GeForce RTX 4070, 12282 MiB GPU memory. Host RAM was not
+  reported by the workflow diagnostics.
+- CUDA driver/toolkit: NVIDIA-SMI `595.71.05`, driver `596.49`,
+  driver-supported CUDA compatibility `13.2`, `nvcc` release `13.2` /
+  `V13.2.78`.
 - Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
 - Commands:
-  - `command -v nvidia-smi && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader`
-  - `cargo check -p signinum-j2k-cuda --features cuda-runtime --benches --tests`
-  - `cargo clippy -p signinum-j2k-cuda --features cuda-runtime --all-targets -- -D warnings`
-  - `cargo bench -p signinum-j2k-cuda --features cuda-runtime --bench htj2k_decode --no-run`
-  - `cargo bench -p signinum --bench facade --features cuda-runtime --no-run`
+  - `gh workflow run gpu-validation.yml --ref codex/cuda-quality-ht-rewrite -f run-timed-benchmarks=true -f run-linux-ci=false -f run-metal-validation=false -f run-nvidia-baseline=false`
+  - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum --bench facade --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+- Note: no `signinum_profile` rows were collected in this workflow because the
+  profile environment variables were not enabled.
+
+End-to-end facade gate:
+
+| Shape | CPU-only | Adaptive | Strict CUDA | Decision |
+| --- | ---: | ---: | ---: | --- |
+| RGB8 512 HTJ2K encode | `17.128 ms .. 17.176 ms` | `17.135 ms .. 17.240 ms` | `20.627 ms .. 20.893 ms` | `blocked`: adaptive does not clear `10% + noise`; strict CUDA loses |
+| RGB8 1024 HTJ2K encode | `81.531 ms .. 81.750 ms` | `81.736 ms .. 82.118 ms` | `44.913 ms .. 45.240 ms` | `blocked`: adaptive does not clear `10% + noise`; strict CUDA is capability proof only |
+| RGBA8 512 HTJ2K encode | `22.346 ms .. 22.484 ms` | `22.486 ms .. 22.644 ms` | `23.516 ms .. 23.678 ms` | `blocked`: adaptive does not clear `10% + noise`; strict CUDA loses |
+| RGBA8 1024 HTJ2K encode | `109.29 ms .. 110.51 ms` | `109.21 ms .. 110.13 ms` | `54.013 ms .. 55.068 ms` | `blocked`: adaptive does not clear `10% + noise`; strict CUDA is capability proof only |
+
+CUDA stage evidence:
+
+| Stage / Shape | CPU | CUDA | Gate |
+| --- | ---: | ---: | --- |
+| RCT 512 | `1.0781 ms .. 1.0969 ms` | `2.2946 ms .. 2.3064 ms` | `reclassified-cpu` |
+| RCT 1024 | `6.6661 ms .. 6.7054 ms` | `7.4541 ms .. 7.5116 ms` | `reclassified-cpu` |
+| RCT 2048 | `21.258 ms .. 21.408 ms` | `18.572 ms .. 18.945 ms` | `candidate` |
+| DWT 5/3 512 | `3.3216 ms .. 3.3384 ms` | `1.1314 ms .. 1.1873 ms` | `candidate` |
+| DWT 5/3 1024 | `19.464 ms .. 19.604 ms` | `2.6517 ms .. 2.6870 ms` | `candidate` |
+| DWT 5/3 2048 | `83.616 ms .. 83.935 ms` | `12.798 ms .. 13.272 ms` | `candidate` |
+| Quantize 512 | `607.72 us .. 623.63 us` | `1.0540 ms .. 1.0645 ms` | `reclassified-cpu` |
+| Quantize 1024 | `2.4449 ms .. 2.4589 ms` | `2.4856 ms .. 2.5152 ms` | `reclassified-cpu` |
+| Quantize 2048 | `9.8383 ms .. 10.086 ms` | `8.2107 ms .. 8.3656 ms` | `candidate` |
+
+CUDA HTJ2K decode evidence:
+
+| Decode Shape | CPU | CUDA | Gate |
+| --- | ---: | ---: | --- |
+| Full tile gray8 512 | `4.4753 ms .. 4.5281 ms` | `175.27 ms .. 179.17 ms` | `blocked` |
+| Full tile RGB8 512 | `12.160 ms .. 12.500 ms` | `183.24 ms .. 186.91 ms` | `blocked` |
+| Full tile RGBA8 512 | `12.343 ms .. 12.500 ms` | `184.80 ms .. 190.72 ms` | `blocked` |
+| ROI gray8 256 | `3.2846 ms .. 3.3169 ms` | `179.73 ms .. 180.92 ms` | `blocked` |
+| ROI RGB8 256 | `8.7233 ms .. 9.0811 ms` | `185.23 ms .. 189.43 ms` | `blocked` |
+| ROI RGBA8 256 | `8.6874 ms .. 8.7639 ms` | `187.56 ms .. 192.22 ms` | `blocked` |
+| Scaled gray8 256 | `975.59 us .. 1.0116 ms` | `175.62 ms .. 178.04 ms` | `blocked` |
+| Scaled RGB8 256 | `2.9459 ms .. 2.9876 ms` | `175.83 ms .. 179.25 ms` | `blocked` |
+| Scaled RGBA8 256 | `3.0093 ms .. 3.0730 ms` | `175.61 ms .. 179.20 ms` | `blocked` |
+| ROI-scaled gray8 128 | `556.99 us .. 561.12 us` | `177.46 ms .. 180.86 ms` | `blocked` |
+| ROI-scaled RGB8 128 | `1.5998 ms .. 1.6148 ms` | `179.07 ms .. 180.65 ms` | `blocked` |
+| ROI-scaled RGBA8 128 | `1.6122 ms .. 1.6547 ms` | `175.52 ms .. 178.58 ms` | `blocked` |
+| Tile batch gray8 batch 8 | `35.926 ms .. 36.346 ms` | `231.53 ms .. 236.35 ms` | `blocked` |
+| Tile batch RGB8 batch 8 | `112.70 ms .. 113.53 ms` | `278.29 ms .. 286.08 ms` | `blocked` |
+| Tile batch RGBA8 batch 8 | `119.66 ms .. 120.24 ms` | `277.32 ms .. 281.46 ms` | `blocked` |
+
+CUDA HTJ2K encode micro evidence:
+
+| Route / Shape | CPU | CUDA | Gate |
+| --- | ---: | ---: | --- |
+| Host-input gray8 512 | `5.6775 ms .. 5.7053 ms` | `10.516 ms .. 10.623 ms` | `blocked` |
+| Cleanup blocks 64 host-staged | `4.5718 ms .. 4.6181 ms` | `4.2067 ms .. 4.2873 ms` | `blocked`: does not clear `10% + noise` |
+| Cleanup blocks 64 resident | `4.5718 ms .. 4.6181 ms` | `1.9976 ms .. 2.0369 ms` | `candidate` |
+| Strided cleanup blocks 64 resident | `4.5333 ms .. 4.5893 ms` | `2.0047 ms .. 2.0471 ms` | `candidate` |
 
 Decision:
 
-- No CUDA RGB/RGBA decode gate decision is recorded from this host.
-- The CUDA code compiles and lints with `cuda-runtime`, and both relevant bench
-  binaries build, but measured CUDA Criterion rows still require a self-hosted
-  NVIDIA CUDA runner.
-- Do not copy the earlier CUDA gray8 numbers below into the new RGB/RGBA gate.
+- Keep CUDA HTJ2K encode default routing `blocked` for RGB8/RGBA8 512/1024.
+- Keep strict CUDA facade rows as capability proof only; they do not approve the
+  default route while the adaptive rows fail the end-to-end gate.
+- Keep DWT 5/3, RCT 2048, quantize 2048, resident cleanup, and resident
+  strided cleanup as CUDA candidate stages.
+- Reclassify standalone RCT 512/1024 and quantize 512/1024 as CPU-shaped until
+  batching or fusion clears the stage gate.
+- Keep every measured CUDA HTJ2K decode shape blocked, including RGB/RGBA full
+  tile, ROI, scaled, ROI-scaled, and batch rows.
 
 RCA:
 
-- Not measured in this rerun. Run the planned `SIGNINUM_REQUIRE_CUDA_BENCH=1`
-  commands on a CUDA runner before classifying the RGB/RGBA decode rows.
+- Root cause class: transfer/synchronization and route-composition overhead.
+- Evidence: DWT and some large/resident encode stages clear the stage gate, but
+  facade adaptive rows are essentially CPU-only and do not clear the default
+  route gate.
+- Strict CUDA 1024 encode rows are faster than CPU, but the current adaptive
+  route does not compose those wins into an approved default path.
+- Decode evidence shows a fixed CUDA route floor around `175 ms .. 192 ms` for
+  single-tile decode shapes, and batch decode remains slower than CPU. That
+  points at synchronization/session/launch or route-composition overhead rather
+  than RGB/RGBA output format cost alone.
+- Next optimization target: profile CUDA HTJ2K decode transfer, launch, block
+  decode, inverse transform, and output-surface completion, then rerun facade
+  gates after adaptive routing can use the strict CUDA encode wins.
 
 ## 2026-05-31 Metal RGB8 HTJ2K Encode
 
