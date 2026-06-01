@@ -126,6 +126,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                             &mut accelerator,
                         )
                         .expect("Auto hybrid HTJ2K lossless encode");
+                        assert!(accelerator.forward_rct_dispatches() > 0);
                         assert!(accelerator.forward_dwt53_dispatches() > 0);
                         assert!(accelerator.ht_code_block_dispatches() > 0);
                         assert_eq!(accelerator.packetization_dispatches(), 0);
@@ -212,7 +213,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                             &session,
                         )
                         .expect("Auto HTJ2K lossless encode from Metal buffer");
-                        assert!(!encoded.resident.coefficient_prep_used);
+                        assert!(encoded.resident.coefficient_prep_used);
                         assert!(!encoded.resident.packetization_used);
                         assert!(!encoded.resident.codestream_assembly_used);
                         encoded.encoded
