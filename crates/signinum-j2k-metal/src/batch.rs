@@ -83,6 +83,28 @@ impl QueuedRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchRoute {
+    Generic,
+    AutoRegionScaledDirectCpu,
+    AutoRegionScaledDirectMetal,
+    AutoRepeatedRegionScaledDirectMetal,
+}
+
+struct GroupedRequests {
+    route: BatchRoute,
+    requests: Vec<QueuedRequest>,
+}
+
+impl GroupedRequests {
+    fn generic(requests: Vec<QueuedRequest>) -> Self {
+        Self {
+            route: BatchRoute::Generic,
+            requests,
+        }
+    }
+}
+
 #[doc(hidden)]
 pub struct BenchmarkGroupedRequests {
     pub batch_count: usize,
@@ -113,7 +135,11 @@ pub fn benchmark_group_region_scaled_requests(
     let batches = group_metal_requests(queued);
     BenchmarkGroupedRequests {
         batch_count: batches.len(),
-        max_batch_len: batches.iter().map(Vec::len).max().unwrap_or(0),
+        max_batch_len: batches
+            .iter()
+            .map(|batch| batch.requests.len())
+            .max()
+            .unwrap_or(0),
     }
 }
 
@@ -188,7 +214,7 @@ fn flush_if_needed(session: &mut SessionState) {
     }
 }
 
-fn group_metal_requests(queued: Vec<QueuedRequest>) -> Vec<Vec<QueuedRequest>> {
+fn group_metal_requests(queued: Vec<QueuedRequest>) -> Vec<GroupedRequests> {
     coalesce_cpu_host_batches(coalesce_distinct_region_scaled_direct_metal_requests(
         coalesce_distinct_full_color_metal_requests(
             coalesce_distinct_full_grayscale_metal_requests(group_repeated_full_metal_requests(
@@ -198,31 +224,35 @@ fn group_metal_requests(queued: Vec<QueuedRequest>) -> Vec<Vec<QueuedRequest>> {
     ))
 }
 
-fn group_repeated_full_metal_requests(queued: Vec<QueuedRequest>) -> Vec<Vec<QueuedRequest>> {
-    let mut batches: Vec<Vec<QueuedRequest>> = Vec::new();
+fn group_repeated_full_metal_requests(queued: Vec<QueuedRequest>) -> Vec<GroupedRequests> {
+    let mut batches: Vec<GroupedRequests> = Vec::new();
     for request in queued {
-        if let Some(batch) = batches
-            .iter_mut()
-            .find(|batch| can_decode_as_repeated_full_metal_batch(&batch[0], &request))
-        {
-            batch.push(request);
+        if let Some(batch) = batches.iter_mut().find(|batch| {
+            batch.route == BatchRoute::Generic
+                && can_decode_as_repeated_full_metal_batch(&batch.requests[0], &request)
+        }) {
+            batch.requests.push(request);
         } else {
-            batches.push(vec![request]);
+            batches.push(GroupedRequests::generic(vec![request]));
         }
     }
     batches
 }
 
 fn coalesce_distinct_full_grayscale_metal_requests(
-    repeated_batches: Vec<Vec<QueuedRequest>>,
-) -> Vec<Vec<QueuedRequest>> {
+    repeated_batches: Vec<GroupedRequests>,
+) -> Vec<GroupedRequests> {
     let mut batches = Vec::new();
     let mut gray8 = Vec::new();
     let mut gray16 = Vec::new();
 
     for batch in repeated_batches {
-        if batch.len() == 1 && is_distinct_full_grayscale_metal_candidate(&batch[0]) {
+        if batch.route == BatchRoute::Generic
+            && batch.requests.len() == 1
+            && is_distinct_full_grayscale_metal_candidate(&batch.requests[0])
+        {
             let request = batch
+                .requests
                 .into_iter()
                 .next()
                 .expect("single-entry batch has request");
@@ -242,8 +272,8 @@ fn coalesce_distinct_full_grayscale_metal_requests(
 }
 
 fn coalesce_distinct_region_scaled_direct_metal_requests(
-    repeated_batches: Vec<Vec<QueuedRequest>>,
-) -> Vec<Vec<QueuedRequest>> {
+    repeated_batches: Vec<GroupedRequests>,
+) -> Vec<GroupedRequests> {
     let mut batches = Vec::new();
     let mut metal_by_format: [Vec<QueuedRequest>; REGION_SCALED_DIRECT_FORMATS.len()] =
         std::array::from_fn(|_| Vec::new());
@@ -251,8 +281,12 @@ fn coalesce_distinct_region_scaled_direct_metal_requests(
         std::array::from_fn(|_| Vec::new());
 
     for batch in repeated_batches {
-        if batch.len() == 1 && is_region_scaled_direct_batch_candidate(&batch[0]) {
+        if batch.route == BatchRoute::Generic
+            && batch.requests.len() == 1
+            && is_region_scaled_direct_batch_candidate(&batch.requests[0])
+        {
             let request = batch
+                .requests
                 .into_iter()
                 .next()
                 .expect("single-entry batch has request");
@@ -277,23 +311,38 @@ fn coalesce_distinct_region_scaled_direct_metal_requests(
     batches
 }
 
-fn push_coalesced_or_single(batches: &mut Vec<Vec<QueuedRequest>>, requests: Vec<QueuedRequest>) {
+fn push_coalesced_or_single(batches: &mut Vec<GroupedRequests>, requests: Vec<QueuedRequest>) {
+    push_coalesced_or_single_with_route(batches, requests, BatchRoute::Generic);
+}
+
+fn push_coalesced_or_single_with_route(
+    batches: &mut Vec<GroupedRequests>,
+    requests: Vec<QueuedRequest>,
+    route: BatchRoute,
+) {
     if requests.is_empty() {
         return;
     }
     if requests.len() == 1 {
-        batches.extend(requests.into_iter().map(|request| vec![request]));
+        batches.extend(requests.into_iter().map(|request| GroupedRequests {
+            route,
+            requests: vec![request],
+        }));
     } else {
-        batches.push(requests);
+        batches.push(GroupedRequests { route, requests });
     }
 }
 
 fn push_auto_region_scaled_direct_batches(
-    batches: &mut Vec<Vec<QueuedRequest>>,
+    batches: &mut Vec<GroupedRequests>,
     requests: Vec<QueuedRequest>,
 ) {
-    let Some(min_dim) = auto_region_scaled_direct_metal_min_dim(&requests) else {
-        push_coalesced_or_single(batches, requests);
+    let Some(classification) = auto_region_scaled_direct_metal_classification(&requests) else {
+        push_coalesced_or_single_with_route(
+            batches,
+            requests,
+            BatchRoute::AutoRegionScaledDirectCpu,
+        );
         return;
     };
 
@@ -302,29 +351,37 @@ fn push_auto_region_scaled_direct_batches(
     for request in requests {
         if request
             .max_image_dim()
-            .is_some_and(|max_dim| max_dim >= min_dim)
+            .is_some_and(|max_dim| max_dim >= classification.min_dim)
         {
             metal_requests.push(request);
         } else {
             cpu_requests.push(request);
         }
     }
-    push_coalesced_or_single(batches, metal_requests);
-    push_coalesced_or_single(batches, cpu_requests);
+    push_coalesced_or_single_with_route(batches, metal_requests, classification.route);
+    push_coalesced_or_single_with_route(
+        batches,
+        cpu_requests,
+        BatchRoute::AutoRegionScaledDirectCpu,
+    );
 }
 
 #[allow(clippy::similar_names)]
 fn coalesce_distinct_full_color_metal_requests(
-    repeated_batches: Vec<Vec<QueuedRequest>>,
-) -> Vec<Vec<QueuedRequest>> {
+    repeated_batches: Vec<GroupedRequests>,
+) -> Vec<GroupedRequests> {
     let mut batches = Vec::new();
     let mut rgb8 = Vec::new();
     let mut rgba8 = Vec::new();
     let mut rgb16 = Vec::new();
 
     for batch in repeated_batches {
-        if batch.len() == 1 && is_distinct_full_color_metal_candidate(&batch[0]) {
+        if batch.route == BatchRoute::Generic
+            && batch.requests.len() == 1
+            && is_distinct_full_color_metal_candidate(&batch.requests[0])
+        {
             let request = batch
+                .requests
                 .into_iter()
                 .next()
                 .expect("single-entry batch has request");
@@ -345,12 +402,16 @@ fn coalesce_distinct_full_color_metal_requests(
     batches
 }
 
-fn coalesce_cpu_host_batches(batches: Vec<Vec<QueuedRequest>>) -> Vec<Vec<QueuedRequest>> {
-    let mut coalesced: Vec<Vec<QueuedRequest>> = Vec::new();
+fn coalesce_cpu_host_batches(batches: Vec<GroupedRequests>) -> Vec<GroupedRequests> {
+    let mut coalesced: Vec<GroupedRequests> = Vec::new();
     let mut cpu_groups: Vec<Vec<QueuedRequest>> = Vec::new();
     for batch in batches {
-        if batch.len() == 1 && is_cpu_host_batch_candidate(&batch[0]) {
+        if batch.route == BatchRoute::Generic
+            && batch.requests.len() == 1
+            && is_cpu_host_batch_candidate(&batch.requests[0])
+        {
             let request = batch
+                .requests
                 .into_iter()
                 .next()
                 .expect("single-entry batch has request");
@@ -366,7 +427,7 @@ fn coalesce_cpu_host_batches(batches: Vec<Vec<QueuedRequest>>) -> Vec<Vec<Queued
             coalesced.push(batch);
         }
     }
-    coalesced.extend(cpu_groups);
+    coalesced.extend(cpu_groups.into_iter().map(GroupedRequests::generic));
     coalesced
 }
 
@@ -475,7 +536,20 @@ fn should_auto_use_metal_for_region_scaled_direct_batch(requests: &[QueuedReques
     auto_region_scaled_direct_metal_min_dim(requests).is_some()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoRegionScaledDirectMetalClassification {
+    min_dim: u32,
+    route: BatchRoute,
+}
+
 fn auto_region_scaled_direct_metal_min_dim(requests: &[QueuedRequest]) -> Option<u32> {
+    auto_region_scaled_direct_metal_classification(requests)
+        .map(|classification| classification.min_dim)
+}
+
+fn auto_region_scaled_direct_metal_classification(
+    requests: &[QueuedRequest],
+) -> Option<AutoRegionScaledDirectMetalClassification> {
     let first = requests.first()?;
     let is_repeated_rgb = matches!(
         first.fmt,
@@ -497,7 +571,10 @@ fn auto_region_scaled_direct_metal_min_dim(requests: &[QueuedRequest]) -> Option
             })
             .count();
         if repeated_rgb_eligible >= AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT {
-            return Some(AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM);
+            return Some(AutoRegionScaledDirectMetalClassification {
+                min_dim: AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
+                route: BatchRoute::AutoRepeatedRegionScaledDirectMetal,
+            });
         }
     }
 
@@ -516,9 +593,15 @@ fn auto_region_scaled_direct_metal_min_dim(requests: &[QueuedRequest]) -> Option
     }
 
     if count_512_class >= AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_COUNT {
-        Some(AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM)
+        Some(AutoRegionScaledDirectMetalClassification {
+            min_dim: AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM,
+            route: BatchRoute::AutoRegionScaledDirectMetal,
+        })
     } else if count_1024_class >= AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT {
-        Some(AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM)
+        Some(AutoRegionScaledDirectMetalClassification {
+            min_dim: AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
+            route: BatchRoute::AutoRegionScaledDirectMetal,
+        })
     } else {
         None
     }
@@ -571,7 +654,54 @@ fn can_decode_requests_as_repeated_full_color_batch(requests: &[QueuedRequest]) 
             .all(|request| can_decode_as_repeated_full_color_batch(first, request))
 }
 
-fn process_batch(session: &mut SessionState, requests: Vec<QueuedRequest>) {
+fn complete_cpu_host_fallback(session: &mut SessionState, requests: Vec<QueuedRequest>) {
+    if requests.len() > 1 {
+        if let Some(Ok(surfaces)) = decode_cpu_host_batch(&requests) {
+            if surfaces.len() == requests.len() {
+                session.submissions = session.submissions.saturating_add(1);
+                for (request, surface) in requests.into_iter().zip(surfaces) {
+                    session.completed[request.output_slot] = Some(Ok(surface));
+                }
+                return;
+            }
+        }
+    }
+    for request in requests {
+        session.submissions = session.submissions.saturating_add(1);
+        session.completed[request.output_slot] = Some(decode_individual(&request));
+    }
+}
+
+fn process_batch(session: &mut SessionState, grouped: GroupedRequests) {
+    let GroupedRequests { route, requests } = grouped;
+    if route == BatchRoute::AutoRegionScaledDirectCpu {
+        complete_cpu_host_fallback(session, requests);
+        return;
+    }
+
+    if matches!(
+        route,
+        BatchRoute::AutoRegionScaledDirectMetal | BatchRoute::AutoRepeatedRegionScaledDirectMetal
+    ) && requests.len() > 1
+    {
+        let decoded = if route == BatchRoute::AutoRepeatedRegionScaledDirectMetal {
+            decode_repeated_region_scaled_direct_batch_prechecked(&requests)
+        } else {
+            decode_distinct_region_scaled_direct_batch_prechecked(&requests)
+        };
+        if let Some(Ok(surfaces)) = decoded {
+            if surfaces.len() == requests.len() {
+                session.submissions = session.submissions.saturating_add(1);
+                for (request, surface) in requests.into_iter().zip(surfaces) {
+                    session.completed[request.output_slot] = Some(Ok(surface));
+                }
+                return;
+            }
+        }
+        complete_cpu_host_fallback(session, requests);
+        return;
+    }
+
     if can_decode_requests_as_repeated_full_grayscale_batch(&requests) {
         if let Some(Ok(surfaces)) = decode_repeated_full_grayscale(&requests[0], requests.len()) {
             if surfaces.len() == requests.len() {
@@ -900,6 +1030,53 @@ fn decode_distinct_full_color_batch(
 fn decode_distinct_region_scaled_direct_batch(
     requests: &[QueuedRequest],
 ) -> Option<Result<Vec<Surface>, Error>> {
+    decode_distinct_region_scaled_direct_batch_inner(requests, false)
+}
+
+fn decode_repeated_region_scaled_direct_batch_prechecked(
+    requests: &[QueuedRequest],
+) -> Option<Result<Vec<Surface>, Error>> {
+    let first = requests.first()?;
+    if requests.len() <= 1 {
+        return None;
+    }
+    let BatchOp::RegionScaled { roi, scale } = first.op else {
+        return None;
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let result = match first.fmt {
+            PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
+                crate::hybrid::decode_repeated_region_scaled_color_batch_direct_to_device(
+                    first.input.as_ref(),
+                    roi,
+                    scale,
+                    first.fmt,
+                    requests.len(),
+                )
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+fn decode_distinct_region_scaled_direct_batch_prechecked(
+    requests: &[QueuedRequest],
+) -> Option<Result<Vec<Surface>, Error>> {
+    decode_distinct_region_scaled_direct_batch_inner(requests, true)
+}
+
+fn decode_distinct_region_scaled_direct_batch_inner(
+    requests: &[QueuedRequest],
+    auto_metal_prechecked: bool,
+) -> Option<Result<Vec<Surface>, Error>> {
     let first = requests.first()?;
     if requests.len() <= 1
         || !requests.iter().all(|request| {
@@ -911,6 +1088,7 @@ fn decode_distinct_region_scaled_direct_batch(
         return None;
     }
     if first.backend == BackendRequest::Auto
+        && !auto_metal_prechecked
         && !should_auto_use_metal_for_region_scaled_direct_batch(requests)
     {
         return None;
@@ -1068,5 +1246,101 @@ mod tests {
         assert!(same_input_bytes(&first, &next));
         assert!(!first.input_fingerprint_cache_filled_for_test());
         assert!(!next.input_fingerprint_cache_filled_for_test());
+    }
+
+    #[test]
+    fn auto_region_scaled_grouping_preserves_repeated_rgb_metal_decision() {
+        let shared = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
+        let requests = (0..AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT)
+            .map(|_| {
+                auto_rgb_region_scaled_request_with_max_dim(
+                    shared.clone(),
+                    AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let grouped = group_metal_requests(requests);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(
+            grouped[0].route,
+            BatchRoute::AutoRepeatedRegionScaledDirectMetal
+        );
+        assert_eq!(
+            grouped[0].requests.len(),
+            AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT
+        );
+        assert!(
+            grouped[0]
+                .requests
+                .iter()
+                .all(|request| !request.input_fingerprint_cache_filled_for_test()),
+            "shared repeated inputs should be classified by Arc identity without fingerprinting"
+        );
+    }
+
+    #[test]
+    fn auto_region_scaled_distinct_rgb_grouping_preserves_cpu_decision() {
+        let requests = (0..AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT)
+            .map(|idx| {
+                auto_rgb_region_scaled_request_with_max_dim(
+                    Arc::from([idx as u8]),
+                    AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_DIM,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let grouped = group_metal_requests(requests);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].route, BatchRoute::AutoRegionScaledDirectCpu);
+        assert_eq!(
+            grouped[0].requests.len(),
+            AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn auto_region_scaled_prechecked_error_does_not_retry_generic_direct_path() {
+        crate::hybrid::reset_region_scaled_color_plan_builds_for_test();
+        let shared = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
+        let requests = (0..AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_COUNT)
+            .map(|slot| {
+                let mut request = auto_rgb_region_scaled_request_with_max_dim(
+                    shared.clone(),
+                    AUTO_REGION_SCALED_DIRECT_REPEATED_RGB_MIN_DIM,
+                );
+                request.output_slot = slot;
+                request
+            })
+            .collect::<Vec<_>>();
+        let mut session = SessionState {
+            submissions: 0,
+            queued: Vec::new(),
+            completed: (0..requests.len()).map(|_| None).collect(),
+        };
+
+        process_batch(
+            &mut session,
+            GroupedRequests {
+                route: BatchRoute::AutoRepeatedRegionScaledDirectMetal,
+                requests,
+            },
+        );
+
+        assert_eq!(
+            crate::hybrid::region_scaled_color_plan_builds_for_test(),
+            1,
+            "failed prechecked Auto Metal routing should fall back to CPU without retrying generic direct Metal"
+        );
+        assert!(
+            session
+                .completed
+                .iter()
+                .all(|result| matches!(result, Some(Err(_)))),
+            "invalid inputs should be surfaced on every fallback request"
+        );
     }
 }

@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use signinum_cuda_runtime::CudaContext;
+use signinum_cuda_runtime::{CudaContext, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables};
+#[cfg(feature = "cuda-runtime")]
+use signinum_j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
+#[cfg(all(test, feature = "cuda-runtime"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 #[cfg(feature = "cuda-runtime")]
 use crate::Error;
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+static HTJ2K_DECODE_TABLE_UPLOADS: AtomicUsize = AtomicUsize::new(0);
 
 /// Mutable CUDA adapter session reused across submissions.
 #[derive(Clone, Default)]
@@ -14,6 +21,8 @@ pub struct CudaSession {
     submissions: u64,
     #[cfg(feature = "cuda-runtime")]
     context: Option<CudaContext>,
+    #[cfg(feature = "cuda-runtime")]
+    htj2k_decode_tables: Option<CudaHtj2kDecodeTableResources>,
 }
 
 impl CudaSession {
@@ -39,6 +48,40 @@ impl CudaSession {
         }
         self.context.clone().ok_or(Error::CudaUnavailable)
     }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn htj2k_decode_table_resources(
+        &mut self,
+    ) -> Result<CudaHtj2kDecodeTableResources, Error> {
+        if let Some(tables) = &self.htj2k_decode_tables {
+            return Ok(tables.clone());
+        }
+
+        let context = self.cuda_context()?;
+        let tables = CudaHtj2kDecodeTables {
+            vlc_table0: ht_vlc_table0(),
+            vlc_table1: ht_vlc_table1(),
+            uvlc_table0: ht_uvlc_table0(),
+            uvlc_table1: ht_uvlc_table1(),
+        };
+        let resources = context
+            .upload_htj2k_decode_table_resources(tables)
+            .map_err(cuda_error)?;
+        #[cfg(test)]
+        HTJ2K_DECODE_TABLE_UPLOADS.fetch_add(1, Ordering::Relaxed);
+        self.htj2k_decode_tables = Some(resources.clone());
+        Ok(resources)
+    }
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+pub(crate) fn reset_htj2k_decode_table_uploads_for_test() {
+    HTJ2K_DECODE_TABLE_UPLOADS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+pub(crate) fn htj2k_decode_table_uploads_for_test() -> usize {
+    HTJ2K_DECODE_TABLE_UPLOADS.load(Ordering::Relaxed)
 }
 
 impl std::fmt::Debug for CudaSession {
@@ -47,6 +90,42 @@ impl std::fmt::Debug for CudaSession {
         debug.field("submissions", &self.submissions);
         #[cfg(feature = "cuda-runtime")]
         debug.field("runtime_initialized", &self.is_runtime_initialized());
+        #[cfg(feature = "cuda-runtime")]
+        debug.field(
+            "htj2k_decode_tables_cached",
+            &self.htj2k_decode_tables.is_some(),
+        );
         debug.finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod tests {
+    use super::CudaSession;
+    use crate::Error;
+
+    fn cuda_required() -> bool {
+        std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
+    }
+
+    #[test]
+    fn htj2k_decode_tables_are_uploaded_once_per_session() {
+        crate::session::reset_htj2k_decode_table_uploads_for_test();
+        let mut session = CudaSession::default();
+
+        let first = session.htj2k_decode_table_resources();
+        if matches!(
+            first,
+            Err(Error::CudaUnavailable | Error::CudaRuntime { .. })
+        ) && !cuda_required()
+        {
+            return;
+        }
+        first.expect("first HTJ2K decode table upload");
+        session
+            .htj2k_decode_table_resources()
+            .expect("cached HTJ2K decode tables");
+
+        assert_eq!(crate::session::htj2k_decode_table_uploads_for_test(), 1);
     }
 }

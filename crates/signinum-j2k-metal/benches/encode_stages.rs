@@ -295,7 +295,7 @@ fn bench_encode_stages(c: &mut Criterion) {
                         // MetalLosslessEncodeBatchStats; the RGB8 single-tile
                         // row above uses host-output reports and cannot emit
                         // RCA stage buckets without adding broader API plumbing.
-                        emit_resident_stats("htj2k_rpcl_rgb8_512_batch", outcome.stats);
+                        emit_resident_stats("htj2k_rpcl_rgb8_512_batch", &outcome.stats);
                         black_box(outcome.stats)
                     });
                 },
@@ -305,7 +305,7 @@ fn bench_encode_stages(c: &mut Criterion) {
     }
 }
 
-fn emit_resident_stats(label: &str, stats: signinum_j2k_metal::MetalLosslessEncodeBatchStats) {
+fn emit_resident_stats(label: &str, stats: &signinum_j2k_metal::MetalLosslessEncodeBatchStats) {
     if std::env::var_os("SIGNINUM_J2K_METAL_PROFILE_STAGES").is_none() {
         return;
     }

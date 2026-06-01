@@ -21,6 +21,24 @@ comparator availability, comparator version, comparator path, and skipped rows.
 Rows skipped because a comparator is unavailable are development diagnostics,
 not evidence for public claims.
 
+## Profiling tool policy
+
+Use `samply` for portable CPU sampling artifacts and quick cross-host RCA, but
+do not treat it as the deepest available profiler on every platform.
+
+- macOS CPU and Metal signoff work should include Apple-native profiling when
+  the toolchain is available: `cargo-instruments` if installed, otherwise
+  `xcrun xctrace` directly with `Time Profiler`, `Allocations` when memory
+  behavior is under review, and `Metal System Trace` for GPU scheduling,
+  command-buffer, and driver-level Metal work.
+- Linux CPU deep dives should use raw `perf` data plus Hotspot or an equivalent
+  viewer when hardware-counter evidence such as cache misses or branch
+  mispredicts matters.
+- CUDA self-hosted runner work comes after local CPU and CPU/Metal evidence for
+  the same slice. CUDA runs should use the GitHub self-hosted runner, and real
+  `samply` collection requires `kernel.perf_event_paranoid <= 1` or an
+  equivalent runner setup that permits Linux perf sampling.
+
 Before copying benchmark numbers into public docs or release notes, generate a
 benchmark publication report and store it with the raw benchmark output:
 
