@@ -512,6 +512,7 @@ fn cuda_decode_profile_workflow_exports_rca_artifacts() {
         "SIGNINUM_REQUIRE_CUDA_BENCH: \"1\"",
         "SIGNINUM_J2K_PROFILE_STAGES: summary",
         "SIGNINUM_J2K_CUDA_TRACE: target/cuda_htj2k_decode_trace.json",
+        "/proc/sys/kernel/perf_event_paranoid",
         "cargo install samply --version 0.13.1 --locked",
         "samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz",
         "--features cuda-runtime,cuda-profiling",

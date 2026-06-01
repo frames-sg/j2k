@@ -145,6 +145,8 @@ full stage dump is needed instead of summary output. Keep the generated
 `target/cuda_htj2k_decode_trace.json`,
 `target/cuda_htj2k_decode_samply.json.gz`, and `target/criterion` together
 with the workflow run URL when updating checked-in gate records.
+The workflow lowers `/proc/sys/kernel/perf_event_paranoid` to `1` when needed
+before invoking `samply`; a local non-root run needs the same kernel setting.
 
 Direct nvJPEG2000 decode comparison command:
 
