@@ -38,6 +38,8 @@ numbers and CUDA runner numbers are separate evidence sets.
 Evidence:
 
 - Commit: `65b3921`
+- Supersedes the older same-date Metal RGB8 HTJ2K encode evidence below for
+  overlapping RGB8 512/1024 shapes.
 - Host: MacBook Pro `Mac16,8`, macOS 26.5 build 25F71, Darwin 25.5.0,
   arm64, Apple M4 Pro 12-core CPU, 16-core GPU, 48 GiB RAM, Metal 4.
 - Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
@@ -58,9 +60,9 @@ Stage Criterion evidence:
 
 | Stage / Shape | CPU | Metal | Gate |
 | --- | ---: | ---: | --- |
-| RCT 512 | `88.956 us .. 92.536 us` | `211.84 us .. 241.96 us` | `blocked` |
-| RCT 1024 | `380.71 us .. 395.41 us` | `671.99 us .. 954.58 us` | `blocked` |
-| RCT 2048 | `1.6764 ms .. 1.7454 ms` | `2.0384 ms .. 2.4412 ms` | `blocked` |
+| RCT 512 | `88.956 us .. 92.536 us` | `211.84 us .. 241.96 us` | `reclassified-cpu` |
+| RCT 1024 | `380.71 us .. 395.41 us` | `671.99 us .. 954.58 us` | `reclassified-cpu` |
+| RCT 2048 | `1.6764 ms .. 1.7454 ms` | `2.0384 ms .. 2.4412 ms` | `reclassified-cpu` |
 | DWT 512 | `1.0081 ms .. 1.0408 ms` | `233.08 us .. 250.68 us` | `candidate` |
 | DWT 1024 | `5.0448 ms .. 5.2933 ms` | `639.35 us .. 852.23 us` | `candidate` |
 | DWT 2048 | `25.844 ms .. 28.346 ms` | `2.9085 ms .. 3.3051 ms` | `candidate` |
@@ -85,6 +87,8 @@ Encode-path evidence:
 
 Resident RCA profile rows:
 
+Raw `sync_wait_us` profile fields are converted to milliseconds in this table.
+
 | Tile count | Code blocks | Coefficient prep observed | Command encode observed | Sync wait observed | RCA |
 | ---: | ---: | ---: | ---: | ---: | --- |
 | 16 | 3072 | `226 us .. 740 us`, median `327 us` | HT median `8 us`, packet prep `3 us`, packetization `2 us`, assembly `1 us` | `99.872 ms .. 103.931 ms`, median `100.316 ms` | sync/wait dominates |
@@ -104,7 +108,7 @@ RCA:
 
 - Root cause class: resident synchronization / route-composition overhead.
 - Evidence: isolated DWT and HT code-block rows are faster on Metal, but strict
-  resident end-to-end encode and the public facade rows lose badly.
+  resident end-to-end encode and the facade gate rows lose badly.
 - The new resident profile rows narrow the loss: HT command encoding,
   packet-block prep, packetization, and codestream assembly command encoding are
   microsecond-scale, while `sync_wait_us` is roughly `100 ms .. 162 ms`.
