@@ -42,15 +42,21 @@ cargo run --release -p signinum-nvidia-baseline \
   --features nvjpeg2000 --bin transcode_compare -- tile0.jpg tile1.jpg ...
 ```
 
-Direct nvJPEG2000 decode comparison uses HTJ2K/J2K codestream inputs. With no
-file arguments it generates 512-pixel Gray8 and RGB8 HTJ2K fixtures:
+Direct nvJPEG2000 decode comparison uses HTJ2K/J2K codestream inputs. On the
+CUDA runner, pass the pathology JPEG tile directory so the comparator first
+uses NVIDIA's encoder to produce HTJ2K inputs, then measures signinum CPU,
+signinum CUDA, and NVIDIA direct decode on the same codestreams:
 
 ```bash
 cargo run --release -p signinum-nvidia-baseline \
   --features nvjpeg2000 --bin decode_compare -- \
+  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
   --json target/decode_compare.json \
   --csv target/decode_compare.csv
 ```
+
+With neither `--jpeg-dir` nor file arguments, it generates 512-pixel Gray8 and
+RGB8 HTJ2K fixtures.
 
 With no file arguments and no `SIGNINUM_BENCH_JPEG_DIR`, `transcode_compare`
 falls back to a tiny bundled 16×16 fixture (a build/link smoke test, not a

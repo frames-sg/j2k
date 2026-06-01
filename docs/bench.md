@@ -112,7 +112,8 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
   Criterion output, including when the bench fails.
 - Direct NVIDIA decode comparison is part of `run-nvidia-baseline=true`.
   The workflow runs `signinum-nvidia-baseline --bin decode_compare` against
-  generated 512-pixel Gray8/RGB8 HTJ2K codestreams and uploads
+  NVIDIA-generated HTJ2K codestreams from the selected pathology JPEG tile
+  corpus and uploads
   `target/decode_compare.json` plus `target/decode_compare.csv` next to the
   JPEG -> HTJ2K transcode baseline artifacts.
 - The release-blocking matrix must include representative Gray/RGB/RGBA,
@@ -151,7 +152,7 @@ Direct nvJPEG2000 decode comparison command:
 SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
 cargo run --release -p signinum-nvidia-baseline \
   --features nvjpeg2000 --bin decode_compare -- \
-  --fixture-dim 512 \
+  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
   --warmup 2 \
   --iterations 10 \
   --min-inputs 2 \

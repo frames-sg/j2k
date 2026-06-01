@@ -80,6 +80,7 @@ fn main() {
 #[derive(Debug, Clone)]
 struct Config {
     inputs: Vec<PathBuf>,
+    jpeg_dir: Option<PathBuf>,
     json: Option<PathBuf>,
     csv: Option<PathBuf>,
     fixture_dim: u32,
@@ -100,6 +101,7 @@ impl Config {
     {
         let mut config = Self {
             inputs: Vec::new(),
+            jpeg_dir: None,
             json: None,
             csv: None,
             fixture_dim: DEFAULT_FIXTURE_DIM,
@@ -112,6 +114,7 @@ impl Config {
             match arg.as_str() {
                 "--json" => config.json = Some(next_path(&mut iter, "--json")?),
                 "--csv" => config.csv = Some(next_path(&mut iter, "--csv")?),
+                "--jpeg-dir" => config.jpeg_dir = Some(next_path(&mut iter, "--jpeg-dir")?),
                 "--fixture-dim" => {
                     config.fixture_dim = next_parse(&mut iter, "--fixture-dim")?;
                     if config.fixture_dim == 0 {
@@ -156,7 +159,7 @@ where
 }
 
 fn usage() -> String {
-    "usage: decode_compare [--fixture-dim n] [--warmup n] [--iterations n] [--min-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
+    "usage: decode_compare [--fixture-dim n] [--jpeg-dir path] [--warmup n] [--iterations n] [--min-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +209,9 @@ struct DecodeInput {
 }
 
 fn load_inputs(config: &Config) -> Result<Vec<DecodeInput>, String> {
+    if let Some(jpeg_dir) = &config.jpeg_dir {
+        return load_nvidia_htj2k_from_jpeg_dir(jpeg_dir, config.min_inputs.max(1));
+    }
     if config.inputs.is_empty() {
         return generated_inputs(config.fixture_dim);
     }
@@ -214,6 +220,58 @@ fn load_inputs(config: &Config) -> Result<Vec<DecodeInput>, String> {
         .iter()
         .map(|path| load_input_path(path))
         .collect()
+}
+
+fn load_nvidia_htj2k_from_jpeg_dir(
+    jpeg_dir: &Path,
+    target_count: usize,
+) -> Result<Vec<DecodeInput>, String> {
+    let mut jpeg_paths = fs::read_dir(jpeg_dir)
+        .map_err(|error| format!("{}: {error}", jpeg_dir.display()))?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let is_jpeg = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")
+                });
+            is_jpeg.then_some(path)
+        })
+        .collect::<Vec<_>>();
+    jpeg_paths.sort();
+    if jpeg_paths.is_empty() {
+        return Err(format!("{}: no JPEG inputs found", jpeg_dir.display()));
+    }
+
+    let mut session = NvBaselineSession::new()
+        .map_err(|error| format!("NVIDIA baseline session required for --jpeg-dir: {error:?}"))?;
+    let mut inputs = Vec::with_capacity(target_count.min(jpeg_paths.len()));
+    for path in jpeg_paths.into_iter().take(target_count) {
+        let jpeg = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let encoded = session
+            .transcode_jpeg_to_htj2k(&jpeg)
+            .map_err(|error| format!("{} NVIDIA HTJ2K transcode: {error:?}", path.display()))?;
+        if encoded.num_components != 3 {
+            return Err(format!(
+                "{} NVIDIA HTJ2K transcode returned {} component(s), expected RGB",
+                path.display(),
+                encoded.num_components
+            ));
+        }
+        let label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("input.jpg");
+        inputs.push(DecodeInput {
+            label: format!("nvidia_htj2k:{label}"),
+            bytes: encoded.codestream,
+            width: encoded.width,
+            height: encoded.height,
+            format: DecodeCaseFormat::Rgb8,
+        });
+    }
+    Ok(inputs)
 }
 
 fn generated_inputs(dim: u32) -> Result<Vec<DecodeInput>, String> {
@@ -733,6 +791,8 @@ mod tests {
         let config = Config::from_args([
             "--fixture-dim",
             "256",
+            "--jpeg-dir",
+            "crates/signinum-nvidia-baseline/benchtiles/pancreas",
             "--warmup",
             "1",
             "--iterations",
@@ -747,6 +807,12 @@ mod tests {
         .expect("config parses");
 
         assert_eq!(config.fixture_dim, 256);
+        assert_eq!(
+            config.jpeg_dir.as_deref(),
+            Some(std::path::Path::new(
+                "crates/signinum-nvidia-baseline/benchtiles/pancreas"
+            ))
+        );
         assert_eq!(config.warmup, 1);
         assert_eq!(config.iterations, 3);
         assert_eq!(config.min_inputs, 2);

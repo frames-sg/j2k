@@ -100,7 +100,7 @@ The direct decode command is:
 SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
 cargo run --release -p signinum-nvidia-baseline \
   --features nvjpeg2000 --bin decode_compare -- \
-  --fixture-dim 512 \
+  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
   --warmup 2 \
   --iterations 10 \
   --min-inputs 2 \

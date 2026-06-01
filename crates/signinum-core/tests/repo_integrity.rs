@@ -544,7 +544,7 @@ fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
         "run-nvidia-baseline",
         "--bin transcode_compare",
         "--bin decode_compare",
-        "--fixture-dim 512",
+        "--jpeg-dir \"${SIGNINUM_BENCH_JPEG_DIR}\"",
         "--min-inputs 2",
         "target/decode_compare.json",
         "target/decode_compare.csv",
