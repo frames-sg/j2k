@@ -429,21 +429,32 @@ impl Row {
 
 fn run_comparison(inputs: &[DecodeInput], config: &Config) -> Vec<Row> {
     let mut rows = Vec::with_capacity(inputs.len());
+    let cpu_results = inputs
+        .iter()
+        .map(|input| timed_best(config, || decode_cpu(input)))
+        .collect::<Vec<_>>();
+
+    // Keep the nvJPEG2000 decode session isolated from Signinum's CUDA Driver
+    // context. Some CUDA runtime/nvJPEG2000 stacks fail decode after another
+    // Driver API context has been made current in the same process.
+    let mut nvidia_session = NvBaselineSession::new().ok();
+    let nvidia_results = inputs
+        .iter()
+        .map(|input| match nvidia_session.as_mut() {
+            Some(session) => timed_best(config, || decode_nvidia(session, input)),
+            None => TimedStatus::failed(nvidia_unavailable_status()),
+        })
+        .collect::<Vec<_>>();
+
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
     let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
-    let mut nvidia_session = NvBaselineSession::new().ok();
-    for input in inputs {
-        let cpu = timed_best(config, || decode_cpu(input));
+    for ((input, cpu), nvidia) in inputs.iter().zip(cpu_results).zip(nvidia_results) {
         #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
         let signinum_cuda = timed_best(config, || {
             decode_signinum_cuda(&mut signinum_cuda_session, input)
         });
         #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
         let signinum_cuda = timed_best(config, || decode_signinum_cuda(input));
-        let nvidia = match nvidia_session.as_mut() {
-            Some(session) => timed_best(config, || decode_nvidia(session, input)),
-            None => TimedStatus::failed(nvidia_unavailable_status()),
-        };
         let cpu_pixels = cpu.result.as_ref().map(|result| result.pixels.as_slice());
         let signinum_cuda_psnr_vs_cpu = cpu_pixels
             .zip(
