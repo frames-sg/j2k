@@ -107,9 +107,10 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
 - CUDA HTJ2K decode RCA/profile evidence is collected through the
   `gpu-validation.yml` workflow dispatch input
   `run-cuda-htj2k-decode-profile`. It runs the strict CUDA decode bench with
-  `samply`, stage summaries, and CUDA trace export. The artifact contains a
-  tee'd console log, CUDA trace JSON, `samply` Firefox Profiler profile, and
-  Criterion output, including when the bench fails.
+  `samply` when Linux perf permissions allow it, stage summaries, and CUDA
+  trace export. The artifact contains a tee'd console log, CUDA trace JSON,
+  samply status file, Criterion output, and, when available, the `samply`
+  Firefox Profiler profile.
 - Direct NVIDIA decode comparison is part of `run-nvidia-baseline=true`.
   The workflow runs `signinum-nvidia-baseline --bin decode_compare` against
   NVIDIA-generated HTJ2K codestreams from the selected pathology JPEG tile
@@ -143,10 +144,14 @@ samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz -- \
 full stage dump is needed instead of summary output. Keep the generated
 `target/cuda_htj2k_decode_profile.log`,
 `target/cuda_htj2k_decode_trace.json`,
-`target/cuda_htj2k_decode_samply.json.gz`, and `target/criterion` together
+`target/cuda_htj2k_decode_samply.json.gz`,
+`target/cuda_htj2k_decode_samply_status.txt`, and `target/criterion` together
 with the workflow run URL when updating checked-in gate records.
 The workflow lowers `/proc/sys/kernel/perf_event_paranoid` to `1` when needed
-before invoking `samply`; a local non-root run needs the same kernel setting.
+before invoking `samply` when the runner permits direct writes or passwordless
+sudo. If it cannot lower the setting, it records `samply_status=blocked` and
+still runs the decode bench with stage summaries and CUDA trace export. A local
+non-root run needs the same kernel setting for a real `samply` CPU profile.
 
 Direct nvJPEG2000 decode comparison command:
 
