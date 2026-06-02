@@ -35,6 +35,16 @@ Interpretation:
   now runs the HT block encoder on CUDA with strict nonzero dispatch gates, but
   the present shape does not beat the CPU Tier-1 implementation.
 
+Scope note:
+
+This note covers the JPEG DCT-grid to HTJ2K 9/7 resident-HT experiment on the
+pancreas transcode corpus. It is not the same workload as the public facade's
+lossless host-pixel RGB/RGBA8 HTJ2K Auto gate. The facade gate uses separate
+lossless host-output measurements and may select CUDA DWT plus CUDA HT block
+coding for large 8-bit RGB/RGBA tiles while keeping MCT/RCT and packetization on
+CPU. Do not use the 9/7 transcode row in this note to disable that lossless
+facade route without re-running the matching facade benchmark.
+
 ## What Improved
 
 Before these changes, the CUDA HT experimental row was about 202 ms wall-clock
@@ -73,6 +83,7 @@ resident structure more closely:
   per subband group.
 
 Until that resident packetization/codestream stage exists, the supported
-production claim should stay conservative: Signinum CUDA transform + CPU HT is
-the fastest Signinum row on the measured corpus, and both Signinum rows beat the
-NVIDIA reused-session serial baseline at matched bytes.
+production claim for this JPEG DCT-grid 9/7 transcode corpus should stay
+conservative: Signinum CUDA transform + CPU HT is the fastest Signinum row on
+the measured corpus, and both Signinum rows beat the NVIDIA reused-session
+serial baseline at matched bytes.

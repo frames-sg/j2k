@@ -291,7 +291,7 @@ fn load_inputs(config: &BenchmarkConfig) -> std::io::Result<Vec<JpegInput>> {
     if paths.is_empty() {
         // Bundled sanity fixture (tiny/unrepresentative — for a smoke test only).
         let bytes = include_bytes!(
-            "../../../signinum-transcode-cuda/tests/fixtures/conformance/baseline_420_16x16.jpg"
+            "../../../../crates/signinum-transcode-cuda/tests/fixtures/conformance/baseline_420_16x16.jpg"
         )
         .to_vec();
         eprintln!("warning: no inputs given; using the bundled 16x16 fixture (not representative)");

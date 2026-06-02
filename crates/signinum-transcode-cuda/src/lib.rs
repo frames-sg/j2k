@@ -34,6 +34,10 @@ pub const CUDA_UNAVAILABLE: &str = "CUDA is unavailable on this host";
 
 /// Default minimum component sample count before Auto mode offers a job to CUDA.
 const DEFAULT_AUTO_MIN_SAMPLES: usize = 224 * 224;
+const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
+const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
+const DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS: usize = 32;
+const DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
 
 /// Error returned by the CUDA transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +90,10 @@ enum CudaDispatchMode {
 pub struct CudaDctToWaveletStageAccelerator {
     mode: CudaDispatchMode,
     min_auto_samples: usize,
+    min_auto_reversible_batch_jobs: usize,
+    min_auto_reversible_batch_samples: usize,
+    min_auto_dwt97_batch_jobs: usize,
+    min_auto_dwt97_batch_samples: usize,
     reversible_dwt53_attempts: usize,
     reversible_dwt53_dispatches: usize,
     reversible_dwt53_batch_attempts: usize,
@@ -125,13 +133,23 @@ impl CudaDctToWaveletStageAccelerator {
     /// unsupported jobs.
     #[must_use]
     pub const fn for_auto() -> Self {
-        Self::with_mode(CudaDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES)
+        Self {
+            min_auto_reversible_batch_jobs: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS,
+            min_auto_reversible_batch_samples: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES,
+            min_auto_dwt97_batch_jobs: DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS,
+            min_auto_dwt97_batch_samples: DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES,
+            ..Self::with_mode(CudaDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES)
+        }
     }
 
     const fn with_mode(mode: CudaDispatchMode, min_auto_samples: usize) -> Self {
         Self {
             mode,
             min_auto_samples,
+            min_auto_reversible_batch_jobs: 0,
+            min_auto_reversible_batch_samples: 0,
+            min_auto_dwt97_batch_jobs: 0,
+            min_auto_dwt97_batch_samples: 0,
             reversible_dwt53_attempts: 0,
             reversible_dwt53_dispatches: 0,
             reversible_dwt53_batch_attempts: 0,
@@ -147,6 +165,32 @@ impl CudaDctToWaveletStageAccelerator {
             last_dwt97_batch_stage_timings: None,
             resident_ht_encode: false,
         }
+    }
+
+    /// Override the reversible 5/3 batch thresholds used before Auto mode
+    /// dispatches a batch to CUDA.
+    #[must_use]
+    pub const fn with_auto_reversible_batch_thresholds(
+        mut self,
+        min_jobs: usize,
+        min_samples: usize,
+    ) -> Self {
+        self.min_auto_reversible_batch_jobs = min_jobs;
+        self.min_auto_reversible_batch_samples = min_samples;
+        self
+    }
+
+    /// Override the 9/7 batch thresholds used before Auto mode dispatches a
+    /// same-geometry batch to CUDA.
+    #[must_use]
+    pub const fn with_auto_dwt97_batch_thresholds(
+        mut self,
+        min_jobs: usize,
+        min_samples: usize,
+    ) -> Self {
+        self.min_auto_dwt97_batch_jobs = min_jobs;
+        self.min_auto_dwt97_batch_samples = min_samples;
+        self
     }
 
     /// Number of reversible 5/3 jobs offered to this accelerator.
@@ -243,6 +287,24 @@ impl CudaDctToWaveletStageAccelerator {
     }
 }
 
+fn reversible_batch_total_samples(jobs: &[DctGridToReversibleDwt53Job<'_>]) -> usize {
+    jobs.iter().fold(0usize, |total, job| {
+        total.saturating_add(job.width.saturating_mul(job.height))
+    })
+}
+
+fn dwt97_batch_total_samples(jobs: &[DctGridToDwt97Job<'_>]) -> usize {
+    jobs.iter().fold(0usize, |total, job| {
+        total.saturating_add(job.width.saturating_mul(job.height))
+    })
+}
+
+fn htj2k97_codeblock_batch_total_samples(jobs: &[DctGridToHtj2k97CodeBlockJob<'_>]) -> usize {
+    jobs.iter().fold(0usize, |total, job| {
+        total.saturating_add(job.width.saturating_mul(job.height))
+    })
+}
+
 impl Default for CudaDctToWaveletStageAccelerator {
     fn default() -> Self {
         Self::for_auto()
@@ -303,9 +365,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(Some(Vec::new()));
         }
         if self.mode == CudaDispatchMode::Auto
-            && jobs
-                .iter()
-                .all(|job| job.width.saturating_mul(job.height) < self.min_auto_samples)
+            && (jobs.len() < self.min_auto_reversible_batch_jobs
+                || reversible_batch_total_samples(jobs) < self.min_auto_reversible_batch_samples)
         {
             return Ok(None);
         }
@@ -400,9 +461,8 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
             return Ok(Some(Vec::new()));
         }
         if self.mode == CudaDispatchMode::Auto
-            && jobs
-                .iter()
-                .all(|job| job.width.saturating_mul(job.height) < self.min_auto_samples)
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || dwt97_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
         {
             return Ok(None);
         }
@@ -440,6 +500,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
+        }
+        if self.mode == CudaDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
         }
 
         #[cfg(not(feature = "cuda-runtime"))]
@@ -480,6 +546,12 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         if jobs.is_empty() {
             return Ok(Some(Vec::new()));
         }
+        if self.mode == CudaDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || htj2k97_codeblock_batch_total_samples(jobs) < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
 
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -510,6 +582,18 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_htj2k97_codeblock_options() -> Htj2k97CodeBlockOptions {
+        Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                signinum_transcode::accelerator::IrreversibleQuantizationSubbandScales::default(),
+        }
+    }
 
     #[test]
     fn explicit_mode_without_cuda_runtime_errors_on_reversible_job() {
@@ -558,5 +642,68 @@ mod tests {
             accelerator.dct_grid_to_dwt97_batch(&[]),
             Ok(Some(Vec::new()))
         );
+    }
+
+    #[test]
+    fn auto_mode_declines_under_amortized_reversible_batches() {
+        let mut accelerator = CudaDctToWaveletStageAccelerator::for_auto()
+            .with_auto_reversible_batch_thresholds(2, 224 * 224 * 2);
+        let blocks = vec![[0i16; 64]; 256 * 256 / 64];
+        let job = DctGridToReversibleDwt53Job {
+            dequantized_blocks: &blocks,
+            block_cols: 32,
+            block_rows: 32,
+            width: 256,
+            height: 256,
+        };
+
+        assert_eq!(
+            accelerator.dct_grid_to_reversible_dwt53_batch(&[job]),
+            Ok(None)
+        );
+        assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
+        assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 0);
+    }
+
+    #[test]
+    fn auto_mode_declines_under_amortized_dwt97_batches() {
+        let mut accelerator = CudaDctToWaveletStageAccelerator::for_auto()
+            .with_auto_dwt97_batch_thresholds(2, 224 * 224 * 2);
+        let blocks = vec![[[0.0f64; 8]; 8]; 256 * 256 / 64];
+        let job = DctGridToDwt97Job {
+            blocks: &blocks,
+            block_cols: 32,
+            block_rows: 32,
+            width: 256,
+            height: 256,
+        };
+
+        assert_eq!(accelerator.dct_grid_to_dwt97_batch(&[job]), Ok(None));
+        assert_eq!(accelerator.dwt97_batch_attempts(), 1);
+        assert_eq!(accelerator.dwt97_batch_dispatches(), 0);
+    }
+
+    #[test]
+    fn auto_mode_declines_under_amortized_htj2k97_codeblock_batches() {
+        let mut accelerator = CudaDctToWaveletStageAccelerator::for_auto()
+            .with_auto_dwt97_batch_thresholds(2, 224 * 224 * 2);
+        let blocks = vec![[[0.0f64; 8]; 8]; 256 * 256 / 64];
+        let job = DctGridToHtj2k97CodeBlockJob {
+            blocks: &blocks,
+            block_cols: 32,
+            block_rows: 32,
+            width: 256,
+            height: 256,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        };
+
+        let result = accelerator
+            .dct_grid_to_htj2k97_codeblock_batch(&[job], test_htj2k97_codeblock_options());
+        assert!(matches!(result, Ok(None)));
+        assert_eq!(accelerator.dwt97_batch_attempts(), 1);
+        assert_eq!(accelerator.dwt97_batch_dispatches(), 0);
+        assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 1);
+        assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 0);
     }
 }

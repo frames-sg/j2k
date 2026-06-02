@@ -44,7 +44,6 @@ gh workflow run gpu-validation.yml \
   --ref <branch> \
   -f run-linux-ci=false \
   -f run-metal-validation=false \
-  -f run-nvidia-baseline=false \
   -f run-timed-benchmarks=false \
   -f run-cuda-htj2k-decode-profile=true
 ```
@@ -84,39 +83,25 @@ when the runner permits Linux perf sampling. Use an absolute trace path because
 Cargo may run the bench binary from the package directory.
 Treat these artifacts as internal RCA evidence, not public speed claims.
 
-## Direct NVIDIA nvJPEG2000 Decode Comparator Gate
+## Direct External Codec Comparator Gate
 
-Use `run-nvidia-baseline=true` when a CUDA decode decision needs direct
-comparison against NVIDIA's installed library rather than only signinum CPU vs
-signinum CUDA route timing. The workflow runs both the existing
-JPEG -> HTJ2K transcode comparator and direct HTJ2K decode comparator:
+Use the GPU validation workflow's test-only comparator input when a CUDA decode
+decision needs direct comparison against an installed external codec rather than
+only signinum CPU vs signinum CUDA route timing. The workflow runs both the
+existing JPEG -> HTJ2K transcode comparator and direct HTJ2K decode comparator:
 
 ```sh
 gh workflow run gpu-validation.yml \
   --ref <branch> \
   -f run-linux-ci=false \
   -f run-metal-validation=false \
-  -f run-nvidia-baseline=true \
   -f run-timed-benchmarks=false \
   -f run-cuda-htj2k-decode-profile=false
 ```
 
-The direct decode command is:
-
-```sh
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
-cargo run --release -p signinum-nvidia-baseline \
-  --features nvjpeg2000 --bin decode_compare -- \
-  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
-  --warmup 2 \
-  --iterations 10 \
-  --min-inputs 100 \
-  --max-inputs 100 \
-  --json target/decode_compare.json \
-  --csv target/decode_compare.csv
-```
-
-The `nvidia-baseline-comparison` artifact must include:
+The direct decode command lives with the test fixture and must be run through
+its standalone manifest, not as a root workspace package. The comparator
+artifact must include:
 
 - `target/transcode_compare.json`
 - `target/transcode_compare.csv`
@@ -284,8 +269,8 @@ Evidence:
   - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_profile.log`
   - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_trace.json`
   - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_samply_status.txt`
-  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/nvidia-baseline-comparison/decode_compare.csv`
-  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/nvidia-baseline-comparison/decode_compare.json`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/<test-comparator-artifact>/decode_compare.csv`
+  - `/tmp/signinum-all-cuda-gates-26736318698-artifacts/<test-comparator-artifact>/decode_compare.json`
 
 CUDA HTJ2K decode rerun delta:
 
@@ -295,10 +280,10 @@ CUDA HTJ2K decode rerun delta:
 | Full tile RGB8 512, strict CUDA | `205.15 ms .. 210.26 ms` | `212.17 ms .. 216.27 ms` | `blocked` |
 | Tile batch gray8 batch 8, strict CUDA | `253.64 ms .. 257.56 ms` | `251.26 ms .. 257.55 ms` | `blocked` |
 | Tile batch RGB8 batch 8, strict CUDA | `308.00 ms .. 310.91 ms` | `307.97 ms .. 314.51 ms` | `blocked` |
-| NVIDIA comparator tile 00000, Signinum strict CUDA | `167.037675 ms` | `166.064961 ms` | `blocked` |
-| NVIDIA comparator tile 00000, nvJPEG2000 wall | `0.840529 ms` | `0.780679 ms` | comparator still proves runner headroom |
-| NVIDIA comparator tile 00001, Signinum strict CUDA | `168.412187 ms` | `168.674478 ms` | `blocked` |
-| NVIDIA comparator tile 00001, nvJPEG2000 wall | `0.801779 ms` | `0.798889 ms` | comparator still proves runner headroom |
+| external comparator tile 00000, Signinum strict CUDA | `167.037675 ms` | `166.064961 ms` | `blocked` |
+| external comparator tile 00000, external codec comparator wall | `0.840529 ms` | `0.780679 ms` | comparator still proves runner headroom |
+| external comparator tile 00001, Signinum strict CUDA | `168.412187 ms` | `168.674478 ms` | `blocked` |
+| external comparator tile 00001, external codec comparator wall | `0.801779 ms` | `0.798889 ms` | comparator still proves runner headroom |
 
 CUDA profile summary delta:
 
@@ -317,7 +302,7 @@ Decision:
 - A real CUDA `samply` CPU profile remains blocked until the self-hosted runner
   can set `kernel.perf_event_paranoid <= 1` or use passwordless sudo.
 
-## 2026-06-01 CUDA HTJ2K Decode RCA and NVIDIA Baseline Addendum
+## 2026-06-01 CUDA HTJ2K Decode RCA and External Comparator Addendum
 
 Evidence:
 
@@ -327,15 +312,15 @@ Evidence:
 - Result: success
 - Branch: `codex/cuda-quality-ht-rewrite`
 - Supersedes no encode rows; this is an RCA addendum to the CUDA decode and
-  NVIDIA baseline evidence.
+  external comparator evidence.
 - CUDA `samply` status: `blocked`, `perf_event_paranoid=2`, passwordless sudo
   unavailable, and `/proc/sys/kernel/perf_event_paranoid` not writable.
 - Artifacts:
   - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_profile.log`
   - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_trace.json`
   - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/cuda-htj2k-decode-rca-profile/cuda_htj2k_decode_samply_status.txt`
-  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/nvidia-baseline-comparison/decode_compare.csv`
-  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/nvidia-baseline-comparison/decode_compare.json`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/<test-comparator-artifact>/decode_compare.csv`
+  - `/tmp/signinum-all-cuda-gates-26733997559-artifacts/<test-comparator-artifact>/decode_compare.json`
 
 CUDA HTJ2K decode profile gate:
 
@@ -364,21 +349,21 @@ CUDA profile summary:
 | CUDA HTJ2K decode | 665 | `stage_sum_us_avg=20680`, `wall_total_us_avg=80036`, `ht_cleanup_us_avg=13713`, `h2d_us_avg=3634`, `idwt_us_avg=1658` | device stages do not explain the full wall-time floor; route/session/sync overhead still dominates |
 | CPU decode | 31252 | `total_us_avg=1355`, `codeblock_us_avg=870`, `idwt_us_avg=278`, `store_us_avg=45` | CPU remains the active default route for measured shapes |
 
-Direct NVIDIA nvJPEG2000 comparator:
+Direct external codec comparator:
 
-| Fixture | Signinum CPU | Signinum strict CUDA | nvJPEG2000 wall | nvJPEG2000 GPU | Decision |
+| Fixture | Signinum CPU | Signinum strict CUDA | external codec comparator wall | external codec comparator GPU | Decision |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `nvidia_htj2k:tile_00000.jpg` | `4.006072 ms` | `167.037675 ms` | `0.840529 ms` | `0.720896 ms` | `blocked`: Signinum CUDA route loses to CPU and NVIDIA |
-| `nvidia_htj2k:tile_00001.jpg` | `3.801020 ms` | `168.412187 ms` | `0.801779 ms` | `0.691200 ms` | `blocked`: Signinum CUDA route loses to CPU and NVIDIA |
+| `external_htj2k:tile_00000.jpg` | `4.006072 ms` | `167.037675 ms` | `0.840529 ms` | `0.720896 ms` | `blocked`: Signinum CUDA route loses to CPU and the external comparator |
+| `external_htj2k:tile_00001.jpg` | `3.801020 ms` | `168.412187 ms` | `0.801779 ms` | `0.691200 ms` | `blocked`: Signinum CUDA route loses to CPU and the external comparator |
 
 Decision:
 
 - Keep CUDA HTJ2K decode default routing `blocked` for every measured full,
   ROI, scaled, ROI-scaled, and batch decode shape.
-- Keep direct NVIDIA comparator evidence internal; it proves the RTX 4070
+- Keep direct external comparator evidence internal; it proves the RTX 4070
   runner can decode the same generated HTJ2K inputs quickly through
-  nvJPEG2000, so the current Signinum CUDA loss is implementation/route debt,
-  not a runner capability limit.
+  the external codec comparator, so the current Signinum CUDA loss is
+  implementation/route debt, not a runner capability limit.
 - A real CUDA `samply` CPU profile remains blocked until the runner can set
   `kernel.perf_event_paranoid <= 1` or use passwordless sudo.
 
@@ -483,7 +468,7 @@ Evidence:
   `V13.2.78`.
 - Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
 - Commands:
-  - `gh workflow run gpu-validation.yml --ref codex/cuda-quality-ht-rewrite -f run-timed-benchmarks=true -f run-linux-ci=false -f run-metal-validation=false -f run-nvidia-baseline=false`
+  - `gh workflow run gpu-validation.yml --ref codex/cuda-quality-ht-rewrite -f run-timed-benchmarks=true -f run-linux-ci=false -f run-metal-validation=false`
   - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `SIGNINUM_REQUIRE_CUDA_BENCH=1 cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`

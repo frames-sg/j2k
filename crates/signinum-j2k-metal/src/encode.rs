@@ -673,6 +673,7 @@ impl MetalEncodedJ2k {
             EncodedJ2k {
                 codestream,
                 backend: BackendKind::Metal,
+                dispatch_report: J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
                 components: self.components,
@@ -2979,16 +2980,16 @@ fn wait_submitted_resident_lossless_buffer_encode_batch(
             {
                 let wait_started = compute::metal_profile_stages_enabled().then(Instant::now);
                 let mut chunk_metadatas = Vec::with_capacity(chunks.len());
-                let mut pendings = Vec::with_capacity(chunks.len());
+                let mut pending_batches = Vec::with_capacity(chunks.len());
                 for chunk in chunks {
                     chunk_metadatas.push((
                         chunk.metadatas,
                         chunk.prepare_durations,
                         chunk.batch_started,
                     ));
-                    pendings.push(chunk.pending);
+                    pending_batches.push(chunk.pending);
                 }
-                let batches = compute::wait_resident_lossless_codestream_batches(pendings)?;
+                let batches = compute::wait_resident_lossless_codestream_batches(pending_batches)?;
                 if let Some(started) = wait_started {
                     let elapsed = started.elapsed();
                     submitted.stats.stage_stats.codestream_wait_duration = submitted
@@ -4664,8 +4665,8 @@ mod tests {
     };
     use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
     use signinum_j2k_native::{
-        encode_with_accelerator, DecodeSettings, EncodeOptions, Image, J2kEncodeStageAccelerator,
-        J2kForwardRctJob,
+        encode_with_accelerator, DecodeSettings, EncodeOptions, Image, J2kEncodeDispatchReport,
+        J2kEncodeStageAccelerator, J2kForwardRctJob,
     };
     #[cfg(target_os = "macos")]
     use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
@@ -4949,6 +4950,7 @@ mod tests {
             encoded: EncodedJ2k {
                 codestream: Vec::new(),
                 backend: signinum_core::BackendKind::Metal,
+                dispatch_report: J2kEncodeDispatchReport::default(),
                 width: 0,
                 height: 0,
                 components: 1,

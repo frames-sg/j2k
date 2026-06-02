@@ -129,10 +129,10 @@ JPEG 2000 / HTJ2K adaptive backend behavior:
   trace export. The artifact contains a tee'd console log, CUDA trace JSON,
   samply status file, Criterion output, and, when available, the `samply`
   Firefox Profiler profile.
-- Direct NVIDIA decode comparison is part of `run-nvidia-baseline=true`.
-  The workflow runs `signinum-nvidia-baseline --bin decode_compare` against
-  NVIDIA-generated HTJ2K codestreams from the selected pathology JPEG tile
-  corpus and uploads
+- Direct external codec decode comparison is part of the GPU validation
+  workflow's opt-in test comparator path. The workflow runs the test-only
+  comparator binary against generated HTJ2K codestreams from the selected
+  pathology JPEG tile corpus and uploads
   `target/decode_compare.json` plus `target/decode_compare.csv` next to the
   JPEG -> HTJ2K transcode baseline artifacts.
 - The release-blocking matrix must include representative Gray/RGB/RGBA,
@@ -173,26 +173,16 @@ non-root run needs the same kernel setting for a real `samply` CPU profile.
 Use an absolute `SIGNINUM_J2K_CUDA_TRACE` path because Cargo may run the bench
 binary with the package directory as its working directory.
 
-Direct nvJPEG2000 decode comparison command:
-
-```sh
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 \
-cargo run --release -p signinum-nvidia-baseline \
-  --features nvjpeg2000 --bin decode_compare -- \
-  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
-  --warmup 2 \
-  --iterations 10 \
-  --min-inputs 100 \
-  --max-inputs 100 \
-  --json target/decode_compare.json \
-  --csv target/decode_compare.csv
-```
+Direct external codec comparator decode comparison is intentionally documented
+with the test fixture instead of as a root workspace package command. Run it
+only through the standalone test manifest.
 
 The JSON/CSV report includes signinum CPU decode, strict signinum CUDA decode
-with host download, signinum CUDA kernel/stage timings, and direct nvJPEG2000
-decode wall/GPU timings for each fixture. `--min-inputs` is the acceptance
-floor; `--max-inputs` is the workload cap. This gate is an internal comparator
-against NVIDIA's library, not a replacement for the Criterion route gates above.
+with host download, signinum CUDA kernel/stage timings, and direct external
+codec comparator decode wall/GPU timings for each fixture. `--min-inputs` is the
+acceptance floor; `--max-inputs` is the workload cap. This gate is an internal
+comparator against an external CUDA codec library, not a replacement for the
+Criterion route gates above.
 
 ## Compared operations
 

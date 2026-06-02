@@ -2417,6 +2417,7 @@ pub signinum_j2k::EncodedJ2k::backend: signinum_core::backend::BackendKind
 pub signinum_j2k::EncodedJ2k::bit_depth: u8
 pub signinum_j2k::EncodedJ2k::codestream: alloc::vec::Vec<u8>
 pub signinum_j2k::EncodedJ2k::components: u8
+pub signinum_j2k::EncodedJ2k::dispatch_report: signinum_j2k_native::J2kEncodeDispatchReport
 pub signinum_j2k::EncodedJ2k::height: u32
 pub signinum_j2k::EncodedJ2k::signed: bool
 pub signinum_j2k::EncodedJ2k::width: u32
@@ -2425,6 +2426,7 @@ pub signinum_j2k::EncodedLossyJ2k::backend: signinum_core::backend::BackendKind
 pub signinum_j2k::EncodedLossyJ2k::bit_depth: u8
 pub signinum_j2k::EncodedLossyJ2k::codestream: alloc::vec::Vec<u8>
 pub signinum_j2k::EncodedLossyJ2k::components: u8
+pub signinum_j2k::EncodedLossyJ2k::dispatch_report: signinum_j2k_native::J2kEncodeDispatchReport
 pub signinum_j2k::EncodedLossyJ2k::height: u32
 pub signinum_j2k::EncodedLossyJ2k::report: signinum_j2k::J2kLossyEncodeReport
 pub signinum_j2k::EncodedLossyJ2k::signed: bool
@@ -3028,6 +3030,7 @@ pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_forward_dwt53(&mu
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_forward_rct(&mut self, signinum_j2k_native::J2kForwardRctJob<'_>) -> core::result::Result<bool, &'static str>
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_block(&mut self, signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<signinum_j2k_native::EncodedHtJ2kCodeBlock>, &'static str>
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_ht_code_blocks(&mut self, &[signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str>
+pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_htj2k_tile(&mut self, signinum_j2k_native::J2kHtj2kTileEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_packetization(&mut self, signinum_j2k_native::J2kPacketizationEncodeJob<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, &'static str>
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_block(&mut self, signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>) -> core::result::Result<core::option::Option<signinum_j2k_native::EncodedJ2kCodeBlock>, &'static str>
 pub fn signinum_j2k_metal::MetalEncodeStageAccelerator::encode_tier1_code_blocks(&mut self, &[signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::EncodedJ2kCodeBlock>>, &'static str>
@@ -3345,6 +3348,7 @@ impl signinum_j2k_cuda::CudaEncodeStageAccelerator
 pub const fn signinum_j2k_cuda::CudaEncodeStageAccelerator::collected_stage_timings(&self) -> signinum_j2k_cuda::CudaEncodeStageTimings
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::deinterleave_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::deinterleave_dispatches(&self) -> usize
+pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::for_auto_host_output() -> Self
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::forward_dwt53_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::forward_dwt53_dispatches(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::forward_dwt97_attempts(&self) -> usize
@@ -3357,6 +3361,7 @@ pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::ht_code_block_attempts(&se
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::ht_code_block_dispatches(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::packetization_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::packetization_dispatches(&self) -> usize
+pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_forward_rct(self, bool) -> Self
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_packetization(self, bool) -> Self
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::quantize_subband_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::quantize_subband_dispatches(&self) -> usize

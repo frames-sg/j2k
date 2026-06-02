@@ -73,3 +73,22 @@ fn dct97_benchmark_groups_are_stable() {
         );
     }
 }
+
+#[test]
+fn dct97_benchmark_emits_transcode_batch_profile_rows() {
+    for expected in [
+        "SIGNINUM_TRANSCODE_METAL_PROFILE_STAGES",
+        "emit_transcode_batch_profile",
+        "signinum_profile codec=transcode op=transcode_batch path=metal",
+        "jpeg_dct_extract_us",
+        "dct_to_wavelet_total_us",
+        "htj2k_encode_us",
+        "accelerator_dispatches",
+        "cpu_fallback_jobs",
+    ] {
+        assert!(
+            DCT97_BENCH.contains(expected),
+            "missing transcode batch profile marker {expected}"
+        );
+    }
+}

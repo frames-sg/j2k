@@ -41,7 +41,7 @@ The current public-source target is the `signinum` facade release. Runtime backe
   readers that bring their own I/O, cache, and pyramid policy.
 - Experimental coefficient-domain JPEG DCT to HTJ2K transcoding in
   `signinum-transcode`, including native JPEG component sampling and optional
-  hybrid Metal acceleration in `signinum-transcode-metal`.
+  hybrid Metal/CUDA acceleration in the matching transcode adapter crates.
 
 ## Which crate should I use?
 
@@ -57,6 +57,7 @@ The current public-source target is the `signinum` facade release. Runtime backe
 | CUDA device-memory output | `signinum-jpeg-cuda`, `signinum-j2k-cuda`, plus the adapter `cuda-runtime` feature | `cargo add signinum-jpeg-cuda --features cuda-runtime` or `cargo add signinum-j2k-cuda --features cuda-runtime` |
 | Experimental JPEG DCT to HTJ2K coefficient transcode | `signinum-transcode` | `cargo add signinum-transcode` |
 | Hybrid Metal acceleration for JPEG DCT to HTJ2K transcode | `signinum-transcode-metal` | `cargo add signinum-transcode-metal` |
+| Hybrid CUDA acceleration for JPEG DCT to HTJ2K transcode | `signinum-transcode-cuda`, plus the adapter `cuda-runtime` feature | `cargo add signinum-transcode-cuda --features cuda-runtime` |
 
 Most application code should start with the facade:
 
@@ -226,6 +227,9 @@ part of the stable facade surface. The promotion gate is documented in
 path: JPEG parsing, entropy decode, dequantization, scheduling, and HTJ2K
 assembly stay on CPU/Rayon while supported DCT-grid to wavelet stages can run on
 Metal.
+`signinum-transcode-cuda` provides the matching CUDA stage accelerator for
+supported transform and fused 9/7 code-block batch paths when built with
+`cuda-runtime`.
 
 `signinum-tilecodec` provides tile decompression primitives:
 

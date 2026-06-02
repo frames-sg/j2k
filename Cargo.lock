@@ -1026,19 +1026,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signinum-nvidia-baseline"
-version = "0.4.4"
-dependencies = [
- "signinum-core",
- "signinum-j2k-cuda",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-transcode",
- "signinum-transcode-cuda",
- "signinum-transcode-metal",
-]
-
-[[package]]
 name = "signinum-profile"
 version = "0.4.4"
 

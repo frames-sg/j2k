@@ -881,7 +881,7 @@ fn decode_to_cuda_resident_surface_impl(
     session: &mut CudaSession,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
-    decode_to_cuda_resident_surface_with_profile_impl(decoder, session, fmt)
+    decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, false)
         .map(|(surface, _report)| surface)
 }
 
@@ -891,13 +891,36 @@ fn decode_to_cuda_resident_surface_with_profile_impl(
     session: &mut CudaSession,
     fmt: PixelFormat,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
-    let wall_started = profile::profile_now(true);
+    decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, true)
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn decode_to_cuda_resident_surface_with_profile_control(
+    decoder: &mut J2kDecoder<'_>,
+    session: &mut CudaSession,
+    fmt: PixelFormat,
+    collect_stage_timings: bool,
+) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
+    let collect_stage_timings = collect_stage_timings || profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 => {
-            decode_grayscale_cuda_resident_surface_with_profile(decoder, session, fmt, wall_started)
+            decode_grayscale_cuda_resident_surface_with_profile(
+                decoder,
+                session,
+                fmt,
+                wall_started,
+                collect_stage_timings,
+            )
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
-            decode_color_cuda_resident_surface_with_profile(decoder, session, fmt, wall_started)
+            decode_color_cuda_resident_surface_with_profile(
+                decoder,
+                session,
+                fmt,
+                wall_started,
+                collect_stage_timings,
+            )
         }
         _ => Err(Error::UnsupportedCudaRequest {
             reason: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
@@ -1014,6 +1037,7 @@ fn decode_grayscale_cuda_resident_surface_with_profile(
     session: &mut CudaSession,
     fmt: PixelFormat,
     wall_started: Option<profile::ProfileInstant>,
+    collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let (plan, mut report) = decoder.build_cuda_htj2k_grayscale_plan_with_profile(fmt)?;
     decode_grayscale_cuda_resident_surface_with_plan_profile(
@@ -1022,6 +1046,7 @@ fn decode_grayscale_cuda_resident_surface_with_profile(
         &plan,
         &mut report,
         wall_started,
+        collect_stage_timings,
     )
 }
 
@@ -1032,7 +1057,8 @@ fn decode_grayscale_cuda_resident_region_surface(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let (plan, mut report) =
         decoder.build_cuda_htj2k_grayscale_region_plan_with_profile(fmt, roi)?;
     decode_grayscale_cuda_resident_surface_with_plan_profile(
@@ -1041,6 +1067,7 @@ fn decode_grayscale_cuda_resident_region_surface(
         &plan,
         &mut report,
         wall_started,
+        collect_stage_timings,
     )
     .map(|(surface, _report)| surface)
 }
@@ -1052,7 +1079,8 @@ fn decode_grayscale_cuda_resident_scaled_surface(
     fmt: PixelFormat,
     output_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let (plan, mut report) =
         decoder.build_cuda_htj2k_grayscale_scaled_plan_with_profile(fmt, output_dimensions)?;
     decode_grayscale_cuda_resident_surface_with_plan_profile(
@@ -1061,6 +1089,7 @@ fn decode_grayscale_cuda_resident_scaled_surface(
         &plan,
         &mut report,
         wall_started,
+        collect_stage_timings,
     )
     .map(|(surface, _report)| surface)
 }
@@ -1073,7 +1102,8 @@ fn decode_grayscale_cuda_resident_region_scaled_surface(
     scaled_roi: Rect,
     scaled_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let (plan, mut report) = decoder.build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
         fmt,
         scaled_roi,
@@ -1085,6 +1115,7 @@ fn decode_grayscale_cuda_resident_region_scaled_surface(
         &plan,
         &mut report,
         wall_started,
+        collect_stage_timings,
     )
     .map(|(surface, _report)| surface)
 }
@@ -1096,9 +1127,10 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
     plan: &CudaHtj2kDecodePlan,
     report: &mut CudaHtj2kProfileReport,
     wall_started: Option<profile::ProfileInstant>,
+    collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let context = session.cuda_context()?;
-    let table_upload_start = profile::profile_now(true);
+    let table_upload_start = profile::profile_now(collect_stage_timings);
     let table_resources = session.htj2k_decode_table_resources()?;
     let table_upload_us = profile::elapsed_us(table_upload_start);
     report.h2d_us = report.h2d_us.saturating_add(table_upload_us);
@@ -1106,50 +1138,55 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
         .detail
         .table_upload_us
         .saturating_add(table_upload_us);
-    let component = decode_cuda_component_plan(&context, plan, &table_resources)?;
+    let component =
+        decode_cuda_component_plan(&context, plan, &table_resources, collect_stage_timings)?;
     let input_width = component
         .store
         .input_rect
         .x1
         .saturating_sub(component.store.input_rect.x0);
     let (store_output, store_us) = context
-        .time_default_stream_named_us("signinum.htj2k.decode.store.gray", || match fmt {
-            PixelFormat::Gray8 => context.j2k_store_gray8_device(
-                &component.buffer,
-                CudaJ2kStoreGray8Job {
-                    input_width,
-                    source_x: component.store.source_x,
-                    source_y: component.store.source_y,
-                    copy_width: component.store.copy_width,
-                    copy_height: component.store.copy_height,
-                    output_width: component.store.output_width,
-                    output_height: component.store.output_height,
-                    output_x: component.store.output_x,
-                    output_y: component.store.output_y,
-                    addend: component.store.addend,
-                    bit_depth: u32::from(plan.bit_depth()),
-                },
-            ),
-            PixelFormat::Gray16 => context.j2k_store_gray16_device(
-                &component.buffer,
-                CudaJ2kStoreGray16Job {
-                    input_width,
-                    source_x: component.store.source_x,
-                    source_y: component.store.source_y,
-                    copy_width: component.store.copy_width,
-                    copy_height: component.store.copy_height,
-                    output_width: component.store.output_width,
-                    output_height: component.store.output_height,
-                    output_x: component.store.output_x,
-                    output_y: component.store.output_y,
-                    addend: component.store.addend,
-                    bit_depth: u32::from(plan.bit_depth()),
-                },
-            ),
-            _ => {
-                unreachable!("validated grayscale CUDA output format");
-            }
-        })
+        .time_default_stream_named_us_if(
+            collect_stage_timings,
+            "signinum.htj2k.decode.store.gray",
+            || match fmt {
+                PixelFormat::Gray8 => context.j2k_store_gray8_device(
+                    &component.buffer,
+                    CudaJ2kStoreGray8Job {
+                        input_width,
+                        source_x: component.store.source_x,
+                        source_y: component.store.source_y,
+                        copy_width: component.store.copy_width,
+                        copy_height: component.store.copy_height,
+                        output_width: component.store.output_width,
+                        output_height: component.store.output_height,
+                        output_x: component.store.output_x,
+                        output_y: component.store.output_y,
+                        addend: component.store.addend,
+                        bit_depth: u32::from(plan.bit_depth()),
+                    },
+                ),
+                PixelFormat::Gray16 => context.j2k_store_gray16_device(
+                    &component.buffer,
+                    CudaJ2kStoreGray16Job {
+                        input_width,
+                        source_x: component.store.source_x,
+                        source_y: component.store.source_y,
+                        copy_width: component.store.copy_width,
+                        copy_height: component.store.copy_height,
+                        output_width: component.store.output_width,
+                        output_height: component.store.output_height,
+                        output_x: component.store.output_x,
+                        output_y: component.store.output_y,
+                        addend: component.store.addend,
+                        bit_depth: u32::from(plan.bit_depth()),
+                    },
+                ),
+                _ => {
+                    unreachable!("validated grayscale CUDA output format");
+                }
+            },
+        )
         .map_err(cuda_error)?;
     let (surface_buffer, store_stats) = store_output.into_parts();
     let dispatches = component
@@ -1192,9 +1229,16 @@ fn decode_color_cuda_resident_surface_with_profile(
     session: &mut CudaSession,
     fmt: PixelFormat,
     wall_started: Option<profile::ProfileInstant>,
+    collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     let color = decoder.build_cuda_htj2k_color_plans_with_profile(fmt)?;
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
+    decode_color_cuda_resident_surface_with_plans_profile(
+        session,
+        fmt,
+        color,
+        wall_started,
+        collect_stage_timings,
+    )
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1204,10 +1248,17 @@ fn decode_color_cuda_resident_scaled_surface(
     fmt: PixelFormat,
     output_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let color = decoder.build_cuda_htj2k_color_scaled_plans_with_profile(fmt, output_dimensions)?;
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
-        .map(|(surface, _report)| surface)
+    decode_color_cuda_resident_surface_with_plans_profile(
+        session,
+        fmt,
+        color,
+        wall_started,
+        collect_stage_timings,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1217,10 +1268,17 @@ fn decode_color_cuda_resident_region_surface(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let color = decoder.build_cuda_htj2k_color_region_plans_with_profile(fmt, roi)?;
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
-        .map(|(surface, _report)| surface)
+    decode_color_cuda_resident_surface_with_plans_profile(
+        session,
+        fmt,
+        color,
+        wall_started,
+        collect_stage_timings,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1231,14 +1289,21 @@ fn decode_color_cuda_resident_region_scaled_surface(
     scaled_roi: Rect,
     scaled_dimensions: (u32, u32),
 ) -> Result<Surface, Error> {
-    let wall_started = profile::profile_now(true);
+    let collect_stage_timings = profile::profile_stages_enabled();
+    let wall_started = profile::profile_now(collect_stage_timings);
     let color = decoder.build_cuda_htj2k_color_region_scaled_plans_with_profile(
         fmt,
         scaled_roi,
         scaled_dimensions,
     )?;
-    decode_color_cuda_resident_surface_with_plans_profile(session, fmt, color, wall_started)
-        .map(|(surface, _report)| surface)
+    decode_color_cuda_resident_surface_with_plans_profile(
+        session,
+        fmt,
+        color,
+        wall_started,
+        collect_stage_timings,
+    )
+    .map(|(surface, _report)| surface)
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -1247,6 +1312,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
     fmt: PixelFormat,
     mut color: CudaHtj2kColorDecodePlans,
     wall_started: Option<profile::ProfileInstant>,
+    collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
     if color.components.len() != 3 {
         return Err(Error::UnsupportedCudaRequest {
@@ -1254,7 +1320,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         });
     }
     let context = session.cuda_context()?;
-    let table_upload_start = profile::profile_now(true);
+    let table_upload_start = profile::profile_now(collect_stage_timings);
     let table_resources = session.htj2k_decode_table_resources()?;
     let table_upload_us = profile::elapsed_us(table_upload_start);
     color.report.h2d_us = color.report.h2d_us.saturating_add(table_upload_us);
@@ -1263,7 +1329,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .detail
         .table_upload_us
         .saturating_add(table_upload_us);
-    let payload_upload_start = profile::profile_now(true);
+    let payload_upload_start = profile::profile_now(collect_stage_timings);
     let decode_resources = context
         .upload_htj2k_decode_resources_with_tables(&color.payload, &table_resources)
         .map_err(cuda_error)?;
@@ -1275,6 +1341,7 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
             &context,
             plan,
             &decode_resources,
+            collect_stage_timings,
         )?);
     }
     let [component0, component1, component2] = decoded_components.as_slice() else {
@@ -1307,22 +1374,26 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
             reason: CUDA_HTJ2K_KERNELS_NOT_READY,
         })?;
         let stats = context
-            .time_default_stream_named_us("signinum.htj2k.decode.mct", || {
-                context.j2k_inverse_mct_device(
-                    &component0.buffer,
-                    &component1.buffer,
-                    &component2.buffer,
-                    CudaJ2kInverseMctJob {
-                        len: mct_len,
-                        irreversible97: u32::from(
-                            color.transform == CudaHtj2kTransform::Irreversible97,
-                        ),
-                        addend0: bit_depth_addend(color.bit_depths[0]),
-                        addend1: bit_depth_addend(color.bit_depths[1]),
-                        addend2: bit_depth_addend(color.bit_depths[2]),
-                    },
-                )
-            })
+            .time_default_stream_named_us_if(
+                collect_stage_timings,
+                "signinum.htj2k.decode.mct",
+                || {
+                    context.j2k_inverse_mct_device(
+                        &component0.buffer,
+                        &component1.buffer,
+                        &component2.buffer,
+                        CudaJ2kInverseMctJob {
+                            len: mct_len,
+                            irreversible97: u32::from(
+                                color.transform == CudaHtj2kTransform::Irreversible97,
+                            ),
+                            addend0: bit_depth_addend(color.bit_depths[0]),
+                            addend1: bit_depth_addend(color.bit_depths[1]),
+                            addend2: bit_depth_addend(color.bit_depths[2]),
+                        },
+                    )
+                },
+            )
             .map_err(cuda_error)?;
         let (stats, mct_us) = stats;
         dispatches = dispatches.saturating_add(stats.kernel_dispatches());
@@ -1358,69 +1429,73 @@ fn decode_color_cuda_resident_surface_with_plans_profile(
         .x1
         .saturating_sub(component2.store.input_rect.x0);
     let (store_output, store_us) = context
-        .time_default_stream_named_us("signinum.htj2k.decode.store.color", || match fmt {
-            PixelFormat::Rgb8 | PixelFormat::Rgba8 => context.j2k_store_rgb8_device(
-                &component0.buffer,
-                &component1.buffer,
-                &component2.buffer,
-                CudaJ2kStoreRgb8Job {
-                    input_width0,
-                    input_width1,
-                    input_width2,
-                    source_x0: component0.store.source_x,
-                    source_y0: component0.store.source_y,
-                    source_x1: component1.store.source_x,
-                    source_y1: component1.store.source_y,
-                    source_x2: component2.store.source_x,
-                    source_y2: component2.store.source_y,
-                    copy_width: component0.store.copy_width,
-                    copy_height: component0.store.copy_height,
-                    output_width: component0.store.output_width,
-                    output_height: component0.store.output_height,
-                    output_x: component0.store.output_x,
-                    output_y: component0.store.output_y,
-                    addend0: addends[0],
-                    addend1: addends[1],
-                    addend2: addends[2],
-                    bit_depth0: u32::from(color.bit_depths[0]),
-                    bit_depth1: u32::from(color.bit_depths[1]),
-                    bit_depth2: u32::from(color.bit_depths[2]),
-                    rgba: u32::from(fmt == PixelFormat::Rgba8),
-                },
-            ),
-            PixelFormat::Rgb16 | PixelFormat::Rgba16 => context.j2k_store_rgb16_device(
-                &component0.buffer,
-                &component1.buffer,
-                &component2.buffer,
-                CudaJ2kStoreRgb16Job {
-                    input_width0,
-                    input_width1,
-                    input_width2,
-                    source_x0: component0.store.source_x,
-                    source_y0: component0.store.source_y,
-                    source_x1: component1.store.source_x,
-                    source_y1: component1.store.source_y,
-                    source_x2: component2.store.source_x,
-                    source_y2: component2.store.source_y,
-                    copy_width: component0.store.copy_width,
-                    copy_height: component0.store.copy_height,
-                    output_width: component0.store.output_width,
-                    output_height: component0.store.output_height,
-                    output_x: component0.store.output_x,
-                    output_y: component0.store.output_y,
-                    addend0: addends[0],
-                    addend1: addends[1],
-                    addend2: addends[2],
-                    bit_depth0: u32::from(color.bit_depths[0]),
-                    bit_depth1: u32::from(color.bit_depths[1]),
-                    bit_depth2: u32::from(color.bit_depths[2]),
-                    rgba: u32::from(fmt == PixelFormat::Rgba16),
-                },
-            ),
-            _ => {
-                unreachable!("validated color CUDA output format");
-            }
-        })
+        .time_default_stream_named_us_if(
+            collect_stage_timings,
+            "signinum.htj2k.decode.store.color",
+            || match fmt {
+                PixelFormat::Rgb8 | PixelFormat::Rgba8 => context.j2k_store_rgb8_device(
+                    &component0.buffer,
+                    &component1.buffer,
+                    &component2.buffer,
+                    CudaJ2kStoreRgb8Job {
+                        input_width0,
+                        input_width1,
+                        input_width2,
+                        source_x0: component0.store.source_x,
+                        source_y0: component0.store.source_y,
+                        source_x1: component1.store.source_x,
+                        source_y1: component1.store.source_y,
+                        source_x2: component2.store.source_x,
+                        source_y2: component2.store.source_y,
+                        copy_width: component0.store.copy_width,
+                        copy_height: component0.store.copy_height,
+                        output_width: component0.store.output_width,
+                        output_height: component0.store.output_height,
+                        output_x: component0.store.output_x,
+                        output_y: component0.store.output_y,
+                        addend0: addends[0],
+                        addend1: addends[1],
+                        addend2: addends[2],
+                        bit_depth0: u32::from(color.bit_depths[0]),
+                        bit_depth1: u32::from(color.bit_depths[1]),
+                        bit_depth2: u32::from(color.bit_depths[2]),
+                        rgba: u32::from(fmt == PixelFormat::Rgba8),
+                    },
+                ),
+                PixelFormat::Rgb16 | PixelFormat::Rgba16 => context.j2k_store_rgb16_device(
+                    &component0.buffer,
+                    &component1.buffer,
+                    &component2.buffer,
+                    CudaJ2kStoreRgb16Job {
+                        input_width0,
+                        input_width1,
+                        input_width2,
+                        source_x0: component0.store.source_x,
+                        source_y0: component0.store.source_y,
+                        source_x1: component1.store.source_x,
+                        source_y1: component1.store.source_y,
+                        source_x2: component2.store.source_x,
+                        source_y2: component2.store.source_y,
+                        copy_width: component0.store.copy_width,
+                        copy_height: component0.store.copy_height,
+                        output_width: component0.store.output_width,
+                        output_height: component0.store.output_height,
+                        output_x: component0.store.output_x,
+                        output_y: component0.store.output_y,
+                        addend0: addends[0],
+                        addend1: addends[1],
+                        addend2: addends[2],
+                        bit_depth0: u32::from(color.bit_depths[0]),
+                        bit_depth1: u32::from(color.bit_depths[1]),
+                        bit_depth2: u32::from(color.bit_depths[2]),
+                        rgba: u32::from(fmt == PixelFormat::Rgba16),
+                    },
+                ),
+                _ => {
+                    unreachable!("validated color CUDA output format");
+                }
+            },
+        )
         .map_err(cuda_error)?;
     let (surface_buffer, store_stats) = store_output.into_parts();
     dispatches = dispatches.saturating_add(store_stats.kernel_dispatches());
@@ -1506,14 +1581,19 @@ fn decode_cuda_component_plan(
     context: &signinum_cuda_runtime::CudaContext,
     plan: &CudaHtj2kDecodePlan,
     tables: &CudaHtj2kDecodeTableResources,
+    collect_stage_timings: bool,
 ) -> Result<CudaDecodedComponent, Error> {
-    let resource_upload_start = profile::profile_now(true);
+    let resource_upload_start = profile::profile_now(collect_stage_timings);
     let decode_resources = context
         .upload_htj2k_decode_resources_with_tables(plan.payload(), tables)
         .map_err(cuda_error)?;
     let resource_upload_us = profile::elapsed_us(resource_upload_start);
-    let mut component =
-        decode_cuda_component_plan_with_resources(context, plan, &decode_resources)?;
+    let mut component = decode_cuda_component_plan_with_resources(
+        context,
+        plan,
+        &decode_resources,
+        collect_stage_timings,
+    )?;
     component.timings.h2d = component.timings.h2d.saturating_add(resource_upload_us);
     component.timings.payload_upload = component
         .timings
@@ -1540,6 +1620,7 @@ fn decode_cuda_component_plan_with_resources(
     context: &signinum_cuda_runtime::CudaContext,
     plan: &CudaHtj2kDecodePlan,
     decode_resources: &CudaHtj2kDecodeResources,
+    collect_stage_timings: bool,
 ) -> Result<CudaDecodedComponent, Error> {
     let mut bands = Vec::with_capacity(plan.subbands().len() + plan.idwt_steps().len());
     let mut dispatches = 0usize;
@@ -1554,10 +1635,17 @@ fn decode_cuda_component_plan_with_resources(
             .map(|block| cuda_code_block_job_from_plan_block(block, subband.width))
             .collect::<Result<Vec<_>, Error>>()?;
         let output_words = checked_area(subband.width, subband.height)?;
-        let stage_start = profile::profile_now(true);
-        let output = context
-            .decode_htj2k_codeblocks_with_resources(decode_resources, &jobs, output_words)
-            .map_err(cuda_error)?;
+        let stage_start = profile::profile_now(collect_stage_timings);
+        let output = if collect_stage_timings {
+            context.decode_htj2k_codeblocks_with_resources(decode_resources, &jobs, output_words)
+        } else {
+            context.decode_htj2k_codeblocks_with_resources_untimed(
+                decode_resources,
+                &jobs,
+                output_words,
+            )
+        }
+        .map_err(cuda_error)?;
         let stage_timings = output.stage_timings();
         let stage_wall_us = profile::elapsed_us(stage_start);
         let gpu_stage_us = stage_timings
@@ -1593,24 +1681,46 @@ fn decode_cuda_component_plan_with_resources(
         let lh = find_cuda_band(&bands, step.lh_band_id)?;
         let hh = find_cuda_band(&bands, step.hh_band_id)?;
         let (output, idwt_us) = context
-            .time_default_stream_named_us("signinum.htj2k.decode.idwt", || {
-                context.j2k_inverse_dwt_single_device(
-                    &ll.buffer,
-                    &hl.buffer,
-                    &lh.buffer,
-                    &hh.buffer,
-                    CudaJ2kIdwtJob {
-                        rect: cuda_runtime_rect(step.rect),
-                        ll_rect: cuda_runtime_rect(step.ll_rect),
-                        hl_rect: cuda_runtime_rect(step.hl_rect),
-                        lh_rect: cuda_runtime_rect(step.lh_rect),
-                        hh_rect: cuda_runtime_rect(step.hh_rect),
-                        irreversible97: u32::from(
-                            step.transform == CudaHtj2kTransform::Irreversible97,
-                        ),
-                    },
-                )
-            })
+            .time_default_stream_named_us_if(
+                collect_stage_timings,
+                "signinum.htj2k.decode.idwt",
+                || {
+                    if collect_stage_timings {
+                        return context.j2k_inverse_dwt_single_device(
+                            &ll.buffer,
+                            &hl.buffer,
+                            &lh.buffer,
+                            &hh.buffer,
+                            CudaJ2kIdwtJob {
+                                rect: cuda_runtime_rect(step.rect),
+                                ll_rect: cuda_runtime_rect(step.ll_rect),
+                                hl_rect: cuda_runtime_rect(step.hl_rect),
+                                lh_rect: cuda_runtime_rect(step.lh_rect),
+                                hh_rect: cuda_runtime_rect(step.hh_rect),
+                                irreversible97: u32::from(
+                                    step.transform == CudaHtj2kTransform::Irreversible97,
+                                ),
+                            },
+                        );
+                    }
+                    context.j2k_inverse_dwt_single_device_untimed(
+                        &ll.buffer,
+                        &hl.buffer,
+                        &lh.buffer,
+                        &hh.buffer,
+                        CudaJ2kIdwtJob {
+                            rect: cuda_runtime_rect(step.rect),
+                            ll_rect: cuda_runtime_rect(step.ll_rect),
+                            hl_rect: cuda_runtime_rect(step.hl_rect),
+                            lh_rect: cuda_runtime_rect(step.lh_rect),
+                            hh_rect: cuda_runtime_rect(step.hh_rect),
+                            irreversible97: u32::from(
+                                step.transform == CudaHtj2kTransform::Irreversible97,
+                            ),
+                        },
+                    )
+                },
+            )
             .map_err(cuda_error)?;
         timings.idwt = timings.idwt.saturating_add(idwt_us);
         let (buffer, stats) = output.into_parts();

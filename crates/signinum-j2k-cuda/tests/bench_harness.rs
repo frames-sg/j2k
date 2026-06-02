@@ -16,11 +16,122 @@ fn cuda_htj2k_decode_bench_exposes_gray_rgb_rgba_rows() {
         "j2k_cuda_htj2k_scaled_decode",
         "j2k_cuda_htj2k_roi_scaled_decode",
         "j2k_cuda_htj2k_tile_batch_decode",
+        "BATCH_SIZES",
+        "[8, 16, 32, 64]",
+        "SIGNINUM_J2K_CUDA_DECODE_BATCH_SIZES",
+        "SIGNINUM_J2K_CUDA_DECODE_FORMATS",
         "SIGNINUM_REQUIRE_CUDA_BENCH",
     ] {
         assert!(
             bench.contains(expected),
             "CUDA HTJ2K decode benchmark is missing `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
+    let bench = include_str!("../benches/htj2k_decode.rs");
+
+    assert!(
+        bench
+            .matches("let mut session = CudaSession::default();")
+            .count()
+            >= 6,
+        "CUDA decode benchmarks must create reusable sessions outside timed iterations"
+    );
+
+    for forbidden in [
+        ".decode_to_device(case.fmt, BackendRequest::Cuda)",
+        ".decode_region_to_device(case.fmt, roi, BackendRequest::Cuda)",
+        ".decode_scaled_to_device(case.fmt, scale, BackendRequest::Cuda)",
+        ".decode_region_scaled_to_device(case.fmt, roi, scale, BackendRequest::Cuda)",
+    ] {
+        assert!(
+            !bench.contains(forbidden),
+            "CUDA decode benchmark timed row must not call context-creating helper `{forbidden}`"
+        );
+    }
+
+    for expected in [
+        ".submit_to_device(",
+        ".submit_region_to_device(",
+        ".submit_scaled_to_device(",
+        ".submit_region_scaled_to_device(",
+        "Codec::submit_tile_to_device(",
+    ] {
+        assert!(
+            bench.contains(expected),
+            "CUDA decode benchmark is missing reusable-session path `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn cuda_htj2k_decode_profile_example_reuses_one_session() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/htj2k_decode_profile.rs"
+    );
+    let example = std::fs::read_to_string(path).expect("read CUDA HTJ2K profile example");
+
+    for expected in [
+        "SIGNINUM_J2K_CUDA_PROFILE_BATCH_SIZE",
+        "SIGNINUM_J2K_CUDA_PROFILE_ITERATIONS",
+        "let mut session = CudaSession::default();",
+        ".decode_to_device_with_session(PixelFormat::Rgb8, &mut session)",
+    ] {
+        assert!(
+            example.contains(expected),
+            "CUDA HTJ2K profile example is missing `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/decoder.rs");
+    let decoder = std::fs::read_to_string(path).expect("read CUDA HTJ2K decoder");
+
+    for expected in [
+        "decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, false)",
+        "decode_to_cuda_resident_surface_with_profile_impl(self, session, fmt)",
+        "decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, true)",
+        "collect_stage_timings",
+        "decode_htj2k_codeblocks_with_resources_untimed",
+        "j2k_inverse_dwt_single_device_untimed",
+        "time_default_stream_named_us_if",
+    ] {
+        assert!(
+            decoder.contains(expected),
+            "steady-state CUDA HTJ2K decode path is missing `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn cuda_runtime_exposes_untimed_htj2k_decode_helpers() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../signinum-cuda-runtime/src/lib.rs"
+    );
+    let runtime = std::fs::read_to_string(path).expect("read CUDA runtime");
+
+    for expected in [
+        "pub fn synchronize(&self) -> Result<(), CudaError>",
+        "pub fn time_default_stream_named_us_if",
+        "pub fn decode_htj2k_codeblocks_with_resources_untimed",
+        "pub fn j2k_inverse_dwt_single_device_untimed",
+        "pinned_upload_staging",
+        "take_pinned_upload_staging",
+        "recycle_pinned_upload_staging",
+        "fn launch_htj2k_decode_codeblocks_async",
+        "fn launch_j2k_dequantize_htj2k_codeblocks_async",
+        "fn launch_j2k_idwt_interleave_async",
+    ] {
+        assert!(
+            runtime.contains(expected),
+            "CUDA runtime is missing steady-state decode helper `{expected}`"
         );
     }
 }

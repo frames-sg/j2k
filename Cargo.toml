@@ -16,7 +16,6 @@ members = [
     "crates/signinum-transcode",
     "crates/signinum-transcode-metal",
     "crates/signinum-transcode-cuda",
-    "crates/signinum-nvidia-baseline",
     "crates/signinum-test-support",
     "crates/signinum-tilecodec",
     "crates/signinum-cli",

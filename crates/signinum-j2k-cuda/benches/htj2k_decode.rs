@@ -2,14 +2,15 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use signinum_core::{
-    BackendKind, BackendRequest, DecoderContext, DeviceSurface, Downscale, ImageDecode,
-    ImageDecodeDevice, PixelFormat, Rect, TileBatchDecodeManyDevice,
+    BackendKind, BackendRequest, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
+    ImageDecode, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
+    TileBatchDecodeSubmit,
 };
 use signinum_j2k_cuda::{Codec, CudaSession, J2kDecoder, SurfaceResidency};
 use signinum_j2k_native::{encode_htj2k, EncodeOptions};
 
 const TILE_DIM: u32 = 512;
-const BATCH_SIZE: usize = 8;
+const BATCH_SIZES: &[usize] = &[8, 16, 32, 64];
 
 struct DecodeBenchCase {
     id: &'static str,
@@ -19,28 +20,41 @@ struct DecodeBenchCase {
 }
 
 fn bench_htj2k_decode(c: &mut Criterion) {
-    let gray_fixture = htj2k_gray8_fixture(TILE_DIM, TILE_DIM);
-    let rgb_fixture = htj2k_rgb8_fixture(TILE_DIM, TILE_DIM);
-    let cases = vec![
-        DecodeBenchCase {
+    let enabled_cases = enabled_decode_cases();
+    let mut cases = Vec::new();
+
+    if enabled_cases.contains(&"gray8") {
+        let gray_fixture = htj2k_gray8_fixture(TILE_DIM, TILE_DIM);
+        cases.push(DecodeBenchCase {
             id: "gray8",
             cuda_available: cuda_decode_available("gray8", &gray_fixture, PixelFormat::Gray8),
             fixture: gray_fixture,
             fmt: PixelFormat::Gray8,
-        },
-        DecodeBenchCase {
-            id: "rgb8",
-            cuda_available: cuda_decode_available("rgb8", &rgb_fixture, PixelFormat::Rgb8),
-            fixture: rgb_fixture.clone(),
-            fmt: PixelFormat::Rgb8,
-        },
-        DecodeBenchCase {
-            id: "rgba8",
-            cuda_available: cuda_decode_available("rgba8", &rgb_fixture, PixelFormat::Rgba8),
-            fixture: rgb_fixture,
-            fmt: PixelFormat::Rgba8,
-        },
-    ];
+        });
+    }
+    if enabled_cases
+        .iter()
+        .any(|id| matches!(*id, "rgb8" | "rgba8"))
+    {
+        let rgb_fixture = htj2k_rgb8_fixture(TILE_DIM, TILE_DIM);
+        if enabled_cases.contains(&"rgb8") {
+            cases.push(DecodeBenchCase {
+                id: "rgb8",
+                cuda_available: cuda_decode_available("rgb8", &rgb_fixture, PixelFormat::Rgb8),
+                fixture: rgb_fixture.clone(),
+                fmt: PixelFormat::Rgb8,
+            });
+        }
+        if enabled_cases.contains(&"rgba8") {
+            cases.push(DecodeBenchCase {
+                id: "rgba8",
+                cuda_available: cuda_decode_available("rgba8", &rgb_fixture, PixelFormat::Rgba8),
+                fixture: rgb_fixture,
+                fmt: PixelFormat::Rgba8,
+            });
+        }
+    }
+
     let roi = Rect {
         x: TILE_DIM / 4,
         y: TILE_DIM / 5,
@@ -75,11 +89,14 @@ fn bench_full_tile(c: &mut Criterion, cases: &[DecodeBenchCase]) {
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
             group.bench_with_input(BenchmarkId::new(cuda_id, TILE_DIM), case, |b, case| {
+                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
                     let surface = decoder
-                        .decode_to_device(case.fmt, BackendRequest::Cuda)
+                        .submit_to_device(&mut session, case.fmt, BackendRequest::Cuda)
+                        .expect("strict CUDA HTJ2K decode submission")
+                        .wait()
                         .expect("strict CUDA HTJ2K decode");
                     assert_cuda_resident_decode(&surface);
                     black_box(surface)
@@ -110,11 +127,14 @@ fn bench_roi(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect) {
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
             group.bench_with_input(BenchmarkId::new(cuda_id, roi.w), case, |b, case| {
+                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
                     let surface = decoder
-                        .decode_region_to_device(case.fmt, roi, BackendRequest::Cuda)
+                        .submit_region_to_device(&mut session, case.fmt, roi, BackendRequest::Cuda)
+                        .expect("strict CUDA HTJ2K ROI decode submission")
+                        .wait()
                         .expect("strict CUDA HTJ2K ROI decode");
                     assert_cuda_resident_decode(&surface);
                     black_box(surface)
@@ -146,11 +166,19 @@ fn bench_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downscale) 
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
             group.bench_with_input(BenchmarkId::new(cuda_id, scaled.w), case, |b, case| {
+                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
                     let surface = decoder
-                        .decode_scaled_to_device(case.fmt, scale, BackendRequest::Cuda)
+                        .submit_scaled_to_device(
+                            &mut session,
+                            case.fmt,
+                            scale,
+                            BackendRequest::Cuda,
+                        )
+                        .expect("strict CUDA HTJ2K scaled decode submission")
+                        .wait()
                         .expect("strict CUDA HTJ2K scaled decode");
                     assert_cuda_resident_decode(&surface);
                     black_box(surface)
@@ -182,11 +210,20 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect, sca
         if case.cuda_available {
             let cuda_id = cuda_benchmark_id(case);
             group.bench_with_input(BenchmarkId::new(cuda_id, scaled.w), case, |b, case| {
+                let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
                         J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
                     let surface = decoder
-                        .decode_region_scaled_to_device(case.fmt, roi, scale, BackendRequest::Cuda)
+                        .submit_region_scaled_to_device(
+                            &mut session,
+                            case.fmt,
+                            roi,
+                            scale,
+                            BackendRequest::Cuda,
+                        )
+                        .expect("strict CUDA HTJ2K ROI+scaled decode submission")
+                        .wait()
                         .expect("strict CUDA HTJ2K ROI+scaled decode");
                     assert_cuda_resident_decode(&surface);
                     black_box(surface)
@@ -199,34 +236,15 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect, sca
 
 fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
     let mut group = c.benchmark_group("j2k_cuda_htj2k_tile_batch_decode");
+    let batch_sizes = decode_batch_sizes();
     for case in cases {
-        let fixtures = vec![case.fixture.clone(); BATCH_SIZE];
-        let inputs = fixtures.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        let fmt = case.fmt;
-        let cpu_id = cpu_benchmark_id(case);
-        group.bench_with_input(
-            BenchmarkId::new(cpu_id, BATCH_SIZE),
-            &inputs,
-            |b, inputs| {
-                b.iter(|| {
-                    let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
-                    let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
-                    let surfaces = Codec::decode_tiles_to_device(
-                        &mut ctx,
-                        &mut pool,
-                        black_box(inputs),
-                        fmt,
-                        BackendRequest::Cpu,
-                    )
-                    .expect("CPU HTJ2K batch decode");
-                    black_box(surfaces)
-                });
-            },
-        );
-        if case.cuda_available {
-            let cuda_id = cuda_benchmark_id(case);
+        for &batch_size in &batch_sizes {
+            let fixtures = vec![case.fixture.clone(); batch_size];
+            let inputs = fixtures.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            let fmt = case.fmt;
+            let cpu_id = cpu_benchmark_id(case);
             group.bench_with_input(
-                BenchmarkId::new(cuda_id, BATCH_SIZE),
+                BenchmarkId::new(cpu_id, batch_size),
                 &inputs,
                 |b, inputs| {
                     b.iter(|| {
@@ -237,17 +255,107 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                             &mut pool,
                             black_box(inputs),
                             fmt,
-                            BackendRequest::Cuda,
+                            BackendRequest::Cpu,
                         )
-                        .expect("strict CUDA HTJ2K batch decode");
-                        surfaces.iter().for_each(assert_cuda_resident_decode);
+                        .expect("CPU HTJ2K batch decode");
                         black_box(surfaces)
                     });
                 },
             );
+            if case.cuda_available {
+                let cuda_id = cuda_benchmark_id(case);
+                group.bench_with_input(
+                    BenchmarkId::new(cuda_id, batch_size),
+                    &inputs,
+                    |b, inputs| {
+                        let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
+                        let mut session = CudaSession::default();
+                        let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
+                        b.iter(|| {
+                            let surfaces = black_box(inputs)
+                                .iter()
+                                .map(|input| {
+                                    Codec::submit_tile_to_device(
+                                        &mut ctx,
+                                        &mut session,
+                                        &mut pool,
+                                        black_box(*input),
+                                        fmt,
+                                        BackendRequest::Cuda,
+                                    )
+                                    .expect("strict CUDA HTJ2K batch decode submission")
+                                    .wait()
+                                    .expect("strict CUDA HTJ2K batch decode")
+                                })
+                                .collect::<Vec<_>>();
+                            surfaces.iter().for_each(assert_cuda_resident_decode);
+                            black_box(surfaces)
+                        });
+                    },
+                );
+            }
         }
     }
     group.finish();
+}
+
+fn enabled_decode_cases() -> Vec<&'static str> {
+    let Some(value) = std::env::var_os("SIGNINUM_J2K_CUDA_DECODE_FORMATS") else {
+        return vec!["gray8", "rgb8", "rgba8"];
+    };
+    let value = value.to_string_lossy();
+    let mut cases = Vec::new();
+    for raw in value.split(',') {
+        let id = raw.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let id = match id {
+            "gray8" => "gray8",
+            "rgb8" => "rgb8",
+            "rgba8" => "rgba8",
+            other => panic!(
+                "unsupported SIGNINUM_J2K_CUDA_DECODE_FORMATS entry `{other}`; expected gray8,rgb8,rgba8"
+            ),
+        };
+        if !cases.contains(&id) {
+            cases.push(id);
+        }
+    }
+    assert!(
+        !cases.is_empty(),
+        "SIGNINUM_J2K_CUDA_DECODE_FORMATS did not contain any decode formats"
+    );
+    cases
+}
+
+fn decode_batch_sizes() -> Vec<usize> {
+    let Some(value) = std::env::var_os("SIGNINUM_J2K_CUDA_DECODE_BATCH_SIZES") else {
+        return BATCH_SIZES.to_vec();
+    };
+    let value = value.to_string_lossy();
+    let mut batch_sizes = Vec::new();
+    for raw in value.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let batch_size = raw.parse::<usize>().unwrap_or_else(|error| {
+            panic!("invalid SIGNINUM_J2K_CUDA_DECODE_BATCH_SIZES entry `{raw}`: {error}")
+        });
+        assert!(
+            batch_size > 0,
+            "SIGNINUM_J2K_CUDA_DECODE_BATCH_SIZES entries must be greater than zero"
+        );
+        if !batch_sizes.contains(&batch_size) {
+            batch_sizes.push(batch_size);
+        }
+    }
+    assert!(
+        !batch_sizes.is_empty(),
+        "SIGNINUM_J2K_CUDA_DECODE_BATCH_SIZES did not contain any batch sizes"
+    );
+    batch_sizes
 }
 
 fn cpu_benchmark_id(case: &DecodeBenchCase) -> &'static str {

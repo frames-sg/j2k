@@ -30,7 +30,6 @@ moved, or removed.
 | `crates/signinum-jpeg/src/entropy/sequential.rs` | Entropy decoder bitstream fast paths. |
 | `crates/signinum-jpeg/src/idct/avx2.rs` | AVX2 IDCT implementation. |
 | `crates/signinum-jpeg/src/idct/neon.rs` | NEON IDCT implementation. |
-| `crates/signinum-nvidia-baseline/src/lib.rs` | nvJPEG/nvJPEG2000 baseline FFI wrappers. |
 | `crates/signinum-transcode-cuda/src/cuda.rs` | CUDA accelerator and context integration for transcode stages. |
 | `crates/signinum-transcode-metal/src/metal.rs` | Metal accelerator integration for transcode stages. |
 
