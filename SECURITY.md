@@ -20,6 +20,6 @@ generally within 30 days for high-severity issues.
 
 ## Supported versions
 
-The supported stable line is CPU-first 1.x. Pre-1.0 adapter crates receive
-security fixes in their latest minor line while they remain part of the
-repository.
+The supported stable line is the current `0.4.x` facade line. Experimental
+adapter and transcode crates receive security fixes in their latest `0.4.x`
+release while they remain part of the repository.

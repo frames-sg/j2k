@@ -24,6 +24,7 @@ const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];
 const MAX_REVERSIBLE_BATCH_SAMPLES: usize = 512 * 512 * 512;
 const WSI_TILE_BATCH_SIZES: [usize; 3] = [128, 256, 512];
+const TRANSCODE_PROFILE_STAGES_ENV: &str = "SIGNINUM_TRANSCODE_METAL_PROFILE_STAGES";
 
 const DIRECT_BENCH_MARKERS: [&str; 8] = [
     "cpu_idct_dwt_224x224",
@@ -786,7 +787,65 @@ fn expect_successful_batch(
         batch.report.successful_tiles, batch.report.tile_count,
         "{context} produced an incomplete successful tile count"
     );
+    emit_transcode_batch_profile(&batch, context);
     batch
+}
+
+fn emit_transcode_batch_profile(batch: &EncodedTranscodeBatch, context: &'static str) {
+    if std::env::var_os(TRANSCODE_PROFILE_STAGES_ENV).is_none() {
+        return;
+    }
+
+    let report = &batch.report;
+    let timings = report.timings;
+    let context = context.replace(' ', "_");
+    let coefficient_path = format!("{:?}", report.coefficient_path);
+    let total_us = report
+        .extract_us
+        .saturating_add(report.transform_us)
+        .saturating_add(report.encode_us);
+    eprintln!(
+        "signinum_profile codec=transcode op=transcode_batch path=metal context={context} coefficient_path={coefficient_path} tile_count={} successful_tiles={} failed_tiles={} transformed_components={} reversible_dwt53_batches={} reversible_dwt53_batch_jobs={} extract_us={} transform_us={} encode_us={} total_us={} source_raw_probe_us={} read_region_decode_us={} compose_pad_us={} generated_jpeg_encode_us={} jpeg_dct_extract_us={} jpeg_dct_repack_us={} dct_to_wavelet_total_us={} dct_to_wavelet_accelerator_us={} dct_to_wavelet_cpu_fallback_us={} dwt_decompose_us={} dwt97_batch_pack_upload_us={} dwt97_batch_idct_row_lift_us={} dwt97_batch_column_lift_us={} dwt97_batch_quantize_codeblock_us={} dwt97_batch_ht_encode_us={} dwt97_batch_ht_codeblock_dispatches={} dwt97_batch_readback_us={} htj2k_encode_us={} htj2k_encode_accelerator_dispatches={} htj2k_encode_ht_code_block_dispatches={} htj2k_encode_packetization_dispatches={} component_count={} batch_count={} batch_jobs={} accelerator_attempts={} accelerator_jobs={} accelerator_dispatches={} accelerator_dispatched_jobs={} cpu_fallback_jobs={}",
+        report.tile_count,
+        report.successful_tiles,
+        report.failed_tiles,
+        report.transformed_components,
+        report.reversible_dwt53_batches,
+        report.reversible_dwt53_batch_jobs,
+        report.extract_us,
+        report.transform_us,
+        report.encode_us,
+        total_us,
+        timings.source_raw_probe_us,
+        timings.read_region_decode_us,
+        timings.compose_pad_us,
+        timings.generated_jpeg_encode_us,
+        timings.jpeg_dct_extract_us,
+        timings.jpeg_dct_repack_us,
+        timings.dct_to_wavelet_total_us,
+        timings.dct_to_wavelet_accelerator_us,
+        timings.dct_to_wavelet_cpu_fallback_us,
+        timings.dwt_decompose_us,
+        timings.dwt97_batch_pack_upload_us,
+        timings.dwt97_batch_idct_row_lift_us,
+        timings.dwt97_batch_column_lift_us,
+        timings.dwt97_batch_quantize_codeblock_us,
+        timings.dwt97_batch_ht_encode_us,
+        timings.dwt97_batch_ht_codeblock_dispatches,
+        timings.dwt97_batch_readback_us,
+        timings.htj2k_encode_us,
+        timings.htj2k_encode_accelerator_dispatches,
+        timings.htj2k_encode_ht_code_block_dispatches,
+        timings.htj2k_encode_packetization_dispatches,
+        timings.component_count,
+        timings.batch_count,
+        timings.batch_jobs,
+        timings.accelerator_attempts,
+        timings.accelerator_jobs,
+        timings.accelerator_dispatches,
+        timings.accelerator_dispatched_jobs,
+        timings.cpu_fallback_jobs,
+    );
 }
 
 fn metal_available() -> bool {

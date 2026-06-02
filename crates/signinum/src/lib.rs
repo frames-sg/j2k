@@ -152,11 +152,24 @@ pub mod j2k {
         samples: J2kLosslessSamples<'_>,
         options: J2kLosslessEncodeOptions,
     ) -> Result<J2kAdaptiveRouteReport, J2kError> {
+        let workload = lossless_encode_workload(samples, options);
+        let benchmarks = facade_lossless_encode_benchmarks(workload);
+        facade_adaptive_route_planner(facade_adaptive_capabilities()).plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+    }
+
+    fn lossless_encode_workload(
+        samples: J2kLosslessSamples<'_>,
+        options: J2kLosslessEncodeOptions,
+    ) -> J2kAdaptiveWorkload {
         let codec_mode = match options.block_coding_mode {
             J2kBlockCodingMode::Classic => J2kAdaptiveCodecMode::ClassicJ2k,
             J2kBlockCodingMode::HighThroughput => J2kAdaptiveCodecMode::Htj2k,
         };
-        let workload = J2kAdaptiveWorkload::new(
+        J2kAdaptiveWorkload::new(
             J2kAdaptiveOperation::Encode,
             codec_mode,
             J2kAdaptiveQualityMode::Lossless,
@@ -164,12 +177,79 @@ pub mod j2k {
             samples.bit_depth,
             (samples.width, samples.height),
             1,
-        );
-        J2kAdaptiveRoutePlanner::detected().plan(
-            workload,
-            J2kAdaptiveBackendRequest::Accelerated,
-            &J2kAdaptiveBenchmarks::default(),
         )
+    }
+
+    fn facade_adaptive_capabilities() -> signinum_core::BackendCapabilities {
+        let mut capabilities = signinum_core::BackendCapabilities::detect();
+        capabilities.metal = capabilities.metal && cfg!(feature = "metal");
+        capabilities.cuda = cfg!(feature = "cuda-runtime");
+        capabilities
+    }
+
+    fn facade_adaptive_route_planner(
+        capabilities: signinum_core::BackendCapabilities,
+    ) -> J2kAdaptiveRoutePlanner {
+        J2kAdaptiveRoutePlanner::new(capabilities).with_rca_finding(
+            J2kAdaptiveRcaFinding::reclassify_cpu(
+                J2kAdaptiveStage::Mct,
+                BackendKind::Cuda,
+                J2kAdaptiveRcaReason::CpuGenuinelyBetter,
+            ),
+        )
+    }
+
+    fn facade_lossless_encode_benchmarks(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBenchmarks {
+        let mut benchmarks = J2kAdaptiveBenchmarks::default();
+        if should_use_measured_cuda_htj2k_host_encode(workload) {
+            // Lossless host-pixel RGB/RGBA8 HTJ2K facade measurements. This is
+            // intentionally separate from the JPEG DCT-grid 9/7 transcode
+            // resident-HT measurements documented in
+            // docs/cuda-htj2k-resident-encode.md.
+            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+                J2kAdaptiveStage::Dwt,
+                BackendKind::Cuda,
+                19_506_000,
+                2_616_000,
+                2.0,
+            ));
+            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+                J2kAdaptiveStage::HtBlockCoding,
+                BackendKind::Cuda,
+                4_566_000,
+                2_002_000,
+                2.0,
+            ));
+            let (cpu_ns, accelerated_ns) = if workload.components == 4 {
+                (108_350_000, 53_360_000)
+            } else {
+                (81_419_000, 41_307_000)
+            };
+            benchmarks.push_end_to_end(J2kAdaptiveBenchmarkEvidence::end_to_end(
+                BackendKind::Cuda,
+                cpu_ns,
+                accelerated_ns,
+                2.0,
+            ));
+        }
+        benchmarks
+    }
+
+    fn should_use_measured_cuda_htj2k_host_encode(workload: J2kAdaptiveWorkload) -> bool {
+        const MIN_CUDA_HTJ2K_AUTO_PIXELS: u64 = 1024 * 1024;
+        let pixels =
+            u64::from(workload.tile_size.0).saturating_mul(u64::from(workload.tile_size.1));
+        workload.operation == J2kAdaptiveOperation::Encode
+            && workload.codec_mode == J2kAdaptiveCodecMode::Htj2k
+            && workload.quality_mode == J2kAdaptiveQualityMode::Lossless
+            && matches!(workload.components, 3 | 4)
+            && workload.bit_depth == 8
+            && workload.batch_size == 1
+            && !workload.roi
+            && !workload.scaled
+            && workload.quality_layers == 1
+            && workload.output_residency == J2kAdaptiveOutputResidency::Host
+            && pixels >= MIN_CUDA_HTJ2K_AUTO_PIXELS
     }
 
     #[cfg(feature = "metal")]
@@ -199,7 +279,11 @@ pub mod j2k {
         samples: J2kLosslessSamples<'_>,
         options: J2kLosslessEncodeOptions,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
-        let mut accelerator = signinum_j2k_cuda::CudaEncodeStageAccelerator::default();
+        let mut accelerator = if options.backend == EncodeBackendPreference::Auto {
+            signinum_j2k_cuda::CudaEncodeStageAccelerator::for_auto_host_output()
+        } else {
+            signinum_j2k_cuda::CudaEncodeStageAccelerator::default()
+        };
         encode_with_device_accelerator(samples, options, BackendKind::Cuda, &mut accelerator)
     }
 
@@ -282,7 +366,99 @@ pub mod j2k {
             .expect("Auto should reuse the CPU-backed codestream after partial device dispatch");
 
             assert_eq!(encoded.backend, BackendKind::Cpu);
+            assert_eq!(encoded.dispatch_report.packetization, 1);
             assert_eq!(accelerator.packetization_dispatches, 1);
+        }
+
+        #[test]
+        fn facade_cuda_htj2k_1024_policy_uses_measured_hybrid_route() {
+            let workload = J2kAdaptiveWorkload::new(
+                J2kAdaptiveOperation::Encode,
+                J2kAdaptiveCodecMode::Htj2k,
+                J2kAdaptiveQualityMode::Lossless,
+                3,
+                8,
+                (1024, 1024),
+                1,
+            );
+            let benchmarks = facade_lossless_encode_benchmarks(workload);
+            let report = facade_adaptive_route_planner(signinum_core::BackendCapabilities {
+                cpu: signinum_core::CpuFeatures::default(),
+                metal: false,
+                cuda: true,
+            })
+            .plan(
+                workload,
+                J2kAdaptiveBackendRequest::Accelerated,
+                &benchmarks,
+            )
+            .expect("facade CUDA route should plan");
+
+            assert_eq!(report.route_kind, J2kAdaptiveRouteKind::Hybrid);
+            assert_eq!(report.selected_device, Some(BackendKind::Cuda));
+            assert_eq!(
+                report
+                    .stage(J2kAdaptiveStage::Mct)
+                    .expect("MCT decision")
+                    .selected_backend,
+                BackendKind::Cpu
+            );
+            assert_eq!(
+                report
+                    .stage(J2kAdaptiveStage::Dwt)
+                    .expect("DWT decision")
+                    .selected_backend,
+                BackendKind::Cuda
+            );
+            assert_eq!(
+                report
+                    .stage(J2kAdaptiveStage::HtBlockCoding)
+                    .expect("HT decision")
+                    .selected_backend,
+                BackendKind::Cuda
+            );
+            assert_eq!(
+                report
+                    .stage(J2kAdaptiveStage::Packetization)
+                    .expect("packetization decision")
+                    .selected_backend,
+                BackendKind::Cpu
+            );
+        }
+
+        #[test]
+        fn facade_cuda_htj2k_512_policy_stays_cpu_below_measured_win_gate() {
+            let workload = J2kAdaptiveWorkload::new(
+                J2kAdaptiveOperation::Encode,
+                J2kAdaptiveCodecMode::Htj2k,
+                J2kAdaptiveQualityMode::Lossless,
+                3,
+                8,
+                (512, 512),
+                1,
+            );
+            let benchmarks = facade_lossless_encode_benchmarks(workload);
+            let report = facade_adaptive_route_planner(signinum_core::BackendCapabilities {
+                cpu: signinum_core::CpuFeatures::default(),
+                metal: false,
+                cuda: true,
+            })
+            .plan(
+                workload,
+                J2kAdaptiveBackendRequest::Accelerated,
+                &benchmarks,
+            )
+            .expect("facade CUDA route should plan");
+
+            assert_eq!(report.route_kind, J2kAdaptiveRouteKind::CpuOnly);
+            assert_eq!(report.selected_device, None);
+            assert!(
+                report
+                    .stages
+                    .iter()
+                    .all(|stage| stage.selected_backend == BackendKind::Cpu),
+                "512 host-pixel CUDA HTJ2K Auto must stay CPU until measured otherwise"
+            );
         }
     }
 }

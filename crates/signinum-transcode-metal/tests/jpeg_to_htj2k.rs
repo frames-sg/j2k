@@ -237,7 +237,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
     assert_eq!(batch.report.successful_tiles, inputs.len());
     assert_eq!(batch.report.failed_tiles, 0);
     assert_eq!(batch.report.timings.batch_jobs, 12);
-    assert_eq!(batch.report.timings.accelerator_dispatches, 3);
+    assert_eq!(batch.report.timings.accelerator_dispatches, 2);
     assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 12);
     assert_eq!(batch.report.timings.cpu_fallback_jobs, 0);
     assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
@@ -246,8 +246,8 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
     assert_eq!(batch.report.timings.dwt97_batch_quantize_codeblock_us, 0);
     assert!(batch.report.timings.dwt97_batch_readback_us > 0);
     assert_eq!(accelerator.dwt97_attempts(), 0);
-    assert_eq!(accelerator.dwt97_batch_attempts(), 3);
-    assert_eq!(accelerator.dwt97_batch_dispatches(), 3);
+    assert_eq!(accelerator.dwt97_batch_attempts(), 2);
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 2);
     for tile in batch.tiles {
         let tile = tile.expect("valid 9/7 tile transcodes");
         assert_eq!(
@@ -296,7 +296,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
     assert_eq!(batch.report.successful_tiles, inputs.len());
     assert_eq!(batch.report.failed_tiles, 0);
     assert_eq!(batch.report.timings.batch_jobs, 12);
-    assert_eq!(batch.report.timings.accelerator_dispatches, 3);
+    assert_eq!(batch.report.timings.accelerator_dispatches, 2);
     assert_eq!(batch.report.timings.accelerator_dispatched_jobs, 12);
     assert_eq!(batch.report.timings.cpu_fallback_jobs, 0);
     assert!(batch.report.timings.dwt97_batch_pack_upload_us > 0);
@@ -305,10 +305,10 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
     assert!(batch.report.timings.dwt97_batch_quantize_codeblock_us > 0);
     assert!(batch.report.timings.dwt97_batch_readback_us > 0);
     assert_eq!(accelerator.dwt97_attempts(), 0);
-    assert_eq!(accelerator.dwt97_batch_attempts(), 3);
-    assert_eq!(accelerator.dwt97_batch_dispatches(), 3);
-    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 3);
-    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 3);
+    assert_eq!(accelerator.dwt97_batch_attempts(), 2);
+    assert_eq!(accelerator.dwt97_batch_dispatches(), 2);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_attempts(), 2);
+    assert_eq!(accelerator.htj2k97_codeblock_batch_dispatches(), 2);
     for tile in batch.tiles {
         let tile = tile.expect("valid 9/7 code-block tile transcodes");
         let decoded = Image::new(&tile.codestream, &DecodeSettings::default())

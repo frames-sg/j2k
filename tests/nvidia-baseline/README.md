@@ -38,7 +38,7 @@ export SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1
 # export NVJPEG2K_LIB_DIR=/opt/nvjpeg2000/lib
 # export NVJPEG2K_INCLUDE_DIR=/opt/nvjpeg2000/include
 
-cargo run --release -p signinum-nvidia-baseline \
+cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 --bin transcode_compare -- tile0.jpg tile1.jpg ...
 ```
 
@@ -48,9 +48,9 @@ uses NVIDIA's encoder to produce HTJ2K inputs, then measures signinum CPU,
 signinum CUDA, and NVIDIA direct decode on the same codestreams:
 
 ```bash
-cargo run --release -p signinum-nvidia-baseline \
+cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 --bin decode_compare -- \
-  --jpeg-dir crates/signinum-nvidia-baseline/benchtiles/pancreas \
+  --jpeg-dir tests/nvidia-baseline/benchtiles/pancreas \
   --json target/decode_compare.json \
   --csv target/decode_compare.csv
 ```

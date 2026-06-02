@@ -549,7 +549,7 @@ fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
         "--bin transcode_compare",
         "--bin decode_compare",
         "--jpeg-dir \"${SIGNINUM_BENCH_JPEG_DIR}\"",
-        "--min-inputs 2",
+        "--min-inputs 100",
         "target/decode_compare.json",
         "target/decode_compare.csv",
         "python3 -m json.tool target/decode_compare.json",
@@ -564,6 +564,49 @@ fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
                 .display()
         );
     }
+}
+
+#[test]
+fn nvidia_codec_comparator_stays_test_only() {
+    let root = repo_root();
+    let needles = [
+        "signinum-nvidia-baseline",
+        "nvjpeg2000",
+        "nvjpeg2k",
+        "nvidia-baseline",
+    ];
+    let mut seen = 0usize;
+    let mut violations = Vec::new();
+
+    for path in repo_text_files(root) {
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let rel_s = format!("./{}", rel.display());
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        for (line_idx, line) in source.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            if !needles.iter().any(|needle| lower.contains(needle)) {
+                continue;
+            }
+            seen += 1;
+            let allowed = rel_s.starts_with("./tests/nvidia-baseline/")
+                || rel_s == "./.github/workflows/gpu-validation.yml"
+                || rel_s == "./crates/signinum-core/tests/repo_integrity.rs";
+            if !allowed {
+                violations.push(format!("{}:{}:{}", rel_s, line_idx + 1, line));
+            }
+        }
+    }
+
+    assert!(
+        seen > 0,
+        "repo must contain the test-only NVIDIA comparator guard input"
+    );
+    assert!(
+        violations.is_empty(),
+        "NVIDIA codec comparator references must stay test-only:\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]
@@ -1327,9 +1370,30 @@ fn should_skip_repo_dir(path: &Path) -> bool {
 }
 
 fn is_repo_text_file(path: &Path) -> bool {
+    if path.file_name().and_then(OsStr::to_str) == Some("Cargo.lock") {
+        return true;
+    }
     matches!(
         path.extension().and_then(OsStr::to_str),
-        Some("bib" | "json" | "md" | "rs" | "sh" | "tex" | "toml" | "txt" | "yaml" | "yml")
+        Some(
+            "bib"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "cu"
+                | "h"
+                | "hpp"
+                | "json"
+                | "lock"
+                | "md"
+                | "rs"
+                | "sh"
+                | "tex"
+                | "toml"
+                | "txt"
+                | "yaml"
+                | "yml"
+        )
     )
 }
 

@@ -2,12 +2,13 @@
 
 Facade crate for the `signinum` pathology image codec workspace.
 
-The default build exposes CPU-portable JPEG, JPEG 2000, shared core contracts,
-tile decompression APIs, and the portable Metal adapter. Runtime backend
-selection defaults to `Auto` / `ACCELERATED`: codecs use CPU for CPU-shaped
-stages and Metal/CUDA for benchmark-approved device-shaped stages. Explicit
-Metal/CUDA requests remain strict proof paths. CUDA remains available through
-the explicit `cuda` or `gpu` features.
+The default build exposes CPU-portable JPEG, JPEG 2000 / HTJ2K, shared core
+contracts, and tile decompression APIs. Runtime backend selection defaults to
+`Auto` / `ACCELERATED`: codecs use CPU for CPU-shaped stages and Metal/CUDA for
+benchmark-approved device-shaped stages when the matching facade feature is
+enabled. Explicit Metal/CUDA requests remain strict proof paths. Metal is
+available through the `metal` or `gpu` features; CUDA is available through the
+`cuda`, `cuda-runtime`, or `gpu` features.
 
 Install:
 

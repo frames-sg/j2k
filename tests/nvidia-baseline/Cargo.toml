@@ -1,11 +1,11 @@
 [package]
 name = "signinum-nvidia-baseline"
 description = "NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking signinum's coefficient-domain JPEG to HTJ2K transcode"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.4.4"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/frames-sg/signinum"
 publish = false
 
 [lib]
@@ -32,17 +32,17 @@ nvjpeg2000 = [
 ]
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.4" }
-signinum-transcode = { path = "../signinum-transcode", version = "=0.4.4" }
-signinum-transcode-cuda = { path = "../signinum-transcode-cuda", version = "=0.4.4" }
-signinum-j2k-cuda = { path = "../signinum-j2k-cuda", version = "=0.4.4", optional = true }
-signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
+signinum-core = { path = "../../crates/signinum-core", version = "=0.4.4" }
+signinum-transcode = { path = "../../crates/signinum-transcode", version = "=0.4.4" }
+signinum-transcode-cuda = { path = "../../crates/signinum-transcode-cuda", version = "=0.4.4" }
+signinum-j2k-cuda = { path = "../../crates/signinum-j2k-cuda", version = "=0.4.4", optional = true }
+signinum-jpeg = { path = "../../crates/signinum-jpeg", version = "=0.4.4" }
+signinum-j2k-native = { path = "../../crates/signinum-j2k-native", version = "=0.4.4" }
 
 # Metal backend for the signinum side of the comparison on macOS (the runner is
 # Linux/CUDA, so this is target-gated to keep the runner build untouched).
 [target.'cfg(target_os = "macos")'.dependencies]
-signinum-transcode-metal = { path = "../signinum-transcode-metal", version = "=0.4.4" }
+signinum-transcode-metal = { path = "../../crates/signinum-transcode-metal", version = "=0.4.4" }
 
 [lints.rust]
 unsafe_code = "allow"
@@ -57,3 +57,6 @@ missing_panics_doc = "allow"
 cast_possible_truncation = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
+
+[workspace]
+resolver = "2"

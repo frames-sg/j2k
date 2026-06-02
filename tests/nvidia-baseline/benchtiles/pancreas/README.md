@@ -23,6 +23,6 @@ benchmark, and the PSNR reference is self-consistent across codecs.
 ## Reproduce
 
 ```bash
-cargo run --release -p signinum-nvidia-baseline --bin svs_extract -- \
+cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --bin svs_extract -- \
   /path/to/Pancreas.svs out_dir --limit 128 --stride 51 --quality 85 --min-tissue 0.6
 ```

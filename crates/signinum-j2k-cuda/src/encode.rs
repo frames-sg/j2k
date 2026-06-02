@@ -123,6 +123,7 @@ pub struct CudaEncodeStageAccelerator {
     tier1_code_block_attempts: usize,
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
+    prefer_cpu_forward_rct: bool,
     prefer_cpu_packetization: bool,
     deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
@@ -153,6 +154,24 @@ impl CudaEncodeStageAccelerator {
             collect_profile,
             ..Self::default()
         }
+    }
+
+    /// Create the measured Auto route for host-output HTJ2K encode.
+    ///
+    /// CUDA keeps the DWT and HT code-block stages, while forward RCT and
+    /// Tier-2 packetization stay on the CPU for the current host-pixel path.
+    #[must_use]
+    pub fn for_auto_host_output() -> Self {
+        Self::default()
+            .prefer_cpu_forward_rct(true)
+            .prefer_cpu_packetization(true)
+    }
+
+    /// Prefer scalar CPU forward RCT while keeping later CUDA stages enabled.
+    #[must_use]
+    pub fn prefer_cpu_forward_rct(mut self, prefer_cpu_forward_rct: bool) -> Self {
+        self.prefer_cpu_forward_rct = prefer_cpu_forward_rct;
+        self
     }
 
     /// Prefer scalar CPU Tier-2 packetization while keeping CUDA Tier-1/HT block coding enabled.
@@ -1275,6 +1294,22 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         job: J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
+        if self.prefer_cpu_forward_rct {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_forward_rct"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "prefer_cpu_forward_rct"),
+                    ],
+                );
+            }
+            let _ = job;
+            return Ok(false);
+        }
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let (execution, elapsed_us) = time_cuda_stage(
@@ -1704,6 +1739,22 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         job: J2kHtj2kTileEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.htj2k_tile_attempts = self.htj2k_tile_attempts.saturating_add(1);
+        if self.prefer_cpu_forward_rct || self.prefer_cpu_packetization {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_htj2k_tile"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "prefer_stage_hybrid"),
+                    ],
+                );
+            }
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let resources = self.cuda_encode_resources(&context)?;
@@ -3109,7 +3160,6 @@ mod tests {
         EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
         J2kLosslessSamples,
     };
-    #[cfg(feature = "cuda-runtime")]
     use signinum_j2k_native::J2kEncodeStageAccelerator;
     use signinum_j2k_native::{
         encode_with_accelerator, DecodeSettings, EncodeOptions, Image,
@@ -4001,6 +4051,30 @@ mod tests {
         assert_eq!(accelerator.forward_dwt53_attempts(), 3);
         assert!(accelerator.tier1_code_block_attempts() > 0);
         assert_eq!(accelerator.packetization_attempts(), 1);
+    }
+
+    #[test]
+    fn cuda_auto_host_output_declines_packetization_before_flattening() {
+        let mut accelerator = CudaEncodeStageAccelerator::for_auto_host_output();
+        let invalid_for_cuda_flattening = J2kPacketizationEncodeJob {
+            resolution_count: 1,
+            num_layers: 1,
+            num_components: 3,
+            code_block_count: 0,
+            progression_order: J2kPacketizationProgressionOrder::Lrcp,
+            packet_descriptors: &[],
+            resolutions: &[],
+        };
+
+        let encoded = J2kEncodeStageAccelerator::encode_packetization(
+            &mut accelerator,
+            invalid_for_cuda_flattening,
+        )
+        .expect("Auto host-output CUDA packetization should decline to CPU");
+
+        assert!(encoded.is_none());
+        assert_eq!(accelerator.packetization_attempts(), 1);
+        assert_eq!(accelerator.packetization_dispatches(), 0);
     }
 
     #[cfg(feature = "cuda-runtime")]

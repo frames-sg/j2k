@@ -890,7 +890,7 @@ mod tests {
             "--fixture-dim",
             "256",
             "--jpeg-dir",
-            "crates/signinum-nvidia-baseline/benchtiles/pancreas",
+            "tests/nvidia-baseline/benchtiles/pancreas",
             "--warmup",
             "1",
             "--iterations",
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(
             config.jpeg_dir.as_deref(),
             Some(std::path::Path::new(
-                "crates/signinum-nvidia-baseline/benchtiles/pancreas"
+                "tests/nvidia-baseline/benchtiles/pancreas"
             ))
         );
         assert_eq!(config.warmup, 1);

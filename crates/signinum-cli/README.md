@@ -8,7 +8,7 @@ Install:
 cargo install signinum-cli
 ```
 
-The CPU-first 1.0 CLI provides:
+The stable `0.4.x` CLI provides:
 
 ```sh
 signinum inspect <file>

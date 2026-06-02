@@ -13,7 +13,7 @@ use signinum_j2k::{
     TileRegionScaledDecodeJob,
 };
 
-use crate::{Error, J2kDecoder, MetalSession, Storage, Surface, SurfaceResidency};
+use crate::{profile, Error, J2kDecoder, MetalSession, Storage, Surface, SurfaceResidency};
 
 const AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_DIM: u32 = 512;
 const AUTO_REGION_SCALED_DIRECT_BATCH64_MIN_COUNT: usize = 64;
@@ -89,6 +89,17 @@ enum BatchRoute {
     AutoRegionScaledDirectCpu,
     AutoRegionScaledDirectMetal,
     AutoRepeatedRegionScaledDirectMetal,
+}
+
+fn profile_route_label(route: BatchRoute) -> &'static str {
+    match route {
+        BatchRoute::Generic => "generic",
+        BatchRoute::AutoRegionScaledDirectCpu => "auto_region_scaled_direct_cpu",
+        BatchRoute::AutoRegionScaledDirectMetal => "auto_region_scaled_direct_metal",
+        BatchRoute::AutoRepeatedRegionScaledDirectMetal => {
+            "auto_repeated_region_scaled_direct_metal"
+        }
+    }
 }
 
 struct GroupedRequests {
@@ -209,7 +220,29 @@ fn flush_if_needed(session: &mut SessionState) {
         return;
     }
 
-    for batch in group_metal_requests(std::mem::take(&mut session.queued)) {
+    let profile_enabled = profile::metal_profile_stages_enabled();
+    let queued = std::mem::take(&mut session.queued);
+    let request_count = queued.len();
+    let group_started = profile::profile_now(profile_enabled);
+    let batches = group_metal_requests(queued);
+    if profile_enabled {
+        profile::emit_metal_batch_profile_row(
+            "decode",
+            &profile::MetalBatchProfileRow {
+                slice: "decode_batch",
+                stage: "group",
+                route: "all",
+                backend: "mixed",
+                fmt: "mixed",
+                request_count,
+                output_count: batches.len(),
+                elapsed_us: profile::elapsed_us(group_started),
+                outcome: "grouped",
+            },
+        );
+    }
+
+    for batch in batches {
         process_batch(session, batch);
     }
 }
@@ -674,6 +707,45 @@ fn complete_cpu_host_fallback(session: &mut SessionState, requests: Vec<QueuedRe
 
 fn process_batch(session: &mut SessionState, grouped: GroupedRequests) {
     let GroupedRequests { route, requests } = grouped;
+    let profile_enabled = profile::metal_profile_stages_enabled();
+    let started = profile::profile_now(profile_enabled);
+    let request_count = requests.len();
+    let slots = if profile_enabled {
+        requests
+            .iter()
+            .map(|request| request.output_slot)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let backend = profile_backend_label(&requests);
+    let fmt = profile_format_label(&requests);
+
+    process_batch_inner(session, route, requests);
+
+    if profile_enabled {
+        profile::emit_metal_batch_profile_row(
+            "decode",
+            &profile::MetalBatchProfileRow {
+                slice: "decode_batch",
+                stage: "execute",
+                route: profile_route_label(route),
+                backend: &backend,
+                fmt: &fmt,
+                request_count,
+                output_count: profile_completed_output_count(session, &slots),
+                elapsed_us: profile::elapsed_us(started),
+                outcome: profile_completed_outcome(session, &slots),
+            },
+        );
+    }
+}
+
+fn process_batch_inner(
+    session: &mut SessionState,
+    route: BatchRoute,
+    requests: Vec<QueuedRequest>,
+) {
     if route == BatchRoute::AutoRegionScaledDirectCpu {
         complete_cpu_host_fallback(session, requests);
         return;
@@ -780,6 +852,77 @@ fn process_batch(session: &mut SessionState, grouped: GroupedRequests) {
     for request in requests {
         session.submissions = session.submissions.saturating_add(1);
         session.completed[request.output_slot] = Some(decode_individual(&request));
+    }
+}
+
+fn profile_backend_label(requests: &[QueuedRequest]) -> String {
+    let Some(first) = requests.first() else {
+        return "none".to_string();
+    };
+    if requests
+        .iter()
+        .all(|request| request.backend == first.backend)
+    {
+        format!("{:?}", first.backend)
+    } else {
+        "mixed".to_string()
+    }
+}
+
+fn profile_format_label(requests: &[QueuedRequest]) -> String {
+    let Some(first) = requests.first() else {
+        return "none".to_string();
+    };
+    if requests.iter().all(|request| request.fmt == first.fmt) {
+        format!("{:?}", first.fmt)
+    } else {
+        "mixed".to_string()
+    }
+}
+
+fn profile_completed_output_count(session: &SessionState, slots: &[usize]) -> usize {
+    slots
+        .iter()
+        .filter(|&&slot| session.completed.get(slot).is_some_and(Option::is_some))
+        .count()
+}
+
+fn profile_completed_outcome(session: &SessionState, slots: &[usize]) -> &'static str {
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    let mut cpu_count = 0usize;
+    let mut metal_count = 0usize;
+    let mut pending_count = 0usize;
+
+    for &slot in slots {
+        match session.completed.get(slot).and_then(Option::as_ref) {
+            Some(Ok(surface)) => {
+                ok_count = ok_count.saturating_add(1);
+                match surface.backend {
+                    BackendKind::Cpu => cpu_count = cpu_count.saturating_add(1),
+                    BackendKind::Metal => metal_count = metal_count.saturating_add(1),
+                    BackendKind::Cuda => {}
+                }
+            }
+            Some(Err(_)) => err_count = err_count.saturating_add(1),
+            None => pending_count = pending_count.saturating_add(1),
+        }
+    }
+
+    if pending_count > 0 {
+        "pending"
+    } else if err_count > 0 && ok_count == 0 {
+        "error"
+    } else if err_count > 0 {
+        "mixed_error"
+    } else if metal_count == ok_count && ok_count > 0 {
+        "metal"
+    } else if cpu_count == ok_count && ok_count > 0 {
+        "cpu"
+    } else if ok_count > 0 {
+        "mixed"
+    } else {
+        "none"
     }
 }
 
@@ -1298,6 +1441,23 @@ mod tests {
         assert_eq!(
             grouped[0].requests.len(),
             AUTO_REGION_SCALED_DIRECT_BATCH16_MIN_COUNT
+        );
+    }
+
+    #[test]
+    fn profile_route_labels_are_stable_for_decode_batch_slices() {
+        assert_eq!(profile_route_label(BatchRoute::Generic), "generic");
+        assert_eq!(
+            profile_route_label(BatchRoute::AutoRegionScaledDirectCpu),
+            "auto_region_scaled_direct_cpu"
+        );
+        assert_eq!(
+            profile_route_label(BatchRoute::AutoRegionScaledDirectMetal),
+            "auto_region_scaled_direct_metal"
+        );
+        assert_eq!(
+            profile_route_label(BatchRoute::AutoRepeatedRegionScaledDirectMetal),
+            "auto_repeated_region_scaled_direct_metal"
         );
     }
 

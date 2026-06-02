@@ -505,6 +505,12 @@ pub struct EncodedJ2k {
     pub codestream: Vec<u8>,
     /// Backend that satisfied the encode contract.
     pub backend: BackendKind,
+    /// Encode-stage dispatches observed while producing this codestream.
+    ///
+    /// This can be nonzero even when [`Self::backend`] is [`BackendKind::Cpu`]
+    /// for Auto routes that used one or more device stages but did not satisfy
+    /// every stage required for a fully device-backed encode contract.
+    pub dispatch_report: J2kEncodeDispatchReport,
     /// Encoded image width in pixels.
     pub width: u32,
     /// Encoded image height in pixels.
@@ -543,6 +549,12 @@ pub struct EncodedLossyJ2k {
     pub codestream: Vec<u8>,
     /// Backend that satisfied the encode contract.
     pub backend: BackendKind,
+    /// Encode-stage dispatches observed while producing this codestream.
+    ///
+    /// This can be nonzero even when [`Self::backend`] is [`BackendKind::Cpu`]
+    /// for Auto routes that used one or more device stages but did not satisfy
+    /// every stage required for a fully device-backed encode contract.
+    pub dispatch_report: J2kEncodeDispatchReport,
     /// Encoded image width in pixels.
     pub width: u32,
     /// Encoded image height in pixels.
@@ -568,6 +580,7 @@ pub fn encode_j2k_lossless(
     Ok(EncodedJ2k {
         codestream,
         backend,
+        dispatch_report: J2kEncodeDispatchReport::default(),
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -607,6 +620,7 @@ pub fn encode_j2k_lossless_with_accelerator(
     Ok(EncodedJ2k {
         codestream,
         backend,
+        dispatch_report: dispatch,
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -629,6 +643,7 @@ pub fn encode_j2k_lossy(
     Ok(EncodedLossyJ2k {
         codestream: attempt.codestream,
         backend: resolve_encode_backend(options.backend)?,
+        dispatch_report: J2kEncodeDispatchReport::default(),
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -667,6 +682,7 @@ pub fn encode_j2k_lossy_with_accelerator(
     Ok(EncodedLossyJ2k {
         codestream: attempt.codestream,
         backend,
+        dispatch_report: dispatch,
         width: samples.width,
         height: samples.height,
         components: samples.components,

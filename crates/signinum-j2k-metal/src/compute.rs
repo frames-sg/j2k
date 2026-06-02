@@ -8525,14 +8525,14 @@ pub(crate) fn wait_resident_lossless_codestream_batch(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn wait_resident_lossless_codestream_batches(
-    pendings: Vec<J2kPendingResidentLosslessCodestreamBatch>,
+    pending_batches: Vec<J2kPendingResidentLosslessCodestreamBatch>,
 ) -> Result<Vec<J2kResidentLosslessCodestreamBatchResult>, Error> {
-    if let Some(last) = pendings.last() {
+    if let Some(last) = pending_batches.last() {
         // These command buffers are submitted on the same Metal queue before
         // harvest, so completing the final one implies earlier chunks are done.
         wait_resident_codestream_command_buffer(&last.command_buffer);
     }
-    pendings
+    pending_batches
         .into_iter()
         .map(finish_completed_resident_lossless_codestream_batch)
         .collect()
