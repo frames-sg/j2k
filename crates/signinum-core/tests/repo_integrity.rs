@@ -593,7 +593,7 @@ fn nvidia_codec_comparator_stays_test_only() {
 
     for path in repo_text_files(root) {
         let rel = path.strip_prefix(root).unwrap_or(&path);
-        let rel_s = format!("./{}", rel.display());
+        let rel_s = format!("./{}", rel.display()).replace('\\', "/");
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
         for (line_idx, line) in source.lines().enumerate() {

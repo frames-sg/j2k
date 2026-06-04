@@ -1187,12 +1187,15 @@ fn decode_repeated_region_scaled_direct_batch_prechecked(
     if requests.len() <= 1 {
         return None;
     }
-    let BatchOp::RegionScaled { roi, scale } = first.op else {
+    if !matches!(first.op, BatchOp::RegionScaled { .. }) {
         return None;
-    };
+    }
 
     #[cfg(target_os = "macos")]
     {
+        let BatchOp::RegionScaled { roi, scale } = first.op else {
+            unreachable!("prechecked region-scaled operation");
+        };
         let result = match first.fmt {
             PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
                 crate::hybrid::decode_repeated_region_scaled_color_batch_direct_to_device(
