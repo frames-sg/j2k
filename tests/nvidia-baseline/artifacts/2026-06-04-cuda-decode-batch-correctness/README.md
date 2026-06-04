@@ -23,7 +23,7 @@ Command:
 ```bash
 cd /home/jcwal/signinum-codex-decode-clean
 
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run --release \
   --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 \
   --bin decode_compare -- \
@@ -42,6 +42,6 @@ Results:
 
 | Row | MP/s | Wall ms | GPU ms | Stage ms | Download ms |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Signinum CUDA batch correctness aggregate | 126.556 | 33.142 | 7.744 | 24.765 | 1.261 |
+| Signinum CUDA batch correctness aggregate | 453.544 | 9.248 | 3.748 | 6.080 | 1.080 |
 
 Per-input rows include CPU timing, NVIDIA timing, Signinum-vs-CPU PSNR, and NVIDIA-vs-CPU PSNR. They intentionally do not contain per-input Signinum timing because the Signinum decode was one aggregate batch.

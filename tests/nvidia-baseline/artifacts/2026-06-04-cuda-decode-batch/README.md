@@ -22,7 +22,7 @@ Commands:
 ```bash
 cd /home/jcwal/signinum-codex-decode-clean
 
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run --release \
   --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 \
   --bin decode_compare -- \
@@ -37,7 +37,7 @@ SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
   --json /tmp/signinum_decode_batch_no_download.json \
   --csv /tmp/signinum_decode_batch_no_download.csv
 
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run --release \
   --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 \
   --bin decode_compare -- \
@@ -51,7 +51,7 @@ SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
   --json /tmp/signinum_decode_batch_download.json \
   --csv /tmp/signinum_decode_batch_download.csv
 
-SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run \
+SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 cargo run --release \
   --manifest-path tests/nvidia-baseline/Cargo.toml \
   --features nvjpeg2000 \
   --bin decode_compare -- \
@@ -68,9 +68,9 @@ Results:
 
 | Row | MP/s | Wall ms | GPU ms | Stage ms | Download ms |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Signinum CUDA batch no-download | 124.054 | 33.810 | 8.126 | 26.434 | 0.000 |
-| Signinum CUDA batch download | 123.750 | 33.893 | 8.170 | 25.531 | 1.147 |
-| Signinum CUDA serial correctness rows | 38.371 | 109.308 | 61.624 | 90.209 | 4.189 |
-| NVIDIA nvJPEG2000 direct decode rows | 79.025 | 53.075 | 44.522 | n/a | n/a |
+| Signinum CUDA batch no-download | 487.127 | 8.610 | 4.121 | 6.587 | 0.000 |
+| Signinum CUDA batch download | 442.449 | 9.480 | 4.001 | 6.351 | 1.070 |
+| Signinum CUDA serial correctness rows | 58.784 | 71.351 | 53.909 | 61.459 | 3.577 |
+| NVIDIA nvJPEG2000 direct decode rows | 85.623 | 48.986 | 42.615 | n/a | n/a |
 
 Average NVIDIA PSNR vs CPU over the 64 normal comparison rows: 51.424 dB.

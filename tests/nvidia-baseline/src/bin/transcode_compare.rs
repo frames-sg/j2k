@@ -44,6 +44,7 @@ const BACKEND_NAME: &str = if cfg!(target_os = "macos") {
 const WARMUP: usize = 2;
 const ITERATIONS: usize = 10;
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let config = match BenchmarkConfig::from_env_args() {
         Ok(config) => config,
