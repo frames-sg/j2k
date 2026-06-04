@@ -1,6 +1,6 @@
 # Benchmarking methodology
 
-`signinum-jpeg` carries two Criterion benchmark targets:
+`signinum-jpeg` carries these Criterion benchmark targets:
 
 - `compare` compares `signinum-jpeg` against `jpeg-decoder`, `zune-jpeg`,
   and direct `libjpeg-turbo` decode paths on the same JPEG byte streams, and
@@ -9,6 +9,10 @@
 - `micro` measures signinum-only hot paths that are useful when tuning
   regressions inside the crate: header inspect, Huffman symbol decode, and
   scalar IDCT.
+- `fast420_breakdown` measures diagnostic fast-path stage timing for 4:2:0
+  JPEG decode.
+- `corpus_report` summarizes local corpus coverage.
+- `encode_cpu` measures CPU JPEG encode fallback paths.
 
 The current benchmark contract is native-only: run and compare on `x86_64`
 and `aarch64` hosts. wasm and `no_std` builds are no longer part of the
@@ -17,9 +21,10 @@ performance signoff path.
 A published benchmark is any benchmark result or comparator claim included in
 the root README, crate READMEs, release notes, or documentation. Published
 claims must record the command, host, compiler, crate revision, input source,
-comparator availability, comparator version, comparator path, and skipped rows.
-Rows skipped because a comparator is unavailable are development diagnostics,
-not evidence for public claims.
+command environment, skipped rows, and comparator availability, comparator
+version, and comparator path when a comparator is part of the claim. Rows
+skipped because a comparator is unavailable are development diagnostics, not
+evidence for public claims.
 
 ## Profiling tool policy
 
@@ -44,16 +49,15 @@ benchmark publication report and store it with the raw benchmark output:
 
 ```sh
 cargo xtask bench-report \
-  --command "SIGNINUM_J2K_COMPARE_THREADS=8 cargo bench -p signinum-j2k-metal --bench compare" \
+  --command "cargo bench -p signinum-j2k --bench public_api" \
   --input-source "external-corpus:example-manifest-sha256" \
   --out target/signinum-bench-report.md
 ```
 
 The report records host/compiler/revision metadata, input source,
-comparator versions, comparator paths, `SIGNINUM_J2K_COMPARE_THREADS`, and
-skipped rows. It is the minimum evidence bundle for any benchmark publication
-report that supports OpenJPEG, Grok, libjpeg-turbo, Metal, CUDA, or CPU
-comparator claims.
+comparator versions, comparator paths, command environment, and skipped rows.
+It is the minimum evidence bundle for any benchmark publication report that
+supports OpenJPEG, Grok, libjpeg-turbo, Metal, CUDA, or CPU comparator claims.
 
 Baseline JPEG encode benchmarks are fallback diagnostics only. WSI/DICOM
 storage signoff should first prove compressed-tile passthrough eligibility and
@@ -523,7 +527,6 @@ cargo bench --profile release-bench -p signinum --bench facade
 cargo bench --profile release-bench -p signinum-jpeg
 cargo bench --profile release-bench -p signinum-j2k-native
 cargo bench --profile release-bench -p signinum-jpeg-metal --bench compare --no-run
-cargo bench --profile release-bench -p signinum-j2k-metal --bench compare --no-run
 ```
 
 CPU codec stage rows:
@@ -543,7 +546,7 @@ SIGNINUM_JPEG_PROFILE_STAGES=summary \
   cargo bench --profile release-bench -p signinum-jpeg --bench compare
 
 SIGNINUM_J2K_PROFILE_STAGES=summary \
-  cargo bench --profile release-bench -p signinum-j2k-metal --bench encode_stages
+  cargo bench --profile release-bench -p signinum-j2k-native --bench direct_cpu
 ```
 
 Rows and summaries are compact key-value stderr lines:
@@ -613,80 +616,30 @@ codestream.
 When stage rows point at a candidate bottleneck, confirm with platform tools
 before optimizing:
 
-- macOS: Instruments Time Profiler and Metal System Trace.
+- macOS: Instruments Time Profiler and Metal System Trace. For J2K Metal
+  hybrid traces, add the Points of Interest instrument and enable
+  `SIGNINUM_J2K_METAL_PROFILE_SIGNPOSTS=1` so exported traces include the
+  app-level encode/decode stage intervals.
+
+The previous `signinum-j2k-metal` Criterion stage binaries were removed during
+the 2026-06 production cleanup. Add a new narrow J2K Metal profiling bench
+before launching an Instruments trace against a benchmark binary.
+
 - Linux: `perf record` / `perf report` for CPU paths.
 - Cross-platform Firefox Profiler workflow: `samply record -- cargo bench ...`.
 
 ## `signinum-j2k`
 
-`signinum-j2k` and `signinum-j2k-metal` carry a dedicated Criterion comparator
-bench at `crates/signinum-j2k-metal/benches/compare.rs`.
+`signinum-j2k` carries the current public API Criterion bench. The old
+`signinum-j2k-metal` Criterion benches (`compare`, `device_upload`,
+`encode_stages`, and `decode_stages`) were removed during the 2026-06
+production cleanup so new Metal/CPU hybrid profiling can start from a narrow,
+intentional bench surface.
 
-It uses deterministic runtime-generated codestreams so the bench is always
-available without a checked-in J2K corpus:
-
-- classic grayscale J2K (`signinum-generated` input source)
-- classic RGB J2K (`signinum-generated` input source)
-- HTJ2K grayscale at 1024 and 512 tile sizes
-
-Bench groups:
-
-- `inspect`
-- `decode_gray`
-- `decode_rgb`
-- `wsi_region_gray`
-- `wsi_scaled_gray_q4`
-- `wsi_region_scaled_gray_q4`
-- `wsi_tile_batch_gray`
-- `wsi_tile_batch_region_scaled_gray_q4`
-- `wsi_tile_batch_region_scaled_gray_distinct_q4`
-- `external_wsi_tile_batch_region_scaled_q4` when
-  `SIGNINUM_J2K_METAL_WSI_TILE_DIR` points at JP2/J2K/JPH/JHC tiles or DICOM
-  WSI files
-- `wsi_tile_batch_gray_32`
-- `wsi_tile_batch_gray_64`
-- `wsi_tile_batch_rgb`
-- `wsi_tile_batch_rgb_distinct`
-
-Comparator policy:
-
-- `signinum-j2k` is benchmarked through its public API
-- OpenJPEG is benchmarked in-process through `openjpeg-sys`
-- Grok is benchmarked in-process through the local `libgrokj2k` shared library
-  plus a thin C shim compiled into `signinum-j2k-compare`
-- the benchmark prints comparator availability, comparator version, comparator
-  path, input source labels, and `SIGNINUM_J2K_COMPARE_THREADS` at startup
-- all three decoders produce packed `Gray8` or interleaved `Rgb8` output so
-  output-layout work is included equally in the timing
-- the OpenJPEG and Grok comparator paths are forced single-threaded per tile
-- batch comparator rows use the same outer worker count as signinum through
-  `SIGNINUM_J2K_COMPARE_THREADS`
-- signinum single-tile comparator groups include explicit serial rows whenever
-  they are compared with single-threaded OpenJPEG or Grok rows
-- classic J2K bench inputs generated by the in-tree encoder are labeled
-  `signinum-generated`; only OpenJPEG-generated inputs or external-corpus rows
-  may support public OpenJPEG or Grok claims
-- `SIGNINUM_OPENJPEG_COMPRESS_BIN` is reserved for OpenJPEG-generated input
-  workflows and required signoff, not for unlabeled fallback rows
-- Grok library discovery is controlled by `SIGNINUM_GROK_SOURCE` and
-  `SIGNINUM_GROK_ROOT`; by default the bench looks for a local Grok build at
-  `/tmp/grok-signinum` with shared libraries under `/tmp/grok-signinum/build/bin`
-
-Region and scale mapping:
-
-- region decode uses the native OpenJPEG decode-area API and Grok region fields
-- scaled decode uses native OpenJPEG reduction-factor decode and Grok reduction
-  decode
-- region+scaled decode projects the source-coordinate ROI onto the
-  reduced-resolution grid with floor-start/ceil-end coverage
-- tile-batch decode includes repeated-tile groups and generated distinct-tile
-  groups; the external WSI group loads distinct JP2/J2K/JPH/JHC files or
-  encapsulated J2K frames from DICOM files when a local corpus is configured
-
-Compile the J2K compare bench:
+Compile the current J2K public API bench:
 
 ```sh
-cargo bench -p signinum-j2k-metal --bench compare --no-run
+cargo bench -p signinum-j2k --bench public_api --no-run
 ```
 
 No-silent-skip OpenJPEG signoff:
@@ -705,21 +658,8 @@ SIGNINUM_REQUIRE_OPENJPEG=1 SIGNINUM_REQUIRE_GROK=1 cargo xtask j2k-bench-signof
 If Grok is unavailable locally, report that the Grok publication gate was not
 run and do not publish Grok comparator claims.
 
-Run it locally against in-process OpenJPEG:
-
-```sh
-SIGNINUM_OPENJPEG_COMPRESS_BIN=/opt/homebrew/bin/opj_compress \
-  cargo bench -p signinum-j2k-metal --bench compare
-```
-
-Run it locally against OpenJPEG and Grok:
-
-```sh
-SIGNINUM_OPENJPEG_COMPRESS_BIN=/opt/homebrew/bin/opj_compress \
-SIGNINUM_GROK_SOURCE=/tmp/grok-signinum \
-SIGNINUM_GROK_ROOT=/tmp/grok-signinum/build/bin \
-  cargo bench -p signinum-j2k-metal --bench compare
-```
+Run publication comparator checks before publishing OpenJPEG or Grok claims;
+do not substitute the removed Metal comparator bench.
 
 ## GPU Benchmark Signoff
 
@@ -728,7 +668,9 @@ runtime performance claims. Use `.github/workflows/gpu-validation.yml` on
 self-hosted runners for GPU signoff:
 
 - Apple Silicon Metal runners validate Metal adapter tests and can run timed
-  `signinum-jpeg-metal` and `signinum-j2k-metal` Criterion benches.
+  `signinum-jpeg-metal` Criterion benches plus facade Metal benches. The
+  `signinum-j2k-metal` bench surface is reset pending new narrow hybrid
+  profiling benches.
 - x86_64 CUDA runners validate CUDA device-memory output with `cuda-runtime`
   and can run the `signinum-jpeg-cuda` nvJPEG and `signinum-j2k-cuda` HTJ2K
   Criterion benches. NVIDIA performance claims require recorded
@@ -747,9 +689,10 @@ publication run.
 
 ## Device-output adapters
 
-`signinum-jpeg-metal` and `signinum-j2k-metal` carry Apple-host device
-benches that compare the CPU decode path against the corresponding
-Metal-surface path.
+`signinum-jpeg-metal` carries Apple-host device benches that compare the CPU
+decode path against the corresponding Metal-surface path. `signinum-j2k-metal`
+currently has no Criterion bench targets; J2K Metal/CPU hybrid profiling must
+be reintroduced as narrow, intentional benches.
 
 Current v1 scope is explicit:
 
@@ -772,12 +715,11 @@ Current v1 scope is explicit:
   input-window origins through the resident band graph so intermediate IDWT
   levels can feed later cropped levels safely. Unsupported codestream features
   still fall back through CPU reconstruction plus device-surface upload
-- J2K `signinum-adaptive` ROI+scaled batch benches submit through
-  `BackendRequest::Auto`; the batching layer chooses CPU for short/small
-  batches and Metal for measured grayscale/RGB batch thresholds
-- these benches measure complete codec-device tasks, including surface
-  production; they do not include WSI container parsing, tile lookup, caching,
-  or prefetch policy
+- J2K Metal/CPU hybrid routing remains a production adapter concern, but no
+  J2K Metal bench row is currently part of GPU benchmark signoff
+- current JPEG Metal device-output benches measure complete codec-device tasks,
+  including surface production; they do not include WSI container parsing, tile
+  lookup, caching, or prefetch policy
 - JPEG baseline encode benches, where present, are compatibility/fallback
   measurements and must not be used as evidence for the diagnostic storage
   conversion path
@@ -802,7 +744,6 @@ Compile the Metal benches:
 ```sh
 cargo bench -p signinum-jpeg-metal --bench compare --no-run
 cargo bench -p signinum-jpeg-metal --bench device_upload --no-run
-cargo bench -p signinum-j2k-metal --bench device_upload --no-run
 ```
 
 Run them on Apple Silicon macOS:
@@ -810,8 +751,11 @@ Run them on Apple Silicon macOS:
 ```sh
 cargo bench -p signinum-jpeg-metal --bench compare -- --noplot
 cargo bench -p signinum-jpeg-metal --bench device_upload -- --noplot
-cargo bench -p signinum-j2k-metal --bench device_upload -- --noplot
 ```
+
+`signinum-j2k-metal` currently has no Criterion bench targets. Add new
+Metal/CPU hybrid profiling benches intentionally before adding J2K Metal rows
+back to GPU signoff.
 
 `signinum-jpeg-cuda` and `signinum-j2k-cuda` expose the same device-output API
 surface, but their strict device-residency contracts differ. On hosts with a

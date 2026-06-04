@@ -9,7 +9,10 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     mem::{size_of, size_of_val},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -27,17 +30,22 @@ use signinum_core::{PixelFormat, Rect};
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::HtCodeBlockDecoder;
 use signinum_j2k_native::{
-    decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar, ht_uvlc_encode_table,
-    ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0, ht_vlc_encode_table1, ht_vlc_table0,
-    ht_vlc_table1, ColorSpace as NativeColorSpace, DecodedComponents as NativeDecodedComponents,
-    EncodeProgressionOrder, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, HtCodeBlockDecodeJob,
-    HtCodeBlockDecodeWorkspace, HtSubBandDecodeJob, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
-    J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kHtCodeBlockEncodeJob, J2kInverseMctJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kSingleDecompositionIdwtJob, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType,
-    J2kTier1CodeBlockEncodeJob, J2kWaveletTransform,
+    decode_ht_code_block_scalar_with_workspace,
+    decode_ht_code_block_scalar_with_workspace_profiled,
+    decode_j2k_code_block_scalar_with_workspace,
+    decode_j2k_code_block_scalar_with_workspace_profiled, ht_uvlc_encode_table, ht_uvlc_table0,
+    ht_uvlc_table1, ht_vlc_encode_table0, ht_vlc_encode_table1, ht_vlc_table0, ht_vlc_table1,
+    pack_j2k_code_block_scalar_from_tier1_tokens, ColorSpace as NativeColorSpace,
+    DecodedComponents as NativeDecodedComponents, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
+    EncodedJ2kCodeBlock, HtCodeBlockDecodeJob, HtCodeBlockDecodeProfile,
+    HtCodeBlockDecodeWorkspace, HtSubBandDecodeJob, J2kCodeBlockDecodeJob,
+    J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace, J2kCodeBlockSegment, J2kCodeBlockStyle,
+    J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
+    J2kDirectIdwtStep, J2kDirectStoreStep, J2kForwardDwt53Level, J2kForwardDwt53Output,
+    J2kHtCodeBlockEncodeJob, J2kInverseMctJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor, J2kSingleDecompositionIdwtJob,
+    J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    J2kTier1TokenSegment, J2kWaveletTransform,
 };
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::{
@@ -57,22 +65,25 @@ static HT_BATCH_COEFFICIENT_COPY_BLITS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static HYBRID_STACKED_COMPONENT_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
+static HYBRID_REPEATED_OUTPUT_BLITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(target_os = "macos", test))]
 static HYBRID_CPU_DECODE_WORKER_INITS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static HYBRID_CPU_DECODE_INPUTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
 static FLATTENED_HYBRID_CPU_DECODE_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(target_os = "macos", test))]
-static RESIDENT_GPU_TIMESTAMP_QUERIES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(target_os = "macos", test))]
-static RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(target_os = "macos", test))]
 std::thread_local! {
+    static RESIDENT_GPU_TIMESTAMP_QUERIES: Cell<usize> = const { Cell::new(0) };
+    static RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS: Cell<usize> = const { Cell::new(0) };
     static DIRECT_TIER1_INPUT_BUFFER_PREPARES: Cell<usize> = const { Cell::new(0) };
     static PRIVATE_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
+    static SHARED_BUFFER_POOL_MISSES: Cell<usize> = const { Cell::new(0) };
     static LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES: Cell<usize> = const { Cell::new(0) };
-    static HT_SIMD_PROTOTYPE_DISPATCHES: Cell<usize> = const { Cell::new(0) };
-    static HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    static CLASSIC_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
+    static CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
+    static CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -87,22 +98,22 @@ pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_resident_gpu_timestamp_queries_for_test() {
-    RESIDENT_GPU_TIMESTAMP_QUERIES.store(0, Ordering::Relaxed);
+    RESIDENT_GPU_TIMESTAMP_QUERIES.with(|queries| queries.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn resident_gpu_timestamp_queries_for_test() -> usize {
-    RESIDENT_GPU_TIMESTAMP_QUERIES.load(Ordering::Relaxed)
+    RESIDENT_GPU_TIMESTAMP_QUERIES.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_resident_codestream_command_buffer_waits_for_test() {
-    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.store(0, Ordering::Relaxed);
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.with(|waits| waits.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn resident_codestream_command_buffer_waits_for_test() -> usize {
-    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.load(Ordering::Relaxed)
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -123,6 +134,16 @@ pub(crate) fn reset_hybrid_stacked_component_batches_for_test() {
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn hybrid_stacked_component_batches_for_test() -> usize {
     HYBRID_STACKED_COMPONENT_BATCHES.load(Ordering::Relaxed)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_hybrid_repeated_output_blits_for_test() {
+    HYBRID_REPEATED_OUTPUT_BLITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn hybrid_repeated_output_blits_for_test() -> usize {
+    HYBRID_REPEATED_OUTPUT_BLITS.load(Ordering::Relaxed)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -166,6 +187,16 @@ pub(crate) fn private_buffer_pool_misses_for_test() -> usize {
 }
 
 #[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_shared_buffer_pool_misses_for_test() {
+    SHARED_BUFFER_POOL_MISSES.with(|misses| misses.set(0));
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn shared_buffer_pool_misses_for_test() -> usize {
+    SHARED_BUFFER_POOL_MISSES.with(Cell::get)
+}
+
+#[cfg(all(target_os = "macos", test))]
 pub(crate) fn reset_lossless_deinterleave_rct_fused_dispatches_for_test() {
     LOSSLESS_DEINTERLEAVE_RCT_FUSED_DISPATCHES.with(|dispatches| dispatches.set(0));
 }
@@ -176,33 +207,63 @@ pub(crate) fn lossless_deinterleave_rct_fused_dispatches_for_test() -> usize {
 }
 
 #[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_ht_simd_prototype_dispatches_for_test() {
-    HT_SIMD_PROTOTYPE_DISPATCHES.with(|dispatches| dispatches.set(0));
+pub(crate) fn reset_classic_gpu_token_pack_dispatches_for_test() {
+    CLASSIC_GPU_TOKEN_PACK_DISPATCHES.with(|dispatches| dispatches.set(0));
 }
 
 #[cfg(all(target_os = "macos", test))]
-pub(crate) fn ht_simd_prototype_dispatches_for_test() -> usize {
-    HT_SIMD_PROTOTYPE_DISPATCHES.with(Cell::get)
+pub(crate) fn classic_gpu_token_pack_dispatches_for_test() -> usize {
+    CLASSIC_GPU_TOKEN_PACK_DISPATCHES.with(Cell::get)
 }
 
 #[cfg(all(target_os = "macos", test))]
-pub(crate) struct HtSimdPrototypeRouteOverrideGuard {
+pub(crate) fn reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test() {
+    CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES.with(|dispatches| dispatches.set(0));
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn classic_split_mq_byte_gpu_token_pack_dispatches_for_test() -> usize {
+    CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES.with(Cell::get)
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) struct ClassicGpuTokenPackRouteOverrideGuard {
     previous: Option<bool>,
 }
 
 #[cfg(all(target_os = "macos", test))]
-impl Drop for HtSimdPrototypeRouteOverrideGuard {
+impl Drop for ClassicGpuTokenPackRouteOverrideGuard {
     fn drop(&mut self) {
-        HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(|route| route.set(self.previous));
+        CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE.with(|route| route.set(self.previous));
     }
 }
 
 #[cfg(all(target_os = "macos", test))]
-pub(crate) fn force_ht_simd_prototype_route_for_test(
+pub(crate) fn force_classic_gpu_token_pack_route_for_test(
     enabled: bool,
-) -> HtSimdPrototypeRouteOverrideGuard {
-    let previous = HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(|route| route.replace(Some(enabled)));
-    HtSimdPrototypeRouteOverrideGuard { previous }
+) -> ClassicGpuTokenPackRouteOverrideGuard {
+    let previous = CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE.with(|route| route.replace(Some(enabled)));
+    ClassicGpuTokenPackRouteOverrideGuard { previous }
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) struct MetalProfileStagesOverrideGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(all(target_os = "macos", test))]
+impl Drop for MetalProfileStagesOverrideGuard {
+    fn drop(&mut self) {
+        METAL_PROFILE_STAGES_OVERRIDE.with(|profile| profile.set(self.previous));
+    }
+}
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn force_metal_profile_stages_for_test(
+    enabled: bool,
+) -> MetalProfileStagesOverrideGuard {
+    let previous = METAL_PROFILE_STAGES_OVERRIDE.with(|profile| profile.replace(Some(enabled)));
+    MetalProfileStagesOverrideGuard { previous }
 }
 
 #[cfg(target_os = "macos")]
@@ -954,6 +1015,10 @@ const J2K_CLASSIC_MAX_HEIGHT: u32 = 64;
 #[cfg(target_os = "macos")]
 const J2K_CLASSIC_MAX_COEFF_COUNT: usize =
     (J2K_CLASSIC_MAX_WIDTH as usize + 2) * (J2K_CLASSIC_MAX_HEIGHT as usize + 2);
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_ENCODE_32_MAX_WIDTH: u32 = 32;
+#[cfg(target_os = "macos")]
+const J2K_CLASSIC_ENCODE_32_MAX_HEIGHT: u32 = 32;
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -1109,6 +1174,18 @@ struct J2kForwardDwt53Params {
     current_height: u32,
     low_width: u32,
     low_height: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kForwardDwt53BatchedParams {
+    full_width: u32,
+    current_width: u32,
+    current_height: u32,
+    low_width: u32,
+    low_height: u32,
+    component_count: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1281,30 +1358,309 @@ const J2K_HT_ENCODE_MS_SIZE: usize = (16_384usize * 16).div_ceil(15);
 #[cfg(target_os = "macos")]
 const J2K_HT_ENCODE_BASE_OUTPUT_SIZE: usize =
     J2K_HT_ENCODE_MS_SIZE + J2K_HT_ENCODE_MEL_SIZE + J2K_HT_ENCODE_VLC_SIZE;
+#[cfg(target_os = "macos")]
+const J2K_HT_ENCODE_MAX_SAMPLES: usize = 16_384;
+#[cfg(target_os = "macos")]
+const J2K_HT_ENCODE_MS_BYTES_PER_SAMPLE_FLOOR: usize = 5;
+#[cfg(target_os = "macos")]
+const PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE: u32 = 256;
+#[cfg(target_os = "macos")]
+const PACKET_PAYLOAD_COPY_STRIPES_PER_JOB: u32 = 4;
 
 #[cfg(target_os = "macos")]
-const HT_SIMD_PROTOTYPE_ENV: &str = "SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE";
+const HT_PACKET_CAPACITY_ENV: &str = "SIGNINUM_J2K_METAL_HT_PACKET_CAPACITY";
 #[cfg(target_os = "macos")]
+const CLASSIC_SELECTIVE_BYPASS_ENV: &str = "SIGNINUM_J2K_METAL_CLASSIC_SELECTIVE_BYPASS";
 const METAL_PROFILE_STAGES_ENV: &str = "SIGNINUM_J2K_METAL_PROFILE_STAGES";
-
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_SIGNPOSTS_ENV: &str = "SIGNINUM_J2K_METAL_PROFILE_SIGNPOSTS";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_DECODE_LABEL_ENV: &str = "SIGNINUM_J2K_METAL_PROFILE_DECODE_LABEL";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_DECODE_SPLIT_COMMANDS_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_DECODE_SPLIT_COMMANDS";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_COEFFICIENT_PREP_SPLIT_COMMANDS_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_COEFFICIENT_PREP_SPLIT_COMMANDS";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_DENSITY_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_DENSITY";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_RAW_PACK_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_RAW_PACK";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_ARITHMETIC_PACK_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_ARITHMETIC_PACK";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_SYMBOL_PLAN_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_SYMBOL_PLAN";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_PASS_PLAN_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_PASS_PLAN";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT";
+#[cfg(target_os = "macos")]
+const METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK_ENV: &str =
+    "SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_GPU_TOKEN_PACK_ENV: &str = "SIGNINUM_J2K_METAL_CLASSIC_TIER1_GPU_TOKEN_PACK";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_SPLIT_GPU_TOKEN_PACK_ENV: &str =
+    "SIGNINUM_J2K_METAL_CLASSIC_TIER1_SPLIT_GPU_TOKEN_PACK";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_ENV: &str =
+    "SIGNINUM_J2K_METAL_CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK";
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_TOKEN_ARENA_BYTES: usize = 4096;
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_MQ_BYTE_TOKEN_ARENA_BYTES: usize = 8192;
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY: usize = 48;
+#[cfg(target_os = "macos")]
+const CLASSIC_TIER1_PASS_PLAN_CAPACITY: usize = 48;
+#[cfg(target_os = "macos")]
+type HybridSignpostName = u32;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_CPU_TIER1: HybridSignpostName = 1;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD: HybridSignpostName = 2;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_COMMAND_WAIT: HybridSignpostName = 3;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE: HybridSignpostName = 4;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE: HybridSignpostName = 5;
+#[cfg(target_os = "macos")]
+const SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE: HybridSignpostName = 6;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT: HybridSignpostName = 7;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST: HybridSignpostName = 8;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_SETUP: HybridSignpostName = 9;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE: HybridSignpostName = 10;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN: HybridSignpostName = 11;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP: HybridSignpostName = 12;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE: HybridSignpostName = 13;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_PAYLOAD_COPY_COMMAND_ENCODE: HybridSignpostName = 14;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE: HybridSignpostName = 15;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP: HybridSignpostName = 16;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE: HybridSignpostName = 17;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_PACKET_PLAN: HybridSignpostName = 18;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_PACKET_BUFFER_SETUP: HybridSignpostName = 19;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE: HybridSignpostName = 20;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE: HybridSignpostName = 21;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_PAYLOAD_COPY_COMMAND_ENCODE: HybridSignpostName = 22;
+#[cfg(target_os = "macos")]
+const SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE: HybridSignpostName = 23;
 #[cfg(target_os = "macos")]
 fn env_flag_enabled(name: &str) -> bool {
     matches!(std::env::var(name), Ok(value) if value == "1")
 }
 
 #[cfg(target_os = "macos")]
-fn ht_simd_prototype_env_requested() -> bool {
+fn classic_resident_style_flags_from_env() -> u32 {
+    if matches!(std::env::var(CLASSIC_SELECTIVE_BYPASS_ENV), Ok(value) if value == "0") {
+        0
+    } else {
+        J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS
+    }
+}
+
+fn classic_cod_block_style_from_flags(flags: u32) -> u32 {
+    let mut style = 0u32;
+    if (flags & J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS) != 0 {
+        style |= 0x01;
+    }
+    if (flags & J2K_CLASSIC_STYLE_RESET_CONTEXT_PROBABILITIES) != 0 {
+        style |= 0x02;
+    }
+    if (flags & J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS) != 0 {
+        style |= 0x04;
+    }
+    if (flags & J2K_CLASSIC_STYLE_VERTICALLY_CAUSAL_CONTEXT) != 0 {
+        style |= 0x08;
+    }
+    if (flags & J2K_CLASSIC_STYLE_SEGMENTATION_SYMBOLS) != 0 {
+        style |= 0x20;
+    }
+    style
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_gpu_token_pack_requested() -> bool {
     #[cfg(test)]
-    if let Some(enabled) = HT_SIMD_PROTOTYPE_ROUTE_OVERRIDE.with(Cell::get) {
+    if let Some(enabled) = CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE.with(Cell::get) {
         return enabled;
     }
-    env_flag_enabled(HT_SIMD_PROTOTYPE_ENV)
+    env_flag_enabled(CLASSIC_TIER1_GPU_TOKEN_PACK_ENV)
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_split_gpu_token_pack_requested() -> bool {
+    env_flag_enabled(CLASSIC_TIER1_SPLIT_GPU_TOKEN_PACK_ENV)
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_split_mq_byte_gpu_token_pack_setting() -> Option<bool> {
+    match std::env::var(CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_ENV) {
+        Ok(value) if value == "1" => Some(true),
+        Ok(value) if value == "0" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_split_mq_byte_gpu_token_pack_requested() -> bool {
+    classic_tier1_split_mq_byte_gpu_token_pack_setting() == Some(true)
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_split_mq_byte_gpu_token_pack_disabled() -> bool {
+    classic_tier1_split_mq_byte_gpu_token_pack_setting() == Some(false)
+}
+
+fn classic_tier1_gpu_token_pack_supported(jobs: &[J2kClassicEncodeBatchJob]) -> bool {
+    !jobs.is_empty()
+        && classic_encode_code_blocks_pipeline_kind(jobs)
+            == J2kClassicEncodePipelineKind::BypassU16_32
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn metal_profile_stages_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
+    #[cfg(test)]
+    if let Some(enabled) = METAL_PROFILE_STAGES_OVERRIDE.with(Cell::get) {
+        return enabled;
+    }
     *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_STAGES_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_signposts_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_SIGNPOSTS_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_decode_split_commands_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_DECODE_SPLIT_COMMANDS_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_coefficient_prep_split_commands_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED
+            .get_or_init(|| env_flag_enabled(METAL_PROFILE_COEFFICIENT_PREP_SPLIT_COMMANDS_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_density_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_DENSITY_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_raw_pack_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_RAW_PACK_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_arithmetic_pack_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED
+            .get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_ARITHMETIC_PACK_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_symbol_plan_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| {
+            env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_SYMBOL_PLAN_ENV)
+                || env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_PASS_PLAN_ENV)
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_pass_plan_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_PASS_PLAN_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_token_emit_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| {
+            env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT_ENV)
+                || env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK_ENV)
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_split_token_emit_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED
+            .get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_profile_classic_tier1_token_pack_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    metal_profile_stages_enabled()
+        && *ENABLED.get_or_init(|| env_flag_enabled(METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK_ENV))
+}
+
+#[cfg(target_os = "macos")]
+fn decode_profile_label() -> String {
+    std::env::var(METAL_PROFILE_DECODE_LABEL_ENV)
+        .ok()
+        .filter(|label| !label.is_empty())
+        .map_or_else(
+            || "unlabeled".to_string(),
+            |label| sanitize_profile_label(&label),
+        )
+}
+
+#[cfg(target_os = "macos")]
+fn sanitize_profile_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1315,33 +1671,50 @@ fn label_command_buffer(command_buffer: &CommandBufferRef, label: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn label_compute_encoder(encoder: &ComputeCommandEncoderRef, label: &str) {
-    if metal_profile_stages_enabled() {
-        encoder.set_label(label);
+type OsSignpostId = u64;
+
+#[cfg(target_os = "macos")]
+const OS_SIGNPOST_ID_NULL: OsSignpostId = 0;
+#[cfg(target_os = "macos")]
+const OS_SIGNPOST_ID_INVALID: OsSignpostId = OsSignpostId::MAX;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn signinum_j2k_metal_signpost_begin(name: HybridSignpostName) -> OsSignpostId;
+    fn signinum_j2k_metal_signpost_end(name: HybridSignpostName, id: OsSignpostId);
+}
+
+#[cfg(target_os = "macos")]
+struct HybridStageSignpost {
+    id: OsSignpostId,
+    name: HybridSignpostName,
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for HybridStageSignpost {
+    fn drop(&mut self) {
+        unsafe {
+            signinum_j2k_metal_signpost_end(self.name, self.id);
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn compile_ht_simd_prototype_pipeline(
-    device: &Device,
-    options: &CompileOptions,
-) -> Option<ComputePipelineState> {
-    let prototype_source =
-        format!("#define SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE 1\n{SHADER_SOURCE}");
-    let library = device
-        .new_library_with_source(&prototype_source, options)
-        .ok()?;
-    let function = library
-        .get_function("j2k_encode_ht_code_blocks_simd_prototype", None)
-        .ok()?;
-    let pipeline = device
-        .new_compute_pipeline_state_with_function(&function)
-        .ok()?;
-    if pipeline.thread_execution_width() == 32 && pipeline.max_total_threads_per_threadgroup() >= 32
-    {
-        Some(pipeline)
-    } else {
-        None
+fn hybrid_stage_signpost(name: HybridSignpostName) -> Option<HybridStageSignpost> {
+    if !metal_profile_signposts_enabled() {
+        return None;
+    }
+    let id = unsafe { signinum_j2k_metal_signpost_begin(name) };
+    if id == OS_SIGNPOST_ID_NULL || id == OS_SIGNPOST_ID_INVALID {
+        return None;
+    }
+    Some(HybridStageSignpost { id, name })
+}
+
+#[cfg(target_os = "macos")]
+fn label_compute_encoder(encoder: &ComputeCommandEncoderRef, label: &str) {
+    if metal_profile_stages_enabled() {
+        encoder.set_label(label);
     }
 }
 
@@ -1375,6 +1748,57 @@ struct J2kClassicEncodeBatchJob {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum J2kClassicEncodePipelineKind {
+    Generic,
+    Generic32,
+    Bypass32,
+    BypassU16_32,
+    Style0,
+    Style0_32,
+}
+
+#[cfg(target_os = "macos")]
+fn classic_encode_code_blocks_pipeline_kind(
+    jobs: &[J2kClassicEncodeBatchJob],
+) -> J2kClassicEncodePipelineKind {
+    let all_32 = jobs.iter().all(|job| {
+        job.width <= J2K_CLASSIC_ENCODE_32_MAX_WIDTH
+            && job.height <= J2K_CLASSIC_ENCODE_32_MAX_HEIGHT
+    });
+    let all_style0 = jobs.iter().all(|job| job.style_flags == 0);
+    let all_bypass = jobs
+        .iter()
+        .all(|job| job.style_flags == J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS);
+    let all_u16_bitplanes = jobs.iter().all(|job| job.total_bitplanes <= 16);
+    match (all_style0, all_bypass, all_32, all_u16_bitplanes) {
+        (true, _, true, _) => J2kClassicEncodePipelineKind::Style0_32,
+        (true, _, false, _) => J2kClassicEncodePipelineKind::Style0,
+        (false, true, true, true) => J2kClassicEncodePipelineKind::BypassU16_32,
+        (false, true, true, false) => J2kClassicEncodePipelineKind::Bypass32,
+        (false, _, true, _) => J2kClassicEncodePipelineKind::Generic32,
+        (false, _, false, _) => J2kClassicEncodePipelineKind::Generic,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_encode_code_blocks_pipeline<'a>(
+    runtime: &'a MetalRuntime,
+    jobs: &[J2kClassicEncodeBatchJob],
+) -> &'a ComputePipelineState {
+    match classic_encode_code_blocks_pipeline_kind(jobs) {
+        J2kClassicEncodePipelineKind::Generic => &runtime.classic_encode_code_blocks,
+        J2kClassicEncodePipelineKind::Generic32 => &runtime.classic_encode_code_blocks_32,
+        J2kClassicEncodePipelineKind::Bypass32 => &runtime.classic_encode_code_blocks_bypass_32,
+        J2kClassicEncodePipelineKind::BypassU16_32 => {
+            &runtime.classic_encode_code_blocks_bypass_u16_32
+        }
+        J2kClassicEncodePipelineKind::Style0 => &runtime.classic_encode_code_blocks_style0,
+        J2kClassicEncodePipelineKind::Style0_32 => &runtime.classic_encode_code_blocks_style0_32,
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct J2kClassicEncodeStatus {
@@ -1386,6 +1810,109 @@ struct J2kClassicEncodeStatus {
     segment_count: u32,
     reserved0: u32,
     reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kClassicTier1DensityCounters {
+    sigprop_active_candidates: u32,
+    sigprop_new_significant: u32,
+    magref_active_candidates: u32,
+    cleanup_active_candidates: u32,
+    cleanup_new_significant: u32,
+    cleanup_rlc_stripes: u32,
+    cleanup_rlc_zero_stripes: u32,
+    arithmetic_sigprop_active_candidates: u32,
+    arithmetic_sigprop_new_significant: u32,
+    raw_sigprop_active_candidates: u32,
+    raw_sigprop_new_significant: u32,
+    arithmetic_magref_active_candidates: u32,
+    raw_magref_active_candidates: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kClassicTier1SymbolPlanCounters {
+    code: u32,
+    detail: u32,
+    coding_passes: u32,
+    missing_bit_planes: u32,
+    segment_count: u32,
+    mq_symbol_count: u32,
+    raw_bit_count: u32,
+    cleanup_mq_symbol_count: u32,
+    sigprop_mq_symbol_count: u32,
+    magref_mq_symbol_count: u32,
+    raw_sigprop_bit_count: u32,
+    raw_magref_bit_count: u32,
+    cleanup_sign_symbol_count: u32,
+    sigprop_sign_symbol_count: u32,
+    mq_symbol_hash: u32,
+    raw_bit_hash: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kClassicTier1PassPlanCounters {
+    code: u32,
+    detail: u32,
+    coding_passes: u32,
+    missing_bit_planes: u32,
+    segment_count: u32,
+    mq_symbol_count: u32,
+    raw_bit_count: u32,
+    nonempty_mq_passes: u32,
+    nonempty_raw_passes: u32,
+    max_mq_symbols_per_pass: u32,
+    max_raw_bits_per_pass: u32,
+    reserved0: u32,
+    reserved1: u32,
+    reserved2: u32,
+    reserved3: u32,
+    reserved4: u32,
+    mq_symbols_by_pass: [u32; CLASSIC_TIER1_PASS_PLAN_CAPACITY],
+    raw_bits_by_pass: [u32; CLASSIC_TIER1_PASS_PLAN_CAPACITY],
+}
+
+#[cfg(target_os = "macos")]
+impl Default for J2kClassicTier1PassPlanCounters {
+    fn default() -> Self {
+        Self {
+            code: 0,
+            detail: 0,
+            coding_passes: 0,
+            missing_bit_planes: 0,
+            segment_count: 0,
+            mq_symbol_count: 0,
+            raw_bit_count: 0,
+            nonempty_mq_passes: 0,
+            nonempty_raw_passes: 0,
+            max_mq_symbols_per_pass: 0,
+            max_raw_bits_per_pass: 0,
+            reserved0: 0,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+            reserved4: 0,
+            mq_symbols_by_pass: [0; CLASSIC_TIER1_PASS_PLAN_CAPACITY],
+            raw_bits_by_pass: [0; CLASSIC_TIER1_PASS_PLAN_CAPACITY],
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kClassicTier1TokenSegment {
+    token_bit_offset: u32,
+    token_bit_count: u32,
+    pass_range: u32,
+    flags: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1424,14 +1951,6 @@ struct J2kHtEncodeStatus {
     reserved2: u32,
 }
 
-#[cfg(all(target_os = "macos", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct HtCodeBlockSegmentLengthsForTest {
-    pub(crate) magnitude_sign: u32,
-    pub(crate) mel: u32,
-    pub(crate) vlc: u32,
-}
-
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1459,6 +1978,8 @@ struct J2kBatchedPacketEncodeJob {
     output_offset: u32,
     header_offset: u32,
     scratch_offset: u32,
+    payload_copy_offset: u32,
+    payload_copy_capacity: u32,
     resolution_count: u32,
     num_layers: u32,
     num_components: u32,
@@ -1468,6 +1989,24 @@ struct J2kBatchedPacketEncodeJob {
     output_capacity: u32,
     header_capacity: u32,
     scratch_node_capacity: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct J2kPacketPayloadCopyJob {
+    src_offset: u32,
+    dst_offset: u32,
+    byte_len: u32,
+    reserved0: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct J2kPacketPayloadCopyParams {
+    bytes_per_thread: u32,
+    stripes_per_job: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1550,6 +2089,10 @@ struct J2kPacketEncodeStatus {
     detail: u32,
     data_len: u32,
     reserved0: u32,
+    payload_copy_bytes: u32,
+    payload_copy_small_jobs: u32,
+    payload_copy_medium_jobs: u32,
+    payload_copy_large_jobs: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -1567,6 +2110,9 @@ struct J2kLosslessCodestreamAssemblyParams {
     progression_order: u32,
     write_tlm: u32,
     high_throughput: u32,
+    code_block_style: u32,
+    code_block_width_exp: u32,
+    code_block_height_exp: u32,
     output_capacity: u32,
 }
 
@@ -1587,6 +2133,9 @@ struct J2kBatchedCodestreamAssemblyJob {
     progression_order: u32,
     write_tlm: u32,
     high_throughput: u32,
+    code_block_style: u32,
+    code_block_width_exp: u32,
+    code_block_height_exp: u32,
     output_capacity: u32,
 }
 
@@ -1649,6 +2198,8 @@ struct MetalRuntime {
     idwt_irreversible97_single_decomposition: ComputePipelineState,
     fdwt53_horizontal: ComputePipelineState,
     fdwt53_vertical: ComputePipelineState,
+    fdwt53_horizontal_batched: ComputePipelineState,
+    fdwt53_vertical_batched: ComputePipelineState,
     inverse_mct: ComputePipelineState,
     forward_rct: ComputePipelineState,
     store_component: ComputePipelineState,
@@ -1664,13 +2215,29 @@ struct MetalRuntime {
     ht_cleanup_repeated_batched: ComputePipelineState,
     classic_encode_code_block: ComputePipelineState,
     classic_encode_code_blocks: ComputePipelineState,
+    classic_encode_code_blocks_32: ComputePipelineState,
+    classic_encode_code_blocks_bypass_32: ComputePipelineState,
+    classic_encode_code_blocks_bypass_u16_32: ComputePipelineState,
+    classic_tier1_density_bypass_u16_32: ComputePipelineState,
+    classic_tier1_raw_pack_bypass_u16_32: ComputePipelineState,
+    classic_tier1_arithmetic_pack_bypass_u16_32: ComputePipelineState,
+    classic_tier1_symbol_plan_bypass_u16_32: ComputePipelineState,
+    classic_tier1_pass_plan_bypass_u16_32: ComputePipelineState,
+    classic_tier1_token_emit_bypass_u16_32: ComputePipelineState,
+    classic_tier1_split_token_emit_bypass_u16_32: ComputePipelineState,
+    classic_tier1_split_mq_byte_token_emit_bypass_u16_32: ComputePipelineState,
+    classic_tier1_token_pack_bypass_u16_32: ComputePipelineState,
+    classic_tier1_split_token_pack_bypass_u16_32: ComputePipelineState,
+    classic_encode_code_blocks_style0: ComputePipelineState,
+    classic_encode_code_blocks_style0_32: ComputePipelineState,
     ht_encode_code_block: ComputePipelineState,
     ht_encode_code_blocks: ComputePipelineState,
-    ht_encode_code_blocks_simd_prototype: Option<ComputePipelineState>,
     packet_block_prepare_resident_classic: ComputePipelineState,
     packet_block_prepare_resident_ht: ComputePipelineState,
     packet_encode: ComputePipelineState,
     packet_encode_batched: ComputePipelineState,
+    packet_encode_resident_classic_batched: ComputePipelineState,
+    packet_payload_copy_batched: ComputePipelineState,
     lossless_codestream_assemble: ComputePipelineState,
     lossless_codestream_assemble_batched: ComputePipelineState,
     ht_vlc_table0: Buffer,
@@ -1682,6 +2249,7 @@ struct MetalRuntime {
     ht_uvlc_encode_table: Buffer,
     tier1_dummy_buffer: Buffer,
     private_buffer_pool: Mutex<HashMap<usize, Vec<Buffer>>>,
+    shared_buffer_pool: Mutex<HashMap<usize, Vec<Buffer>>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1699,15 +2267,6 @@ impl MetalRuntime {
             let function = library.get_function(name, None)?;
             device.new_compute_pipeline_state_with_function(&function)
         };
-        let ht_encode_code_blocks_simd_prototype =
-            if cfg!(test) || ht_simd_prototype_env_requested() {
-                compile_ht_simd_prototype_pipeline(device, &options)
-            } else {
-                None
-            };
-        if ht_simd_prototype_env_requested() && ht_encode_code_blocks_simd_prototype.is_none() {
-            return Err("SIGNINUM_J2K_METAL_HT_SIMD_PROTOTYPE=1 requested, but the HTJ2K SIMD prototype pipeline is unavailable on this Metal device".to_string());
-        }
         let classic_cleanup_plain_batched_fn =
             library.get_function("j2k_decode_classic_cleanup_plain_batched", None)?;
         let classic_cleanup_batched_fn =
@@ -1737,6 +2296,10 @@ impl MetalRuntime {
             library.get_function("j2k_idwt_irreversible97_single_decomposition", None)?;
         let fdwt53_horizontal_fn = library.get_function("j2k_forward_dwt53_horizontal", None)?;
         let fdwt53_vertical_fn = library.get_function("j2k_forward_dwt53_vertical", None)?;
+        let fdwt53_horizontal_batched_fn =
+            library.get_function("j2k_forward_dwt53_horizontal_batched", None)?;
+        let fdwt53_vertical_batched_fn =
+            library.get_function("j2k_forward_dwt53_vertical_batched", None)?;
         let inverse_mct_fn = library.get_function("j2k_inverse_mct", None)?;
         let forward_rct_fn = library.get_function("j2k_forward_rct", None)?;
         let store_component_fn = library.get_function("j2k_store_component", None)?;
@@ -1792,6 +2355,10 @@ impl MetalRuntime {
             device.new_compute_pipeline_state_with_function(&fdwt53_horizontal_fn)?;
         let fdwt53_vertical =
             device.new_compute_pipeline_state_with_function(&fdwt53_vertical_fn)?;
+        let fdwt53_horizontal_batched =
+            device.new_compute_pipeline_state_with_function(&fdwt53_horizontal_batched_fn)?;
+        let fdwt53_vertical_batched =
+            device.new_compute_pipeline_state_with_function(&fdwt53_vertical_batched_fn)?;
         let inverse_mct = device.new_compute_pipeline_state_with_function(&inverse_mct_fn)?;
         let forward_rct = device.new_compute_pipeline_state_with_function(&forward_rct_fn)?;
         let store_component =
@@ -1856,6 +2423,8 @@ impl MetalRuntime {
             idwt_irreversible97_single_decomposition,
             fdwt53_horizontal,
             fdwt53_vertical,
+            fdwt53_horizontal_batched,
+            fdwt53_vertical_batched,
             inverse_mct,
             forward_rct,
             store_component,
@@ -1871,15 +2440,59 @@ impl MetalRuntime {
             ht_cleanup_repeated_batched,
             classic_encode_code_block: pipeline("j2k_encode_classic_code_block")?,
             classic_encode_code_blocks: pipeline("j2k_encode_classic_code_blocks")?,
+            classic_encode_code_blocks_32: pipeline("j2k_encode_classic_code_blocks_32")?,
+            classic_encode_code_blocks_bypass_32: pipeline(
+                "j2k_encode_classic_code_blocks_bypass_32",
+            )?,
+            classic_encode_code_blocks_bypass_u16_32: pipeline(
+                "j2k_encode_classic_code_blocks_bypass_u16_32",
+            )?,
+            classic_tier1_density_bypass_u16_32: pipeline(
+                "j2k_profile_classic_tier1_density_bypass_u16_32",
+            )?,
+            classic_tier1_raw_pack_bypass_u16_32: pipeline(
+                "j2k_profile_classic_tier1_raw_pack_bypass_u16_32",
+            )?,
+            classic_tier1_arithmetic_pack_bypass_u16_32: pipeline(
+                "j2k_profile_classic_tier1_arithmetic_pack_bypass_u16_32",
+            )?,
+            classic_tier1_symbol_plan_bypass_u16_32: pipeline(
+                "j2k_plan_classic_tier1_symbols_bypass_u16_32",
+            )?,
+            classic_tier1_pass_plan_bypass_u16_32: pipeline(
+                "j2k_plan_classic_tier1_passes_bypass_u16_32",
+            )?,
+            classic_tier1_token_emit_bypass_u16_32: pipeline(
+                "j2k_emit_classic_tier1_tokens_bypass_u16_32",
+            )?,
+            classic_tier1_split_token_emit_bypass_u16_32: pipeline(
+                "j2k_emit_classic_tier1_split_tokens_bypass_u16_32",
+            )?,
+            classic_tier1_split_mq_byte_token_emit_bypass_u16_32: pipeline(
+                "j2k_emit_classic_tier1_split_mq_byte_raw_tokens_bypass_u16_32",
+            )?,
+            classic_tier1_token_pack_bypass_u16_32: pipeline(
+                "j2k_pack_classic_tier1_tokens_bypass_u16_32",
+            )?,
+            classic_tier1_split_token_pack_bypass_u16_32: pipeline(
+                "j2k_pack_classic_tier1_split_tokens_bypass_u16_32",
+            )?,
+            classic_encode_code_blocks_style0: pipeline("j2k_encode_classic_code_blocks_style0")?,
+            classic_encode_code_blocks_style0_32: pipeline(
+                "j2k_encode_classic_code_blocks_style0_32",
+            )?,
             ht_encode_code_block: pipeline("j2k_encode_ht_code_block")?,
             ht_encode_code_blocks: pipeline("j2k_encode_ht_code_blocks")?,
-            ht_encode_code_blocks_simd_prototype,
             packet_block_prepare_resident_classic: pipeline(
                 "j2k_prepare_packet_blocks_from_classic_status",
             )?,
             packet_block_prepare_resident_ht: pipeline("j2k_prepare_packet_blocks_from_ht_status")?,
             packet_encode: pipeline("j2k_encode_packetization")?,
             packet_encode_batched: pipeline("j2k_encode_packetization_batched")?,
+            packet_encode_resident_classic_batched: pipeline(
+                "j2k_encode_packetization_resident_classic_batched",
+            )?,
+            packet_payload_copy_batched: pipeline("j2k_copy_packet_payload_batched")?,
             lossless_codestream_assemble: pipeline("j2k_assemble_lossless_classic_codestream")?,
             lossless_codestream_assemble_batched: pipeline(
                 "j2k_assemble_lossless_codestream_batched",
@@ -1921,6 +2534,7 @@ impl MetalRuntime {
             ),
             tier1_dummy_buffer: device.new_buffer(1, MTLResourceOptions::StorageModeShared),
             private_buffer_pool: Mutex::new(HashMap::new()),
+            shared_buffer_pool: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1945,6 +2559,32 @@ impl MetalRuntime {
         self.private_buffer_pool
             .lock()
             .expect("private buffer pool lock not poisoned")
+            .entry(bytes)
+            .or_default()
+            .push(buffer);
+    }
+
+    fn take_shared_buffer(&self, bytes: usize) -> Buffer {
+        let bytes = bytes.max(1);
+        let mut pool = self
+            .shared_buffer_pool
+            .lock()
+            .expect("shared buffer pool lock not poisoned");
+        if let Some(buffer) = pool.get_mut(&bytes).and_then(Vec::pop) {
+            buffer
+        } else {
+            #[cfg(test)]
+            SHARED_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
+            self.device
+                .new_buffer(bytes as u64, MTLResourceOptions::StorageModeShared)
+        }
+    }
+
+    fn recycle_shared_buffer(&self, bytes: usize, buffer: Buffer) {
+        let bytes = bytes.max(1);
+        self.shared_buffer_pool
+            .lock()
+            .expect("shared buffer pool lock not poisoned")
             .entry(bytes)
             .or_default()
             .push(buffer);
@@ -2046,20 +2686,6 @@ pub(crate) fn with_isolated_runtime_for_device_for_test<R>(
     let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime)));
     let _guard = RuntimeOverrideGuard { previous };
     f()
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn ht_simd_prototype_available_for_test() -> Result<bool, Error> {
-    with_runtime(|runtime| Ok(runtime.ht_encode_code_blocks_simd_prototype.is_some()))
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn ht_simd_prototype_available_for_device_for_test(
-    device: &Device,
-) -> Result<bool, Error> {
-    with_runtime_for_device(device, |runtime| {
-        Ok(runtime.ht_encode_code_blocks_simd_prototype.is_some())
-    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2336,6 +2962,19 @@ enum DirectTier1Mode {
     CpuUpload,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct CpuTier1CoefficientCacheKey {
+    step_idx: usize,
+    output_len: usize,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct CpuTier1CoefficientCache {
+    entries: Mutex<HashMap<CpuTier1CoefficientCacheKey, Arc<[f32]>>>,
+}
+
 #[cfg(all(target_os = "macos", test))]
 fn record_direct_tier1_input_buffer_prepare() {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(|counter| counter.set(counter.get() + 1));
@@ -2363,16 +3002,237 @@ fn prepare_direct_tier1_input_buffer<T>(
 #[derive(Default)]
 struct DirectHybridStageTimings {
     cpu_tier1: u128,
+    cpu_tier1_flattened_batches: u128,
+    cpu_tier1_classic_segment_prep: u128,
+    cpu_tier1_classic_block_decode: u128,
+    cpu_tier1_classic_sigprop: u128,
+    cpu_tier1_classic_magref: u128,
+    cpu_tier1_classic_cleanup: u128,
+    cpu_tier1_classic_bypass: u128,
+    cpu_tier1_classic_output_convert: u128,
+    cpu_tier1_ht_block_decode: u128,
+    cpu_tier1_ht_cleanup: u128,
+    cpu_tier1_ht_mag_sgn: u128,
+    cpu_tier1_ht_sigma: u128,
+    cpu_tier1_ht_sigprop: u128,
+    cpu_tier1_ht_magref: u128,
     coefficient_upload: u128,
     metal_idwt_encode: u128,
     metal_store_encode: u128,
     metal_mct_pack_encode: u128,
     command_wait: u128,
     gpu_command: u128,
+    metal_idwt_gpu: u128,
+    metal_idwt_interleave_gpu: u128,
+    metal_idwt_horizontal_gpu: u128,
+    metal_idwt_vertical_gpu: u128,
+    metal_store_gpu: u128,
+    metal_mct_pack_gpu: u128,
 }
 
 #[cfg(target_os = "macos")]
-const HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK: usize = 2;
+#[derive(Default)]
+struct CpuTier1DecodeSubstageCounters {
+    classic_segment_prep: AtomicU64,
+    classic_block_decode: AtomicU64,
+    classic_sigprop: AtomicU64,
+    classic_magref: AtomicU64,
+    classic_cleanup: AtomicU64,
+    classic_bypass: AtomicU64,
+    classic_output_convert: AtomicU64,
+    ht_block_decode: AtomicU64,
+    ht_cleanup: AtomicU64,
+    ht_mag_sgn: AtomicU64,
+    ht_sigma: AtomicU64,
+    ht_sigprop: AtomicU64,
+    ht_magref: AtomicU64,
+}
+
+#[cfg(target_os = "macos")]
+impl CpuTier1DecodeSubstageCounters {
+    fn add_counter(counter: &AtomicU64, elapsed_us: u128) {
+        counter.fetch_add(
+            elapsed_us.min(u128::from(u64::MAX)) as u64,
+            AtomicOrdering::Relaxed,
+        );
+    }
+
+    fn record_classic_segment_prep(&self, started: Instant) {
+        self.classic_segment_prep
+            .fetch_add(elapsed_us_u64(started), AtomicOrdering::Relaxed);
+    }
+
+    fn record_classic_block_decode(&self, started: Instant, profile: &J2kCodeBlockDecodeProfile) {
+        self.classic_block_decode
+            .fetch_add(elapsed_us_u64(started), AtomicOrdering::Relaxed);
+        Self::add_counter(&self.classic_sigprop, profile.sigprop_us);
+        Self::add_counter(&self.classic_magref, profile.magref_us);
+        Self::add_counter(&self.classic_cleanup, profile.cleanup_us);
+        Self::add_counter(&self.classic_bypass, profile.bypass_us);
+        Self::add_counter(&self.classic_output_convert, profile.output_convert_us);
+    }
+
+    fn record_ht_block_decode(&self, started: Instant, profile: &HtCodeBlockDecodeProfile) {
+        self.ht_block_decode
+            .fetch_add(elapsed_us_u64(started), AtomicOrdering::Relaxed);
+        Self::add_counter(&self.ht_cleanup, profile.cleanup_us);
+        Self::add_counter(&self.ht_mag_sgn, profile.mag_sgn_us);
+        Self::add_counter(&self.ht_sigma, profile.sigma_us);
+        Self::add_counter(&self.ht_sigprop, profile.sigprop_us);
+        Self::add_counter(&self.ht_magref, profile.magref_us);
+    }
+
+    fn load_counter(counter: &AtomicU64) -> u128 {
+        u128::from(counter.load(AtomicOrdering::Relaxed))
+    }
+
+    fn add_to_stage_timings(&self, timings: &mut DirectHybridStageTimings) {
+        timings.cpu_tier1_classic_segment_prep = timings
+            .cpu_tier1_classic_segment_prep
+            .saturating_add(Self::load_counter(&self.classic_segment_prep));
+        timings.cpu_tier1_classic_block_decode = timings
+            .cpu_tier1_classic_block_decode
+            .saturating_add(Self::load_counter(&self.classic_block_decode));
+        timings.cpu_tier1_classic_sigprop = timings
+            .cpu_tier1_classic_sigprop
+            .saturating_add(Self::load_counter(&self.classic_sigprop));
+        timings.cpu_tier1_classic_magref = timings
+            .cpu_tier1_classic_magref
+            .saturating_add(Self::load_counter(&self.classic_magref));
+        timings.cpu_tier1_classic_cleanup = timings
+            .cpu_tier1_classic_cleanup
+            .saturating_add(Self::load_counter(&self.classic_cleanup));
+        timings.cpu_tier1_classic_bypass = timings
+            .cpu_tier1_classic_bypass
+            .saturating_add(Self::load_counter(&self.classic_bypass));
+        timings.cpu_tier1_classic_output_convert = timings
+            .cpu_tier1_classic_output_convert
+            .saturating_add(Self::load_counter(&self.classic_output_convert));
+        timings.cpu_tier1_ht_block_decode = timings
+            .cpu_tier1_ht_block_decode
+            .saturating_add(Self::load_counter(&self.ht_block_decode));
+        timings.cpu_tier1_ht_cleanup = timings
+            .cpu_tier1_ht_cleanup
+            .saturating_add(Self::load_counter(&self.ht_cleanup));
+        timings.cpu_tier1_ht_mag_sgn = timings
+            .cpu_tier1_ht_mag_sgn
+            .saturating_add(Self::load_counter(&self.ht_mag_sgn));
+        timings.cpu_tier1_ht_sigma = timings
+            .cpu_tier1_ht_sigma
+            .saturating_add(Self::load_counter(&self.ht_sigma));
+        timings.cpu_tier1_ht_sigprop = timings
+            .cpu_tier1_ht_sigprop
+            .saturating_add(Self::load_counter(&self.ht_sigprop));
+        timings.cpu_tier1_ht_magref = timings
+            .cpu_tier1_ht_magref
+            .saturating_add(Self::load_counter(&self.ht_magref));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct DirectIdwtCommandBuffers<'a> {
+    interleave: &'a CommandBufferRef,
+    horizontal: &'a CommandBufferRef,
+    vertical: &'a CommandBufferRef,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> DirectIdwtCommandBuffers<'a> {
+    fn single(command_buffer: &'a CommandBufferRef) -> Self {
+        Self {
+            interleave: command_buffer,
+            horizontal: command_buffer,
+            vertical: command_buffer,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct DirectColorBatchCommandBuffers<'a> {
+    default: &'a CommandBufferRef,
+    idwt: DirectIdwtCommandBuffers<'a>,
+    store: &'a CommandBufferRef,
+    mct_pack: &'a CommandBufferRef,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> DirectColorBatchCommandBuffers<'a> {
+    fn single(command_buffer: &'a CommandBufferRef) -> Self {
+        Self {
+            default: command_buffer,
+            idwt: DirectIdwtCommandBuffers::single(command_buffer),
+            store: command_buffer,
+            mct_pack: command_buffer,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct DecodeHybridSplitCommandBuffers {
+    idwt_interleave: CommandBuffer,
+    idwt_horizontal: CommandBuffer,
+    idwt_vertical: CommandBuffer,
+    store: CommandBuffer,
+    mct_pack: CommandBuffer,
+}
+
+#[cfg(target_os = "macos")]
+impl DecodeHybridSplitCommandBuffers {
+    fn new(runtime: &MetalRuntime) -> Self {
+        let idwt_interleave = runtime.queue.new_command_buffer().to_owned();
+        label_command_buffer(
+            &idwt_interleave,
+            "signinum-j2k decode hybrid IDWT interleave stage",
+        );
+        let idwt_horizontal = runtime.queue.new_command_buffer().to_owned();
+        label_command_buffer(
+            &idwt_horizontal,
+            "signinum-j2k decode hybrid IDWT horizontal stage",
+        );
+        let idwt_vertical = runtime.queue.new_command_buffer().to_owned();
+        label_command_buffer(
+            &idwt_vertical,
+            "signinum-j2k decode hybrid IDWT vertical stage",
+        );
+        let store = runtime.queue.new_command_buffer().to_owned();
+        label_command_buffer(&store, "signinum-j2k decode hybrid store stage");
+        let mct_pack = runtime.queue.new_command_buffer().to_owned();
+        label_command_buffer(&mct_pack, "signinum-j2k decode hybrid MCT pack stage");
+        Self {
+            idwt_interleave,
+            idwt_horizontal,
+            idwt_vertical,
+            store,
+            mct_pack,
+        }
+    }
+
+    fn refs(&self) -> DirectColorBatchCommandBuffers<'_> {
+        DirectColorBatchCommandBuffers {
+            default: &self.idwt_interleave,
+            idwt: DirectIdwtCommandBuffers {
+                interleave: &self.idwt_interleave,
+                horizontal: &self.idwt_horizontal,
+                vertical: &self.idwt_vertical,
+            },
+            store: &self.store,
+            mct_pack: &self.mct_pack,
+        }
+    }
+
+    fn commit_in_order(&self) {
+        self.idwt_interleave.commit();
+        self.idwt_horizontal.commit();
+        self.idwt_vertical.commit();
+        self.store.commit();
+        self.mct_pack.commit();
+    }
+}
+
+#[cfg(target_os = "macos")]
+const HYBRID_CPU_DECODE_MIN_INPUTS_PER_TASK: usize = 1;
 #[cfg(target_os = "macos")]
 const HYBRID_FLAT_CPU_TIER1_MIN_DIM: u32 = 1024;
 #[cfg(target_os = "macos")]
@@ -2389,6 +3249,7 @@ pub(crate) struct PreparedDirectGrayscalePlan {
     steps: Vec<PreparedDirectGrayscaleStep>,
     classic_groups: Vec<PreparedClassicSubBandGroup>,
     ht_groups: Vec<PreparedHtSubBandGroup>,
+    cpu_tier1_cache: Arc<CpuTier1CoefficientCache>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2630,6 +3491,7 @@ fn encode_plane_stage_to_surface_in_command_buffer(
     };
 
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid plane pack");
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(
         0,
@@ -2712,7 +3574,9 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };
 
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid MCT RGB8 pack");
     encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
@@ -2743,6 +3607,7 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
         },
     );
     encoder.end_encoding();
+    drop(signpost);
 
     Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
 }
@@ -2806,7 +3671,9 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };
 
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid batched MCT RGB8 pack");
     encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
     encoder.set_buffer(0, Some(planes[0]), 0);
     encoder.set_buffer(1, Some(planes[1]), 0);
@@ -2840,6 +3707,7 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         },
     );
     encoder.end_encoding();
+    drop(signpost);
 
     Ok((0..count)
         .map(|index| {
@@ -2851,6 +3719,162 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
             )
         })
         .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    dims: (u32, u32),
+    count: usize,
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Vec<Surface>, Error> {
+    let pitch_bytes = dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let surface_bytes =
+        pitch_bytes
+            .checked_mul(dims.1 as usize)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K MetalDirect repeated color batch output size overflow".to_string(),
+            })?;
+    let total_bytes = surface_bytes
+        .checked_mul(count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch output size overflow".to_string(),
+        })?;
+    let output_len = u64::try_from(total_bytes.max(1)).map_err(|_| Error::MetalKernel {
+        message: "J2K MetalDirect repeated output buffer exceeds u64".to_string(),
+    })?;
+    let out_buffer = runtime
+        .device
+        .new_buffer(output_len, MTLResourceOptions::StorageModeShared);
+    let plane_stride = dims
+        .0
+        .checked_mul(dims.1)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch plane stride overflow".to_string(),
+        })?;
+    let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
+        u32::from(bit_depths[0]),
+        u32::from(bit_depths[1]),
+        u32::from(bit_depths[2]),
+        0,
+    ]);
+    let params = J2kBatchedMctRgb8PackParams {
+        width: dims.0,
+        height: dims.1,
+        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        transform: mct_transform_code(transform),
+        batch_count: 1,
+        plane_stride,
+        output_stride: u32::try_from(surface_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K MetalDirect repeated color batch surface stride exceeds u32".to_string(),
+        })?,
+        addends: [
+            signed_sample_bias(bit_depths[0]),
+            signed_sample_bias(bit_depths[1]),
+            signed_sample_bias(bit_depths[2]),
+        ],
+        max_values: [max_values[0], max_values[1], max_values[2]],
+        u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
+    };
+
+    let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated MCT RGB8 pack");
+    encoder.set_compute_pipeline_state(&runtime.pack_mct_rgb8_batched);
+    encoder.set_buffer(0, Some(planes[0]), 0);
+    encoder.set_buffer(1, Some(planes[1]), 0);
+    encoder.set_buffer(2, Some(planes[2]), 0);
+    encoder.set_buffer(3, Some(&out_buffer), 0);
+    encoder.set_bytes(
+        4,
+        size_of::<J2kBatchedMctRgb8PackParams>() as u64,
+        (&raw const params).cast(),
+    );
+
+    let width = runtime
+        .pack_mct_rgb8_batched
+        .thread_execution_width()
+        .max(1);
+    let max_threads = runtime
+        .pack_mct_rgb8_batched
+        .max_total_threads_per_threadgroup()
+        .max(width);
+    let height = (max_threads / width).max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(dims.0),
+            height: u64::from(dims.1),
+            depth: 1,
+        },
+        MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    drop(signpost);
+
+    if surface_bytes > 0 && count > 1 {
+        let blit = command_buffer.new_blit_command_encoder();
+        if metal_profile_stages_enabled() {
+            blit.set_label("J2K decode hybrid repeated output blit");
+        }
+        let mut copied = 1usize;
+        while copied < count {
+            let copy_count = copied.min(count - copied);
+            let dst_offset =
+                copied
+                    .checked_mul(surface_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K MetalDirect repeated output destination offset overflow"
+                            .to_string(),
+                    })?;
+            let copy_bytes =
+                copy_count
+                    .checked_mul(surface_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K MetalDirect repeated output copy size overflow".to_string(),
+                    })?;
+            blit.copy_from_buffer(
+                &out_buffer,
+                0,
+                &out_buffer,
+                u64::try_from(dst_offset).map_err(|_| Error::MetalKernel {
+                    message: "J2K MetalDirect repeated output destination offset exceeds u64"
+                        .to_string(),
+                })?,
+                u64::try_from(copy_bytes).map_err(|_| Error::MetalKernel {
+                    message: "J2K MetalDirect repeated output copy size exceeds u64".to_string(),
+                })?,
+            );
+            record_hybrid_repeated_output_blit();
+            copied += copy_count;
+        }
+        blit.end_encoding();
+    }
+
+    Ok((0..count)
+        .map(|index| {
+            Surface::from_metal_buffer_with_offset(
+                out_buffer.clone(),
+                dims,
+                PixelFormat::Rgb8,
+                index * surface_bytes,
+            )
+        })
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn repeated_shared_direct_color_plan_count(
+    plans: &[Arc<PreparedDirectColorPlan>],
+) -> Option<usize> {
+    let first = plans.first()?;
+    (plans.len() > 1 && plans.iter().all(|plan| Arc::ptr_eq(plan, first))).then_some(plans.len())
 }
 
 #[cfg(target_os = "macos")]
@@ -3337,6 +4361,7 @@ fn prepare_direct_grayscale_plan_with_tier1_mode(
         steps,
         classic_groups,
         ht_groups,
+        cpu_tier1_cache: Arc::new(CpuTier1CoefficientCache::default()),
     })
 }
 
@@ -3359,6 +4384,7 @@ pub(crate) fn crop_prepared_direct_grayscale_plan_to_output_region(
         return Ok(());
     }
 
+    plan.clear_cpu_tier1_cache()?;
     let mut store_count = 0;
     for step in &mut plan.steps {
         if let PreparedDirectGrayscaleStep::Store(store) = step {
@@ -4001,6 +5027,59 @@ impl PreparedDirectGrayscalePlan {
             .iter()
             .find(|group| group.start_step == step_idx)
     }
+
+    fn cached_cpu_tier1_coefficients(
+        &self,
+        step_idx: usize,
+        output_len: usize,
+    ) -> Result<Option<Vec<f32>>, Error> {
+        let key = CpuTier1CoefficientCacheKey {
+            step_idx,
+            output_len,
+        };
+        let entries = self
+            .cpu_tier1_cache
+            .entries
+            .lock()
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K MetalDirect hybrid CPU Tier-1 cache lock is poisoned".to_string(),
+            })?;
+        Ok(entries.get(&key).map(|coefficients| coefficients.to_vec()))
+    }
+
+    fn store_cpu_tier1_coefficients(
+        &self,
+        step_idx: usize,
+        output_len: usize,
+        coefficients: Vec<f32>,
+    ) -> Result<Vec<f32>, Error> {
+        let key = CpuTier1CoefficientCacheKey {
+            step_idx,
+            output_len,
+        };
+        let cached = Arc::<[f32]>::from(coefficients.clone());
+        let mut entries = self
+            .cpu_tier1_cache
+            .entries
+            .lock()
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K MetalDirect hybrid CPU Tier-1 cache lock is poisoned".to_string(),
+            })?;
+        entries.insert(key, cached);
+        Ok(coefficients)
+    }
+
+    fn clear_cpu_tier1_cache(&self) -> Result<(), Error> {
+        let mut entries = self
+            .cpu_tier1_cache
+            .entries
+            .lock()
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K MetalDirect hybrid CPU Tier-1 cache lock is poisoned".to_string(),
+            })?;
+        entries.clear();
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -4281,36 +5360,71 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer(
     result
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn decode_prepared_classic_sub_band_on_cpu(
     sub_band: &PreparedClassicSubBand,
 ) -> Result<Vec<f32>, Error> {
+    decode_prepared_classic_sub_band_on_cpu_profile(sub_band, None)
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_classic_sub_band_on_cpu_profile(
+    sub_band: &PreparedClassicSubBand,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let len = checked_coefficient_len(
         sub_band.width,
         sub_band.height,
         "classic J2K MetalDirect hybrid sub-band size overflow",
     )?;
     let mut output = vec![0.0_f32; len];
-    decode_prepared_classic_jobs_on_cpu(
-        &sub_band.coded_data,
-        &sub_band.segments,
-        &sub_band.jobs,
-        &mut output,
-    )?;
+    if let Some(counters) = profile_counters {
+        let mut scratch = ClassicCpuDecodeScratch::default();
+        decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
+            &sub_band.coded_data,
+            &sub_band.segments,
+            &sub_band.jobs,
+            &mut output,
+            &mut scratch,
+            counters,
+        )?;
+    } else {
+        decode_prepared_classic_jobs_on_cpu(
+            &sub_band.coded_data,
+            &sub_band.segments,
+            &sub_band.jobs,
+            &mut output,
+        )?;
+    }
     Ok(output)
 }
 
 #[cfg(target_os = "macos")]
-fn decode_prepared_classic_sub_band_group_on_cpu(
+fn decode_prepared_classic_sub_band_group_on_cpu_profile(
     group: &PreparedClassicSubBandGroup,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let mut output = vec![0.0_f32; group.total_coefficients];
-    decode_prepared_classic_jobs_on_cpu(
-        &group.coded_data,
-        &group.segments,
-        &group.jobs,
-        &mut output,
-    )?;
+    if let Some(counters) = profile_counters {
+        let mut scratch = ClassicCpuDecodeScratch::default();
+        decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
+            &group.coded_data,
+            &group.segments,
+            &group.jobs,
+            &mut output,
+            &mut scratch,
+            counters,
+        )?;
+    } else {
+        decode_prepared_classic_jobs_on_cpu(
+            &group.coded_data,
+            &group.segments,
+            &group.jobs,
+            &mut output,
+        )?;
+    }
     Ok(output)
 }
 
@@ -4318,6 +5432,7 @@ fn decode_prepared_classic_sub_band_group_on_cpu(
 #[derive(Default)]
 struct ClassicCpuDecodeScratch {
     segments: Vec<J2kCodeBlockSegment>,
+    decode: J2kCodeBlockDecodeWorkspace,
 }
 
 #[cfg(target_os = "macos")]
@@ -4345,7 +5460,41 @@ fn decode_prepared_classic_jobs_on_cpu_with_scratch(
     output: &mut [f32],
     scratch: &mut ClassicCpuDecodeScratch,
 ) -> Result<(), Error> {
+    decode_prepared_classic_jobs_on_cpu_with_scratch_impl::<false>(
+        coded_data, segments, jobs, output, scratch, None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
+    coded_data: &[u8],
+    segments: &[J2kClassicSegment],
+    jobs: &[J2kClassicCleanupBatchJob],
+    output: &mut [f32],
+    scratch: &mut ClassicCpuDecodeScratch,
+    profile_counters: &CpuTier1DecodeSubstageCounters,
+) -> Result<(), Error> {
+    decode_prepared_classic_jobs_on_cpu_with_scratch_impl::<true>(
+        coded_data,
+        segments,
+        jobs,
+        output,
+        scratch,
+        Some(profile_counters),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_classic_jobs_on_cpu_with_scratch_impl<const PROFILE: bool>(
+    coded_data: &[u8],
+    segments: &[J2kClassicSegment],
+    jobs: &[J2kClassicCleanupBatchJob],
+    output: &mut [f32],
+    scratch: &mut ClassicCpuDecodeScratch,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<(), Error> {
     for job in jobs {
+        let prep_started = PROFILE.then(Instant::now);
         let start = job.output_offset as usize;
         let segment_window = prepared_classic_segment_window(segments, job)?;
         scratch.segments.clear();
@@ -4365,7 +5514,32 @@ fn decode_prepared_classic_jobs_on_cpu_with_scratch(
                 message: "classic J2K MetalDirect hybrid output slice is too small".to_string(),
             });
         };
-        decode_j2k_code_block_scalar(decode_job, output_window).map_err(native_decode_error)?;
+        if let Some(started) = prep_started {
+            profile_counters
+                .expect("profile counters required for profiled classic decode")
+                .record_classic_segment_prep(started);
+        }
+        if PROFILE {
+            let decode_started = Instant::now();
+            let mut profile = J2kCodeBlockDecodeProfile::default();
+            decode_j2k_code_block_scalar_with_workspace_profiled(
+                decode_job,
+                output_window,
+                &mut scratch.decode,
+                &mut profile,
+            )
+            .map_err(native_decode_error)?;
+            profile_counters
+                .expect("profile counters required for profiled classic decode")
+                .record_classic_block_decode(decode_started, &profile);
+        } else {
+            decode_j2k_code_block_scalar_with_workspace(
+                decode_job,
+                output_window,
+                &mut scratch.decode,
+            )
+            .map_err(native_decode_error)?;
+        }
     }
     Ok(())
 }
@@ -4449,23 +5623,51 @@ fn prepared_classic_style(flags: u32) -> J2kCodeBlockStyle {
 }
 
 #[cfg(target_os = "macos")]
-fn decode_prepared_ht_sub_band_on_cpu(sub_band: &PreparedHtSubBand) -> Result<Vec<f32>, Error> {
+fn decode_prepared_ht_sub_band_on_cpu_profile(
+    sub_band: &PreparedHtSubBand,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let len = checked_coefficient_len(
         sub_band.width,
         sub_band.height,
         "HTJ2K MetalDirect hybrid sub-band size overflow",
     )?;
     let mut output = vec![0.0_f32; len];
-    decode_prepared_ht_jobs_on_cpu(&sub_band.coded_data, &sub_band.jobs, &mut output)?;
+    if let Some(counters) = profile_counters {
+        let mut workspace = HtCodeBlockDecodeWorkspace::default();
+        decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
+            &sub_band.coded_data,
+            &sub_band.jobs,
+            &mut output,
+            &mut workspace,
+            counters,
+        )?;
+    } else {
+        decode_prepared_ht_jobs_on_cpu(&sub_band.coded_data, &sub_band.jobs, &mut output)?;
+    }
     Ok(output)
 }
 
 #[cfg(target_os = "macos")]
-fn decode_prepared_ht_sub_band_group_on_cpu(
+fn decode_prepared_ht_sub_band_group_on_cpu_profile(
     group: &PreparedHtSubBandGroup,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let mut output = vec![0.0_f32; group.total_coefficients];
-    decode_prepared_ht_jobs_on_cpu(&group.coded_arena.data, &group.jobs, &mut output)?;
+    if let Some(counters) = profile_counters {
+        let mut workspace = HtCodeBlockDecodeWorkspace::default();
+        decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
+            &group.coded_arena.data,
+            &group.jobs,
+            &mut output,
+            &mut workspace,
+            counters,
+        )?;
+    } else {
+        decode_prepared_ht_jobs_on_cpu(&group.coded_arena.data, &group.jobs, &mut output)?;
+    }
     Ok(output)
 }
 
@@ -4486,6 +5688,36 @@ fn decode_prepared_ht_jobs_on_cpu_with_workspace(
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<(), Error> {
+    decode_prepared_ht_jobs_on_cpu_with_workspace_impl::<false>(
+        coded_data, jobs, output, workspace, None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
+    coded_data: &[u8],
+    jobs: &[J2kHtCleanupBatchJob],
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    profile_counters: &CpuTier1DecodeSubstageCounters,
+) -> Result<(), Error> {
+    decode_prepared_ht_jobs_on_cpu_with_workspace_impl::<true>(
+        coded_data,
+        jobs,
+        output,
+        workspace,
+        Some(profile_counters),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_ht_jobs_on_cpu_with_workspace_impl<const PROFILE: bool>(
+    coded_data: &[u8],
+    jobs: &[J2kHtCleanupBatchJob],
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<(), Error> {
     for job in jobs {
         let start = job.output_offset as usize;
         let decode_job = prepared_ht_decode_job(coded_data, job)?;
@@ -4500,8 +5732,23 @@ fn decode_prepared_ht_jobs_on_cpu_with_workspace(
                 message: "HTJ2K MetalDirect hybrid output slice is too small".to_string(),
             });
         };
-        decode_ht_code_block_scalar_with_workspace(decode_job, output_window, workspace)
+        if PROFILE {
+            let decode_started = Instant::now();
+            let mut profile = HtCodeBlockDecodeProfile::default();
+            decode_ht_code_block_scalar_with_workspace_profiled(
+                decode_job,
+                output_window,
+                workspace,
+                &mut profile,
+            )
             .map_err(native_decode_error)?;
+            profile_counters
+                .expect("profile counters required for profiled HT decode")
+                .record_ht_block_decode(decode_started, &profile);
+        } else {
+            decode_ht_code_block_scalar_with_workspace(decode_job, output_window, workspace)
+                .map_err(native_decode_error)?;
+        }
     }
     Ok(())
 }
@@ -4524,7 +5771,9 @@ struct HtCpuDecodeInput<'a> {
 #[cfg(target_os = "macos")]
 fn decode_classic_inputs_on_cpu_parallel(
     inputs: &[ClassicCpuDecodeInput<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     record_hybrid_cpu_decode_inputs(inputs.len());
     let Some(output_len) = packed_cpu_decode_output_len(
         inputs.iter().map(|input| input.output_len),
@@ -4544,20 +5793,35 @@ fn decode_classic_inputs_on_cpu_parallel(
                 ClassicCpuDecodeScratch::default()
             },
             |scratch, (output, input)| {
-                decode_prepared_classic_jobs_on_cpu_with_scratch(
-                    input.coded_data,
-                    input.segments,
-                    input.jobs,
-                    output,
-                    scratch,
-                )
+                if let Some(counters) = profile_counters {
+                    decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
+                        input.coded_data,
+                        input.segments,
+                        input.jobs,
+                        output,
+                        scratch,
+                        counters,
+                    )
+                } else {
+                    decode_prepared_classic_jobs_on_cpu_with_scratch(
+                        input.coded_data,
+                        input.segments,
+                        input.jobs,
+                        output,
+                        scratch,
+                    )
+                }
             },
         )?;
     Ok(coefficients)
 }
 
 #[cfg(target_os = "macos")]
-fn decode_ht_inputs_on_cpu_parallel(inputs: &[HtCpuDecodeInput<'_>]) -> Result<Vec<f32>, Error> {
+fn decode_ht_inputs_on_cpu_parallel(
+    inputs: &[HtCpuDecodeInput<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<Vec<f32>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     record_hybrid_cpu_decode_inputs(inputs.len());
     let Some(output_len) = packed_cpu_decode_output_len(
         inputs.iter().map(|input| input.output_len),
@@ -4577,15 +5841,65 @@ fn decode_ht_inputs_on_cpu_parallel(inputs: &[HtCpuDecodeInput<'_>]) -> Result<V
                 HtCodeBlockDecodeWorkspace::default()
             },
             |workspace, (output, input)| {
-                decode_prepared_ht_jobs_on_cpu_with_workspace(
-                    input.coded_data,
-                    input.jobs,
-                    output,
-                    workspace,
-                )
+                if let Some(counters) = profile_counters {
+                    decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
+                        input.coded_data,
+                        input.jobs,
+                        output,
+                        workspace,
+                        counters,
+                    )
+                } else {
+                    decode_prepared_ht_jobs_on_cpu_with_workspace(
+                        input.coded_data,
+                        input.jobs,
+                        output,
+                        workspace,
+                    )
+                }
             },
         )?;
     Ok(coefficients)
+}
+
+#[cfg(target_os = "macos")]
+fn decode_classic_inputs_on_cpu_with_plan_cache(
+    plan: &PreparedDirectGrayscalePlan,
+    step_idx: usize,
+    inputs: &[ClassicCpuDecodeInput<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<Vec<f32>, Error> {
+    if inputs.len() != 1 {
+        return decode_classic_inputs_on_cpu_parallel(inputs, profile_counters);
+    }
+
+    let output_len = inputs[0].output_len;
+    if let Some(coefficients) = plan.cached_cpu_tier1_coefficients(step_idx, output_len)? {
+        return Ok(coefficients);
+    }
+
+    let coefficients = decode_classic_inputs_on_cpu_parallel(inputs, profile_counters)?;
+    plan.store_cpu_tier1_coefficients(step_idx, output_len, coefficients)
+}
+
+#[cfg(target_os = "macos")]
+fn decode_ht_inputs_on_cpu_with_plan_cache(
+    plan: &PreparedDirectGrayscalePlan,
+    step_idx: usize,
+    inputs: &[HtCpuDecodeInput<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+) -> Result<Vec<f32>, Error> {
+    if inputs.len() != 1 {
+        return decode_ht_inputs_on_cpu_parallel(inputs, profile_counters);
+    }
+
+    let output_len = inputs[0].output_len;
+    if let Some(coefficients) = plan.cached_cpu_tier1_coefficients(step_idx, output_len)? {
+        return Ok(coefficients);
+    }
+
+    let coefficients = decode_ht_inputs_on_cpu_parallel(inputs, profile_counters)?;
+    plan.store_cpu_tier1_coefficients(step_idx, output_len, coefficients)
 }
 
 #[cfg(target_os = "macos")]
@@ -4689,6 +6003,7 @@ impl FlattenedCpuTier1Output {
 #[derive(Default)]
 struct FlattenedCpuTier1DecodeScratch {
     classic: ClassicCpuDecodeScratch,
+    ht: HtCodeBlockDecodeWorkspace,
 }
 
 #[cfg(target_os = "macos")]
@@ -4700,10 +6015,17 @@ fn build_flattened_cpu_tier1_cache(
     retained_cpu_coefficients: &mut Vec<Vec<f32>>,
 ) -> Result<FlattenedCpuTier1Cache, Error> {
     let specs = collect_flattened_cpu_tier1_bucket_specs(plans)?;
+    stage_timings.cpu_tier1_flattened_batches =
+        stage_timings.cpu_tier1_flattened_batches.saturating_add(1);
     let decode_started = metal_profile_stages_enabled().then(Instant::now);
-    let decoded_buckets = decode_flattened_cpu_tier1_buckets(&specs)?;
+    let cpu_tier1_counters =
+        metal_profile_stages_enabled().then(CpuTier1DecodeSubstageCounters::default);
+    let decoded_buckets = decode_flattened_cpu_tier1_buckets(&specs, cpu_tier1_counters.as_ref())?;
     if let Some(started) = decode_started {
         stage_timings.cpu_tier1 += elapsed_us(started);
+    }
+    if let Some(counters) = &cpu_tier1_counters {
+        counters.add_to_stage_timings(stage_timings);
     }
 
     let upload_started = metal_profile_stages_enabled().then(Instant::now);
@@ -4906,7 +6228,9 @@ fn collect_flattened_cpu_tier1_bucket_specs(
 #[cfg(target_os = "macos")]
 fn decode_flattened_cpu_tier1_buckets(
     specs: &[FlattenedCpuTier1BucketSpec<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<Vec<Vec<f32>>, Error> {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_CPU_TIER1);
     let mut buckets = specs
         .iter()
         .map(|spec| packed_cpu_decode_coefficients(spec.inputs.len(), spec.output_len))
@@ -4945,7 +6269,7 @@ fn decode_flattened_cpu_tier1_buckets(
     record_flattened_hybrid_cpu_decode_batch();
     record_hybrid_cpu_decode_inputs(work_items.len());
 
-    decode_flattened_cpu_tier1_work_items_chunked(&work_items)?;
+    decode_flattened_cpu_tier1_work_items_chunked(&work_items, profile_counters)?;
 
     Ok(buckets)
 }
@@ -4953,6 +6277,7 @@ fn decode_flattened_cpu_tier1_buckets(
 #[cfg(target_os = "macos")]
 fn decode_flattened_cpu_tier1_work_items_chunked(
     work_items: &[FlattenedCpuTier1WorkItem<'_>],
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<(), Error> {
     if work_items.is_empty() {
         return Ok(());
@@ -4967,7 +6292,7 @@ fn decode_flattened_cpu_tier1_work_items_chunked(
                 record_hybrid_cpu_decode_worker_init();
                 let mut scratch = FlattenedCpuTier1DecodeScratch::default();
                 for item in chunk {
-                    decode_flattened_cpu_tier1_work_item(item, &mut scratch)?;
+                    decode_flattened_cpu_tier1_work_item(item, &mut scratch, profile_counters)?;
                 }
                 Ok(())
             }));
@@ -4997,6 +6322,7 @@ fn hybrid_cpu_decode_worker_count(item_count: usize) -> usize {
 fn decode_flattened_cpu_tier1_work_item(
     item: &FlattenedCpuTier1WorkItem<'_>,
     scratch: &mut FlattenedCpuTier1DecodeScratch,
+    profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<(), Error> {
     let output = unsafe { item.output.as_slice_mut(item.output_len) };
     match item.source {
@@ -5004,15 +6330,43 @@ fn decode_flattened_cpu_tier1_work_item(
             coded_data,
             segments,
             jobs,
-        } => decode_prepared_classic_jobs_on_cpu_with_scratch(
-            coded_data,
-            segments,
-            jobs,
-            output,
-            &mut scratch.classic,
-        ),
+        } => {
+            if let Some(counters) = profile_counters {
+                decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
+                    coded_data,
+                    segments,
+                    jobs,
+                    output,
+                    &mut scratch.classic,
+                    counters,
+                )
+            } else {
+                decode_prepared_classic_jobs_on_cpu_with_scratch(
+                    coded_data,
+                    segments,
+                    jobs,
+                    output,
+                    &mut scratch.classic,
+                )
+            }
+        }
         FlattenedCpuTier1Source::Ht { coded_data, jobs } => {
-            decode_prepared_ht_jobs_on_cpu(coded_data, jobs, output)
+            if let Some(counters) = profile_counters {
+                decode_prepared_ht_jobs_on_cpu_with_workspace_profiled(
+                    coded_data,
+                    jobs,
+                    output,
+                    &mut scratch.ht,
+                    counters,
+                )
+            } else {
+                decode_prepared_ht_jobs_on_cpu_with_workspace(
+                    coded_data,
+                    jobs,
+                    output,
+                    &mut scratch.ht,
+                )
+            }
         }
     }
 }
@@ -5126,6 +6480,7 @@ fn upload_cpu_decoded_coefficients(
     retained_buffers: &mut Vec<Buffer>,
     retained_cpu_coefficients: &mut Vec<Vec<f32>>,
 ) -> Buffer {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COEFFICIENT_UPLOAD);
     let buffer = borrow_mut_slice_buffer(&runtime.device, &mut coefficients);
     retained_buffers.push(buffer.clone());
     retained_cpu_coefficients.push(coefficients);
@@ -5135,6 +6490,11 @@ fn upload_cpu_decoded_coefficients(
 #[cfg(target_os = "macos")]
 fn elapsed_us(started: Instant) -> u128 {
     started.elapsed().as_micros()
+}
+
+#[cfg(target_os = "macos")]
+fn elapsed_us_u64(started: Instant) -> u64 {
+    elapsed_us(started).min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(target_os = "macos")]
@@ -5149,19 +6509,151 @@ fn emit_direct_hybrid_stage_timings(
 
     let fmt_s = format!("{fmt:?}");
     let batch_count_s = batch_count.to_string();
+    let label = decode_profile_label();
     for (stage, elapsed_us) in [
         ("cpu_tier1", timings.cpu_tier1),
+        (
+            "cpu_tier1_flattened_batches",
+            timings.cpu_tier1_flattened_batches,
+        ),
+        (
+            "cpu_tier1_classic_segment_prep",
+            timings.cpu_tier1_classic_segment_prep,
+        ),
+        (
+            "cpu_tier1_classic_block_decode",
+            timings.cpu_tier1_classic_block_decode,
+        ),
+        (
+            "cpu_tier1_classic_sigprop",
+            timings.cpu_tier1_classic_sigprop,
+        ),
+        ("cpu_tier1_classic_magref", timings.cpu_tier1_classic_magref),
+        (
+            "cpu_tier1_classic_cleanup",
+            timings.cpu_tier1_classic_cleanup,
+        ),
+        ("cpu_tier1_classic_bypass", timings.cpu_tier1_classic_bypass),
+        (
+            "cpu_tier1_classic_output_convert",
+            timings.cpu_tier1_classic_output_convert,
+        ),
+        (
+            "cpu_tier1_ht_block_decode",
+            timings.cpu_tier1_ht_block_decode,
+        ),
+        ("cpu_tier1_ht_cleanup", timings.cpu_tier1_ht_cleanup),
+        ("cpu_tier1_ht_mag_sgn", timings.cpu_tier1_ht_mag_sgn),
+        ("cpu_tier1_ht_sigma", timings.cpu_tier1_ht_sigma),
+        ("cpu_tier1_ht_sigprop", timings.cpu_tier1_ht_sigprop),
+        ("cpu_tier1_ht_magref", timings.cpu_tier1_ht_magref),
         ("coefficient_upload", timings.coefficient_upload),
         ("metal_idwt_encode", timings.metal_idwt_encode),
         ("metal_store_encode", timings.metal_store_encode),
         ("metal_mct_pack_encode", timings.metal_mct_pack_encode),
         ("command_wait", timings.command_wait),
         ("gpu_command", timings.gpu_command),
+        ("metal_idwt_gpu", timings.metal_idwt_gpu),
+        (
+            "metal_idwt_interleave_gpu",
+            timings.metal_idwt_interleave_gpu,
+        ),
+        (
+            "metal_idwt_horizontal_gpu",
+            timings.metal_idwt_horizontal_gpu,
+        ),
+        ("metal_idwt_vertical_gpu", timings.metal_idwt_vertical_gpu),
+        ("metal_store_gpu", timings.metal_store_gpu),
+        ("metal_mct_pack_gpu", timings.metal_mct_pack_gpu),
     ] {
         let elapsed_us_s = elapsed_us.to_string();
+        let processor = stage_processor(stage);
+        let metric = stage_metric(stage);
+        let metric_kind = stage_metric_kind(stage);
+        let aggregation = stage_aggregation(stage);
         eprintln!(
-            "signinum_profile codec=j2k op=decode path=metal_direct_hybrid stage={stage} fmt={fmt_s} batch_count={batch_count_s} elapsed_us={elapsed_us_s}"
+            "signinum_profile codec=j2k op=decode path=metal_cpu_hybrid pipeline=decode_hybrid label={label} stage={stage} processor={processor} metric={metric} metric_kind={metric_kind} aggregation={aggregation} fmt={fmt_s} batch_count={batch_count_s} elapsed_us={elapsed_us_s}"
         );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_processor(stage: &str) -> &'static str {
+    match stage {
+        "cpu_tier1_flattened_batches" => "scheduler",
+        "cpu_tier1"
+        | "cpu_tier1_classic_segment_prep"
+        | "cpu_tier1_classic_block_decode"
+        | "cpu_tier1_classic_sigprop"
+        | "cpu_tier1_classic_magref"
+        | "cpu_tier1_classic_cleanup"
+        | "cpu_tier1_classic_bypass"
+        | "cpu_tier1_classic_output_convert"
+        | "cpu_tier1_ht_block_decode"
+        | "cpu_tier1_ht_cleanup"
+        | "cpu_tier1_ht_mag_sgn"
+        | "cpu_tier1_ht_sigma"
+        | "cpu_tier1_ht_sigprop"
+        | "cpu_tier1_ht_magref" => "cpu",
+        "coefficient_upload" => "transfer",
+        "metal_idwt_encode"
+        | "metal_store_encode"
+        | "metal_mct_pack_encode"
+        | "gpu_command"
+        | "metal_idwt_gpu"
+        | "metal_idwt_interleave_gpu"
+        | "metal_idwt_horizontal_gpu"
+        | "metal_idwt_vertical_gpu"
+        | "metal_store_gpu"
+        | "metal_mct_pack_gpu" => "metal",
+        "command_wait" => "wait",
+        _ => "hybrid",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_metric(stage: &str) -> &'static str {
+    match stage {
+        "cpu_tier1_flattened_batches" => "count",
+        "cpu_tier1_classic_segment_prep"
+        | "cpu_tier1_classic_block_decode"
+        | "cpu_tier1_classic_sigprop"
+        | "cpu_tier1_classic_magref"
+        | "cpu_tier1_classic_cleanup"
+        | "cpu_tier1_classic_bypass"
+        | "cpu_tier1_classic_output_convert"
+        | "cpu_tier1_ht_block_decode"
+        | "cpu_tier1_ht_cleanup"
+        | "cpu_tier1_ht_mag_sgn"
+        | "cpu_tier1_ht_sigma"
+        | "cpu_tier1_ht_sigprop"
+        | "cpu_tier1_ht_magref" => "cpu_worker_us",
+        "gpu_command"
+        | "metal_idwt_gpu"
+        | "metal_idwt_interleave_gpu"
+        | "metal_idwt_horizontal_gpu"
+        | "metal_idwt_vertical_gpu"
+        | "metal_store_gpu"
+        | "metal_mct_pack_gpu" => "gpu_elapsed_us",
+        _ => "wall_us",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_metric_kind(stage: &str) -> &'static str {
+    match stage_metric(stage) {
+        "count" => "counter",
+        "cpu_worker_us" => "cpu_worker_sum",
+        "gpu_elapsed_us" => "gpu_busy_sum",
+        _ => "wall_elapsed",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_aggregation(stage: &str) -> &'static str {
+    match stage_metric(stage) {
+        "count" | "cpu_worker_us" | "gpu_elapsed_us" => "sum",
+        _ => "exclusive",
     }
 }
 
@@ -5174,6 +6666,14 @@ fn record_hybrid_stacked_component_batch(tier1_mode: DirectTier1Mode) {
 
 #[cfg(all(target_os = "macos", not(test)))]
 fn record_hybrid_stacked_component_batch(_tier1_mode: DirectTier1Mode) {}
+
+#[cfg(all(target_os = "macos", test))]
+fn record_hybrid_repeated_output_blit() {
+    HYBRID_REPEATED_OUTPUT_BLITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn record_hybrid_repeated_output_blit() {}
 
 #[cfg(all(target_os = "macos", test))]
 fn record_hybrid_cpu_decode_worker_init() {
@@ -5240,9 +6740,17 @@ fn encode_prepared_direct_component_plane_in_command_buffer(
                     }
                     DirectTier1Mode::CpuUpload => {
                         let decode_started = profile_stages.then(Instant::now);
-                        let coefficients = decode_prepared_classic_sub_band_group_on_cpu(group)?;
+                        let cpu_tier1_counters =
+                            profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                        let coefficients = decode_prepared_classic_sub_band_group_on_cpu_profile(
+                            group,
+                            cpu_tier1_counters.as_ref(),
+                        )?;
                         if let Some(started) = decode_started {
                             stage_timings.cpu_tier1 += elapsed_us(started);
+                        }
+                        if let Some(counters) = &cpu_tier1_counters {
+                            counters.add_to_stage_timings(stage_timings);
                         }
                         let upload_started = profile_stages.then(Instant::now);
                         let buffer = upload_cpu_decoded_coefficients(
@@ -5288,9 +6796,17 @@ fn encode_prepared_direct_component_plane_in_command_buffer(
                     }
                     DirectTier1Mode::CpuUpload => {
                         let decode_started = profile_stages.then(Instant::now);
-                        let coefficients = decode_prepared_ht_sub_band_group_on_cpu(group)?;
+                        let cpu_tier1_counters =
+                            profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                        let coefficients = decode_prepared_ht_sub_band_group_on_cpu_profile(
+                            group,
+                            cpu_tier1_counters.as_ref(),
+                        )?;
                         if let Some(started) = decode_started {
                             stage_timings.cpu_tier1 += elapsed_us(started);
+                        }
+                        if let Some(counters) = &cpu_tier1_counters {
+                            counters.add_to_stage_timings(stage_timings);
                         }
                         let upload_started = profile_stages.then(Instant::now);
                         let buffer = upload_cpu_decoded_coefficients(
@@ -5341,9 +6857,17 @@ fn encode_prepared_direct_component_plane_in_command_buffer(
                         }
                         DirectTier1Mode::CpuUpload => {
                             let decode_started = profile_stages.then(Instant::now);
-                            let coefficients = decode_prepared_classic_sub_band_on_cpu(sub_band)?;
+                            let cpu_tier1_counters =
+                                profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                            let coefficients = decode_prepared_classic_sub_band_on_cpu_profile(
+                                sub_band,
+                                cpu_tier1_counters.as_ref(),
+                            )?;
                             if let Some(started) = decode_started {
                                 stage_timings.cpu_tier1 += elapsed_us(started);
+                            }
+                            if let Some(counters) = &cpu_tier1_counters {
+                                counters.add_to_stage_timings(stage_timings);
                             }
                             let upload_started = profile_stages.then(Instant::now);
                             let buffer = upload_cpu_decoded_coefficients(
@@ -5387,9 +6911,17 @@ fn encode_prepared_direct_component_plane_in_command_buffer(
                         }
                         DirectTier1Mode::CpuUpload => {
                             let decode_started = profile_stages.then(Instant::now);
-                            let coefficients = decode_prepared_ht_sub_band_on_cpu(sub_band)?;
+                            let cpu_tier1_counters =
+                                profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                            let coefficients = decode_prepared_ht_sub_band_on_cpu_profile(
+                                sub_band,
+                                cpu_tier1_counters.as_ref(),
+                            )?;
                             if let Some(started) = decode_started {
                                 stage_timings.cpu_tier1 += elapsed_us(started);
+                            }
+                            if let Some(counters) = &cpu_tier1_counters {
+                                counters.add_to_stage_timings(stage_timings);
                             }
                             let upload_started = profile_stages.then(Instant::now);
                             let buffer = upload_cpu_decoded_coefficients(
@@ -5615,7 +7147,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
         if plans.len() > 1 && supports_stacked_direct_component_plane_batch(&component_plan_refs) {
             let stacked_plane = encode_stacked_direct_component_plane_batch(
                 runtime,
-                command_buffer,
+                DirectColorBatchCommandBuffers::single(command_buffer),
                 &component_plan_refs,
                 0,
                 None,
@@ -5765,7 +7297,6 @@ fn execute_direct_color_plan_batch_with_tier1_options(
     }
 
     with_runtime(|runtime| {
-        let command_buffer = runtime.queue.new_command_buffer();
         let mut retained_buffers = Vec::new();
         let mut retained_cpu_coefficients = Vec::<Vec<f32>>::new();
         let mut status_checks = Vec::new();
@@ -5774,10 +7305,62 @@ fn execute_direct_color_plan_batch_with_tier1_options(
         let profile_hybrid_stages =
             tier1_mode == DirectTier1Mode::CpuUpload && metal_profile_stages_enabled();
 
+        if fmt == PixelFormat::Rgb8
+            && profile_hybrid_stages
+            && metal_profile_decode_split_commands_enabled()
+        {
+            let split_command_buffers = DecodeHybridSplitCommandBuffers::new(runtime);
+            if let Some(surfaces) = try_encode_stacked_mct_rgb8_direct_color_batch(
+                runtime,
+                split_command_buffers.refs(),
+                plans,
+                tier1_mode,
+                force_flattened_cpu_tier1,
+                &mut stage_timings,
+                &mut retained_buffers,
+                &mut retained_cpu_coefficients,
+                &mut status_checks,
+                &mut scratch_buffers,
+            )? {
+                split_command_buffers.commit_in_order();
+                let wait_started = Instant::now();
+                let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
+                split_command_buffers.mct_pack.wait_until_completed();
+                stage_timings.command_wait += elapsed_us(wait_started);
+                record_completed_decode_split_gpu_stages(
+                    &mut stage_timings,
+                    &split_command_buffers,
+                );
+                for status_check in status_checks {
+                    validate_direct_status(status_check)?;
+                }
+                emit_direct_hybrid_stage_timings(&stage_timings, fmt, plans.len());
+                drop(retained_buffers);
+                drop(retained_cpu_coefficients);
+                recycle_scratch_buffers(runtime, scratch_buffers);
+                return Ok(surfaces);
+            }
+
+            drop(split_command_buffers);
+            retained_buffers.clear();
+            retained_cpu_coefficients.clear();
+            status_checks.clear();
+            scratch_buffers.clear();
+            stage_timings = DirectHybridStageTimings::default();
+        }
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        if profile_hybrid_stages {
+            label_command_buffer(
+                command_buffer,
+                "signinum-j2k decode hybrid direct color batch",
+            );
+        }
+
         if fmt == PixelFormat::Rgb8 {
             if let Some(surfaces) = try_encode_stacked_mct_rgb8_direct_color_batch(
                 runtime,
-                command_buffer,
+                DirectColorBatchCommandBuffers::single(command_buffer),
                 plans,
                 tier1_mode,
                 force_flattened_cpu_tier1,
@@ -5789,6 +7372,7 @@ fn execute_direct_color_plan_batch_with_tier1_options(
             )? {
                 command_buffer.commit();
                 let wait_started = profile_hybrid_stages.then(Instant::now);
+                let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
                 command_buffer.wait_until_completed();
                 if let Some(started) = wait_started {
                     stage_timings.command_wait += elapsed_us(started);
@@ -5831,6 +7415,7 @@ fn execute_direct_color_plan_batch_with_tier1_options(
 
         command_buffer.commit();
         let wait_started = profile_hybrid_stages.then(Instant::now);
+        let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
         command_buffer.wait_until_completed();
         if let Some(started) = wait_started {
             stage_timings.command_wait += elapsed_us(started);
@@ -6039,7 +7624,7 @@ struct StackedDirectComponentPlane {
 #[allow(clippy::too_many_arguments)]
 fn try_encode_stacked_mct_rgb8_direct_color_batch(
     runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
+    command_buffers: DirectColorBatchCommandBuffers<'_>,
     plans: &[Arc<PreparedDirectColorPlan>],
     tier1_mode: DirectTier1Mode,
     force_flattened_cpu_tier1: bool,
@@ -6052,6 +7637,7 @@ fn try_encode_stacked_mct_rgb8_direct_color_batch(
     let Some(first) = plans.first() else {
         return Ok(Some(Vec::new()));
     };
+    let repeated_count = repeated_shared_direct_color_plan_count(plans);
     if plans.len() <= 1
         || !first.mct
         || first.component_plans.len() != 3
@@ -6065,15 +7651,20 @@ fn try_encode_stacked_mct_rgb8_direct_color_batch(
     {
         return Ok(None);
     }
+    let execution_plans = if repeated_count.is_some() {
+        &plans[..1]
+    } else {
+        plans
+    };
 
     let flattened_cpu_tier1_cache = if tier1_mode == DirectTier1Mode::CpuUpload
         && (force_flattened_cpu_tier1
             || flattened_hybrid_cpu_tier1_enabled()
-            || should_flatten_hybrid_cpu_tier1_color_batch(plans))
+            || should_flatten_hybrid_cpu_tier1_color_batch(execution_plans))
     {
         Some(build_flattened_cpu_tier1_cache(
             runtime,
-            plans,
+            execution_plans,
             stage_timings,
             retained_buffers,
             retained_cpu_coefficients,
@@ -6084,7 +7675,7 @@ fn try_encode_stacked_mct_rgb8_direct_color_batch(
 
     let mut stacked_planes = Vec::with_capacity(3);
     for component_idx in 0..3 {
-        let component_plan_refs = plans
+        let component_plan_refs = execution_plans
             .iter()
             .map(|plan| &plan.component_plans[component_idx])
             .collect::<Vec<_>>();
@@ -6093,7 +7684,7 @@ fn try_encode_stacked_mct_rgb8_direct_color_batch(
         }
         stacked_planes.push(encode_stacked_direct_component_plane_batch(
             runtime,
-            command_buffer,
+            command_buffers,
             &component_plan_refs,
             component_idx,
             flattened_cpu_tier1_cache.as_ref(),
@@ -6108,25 +7699,38 @@ fn try_encode_stacked_mct_rgb8_direct_color_batch(
 
     if !stacked_planes
         .iter()
-        .all(|plane| plane.dimensions == first.dimensions && plane.count == plans.len())
+        .all(|plane| plane.dimensions == first.dimensions && plane.count == execution_plans.len())
     {
         return Ok(None);
     }
 
     let encode_started = metal_profile_stages_enabled().then(Instant::now);
-    let surfaces = encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
-        runtime,
-        command_buffer,
-        [
-            &stacked_planes[0].buffer,
-            &stacked_planes[1].buffer,
-            &stacked_planes[2].buffer,
-        ],
-        first.dimensions,
-        plans.len(),
-        first.bit_depths,
-        first.transform,
-    )?;
+    let mct_plane_buffers = [
+        &stacked_planes[0].buffer,
+        &stacked_planes[1].buffer,
+        &stacked_planes[2].buffer,
+    ];
+    let surfaces = if let Some(count) = repeated_count {
+        encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
+            runtime,
+            command_buffers.mct_pack,
+            mct_plane_buffers,
+            first.dimensions,
+            count,
+            first.bit_depths,
+            first.transform,
+        )?
+    } else {
+        encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
+            runtime,
+            command_buffers.mct_pack,
+            mct_plane_buffers,
+            first.dimensions,
+            execution_plans.len(),
+            first.bit_depths,
+            first.transform,
+        )?
+    };
     if let Some(started) = encode_started {
         stage_timings.metal_mct_pack_encode += elapsed_us(started);
     }
@@ -6469,7 +8073,7 @@ fn store_shapes_match(first: &J2kDirectStoreStep, other: &J2kDirectStoreStep) ->
 #[allow(clippy::too_many_arguments)]
 fn encode_stacked_direct_component_plane_batch(
     runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
+    command_buffers: DirectColorBatchCommandBuffers<'_>,
     plans: &[&PreparedDirectGrayscalePlan],
     component_idx: usize,
     flattened_cpu_tier1_cache: Option<&FlattenedCpuTier1Cache>,
@@ -6509,7 +8113,7 @@ fn encode_stacked_direct_component_plane_batch(
                     let (buffers, status_check) =
                         encode_distinct_classic_sub_band_groups_to_buffer_in_command_buffer(
                             runtime,
-                            command_buffer,
+                            command_buffers.default,
                             &groups,
                             &output.buffer,
                             scratch_buffers,
@@ -6544,9 +8148,19 @@ fn encode_stacked_direct_component_plane_batch(
                             })
                             .collect::<Vec<_>>();
                         let decode_started = profile_stages.then(Instant::now);
-                        let coefficients = decode_classic_inputs_on_cpu_parallel(&inputs)?;
+                        let cpu_tier1_counters =
+                            profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                        let coefficients = decode_classic_inputs_on_cpu_with_plan_cache(
+                            first,
+                            step_idx,
+                            &inputs,
+                            cpu_tier1_counters.as_ref(),
+                        )?;
                         if let Some(started) = decode_started {
                             stage_timings.cpu_tier1 += elapsed_us(started);
+                        }
+                        if let Some(counters) = &cpu_tier1_counters {
+                            counters.add_to_stage_timings(stage_timings);
                         }
                         let upload_started = profile_stages.then(Instant::now);
                         let buffer = upload_cpu_decoded_coefficients(
@@ -6601,7 +8215,7 @@ fn encode_stacked_direct_component_plane_batch(
                     let (buffers, status_check) =
                         encode_distinct_ht_sub_band_groups_to_buffer_in_command_buffer(
                             runtime,
-                            command_buffer,
+                            command_buffers.default,
                             &groups,
                             &output.buffer,
                         )?;
@@ -6634,9 +8248,19 @@ fn encode_stacked_direct_component_plane_batch(
                             })
                             .collect::<Vec<_>>();
                         let decode_started = profile_stages.then(Instant::now);
-                        let coefficients = decode_ht_inputs_on_cpu_parallel(&inputs)?;
+                        let cpu_tier1_counters =
+                            profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                        let coefficients = decode_ht_inputs_on_cpu_with_plan_cache(
+                            first,
+                            step_idx,
+                            &inputs,
+                            cpu_tier1_counters.as_ref(),
+                        )?;
                         if let Some(started) = decode_started {
                             stage_timings.cpu_tier1 += elapsed_us(started);
+                        }
+                        if let Some(counters) = &cpu_tier1_counters {
+                            counters.add_to_stage_timings(stage_timings);
                         }
                         let upload_started = profile_stages.then(Instant::now);
                         let buffer = upload_cpu_decoded_coefficients(
@@ -6693,7 +8317,7 @@ fn encode_stacked_direct_component_plane_batch(
                         let (buffers, status_check) =
                             encode_distinct_classic_sub_bands_to_buffer_in_command_buffer(
                                 runtime,
-                                command_buffer,
+                                command_buffers.default,
                                 &sub_bands,
                                 &output.buffer,
                                 scratch_buffers,
@@ -6728,9 +8352,19 @@ fn encode_stacked_direct_component_plane_batch(
                                 })
                                 .collect::<Vec<_>>();
                             let decode_started = profile_stages.then(Instant::now);
-                            let coefficients = decode_classic_inputs_on_cpu_parallel(&inputs)?;
+                            let cpu_tier1_counters =
+                                profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                            let coefficients = decode_classic_inputs_on_cpu_with_plan_cache(
+                                first,
+                                step_idx,
+                                &inputs,
+                                cpu_tier1_counters.as_ref(),
+                            )?;
                             if let Some(started) = decode_started {
                                 stage_timings.cpu_tier1 += elapsed_us(started);
+                            }
+                            if let Some(counters) = &cpu_tier1_counters {
+                                counters.add_to_stage_timings(stage_timings);
                             }
                             let upload_started = profile_stages.then(Instant::now);
                             let buffer = upload_cpu_decoded_coefficients(
@@ -6784,7 +8418,7 @@ fn encode_stacked_direct_component_plane_batch(
                         let (buffers, status_check) =
                             encode_distinct_ht_sub_bands_to_buffer_in_command_buffer(
                                 runtime,
-                                command_buffer,
+                                command_buffers.default,
                                 &sub_bands,
                                 &output.buffer,
                             )?;
@@ -6817,9 +8451,19 @@ fn encode_stacked_direct_component_plane_batch(
                                 })
                                 .collect::<Vec<_>>();
                             let decode_started = profile_stages.then(Instant::now);
-                            let coefficients = decode_ht_inputs_on_cpu_parallel(&inputs)?;
+                            let cpu_tier1_counters =
+                                profile_stages.then(CpuTier1DecodeSubstageCounters::default);
+                            let coefficients = decode_ht_inputs_on_cpu_with_plan_cache(
+                                first,
+                                step_idx,
+                                &inputs,
+                                cpu_tier1_counters.as_ref(),
+                            )?;
                             if let Some(started) = decode_started {
                                 stage_timings.cpu_tier1 += elapsed_us(started);
+                            }
+                            if let Some(counters) = &cpu_tier1_counters {
+                                counters.add_to_stage_timings(stage_timings);
                             }
                             let upload_started = profile_stages.then(Instant::now);
                             let buffer = upload_cpu_decoded_coefficients(
@@ -6898,7 +8542,7 @@ fn encode_stacked_direct_component_plane_batch(
                         )?;
                         dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
                             runtime,
-                            command_buffer,
+                            command_buffers.idwt,
                             &ll.buffer,
                             ll.offset_bytes,
                             &hl.buffer,
@@ -6945,7 +8589,7 @@ fn encode_stacked_direct_component_plane_batch(
                             status_checks.push(
                                 dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets(
                                     runtime,
-                                    command_buffer,
+                                    command_buffers.idwt.interleave,
                                     &ll.buffer,
                                     ll.offset_bytes,
                                     &hl.buffer,
@@ -6992,7 +8636,7 @@ fn encode_stacked_direct_component_plane_batch(
                 let encode_started = profile_stages.then(Instant::now);
                 dispatch_store_component_repeated_in_command_buffer(
                     runtime,
-                    command_buffer,
+                    command_buffers.store,
                     &input.buffer,
                     input.offset_bytes,
                     &output.buffer,
@@ -7214,7 +8858,7 @@ fn encode_repeated_direct_grayscale_plan_in_command_buffer(
                     let output = take_f32_scratch_buffer(runtime, per_instance_len * count);
                     dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
                         runtime,
-                        command_buffer,
+                        DirectIdwtCommandBuffers::single(command_buffer),
                         &ll.buffer,
                         ll.offset_bytes,
                         &hl.buffer,
@@ -7504,6 +9148,25 @@ fn recycle_private_buffers(
 ) {
     for (bytes, buffer) in recyclable_private_buffers {
         runtime.recycle_private_buffer(bytes, buffer);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn take_recyclable_shared_buffer(
+    runtime: &MetalRuntime,
+    bytes: usize,
+    recyclable_shared_buffers: &mut Vec<(usize, Buffer)>,
+) -> Buffer {
+    let bytes = bytes.max(1);
+    let buffer = runtime.take_shared_buffer(bytes);
+    recyclable_shared_buffers.push((bytes, buffer.clone()));
+    buffer
+}
+
+#[cfg(target_os = "macos")]
+fn recycle_shared_buffers(runtime: &MetalRuntime, recyclable_shared_buffers: Vec<(usize, Buffer)>) {
+    for (bytes, buffer) in recyclable_shared_buffers {
+        runtime.recycle_shared_buffer(bytes, buffer);
     }
 }
 
@@ -7948,6 +9611,40 @@ fn copied_slice_buffer<T>(device: &Device, data: &[T]) -> Buffer {
 }
 
 #[cfg(target_os = "macos")]
+fn copied_recyclable_shared_slice_buffer<T>(
+    runtime: &MetalRuntime,
+    data: &[T],
+    recyclable_shared_buffers: &mut Vec<(usize, Buffer)>,
+) -> Buffer {
+    let size = size_of_val(data).max(1);
+    let buffer = take_recyclable_shared_buffer(runtime, size, recyclable_shared_buffers);
+    if !data.is_empty() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr().cast::<u8>(),
+                buffer.contents().cast::<u8>(),
+                size_of_val(data),
+            );
+        }
+    }
+    buffer
+}
+
+#[cfg(target_os = "macos")]
+fn zeroed_recyclable_shared_buffer(
+    runtime: &MetalRuntime,
+    bytes: usize,
+    recyclable_shared_buffers: &mut Vec<(usize, Buffer)>,
+) -> Buffer {
+    let bytes = bytes.max(1);
+    let buffer = take_recyclable_shared_buffer(runtime, bytes, recyclable_shared_buffers);
+    unsafe {
+        core::ptr::write_bytes(buffer.contents().cast::<u8>(), 0, bytes);
+    }
+    buffer
+}
+
+#[cfg(target_os = "macos")]
 fn classic_coefficients_scratch_bytes(job_count: usize) -> Result<usize, Error> {
     job_count
         .max(1)
@@ -8049,6 +9746,7 @@ pub(crate) fn encode_forward_dwt53(
                     input,
                     output,
                     params,
+                    "J2K forward DWT 5/3 vertical",
                 );
                 active_is_a = !active_is_a;
             }
@@ -8061,6 +9759,7 @@ pub(crate) fn encode_forward_dwt53(
                     input,
                     output,
                     params,
+                    "J2K forward DWT 5/3 horizontal",
                 );
                 active_is_a = !active_is_a;
             }
@@ -8119,8 +9818,10 @@ fn dispatch_forward_dwt53_pass(
     input: &Buffer,
     output: &Buffer,
     params: J2kForwardDwt53Params,
+    label: &str,
 ) {
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, label);
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(input), 0);
     encoder.set_buffer(1, Some(output), 0);
@@ -8137,6 +9838,57 @@ fn dispatch_forward_dwt53_pass(
             width: u64::from(params.current_width),
             height: u64::from(params.current_height),
             depth: 1,
+        },
+        MTLSize {
+            width,
+            height,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_forward_dwt53_batched_pass(
+    pipeline: &ComputePipelineState,
+    command_buffer: &CommandBufferRef,
+    inputs: &[Buffer],
+    outputs: &[Buffer],
+    params: J2kForwardDwt53BatchedParams,
+    label: &str,
+) {
+    debug_assert!(!inputs.is_empty());
+    debug_assert!(!outputs.is_empty());
+    debug_assert!(params.component_count >= 1 && params.component_count <= 3);
+    let first_input_buffer = &inputs[0];
+    let second_input_buffer = inputs.get(1).unwrap_or(first_input_buffer);
+    let third_input_buffer = inputs.get(2).unwrap_or(first_input_buffer);
+    let first_output_buffer = &outputs[0];
+    let second_output_buffer = outputs.get(1).unwrap_or(first_output_buffer);
+    let third_output_buffer = outputs.get(2).unwrap_or(first_output_buffer);
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, label);
+    encoder.set_compute_pipeline_state(pipeline);
+    encoder.set_buffer(0, Some(first_input_buffer), 0);
+    encoder.set_buffer(1, Some(second_input_buffer), 0);
+    encoder.set_buffer(2, Some(third_input_buffer), 0);
+    encoder.set_buffer(3, Some(first_output_buffer), 0);
+    encoder.set_buffer(4, Some(second_output_buffer), 0);
+    encoder.set_buffer(5, Some(third_output_buffer), 0);
+    encoder.set_bytes(
+        6,
+        size_of::<J2kForwardDwt53BatchedParams>() as u64,
+        (&raw const params).cast(),
+    );
+    let width = pipeline.thread_execution_width().max(1);
+    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
+    let height = (max_threads / width).max(1);
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(params.current_width),
+            height: u64::from(params.current_height),
+            depth: u64::from(params.component_count),
         },
         MTLSize {
             width,
@@ -8273,6 +10025,11 @@ pub(crate) struct J2kPreparedLosslessDeviceCodeBlocks {
     code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
     recyclable_private_buffers: Vec<(usize, Buffer)>,
     _prepare_command_buffer: CommandBuffer,
+    _prepare_deinterleave_rct_command_buffer: Option<CommandBuffer>,
+    _prepare_dwt53_command_buffer: Option<CommandBuffer>,
+    _prepare_dwt53_vertical_command_buffers: Vec<CommandBuffer>,
+    _prepare_dwt53_horizontal_command_buffers: Vec<CommandBuffer>,
+    _prepare_coefficient_extract_command_buffer: Option<CommandBuffer>,
     _deinterleave_status_buffer: Buffer,
     _plane_buffers: Vec<Buffer>,
     _scratch_buffers: Vec<Buffer>,
@@ -8323,6 +10080,8 @@ pub(crate) struct J2kLosslessCodestreamAssemblyJob {
     pub(crate) num_decomposition_levels: u8,
     pub(crate) use_mct: bool,
     pub(crate) guard_bits: u8,
+    pub(crate) code_block_width_exp: u8,
+    pub(crate) code_block_height_exp: u8,
     pub(crate) progression_order: EncodeProgressionOrder,
     pub(crate) write_tlm: bool,
     pub(crate) block_coding_mode: J2kLosslessCodestreamBlockCodingMode,
@@ -8424,9 +10183,136 @@ pub(crate) struct J2kResidentEncodeStageStats {
     pub(crate) ht_buffer_allocation_duration: Duration,
     pub(crate) ht_command_encode_duration: Duration,
     pub(crate) ht_block_encode_duration: Duration,
+    pub(crate) classic_tier1_setup_duration: Duration,
+    pub(crate) classic_block_encode_duration: Duration,
+    pub(crate) classic_tier1_token_pack_duration: Duration,
+    pub(crate) classic_packet_plan_duration: Duration,
+    pub(crate) classic_packet_buffer_setup_duration: Duration,
+    pub(crate) classic_command_buffer_commit_duration: Duration,
+    pub(crate) result_harvest_duration: Duration,
+    pub(crate) result_status_copy_duration: Duration,
+    pub(crate) result_private_recycle_duration: Duration,
+    pub(crate) result_shared_recycle_duration: Duration,
+    pub(crate) result_codestream_collect_duration: Duration,
     pub(crate) packet_block_prep_duration: Duration,
     pub(crate) packetization_duration: Duration,
     pub(crate) codestream_assembly_duration: Duration,
+    pub(crate) coefficient_prep_gpu_duration: Duration,
+    pub(crate) coefficient_deinterleave_rct_gpu_duration: Duration,
+    pub(crate) coefficient_dwt53_gpu_duration: Duration,
+    pub(crate) coefficient_dwt53_vertical_gpu_duration: Duration,
+    pub(crate) coefficient_dwt53_horizontal_gpu_duration: Duration,
+    pub(crate) coefficient_extract_gpu_duration: Duration,
+    pub(crate) coefficient_copy_gpu_duration: Duration,
+    pub(crate) gpu_elapsed_wall_duration: Duration,
+    pub(crate) classic_block_gpu_duration: Duration,
+    pub(crate) classic_tier1_density_gpu_duration: Duration,
+    pub(crate) classic_tier1_raw_pack_gpu_duration: Duration,
+    pub(crate) classic_tier1_arithmetic_pack_gpu_duration: Duration,
+    pub(crate) classic_tier1_symbol_plan_gpu_duration: Duration,
+    pub(crate) classic_tier1_pass_plan_gpu_duration: Duration,
+    pub(crate) classic_tier1_token_emit_gpu_duration: Duration,
+    pub(crate) classic_tier1_split_token_emit_gpu_duration: Duration,
+    pub(crate) classic_tier1_token_pack_gpu_duration: Duration,
+    pub(crate) ht_block_gpu_duration: Duration,
+    pub(crate) packet_block_prep_gpu_duration: Duration,
+    pub(crate) packetization_gpu_duration: Duration,
+    pub(crate) packet_payload_copy_gpu_duration: Duration,
+    pub(crate) codestream_assembly_gpu_duration: Duration,
+    pub(crate) codestream_payload_copy_gpu_duration: Duration,
+    pub(crate) tier1_output_capacity_total: usize,
+    pub(crate) max_tier1_output_capacity: usize,
+    pub(crate) tier1_output_used_bytes_total: usize,
+    pub(crate) max_tier1_output_used_bytes: usize,
+    pub(crate) tier1_segment_capacity_total: usize,
+    pub(crate) max_tier1_segment_capacity_per_block: usize,
+    pub(crate) tier1_coding_pass_count_total: usize,
+    pub(crate) max_tier1_coding_passes_per_block: usize,
+    pub(crate) tier1_arithmetic_pass_count_total: usize,
+    pub(crate) tier1_raw_pass_count_total: usize,
+    pub(crate) tier1_cleanup_pass_count_total: usize,
+    pub(crate) tier1_sigprop_pass_count_total: usize,
+    pub(crate) tier1_magref_pass_count_total: usize,
+    pub(crate) tier1_arithmetic_cleanup_pass_count_total: usize,
+    pub(crate) tier1_arithmetic_sigprop_pass_count_total: usize,
+    pub(crate) tier1_arithmetic_magref_pass_count_total: usize,
+    pub(crate) tier1_raw_sigprop_pass_count_total: usize,
+    pub(crate) tier1_raw_magref_pass_count_total: usize,
+    pub(crate) tier1_full_scan_coeff_visit_count_total: usize,
+    pub(crate) tier1_arithmetic_scan_coeff_visit_count_total: usize,
+    pub(crate) tier1_raw_scan_coeff_visit_count_total: usize,
+    pub(crate) tier1_cleanup_scan_coeff_visit_count_total: usize,
+    pub(crate) tier1_sigprop_scan_coeff_visit_count_total: usize,
+    pub(crate) tier1_magref_scan_coeff_visit_count_total: usize,
+    pub(crate) max_tier1_full_scan_coeff_visits_per_block: usize,
+    pub(crate) tier1_sigprop_active_candidate_count_total: usize,
+    pub(crate) tier1_sigprop_new_significant_count_total: usize,
+    pub(crate) tier1_magref_active_candidate_count_total: usize,
+    pub(crate) tier1_arithmetic_sigprop_active_candidate_count_total: usize,
+    pub(crate) tier1_arithmetic_sigprop_new_significant_count_total: usize,
+    pub(crate) tier1_raw_sigprop_active_candidate_count_total: usize,
+    pub(crate) tier1_raw_sigprop_new_significant_count_total: usize,
+    pub(crate) tier1_arithmetic_magref_active_candidate_count_total: usize,
+    pub(crate) tier1_raw_magref_active_candidate_count_total: usize,
+    pub(crate) tier1_cleanup_active_candidate_count_total: usize,
+    pub(crate) tier1_cleanup_new_significant_count_total: usize,
+    pub(crate) tier1_cleanup_rlc_stripe_count_total: usize,
+    pub(crate) tier1_cleanup_rlc_zero_stripe_count_total: usize,
+    pub(crate) tier1_symbol_plan_mq_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_raw_bit_count_total: usize,
+    pub(crate) max_tier1_symbol_plan_mq_symbols_per_block: usize,
+    pub(crate) max_tier1_symbol_plan_raw_bits_per_block: usize,
+    pub(crate) tier1_symbol_plan_packed_token_bytes_total: usize,
+    pub(crate) max_tier1_symbol_plan_packed_token_bytes_per_block: usize,
+    pub(crate) tier1_symbol_plan_cleanup_mq_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_sigprop_mq_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_magref_mq_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_raw_sigprop_bit_count_total: usize,
+    pub(crate) tier1_symbol_plan_raw_magref_bit_count_total: usize,
+    pub(crate) tier1_symbol_plan_cleanup_sign_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_sigprop_sign_symbol_count_total: usize,
+    pub(crate) tier1_symbol_plan_mq_symbol_hash_xor: usize,
+    pub(crate) tier1_symbol_plan_raw_bit_hash_xor: usize,
+    pub(crate) tier1_pass_plan_mq_symbol_count_total: usize,
+    pub(crate) tier1_pass_plan_raw_bit_count_total: usize,
+    pub(crate) tier1_pass_plan_nonempty_mq_pass_count_total: usize,
+    pub(crate) tier1_pass_plan_nonempty_raw_pass_count_total: usize,
+    pub(crate) max_tier1_pass_plan_mq_symbols_per_pass: usize,
+    pub(crate) max_tier1_pass_plan_raw_bits_per_pass: usize,
+    pub(crate) tier1_token_emit_mq_symbol_count_total: usize,
+    pub(crate) tier1_token_emit_raw_bit_count_total: usize,
+    pub(crate) tier1_token_emit_token_bytes_total: usize,
+    pub(crate) max_tier1_token_emit_token_bytes_per_block: usize,
+    pub(crate) tier1_token_emit_segment_count_total: usize,
+    pub(crate) max_tier1_token_emit_segments_per_block: usize,
+    pub(crate) tier1_token_emit_mq_symbol_hash_xor: usize,
+    pub(crate) tier1_token_emit_raw_bit_hash_xor: usize,
+    pub(crate) tier1_token_pack_output_bytes_total: usize,
+    pub(crate) max_tier1_token_pack_output_bytes_per_block: usize,
+    pub(crate) tier1_nonzero_block_count_total: usize,
+    pub(crate) tier1_zero_block_count_total: usize,
+    pub(crate) tier1_missing_bitplane_count_total: usize,
+    pub(crate) max_tier1_missing_bitplanes_per_block: usize,
+    pub(crate) tier1_segment_count_total: usize,
+    pub(crate) max_tier1_segments_per_block: usize,
+    pub(crate) packet_payload_copy_job_capacity_total: usize,
+    pub(crate) max_packet_payload_copy_jobs_per_tile: usize,
+    pub(crate) packet_payload_copy_job_count_total: usize,
+    pub(crate) max_packet_payload_copy_jobs_used_per_tile: usize,
+    pub(crate) packet_payload_copy_bytes_total: usize,
+    pub(crate) max_packet_payload_copy_bytes_per_tile: usize,
+    pub(crate) packet_payload_copy_small_job_count_total: usize,
+    pub(crate) packet_payload_copy_medium_job_count_total: usize,
+    pub(crate) packet_payload_copy_large_job_count_total: usize,
+    pub(crate) packet_payload_copy_launched_stripe_count_total: usize,
+    pub(crate) packet_payload_copy_active_stripe_count_total: usize,
+    pub(crate) packet_output_capacity_total: usize,
+    pub(crate) max_packet_output_capacity: usize,
+    pub(crate) packet_output_used_bytes_total: usize,
+    pub(crate) max_packet_output_used_bytes: usize,
+    pub(crate) codestream_payload_copy_bytes_total: usize,
+    pub(crate) codestream_payload_copy_launched_thread_count_total: usize,
+    pub(crate) codestream_payload_copy_active_thread_count_total: usize,
     pub(crate) code_block_count: usize,
 }
 
@@ -8437,20 +10323,144 @@ pub(crate) struct J2kResidentLosslessCodestreamBatchResult {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum J2kResidentTier1StatusKind {
+    Classic,
+    HighThroughput,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentTier1StatusReadback {
+    buffer: Buffer,
+    kind: J2kResidentTier1StatusKind,
+    classic_style_flags: u32,
+    classic_jobs: Option<Vec<J2kClassicEncodeBatchJob>>,
+    count: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1DensityReadback {
+    buffer: Buffer,
+    count: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1SymbolPlanReadback {
+    buffer: Buffer,
+    count: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1PassPlanReadback {
+    buffer: Buffer,
+    count: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1TokenEmitReadback {
+    counter_buffer: Buffer,
+    token_buffer: Option<Buffer>,
+    segment_buffer: Option<Buffer>,
+    token_stride_bytes: usize,
+    token_segment_stride: usize,
+    count: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1GpuTokenBuffers {
+    counter_buffer: Buffer,
+    token_buffer: Buffer,
+    segment_buffer: Buffer,
+    job_count: u32,
+    token_stride_bytes: u32,
+    token_segment_stride: u32,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentClassicTier1SplitTokenBuffers {
+    counter_buffer: Buffer,
+    mq_token_buffer: Buffer,
+    raw_token_buffer: Buffer,
+    segment_buffer: Buffer,
+    job_count: u32,
+    mq_token_stride_bytes: u32,
+    raw_token_stride_bytes: u32,
+    token_segment_stride: u32,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
     device: Device,
     buffer: Buffer,
     byte_offsets: Vec<usize>,
     capacities: Vec<usize>,
     status_buffer: Buffer,
+    packet_status_buffer: Buffer,
+    tier1_status_readback: Option<J2kResidentTier1StatusReadback>,
+    classic_tier1_density_readback: Option<J2kResidentClassicTier1DensityReadback>,
+    classic_tier1_symbol_plan_readback: Option<J2kResidentClassicTier1SymbolPlanReadback>,
+    classic_tier1_pass_plan_readback: Option<J2kResidentClassicTier1PassPlanReadback>,
+    classic_tier1_token_emit_readback: Option<J2kResidentClassicTier1TokenEmitReadback>,
+    classic_tier1_split_token_emit_readback: Option<J2kResidentClassicTier1SplitTokenBuffers>,
+    classic_gpu_token_pack_used: bool,
     command_buffer: CommandBuffer,
     retained_command_buffers: Vec<CommandBuffer>,
     _retained_buffers: Vec<Buffer>,
     recyclable_private_buffers: Vec<(usize, Buffer)>,
+    recyclable_shared_buffers: Vec<(usize, Buffer)>,
+    gpu_stage_command_buffers: Vec<J2kResidentEncodeGpuStageCommandBuffer>,
     stage_stats: J2kResidentEncodeStageStats,
+    codestream_payload_copy_dispatched: bool,
     status_stage: &'static str,
     length_error: &'static str,
     capacity_error: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+struct J2kResidentEncodeGpuStageCommandBuffer {
+    stage: J2kResidentEncodeGpuStage,
+    command_buffer: CommandBuffer,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct J2kBatchedPacketPayloadCopyDispatch<'a> {
+    payload_buffer: &'a Buffer,
+    packet_output_buffer: &'a Buffer,
+    packet_job_buffer: &'a Buffer,
+    packet_status_buffer: &'a Buffer,
+    packet_payload_copy_job_buffer: &'a Buffer,
+    tile_count: u64,
+    max_payload_copy_jobs_per_tile: u64,
+    label: &'a str,
+    signpost_name: HybridSignpostName,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum J2kResidentEncodeGpuStage {
+    CoefficientPrep,
+    CoefficientDeinterleaveRct,
+    CoefficientDwt53,
+    CoefficientDwt53Vertical,
+    CoefficientDwt53Horizontal,
+    CoefficientExtract,
+    CoefficientCopy,
+    ClassicBlock,
+    ClassicTier1Density,
+    ClassicTier1RawPack,
+    ClassicTier1ArithmeticPack,
+    ClassicTier1SymbolPlan,
+    ClassicTier1PassPlan,
+    ClassicTier1TokenEmit,
+    ClassicTier1SplitTokenEmit,
+    ClassicTier1TokenPack,
+    HtBlock,
+    PacketBlockPrep,
+    Packetization,
+    PacketPayloadCopy,
+    CodestreamAssembly,
+    CodestreamPayloadCopy,
 }
 
 #[cfg(target_os = "macos")]
@@ -8462,6 +10472,11 @@ struct PreparedLosslessBatchTile {
     code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
     recyclable_private_buffers: Vec<(usize, Buffer)>,
     prepare_command_buffer: CommandBuffer,
+    prepare_deinterleave_rct_command_buffer: Option<CommandBuffer>,
+    prepare_dwt53_command_buffer: Option<CommandBuffer>,
+    prepare_dwt53_vertical_command_buffers: Vec<CommandBuffer>,
+    prepare_dwt53_horizontal_command_buffers: Vec<CommandBuffer>,
+    prepare_coefficient_extract_command_buffer: Option<CommandBuffer>,
     deinterleave_status_buffer: Buffer,
     plane_buffers: Vec<Buffer>,
     scratch_buffers: Vec<Buffer>,
@@ -8539,9 +10554,2196 @@ pub(crate) fn wait_resident_lossless_codestream_batches(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn schedule_resident_tier1_status_readback(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    status_buffer: &Buffer,
+    kind: J2kResidentTier1StatusKind,
+    classic_style_flags: u32,
+    classic_jobs: Option<&[J2kClassicEncodeBatchJob]>,
+    count: usize,
+    status_size: usize,
+    profile_stages: bool,
+) -> Result<Option<J2kResidentTier1StatusReadback>, Error> {
+    if !profile_stages || count == 0 {
+        return Ok(None);
+    }
+    let byte_len = count
+        .checked_mul(status_size)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal resident Tier-1 status readback size overflow".to_string(),
+        })?;
+    let readback = runtime.device.new_buffer(
+        byte_len.max(1) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_buffer(status_buffer, 0, &readback, 0, byte_len as u64);
+    blit.end_encoding();
+    Ok(Some(J2kResidentTier1StatusReadback {
+        buffer: readback,
+        kind,
+        classic_style_flags,
+        classic_jobs: classic_jobs.map(<[J2kClassicEncodeBatchJob]>::to_vec),
+        count,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_density_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<Option<J2kResidentClassicTier1DensityReadback>, Error> {
+    if !metal_profile_classic_tier1_density_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 density profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = runtime.device.new_buffer(
+        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1DensityCounters>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 density job count exceeds u32".to_string(),
+    })?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 density profile");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_density_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_density_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(J2kResidentClassicTier1DensityReadback {
+        buffer: counter_buffer,
+        count: tier1_jobs.len(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_raw_pack_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+    tier1_output_capacity_total: usize,
+) -> Result<Option<Buffer>, Error> {
+    if !metal_profile_classic_tier1_raw_pack_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 raw-pack profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let raw_output_buffer = runtime.device.new_buffer(
+        tier1_output_capacity_total.max(1) as u64,
+        MTLResourceOptions::StorageModePrivate,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 raw-pack job count exceeds u32".to_string(),
+    })?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 raw-pack profile");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_raw_pack_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&raw_output_buffer), 0);
+    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_raw_pack_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(raw_output_buffer))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_arithmetic_pack_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+    tier1_output_capacity_total: usize,
+) -> Result<Option<Buffer>, Error> {
+    if !metal_profile_classic_tier1_arithmetic_pack_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 arithmetic-pack profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let arithmetic_output_buffer = runtime.device.new_buffer(
+        tier1_output_capacity_total.max(1) as u64,
+        MTLResourceOptions::StorageModePrivate,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 arithmetic-pack job count exceeds u32".to_string(),
+    })?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 arithmetic-pack profile");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_arithmetic_pack_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&arithmetic_output_buffer), 0);
+    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_arithmetic_pack_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(arithmetic_output_buffer))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_symbol_plan_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<Option<J2kResidentClassicTier1SymbolPlanReadback>, Error> {
+    if !metal_profile_classic_tier1_symbol_plan_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 symbol-plan profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = runtime.device.new_buffer(
+        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 symbol-plan job count exceeds u32".to_string(),
+    })?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 symbol plan");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_symbol_plan_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_symbol_plan_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(J2kResidentClassicTier1SymbolPlanReadback {
+        buffer: counter_buffer,
+        count: tier1_jobs.len(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_pass_plan_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<Option<J2kResidentClassicTier1PassPlanReadback>, Error> {
+    if !metal_profile_classic_tier1_pass_plan_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 pass-plan profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = runtime.device.new_buffer(
+        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1PassPlanCounters>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 pass-plan job count exceeds u32".to_string(),
+    })?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 pass plan");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_pass_plan_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_pass_plan_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(J2kResidentClassicTier1PassPlanReadback {
+        buffer: counter_buffer,
+        count: tier1_jobs.len(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_token_emit_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<Option<J2kResidentClassicTier1TokenEmitReadback>, Error> {
+    if !metal_profile_classic_tier1_token_emit_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    if classic_encode_code_blocks_pipeline_kind(tier1_jobs)
+        != J2kClassicEncodePipelineKind::BypassU16_32
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token-emitter profiling currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = runtime.device.new_buffer(
+        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_ARENA_BYTES)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token buffer size overflow".to_string(),
+        })?;
+    let token_buffer = runtime.device.new_buffer(
+        token_buffer_len as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let segment_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY)
+        .and_then(|count| count.checked_mul(size_of::<J2kClassicTier1TokenSegment>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token segment buffer size overflow".to_string(),
+        })?;
+    let segment_buffer = runtime.device.new_buffer(
+        segment_buffer_len as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 token-emitter job count exceeds u32".to_string(),
+    })?;
+    let token_stride_bytes =
+        u32::try_from(CLASSIC_TIER1_TOKEN_ARENA_BYTES).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token arena stride exceeds u32".to_string(),
+        })?;
+    let token_segment_stride =
+        u32::try_from(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token segment stride exceeds u32".to_string(),
+        })?;
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 token emit");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_buffer(3, Some(&token_buffer), 0);
+    encoder.set_buffer(4, Some(&segment_buffer), 0);
+    encoder.set_bytes(
+        5,
+        size_of::<u32>() as u64,
+        (&raw const token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        6,
+        size_of::<u32>() as u64,
+        (&raw const token_segment_stride).cast(),
+    );
+    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_token_emit_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    Ok(Some(J2kResidentClassicTier1TokenEmitReadback {
+        counter_buffer,
+        token_buffer: Some(token_buffer),
+        segment_buffer: Some(segment_buffer),
+        token_stride_bytes: CLASSIC_TIER1_TOKEN_ARENA_BYTES,
+        token_segment_stride: CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY,
+        count: tier1_jobs.len(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_split_token_emit_for_cpu_pack(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<J2kResidentClassicTier1SplitTokenBuffers, Error> {
+    if !classic_tier1_gpu_token_pack_supported(tier1_jobs) {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic split-token route currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = runtime.device.new_buffer(
+        (tier1_jobs.len().max(1) * size_of::<J2kClassicTier1SymbolPlanCounters>()) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let mq_token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_ARENA_BYTES)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split-token MQ buffer size overflow".to_string(),
+        })?;
+    let mq_token_buffer = runtime.device.new_buffer(
+        mq_token_buffer_len as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let raw_token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_ARENA_BYTES)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split-token raw buffer size overflow".to_string(),
+        })?;
+    let raw_token_buffer = runtime.device.new_buffer(
+        raw_token_buffer_len as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let segment_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY)
+        .and_then(|count| count.checked_mul(size_of::<J2kClassicTier1TokenSegment>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split-token segment buffer size overflow".to_string(),
+        })?;
+    let segment_buffer = runtime.device.new_buffer(
+        segment_buffer_len as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic split-token job count exceeds u32".to_string(),
+    })?;
+    let mq_token_stride_bytes =
+        u32::try_from(CLASSIC_TIER1_TOKEN_ARENA_BYTES).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split-token MQ arena stride exceeds u32".to_string(),
+        })?;
+    let raw_token_stride_bytes =
+        u32::try_from(CLASSIC_TIER1_TOKEN_ARENA_BYTES).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split-token raw arena stride exceeds u32".to_string(),
+        })?;
+    let token_segment_stride =
+        u32::try_from(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split-token segment stride exceeds u32".to_string(),
+        })?;
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 split token emit");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_split_token_emit_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_buffer(3, Some(&mq_token_buffer), 0);
+    encoder.set_buffer(4, Some(&raw_token_buffer), 0);
+    encoder.set_buffer(5, Some(&segment_buffer), 0);
+    encoder.set_bytes(
+        6,
+        size_of::<u32>() as u64,
+        (&raw const mq_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        7,
+        size_of::<u32>() as u64,
+        (&raw const raw_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        8,
+        size_of::<u32>() as u64,
+        (&raw const token_segment_stride).cast(),
+    );
+    encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_split_token_emit_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+
+    Ok(J2kResidentClassicTier1SplitTokenBuffers {
+        counter_buffer,
+        mq_token_buffer,
+        raw_token_buffer,
+        segment_buffer,
+        job_count,
+        mq_token_stride_bytes,
+        raw_token_stride_bytes,
+        token_segment_stride,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_split_token_emit_profile(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+) -> Result<Option<J2kResidentClassicTier1SplitTokenBuffers>, Error> {
+    if !metal_profile_classic_tier1_split_token_emit_enabled() || tier1_jobs.is_empty() {
+        return Ok(None);
+    }
+    dispatch_classic_tier1_split_token_emit_for_cpu_pack(
+        runtime,
+        command_buffer,
+        coefficient_buffer,
+        tier1_job_buffer,
+        tier1_jobs,
+    )
+    .map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+    use_mq_byte_emit: bool,
+) -> Result<J2kResidentClassicTier1SplitTokenBuffers, Error> {
+    if !classic_tier1_gpu_token_pack_supported(tier1_jobs) {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic split GPU token-pack route currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+    #[cfg(test)]
+    if use_mq_byte_emit {
+        CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES.with(|dispatches| {
+            dispatches.set(dispatches.get().saturating_add(1));
+        });
+    }
+
+    let counter_buffer = take_recyclable_private_buffer(
+        runtime,
+        tier1_jobs
+            .len()
+            .max(1)
+            .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic split GPU token counter buffer size overflow"
+                    .to_string(),
+            })?,
+        recyclable_private_buffers,
+    );
+    let mq_token_arena_bytes = if use_mq_byte_emit {
+        CLASSIC_TIER1_MQ_BYTE_TOKEN_ARENA_BYTES
+    } else {
+        CLASSIC_TIER1_TOKEN_ARENA_BYTES
+    };
+    let mq_token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(mq_token_arena_bytes)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token MQ buffer size overflow".to_string(),
+        })?;
+    let mq_token_buffer =
+        take_recyclable_private_buffer(runtime, mq_token_buffer_len, recyclable_private_buffers);
+    let raw_token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_ARENA_BYTES)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token raw buffer size overflow".to_string(),
+        })?;
+    let raw_token_buffer =
+        take_recyclable_private_buffer(runtime, raw_token_buffer_len, recyclable_private_buffers);
+    let segment_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY)
+        .and_then(|count| count.checked_mul(size_of::<J2kClassicTier1TokenSegment>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token segment buffer size overflow".to_string(),
+        })?;
+    let segment_buffer =
+        take_recyclable_private_buffer(runtime, segment_buffer_len, recyclable_private_buffers);
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic split GPU token job count exceeds u32".to_string(),
+    })?;
+    let mq_token_stride_bytes =
+        u32::try_from(mq_token_arena_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token MQ arena stride exceeds u32".to_string(),
+        })?;
+    let raw_token_stride_bytes =
+        u32::try_from(CLASSIC_TIER1_TOKEN_ARENA_BYTES).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token raw arena stride exceeds u32".to_string(),
+        })?;
+    let token_segment_stride =
+        u32::try_from(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic split GPU token segment stride exceeds u32".to_string(),
+        })?;
+
+    let emit_pipeline = if use_mq_byte_emit {
+        &runtime.classic_tier1_split_mq_byte_token_emit_bypass_u16_32
+    } else {
+        &runtime.classic_tier1_split_token_emit_bypass_u16_32
+    };
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    if use_mq_byte_emit {
+        label_compute_encoder(encoder, "J2K classic Tier-1 split MQ-byte token emit");
+    } else {
+        label_compute_encoder(encoder, "J2K classic Tier-1 split token emit");
+    }
+    encoder.set_compute_pipeline_state(emit_pipeline);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_buffer(3, Some(&mq_token_buffer), 0);
+    encoder.set_buffer(4, Some(&raw_token_buffer), 0);
+    encoder.set_buffer(5, Some(&segment_buffer), 0);
+    encoder.set_bytes(
+        6,
+        size_of::<u32>() as u64,
+        (&raw const mq_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        7,
+        size_of::<u32>() as u64,
+        (&raw const raw_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        8,
+        size_of::<u32>() as u64,
+        (&raw const token_segment_stride).cast(),
+    );
+    encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: emit_pipeline.thread_execution_width().max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+
+    Ok(J2kResidentClassicTier1SplitTokenBuffers {
+        counter_buffer,
+        mq_token_buffer,
+        raw_token_buffer,
+        segment_buffer,
+        job_count,
+        mq_token_stride_bytes,
+        raw_token_stride_bytes,
+        token_segment_stride,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_token_emit_for_gpu_pack(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    coefficient_buffer: &Buffer,
+    tier1_job_buffer: &Buffer,
+    tier1_jobs: &[J2kClassicEncodeBatchJob],
+    recyclable_private_buffers: &mut Vec<(usize, Buffer)>,
+) -> Result<J2kResidentClassicTier1GpuTokenBuffers, Error> {
+    if !classic_tier1_gpu_token_pack_supported(tier1_jobs) {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic GPU token-pack route currently supports only bypass_u16_32 resident jobs".to_string(),
+        });
+    }
+
+    let counter_buffer = take_recyclable_private_buffer(
+        runtime,
+        tier1_jobs
+            .len()
+            .max(1)
+            .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token counter buffer size overflow".to_string(),
+            })?,
+        recyclable_private_buffers,
+    );
+    let token_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_ARENA_BYTES)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token buffer size overflow".to_string(),
+        })?;
+    let token_buffer =
+        take_recyclable_private_buffer(runtime, token_buffer_len, recyclable_private_buffers);
+    let segment_buffer_len = tier1_jobs
+        .len()
+        .max(1)
+        .checked_mul(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY)
+        .and_then(|count| count.checked_mul(size_of::<J2kClassicTier1TokenSegment>()))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token segment buffer size overflow".to_string(),
+        })?;
+    let segment_buffer =
+        take_recyclable_private_buffer(runtime, segment_buffer_len, recyclable_private_buffers);
+    let job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 token-emitter job count exceeds u32".to_string(),
+    })?;
+    let token_stride_bytes =
+        u32::try_from(CLASSIC_TIER1_TOKEN_ARENA_BYTES).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token arena stride exceeds u32".to_string(),
+        })?;
+    let token_segment_stride =
+        u32::try_from(CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token segment stride exceeds u32".to_string(),
+        })?;
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 token emit");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_emit_bypass_u16_32);
+    encoder.set_buffer(0, Some(coefficient_buffer), 0);
+    encoder.set_buffer(1, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(2, Some(&counter_buffer), 0);
+    encoder.set_buffer(3, Some(&token_buffer), 0);
+    encoder.set_buffer(4, Some(&segment_buffer), 0);
+    encoder.set_bytes(
+        5,
+        size_of::<u32>() as u64,
+        (&raw const token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        6,
+        size_of::<u32>() as u64,
+        (&raw const token_segment_stride).cast(),
+    );
+    encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_token_emit_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+
+    Ok(J2kResidentClassicTier1GpuTokenBuffers {
+        counter_buffer,
+        token_buffer,
+        segment_buffer,
+        job_count,
+        token_stride_bytes,
+        token_segment_stride,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_token_pack_from_gpu_tokens(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    tier1_job_buffer: &Buffer,
+    token_buffers: &J2kResidentClassicTier1GpuTokenBuffers,
+    tier1_output_buffer: &Buffer,
+    tier1_status_buffer: &Buffer,
+    tier1_segment_buffer: &Buffer,
+) {
+    #[cfg(test)]
+    CLASSIC_GPU_TOKEN_PACK_DISPATCHES.with(|dispatches| {
+        dispatches.set(dispatches.get().saturating_add(1));
+    });
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 token pack");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_token_pack_bypass_u16_32);
+    encoder.set_buffer(0, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
+    encoder.set_buffer(2, Some(&token_buffers.token_buffer), 0);
+    encoder.set_buffer(3, Some(&token_buffers.segment_buffer), 0);
+    encoder.set_buffer(4, Some(tier1_output_buffer), 0);
+    encoder.set_buffer(5, Some(tier1_status_buffer), 0);
+    encoder.set_buffer(6, Some(tier1_segment_buffer), 0);
+    encoder.set_bytes(
+        7,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        8,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.token_segment_stride).cast(),
+    );
+    encoder.set_bytes(
+        9,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.job_count).cast(),
+    );
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(token_buffers.job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_token_pack_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    tier1_job_buffer: &Buffer,
+    token_buffers: &J2kResidentClassicTier1SplitTokenBuffers,
+    tier1_output_buffer: &Buffer,
+    tier1_status_buffer: &Buffer,
+    tier1_segment_buffer: &Buffer,
+) {
+    #[cfg(test)]
+    CLASSIC_GPU_TOKEN_PACK_DISPATCHES.with(|dispatches| {
+        dispatches.set(dispatches.get().saturating_add(1));
+    });
+
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K classic Tier-1 split token pack");
+    encoder.set_compute_pipeline_state(&runtime.classic_tier1_split_token_pack_bypass_u16_32);
+    encoder.set_buffer(0, Some(tier1_job_buffer), 0);
+    encoder.set_buffer(1, Some(&token_buffers.counter_buffer), 0);
+    encoder.set_buffer(2, Some(&token_buffers.mq_token_buffer), 0);
+    encoder.set_buffer(3, Some(&token_buffers.raw_token_buffer), 0);
+    encoder.set_buffer(4, Some(&token_buffers.segment_buffer), 0);
+    encoder.set_buffer(5, Some(tier1_output_buffer), 0);
+    encoder.set_buffer(6, Some(tier1_status_buffer), 0);
+    encoder.set_buffer(7, Some(tier1_segment_buffer), 0);
+    encoder.set_bytes(
+        8,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.mq_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        9,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.raw_token_stride_bytes).cast(),
+    );
+    encoder.set_bytes(
+        10,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.token_segment_stride).cast(),
+    );
+    encoder.set_bytes(
+        11,
+        size_of::<u32>() as u64,
+        (&raw const token_buffers.job_count).cast(),
+    );
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(token_buffers.job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: runtime
+                .classic_tier1_split_token_pack_bypass_u16_32
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_classic_tier1_gpu_token_pack_readback(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    token_buffers: &J2kResidentClassicTier1GpuTokenBuffers,
+    profile_stages: bool,
+) -> Result<Option<J2kResidentClassicTier1TokenEmitReadback>, Error> {
+    if !profile_stages || token_buffers.job_count == 0 {
+        return Ok(None);
+    }
+
+    let count = usize::try_from(token_buffers.job_count).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic GPU token-pack readback job count exceeds usize".to_string(),
+    })?;
+    let token_stride_bytes =
+        usize::try_from(token_buffers.token_stride_bytes).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic GPU token-pack token stride exceeds usize".to_string(),
+        })?;
+    let token_segment_stride =
+        usize::try_from(token_buffers.token_segment_stride).map_err(|_| Error::MetalKernel {
+            message: "J2K Metal classic GPU token-pack segment stride exceeds usize".to_string(),
+        })?;
+    let counter_byte_len = count
+        .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal classic GPU token-pack counter readback size overflow".to_string(),
+        })?;
+    let counter_readback = runtime.device.new_buffer(
+        counter_byte_len.max(1) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
+    let copy_token_payloads = metal_profile_classic_tier1_token_pack_enabled();
+    let (token_readback, token_byte_len) = if copy_token_payloads {
+        let byte_len = count
+            .checked_mul(token_stride_bytes)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic GPU token-pack token readback size overflow"
+                    .to_string(),
+            })?;
+        (
+            Some(runtime.device.new_buffer(
+                byte_len.max(1) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )),
+            byte_len,
+        )
+    } else {
+        (None, 0)
+    };
+    let (segment_readback, segment_byte_len) = if copy_token_payloads {
+        let byte_len = count
+            .checked_mul(token_segment_stride)
+            .and_then(|segment_count| {
+                segment_count.checked_mul(size_of::<J2kClassicTier1TokenSegment>())
+            })
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal classic GPU token-pack segment readback size overflow"
+                    .to_string(),
+            })?;
+        (
+            Some(runtime.device.new_buffer(
+                byte_len.max(1) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )),
+            byte_len,
+        )
+    } else {
+        (None, 0)
+    };
+
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_buffer(
+        &token_buffers.counter_buffer,
+        0,
+        &counter_readback,
+        0,
+        counter_byte_len as u64,
+    );
+    if let Some(token_readback) = token_readback.as_ref() {
+        blit.copy_from_buffer(
+            &token_buffers.token_buffer,
+            0,
+            token_readback,
+            0,
+            token_byte_len as u64,
+        );
+    }
+    if let Some(segment_readback) = segment_readback.as_ref() {
+        blit.copy_from_buffer(
+            &token_buffers.segment_buffer,
+            0,
+            segment_readback,
+            0,
+            segment_byte_len as u64,
+        );
+    }
+    blit.end_encoding();
+
+    Ok(Some(J2kResidentClassicTier1TokenEmitReadback {
+        counter_buffer: counter_readback,
+        token_buffer: token_readback,
+        segment_buffer: segment_readback,
+        token_stride_bytes,
+        token_segment_stride,
+        count,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct J2kClassicTier1PassClassCounts {
+    arithmetic: usize,
+    raw: usize,
+    cleanup: usize,
+    sigprop: usize,
+    magref: usize,
+    arithmetic_cleanup: usize,
+    arithmetic_sigprop: usize,
+    arithmetic_magref: usize,
+    raw_sigprop: usize,
+    raw_magref: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn classic_tier1_pass_class_counts(
+    coding_passes: usize,
+    style_flags: u32,
+) -> J2kClassicTier1PassClassCounts {
+    let selective_bypass =
+        (style_flags & J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS) != 0;
+    let mut counts = J2kClassicTier1PassClassCounts::default();
+    for coding_pass in 0..coding_passes {
+        let pass_type = coding_pass % 3;
+        let arithmetic = !selective_bypass || coding_pass <= 9 || pass_type == 0;
+        match pass_type {
+            0 => {
+                counts.cleanup = counts.cleanup.saturating_add(1);
+                counts.arithmetic_cleanup = counts.arithmetic_cleanup.saturating_add(1);
+            }
+            1 => {
+                counts.sigprop = counts.sigprop.saturating_add(1);
+                if arithmetic {
+                    counts.arithmetic_sigprop = counts.arithmetic_sigprop.saturating_add(1);
+                } else {
+                    counts.raw_sigprop = counts.raw_sigprop.saturating_add(1);
+                }
+            }
+            _ => {
+                counts.magref = counts.magref.saturating_add(1);
+                if arithmetic {
+                    counts.arithmetic_magref = counts.arithmetic_magref.saturating_add(1);
+                } else {
+                    counts.raw_magref = counts.raw_magref.saturating_add(1);
+                }
+            }
+        }
+        if arithmetic {
+            counts.arithmetic = counts.arithmetic.saturating_add(1);
+        } else {
+            counts.raw = counts.raw.saturating_add(1);
+        }
+    }
+    counts
+}
+
+#[cfg(target_os = "macos")]
+fn accumulate_classic_tier1_scan_estimates(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    pass_counts: J2kClassicTier1PassClassCounts,
+    coeff_count: usize,
+) {
+    let full_scan_visits = pass_counts
+        .cleanup
+        .saturating_add(pass_counts.sigprop)
+        .saturating_add(pass_counts.magref)
+        .saturating_mul(coeff_count);
+    stage_stats.tier1_full_scan_coeff_visit_count_total = stage_stats
+        .tier1_full_scan_coeff_visit_count_total
+        .saturating_add(full_scan_visits);
+    stage_stats.max_tier1_full_scan_coeff_visits_per_block = stage_stats
+        .max_tier1_full_scan_coeff_visits_per_block
+        .max(full_scan_visits);
+    stage_stats.tier1_arithmetic_scan_coeff_visit_count_total = stage_stats
+        .tier1_arithmetic_scan_coeff_visit_count_total
+        .saturating_add(pass_counts.arithmetic.saturating_mul(coeff_count));
+    stage_stats.tier1_raw_scan_coeff_visit_count_total = stage_stats
+        .tier1_raw_scan_coeff_visit_count_total
+        .saturating_add(pass_counts.raw.saturating_mul(coeff_count));
+    stage_stats.tier1_cleanup_scan_coeff_visit_count_total = stage_stats
+        .tier1_cleanup_scan_coeff_visit_count_total
+        .saturating_add(pass_counts.cleanup.saturating_mul(coeff_count));
+    stage_stats.tier1_sigprop_scan_coeff_visit_count_total = stage_stats
+        .tier1_sigprop_scan_coeff_visit_count_total
+        .saturating_add(pass_counts.sigprop.saturating_mul(coeff_count));
+    stage_stats.tier1_magref_scan_coeff_visit_count_total = stage_stats
+        .tier1_magref_scan_coeff_visit_count_total
+        .saturating_add(pass_counts.magref.saturating_mul(coeff_count));
+}
+
+#[cfg(target_os = "macos")]
+fn record_classic_tier1_density_counters(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentClassicTier1DensityReadback,
+) -> Result<(), Error> {
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1DensityCounters>(),
+            readback.count,
+        )
+    };
+    for counter in counters {
+        stage_stats.tier1_sigprop_active_candidate_count_total = stage_stats
+            .tier1_sigprop_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.sigprop_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 sigprop candidate count exceeds usize"
+                            .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_sigprop_new_significant_count_total = stage_stats
+            .tier1_sigprop_new_significant_count_total
+            .saturating_add(
+                usize::try_from(counter.sigprop_new_significant).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 sigprop significance count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_magref_active_candidate_count_total = stage_stats
+            .tier1_magref_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.magref_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 magref candidate count exceeds usize"
+                            .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_arithmetic_sigprop_active_candidate_count_total = stage_stats
+            .tier1_arithmetic_sigprop_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.arithmetic_sigprop_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 arithmetic sigprop candidate count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_arithmetic_sigprop_new_significant_count_total = stage_stats
+            .tier1_arithmetic_sigprop_new_significant_count_total
+            .saturating_add(
+                usize::try_from(counter.arithmetic_sigprop_new_significant).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 arithmetic sigprop significance count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_raw_sigprop_active_candidate_count_total = stage_stats
+            .tier1_raw_sigprop_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.raw_sigprop_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 raw sigprop candidate count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_raw_sigprop_new_significant_count_total = stage_stats
+            .tier1_raw_sigprop_new_significant_count_total
+            .saturating_add(
+                usize::try_from(counter.raw_sigprop_new_significant).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 raw sigprop significance count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_arithmetic_magref_active_candidate_count_total = stage_stats
+            .tier1_arithmetic_magref_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.arithmetic_magref_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 arithmetic magref candidate count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_raw_magref_active_candidate_count_total = stage_stats
+            .tier1_raw_magref_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.raw_magref_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 raw magref candidate count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_cleanup_active_candidate_count_total = stage_stats
+            .tier1_cleanup_active_candidate_count_total
+            .saturating_add(
+                usize::try_from(counter.cleanup_active_candidates).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 cleanup candidate count exceeds usize"
+                            .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_cleanup_new_significant_count_total = stage_stats
+            .tier1_cleanup_new_significant_count_total
+            .saturating_add(
+                usize::try_from(counter.cleanup_new_significant).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 cleanup significance count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_cleanup_rlc_stripe_count_total = stage_stats
+            .tier1_cleanup_rlc_stripe_count_total
+            .saturating_add(usize::try_from(counter.cleanup_rlc_stripes).map_err(|_| {
+                Error::MetalKernel {
+                    message: "J2K Metal classic Tier-1 cleanup RLC stripe count exceeds usize"
+                        .to_string(),
+                }
+            })?);
+        stage_stats.tier1_cleanup_rlc_zero_stripe_count_total = stage_stats
+            .tier1_cleanup_rlc_zero_stripe_count_total
+            .saturating_add(
+                usize::try_from(counter.cleanup_rlc_zero_stripes).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 cleanup zero-RLC stripe count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn record_classic_tier1_symbol_plan_counters(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentClassicTier1SymbolPlanReadback,
+) -> Result<(), Error> {
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            readback.count,
+        )
+    };
+    for counter in counters {
+        if counter.code != J2K_ENCODE_STATUS_OK {
+            return Err(encode_status_error(
+                "classic Tier-1 symbol plan",
+                counter.code,
+                counter.detail,
+            ));
+        }
+        stage_stats.tier1_symbol_plan_mq_symbol_count_total = stage_stats
+            .tier1_symbol_plan_mq_symbol_count_total
+            .saturating_add(usize::try_from(counter.mq_symbol_count).map_err(|_| {
+                Error::MetalKernel {
+                    message: "J2K Metal classic Tier-1 symbol-plan MQ count exceeds usize"
+                        .to_string(),
+                }
+            })?);
+        stage_stats.tier1_symbol_plan_raw_bit_count_total = stage_stats
+            .tier1_symbol_plan_raw_bit_count_total
+            .saturating_add(usize::try_from(counter.raw_bit_count).map_err(|_| {
+                Error::MetalKernel {
+                    message: "J2K Metal classic Tier-1 symbol-plan raw bit count exceeds usize"
+                        .to_string(),
+                }
+            })?);
+        let mq_symbol_count =
+            usize::try_from(counter.mq_symbol_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 symbol-plan MQ count exceeds usize".to_string(),
+            })?;
+        let raw_bit_count =
+            usize::try_from(counter.raw_bit_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 symbol-plan raw bit count exceeds usize"
+                    .to_string(),
+            })?;
+        stage_stats.max_tier1_symbol_plan_mq_symbols_per_block = stage_stats
+            .max_tier1_symbol_plan_mq_symbols_per_block
+            .max(mq_symbol_count);
+        stage_stats.max_tier1_symbol_plan_raw_bits_per_block = stage_stats
+            .max_tier1_symbol_plan_raw_bits_per_block
+            .max(raw_bit_count);
+        let mq_packed_bytes = mq_symbol_count
+            .saturating_mul(6)
+            .saturating_add(7)
+            .checked_div(8)
+            .unwrap_or(usize::MAX);
+        let raw_packed_bytes = raw_bit_count
+            .saturating_add(7)
+            .checked_div(8)
+            .unwrap_or(usize::MAX);
+        let packed_token_bytes = mq_packed_bytes.saturating_add(raw_packed_bytes);
+        stage_stats.tier1_symbol_plan_packed_token_bytes_total = stage_stats
+            .tier1_symbol_plan_packed_token_bytes_total
+            .saturating_add(packed_token_bytes);
+        stage_stats.max_tier1_symbol_plan_packed_token_bytes_per_block = stage_stats
+            .max_tier1_symbol_plan_packed_token_bytes_per_block
+            .max(packed_token_bytes);
+        stage_stats.tier1_symbol_plan_cleanup_mq_symbol_count_total = stage_stats
+            .tier1_symbol_plan_cleanup_mq_symbol_count_total
+            .saturating_add(
+                usize::try_from(counter.cleanup_mq_symbol_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 symbol-plan cleanup MQ count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_symbol_plan_sigprop_mq_symbol_count_total = stage_stats
+            .tier1_symbol_plan_sigprop_mq_symbol_count_total
+            .saturating_add(
+                usize::try_from(counter.sigprop_mq_symbol_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 symbol-plan sigprop MQ count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_symbol_plan_magref_mq_symbol_count_total = stage_stats
+            .tier1_symbol_plan_magref_mq_symbol_count_total
+            .saturating_add(
+                usize::try_from(counter.magref_mq_symbol_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 symbol-plan magref MQ count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_symbol_plan_raw_sigprop_bit_count_total = stage_stats
+            .tier1_symbol_plan_raw_sigprop_bit_count_total
+            .saturating_add(usize::try_from(counter.raw_sigprop_bit_count).map_err(|_| {
+                Error::MetalKernel {
+                    message:
+                        "J2K Metal classic Tier-1 symbol-plan raw sigprop bit count exceeds usize"
+                            .to_string(),
+                }
+            })?);
+        stage_stats.tier1_symbol_plan_raw_magref_bit_count_total = stage_stats
+            .tier1_symbol_plan_raw_magref_bit_count_total
+            .saturating_add(usize::try_from(counter.raw_magref_bit_count).map_err(|_| {
+                Error::MetalKernel {
+                    message:
+                        "J2K Metal classic Tier-1 symbol-plan raw magref bit count exceeds usize"
+                            .to_string(),
+                }
+            })?);
+        stage_stats.tier1_symbol_plan_cleanup_sign_symbol_count_total = stage_stats
+            .tier1_symbol_plan_cleanup_sign_symbol_count_total
+            .saturating_add(
+                usize::try_from(counter.cleanup_sign_symbol_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 symbol-plan cleanup sign count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_symbol_plan_sigprop_sign_symbol_count_total = stage_stats
+            .tier1_symbol_plan_sigprop_sign_symbol_count_total
+            .saturating_add(
+                usize::try_from(counter.sigprop_sign_symbol_count).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 symbol-plan sigprop sign count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.tier1_symbol_plan_mq_symbol_hash_xor ^= usize::try_from(counter.mq_symbol_hash)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 symbol-plan MQ hash exceeds usize".to_string(),
+            })?;
+        stage_stats.tier1_symbol_plan_raw_bit_hash_xor ^= usize::try_from(counter.raw_bit_hash)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 symbol-plan raw hash exceeds usize".to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn record_classic_tier1_pass_plan_counters(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentClassicTier1PassPlanReadback,
+) -> Result<(), Error> {
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1PassPlanCounters>(),
+            readback.count,
+        )
+    };
+    for counter in counters {
+        if counter.code != J2K_ENCODE_STATUS_OK {
+            return Err(encode_status_error(
+                "classic Tier-1 pass plan",
+                counter.code,
+                counter.detail,
+            ));
+        }
+        let mq_symbol_count =
+            usize::try_from(counter.mq_symbol_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 pass-plan MQ count exceeds usize".to_string(),
+            })?;
+        let raw_bit_count =
+            usize::try_from(counter.raw_bit_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 pass-plan raw bit count exceeds usize"
+                    .to_string(),
+            })?;
+        stage_stats.tier1_pass_plan_mq_symbol_count_total = stage_stats
+            .tier1_pass_plan_mq_symbol_count_total
+            .saturating_add(mq_symbol_count);
+        stage_stats.tier1_pass_plan_raw_bit_count_total = stage_stats
+            .tier1_pass_plan_raw_bit_count_total
+            .saturating_add(raw_bit_count);
+        stage_stats.tier1_pass_plan_nonempty_mq_pass_count_total = stage_stats
+            .tier1_pass_plan_nonempty_mq_pass_count_total
+            .saturating_add(usize::try_from(counter.nonempty_mq_passes).map_err(|_| {
+                Error::MetalKernel {
+                    message:
+                        "J2K Metal classic Tier-1 pass-plan nonempty MQ pass count exceeds usize"
+                            .to_string(),
+                }
+            })?);
+        stage_stats.tier1_pass_plan_nonempty_raw_pass_count_total = stage_stats
+            .tier1_pass_plan_nonempty_raw_pass_count_total
+            .saturating_add(usize::try_from(counter.nonempty_raw_passes).map_err(|_| {
+                Error::MetalKernel {
+                    message:
+                        "J2K Metal classic Tier-1 pass-plan nonempty raw pass count exceeds usize"
+                            .to_string(),
+                }
+            })?);
+        stage_stats.max_tier1_pass_plan_mq_symbols_per_pass =
+            stage_stats.max_tier1_pass_plan_mq_symbols_per_pass.max(
+                usize::try_from(counter.max_mq_symbols_per_pass).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 pass-plan max MQ pass count exceeds usize"
+                                .to_string(),
+                    }
+                })?,
+            );
+        stage_stats.max_tier1_pass_plan_raw_bits_per_pass =
+            stage_stats.max_tier1_pass_plan_raw_bits_per_pass.max(
+                usize::try_from(counter.max_raw_bits_per_pass).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal classic Tier-1 pass-plan max raw pass count exceeds usize"
+                        .to_string(),
+                })?,
+            );
+
+        let pass_mq_total = counter.mq_symbols_by_pass.iter().try_fold(
+            0usize,
+            |acc, &value| -> Result<usize, Error> {
+                Ok(acc.saturating_add(
+                    usize::try_from(value).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 pass-plan MQ pass count exceeds usize"
+                            .to_string(),
+                    })?,
+                ))
+            },
+        )?;
+        let pass_raw_total = counter.raw_bits_by_pass.iter().try_fold(
+            0usize,
+            |acc, &value| -> Result<usize, Error> {
+                Ok(acc.saturating_add(usize::try_from(value).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 pass-plan raw pass count exceeds usize"
+                            .to_string(),
+                    }
+                })?))
+            },
+        )?;
+        if pass_mq_total != mq_symbol_count || pass_raw_total != raw_bit_count {
+            return Err(Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 pass-plan per-pass totals are inconsistent"
+                    .to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn compare_classic_tier1_symbol_plan_and_pass_plan_counters(
+    symbol_plan: &J2kResidentClassicTier1SymbolPlanReadback,
+    pass_plan: &J2kResidentClassicTier1PassPlanReadback,
+) -> Result<(), Error> {
+    if symbol_plan.count != pass_plan.count {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 pass-plan comparison count mismatch".to_string(),
+        });
+    }
+    let symbol_plan_counters = unsafe {
+        core::slice::from_raw_parts(
+            symbol_plan
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            symbol_plan.count,
+        )
+    };
+    let pass_plan_counters = unsafe {
+        core::slice::from_raw_parts(
+            pass_plan
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1PassPlanCounters>(),
+            pass_plan.count,
+        )
+    };
+    for (idx, (plan, pass)) in symbol_plan_counters
+        .iter()
+        .zip(pass_plan_counters)
+        .enumerate()
+    {
+        let plan_values = [
+            plan.code,
+            plan.detail,
+            plan.coding_passes,
+            plan.missing_bit_planes,
+            plan.segment_count,
+            plan.mq_symbol_count,
+            plan.raw_bit_count,
+        ];
+        let pass_values = [
+            pass.code,
+            pass.detail,
+            pass.coding_passes,
+            pass.missing_bit_planes,
+            pass.segment_count,
+            pass.mq_symbol_count,
+            pass.raw_bit_count,
+        ];
+        if plan_values != pass_values {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "J2K Metal classic Tier-1 pass-plan diverged from symbol plan at block {idx}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn record_classic_tier1_token_emit_counters(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentClassicTier1TokenEmitReadback,
+) -> Result<(), Error> {
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .counter_buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            readback.count,
+        )
+    };
+    for counter in counters {
+        if counter.code != J2K_ENCODE_STATUS_OK {
+            return Err(encode_status_error(
+                "classic Tier-1 token emit",
+                counter.code,
+                counter.detail,
+            ));
+        }
+        let mq_symbol_count =
+            usize::try_from(counter.mq_symbol_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-emitter MQ count exceeds usize"
+                    .to_string(),
+            })?;
+        let raw_bit_count =
+            usize::try_from(counter.raw_bit_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-emitter raw bit count exceeds usize"
+                    .to_string(),
+            })?;
+        let segment_count =
+            usize::try_from(counter.segment_count).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-emitter segment count exceeds usize"
+                    .to_string(),
+            })?;
+        let token_bytes = mq_symbol_count
+            .saturating_mul(6)
+            .saturating_add(raw_bit_count)
+            .saturating_add(7)
+            .checked_div(8)
+            .unwrap_or(usize::MAX);
+        stage_stats.tier1_token_emit_mq_symbol_count_total = stage_stats
+            .tier1_token_emit_mq_symbol_count_total
+            .saturating_add(mq_symbol_count);
+        stage_stats.tier1_token_emit_raw_bit_count_total = stage_stats
+            .tier1_token_emit_raw_bit_count_total
+            .saturating_add(raw_bit_count);
+        stage_stats.tier1_token_emit_token_bytes_total = stage_stats
+            .tier1_token_emit_token_bytes_total
+            .saturating_add(token_bytes);
+        stage_stats.max_tier1_token_emit_token_bytes_per_block = stage_stats
+            .max_tier1_token_emit_token_bytes_per_block
+            .max(token_bytes);
+        stage_stats.tier1_token_emit_segment_count_total = stage_stats
+            .tier1_token_emit_segment_count_total
+            .saturating_add(segment_count);
+        stage_stats.max_tier1_token_emit_segments_per_block = stage_stats
+            .max_tier1_token_emit_segments_per_block
+            .max(segment_count);
+        stage_stats.tier1_token_emit_mq_symbol_hash_xor ^= usize::try_from(counter.mq_symbol_hash)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-emitter MQ hash exceeds usize".to_string(),
+            })?;
+        stage_stats.tier1_token_emit_raw_bit_hash_xor ^= usize::try_from(counter.raw_bit_hash)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal classic Tier-1 token-emitter raw hash exceeds usize"
+                    .to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn compare_classic_tier1_symbol_plan_and_token_emit_counters(
+    symbol_plan: &J2kResidentClassicTier1SymbolPlanReadback,
+    token_emit: &J2kResidentClassicTier1TokenEmitReadback,
+) -> Result<(), Error> {
+    if symbol_plan.count != token_emit.count {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 token-emitter comparison count mismatch".to_string(),
+        });
+    }
+    let symbol_plan_counters = unsafe {
+        core::slice::from_raw_parts(
+            symbol_plan
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            symbol_plan.count,
+        )
+    };
+    let token_emit_counters = unsafe {
+        core::slice::from_raw_parts(
+            token_emit
+                .counter_buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            token_emit.count,
+        )
+    };
+    for (idx, (plan, emit)) in symbol_plan_counters
+        .iter()
+        .zip(token_emit_counters)
+        .enumerate()
+    {
+        let plan_values = [
+            plan.code,
+            plan.detail,
+            plan.coding_passes,
+            plan.missing_bit_planes,
+            plan.segment_count,
+            plan.mq_symbol_count,
+            plan.raw_bit_count,
+            plan.cleanup_mq_symbol_count,
+            plan.sigprop_mq_symbol_count,
+            plan.magref_mq_symbol_count,
+            plan.raw_sigprop_bit_count,
+            plan.raw_magref_bit_count,
+            plan.cleanup_sign_symbol_count,
+            plan.sigprop_sign_symbol_count,
+            plan.mq_symbol_hash,
+            plan.raw_bit_hash,
+        ];
+        let emit_values = [
+            emit.code,
+            emit.detail,
+            emit.coding_passes,
+            emit.missing_bit_planes,
+            emit.segment_count,
+            emit.mq_symbol_count,
+            emit.raw_bit_count,
+            emit.cleanup_mq_symbol_count,
+            emit.sigprop_mq_symbol_count,
+            emit.magref_mq_symbol_count,
+            emit.raw_sigprop_bit_count,
+            emit.raw_magref_bit_count,
+            emit.cleanup_sign_symbol_count,
+            emit.sigprop_sign_symbol_count,
+            emit.mq_symbol_hash,
+            emit.raw_bit_hash,
+        ];
+        if plan_values != emit_values {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "J2K Metal classic Tier-1 token-emitter diverged from symbol plan at block {idx}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_classic_tier1_split_token_emit_counters(
+    readback: &J2kResidentClassicTier1SplitTokenBuffers,
+) -> Result<(), Error> {
+    if readback.mq_token_stride_bytes == 0
+        || readback.raw_token_stride_bytes == 0
+        || readback.token_segment_stride == 0
+    {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 split-token readback has empty stride".to_string(),
+        });
+    }
+    let count = usize::try_from(readback.job_count).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 split-token counter count exceeds usize".to_string(),
+    })?;
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .counter_buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            count,
+        )
+    };
+    for counter in counters {
+        if counter.code != J2K_ENCODE_STATUS_OK {
+            return Err(encode_status_error(
+                "classic Tier-1 split-token emit",
+                counter.code,
+                counter.detail,
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn compare_classic_tier1_symbol_plan_and_split_token_emit_counters(
+    symbol_plan: &J2kResidentClassicTier1SymbolPlanReadback,
+    split_emit: &J2kResidentClassicTier1SplitTokenBuffers,
+) -> Result<(), Error> {
+    let split_count = usize::try_from(split_emit.job_count).map_err(|_| Error::MetalKernel {
+        message: "J2K Metal classic Tier-1 split-token comparison count exceeds usize".to_string(),
+    })?;
+    if symbol_plan.count != split_count {
+        return Err(Error::MetalKernel {
+            message: "J2K Metal classic Tier-1 split-token comparison count mismatch".to_string(),
+        });
+    }
+    let symbol_plan_counters = unsafe {
+        core::slice::from_raw_parts(
+            symbol_plan
+                .buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            symbol_plan.count,
+        )
+    };
+    let split_emit_counters = unsafe {
+        core::slice::from_raw_parts(
+            split_emit
+                .counter_buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            split_count,
+        )
+    };
+    for (idx, (plan, emit)) in symbol_plan_counters
+        .iter()
+        .zip(split_emit_counters)
+        .enumerate()
+    {
+        let plan_values = [
+            plan.code,
+            plan.detail,
+            plan.coding_passes,
+            plan.missing_bit_planes,
+            plan.segment_count,
+            plan.mq_symbol_count,
+            plan.raw_bit_count,
+            plan.cleanup_mq_symbol_count,
+            plan.sigprop_mq_symbol_count,
+            plan.magref_mq_symbol_count,
+            plan.raw_sigprop_bit_count,
+            plan.raw_magref_bit_count,
+            plan.cleanup_sign_symbol_count,
+            plan.sigprop_sign_symbol_count,
+            plan.mq_symbol_hash,
+            plan.raw_bit_hash,
+        ];
+        let emit_values = [
+            emit.code,
+            emit.detail,
+            emit.coding_passes,
+            emit.missing_bit_planes,
+            emit.segment_count,
+            emit.mq_symbol_count,
+            emit.raw_bit_count,
+            emit.cleanup_mq_symbol_count,
+            emit.sigprop_mq_symbol_count,
+            emit.magref_mq_symbol_count,
+            emit.raw_sigprop_bit_count,
+            emit.raw_magref_bit_count,
+            emit.cleanup_sign_symbol_count,
+            emit.sigprop_sign_symbol_count,
+            emit.mq_symbol_hash,
+            emit.raw_bit_hash,
+        ];
+        if plan_values != emit_values {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "J2K Metal classic Tier-1 split-token emitter diverged from symbol plan at block {idx}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn profile_classic_tier1_token_pack(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentClassicTier1TokenEmitReadback,
+) -> Result<(), Error> {
+    if !metal_profile_classic_tier1_token_pack_enabled() {
+        return Ok(());
+    }
+    let counters = unsafe {
+        core::slice::from_raw_parts(
+            readback
+                .counter_buffer
+                .contents()
+                .cast::<J2kClassicTier1SymbolPlanCounters>(),
+            readback.count,
+        )
+    };
+    let token_buffer = readback
+        .token_buffer
+        .as_ref()
+        .ok_or_else(|| Error::MetalKernel {
+            message:
+                "J2K Metal classic Tier-1 token-pack profiling requires token payload readback"
+                    .to_string(),
+        })?;
+    let segment_buffer = readback
+        .segment_buffer
+        .as_ref()
+        .ok_or_else(|| Error::MetalKernel {
+            message:
+                "J2K Metal classic Tier-1 token-pack profiling requires token segment readback"
+                    .to_string(),
+        })?;
+    let token_bytes = unsafe {
+        core::slice::from_raw_parts(
+            token_buffer.contents().cast::<u8>(),
+            readback.count.saturating_mul(readback.token_stride_bytes),
+        )
+    };
+    let token_segments = unsafe {
+        core::slice::from_raw_parts(
+            segment_buffer
+                .contents()
+                .cast::<J2kClassicTier1TokenSegment>(),
+            readback.count.saturating_mul(readback.token_segment_stride),
+        )
+    };
+    let token_stride_bytes = readback.token_stride_bytes;
+    let token_segment_stride = readback.token_segment_stride;
+
+    let started = Instant::now();
+    let packed_lengths = (0..readback.count)
+        .into_par_iter()
+        .map(|block_idx| -> Result<usize, String> {
+            let counter = &counters[block_idx];
+            if counter.code != J2K_ENCODE_STATUS_OK {
+                return Err(format!(
+                "classic Tier-1 token pack input failed at block {block_idx}: code={} detail={}",
+                counter.code, counter.detail
+            ));
+            }
+            let segment_count = usize::try_from(counter.segment_count)
+                .map_err(|_| "J2K Metal classic Tier-1 token-pack segment count exceeds usize")?;
+            if segment_count > CLASSIC_TIER1_TOKEN_SEGMENT_CAPACITY {
+                return Err(
+                    "J2K Metal classic Tier-1 token-pack segment count exceeds capacity"
+                        .to_string(),
+                );
+            }
+            let token_start = block_idx
+                .checked_mul(token_stride_bytes)
+                .ok_or("J2K Metal classic Tier-1 token-pack byte offset overflow")?;
+            let segment_start = block_idx
+                .checked_mul(token_segment_stride)
+                .ok_or("J2K Metal classic Tier-1 token-pack segment offset overflow")?;
+            let mut native_segments = Vec::with_capacity(segment_count);
+            for segment in &token_segments[segment_start..segment_start + segment_count] {
+                let start_coding_pass = u8::try_from(segment.pass_range & 0xFFFF)
+                    .map_err(|_| "J2K Metal classic Tier-1 token-pack start pass exceeds u8")?;
+                let end_coding_pass = u8::try_from(segment.pass_range >> 16)
+                    .map_err(|_| "J2K Metal classic Tier-1 token-pack end pass exceeds u8")?;
+                native_segments.push(J2kTier1TokenSegment {
+                    token_bit_offset: segment.token_bit_offset,
+                    token_bit_count: segment.token_bit_count,
+                    start_coding_pass,
+                    end_coding_pass,
+                    use_arithmetic: (segment.flags & 1) != 0,
+                });
+            }
+            let packed = pack_j2k_code_block_scalar_from_tier1_tokens(
+                &token_bytes[token_start..token_start + token_stride_bytes],
+                &native_segments,
+                u8::try_from(counter.coding_passes).map_err(|_| {
+                    "J2K Metal classic Tier-1 token-pack coding-pass count exceeds u8"
+                })?,
+                u8::try_from(counter.missing_bit_planes).map_err(|_| {
+                    "J2K Metal classic Tier-1 token-pack missing bitplanes exceed u8"
+                })?,
+            )
+            .map_err(|message| format!("J2K Metal classic Tier-1 token-pack failed: {message}"))?;
+            Ok(packed.data.len())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| Error::MetalKernel { message })?;
+    for output_len in packed_lengths {
+        stage_stats.tier1_token_pack_output_bytes_total = stage_stats
+            .tier1_token_pack_output_bytes_total
+            .saturating_add(output_len);
+        stage_stats.max_tier1_token_pack_output_bytes_per_block = stage_stats
+            .max_tier1_token_pack_output_bytes_per_block
+            .max(output_len);
+    }
+    stage_stats.classic_tier1_token_pack_duration = started.elapsed();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn record_resident_tier1_output_usage(
+    stage_stats: &mut J2kResidentEncodeStageStats,
+    readback: &J2kResidentTier1StatusReadback,
+    classic_gpu_token_pack_used: bool,
+) -> Result<(), Error> {
+    match readback.kind {
+        J2kResidentTier1StatusKind::Classic => {
+            let classic_jobs =
+                readback
+                    .classic_jobs
+                    .as_ref()
+                    .ok_or_else(|| Error::MetalKernel {
+                        message:
+                            "J2K Metal classic Tier-1 profile readback is missing job metadata"
+                                .to_string(),
+                    })?;
+            let statuses = unsafe {
+                core::slice::from_raw_parts(
+                    readback.buffer.contents().cast::<J2kClassicEncodeStatus>(),
+                    readback.count,
+                )
+            };
+            if classic_jobs.len() != statuses.len() {
+                return Err(Error::MetalKernel {
+                    message: "J2K Metal classic Tier-1 profile readback job/status count mismatch"
+                        .to_string(),
+                });
+            }
+            for (status, job) in statuses.iter().zip(classic_jobs) {
+                if status.code != J2K_ENCODE_STATUS_OK {
+                    return Err(encode_status_error(
+                        "classic Tier-1",
+                        status.code,
+                        status.detail,
+                    ));
+                }
+                let data_len =
+                    usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 output length exceeds usize".to_string(),
+                    })?;
+                stage_stats.tier1_output_used_bytes_total = stage_stats
+                    .tier1_output_used_bytes_total
+                    .saturating_add(data_len);
+                stage_stats.max_tier1_output_used_bytes =
+                    stage_stats.max_tier1_output_used_bytes.max(data_len);
+                if classic_gpu_token_pack_used {
+                    stage_stats.tier1_token_pack_output_bytes_total = stage_stats
+                        .tier1_token_pack_output_bytes_total
+                        .saturating_add(data_len);
+                    stage_stats.max_tier1_token_pack_output_bytes_per_block = stage_stats
+                        .max_tier1_token_pack_output_bytes_per_block
+                        .max(data_len);
+                }
+                let coding_passes =
+                    usize::try_from(status.number_of_coding_passes).map_err(|_| {
+                        Error::MetalKernel {
+                            message: "J2K Metal classic Tier-1 coding-pass count exceeds usize"
+                                .to_string(),
+                        }
+                    })?;
+                stage_stats.tier1_coding_pass_count_total = stage_stats
+                    .tier1_coding_pass_count_total
+                    .saturating_add(coding_passes);
+                stage_stats.max_tier1_coding_passes_per_block = stage_stats
+                    .max_tier1_coding_passes_per_block
+                    .max(coding_passes);
+                let pass_counts =
+                    classic_tier1_pass_class_counts(coding_passes, readback.classic_style_flags);
+                let coeff_count = usize::try_from(job.width)
+                    .and_then(|width| {
+                        usize::try_from(job.height).map(|height| width.saturating_mul(height))
+                    })
+                    .map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 code-block dimensions exceed usize"
+                            .to_string(),
+                    })?;
+                accumulate_classic_tier1_scan_estimates(stage_stats, pass_counts, coeff_count);
+                stage_stats.tier1_arithmetic_pass_count_total = stage_stats
+                    .tier1_arithmetic_pass_count_total
+                    .saturating_add(pass_counts.arithmetic);
+                stage_stats.tier1_raw_pass_count_total = stage_stats
+                    .tier1_raw_pass_count_total
+                    .saturating_add(pass_counts.raw);
+                stage_stats.tier1_cleanup_pass_count_total = stage_stats
+                    .tier1_cleanup_pass_count_total
+                    .saturating_add(pass_counts.cleanup);
+                stage_stats.tier1_sigprop_pass_count_total = stage_stats
+                    .tier1_sigprop_pass_count_total
+                    .saturating_add(pass_counts.sigprop);
+                stage_stats.tier1_magref_pass_count_total = stage_stats
+                    .tier1_magref_pass_count_total
+                    .saturating_add(pass_counts.magref);
+                stage_stats.tier1_arithmetic_cleanup_pass_count_total = stage_stats
+                    .tier1_arithmetic_cleanup_pass_count_total
+                    .saturating_add(pass_counts.arithmetic_cleanup);
+                stage_stats.tier1_arithmetic_sigprop_pass_count_total = stage_stats
+                    .tier1_arithmetic_sigprop_pass_count_total
+                    .saturating_add(pass_counts.arithmetic_sigprop);
+                stage_stats.tier1_arithmetic_magref_pass_count_total = stage_stats
+                    .tier1_arithmetic_magref_pass_count_total
+                    .saturating_add(pass_counts.arithmetic_magref);
+                stage_stats.tier1_raw_sigprop_pass_count_total = stage_stats
+                    .tier1_raw_sigprop_pass_count_total
+                    .saturating_add(pass_counts.raw_sigprop);
+                stage_stats.tier1_raw_magref_pass_count_total = stage_stats
+                    .tier1_raw_magref_pass_count_total
+                    .saturating_add(pass_counts.raw_magref);
+                if coding_passes == 0 {
+                    stage_stats.tier1_zero_block_count_total =
+                        stage_stats.tier1_zero_block_count_total.saturating_add(1);
+                } else {
+                    stage_stats.tier1_nonzero_block_count_total = stage_stats
+                        .tier1_nonzero_block_count_total
+                        .saturating_add(1);
+                }
+                let missing_bitplanes =
+                    usize::try_from(status.missing_bit_planes).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 missing-bitplane count exceeds usize"
+                            .to_string(),
+                    })?;
+                stage_stats.tier1_missing_bitplane_count_total = stage_stats
+                    .tier1_missing_bitplane_count_total
+                    .saturating_add(missing_bitplanes);
+                stage_stats.max_tier1_missing_bitplanes_per_block = stage_stats
+                    .max_tier1_missing_bitplanes_per_block
+                    .max(missing_bitplanes);
+                let segment_count =
+                    usize::try_from(status.segment_count).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal classic Tier-1 segment count exceeds usize".to_string(),
+                    })?;
+                stage_stats.tier1_segment_count_total = stage_stats
+                    .tier1_segment_count_total
+                    .saturating_add(segment_count);
+                stage_stats.max_tier1_segments_per_block =
+                    stage_stats.max_tier1_segments_per_block.max(segment_count);
+            }
+        }
+        J2kResidentTier1StatusKind::HighThroughput => {
+            let statuses = unsafe {
+                core::slice::from_raw_parts(
+                    readback.buffer.contents().cast::<J2kHtEncodeStatus>(),
+                    readback.count,
+                )
+            };
+            for status in statuses {
+                if status.code != J2K_ENCODE_STATUS_OK {
+                    return Err(encode_status_error(
+                        "HTJ2K Tier-1",
+                        status.code,
+                        status.detail,
+                    ));
+                }
+                let data_len =
+                    usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal Tier-1 output length exceeds usize".to_string(),
+                    })?;
+                stage_stats.tier1_output_used_bytes_total = stage_stats
+                    .tier1_output_used_bytes_total
+                    .saturating_add(data_len);
+                stage_stats.max_tier1_output_used_bytes =
+                    stage_stats.max_tier1_output_used_bytes.max(data_len);
+                let coding_passes =
+                    usize::try_from(status.num_coding_passes).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal Tier-1 coding-pass count exceeds usize".to_string(),
+                    })?;
+                stage_stats.tier1_coding_pass_count_total = stage_stats
+                    .tier1_coding_pass_count_total
+                    .saturating_add(coding_passes);
+                stage_stats.max_tier1_coding_passes_per_block = stage_stats
+                    .max_tier1_coding_passes_per_block
+                    .max(coding_passes);
+                if coding_passes == 0 {
+                    stage_stats.tier1_zero_block_count_total =
+                        stage_stats.tier1_zero_block_count_total.saturating_add(1);
+                } else {
+                    stage_stats.tier1_nonzero_block_count_total = stage_stats
+                        .tier1_nonzero_block_count_total
+                        .saturating_add(1);
+                }
+                let missing_bitplanes =
+                    usize::try_from(status.num_zero_bitplanes).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal Tier-1 missing-bitplane count exceeds usize"
+                            .to_string(),
+                    })?;
+                stage_stats.tier1_missing_bitplane_count_total = stage_stats
+                    .tier1_missing_bitplane_count_total
+                    .saturating_add(missing_bitplanes);
+                stage_stats.max_tier1_missing_bitplanes_per_block = stage_stats
+                    .max_tier1_missing_bitplanes_per_block
+                    .max(missing_bitplanes);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn wait_resident_codestream_command_buffer(command_buffer: &CommandBufferRef) {
     #[cfg(test)]
-    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.fetch_add(1, Ordering::Relaxed);
+    RESIDENT_CODESTREAM_COMMAND_BUFFER_WAITS.with(|waits| waits.set(waits.get() + 1));
+    let _signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT);
     command_buffer.wait_until_completed();
 }
 
@@ -8549,18 +12751,78 @@ fn wait_resident_codestream_command_buffer(command_buffer: &CommandBufferRef) {
 fn finish_completed_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
-    let gpu_duration = completed_command_buffers_gpu_duration(
+    let _signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST);
+    let profile_stages = metal_profile_stages_enabled();
+    let result_harvest_started = profile_stages.then(Instant::now);
+    let gpu_timings = completed_command_buffers_gpu_duration_and_elapsed_window(
         &pending.retained_command_buffers,
         &pending.command_buffer,
     );
-    let stage_stats = pending.stage_stats;
+    let gpu_duration = gpu_timings.map(|timings| timings.0);
+    let gpu_elapsed_wall_duration = gpu_timings.map(|timings| timings.1);
+    let mut stage_stats = pending.stage_stats;
+    if let Some(duration) = gpu_elapsed_wall_duration {
+        stage_stats.gpu_elapsed_wall_duration = duration;
+    }
+    if profile_stages {
+        record_completed_resident_encode_gpu_stages(
+            &mut stage_stats,
+            &pending.gpu_stage_command_buffers,
+        );
+    }
+    if let Some(readback) = pending.tier1_status_readback.as_ref() {
+        record_resident_tier1_output_usage(
+            &mut stage_stats,
+            readback,
+            pending.classic_gpu_token_pack_used,
+        )?;
+    }
+    if let Some(readback) = pending.classic_tier1_density_readback.as_ref() {
+        record_classic_tier1_density_counters(&mut stage_stats, readback)?;
+    }
+    if let Some(readback) = pending.classic_tier1_symbol_plan_readback.as_ref() {
+        record_classic_tier1_symbol_plan_counters(&mut stage_stats, readback)?;
+    }
+    if let (Some(symbol_plan), Some(pass_plan)) = (
+        pending.classic_tier1_symbol_plan_readback.as_ref(),
+        pending.classic_tier1_pass_plan_readback.as_ref(),
+    ) {
+        compare_classic_tier1_symbol_plan_and_pass_plan_counters(symbol_plan, pass_plan)?;
+    }
+    if let Some(readback) = pending.classic_tier1_pass_plan_readback.as_ref() {
+        record_classic_tier1_pass_plan_counters(&mut stage_stats, readback)?;
+    }
+    if let (Some(symbol_plan), Some(token_emit)) = (
+        pending.classic_tier1_symbol_plan_readback.as_ref(),
+        pending.classic_tier1_token_emit_readback.as_ref(),
+    ) {
+        compare_classic_tier1_symbol_plan_and_token_emit_counters(symbol_plan, token_emit)?;
+    }
+    if let Some(readback) = pending.classic_tier1_token_emit_readback.as_ref() {
+        record_classic_tier1_token_emit_counters(&mut stage_stats, readback)?;
+        profile_classic_tier1_token_pack(&mut stage_stats, readback)?;
+    }
+    if let Some(readback) = pending.classic_tier1_split_token_emit_readback.as_ref() {
+        validate_classic_tier1_split_token_emit_counters(readback)?;
+    }
+    if let (Some(symbol_plan), Some(split_emit)) = (
+        pending.classic_tier1_symbol_plan_readback.as_ref(),
+        pending.classic_tier1_split_token_emit_readback.as_ref(),
+    ) {
+        compare_classic_tier1_symbol_plan_and_split_token_emit_counters(symbol_plan, split_emit)?;
+    }
     let recyclable_private_buffers = pending.recyclable_private_buffers;
+    let private_recycle_started = profile_stages.then(Instant::now);
     with_runtime_for_device(&pending.device, |runtime| {
         recycle_private_buffers(runtime, recyclable_private_buffers);
         Ok(())
     })?;
+    if let Some(started) = private_recycle_started {
+        stage_stats.result_private_recycle_duration = started.elapsed();
+    }
     let gpu_duration_share =
         gpu_duration.map(|duration| duration_share(duration, pending.capacities.len()));
+    let status_copy_started = profile_stages.then(Instant::now);
     let statuses = unsafe {
         core::slice::from_raw_parts(
             pending
@@ -8569,9 +12831,42 @@ fn finish_completed_resident_lossless_codestream_batch(
                 .cast::<J2kCodestreamAssemblyStatus>(),
             pending.capacities.len(),
         )
-    };
+    }
+    .to_vec();
+    let packet_statuses = unsafe {
+        core::slice::from_raw_parts(
+            pending
+                .packet_status_buffer
+                .contents()
+                .cast::<J2kPacketEncodeStatus>(),
+            pending.capacities.len(),
+        )
+    }
+    .to_vec();
+    if let Some(started) = status_copy_started {
+        stage_stats.result_status_copy_duration = started.elapsed();
+    }
+    let recyclable_shared_buffers = pending.recyclable_shared_buffers;
+    let shared_recycle_started = profile_stages.then(Instant::now);
+    with_runtime_for_device(&pending.device, |runtime| {
+        recycle_shared_buffers(runtime, recyclable_shared_buffers);
+        Ok(())
+    })?;
+    if let Some(started) = shared_recycle_started {
+        stage_stats.result_shared_recycle_duration = started.elapsed();
+    }
+    let codestream_collect_started = profile_stages.then(Instant::now);
     let mut codestreams = Vec::with_capacity(pending.capacities.len());
-    for (index, status) in statuses.iter().copied().enumerate() {
+    for (index, status) in statuses.into_iter().enumerate() {
+        let packet_status = packet_statuses
+            .get(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal packetization status missing for resident batch tile"
+                    .to_string(),
+            })?;
+        if packet_status.code != J2K_ENCODE_STATUS_OK {
+            return Err(packet_encode_status_error(*packet_status));
+        }
         if status.code != J2K_ENCODE_STATUS_OK {
             return Err(encode_status_error(
                 pending.status_stage,
@@ -8588,6 +12883,69 @@ fn finish_completed_resident_lossless_codestream_batch(
                 message: pending.capacity_error.to_string(),
             });
         }
+        let packet_output_used =
+            usize::try_from(packet_status.data_len).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal packet output length exceeds usize".to_string(),
+            })?;
+        let packet_payload_copy_jobs =
+            usize::try_from(packet_status.detail).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal packet payload-copy count exceeds usize".to_string(),
+            })?;
+        let packet_payload_copy_bytes =
+            usize::try_from(packet_status.payload_copy_bytes).map_err(|_| Error::MetalKernel {
+                message: "J2K Metal packet payload-copy byte count exceeds usize".to_string(),
+            })?;
+        let packet_payload_copy_small_jobs = usize::try_from(packet_status.payload_copy_small_jobs)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal small packet payload-copy count exceeds usize".to_string(),
+            })?;
+        let packet_payload_copy_medium_jobs =
+            usize::try_from(packet_status.payload_copy_medium_jobs).map_err(|_| {
+                Error::MetalKernel {
+                    message: "J2K Metal medium packet payload-copy count exceeds usize".to_string(),
+                }
+            })?;
+        let packet_payload_copy_large_jobs = usize::try_from(packet_status.payload_copy_large_jobs)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal large packet payload-copy count exceeds usize".to_string(),
+            })?;
+        let packet_payload_copy_active_stripes =
+            packet_payload_copy_jobs.saturating_mul(PACKET_PAYLOAD_COPY_STRIPES_PER_JOB as usize);
+        stage_stats.packet_output_used_bytes_total = stage_stats
+            .packet_output_used_bytes_total
+            .saturating_add(packet_output_used);
+        stage_stats.max_packet_output_used_bytes = stage_stats
+            .max_packet_output_used_bytes
+            .max(packet_output_used);
+        stage_stats.packet_payload_copy_job_count_total = stage_stats
+            .packet_payload_copy_job_count_total
+            .saturating_add(packet_payload_copy_jobs);
+        stage_stats.max_packet_payload_copy_jobs_used_per_tile = stage_stats
+            .max_packet_payload_copy_jobs_used_per_tile
+            .max(packet_payload_copy_jobs);
+        stage_stats.packet_payload_copy_bytes_total = stage_stats
+            .packet_payload_copy_bytes_total
+            .saturating_add(packet_payload_copy_bytes);
+        stage_stats.max_packet_payload_copy_bytes_per_tile = stage_stats
+            .max_packet_payload_copy_bytes_per_tile
+            .max(packet_payload_copy_bytes);
+        stage_stats.packet_payload_copy_small_job_count_total = stage_stats
+            .packet_payload_copy_small_job_count_total
+            .saturating_add(packet_payload_copy_small_jobs);
+        stage_stats.packet_payload_copy_medium_job_count_total = stage_stats
+            .packet_payload_copy_medium_job_count_total
+            .saturating_add(packet_payload_copy_medium_jobs);
+        stage_stats.packet_payload_copy_large_job_count_total = stage_stats
+            .packet_payload_copy_large_job_count_total
+            .saturating_add(packet_payload_copy_large_jobs);
+        stage_stats.packet_payload_copy_active_stripe_count_total = stage_stats
+            .packet_payload_copy_active_stripe_count_total
+            .saturating_add(packet_payload_copy_active_stripes);
+        if pending.codestream_payload_copy_dispatched {
+            stage_stats.codestream_payload_copy_bytes_total = stage_stats
+                .codestream_payload_copy_bytes_total
+                .saturating_add(packet_output_used);
+        }
         codestreams.push(J2kResidentLosslessCodestream {
             buffer: pending.buffer.clone(),
             byte_offset: pending.byte_offsets[index],
@@ -8595,6 +12953,12 @@ fn finish_completed_resident_lossless_codestream_batch(
             capacity,
             gpu_duration: gpu_duration_share,
         });
+    }
+    if let Some(started) = codestream_collect_started {
+        stage_stats.result_codestream_collect_duration = started.elapsed();
+    }
+    if let Some(started) = result_harvest_started {
+        stage_stats.result_harvest_duration = started.elapsed();
     }
     Ok(J2kResidentLosslessCodestreamBatchResult {
         codestreams,
@@ -8612,11 +12976,297 @@ fn duration_share(duration: Duration, count: usize) -> Duration {
 }
 
 #[cfg(target_os = "macos")]
+fn record_completed_resident_encode_gpu_stages(
+    stats: &mut J2kResidentEncodeStageStats,
+    command_buffers: &[J2kResidentEncodeGpuStageCommandBuffer],
+) {
+    for stage_command_buffer in command_buffers {
+        let Some(duration) =
+            completed_command_buffer_gpu_duration(&stage_command_buffer.command_buffer)
+        else {
+            continue;
+        };
+        match stage_command_buffer.stage {
+            J2kResidentEncodeGpuStage::CoefficientPrep => {
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientDeinterleaveRct => {
+                stats.coefficient_deinterleave_rct_gpu_duration = stats
+                    .coefficient_deinterleave_rct_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientDwt53 => {
+                stats.coefficient_dwt53_gpu_duration = stats
+                    .coefficient_dwt53_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientDwt53Vertical => {
+                stats.coefficient_dwt53_vertical_gpu_duration = stats
+                    .coefficient_dwt53_vertical_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_dwt53_gpu_duration = stats
+                    .coefficient_dwt53_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientDwt53Horizontal => {
+                stats.coefficient_dwt53_horizontal_gpu_duration = stats
+                    .coefficient_dwt53_horizontal_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_dwt53_gpu_duration = stats
+                    .coefficient_dwt53_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientExtract => {
+                stats.coefficient_extract_gpu_duration = stats
+                    .coefficient_extract_gpu_duration
+                    .saturating_add(duration);
+                stats.coefficient_prep_gpu_duration =
+                    stats.coefficient_prep_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CoefficientCopy => {
+                stats.coefficient_copy_gpu_duration =
+                    stats.coefficient_copy_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicBlock => {
+                stats.classic_block_gpu_duration =
+                    stats.classic_block_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1Density => {
+                stats.classic_tier1_density_gpu_duration = stats
+                    .classic_tier1_density_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1RawPack => {
+                stats.classic_tier1_raw_pack_gpu_duration = stats
+                    .classic_tier1_raw_pack_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1ArithmeticPack => {
+                stats.classic_tier1_arithmetic_pack_gpu_duration = stats
+                    .classic_tier1_arithmetic_pack_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1SymbolPlan => {
+                stats.classic_tier1_symbol_plan_gpu_duration = stats
+                    .classic_tier1_symbol_plan_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1PassPlan => {
+                stats.classic_tier1_pass_plan_gpu_duration = stats
+                    .classic_tier1_pass_plan_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1TokenEmit => {
+                stats.classic_tier1_token_emit_gpu_duration = stats
+                    .classic_tier1_token_emit_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1SplitTokenEmit => {
+                stats.classic_tier1_split_token_emit_gpu_duration = stats
+                    .classic_tier1_split_token_emit_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::ClassicTier1TokenPack => {
+                stats.classic_tier1_token_pack_gpu_duration = stats
+                    .classic_tier1_token_pack_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::HtBlock => {
+                stats.ht_block_gpu_duration = stats.ht_block_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::PacketBlockPrep => {
+                stats.packet_block_prep_gpu_duration = stats
+                    .packet_block_prep_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::Packetization => {
+                stats.packetization_gpu_duration =
+                    stats.packetization_gpu_duration.saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::PacketPayloadCopy => {
+                stats.packet_payload_copy_gpu_duration = stats
+                    .packet_payload_copy_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CodestreamAssembly => {
+                stats.codestream_assembly_gpu_duration = stats
+                    .codestream_assembly_gpu_duration
+                    .saturating_add(duration);
+            }
+            J2kResidentEncodeGpuStage::CodestreamPayloadCopy => {
+                stats.codestream_payload_copy_gpu_duration = stats
+                    .codestream_payload_copy_gpu_duration
+                    .saturating_add(duration);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn new_resident_encode_command_buffer(runtime: &MetalRuntime, label: &str) -> CommandBuffer {
+    let command_buffer = runtime.queue.new_command_buffer().to_owned();
+    label_command_buffer(&command_buffer, label);
+    command_buffer
+}
+
+#[cfg(target_os = "macos")]
+fn finish_resident_encode_split_command_buffer(
+    command_buffer: CommandBuffer,
+    runtime: &MetalRuntime,
+    stage: J2kResidentEncodeGpuStage,
+    next_label: &str,
+    command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
+) -> CommandBuffer {
+    command_buffer.commit();
+    command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+        stage,
+        command_buffer,
+    });
+    new_resident_encode_command_buffer(runtime, next_label)
+}
+
+#[cfg(target_os = "macos")]
+fn finish_resident_encode_split_command_buffer_timed(
+    command_buffer: CommandBuffer,
+    runtime: &MetalRuntime,
+    stage: J2kResidentEncodeGpuStage,
+    next_label: &str,
+    command_buffers: &mut Vec<J2kResidentEncodeGpuStageCommandBuffer>,
+    profile_stages: bool,
+    accumulated: &mut Duration,
+) -> CommandBuffer {
+    let started = profile_stages.then(Instant::now);
+    let next = finish_resident_encode_split_command_buffer(
+        command_buffer,
+        runtime,
+        stage,
+        next_label,
+        command_buffers,
+    );
+    if let Some(started) = started {
+        *accumulated = accumulated.saturating_add(started.elapsed());
+    }
+    next
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_batched_packet_payload_copy(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    dispatch: J2kBatchedPacketPayloadCopyDispatch<'_>,
+) -> bool {
+    if dispatch.tile_count == 0 || dispatch.max_payload_copy_jobs_per_tile == 0 {
+        return false;
+    }
+
+    let signpost = hybrid_stage_signpost(dispatch.signpost_name);
+    let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, dispatch.label);
+    encoder.set_compute_pipeline_state(&runtime.packet_payload_copy_batched);
+    encoder.set_buffer(0, Some(dispatch.payload_buffer), 0);
+    encoder.set_buffer(1, Some(dispatch.packet_output_buffer), 0);
+    encoder.set_buffer(2, Some(dispatch.packet_job_buffer), 0);
+    encoder.set_buffer(3, Some(dispatch.packet_status_buffer), 0);
+    encoder.set_buffer(4, Some(dispatch.packet_payload_copy_job_buffer), 0);
+    let params = J2kPacketPayloadCopyParams {
+        bytes_per_thread: PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE,
+        stripes_per_job: PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+    };
+    encoder.set_bytes(
+        5,
+        size_of::<J2kPacketPayloadCopyParams>() as u64,
+        (&raw const params).cast(),
+    );
+    encoder.dispatch_threads(
+        MTLSize {
+            width: dispatch.max_payload_copy_jobs_per_tile,
+            height: dispatch.tile_count,
+            depth: u64::from(PACKET_PAYLOAD_COPY_STRIPES_PER_JOB),
+        },
+        MTLSize {
+            width: runtime
+                .packet_payload_copy_batched
+                .thread_execution_width()
+                .max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
+    encoder.end_encoding();
+    drop(signpost);
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn record_completed_decode_split_gpu_stages(
+    timings: &mut DirectHybridStageTimings,
+    command_buffers: &DecodeHybridSplitCommandBuffers,
+) {
+    let mut gpu_command = Duration::ZERO;
+    let mut idwt_gpu = Duration::ZERO;
+    if let Some(duration) = completed_command_buffer_gpu_duration(&command_buffers.idwt_interleave)
+    {
+        timings.metal_idwt_interleave_gpu = timings
+            .metal_idwt_interleave_gpu
+            .saturating_add(duration.as_micros());
+        idwt_gpu = idwt_gpu.saturating_add(duration);
+        gpu_command = gpu_command.saturating_add(duration);
+    }
+    if let Some(duration) = completed_command_buffer_gpu_duration(&command_buffers.idwt_horizontal)
+    {
+        timings.metal_idwt_horizontal_gpu = timings
+            .metal_idwt_horizontal_gpu
+            .saturating_add(duration.as_micros());
+        idwt_gpu = idwt_gpu.saturating_add(duration);
+        gpu_command = gpu_command.saturating_add(duration);
+    }
+    if let Some(duration) = completed_command_buffer_gpu_duration(&command_buffers.idwt_vertical) {
+        timings.metal_idwt_vertical_gpu = timings
+            .metal_idwt_vertical_gpu
+            .saturating_add(duration.as_micros());
+        idwt_gpu = idwt_gpu.saturating_add(duration);
+        gpu_command = gpu_command.saturating_add(duration);
+    }
+    timings.metal_idwt_gpu = timings.metal_idwt_gpu.saturating_add(idwt_gpu.as_micros());
+    if let Some(duration) = completed_command_buffer_gpu_duration(&command_buffers.store) {
+        timings.metal_store_gpu = timings.metal_store_gpu.saturating_add(duration.as_micros());
+        gpu_command = gpu_command.saturating_add(duration);
+    }
+    if let Some(duration) = completed_command_buffer_gpu_duration(&command_buffers.mct_pack) {
+        timings.metal_mct_pack_gpu = timings
+            .metal_mct_pack_gpu
+            .saturating_add(duration.as_micros());
+        gpu_command = gpu_command.saturating_add(duration);
+    }
+    timings.gpu_command = timings.gpu_command.saturating_add(gpu_command.as_micros());
+}
+
+#[cfg(target_os = "macos")]
 fn completed_command_buffers_gpu_duration(
     retained: &[CommandBuffer],
     final_buffer: &CommandBufferRef,
 ) -> Option<Duration> {
+    completed_command_buffers_gpu_duration_and_elapsed_window(retained, final_buffer)
+        .map(|(duration, _window)| duration)
+}
+
+#[cfg(target_os = "macos")]
+fn completed_command_buffers_gpu_duration_and_elapsed_window(
+    retained: &[CommandBuffer],
+    final_buffer: &CommandBufferRef,
+) -> Option<(Duration, Duration)> {
     let mut total = Duration::ZERO;
+    let mut min_start = f64::INFINITY;
+    let mut max_end = f64::NEG_INFINITY;
     let mut seen = Vec::with_capacity(retained.len().saturating_add(1));
     for command_buffer in retained {
         let ptr = command_buffer.as_ptr();
@@ -8624,19 +13274,35 @@ fn completed_command_buffers_gpu_duration(
             continue;
         }
         seen.push(ptr);
-        total = total.saturating_add(completed_command_buffer_gpu_duration(command_buffer)?);
+        let (start, end) = completed_command_buffer_gpu_times(command_buffer)?;
+        total = total.saturating_add(Duration::from_secs_f64(end - start));
+        min_start = min_start.min(start);
+        max_end = max_end.max(end);
     }
     let final_ptr = final_buffer.as_ptr();
     if !seen.contains(&final_ptr) {
-        total = total.saturating_add(completed_command_buffer_gpu_duration(final_buffer)?);
+        let (start, end) = completed_command_buffer_gpu_times(final_buffer)?;
+        total = total.saturating_add(Duration::from_secs_f64(end - start));
+        min_start = min_start.min(start);
+        max_end = max_end.max(end);
     }
-    Some(total)
+    if min_start.is_finite() && max_end.is_finite() && max_end > min_start {
+        Some((total, Duration::from_secs_f64(max_end - min_start)))
+    } else {
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn completed_command_buffer_gpu_duration(command_buffer: &CommandBufferRef) -> Option<Duration> {
+    let (start, end) = completed_command_buffer_gpu_times(command_buffer)?;
+    Some(Duration::from_secs_f64(end - start))
+}
+
+#[cfg(target_os = "macos")]
+fn completed_command_buffer_gpu_times(command_buffer: &CommandBufferRef) -> Option<(f64, f64)> {
     #[cfg(test)]
-    RESIDENT_GPU_TIMESTAMP_QUERIES.fetch_add(1, Ordering::Relaxed);
+    RESIDENT_GPU_TIMESTAMP_QUERIES.with(|queries| queries.set(queries.get() + 1));
 
     let start: f64 = unsafe {
         command_buffer
@@ -8649,7 +13315,7 @@ fn completed_command_buffer_gpu_duration(command_buffer: &CommandBufferRef) -> O
             .ok()?
     };
     if start.is_finite() && end.is_finite() && end > start {
-        Some(Duration::from_secs_f64(end - start))
+        Some((start, end))
     } else {
         None
     }
@@ -8689,7 +13355,7 @@ fn dispatch_lossless_deinterleave(
         sample_offset,
     };
     let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K input deinterleave");
+    label_compute_encoder(encoder, "J2K coefficient prep deinterleave");
     encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
@@ -8760,7 +13426,7 @@ fn dispatch_lossless_deinterleave_rct_rgb8(
         sample_offset,
     };
     let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K input deinterleave + RCT");
+    label_compute_encoder(encoder, "J2K coefficient prep deinterleave + RCT");
     encoder.set_compute_pipeline_state(&runtime.lossless_deinterleave_rct_rgb8_to_planes);
     encoder.set_buffer(0, Some(job.input), input_byte_offset);
     encoder.set_buffer(1, Some(plane0), 0);
@@ -8828,6 +13494,7 @@ fn dispatch_forward_rct_on_buffers(
         _reserved2: 0,
     };
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K coefficient prep RCT");
     encoder.set_compute_pipeline_state(&runtime.forward_rct);
     encoder.set_buffer(0, Some(plane0), 0);
     encoder.set_buffer(1, Some(plane1), 0);
@@ -8887,7 +13554,14 @@ fn dispatch_forward_dwt53_on_buffers(
 
         if current_height >= 2 {
             let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
-            dispatch_forward_dwt53_pass(&runtime.fdwt53_vertical, command_buffer, src, dst, params);
+            dispatch_forward_dwt53_pass(
+                &runtime.fdwt53_vertical,
+                command_buffer,
+                src,
+                dst,
+                params,
+                "J2K coefficient prep DWT 5/3 vertical",
+            );
             active_is_input = !active_is_input;
         }
         if current_width >= 2 {
@@ -8898,6 +13572,7 @@ fn dispatch_forward_dwt53_on_buffers(
                 src,
                 dst,
                 params,
+                "J2K coefficient prep DWT 5/3 horizontal",
             );
             active_is_input = !active_is_input;
         }
@@ -8912,6 +13587,251 @@ fn dispatch_forward_dwt53_on_buffers(
     } else {
         scratch.to_owned()
     }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn dispatch_forward_dwt53_components_on_buffers(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    plane_buffers: &[Buffer],
+    scratch_buffers: &[Buffer],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+    component_count: usize,
+) -> Vec<Buffer> {
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut levels_run = 0u8;
+    let mut active_is_input = true;
+    let component_count_u32 = component_count as u32;
+
+    while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let params = J2kForwardDwt53BatchedParams {
+            full_width: width,
+            current_width,
+            current_height,
+            low_width,
+            low_height,
+            component_count: component_count_u32,
+        };
+
+        if current_height >= 2 {
+            let (inputs, outputs) = if active_is_input {
+                (plane_buffers, scratch_buffers)
+            } else {
+                (scratch_buffers, plane_buffers)
+            };
+            dispatch_forward_dwt53_batched_pass(
+                &runtime.fdwt53_vertical_batched,
+                command_buffer,
+                inputs,
+                outputs,
+                params,
+                "J2K coefficient prep DWT 5/3 vertical",
+            );
+            active_is_input = !active_is_input;
+        }
+        if current_width >= 2 {
+            let (inputs, outputs) = if active_is_input {
+                (plane_buffers, scratch_buffers)
+            } else {
+                (scratch_buffers, plane_buffers)
+            };
+            dispatch_forward_dwt53_batched_pass(
+                &runtime.fdwt53_horizontal_batched,
+                command_buffer,
+                inputs,
+                outputs,
+                params,
+                "J2K coefficient prep DWT 5/3 horizontal",
+            );
+            active_is_input = !active_is_input;
+        }
+
+        current_width = low_width;
+        current_height = low_height;
+        levels_run = levels_run.saturating_add(1);
+    }
+
+    let active_buffers = if active_is_input {
+        plane_buffers
+    } else {
+        scratch_buffers
+    };
+    active_buffers[..component_count].to_vec()
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_forward_dwt53_on_buffers_split_profile(
+    runtime: &MetalRuntime,
+    input: &Buffer,
+    scratch: &Buffer,
+    width: u32,
+    height: u32,
+    num_levels: u8,
+) -> (Buffer, Vec<CommandBuffer>, Vec<CommandBuffer>) {
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut levels_run = 0u8;
+    let mut active_is_input = true;
+    let mut vertical_command_buffers = Vec::new();
+    let mut horizontal_command_buffers = Vec::new();
+
+    while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let params = J2kForwardDwt53Params {
+            full_width: width,
+            current_width,
+            current_height,
+            low_width,
+            low_height,
+        };
+
+        if current_height >= 2 {
+            let command_buffer = new_resident_encode_command_buffer(
+                runtime,
+                "signinum-j2k coefficient prep DWT 5/3 vertical",
+            );
+            let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
+            dispatch_forward_dwt53_pass(
+                &runtime.fdwt53_vertical,
+                &command_buffer,
+                src,
+                dst,
+                params,
+                "J2K coefficient prep DWT 5/3 vertical",
+            );
+            command_buffer.commit();
+            vertical_command_buffers.push(command_buffer);
+            active_is_input = !active_is_input;
+        }
+        if current_width >= 2 {
+            let command_buffer = new_resident_encode_command_buffer(
+                runtime,
+                "signinum-j2k coefficient prep DWT 5/3 horizontal",
+            );
+            let (src, dst) = active_forward_dwt53_buffers(input, scratch, active_is_input);
+            dispatch_forward_dwt53_pass(
+                &runtime.fdwt53_horizontal,
+                &command_buffer,
+                src,
+                dst,
+                params,
+                "J2K coefficient prep DWT 5/3 horizontal",
+            );
+            command_buffer.commit();
+            horizontal_command_buffers.push(command_buffer);
+            active_is_input = !active_is_input;
+        }
+
+        current_width = low_width;
+        current_height = low_height;
+        levels_run = levels_run.saturating_add(1);
+    }
+
+    let active = if active_is_input {
+        input.to_owned()
+    } else {
+        scratch.to_owned()
+    };
+    (active, vertical_command_buffers, horizontal_command_buffers)
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_forward_dwt53_components_split_profile(
+    runtime: &MetalRuntime,
+    plane_buffers: &[Buffer],
+    scratch_buffers: &[Buffer],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+    component_count: usize,
+) -> (Vec<Buffer>, Vec<CommandBuffer>, Vec<CommandBuffer>) {
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut levels_run = 0u8;
+    let mut active_is_input = true;
+    let mut vertical_command_buffers = Vec::new();
+    let mut horizontal_command_buffers = Vec::new();
+    let component_count_u32 = component_count as u32;
+
+    while levels_run < num_levels && (current_width >= 2 || current_height >= 2) {
+        let low_width = current_width.div_ceil(2);
+        let low_height = current_height.div_ceil(2);
+        let params = J2kForwardDwt53BatchedParams {
+            full_width: width,
+            current_width,
+            current_height,
+            low_width,
+            low_height,
+            component_count: component_count_u32,
+        };
+
+        if current_height >= 2 {
+            let command_buffer = new_resident_encode_command_buffer(
+                runtime,
+                "signinum-j2k coefficient prep DWT 5/3 vertical",
+            );
+            let (inputs, outputs) = if active_is_input {
+                (plane_buffers, scratch_buffers)
+            } else {
+                (scratch_buffers, plane_buffers)
+            };
+            dispatch_forward_dwt53_batched_pass(
+                &runtime.fdwt53_vertical_batched,
+                &command_buffer,
+                inputs,
+                outputs,
+                params,
+                "J2K coefficient prep DWT 5/3 vertical",
+            );
+            command_buffer.commit();
+            vertical_command_buffers.push(command_buffer);
+            active_is_input = !active_is_input;
+        }
+        if current_width >= 2 {
+            let command_buffer = new_resident_encode_command_buffer(
+                runtime,
+                "signinum-j2k coefficient prep DWT 5/3 horizontal",
+            );
+            let (inputs, outputs) = if active_is_input {
+                (plane_buffers, scratch_buffers)
+            } else {
+                (scratch_buffers, plane_buffers)
+            };
+            dispatch_forward_dwt53_batched_pass(
+                &runtime.fdwt53_horizontal_batched,
+                &command_buffer,
+                inputs,
+                outputs,
+                params,
+                "J2K coefficient prep DWT 5/3 horizontal",
+            );
+            command_buffer.commit();
+            horizontal_command_buffers.push(command_buffer);
+            active_is_input = !active_is_input;
+        }
+
+        current_width = low_width;
+        current_height = low_height;
+        levels_run = levels_run.saturating_add(1);
+    }
+
+    let active_buffers = if active_is_input {
+        plane_buffers
+    } else {
+        scratch_buffers
+    };
+    (
+        active_buffers[..component_count].to_vec(),
+        vertical_command_buffers,
+        horizontal_command_buffers,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -8938,7 +13858,7 @@ fn dispatch_lossless_extract_coefficients(
         .max()
         .unwrap_or(1);
     let encoder = command_buffer.new_compute_command_encoder();
-    label_compute_encoder(encoder, "J2K coefficient prep");
+    label_compute_encoder(encoder, "J2K coefficient prep extract");
     encoder.set_compute_pipeline_state(&runtime.lossless_extract_coefficients);
     encoder.set_buffer(0, planes.first().map(|buffer| &**buffer), 0);
     encoder.set_buffer(
@@ -9152,6 +14072,11 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             code_blocks,
             recyclable_private_buffers: Vec::new(),
             _prepare_command_buffer: command_buffer.to_owned(),
+            _prepare_deinterleave_rct_command_buffer: None,
+            _prepare_dwt53_command_buffer: None,
+            _prepare_dwt53_vertical_command_buffers: Vec::new(),
+            _prepare_dwt53_horizontal_command_buffers: Vec::new(),
+            _prepare_coefficient_extract_command_buffer: None,
             _deinterleave_status_buffer: status_buffer,
             _plane_buffers: plane_buffers,
             _scratch_buffers: scratch_buffers,
@@ -9195,7 +14120,12 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
             total_coefficient_bytes.max(1),
             &mut shared_recyclable_private_buffers,
         );
-        let command_buffer = runtime.queue.new_command_buffer();
+        let split_prepare_command_buffers = metal_profile_coefficient_prep_split_commands_enabled();
+        let shared_command_buffer = if split_prepare_command_buffers {
+            None
+        } else {
+            Some(runtime.queue.new_command_buffer().to_owned())
+        };
         let mut prepared = Vec::with_capacity(items.len());
 
         for ((item, item_sizes), coefficient_byte_offset) in
@@ -9230,10 +14160,26 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                 MTLResourceOptions::StorageModeShared,
             );
 
+            let mut prepare_deinterleave_rct_command_buffer = None;
+            let prepare_dwt53_command_buffer = None;
+            let mut prepare_dwt53_vertical_command_buffers = Vec::new();
+            let mut prepare_dwt53_horizontal_command_buffers = Vec::new();
+            let mut prepare_coefficient_extract_command_buffer = None;
+            let deinterleave_command_buffer = if split_prepare_command_buffers {
+                new_resident_encode_command_buffer(
+                    runtime,
+                    "signinum-j2k coefficient prep deinterleave rct",
+                )
+            } else {
+                shared_command_buffer
+                    .as_ref()
+                    .expect("shared coefficient prep command buffer exists")
+                    .clone()
+            };
             if lossless_deinterleave_rct_rgb8_supported(job) {
                 dispatch_lossless_deinterleave_rct_rgb8(
                     runtime,
-                    command_buffer,
+                    &deinterleave_command_buffer,
                     job,
                     &plane_buffers[0],
                     &plane_buffers[1],
@@ -9243,7 +14189,7 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
             } else {
                 dispatch_lossless_deinterleave(
                     runtime,
-                    command_buffer,
+                    &deinterleave_command_buffer,
                     job,
                     &plane_buffers[0],
                     &plane_buffers[1],
@@ -9259,7 +14205,7 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
             if job.components == 3 && !lossless_deinterleave_rct_rgb8_supported(job) {
                 dispatch_forward_rct_on_buffers(
                     runtime,
-                    command_buffer,
+                    &deinterleave_command_buffer,
                     &plane_buffers[0],
                     &plane_buffers[1],
                     &plane_buffers[2],
@@ -9273,21 +14219,88 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                     ),
                 })?;
             }
+            if split_prepare_command_buffers {
+                deinterleave_command_buffer.commit();
+                prepare_deinterleave_rct_command_buffer = Some(deinterleave_command_buffer);
+            }
 
             let mut active_planes = Vec::with_capacity(usize::from(job.components));
-            for component in 0..usize::from(job.components) {
-                if job.num_decomposition_levels == 0 {
-                    active_planes.push(plane_buffers[component].clone());
-                } else {
-                    active_planes.push(dispatch_forward_dwt53_on_buffers(
+            if job.num_decomposition_levels == 0 {
+                active_planes.extend(
+                    plane_buffers
+                        .iter()
+                        .take(usize::from(job.components))
+                        .cloned(),
+                );
+            } else if split_prepare_command_buffers {
+                let component_count = usize::from(job.components);
+                if component_count > 1 {
+                    let (
+                        mut component_active_planes,
+                        mut vertical_command_buffers,
+                        mut horizontal_command_buffers,
+                    ) = dispatch_forward_dwt53_components_split_profile(
                         runtime,
-                        command_buffer,
-                        &plane_buffers[component],
-                        &scratch_buffers[component],
+                        &plane_buffers,
+                        &scratch_buffers,
                         job.output_width,
                         job.output_height,
                         job.num_decomposition_levels,
-                    ));
+                        component_count,
+                    );
+                    active_planes.append(&mut component_active_planes);
+                    prepare_dwt53_vertical_command_buffers.append(&mut vertical_command_buffers);
+                    prepare_dwt53_horizontal_command_buffers
+                        .append(&mut horizontal_command_buffers);
+                } else {
+                    for component in 0..component_count {
+                        let (
+                            active_plane,
+                            mut vertical_command_buffers,
+                            mut horizontal_command_buffers,
+                        ) = dispatch_forward_dwt53_on_buffers_split_profile(
+                            runtime,
+                            &plane_buffers[component],
+                            &scratch_buffers[component],
+                            job.output_width,
+                            job.output_height,
+                            job.num_decomposition_levels,
+                        );
+                        active_planes.push(active_plane);
+                        prepare_dwt53_vertical_command_buffers
+                            .append(&mut vertical_command_buffers);
+                        prepare_dwt53_horizontal_command_buffers
+                            .append(&mut horizontal_command_buffers);
+                    }
+                }
+            } else {
+                let dwt_command_buffer_ref = shared_command_buffer
+                    .as_ref()
+                    .expect("shared coefficient prep command buffer exists");
+                let component_count = usize::from(job.components);
+                if component_count > 1 {
+                    active_planes = dispatch_forward_dwt53_components_on_buffers(
+                        runtime,
+                        dwt_command_buffer_ref,
+                        &plane_buffers,
+                        &scratch_buffers,
+                        job.output_width,
+                        job.output_height,
+                        job.num_decomposition_levels,
+                        component_count,
+                    );
+                } else {
+                    for component in 0..component_count {
+                        active_planes.push(dispatch_forward_dwt53_on_buffers(
+                            runtime,
+                            dwt_command_buffer_ref,
+                            &plane_buffers[component],
+                            &scratch_buffers[component],
+                            job.output_width,
+                            job.output_height,
+                            job.num_decomposition_levels,
+                        ));
+                    }
                 }
             }
             while active_planes.len() < 3 {
@@ -9333,9 +14346,17 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                     })
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
+            let extract_command_buffer = if split_prepare_command_buffers {
+                new_resident_encode_command_buffer(runtime, "signinum-j2k coefficient prep extract")
+            } else {
+                shared_command_buffer
+                    .as_ref()
+                    .expect("shared coefficient prep command buffer exists")
+                    .clone()
+            };
             let coefficient_job_buffer = dispatch_lossless_extract_coefficients(
                 runtime,
-                command_buffer,
+                &extract_command_buffer,
                 &active_planes,
                 &coefficient_buffer,
                 &coefficient_jobs,
@@ -9347,6 +14368,11 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                     item.tile_index
                 ),
             })?;
+            let prepare_command_buffer = extract_command_buffer.clone();
+            if split_prepare_command_buffers {
+                extract_command_buffer.commit();
+                prepare_coefficient_extract_command_buffer = Some(extract_command_buffer);
+            }
 
             prepared.push(J2kPreparedLosslessDeviceCodeBlocks {
                 coefficient_buffer: coefficient_buffer.clone(),
@@ -9355,7 +14381,13 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
                 coefficient_buffer_is_batch_shared: true,
                 code_blocks: item.code_blocks,
                 recyclable_private_buffers,
-                _prepare_command_buffer: command_buffer.to_owned(),
+                _prepare_command_buffer: prepare_command_buffer,
+                _prepare_deinterleave_rct_command_buffer: prepare_deinterleave_rct_command_buffer,
+                _prepare_dwt53_command_buffer: prepare_dwt53_command_buffer,
+                _prepare_dwt53_vertical_command_buffers: prepare_dwt53_vertical_command_buffers,
+                _prepare_dwt53_horizontal_command_buffers: prepare_dwt53_horizontal_command_buffers,
+                _prepare_coefficient_extract_command_buffer:
+                    prepare_coefficient_extract_command_buffer,
                 _deinterleave_status_buffer: status_buffer,
                 _plane_buffers: plane_buffers,
                 _scratch_buffers: scratch_buffers,
@@ -9363,7 +14395,9 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
             });
         }
 
-        command_buffer.commit();
+        if let Some(command_buffer) = shared_command_buffer {
+            command_buffer.commit();
+        }
         Ok(prepared)
     })
 }
@@ -9582,6 +14616,7 @@ fn dispatch_inverse_mct_buffers_in_command_buffer(
         MTLResourceOptions::StorageModeShared,
     );
 
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.inverse_mct);
     encoder.set_buffer(0, Some(planes[0]), 0);
@@ -9734,7 +14769,9 @@ fn dispatch_store_component_buffer_in_command_buffer_with_offsets(
     output_offset_bytes: usize,
     params: J2kStoreParams,
 ) {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid component store");
     dispatch_store_component_buffer_in_encoder_with_offsets(
         runtime,
         encoder,
@@ -9793,7 +14830,9 @@ fn dispatch_store_component_repeated_in_command_buffer(
     output: &Buffer,
     params: J2kRepeatedStoreParams,
 ) {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_STORE_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated component store");
     encoder.set_compute_pipeline_state(&runtime.store_component_repeated);
     encoder.set_buffer(0, Some(input), input_offset_bytes as u64);
     encoder.set_buffer(1, Some(output), 0);
@@ -10140,7 +15179,9 @@ fn dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_off
     decoded: &Buffer,
     decoded_offset: usize,
 ) {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid reversible53 IDWT");
     dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(
         runtime,
         encoder,
@@ -10260,7 +15301,7 @@ fn dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(
 #[allow(clippy::too_many_arguments)]
 fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
     runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
+    command_buffers: DirectIdwtCommandBuffers<'_>,
     ll: &Buffer,
     ll_offset: usize,
     hl: &Buffer,
@@ -10272,7 +15313,9 @@ fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
     params: J2kRepeatedIdwtSingleDecompositionParams,
     decoded: &Buffer,
 ) {
-    let encoder = command_buffer.new_compute_command_encoder();
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
+    let encoder = command_buffers.interleave.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT interleave");
     encoder.set_compute_pipeline_state(&runtime.idwt_interleave_batched);
     encoder.set_buffer(0, Some(ll), ll_offset as u64);
     encoder.set_buffer(1, Some(hl), hl_offset as u64);
@@ -10308,7 +15351,8 @@ fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
     );
     encoder.end_encoding();
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = command_buffers.horizontal.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT horizontal");
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes(
@@ -10334,7 +15378,8 @@ fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
     );
     encoder.end_encoding();
 
-    let encoder = command_buffer.new_compute_command_encoder();
+    let encoder = command_buffers.vertical.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid repeated IDWT vertical");
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_vertical_batched);
     encoder.set_buffer(0, Some(decoded), 0);
     encoder.set_bytes(
@@ -10464,12 +15509,14 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_o
     decoded: &Buffer,
     decoded_offset: usize,
 ) -> DirectStatusCheck {
+    let _signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_IDWT_COMMAND_ENCODE);
     let status_buffer = runtime.device.new_buffer(
         size_of::<J2kIdwtStatus>() as u64,
         MTLResourceOptions::StorageModeShared,
     );
 
     let encoder = command_buffer.new_compute_command_encoder();
+    label_compute_encoder(encoder, "J2K decode hybrid irreversible97 IDWT");
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
         runtime,
         encoder,
@@ -11998,10 +17045,48 @@ fn encode_status_error(stage: &str, code: u32, detail: u32) -> Error {
 }
 
 #[cfg(target_os = "macos")]
-fn classic_encode_output_capacity(
+fn packet_encode_status_error(status: J2kPacketEncodeStatus) -> Error {
+    if status.code == J2K_ENCODE_STATUS_FAIL && status.detail == 7 {
+        return Error::MetalKernel {
+            message: format!(
+                "packetization Metal encode kernel failure (detail=7, tier1_detail={})",
+                status.data_len
+            ),
+        };
+    }
+    encode_status_error("packetization", status.code, status.detail)
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum J2kClassicEncodeOutputCapacityMode {
+    Conservative,
+    Tight,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum J2kHtPacketOutputCapacityMode {
+    Conservative,
+    Tight,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn ht_packet_output_capacity_mode_from_env() -> J2kHtPacketOutputCapacityMode {
+    match std::env::var(HT_PACKET_CAPACITY_ENV) {
+        Ok(value) if value.eq_ignore_ascii_case("conservative") => {
+            J2kHtPacketOutputCapacityMode::Conservative
+        }
+        _ => J2kHtPacketOutputCapacityMode::Tight,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_encode_output_capacity_for_mode(
     width: u32,
     height: u32,
     total_bitplanes: u8,
+    mode: J2kClassicEncodeOutputCapacityMode,
 ) -> Result<usize, Error> {
     let samples = usize::try_from(width)
         .ok()
@@ -12009,10 +17094,20 @@ fn classic_encode_output_capacity(
         .ok_or_else(|| Error::MetalKernel {
             message: "classic J2K Metal encode block size overflow".to_string(),
         })?;
-    samples
+    let bitplane_bytes = samples
         .checked_mul(usize::from(total_bitplanes).max(1))
-        .and_then(|bits| bits.checked_mul(8))
-        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K Metal encode output capacity overflow".to_string(),
+        })?;
+    let payload_bytes = match mode {
+        J2kClassicEncodeOutputCapacityMode::Conservative => bitplane_bytes.checked_mul(8),
+        J2kClassicEncodeOutputCapacityMode::Tight => Some(bitplane_bytes),
+    }
+    .ok_or_else(|| Error::MetalKernel {
+        message: "classic J2K Metal encode output capacity overflow".to_string(),
+    })?;
+    payload_bytes
+        .checked_add(4096)
         .map(|bytes| bytes.max(4096) + 1)
         .ok_or_else(|| Error::MetalKernel {
             message: "classic J2K Metal encode output capacity overflow".to_string(),
@@ -12020,6 +17115,93 @@ fn classic_encode_output_capacity(
 }
 
 #[cfg(target_os = "macos")]
+fn classic_encode_output_capacity(
+    width: u32,
+    height: u32,
+    total_bitplanes: u8,
+) -> Result<usize, Error> {
+    classic_encode_output_capacity_for_mode(
+        width,
+        height,
+        total_bitplanes,
+        J2kClassicEncodeOutputCapacityMode::Conservative,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn classic_encode_total_coding_passes(total_bitplanes: u8) -> usize {
+    if total_bitplanes == 0 {
+        0
+    } else {
+        1 + 3 * (usize::from(total_bitplanes) - 1)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_bypass_segment_index(pass_idx: usize) -> usize {
+    if pass_idx < 10 {
+        0
+    } else {
+        1 + 2 * ((pass_idx - 10) / 3) + usize::from(((pass_idx - 10) % 3) == 2)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classic_encode_segment_capacity(style_flags: u32, total_bitplanes: u8) -> usize {
+    let total_passes = classic_encode_total_coding_passes(total_bitplanes);
+    if total_passes == 0 {
+        return 1;
+    }
+    if (style_flags & J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS) != 0 {
+        total_passes
+    } else if (style_flags & J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS) != 0 {
+        classic_bypass_segment_index(total_passes - 1) + 1
+    } else {
+        1
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ht_scaled_scratch_size(max_size: usize, sample_count: usize) -> Result<usize, Error> {
+    if sample_count > J2K_HT_ENCODE_MAX_SAMPLES {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal encode code-block exceeds maximum sample count".to_string(),
+        });
+    }
+
+    max_size
+        .checked_mul(sample_count)
+        .map(|bytes| bytes.div_ceil(J2K_HT_ENCODE_MAX_SAMPLES).max(1))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal encode output capacity overflow".to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn ht_encode_output_capacity(width: u32, height: u32) -> Result<usize, Error> {
+    let sample_count = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal encode sample count overflow".to_string(),
+        })?;
+    let scaled_ms_size = ht_scaled_scratch_size(J2K_HT_ENCODE_MS_SIZE, sample_count)?;
+    let ms_floor = sample_count
+        .checked_mul(J2K_HT_ENCODE_MS_BYTES_PER_SAMPLE_FLOOR)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal encode output capacity overflow".to_string(),
+        })?;
+    let ms_size = scaled_ms_size.max(ms_floor).min(J2K_HT_ENCODE_MS_SIZE);
+    let mel_size = J2K_HT_ENCODE_MEL_SIZE;
+    let vlc_size = J2K_HT_ENCODE_VLC_SIZE;
+    ms_size
+        .checked_add(mel_size)
+        .and_then(|bytes| bytes.checked_add(vlc_size))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "HTJ2K Metal encode output capacity overflow".to_string(),
+        })
+}
+
 fn classic_encode_sub_band_code(sub_band_type: signinum_j2k_native::J2kSubBandType) -> u32 {
     match sub_band_type {
         signinum_j2k_native::J2kSubBandType::LowLow => 0,
@@ -12049,19 +17231,9 @@ fn read_classic_encoded_code_block(
     let data_len = usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
         message: "classic J2K Metal encode length exceeds usize".to_string(),
     })?;
-    if data_len > output_capacity {
-        return Err(Error::MetalKernel {
-            message: "classic J2K Metal encode length exceeds output buffer".to_string(),
-        });
-    }
-    let data = if data_len == 0 {
-        Vec::new()
-    } else {
-        unsafe {
-            core::slice::from_raw_parts(output.contents().cast::<u8>().add(output_offset), data_len)
-        }
-        .to_vec()
-    };
+    let payload_skip = usize::try_from(status.reserved0).map_err(|_| Error::MetalKernel {
+        message: "classic J2K Metal encode payload skip exceeds usize".to_string(),
+    })?;
     let number_of_coding_passes =
         u8::try_from(status.number_of_coding_passes).map_err(|_| Error::MetalKernel {
             message: "classic J2K Metal encode pass count exceeds u8".to_string(),
@@ -12090,6 +17262,34 @@ fn read_classic_encoded_code_block(
                 segment_count,
             )
         }
+    };
+    let data = if data_len == 0 {
+        Vec::new()
+    } else {
+        let payload_span =
+            data_len
+                .checked_add(payload_skip)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal encode payload span overflow".to_string(),
+                })?;
+        if payload_span > output_capacity {
+            return Err(Error::MetalKernel {
+                message: "classic J2K Metal encode length exceeds output buffer".to_string(),
+            });
+        }
+        let payload_offset =
+            output_offset
+                .checked_add(payload_skip)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal encode payload offset overflow".to_string(),
+                })?;
+        unsafe {
+            core::slice::from_raw_parts(
+                output.contents().cast::<u8>().add(payload_offset),
+                data_len,
+            )
+        }
+        .to_vec()
     };
     let segments = raw_segments
         .iter()
@@ -12133,7 +17333,6 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
         let mut output_capacity_total = 0usize;
         let mut segment_capacity_total = 0usize;
-        let segment_capacity_per_job = 256usize;
 
         for job in jobs {
             let expected_coefficients = usize::try_from(job.width)
@@ -12166,6 +17365,9 @@ pub(crate) fn encode_classic_tier1_code_blocks(
                 u32::try_from(segment_capacity_total).map_err(|_| Error::MetalKernel {
                     message: "classic J2K Metal encode segment table exceeds u32".to_string(),
                 })?;
+            let style_flags = classic_style_flags(job.style);
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, job.total_bitplanes);
             batch_jobs.push(J2kClassicEncodeBatchJob {
                 coefficient_offset,
                 output_offset,
@@ -12174,13 +17376,13 @@ pub(crate) fn encode_classic_tier1_code_blocks(
                 height: job.height,
                 sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
                 total_bitplanes: u32::from(job.total_bitplanes),
-                style_flags: classic_style_flags(job.style),
+                style_flags,
                 output_capacity: u32::try_from(output_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "classic J2K Metal encode output capacity exceeds u32".to_string(),
                     }
                 })?,
-                segment_capacity: u32::try_from(segment_capacity_per_job).map_err(|_| {
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "classic J2K Metal encode segment capacity exceeds u32"
                             .to_string(),
@@ -12193,7 +17395,7 @@ pub(crate) fn encode_classic_tier1_code_blocks(
                     message: "classic J2K Metal encode output buffer overflow".to_string(),
                 })?;
             segment_capacity_total = segment_capacity_total
-                .checked_add(segment_capacity_per_job)
+                .checked_add(segment_capacity)
                 .ok_or_else(|| Error::MetalKernel {
                     message: "classic J2K Metal encode segment buffer overflow".to_string(),
                 })?;
@@ -12219,7 +17421,8 @@ pub(crate) fn encode_classic_tier1_code_blocks(
 
         let command_buffer = runtime.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.classic_encode_code_blocks);
+        let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
+        encoder.set_compute_pipeline_state(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
@@ -12233,10 +17436,7 @@ pub(crate) fn encode_classic_tier1_code_blocks(
                 depth: 1,
             },
             MTLSize {
-                width: runtime
-                    .classic_encode_code_blocks
-                    .thread_execution_width()
-                    .max(1),
+                width: classic_encode_pipeline.thread_execution_width().max(1),
                 height: 1,
                 depth: 1,
             },
@@ -12277,6 +17477,981 @@ pub(crate) fn encode_classic_tier1_code_blocks(
     })
 }
 
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    with_runtime(|runtime| {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut coefficients = Vec::<i32>::new();
+        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
+        let mut output_capacity_total = 0usize;
+        let mut segment_capacity_total = 0usize;
+
+        for job in jobs {
+            let expected_coefficients = usize::try_from(job.width)
+                .ok()
+                .and_then(|w| {
+                    usize::try_from(job.height)
+                        .ok()
+                        .and_then(|h| w.checked_mul(h))
+                })
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack coefficient count overflow".to_string(),
+                })?;
+            if job.coefficients.len() < expected_coefficients {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal token-pack coefficient slice is too small"
+                        .to_string(),
+                });
+            }
+            let coefficient_offset =
+                u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack coefficient table exceeds u32"
+                        .to_string(),
+                })?;
+            coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
+            let output_capacity =
+                classic_encode_output_capacity(job.width, job.height, job.total_bitplanes)?;
+            let output_offset =
+                u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack output table exceeds u32".to_string(),
+                })?;
+            let segment_offset =
+                u32::try_from(segment_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack segment table exceeds u32".to_string(),
+                })?;
+            let style_flags = classic_style_flags(job.style);
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, job.total_bitplanes);
+            batch_jobs.push(J2kClassicEncodeBatchJob {
+                coefficient_offset,
+                output_offset,
+                segment_offset,
+                width: job.width,
+                height: job.height,
+                sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
+                total_bitplanes: u32::from(job.total_bitplanes),
+                style_flags,
+                output_capacity: u32::try_from(output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal token-pack output capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal token-pack segment capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+            });
+            output_capacity_total = output_capacity_total
+                .checked_add(output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack output buffer overflow".to_string(),
+                })?;
+            segment_capacity_total = segment_capacity_total
+                .checked_add(segment_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack segment buffer overflow".to_string(),
+                })?;
+        }
+
+        if !classic_tier1_gpu_token_pack_supported(&batch_jobs) {
+            return Err(Error::MetalKernel {
+                message:
+                    "classic J2K Metal token-pack parity helper supports only bypass_u16_32 jobs"
+                        .to_string(),
+            });
+        }
+
+        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
+        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
+        let output = runtime.device.new_buffer(
+            output_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let status_buffer = runtime.device.new_buffer(
+            (jobs.len() * size_of::<J2kClassicEncodeStatus>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let segment_buffer = runtime.device.new_buffer(
+            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let job_count = u32::try_from(batch_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "classic J2K Metal token-pack job count exceeds u32".to_string(),
+        })?;
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
+            runtime,
+            command_buffer,
+            &coefficient_buffer,
+            &job_buffer,
+            &batch_jobs,
+            &mut recyclable_private_buffers,
+        )?;
+        debug_assert_eq!(token_buffers.job_count, job_count);
+        dispatch_classic_tier1_token_pack_from_gpu_tokens(
+            runtime,
+            command_buffer,
+            &job_buffer,
+            &token_buffers,
+            &output,
+            &status_buffer,
+            &segment_buffer,
+        );
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let statuses = unsafe {
+            core::slice::from_raw_parts(
+                status_buffer.contents().cast::<J2kClassicEncodeStatus>(),
+                jobs.len(),
+            )
+        };
+        let mut results = Vec::with_capacity(jobs.len());
+        for (idx, status) in statuses.iter().copied().enumerate() {
+            let batch_job = batch_jobs[idx];
+            results.push(read_classic_encoded_code_block(
+                status,
+                &output,
+                usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack output offset exceeds usize".to_string(),
+                })?,
+                usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack output capacity exceeds usize"
+                        .to_string(),
+                })?,
+                &segment_buffer,
+                usize::try_from(batch_job.segment_offset).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack segment offset exceeds usize"
+                        .to_string(),
+                })?,
+                usize::try_from(batch_job.segment_capacity).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal token-pack segment capacity exceeds usize"
+                        .to_string(),
+                })?,
+            )?);
+        }
+
+        Ok(results)
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_with_emit_route(
+        jobs, false,
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_byte_raw_tokens_gpu_pack_for_test(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_with_emit_route(
+        jobs, true,
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_with_emit_route(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    use_mq_byte_emit: bool,
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    with_runtime(|runtime| {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut coefficients = Vec::<i32>::new();
+        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
+        let mut output_capacity_total = 0usize;
+        let mut segment_capacity_total = 0usize;
+
+        for job in jobs {
+            let expected_coefficients = usize::try_from(job.width)
+                .ok()
+                .and_then(|w| {
+                    usize::try_from(job.height)
+                        .ok()
+                        .and_then(|h| w.checked_mul(h))
+                })
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack coefficient count overflow"
+                        .to_string(),
+                })?;
+            if job.coefficients.len() < expected_coefficients {
+                return Err(Error::MetalKernel {
+                    message:
+                        "classic J2K Metal split GPU token-pack coefficient slice is too small"
+                            .to_string(),
+                });
+            }
+            let coefficient_offset =
+                u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack coefficient table exceeds u32"
+                        .to_string(),
+                })?;
+            coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
+            let output_capacity =
+                classic_encode_output_capacity(job.width, job.height, job.total_bitplanes)?;
+            let output_offset =
+                u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack output table exceeds u32"
+                        .to_string(),
+                })?;
+            let segment_offset =
+                u32::try_from(segment_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack segment table exceeds u32"
+                        .to_string(),
+                })?;
+            let style_flags = classic_style_flags(job.style);
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, job.total_bitplanes);
+            batch_jobs.push(J2kClassicEncodeBatchJob {
+                coefficient_offset,
+                output_offset,
+                segment_offset,
+                width: job.width,
+                height: job.height,
+                sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
+                total_bitplanes: u32::from(job.total_bitplanes),
+                style_flags,
+                output_capacity: u32::try_from(output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "classic J2K Metal split GPU token-pack output capacity exceeds u32"
+                                .to_string(),
+                    }
+                })?,
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message:
+                            "classic J2K Metal split GPU token-pack segment capacity exceeds u32"
+                                .to_string(),
+                    }
+                })?,
+            });
+            output_capacity_total = output_capacity_total
+                .checked_add(output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack output buffer overflow"
+                        .to_string(),
+                })?;
+            segment_capacity_total = segment_capacity_total
+                .checked_add(segment_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack segment buffer overflow"
+                        .to_string(),
+                })?;
+        }
+
+        if !classic_tier1_gpu_token_pack_supported(&batch_jobs) {
+            return Err(Error::MetalKernel {
+                message:
+                    "classic J2K Metal split GPU token-pack helper supports only bypass_u16_32 jobs"
+                        .to_string(),
+            });
+        }
+
+        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
+        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
+        let output = runtime.device.new_buffer(
+            output_capacity_total.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let status_buffer = runtime.device.new_buffer(
+            (jobs.len() * size_of::<J2kClassicEncodeStatus>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let segment_buffer = runtime.device.new_buffer(
+            (segment_capacity_total * size_of::<J2kClassicSegment>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let split_buffers = dispatch_classic_tier1_split_token_emit_for_gpu_pack(
+            runtime,
+            command_buffer,
+            &coefficient_buffer,
+            &job_buffer,
+            &batch_jobs,
+            &mut recyclable_private_buffers,
+            use_mq_byte_emit,
+        )?;
+        dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
+            runtime,
+            command_buffer,
+            &job_buffer,
+            &split_buffers,
+            &output,
+            &status_buffer,
+            &segment_buffer,
+        );
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let statuses = unsafe {
+            core::slice::from_raw_parts(
+                status_buffer.contents().cast::<J2kClassicEncodeStatus>(),
+                jobs.len(),
+            )
+        };
+        let mut results = Vec::with_capacity(jobs.len());
+        for (idx, status) in statuses.iter().copied().enumerate() {
+            let batch_job = batch_jobs[idx];
+            results.push(read_classic_encoded_code_block(
+                status,
+                &output,
+                usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack output offset exceeds usize"
+                        .to_string(),
+                })?,
+                usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack output capacity exceeds usize"
+                        .to_string(),
+                })?,
+                &segment_buffer,
+                usize::try_from(batch_job.segment_offset).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split GPU token-pack segment offset exceeds usize"
+                        .to_string(),
+                })?,
+                usize::try_from(batch_job.segment_capacity).map_err(|_| Error::MetalKernel {
+                    message:
+                        "classic J2K Metal split GPU token-pack segment capacity exceeds usize"
+                            .to_string(),
+                })?,
+            )?);
+        }
+
+        Ok(results)
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_test(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    with_runtime(|runtime| {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut coefficients = Vec::<i32>::new();
+        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
+        let mut output_capacity_total = 0usize;
+        let mut segment_capacity_total = 0usize;
+
+        for job in jobs {
+            let expected_coefficients = usize::try_from(job.width)
+                .ok()
+                .and_then(|w| {
+                    usize::try_from(job.height)
+                        .ok()
+                        .and_then(|h| w.checked_mul(h))
+                })
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token coefficient count overflow"
+                        .to_string(),
+                })?;
+            if job.coefficients.len() < expected_coefficients {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token coefficient slice is too small"
+                        .to_string(),
+                });
+            }
+            let coefficient_offset =
+                u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token coefficient table exceeds u32"
+                        .to_string(),
+                })?;
+            coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
+            let output_capacity =
+                classic_encode_output_capacity(job.width, job.height, job.total_bitplanes)?;
+            let output_offset =
+                u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token output table exceeds u32".to_string(),
+                })?;
+            let segment_offset =
+                u32::try_from(segment_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token segment table exceeds u32"
+                        .to_string(),
+                })?;
+            let style_flags = classic_style_flags(job.style);
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, job.total_bitplanes);
+            batch_jobs.push(J2kClassicEncodeBatchJob {
+                coefficient_offset,
+                output_offset,
+                segment_offset,
+                width: job.width,
+                height: job.height,
+                sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
+                total_bitplanes: u32::from(job.total_bitplanes),
+                style_flags,
+                output_capacity: u32::try_from(output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token output capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token segment capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+            });
+            output_capacity_total = output_capacity_total
+                .checked_add(output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token output buffer overflow".to_string(),
+                })?;
+            segment_capacity_total = segment_capacity_total
+                .checked_add(segment_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token segment buffer overflow".to_string(),
+                })?;
+        }
+
+        if !classic_tier1_gpu_token_pack_supported(&batch_jobs) {
+            return Err(Error::MetalKernel {
+                message: "classic J2K Metal ordered-token helper supports only bypass_u16_32 jobs"
+                    .to_string(),
+            });
+        }
+
+        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
+        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
+        let command_buffer = runtime.queue.new_command_buffer();
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
+            runtime,
+            command_buffer,
+            &coefficient_buffer,
+            &job_buffer,
+            &batch_jobs,
+            &mut recyclable_private_buffers,
+        )?;
+        let job_count =
+            usize::try_from(token_buffers.job_count).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal ordered-token job count exceeds usize".to_string(),
+            })?;
+        let token_stride_bytes =
+            usize::try_from(token_buffers.token_stride_bytes).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal ordered-token byte stride exceeds usize".to_string(),
+            })?;
+        let token_segment_stride =
+            usize::try_from(token_buffers.token_segment_stride).map_err(|_| {
+                Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token segment stride exceeds usize"
+                        .to_string(),
+                }
+            })?;
+        let counter_byte_len = job_count
+            .checked_mul(size_of::<J2kClassicTier1SymbolPlanCounters>())
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K Metal ordered-token counter readback overflow".to_string(),
+            })?;
+        let token_byte_len =
+            job_count
+                .checked_mul(token_stride_bytes)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token byte readback overflow".to_string(),
+                })?;
+        let token_segment_byte_len = job_count
+            .checked_mul(token_segment_stride)
+            .and_then(|count| count.checked_mul(size_of::<J2kClassicTier1TokenSegment>()))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K Metal ordered-token segment readback overflow".to_string(),
+            })?;
+        let counter_readback = runtime.device.new_buffer(
+            counter_byte_len.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let token_readback = runtime.device.new_buffer(
+            token_byte_len.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let token_segment_readback = runtime.device.new_buffer(
+            token_segment_byte_len.max(1) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let blit = command_buffer.new_blit_command_encoder();
+        blit.copy_from_buffer(
+            &token_buffers.counter_buffer,
+            0,
+            &counter_readback,
+            0,
+            counter_byte_len as u64,
+        );
+        blit.copy_from_buffer(
+            &token_buffers.token_buffer,
+            0,
+            &token_readback,
+            0,
+            token_byte_len as u64,
+        );
+        blit.copy_from_buffer(
+            &token_buffers.segment_buffer,
+            0,
+            &token_segment_readback,
+            0,
+            token_segment_byte_len as u64,
+        );
+        blit.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let counters = unsafe {
+            core::slice::from_raw_parts(
+                counter_readback
+                    .contents()
+                    .cast::<J2kClassicTier1SymbolPlanCounters>(),
+                job_count,
+            )
+        };
+        let token_bytes = unsafe {
+            core::slice::from_raw_parts(token_readback.contents().cast::<u8>(), token_byte_len)
+        };
+        let token_segments = unsafe {
+            core::slice::from_raw_parts(
+                token_segment_readback
+                    .contents()
+                    .cast::<J2kClassicTier1TokenSegment>(),
+                job_count.saturating_mul(token_segment_stride),
+            )
+        };
+
+        let mut results = Vec::with_capacity(job_count);
+        for (block_idx, counter) in counters.iter().enumerate() {
+            if counter.code != J2K_ENCODE_STATUS_OK {
+                return Err(encode_status_error(
+                    "classic Tier-1 ordered-token emit",
+                    counter.code,
+                    counter.detail,
+                ));
+            }
+            let segment_count =
+                usize::try_from(counter.segment_count).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token segment count exceeds usize"
+                        .to_string(),
+                })?;
+            if segment_count > token_segment_stride {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token segment count exceeds capacity"
+                        .to_string(),
+                });
+            }
+            let token_start =
+                block_idx
+                    .checked_mul(token_stride_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token byte offset overflow".to_string(),
+                    })?;
+            let segment_start =
+                block_idx
+                    .checked_mul(token_segment_stride)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token segment offset overflow"
+                            .to_string(),
+                    })?;
+            let mut native_segments = Vec::with_capacity(segment_count);
+            for segment in &token_segments[segment_start..segment_start + segment_count] {
+                let start_coding_pass =
+                    u8::try_from(segment.pass_range & 0xFFFF).map_err(|_| Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token start pass exceeds u8"
+                            .to_string(),
+                    })?;
+                let end_coding_pass =
+                    u8::try_from(segment.pass_range >> 16).map_err(|_| Error::MetalKernel {
+                        message: "classic J2K Metal ordered-token end pass exceeds u8".to_string(),
+                    })?;
+                native_segments.push(J2kTier1TokenSegment {
+                    token_bit_offset: segment.token_bit_offset,
+                    token_bit_count: segment.token_bit_count,
+                    start_coding_pass,
+                    end_coding_pass,
+                    use_arithmetic: (segment.flags & 1) != 0,
+                });
+            }
+            let packed = pack_j2k_code_block_scalar_from_tier1_tokens(
+                &token_bytes[token_start..token_start + token_stride_bytes],
+                &native_segments,
+                u8::try_from(counter.coding_passes).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token coding-pass count exceeds u8"
+                        .to_string(),
+                })?,
+                u8::try_from(counter.missing_bit_planes).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal ordered-token missing bitplanes exceed u8"
+                        .to_string(),
+                })?,
+            )
+            .map_err(|message| Error::MetalKernel {
+                message: format!("classic J2K Metal ordered-token CPU pack failed: {message}"),
+            })?;
+            results.push(packed);
+        }
+
+        Ok(results)
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[derive(Default)]
+struct ClassicTier1MsbBitWriter {
+    bytes: Vec<u8>,
+    current_byte: u8,
+    bits_in_current: u8,
+    bit_count: usize,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl ClassicTier1MsbBitWriter {
+    fn write_bit(&mut self, bit: u8) {
+        self.current_byte = (self.current_byte << 1) | (bit & 1);
+        self.bits_in_current += 1;
+        self.bit_count += 1;
+        if self.bits_in_current == 8 {
+            self.bytes.push(self.current_byte);
+            self.current_byte = 0;
+            self.bits_in_current = 0;
+        }
+    }
+
+    fn bit_count_u32(&self) -> Result<u32, Error> {
+        u32::try_from(self.bit_count).map_err(|_| Error::MetalKernel {
+            message: "classic J2K Metal split-token combined bit offset exceeds u32".to_string(),
+        })
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.bits_in_current != 0 {
+            self.bytes
+                .push(self.current_byte << (8 - self.bits_in_current));
+        }
+        self.bytes
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn classic_tier1_split_token_bit(source: &[u8], bit_offset: usize) -> Result<u8, Error> {
+    if bit_offset >= source.len().saturating_mul(8) {
+        return Err(Error::MetalKernel {
+            message: "classic J2K Metal split-token bit offset exceeds stream".to_string(),
+        });
+    }
+    let byte = source[bit_offset / 8];
+    let shift = 7 - (bit_offset % 8);
+    Ok((byte >> shift) & 1)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn classic_tier1_append_split_token_bits(
+    writer: &mut ClassicTier1MsbBitWriter,
+    source: &[u8],
+    bit_offset: usize,
+    bit_count: usize,
+) -> Result<(), Error> {
+    let end = bit_offset
+        .checked_add(bit_count)
+        .ok_or_else(|| Error::MetalKernel {
+            message: "classic J2K Metal split-token bit range overflow".to_string(),
+        })?;
+    if end > source.len().saturating_mul(8) {
+        return Err(Error::MetalKernel {
+            message: "classic J2K Metal split-token bit range exceeds stream".to_string(),
+        });
+    }
+    for bit_idx in 0..bit_count {
+        writer.write_bit(classic_tier1_split_token_bit(source, bit_offset + bit_idx)?);
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn pack_classic_split_mq_raw_tokens_for_test(
+    mq_token_bytes: &[u8],
+    raw_token_bytes: &[u8],
+    split_segments: &[J2kClassicTier1TokenSegment],
+    counter: J2kClassicTier1SymbolPlanCounters,
+) -> Result<EncodedJ2kCodeBlock, Error> {
+    if counter.code != J2K_ENCODE_STATUS_OK {
+        return Err(encode_status_error(
+            "classic Tier-1 split-token emit",
+            counter.code,
+            counter.detail,
+        ));
+    }
+
+    let mut combined = ClassicTier1MsbBitWriter::default();
+    let mut native_segments = Vec::with_capacity(split_segments.len());
+    for segment in split_segments {
+        if (segment.flags & !1) != 0 {
+            return Err(Error::MetalKernel {
+                message: "classic J2K Metal split-token segment has unsupported flags".to_string(),
+            });
+        }
+        let use_arithmetic = (segment.flags & 1) != 0;
+        let source = if use_arithmetic {
+            mq_token_bytes
+        } else {
+            raw_token_bytes
+        };
+        let source_bit_offset =
+            usize::try_from(segment.token_bit_offset).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token bit offset exceeds usize".to_string(),
+            })?;
+        let source_bit_count =
+            usize::try_from(segment.token_bit_count).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token bit count exceeds usize".to_string(),
+            })?;
+        let combined_bit_offset = combined.bit_count_u32()?;
+        classic_tier1_append_split_token_bits(
+            &mut combined,
+            source,
+            source_bit_offset,
+            source_bit_count,
+        )?;
+        let start_coding_pass =
+            u8::try_from(segment.pass_range & 0xFFFF).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token start pass exceeds u8".to_string(),
+            })?;
+        let end_coding_pass =
+            u8::try_from(segment.pass_range >> 16).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token end pass exceeds u8".to_string(),
+            })?;
+        native_segments.push(J2kTier1TokenSegment {
+            token_bit_offset: combined_bit_offset,
+            token_bit_count: segment.token_bit_count,
+            start_coding_pass,
+            end_coding_pass,
+            use_arithmetic,
+        });
+    }
+
+    pack_j2k_code_block_scalar_from_tier1_tokens(
+        &combined.finish(),
+        &native_segments,
+        u8::try_from(counter.coding_passes).map_err(|_| Error::MetalKernel {
+            message: "classic J2K Metal split-token coding-pass count exceeds u8".to_string(),
+        })?,
+        u8::try_from(counter.missing_bit_planes).map_err(|_| Error::MetalKernel {
+            message: "classic J2K Metal split-token missing bitplanes exceed u8".to_string(),
+        })?,
+    )
+    .map_err(|message| Error::MetalKernel {
+        message: format!("classic J2K Metal split-token CPU pack failed: {message}"),
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_for_test(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
+    with_runtime(|runtime| {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut coefficients = Vec::<i32>::new();
+        let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(jobs.len());
+        let mut output_capacity_total = 0usize;
+        let mut segment_capacity_total = 0usize;
+
+        for job in jobs {
+            let expected_coefficients = usize::try_from(job.width)
+                .ok()
+                .and_then(|w| {
+                    usize::try_from(job.height)
+                        .ok()
+                        .and_then(|h| w.checked_mul(h))
+                })
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split-token coefficient count overflow".to_string(),
+                })?;
+            if job.coefficients.len() < expected_coefficients {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal split-token coefficient slice is too small"
+                        .to_string(),
+                });
+            }
+            let coefficient_offset =
+                u32::try_from(coefficients.len()).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split-token coefficient table exceeds u32"
+                        .to_string(),
+                })?;
+            coefficients.extend_from_slice(&job.coefficients[..expected_coefficients]);
+            let output_capacity =
+                classic_encode_output_capacity(job.width, job.height, job.total_bitplanes)?;
+            let output_offset =
+                u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split-token output table exceeds u32".to_string(),
+                })?;
+            let segment_offset =
+                u32::try_from(segment_capacity_total).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split-token segment table exceeds u32".to_string(),
+                })?;
+            let style_flags = classic_style_flags(job.style);
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, job.total_bitplanes);
+            batch_jobs.push(J2kClassicEncodeBatchJob {
+                coefficient_offset,
+                output_offset,
+                segment_offset,
+                width: job.width,
+                height: job.height,
+                sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
+                total_bitplanes: u32::from(job.total_bitplanes),
+                style_flags,
+                output_capacity: u32::try_from(output_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal split-token output capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "classic J2K Metal split-token segment capacity exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+            });
+            output_capacity_total = output_capacity_total
+                .checked_add(output_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split-token output buffer overflow".to_string(),
+                })?;
+            segment_capacity_total = segment_capacity_total
+                .checked_add(segment_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split-token segment buffer overflow".to_string(),
+                })?;
+        }
+
+        if !classic_tier1_gpu_token_pack_supported(&batch_jobs) {
+            return Err(Error::MetalKernel {
+                message: "classic J2K Metal split-token helper supports only bypass_u16_32 jobs"
+                    .to_string(),
+            });
+        }
+
+        let coefficient_buffer = owned_slice_buffer(&runtime.device, &coefficients);
+        let job_buffer = owned_slice_buffer(&runtime.device, &batch_jobs);
+        let command_buffer = runtime.queue.new_command_buffer();
+        let split_buffers = dispatch_classic_tier1_split_token_emit_for_cpu_pack(
+            runtime,
+            command_buffer,
+            &coefficient_buffer,
+            &job_buffer,
+            &batch_jobs,
+        )?;
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let job_count =
+            usize::try_from(split_buffers.job_count).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token job count exceeds usize".to_string(),
+            })?;
+        let mq_token_stride_bytes =
+            usize::try_from(split_buffers.mq_token_stride_bytes).map_err(|_| {
+                Error::MetalKernel {
+                    message: "classic J2K Metal split-token MQ byte stride exceeds usize"
+                        .to_string(),
+                }
+            })?;
+        let raw_token_stride_bytes = usize::try_from(split_buffers.raw_token_stride_bytes)
+            .map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal split-token raw byte stride exceeds usize".to_string(),
+            })?;
+        let token_segment_stride =
+            usize::try_from(split_buffers.token_segment_stride).map_err(|_| {
+                Error::MetalKernel {
+                    message: "classic J2K Metal split-token segment stride exceeds usize"
+                        .to_string(),
+                }
+            })?;
+        let counters = unsafe {
+            core::slice::from_raw_parts(
+                split_buffers
+                    .counter_buffer
+                    .contents()
+                    .cast::<J2kClassicTier1SymbolPlanCounters>(),
+                job_count,
+            )
+        };
+        let mq_token_bytes = unsafe {
+            core::slice::from_raw_parts(
+                split_buffers.mq_token_buffer.contents().cast::<u8>(),
+                job_count.saturating_mul(mq_token_stride_bytes),
+            )
+        };
+        let raw_token_bytes = unsafe {
+            core::slice::from_raw_parts(
+                split_buffers.raw_token_buffer.contents().cast::<u8>(),
+                job_count.saturating_mul(raw_token_stride_bytes),
+            )
+        };
+        let token_segments = unsafe {
+            core::slice::from_raw_parts(
+                split_buffers
+                    .segment_buffer
+                    .contents()
+                    .cast::<J2kClassicTier1TokenSegment>(),
+                job_count.saturating_mul(token_segment_stride),
+            )
+        };
+
+        let mut results = Vec::with_capacity(job_count);
+        for (block_idx, counter) in counters.iter().copied().enumerate() {
+            let segment_count =
+                usize::try_from(counter.segment_count).map_err(|_| Error::MetalKernel {
+                    message: "classic J2K Metal split-token segment count exceeds usize"
+                        .to_string(),
+                })?;
+            if segment_count > token_segment_stride {
+                return Err(Error::MetalKernel {
+                    message: "classic J2K Metal split-token segment count exceeds capacity"
+                        .to_string(),
+                });
+            }
+            let mq_token_start = block_idx
+                .checked_mul(mq_token_stride_bytes)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal split-token MQ byte offset overflow".to_string(),
+                })?;
+            let raw_token_start =
+                block_idx
+                    .checked_mul(raw_token_stride_bytes)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "classic J2K Metal split-token raw byte offset overflow"
+                            .to_string(),
+                    })?;
+            let segment_start =
+                block_idx
+                    .checked_mul(token_segment_stride)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "classic J2K Metal split-token segment offset overflow"
+                            .to_string(),
+                    })?;
+            results.push(pack_classic_split_mq_raw_tokens_for_test(
+                &mq_token_bytes[mq_token_start..mq_token_start + mq_token_stride_bytes],
+                &raw_token_bytes[raw_token_start..raw_token_start + raw_token_stride_bytes],
+                &token_segments[segment_start..segment_start + segment_count],
+                counter,
+            )?);
+        }
+
+        Ok(results)
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
     session: &crate::MetalBackendSession,
@@ -12290,6 +18465,11 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         code_blocks,
         recyclable_private_buffers: _,
         _prepare_command_buffer: prepare_command_buffer,
+        _prepare_deinterleave_rct_command_buffer: _,
+        _prepare_dwt53_command_buffer: _,
+        _prepare_dwt53_vertical_command_buffers: _,
+        _prepare_dwt53_horizontal_command_buffers: _,
+        _prepare_coefficient_extract_command_buffer: _,
         _deinterleave_status_buffer: deinterleave_status_buffer,
         _plane_buffers: plane_buffers,
         _scratch_buffers: scratch_buffers,
@@ -12331,7 +18511,6 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         let mut batch_jobs = Vec::<J2kClassicEncodeBatchJob>::with_capacity(code_blocks.len());
         let mut output_capacity_total = 0usize;
         let mut segment_capacity_total = 0usize;
-        let segment_capacity_per_job = 256usize;
 
         for block in &code_blocks {
             let output_capacity =
@@ -12346,6 +18525,9 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                     message: "classic J2K Metal resident encode segment table exceeds u32"
                         .to_string(),
                 })?;
+            let style_flags = 0;
+            let segment_capacity =
+                classic_encode_segment_capacity(style_flags, block.total_bitplanes);
             batch_jobs.push(J2kClassicEncodeBatchJob {
                 coefficient_offset: block.coefficient_offset,
                 output_offset,
@@ -12354,14 +18536,14 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                 height: block.height,
                 sub_band_type: classic_encode_sub_band_code(block.sub_band_type),
                 total_bitplanes: u32::from(block.total_bitplanes),
-                style_flags: 0,
+                style_flags,
                 output_capacity: u32::try_from(output_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "classic J2K Metal resident encode output capacity exceeds u32"
                             .to_string(),
                     }
                 })?,
-                segment_capacity: u32::try_from(segment_capacity_per_job).map_err(|_| {
+                segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "classic J2K Metal resident encode segment capacity exceeds u32"
                             .to_string(),
@@ -12374,7 +18556,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                     message: "classic J2K Metal resident encode output buffer overflow".to_string(),
                 })?;
             segment_capacity_total = segment_capacity_total
-                .checked_add(segment_capacity_per_job)
+                .checked_add(segment_capacity)
                 .ok_or_else(|| Error::MetalKernel {
                     message: "classic J2K Metal resident encode segment buffer overflow"
                         .to_string(),
@@ -12400,7 +18582,8 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
 
         let command_buffer = runtime.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.classic_encode_code_blocks);
+        let classic_encode_pipeline = classic_encode_code_blocks_pipeline(runtime, &batch_jobs);
+        encoder.set_compute_pipeline_state(classic_encode_pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
         encoder.set_buffer(2, Some(&job_buffer), 0);
@@ -12414,10 +18597,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
                 depth: 1,
             },
             MTLSize {
-                width: runtime
-                    .classic_encode_code_blocks
-                    .thread_execution_width()
-                    .max(1),
+                width: classic_encode_pipeline.thread_execution_width().max(1),
                 height: 1,
                 depth: 1,
             },
@@ -12457,6 +18637,11 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         code_blocks,
         recyclable_private_buffers: _,
         _prepare_command_buffer: prepare_command_buffer,
+        _prepare_deinterleave_rct_command_buffer: _,
+        _prepare_dwt53_command_buffer: _,
+        _prepare_dwt53_vertical_command_buffers: _,
+        _prepare_dwt53_horizontal_command_buffers: _,
+        _prepare_coefficient_extract_command_buffer: _,
         _deinterleave_status_buffer: deinterleave_status_buffer,
         _plane_buffers: plane_buffers,
         _scratch_buffers: scratch_buffers,
@@ -12492,15 +18677,15 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
             });
         }
 
-        let output_capacity = J2K_HT_ENCODE_BASE_OUTPUT_SIZE;
-        let output_capacity_u32 =
-            u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal resident encode output capacity exceeds u32".to_string(),
-            })?;
         let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(code_blocks.len());
         let mut output_capacity_total = 0usize;
 
         for block in &code_blocks {
+            let output_capacity = ht_encode_output_capacity(block.width, block.height)?;
+            let output_capacity_u32 =
+                u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
+                    message: "HTJ2K Metal resident encode output capacity exceeds u32".to_string(),
+                })?;
             let output_offset =
                 u32::try_from(output_capacity_total).map_err(|_| Error::MetalKernel {
                     message: "HTJ2K Metal resident encode output table exceeds u32".to_string(),
@@ -12537,8 +18722,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         label_command_buffer(command_buffer, "signinum-j2k htj2k resident tier1");
         let encoder = command_buffer.new_compute_command_encoder();
         label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
-        let kernel = HtEncodeCodeBlocksKernel::from_env(runtime);
-        let pipeline = kernel.pipeline(runtime)?;
+        let pipeline = &runtime.ht_encode_code_blocks;
         encoder.set_compute_pipeline_state(pipeline);
         encoder.set_buffer(0, Some(&coefficient_buffer), 0);
         encoder.set_buffer(1, Some(&output), 0);
@@ -12548,7 +18732,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-        kernel.dispatch(encoder, pipeline, job_count);
+        dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -12597,14 +18781,18 @@ pub(crate) fn encode_classic_tier1_code_block(
             u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
                 message: "classic J2K Metal encode output capacity exceeds u32".to_string(),
             })?;
+        let style_flags = classic_style_flags(job.style);
+        let segment_capacity = classic_encode_segment_capacity(style_flags, job.total_bitplanes);
         let params = J2kClassicEncodeParams {
             width: job.width,
             height: job.height,
             sub_band_type: classic_encode_sub_band_code(job.sub_band_type),
             total_bitplanes: u32::from(job.total_bitplanes),
-            style_flags: classic_style_flags(job.style),
+            style_flags,
             output_capacity: output_capacity_u32,
-            segment_capacity: 256,
+            segment_capacity: u32::try_from(segment_capacity).map_err(|_| Error::MetalKernel {
+                message: "classic J2K Metal encode segment capacity exceeds u32".to_string(),
+            })?,
         };
         let coefficients =
             borrow_slice_buffer(&runtime.device, &job.coefficients[..expected_coefficients]);
@@ -12667,16 +18855,31 @@ pub(crate) fn encode_classic_tier1_code_block(
         let data_len = usize::try_from(status.data_len).map_err(|_| Error::MetalKernel {
             message: "classic J2K Metal encode length exceeds usize".to_string(),
         })?;
-        if data_len > output_capacity {
+        let payload_skip = usize::try_from(status.reserved0).map_err(|_| Error::MetalKernel {
+            message: "classic J2K Metal encode payload skip exceeds usize".to_string(),
+        })?;
+        let payload_span =
+            data_len
+                .checked_add(payload_skip)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "classic J2K Metal encode payload span overflow".to_string(),
+                })?;
+        if payload_span > output_capacity {
             return Err(Error::MetalKernel {
                 message: "classic J2K Metal encode length exceeds output buffer".to_string(),
             });
         }
+        let payload_offset = payload_skip;
         let data = if data_len == 0 {
             Vec::new()
         } else {
-            unsafe { core::slice::from_raw_parts(output.contents().cast::<u8>(), data_len) }
-                .to_vec()
+            unsafe {
+                core::slice::from_raw_parts(
+                    output.contents().cast::<u8>().add(payload_offset),
+                    data_len,
+                )
+            }
+            .to_vec()
         };
         let number_of_coding_passes =
             u8::try_from(status.number_of_coding_passes).map_err(|_| Error::MetalKernel {
@@ -12863,115 +19066,38 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
-enum HtEncodeCodeBlocksKernel {
-    Scalar,
-    SimdPrototype,
-}
-
-#[cfg(target_os = "macos")]
-impl HtEncodeCodeBlocksKernel {
-    fn from_env(runtime: &MetalRuntime) -> Self {
-        if ht_simd_prototype_env_requested()
-            && runtime.ht_encode_code_blocks_simd_prototype.is_some()
-        {
-            Self::SimdPrototype
-        } else {
-            Self::Scalar
-        }
-    }
-
-    fn pipeline(self, runtime: &MetalRuntime) -> Result<&ComputePipelineState, Error> {
-        match self {
-            Self::Scalar => Ok(&runtime.ht_encode_code_blocks),
-            Self::SimdPrototype => {
-                runtime
-                    .ht_encode_code_blocks_simd_prototype
-                    .as_ref()
-                    .ok_or(Error::MetalKernel {
-                        message:
-                            "HTJ2K SIMD prototype pipeline is unavailable on this Metal device"
-                                .to_string(),
-                    })
-            }
-        }
-    }
-
-    fn dispatch(
-        self,
-        encoder: &ComputeCommandEncoderRef,
-        pipeline: &ComputePipelineState,
-        job_count: u32,
-    ) {
-        match self {
-            Self::Scalar => {
-                encoder.dispatch_threads(
-                    MTLSize {
-                        width: u64::from(job_count),
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: pipeline.thread_execution_width().max(1),
-                        height: 1,
-                        depth: 1,
-                    },
-                );
-            }
-            Self::SimdPrototype => {
-                #[cfg(test)]
-                HT_SIMD_PROTOTYPE_DISPATCHES
-                    .with(|dispatches| dispatches.set(dispatches.get() + 1));
-                encoder.dispatch_thread_groups(
-                    MTLSize {
-                        width: u64::from(job_count),
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: 32,
-                        height: 1,
-                        depth: 1,
-                    },
-                );
-            }
-        }
-    }
+fn dispatch_ht_encode_code_blocks(
+    encoder: &ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    job_count: u32,
+) {
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(job_count),
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: pipeline.thread_execution_width().max(1),
+            height: 1,
+            depth: 1,
+        },
+    );
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn encode_ht_cleanup_code_blocks(
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    with_runtime(|runtime| {
-        encode_ht_cleanup_code_blocks_with_runtime(
-            runtime,
-            jobs,
-            HtEncodeCodeBlocksKernel::from_env(runtime),
-        )
-    })
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn encode_ht_cleanup_code_blocks_simd_prototype_for_test(
-    jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    with_runtime(|runtime| {
-        encode_ht_cleanup_code_blocks_with_runtime(
-            runtime,
-            jobs,
-            HtEncodeCodeBlocksKernel::SimdPrototype,
-        )
-    })
+    with_runtime(|runtime| encode_ht_cleanup_code_blocks_with_runtime(runtime, jobs))
 }
 
 #[cfg(target_os = "macos")]
 fn encode_ht_cleanup_code_blocks_with_runtime(
     runtime: &MetalRuntime,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    kernel: HtEncodeCodeBlocksKernel,
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs, kernel).map(|blocks| {
+    encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs).map(|blocks| {
         blocks
             .into_iter()
             .map(|(encoded, _status)| encoded)
@@ -12979,42 +19105,10 @@ fn encode_ht_cleanup_code_blocks_with_runtime(
     })
 }
 
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn encode_ht_cleanup_code_blocks_with_segment_lengths_for_test(
-    jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    use_simd_prototype: bool,
-) -> Result<Vec<(EncodedHtJ2kCodeBlock, HtCodeBlockSegmentLengthsForTest)>, Error> {
-    with_runtime(|runtime| {
-        let kernel = if use_simd_prototype {
-            HtEncodeCodeBlocksKernel::SimdPrototype
-        } else {
-            HtEncodeCodeBlocksKernel::Scalar
-        };
-        encode_ht_cleanup_code_blocks_with_runtime_and_statuses(runtime, jobs, kernel).map(
-            |blocks| {
-                blocks
-                    .into_iter()
-                    .map(|(encoded, status)| {
-                        (
-                            encoded,
-                            HtCodeBlockSegmentLengthsForTest {
-                                magnitude_sign: status.reserved0,
-                                mel: status.reserved1,
-                                vlc: status.reserved2,
-                            },
-                        )
-                    })
-                    .collect()
-            },
-        )
-    })
-}
-
 #[cfg(target_os = "macos")]
 fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     runtime: &MetalRuntime,
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    kernel: HtEncodeCodeBlocksKernel,
 ) -> Result<Vec<(EncodedHtJ2kCodeBlock, J2kHtEncodeStatus)>, Error> {
     if jobs.is_empty() {
         return Ok(Vec::new());
@@ -13025,15 +19119,16 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
         });
     }
 
-    let output_capacity = J2K_HT_ENCODE_BASE_OUTPUT_SIZE;
-    let output_capacity_u32 = u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-        message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
-    })?;
     let mut coefficients = Vec::<i32>::new();
     let mut batch_jobs = Vec::<J2kHtEncodeBatchJob>::with_capacity(jobs.len());
     let mut output_capacity_total = 0usize;
 
     for job in jobs {
+        let output_capacity = ht_encode_output_capacity(job.width, job.height)?;
+        let output_capacity_u32 =
+            u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
+            })?;
         let expected_coefficients = usize::try_from(job.width)
             .ok()
             .and_then(|w| {
@@ -13091,7 +19186,7 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     label_command_buffer(command_buffer, "signinum-j2k htj2k tier1 batch");
     let encoder = command_buffer.new_compute_command_encoder();
     label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
-    let pipeline = kernel.pipeline(runtime)?;
+    let pipeline = &runtime.ht_encode_code_blocks;
     encoder.set_compute_pipeline_state(pipeline);
     encoder.set_buffer(0, Some(&coefficient_buffer), 0);
     encoder.set_buffer(1, Some(&output), 0);
@@ -13101,7 +19196,7 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
     encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    kernel.dispatch(encoder, pipeline, job_count);
+    dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
@@ -13156,7 +19251,7 @@ pub(crate) fn encode_ht_cleanup_code_block(
                 message: "HTJ2K Metal encode coefficient slice is too small".to_string(),
             });
         }
-        let output_capacity = J2K_HT_ENCODE_BASE_OUTPUT_SIZE;
+        let output_capacity = ht_encode_output_capacity(job.width, job.height)?;
         let output_capacity_u32 =
             u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
                 message: "HTJ2K Metal encode output capacity exceeds u32".to_string(),
@@ -13279,8 +19374,7 @@ fn packet_tree_node_count(width: u32, height: u32) -> Result<usize, Error> {
 }
 
 #[cfg(target_os = "macos")]
-fn lossless_codestream_assembly_capacity(
-    tile_capacity: usize,
+fn lossless_codestream_payload_offset(
     job: J2kLosslessCodestreamAssemblyJob,
 ) -> Result<usize, Error> {
     let component_count = usize::from(job.num_components);
@@ -13327,11 +19421,123 @@ fn lossless_codestream_assembly_capacity(
         .and_then(|len| len.checked_add(if job.write_tlm { 12 } else { 0 }))
         .and_then(|len| len.checked_add(12))
         .and_then(|len| len.checked_add(2))
-        .and_then(|len| len.checked_add(tile_capacity))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal codestream payload offset overflow".to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_codestream_assembly_capacity(
+    tile_capacity: usize,
+    job: J2kLosslessCodestreamAssemblyJob,
+) -> Result<usize, Error> {
+    lossless_codestream_payload_offset(job)?
+        .checked_add(tile_capacity)
         .and_then(|len| len.checked_add(2))
         .ok_or_else(|| Error::MetalKernel {
             message: "J2K Metal codestream assembly capacity overflow".to_string(),
         })
+}
+
+#[cfg(target_os = "macos")]
+fn lossless_raw_sample_bytes(
+    job: J2kLosslessCodestreamAssemblyJob,
+    overflow_message: &'static str,
+) -> Result<usize, Error> {
+    let pixels = usize::try_from(job.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(job.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or_else(|| Error::MetalKernel {
+            message: overflow_message.to_string(),
+        })?;
+    let component_count = usize::from(job.num_components);
+    let bytes_per_sample = usize::from(job.bit_depth).div_ceil(8).max(1);
+    pixels
+        .checked_mul(component_count)
+        .and_then(|bytes| bytes.checked_mul(bytes_per_sample))
+        .ok_or_else(|| Error::MetalKernel {
+            message: overflow_message.to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn ht_lossless_raw_sample_bytes(job: J2kLosslessCodestreamAssemblyJob) -> Result<usize, Error> {
+    lossless_raw_sample_bytes(job, "HTJ2K Metal batch raw sample byte count overflow")
+}
+
+#[cfg(target_os = "macos")]
+fn classic_packet_output_capacity(
+    tier1_output_capacity: usize,
+    header_capacity: usize,
+    packet_descriptor_count: usize,
+    codestream: J2kLosslessCodestreamAssemblyJob,
+) -> Result<usize, Error> {
+    let descriptor_count = packet_descriptor_count.max(1);
+    let conservative_capacity = tier1_output_capacity
+        .checked_add(header_capacity.saturating_mul(descriptor_count))
+        .and_then(|bytes| bytes.checked_add(1024))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal batch packet output capacity overflow".to_string(),
+        })?;
+    let raw_bytes =
+        lossless_raw_sample_bytes(codestream, "J2K Metal batch raw sample byte count overflow")?;
+    let descriptor_header_slack =
+        descriptor_count
+            .checked_mul(256)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal batch packet descriptor slack overflow".to_string(),
+            })?;
+    let tight_capacity = raw_bytes
+        .checked_add(header_capacity)
+        .and_then(|bytes| bytes.checked_add(descriptor_header_slack))
+        .and_then(|bytes| bytes.checked_add(64 * 1024))
+        .map(|bytes| bytes.max(4096))
+        .ok_or_else(|| Error::MetalKernel {
+            message: "J2K Metal batch packet output capacity overflow".to_string(),
+        })?;
+
+    Ok(tight_capacity.min(conservative_capacity))
+}
+
+#[cfg(target_os = "macos")]
+fn ht_packet_output_capacity_for_mode(
+    code_block_count: usize,
+    header_capacity: usize,
+    packet_descriptor_count: usize,
+    codestream: J2kLosslessCodestreamAssemblyJob,
+    mode: J2kHtPacketOutputCapacityMode,
+) -> Result<usize, Error> {
+    let descriptor_count = packet_descriptor_count.max(1);
+    match mode {
+        J2kHtPacketOutputCapacityMode::Conservative => code_block_count
+            .checked_mul(J2K_HT_ENCODE_BASE_OUTPUT_SIZE)
+            .and_then(|bytes| bytes.checked_add(header_capacity.saturating_mul(descriptor_count)))
+            .and_then(|bytes| bytes.checked_add(1024))
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K Metal batch packet output capacity overflow".to_string(),
+            }),
+        J2kHtPacketOutputCapacityMode::Tight => {
+            let raw_bytes = ht_lossless_raw_sample_bytes(codestream)?;
+            let descriptor_header_slack =
+                descriptor_count
+                    .checked_mul(256)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet descriptor slack overflow".to_string(),
+                    })?;
+            raw_bytes
+                .checked_add(header_capacity)
+                .and_then(|bytes| bytes.checked_add(descriptor_header_slack))
+                .and_then(|bytes| bytes.checked_add(64 * 1024))
+                .map(|bytes| bytes.max(4096))
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet output capacity overflow".to_string(),
+                })
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -13982,6 +20188,12 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_classic_tier1(
                 codestream_job.block_coding_mode
                     == J2kLosslessCodestreamBlockCodingMode::HighThroughput,
             ),
+            code_block_style: match codestream_job.block_coding_mode {
+                J2kLosslessCodestreamBlockCodingMode::Classic => 0,
+                J2kLosslessCodestreamBlockCodingMode::HighThroughput => 0x40,
+            },
+            code_block_width_exp: u32::from(codestream_job.code_block_width_exp),
+            code_block_height_exp: u32::from(codestream_job.code_block_height_exp),
             output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
                 Error::MetalKernel {
                     message: "J2K Metal codestream assembly capacity exceeds u32".to_string(),
@@ -14487,6 +20699,12 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 codestream_job.block_coding_mode
                     == J2kLosslessCodestreamBlockCodingMode::HighThroughput,
             ),
+            code_block_style: match codestream_job.block_coding_mode {
+                J2kLosslessCodestreamBlockCodingMode::Classic => 0,
+                J2kLosslessCodestreamBlockCodingMode::HighThroughput => 0x40,
+            },
+            code_block_width_exp: u32::from(codestream_job.code_block_width_exp),
+            code_block_height_exp: u32::from(codestream_job.code_block_height_exp),
             output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
                 Error::MetalKernel {
                     message: "HTJ2K Metal codestream assembly capacity exceeds u32".to_string(),
@@ -14668,6 +20886,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
 pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
     session: &crate::MetalBackendSession,
     items: Vec<J2kResidentHtBatchEncodeItem>,
+    packet_capacity_mode: J2kHtPacketOutputCapacityMode,
 ) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
     if items.is_empty() {
         return Err(Error::MetalKernel {
@@ -14685,6 +20904,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             code_blocks,
             recyclable_private_buffers,
             _prepare_command_buffer: prepare_command_buffer,
+            _prepare_deinterleave_rct_command_buffer: prepare_deinterleave_rct_command_buffer,
+            _prepare_dwt53_command_buffer: prepare_dwt53_command_buffer,
+            _prepare_dwt53_vertical_command_buffers: prepare_dwt53_vertical_command_buffers,
+            _prepare_dwt53_horizontal_command_buffers: prepare_dwt53_horizontal_command_buffers,
+            _prepare_coefficient_extract_command_buffer: prepare_coefficient_extract_command_buffer,
             _deinterleave_status_buffer: deinterleave_status_buffer,
             _plane_buffers: plane_buffers,
             _scratch_buffers: scratch_buffers,
@@ -14698,6 +20922,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             code_blocks,
             recyclable_private_buffers,
             prepare_command_buffer,
+            prepare_deinterleave_rct_command_buffer,
+            prepare_dwt53_command_buffer,
+            prepare_dwt53_vertical_command_buffers,
+            prepare_dwt53_horizontal_command_buffers,
+            prepare_coefficient_extract_command_buffer,
             deinterleave_status_buffer,
             plane_buffers,
             scratch_buffers,
@@ -14721,11 +20950,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         let mut packetization_duration = Duration::ZERO;
         let mut codestream_assembly_duration = Duration::ZERO;
         let mut ht_table_build_started = profile_stages.then(Instant::now);
-        let command_buffer = runtime.queue.new_command_buffer();
-        label_command_buffer(command_buffer, "signinum-j2k htj2k resident encode batch");
+        let ht_tier1_setup_signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_TIER1_SETUP);
+        let split_profile_commands = true;
         let mut retained_command_buffers = Vec::with_capacity(prepared_tiles.len());
+        let mut gpu_stage_command_buffers = Vec::new();
         let mut retained_buffers = Vec::<Buffer>::new();
         let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let mut recyclable_shared_buffers = Vec::<(usize, Buffer)>::new();
         let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
             let ptr = first.coefficient_buffer.as_ptr();
             prepared_tiles
@@ -14736,6 +20967,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 })
                 .then(|| first.coefficient_buffer.clone())
         });
+        let needs_coefficient_copy = shared_coefficient_buffer.is_none();
+        let initial_command_buffer_label = if split_profile_commands && needs_coefficient_copy {
+            "signinum-j2k htj2k resident coefficient copy"
+        } else if split_profile_commands {
+            "signinum-j2k htj2k resident tier1 encode"
+        } else {
+            "signinum-j2k htj2k resident encode batch"
+        };
+        let mut command_buffer =
+            new_resident_encode_command_buffer(runtime, initial_command_buffer_label);
         let (coefficient_buffer, coefficient_offsets) = if let Some(coefficient_buffer) =
             shared_coefficient_buffer
         {
@@ -14780,16 +21021,21 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 }
             }
             blit.end_encoding();
+            if split_profile_commands {
+                command_buffer = finish_resident_encode_split_command_buffer(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::CoefficientCopy,
+                    "signinum-j2k htj2k resident tier1 encode",
+                    &mut gpu_stage_command_buffers,
+                );
+            }
             (coefficient_buffer, coefficient_offsets)
         };
 
-        let output_capacity_per_job = J2K_HT_ENCODE_BASE_OUTPUT_SIZE;
-        let output_capacity_per_job_u32 =
-            u32::try_from(output_capacity_per_job).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Metal batch output capacity exceeds u32".to_string(),
-            })?;
         let mut tier1_jobs = Vec::<J2kHtEncodeBatchJob>::new();
         let mut tier1_output_capacity_total = 0usize;
+        let mut max_tier1_output_capacity = 0usize;
         let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
         for (tile, &coefficient_byte_offset) in
             prepared_tiles.iter().zip(coefficient_offsets.iter())
@@ -14805,6 +21051,12 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                     message: "HTJ2K Metal batch coefficient offset exceeds u32".to_string(),
                 })?;
             for block in &tile.code_blocks {
+                let output_capacity_per_job = ht_encode_output_capacity(block.width, block.height)?;
+                max_tier1_output_capacity = max_tier1_output_capacity.max(output_capacity_per_job);
+                let output_capacity_per_job_u32 =
+                    u32::try_from(output_capacity_per_job).map_err(|_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch output capacity exceeds u32".to_string(),
+                    })?;
                 let output_offset =
                     u32::try_from(tier1_output_capacity_total).map_err(|_| Error::MetalKernel {
                         message: "HTJ2K Metal batch Tier-1 output offset exceeds u32".to_string(),
@@ -14845,15 +21097,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         let tier1_job_count = u32::try_from(tier1_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "HTJ2K Metal batch Tier-1 job count exceeds u32".to_string(),
         })?;
+        drop(ht_tier1_setup_signpost);
         if let Some(started) = ht_table_build_started.take() {
             ht_table_build_duration = ht_table_build_duration.saturating_add(started.elapsed());
         }
-        let kernel = HtEncodeCodeBlocksKernel::from_env(runtime);
         if tier1_job_count > 0 {
             let command_encode_started = profile_stages.then(Instant::now);
+            let signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_TIER1_COMMAND_ENCODE);
             let encoder = command_buffer.new_compute_command_encoder();
             label_compute_encoder(encoder, "HTJ2K Tier-1 encode");
-            let pipeline = kernel.pipeline(runtime)?;
+            let pipeline = &runtime.ht_encode_code_blocks;
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(&coefficient_buffer), 0);
             encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
@@ -14867,15 +21120,28 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 size_of::<u32>() as u64,
                 (&raw const tier1_job_count).cast(),
             );
-            kernel.dispatch(encoder, pipeline, tier1_job_count);
+            dispatch_ht_encode_code_blocks(encoder, pipeline, tier1_job_count);
             encoder.end_encoding();
+            drop(signpost);
             if let Some(started) = command_encode_started {
                 ht_block_encode_duration =
                     ht_block_encode_duration.saturating_add(started.elapsed());
             }
+            if split_profile_commands {
+                command_buffer = finish_resident_encode_split_command_buffer(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::HtBlock,
+                    "signinum-j2k htj2k resident packetization",
+                    &mut gpu_stage_command_buffers,
+                );
+            }
+        } else if split_profile_commands {
+            label_command_buffer(&command_buffer, "signinum-j2k htj2k resident packetization");
         }
 
         ht_table_build_started = profile_stages.then(Instant::now);
+        let ht_packet_plan_signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_PLAN);
         let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
         let mut packet_subbands = Vec::<J2kPacketSubband>::new();
         let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
@@ -14885,6 +21151,8 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         let mut assembly_jobs =
             Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
         let mut packet_output_capacity_total = 0usize;
+        let mut packet_payload_copy_job_capacity_total = 0usize;
+        let mut max_payload_copy_jobs_per_tile = 0usize;
         let mut header_capacity_total = 0usize;
         let mut scratch_words_total = 0usize;
         let mut codestream_capacity_total = 0usize;
@@ -14901,6 +21169,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             let mut max_tree_nodes = 1usize;
             let mut local_subband_count = 0usize;
             let mut local_resident_block_count = 0usize;
+            let mut local_payload_copy_job_capacity = 0usize;
 
             for resolution in &tile.resolutions {
                 let subband_offset =
@@ -15078,6 +21347,12 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                         message: "HTJ2K Metal batch descriptor state layout mismatch".to_string(),
                     });
                 }
+                local_payload_copy_job_capacity = local_payload_copy_job_capacity
+                    .checked_add(packet_block_count)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet payload-copy job count overflow"
+                            .to_string(),
+                    })?;
                 packet_descriptors.push(J2kPacketDescriptor {
                     packet_index: descriptor.packet_index,
                     state_index: descriptor.state_index,
@@ -15097,26 +21372,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 .ok_or_else(|| Error::MetalKernel {
                     message: "HTJ2K Metal batch packet header capacity overflow".to_string(),
                 })?;
-            let packet_output_capacity = tile
-                .code_blocks
-                .len()
-                .checked_mul(output_capacity_per_job)
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        header_capacity.saturating_mul(
-                            tile.packet_descriptors
-                                .len()
-                                .max(tile.resolutions.len())
-                                .max(1),
-                        ),
-                    )
-                })
-                .and_then(|bytes| bytes.checked_add(1024))
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch packet output capacity overflow".to_string(),
-                })?;
+            let packet_output_capacity = ht_packet_output_capacity_for_mode(
+                tile.code_blocks.len(),
+                header_capacity,
+                tile.packet_descriptors.len().max(tile.resolutions.len()),
+                tile.codestream,
+                packet_capacity_mode,
+            )?;
             let codestream_capacity =
                 lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
+            let codestream_payload_offset = lossless_codestream_payload_offset(tile.codestream)?;
             let scratch_words =
                 max_tree_nodes
                     .checked_mul(6)
@@ -15124,10 +21389,18 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                         message: "HTJ2K Metal batch scratch size overflow".to_string(),
                     })?;
 
-            let packet_output_offset = packet_output_capacity_total;
             let header_offset = header_capacity_total;
             let scratch_offset = scratch_words_total;
+            if tile.packet_descriptors.is_empty() {
+                local_payload_copy_job_capacity = local_resident_block_count;
+            }
+            let payload_copy_offset = packet_payload_copy_job_capacity_total;
             let codestream_offset = codestream_capacity_total;
+            let packet_output_offset = codestream_offset
+                .checked_add(codestream_payload_offset)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch direct packet output offset overflow".to_string(),
+                })?;
             packet_jobs.push(J2kBatchedPacketEncodeJob {
                 resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
                     Error::MetalKernel {
@@ -15165,6 +21438,18 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
                     message: "HTJ2K Metal batch scratch offset exceeds u32".to_string(),
                 })?,
+                payload_copy_offset: u32::try_from(payload_copy_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet payload-copy offset exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                payload_copy_capacity: u32::try_from(local_payload_copy_job_capacity).map_err(
+                    |_| Error::MetalKernel {
+                        message: "HTJ2K Metal batch packet payload-copy capacity exceeds u32"
+                            .to_string(),
+                    },
+                )?,
                 resolution_count: tile.resolution_count,
                 num_layers: u32::from(tile.num_layers),
                 num_components: u32::from(tile.num_components),
@@ -15219,6 +21504,9 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 ),
                 write_tlm: u32::from(tile.codestream.write_tlm),
                 high_throughput: 1,
+                code_block_style: 0x40,
+                code_block_width_exp: u32::from(tile.codestream.code_block_width_exp),
+                code_block_height_exp: u32::from(tile.codestream.code_block_height_exp),
                 output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "HTJ2K Metal batch codestream capacity exceeds u32".to_string(),
@@ -15232,6 +21520,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 .ok_or_else(|| Error::MetalKernel {
                     message: "HTJ2K Metal batch packet output total overflow".to_string(),
                 })?;
+            packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total
+                .checked_add(local_payload_copy_job_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet payload-copy job total overflow".to_string(),
+                })?;
+            max_payload_copy_jobs_per_tile =
+                max_payload_copy_jobs_per_tile.max(local_payload_copy_job_capacity);
             header_capacity_total = header_capacity_total
                 .checked_add(header_capacity)
                 .ok_or_else(|| Error::MetalKernel {
@@ -15250,23 +21545,52 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 })?;
         }
 
+        drop(ht_packet_plan_signpost);
         if let Some(started) = ht_table_build_started.take() {
             ht_table_build_duration = ht_table_build_duration.saturating_add(started.elapsed());
         }
         let ht_buffer_allocation_started = profile_stages.then(Instant::now);
-        let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
-        let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
-        let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
+        let ht_packet_buffer_setup_signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BUFFER_SETUP);
+        let packet_resolution_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &packet_resolutions,
+            &mut recyclable_shared_buffers,
+        );
+        let packet_subband_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &packet_subbands,
+            &mut recyclable_shared_buffers,
+        );
+        let resident_block_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &resident_blocks,
+            &mut recyclable_shared_buffers,
+        );
         let packet_block_buffer = take_recyclable_private_buffer(
             runtime,
             resident_blocks.len().max(1) * size_of::<J2kPacketBlock>(),
             &mut recyclable_private_buffers,
         );
-        let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors);
-        let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
-        let packet_output_buffer = take_recyclable_private_buffer(
+        let packet_descriptor_buffer = copied_recyclable_shared_slice_buffer(
             runtime,
-            packet_output_capacity_total.max(1),
+            &packet_descriptors,
+            &mut recyclable_shared_buffers,
+        );
+        let state_block_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &state_blocks,
+            &mut recyclable_shared_buffers,
+        );
+        let packet_payload_copy_job_buffer = take_recyclable_private_buffer(
+            runtime,
+            packet_payload_copy_job_capacity_total
+                .max(1)
+                .checked_mul(size_of::<J2kPacketPayloadCopyJob>())
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "HTJ2K Metal batch packet payload-copy buffer size overflow"
+                        .to_string(),
+                })?,
             &mut recyclable_private_buffers,
         );
         let header_buffer = take_recyclable_private_buffer(
@@ -15279,21 +21603,31 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             scratch_words_total.max(1) * size_of::<u32>(),
             &mut recyclable_private_buffers,
         );
-        let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs);
-        let packet_status_buffer = take_recyclable_private_buffer(
+        let packet_job_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &packet_jobs,
+            &mut recyclable_shared_buffers,
+        );
+        let packet_status_buffer = zeroed_recyclable_shared_buffer(
             runtime,
             packet_jobs.len().max(1) * size_of::<J2kPacketEncodeStatus>(),
-            &mut recyclable_private_buffers,
+            &mut recyclable_shared_buffers,
         );
-        let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs);
+        let codestream_job_buffer = copied_recyclable_shared_slice_buffer(
+            runtime,
+            &assembly_jobs,
+            &mut recyclable_shared_buffers,
+        );
         let codestream_buffer = runtime.device.new_buffer(
             codestream_capacity_total.max(1) as u64,
             MTLResourceOptions::StorageModeShared,
         );
-        let codestream_status_buffer = runtime.device.new_buffer(
-            (assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>()) as u64,
-            MTLResourceOptions::StorageModeShared,
+        let codestream_status_buffer = zeroed_recyclable_shared_buffer(
+            runtime,
+            assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>(),
+            &mut recyclable_shared_buffers,
         );
+        drop(ht_packet_buffer_setup_signpost);
         if let Some(started) = ht_buffer_allocation_started {
             stage_stats.ht_buffer_allocation_duration = started.elapsed();
         }
@@ -15304,8 +21638,14 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             })?,
             tier1_job_count,
         };
+
+        let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
+            message: "HTJ2K Metal batch tile count exceeds u64".to_string(),
+        })?;
         if !resident_blocks.is_empty() {
             let command_encode_started = profile_stages.then(Instant::now);
+            let signpost =
+                hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_BLOCK_PREP_COMMAND_ENCODE);
             let encoder = command_buffer.new_compute_command_encoder();
             label_compute_encoder(encoder, "HTJ2K packet block prep");
             encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
@@ -15334,16 +21674,26 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 },
             );
             encoder.end_encoding();
+            drop(signpost);
             if let Some(started) = command_encode_started {
                 packet_block_prep_duration =
                     packet_block_prep_duration.saturating_add(started.elapsed());
             }
+            if split_profile_commands {
+                command_buffer = finish_resident_encode_split_command_buffer(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::PacketBlockPrep,
+                    "signinum-j2k htj2k resident packetization",
+                    &mut gpu_stage_command_buffers,
+                );
+            }
+        } else if split_profile_commands {
+            label_command_buffer(&command_buffer, "signinum-j2k htj2k resident packetization");
         }
-
-        let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
-            message: "HTJ2K Metal batch tile count exceeds u64".to_string(),
-        })?;
         let command_encode_started = profile_stages.then(Instant::now);
+        let signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKETIZATION_COMMAND_ENCODE);
         let encoder = command_buffer.new_compute_command_encoder();
         label_compute_encoder(encoder, "HTJ2K packetization");
         encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
@@ -15351,13 +21701,14 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
         encoder.set_buffer(2, Some(&packet_block_buffer), 0);
         encoder.set_buffer(3, Some(&tier1_output_buffer), 0);
-        encoder.set_buffer(4, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(4, Some(&codestream_buffer), 0);
         encoder.set_buffer(5, Some(&header_buffer), 0);
         encoder.set_buffer(6, Some(&scratch_buffer), 0);
         encoder.set_buffer(7, Some(&packet_job_buffer), 0);
         encoder.set_buffer(8, Some(&packet_status_buffer), 0);
         encoder.set_buffer(9, Some(&packet_descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
+        encoder.set_buffer(11, Some(&packet_payload_copy_job_buffer), 0);
         encoder.dispatch_threads(
             MTLSize {
                 width: tile_count,
@@ -15374,15 +21725,58 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             },
         );
         encoder.end_encoding();
+        drop(signpost);
         if let Some(started) = command_encode_started {
             packetization_duration = packetization_duration.saturating_add(started.elapsed());
         }
+        if split_profile_commands {
+            command_buffer = finish_resident_encode_split_command_buffer(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::Packetization,
+                "signinum-j2k htj2k resident packet payload copy",
+                &mut gpu_stage_command_buffers,
+            );
+        }
+        let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
+            runtime,
+            &command_buffer,
+            J2kBatchedPacketPayloadCopyDispatch {
+                payload_buffer: &tier1_output_buffer,
+                packet_output_buffer: &codestream_buffer,
+                packet_job_buffer: &packet_job_buffer,
+                packet_status_buffer: &packet_status_buffer,
+                packet_payload_copy_job_buffer: &packet_payload_copy_job_buffer,
+                tile_count,
+                max_payload_copy_jobs_per_tile: max_payload_copy_jobs_per_tile as u64,
+                label: "HTJ2K packetization payload copy",
+                signpost_name: SIGNPOST_ENCODE_HYBRID_HT_PAYLOAD_COPY_COMMAND_ENCODE,
+            },
+        );
+        if split_profile_commands {
+            if packet_payload_copy_dispatched {
+                command_buffer = finish_resident_encode_split_command_buffer(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::PacketPayloadCopy,
+                    "signinum-j2k htj2k resident codestream assembly",
+                    &mut gpu_stage_command_buffers,
+                );
+            } else {
+                label_command_buffer(
+                    &command_buffer,
+                    "signinum-j2k htj2k resident codestream assembly",
+                );
+            }
+        }
 
         let command_encode_started = profile_stages.then(Instant::now);
+        let signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_CODESTREAM_ASSEMBLY_COMMAND_ENCODE);
         let encoder = command_buffer.new_compute_command_encoder();
         label_compute_encoder(encoder, "HTJ2K codestream assembly");
         encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
-        encoder.set_buffer(0, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(0, Some(&codestream_buffer), 0);
         encoder.set_buffer(1, Some(&packet_status_buffer), 0);
         encoder.set_buffer(2, Some(&codestream_buffer), 0);
         encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
@@ -15403,13 +21797,136 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             },
         );
         encoder.end_encoding();
+        drop(signpost);
+        let max_packet_output_capacity = packet_jobs
+            .iter()
+            .map(|job| job.output_capacity)
+            .max()
+            .unwrap_or(0);
+        let max_packet_output_capacity_usize = usize::try_from(max_packet_output_capacity)
+            .map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal batch max packet output capacity exceeds usize".to_string(),
+            })?;
+        if split_profile_commands {
+            command_buffer = finish_resident_encode_split_command_buffer(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::CodestreamAssembly,
+                "signinum-j2k htj2k resident result readback",
+                &mut gpu_stage_command_buffers,
+            );
+        }
+        let codestream_payload_copy_dispatched = false;
         if let Some(started) = command_encode_started {
             codestream_assembly_duration =
                 codestream_assembly_duration.saturating_add(started.elapsed());
         }
+        let tier1_status_readback = schedule_resident_tier1_status_readback(
+            runtime,
+            &command_buffer,
+            &tier1_status_buffer,
+            J2kResidentTier1StatusKind::HighThroughput,
+            0,
+            None,
+            tier1_jobs.len(),
+            size_of::<J2kHtEncodeStatus>(),
+            profile_stages,
+        )?;
         command_buffer.commit();
+        if split_profile_commands && codestream_payload_copy_dispatched {
+            gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                stage: J2kResidentEncodeGpuStage::CodestreamPayloadCopy,
+                command_buffer: command_buffer.clone(),
+            });
+        }
 
+        if profile_stages {
+            let mut prepare_command_buffer_ptrs = Vec::new();
+            for tile in &prepared_tiles {
+                let mut pushed_split_prepare = false;
+                for (stage, command_buffer) in [
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientDeinterleaveRct,
+                        tile.prepare_deinterleave_rct_command_buffer.as_ref(),
+                    ),
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientDwt53,
+                        tile.prepare_dwt53_command_buffer.as_ref(),
+                    ),
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientExtract,
+                        tile.prepare_coefficient_extract_command_buffer.as_ref(),
+                    ),
+                ] {
+                    if let Some(command_buffer) = command_buffer {
+                        let ptr = command_buffer.as_ptr();
+                        if prepare_command_buffer_ptrs.contains(&ptr) {
+                            continue;
+                        }
+                        prepare_command_buffer_ptrs.push(ptr);
+                        pushed_split_prepare = true;
+                        gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                            stage,
+                            command_buffer: command_buffer.clone(),
+                        });
+                    }
+                }
+                for command_buffer in &tile.prepare_dwt53_vertical_command_buffers {
+                    let ptr = command_buffer.as_ptr();
+                    if prepare_command_buffer_ptrs.contains(&ptr) {
+                        continue;
+                    }
+                    prepare_command_buffer_ptrs.push(ptr);
+                    pushed_split_prepare = true;
+                    gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                        stage: J2kResidentEncodeGpuStage::CoefficientDwt53Vertical,
+                        command_buffer: command_buffer.clone(),
+                    });
+                }
+                for command_buffer in &tile.prepare_dwt53_horizontal_command_buffers {
+                    let ptr = command_buffer.as_ptr();
+                    if prepare_command_buffer_ptrs.contains(&ptr) {
+                        continue;
+                    }
+                    prepare_command_buffer_ptrs.push(ptr);
+                    pushed_split_prepare = true;
+                    gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                        stage: J2kResidentEncodeGpuStage::CoefficientDwt53Horizontal,
+                        command_buffer: command_buffer.clone(),
+                    });
+                }
+                if pushed_split_prepare {
+                    continue;
+                }
+                let ptr = tile.prepare_command_buffer.as_ptr();
+                if prepare_command_buffer_ptrs.contains(&ptr) {
+                    continue;
+                }
+                prepare_command_buffer_ptrs.push(ptr);
+                gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                    stage: J2kResidentEncodeGpuStage::CoefficientPrep,
+                    command_buffer: tile.prepare_command_buffer.clone(),
+                });
+            }
+        }
+
+        retained_command_buffers.extend(
+            gpu_stage_command_buffers
+                .iter()
+                .map(|stage_command_buffer| stage_command_buffer.command_buffer.clone()),
+        );
         for tile in prepared_tiles {
+            if let Some(command_buffer) = tile.prepare_deinterleave_rct_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
+            if let Some(command_buffer) = tile.prepare_dwt53_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
+            retained_command_buffers.extend(tile.prepare_dwt53_vertical_command_buffers);
+            retained_command_buffers.extend(tile.prepare_dwt53_horizontal_command_buffers);
+            if let Some(command_buffer) = tile.prepare_coefficient_extract_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
             retained_command_buffers.push(tile.prepare_command_buffer);
             retained_buffers.push(tile.coefficient_buffer);
             retained_buffers.push(tile.deinterleave_status_buffer);
@@ -15428,11 +21945,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         retained_buffers.push(packet_block_buffer);
         retained_buffers.push(packet_descriptor_buffer);
         retained_buffers.push(state_block_buffer);
-        retained_buffers.push(packet_output_buffer);
+        retained_buffers.push(packet_payload_copy_job_buffer);
         retained_buffers.push(header_buffer);
         retained_buffers.push(scratch_buffer);
         retained_buffers.push(packet_job_buffer);
-        retained_buffers.push(packet_status_buffer);
+        retained_buffers.push(packet_status_buffer.clone());
         retained_buffers.push(codestream_job_buffer);
 
         stage_stats.ht_table_build_duration = ht_table_build_duration;
@@ -15444,6 +21961,17 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             .saturating_add(packet_block_prep_duration)
             .saturating_add(packetization_duration)
             .saturating_add(codestream_assembly_duration);
+        stage_stats.packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total;
+        stage_stats.max_packet_payload_copy_jobs_per_tile = max_payload_copy_jobs_per_tile;
+        stage_stats.packet_payload_copy_launched_stripe_count_total = packet_jobs
+            .len()
+            .saturating_mul(max_payload_copy_jobs_per_tile)
+            .saturating_mul(PACKET_PAYLOAD_COPY_STRIPES_PER_JOB as usize);
+        stage_stats.tier1_output_capacity_total = tier1_output_capacity_total;
+        stage_stats.max_tier1_output_capacity = max_tier1_output_capacity;
+        stage_stats.packet_output_capacity_total = packet_output_capacity_total;
+        stage_stats.max_packet_output_capacity = max_packet_output_capacity_usize;
+        stage_stats.codestream_payload_copy_launched_thread_count_total = 0;
         stage_stats.code_block_count = tier1_jobs.len();
 
         Ok(J2kPendingResidentLosslessCodestreamBatch {
@@ -15452,11 +21980,22 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             byte_offsets: codestream_offsets,
             capacities: codestream_capacities,
             status_buffer: codestream_status_buffer,
-            command_buffer: command_buffer.to_owned(),
+            packet_status_buffer,
+            tier1_status_readback,
+            classic_tier1_density_readback: None,
+            classic_tier1_symbol_plan_readback: None,
+            classic_tier1_pass_plan_readback: None,
+            classic_tier1_token_emit_readback: None,
+            classic_tier1_split_token_emit_readback: None,
+            classic_gpu_token_pack_used: false,
+            command_buffer,
             retained_command_buffers,
             _retained_buffers: retained_buffers,
             recyclable_private_buffers,
+            recyclable_shared_buffers,
+            gpu_stage_command_buffers,
             stage_stats,
+            codestream_payload_copy_dispatched,
             status_stage: "HTJ2K batched codestream assembly",
             length_error: "HTJ2K Metal batched codestream output length exceeds usize",
             capacity_error: "HTJ2K Metal batched codestream output length exceeds buffer",
@@ -15468,6 +22007,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
 pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
     session: &crate::MetalBackendSession,
     items: Vec<J2kResidentClassicBatchEncodeItem>,
+    output_capacity_mode: J2kClassicEncodeOutputCapacityMode,
 ) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
     if items.is_empty() {
         return Err(Error::MetalKernel {
@@ -15485,6 +22025,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             code_blocks,
             recyclable_private_buffers,
             _prepare_command_buffer: prepare_command_buffer,
+            _prepare_deinterleave_rct_command_buffer: prepare_deinterleave_rct_command_buffer,
+            _prepare_dwt53_command_buffer: prepare_dwt53_command_buffer,
+            _prepare_dwt53_vertical_command_buffers: prepare_dwt53_vertical_command_buffers,
+            _prepare_dwt53_horizontal_command_buffers: prepare_dwt53_horizontal_command_buffers,
+            _prepare_coefficient_extract_command_buffer: prepare_coefficient_extract_command_buffer,
             _deinterleave_status_buffer: deinterleave_status_buffer,
             _plane_buffers: plane_buffers,
             _scratch_buffers: scratch_buffers,
@@ -15498,6 +22043,11 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             code_blocks,
             recyclable_private_buffers,
             prepare_command_buffer,
+            prepare_deinterleave_rct_command_buffer,
+            prepare_dwt53_command_buffer,
+            prepare_dwt53_vertical_command_buffers,
+            prepare_dwt53_horizontal_command_buffers,
+            prepare_coefficient_extract_command_buffer,
             deinterleave_status_buffer,
             plane_buffers,
             scratch_buffers,
@@ -15513,9 +22063,31 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
     }
 
     with_runtime_for_device(&session.device, |runtime| {
-        let command_buffer = runtime.queue.new_command_buffer();
+        let profile_stages = metal_profile_stages_enabled();
+        // Commit classic stages independently so the long Tier-1 kernel can run
+        // while CPU packet metadata for the following stages is built.
+        let split_command_buffers = true;
+        let mut stage_stats = J2kResidentEncodeStageStats::default();
+        let mut classic_tier1_setup_duration = Duration::ZERO;
+        let mut classic_block_encode_duration = Duration::ZERO;
+        let mut classic_packet_plan_duration = Duration::ZERO;
+        let mut classic_packet_buffer_setup_duration = Duration::ZERO;
+        let mut classic_command_buffer_commit_duration = Duration::ZERO;
+        let packet_block_prep_duration = Duration::ZERO;
+        let mut packetization_duration = Duration::ZERO;
+        let mut codestream_assembly_duration = Duration::ZERO;
         let mut retained_command_buffers = Vec::with_capacity(prepared_tiles.len());
+        let mut gpu_stage_command_buffers = Vec::new();
         let mut retained_buffers = Vec::<Buffer>::new();
+        let profile_classic_tier1_density = metal_profile_classic_tier1_density_enabled();
+        let profile_classic_tier1_raw_pack = metal_profile_classic_tier1_raw_pack_enabled();
+        let profile_classic_tier1_arithmetic_pack =
+            metal_profile_classic_tier1_arithmetic_pack_enabled();
+        let profile_classic_tier1_pass_plan = metal_profile_classic_tier1_pass_plan_enabled();
+        let profile_classic_tier1_symbol_plan = metal_profile_classic_tier1_symbol_plan_enabled();
+        let profile_classic_tier1_token_emit = metal_profile_classic_tier1_token_emit_enabled();
+        let profile_classic_tier1_split_token_emit =
+            metal_profile_classic_tier1_split_token_emit_enabled();
         let shared_coefficient_buffer = prepared_tiles.first().and_then(|first| {
             let ptr = first.coefficient_buffer.as_ptr();
             prepared_tiles
@@ -15526,6 +22098,16 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 })
                 .then(|| first.coefficient_buffer.clone())
         });
+        let needs_coefficient_copy = shared_coefficient_buffer.is_none();
+        let initial_command_buffer_label = if split_command_buffers && needs_coefficient_copy {
+            "signinum-j2k classic resident coefficient copy"
+        } else if split_command_buffers {
+            "signinum-j2k classic resident Tier-1 encode"
+        } else {
+            "signinum-j2k classic resident encode batch"
+        };
+        let mut command_buffer =
+            new_resident_encode_command_buffer(runtime, initial_command_buffer_label);
         let (coefficient_buffer, coefficient_offsets) =
             if let Some(coefficient_buffer) = shared_coefficient_buffer {
                 (
@@ -15551,6 +22133,9 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     MTLResourceOptions::StorageModePrivate,
                 );
                 let blit = command_buffer.new_blit_command_encoder();
+                if profile_stages {
+                    blit.set_label("J2K coefficient prep");
+                }
                 for (tile, &dst_offset) in prepared_tiles.iter().zip(coefficient_offsets.iter()) {
                     if tile.coefficient_byte_len > 0 {
                         blit.copy_from_buffer(
@@ -15563,13 +22148,28 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     }
                 }
                 blit.end_encoding();
+                if split_command_buffers {
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::CoefficientCopy,
+                        "signinum-j2k classic resident Tier-1 encode",
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
                 (coefficient_buffer, coefficient_offsets)
             };
 
+        let classic_tier1_setup_started = profile_stages.then(Instant::now);
+        let classic_tier1_setup_signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_SETUP);
+        let classic_resident_style_flags = classic_resident_style_flags_from_env();
         let mut tier1_jobs = Vec::<J2kClassicEncodeBatchJob>::new();
         let mut tier1_output_capacity_total = 0usize;
+        let mut max_tier1_output_capacity = 0usize;
         let mut tier1_segment_capacity_total = 0usize;
-        let segment_capacity_per_job = 256usize;
         let mut tile_tier1_job_bases = Vec::<usize>::with_capacity(prepared_tiles.len());
         let mut tile_tier1_output_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
         for (tile, &coefficient_byte_offset) in
@@ -15587,11 +22187,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     message: "J2K Metal batch coefficient offset exceeds u32".to_string(),
                 })?;
             for block in &tile.code_blocks {
-                let output_capacity = classic_encode_output_capacity(
+                let output_capacity = classic_encode_output_capacity_for_mode(
                     block.width,
                     block.height,
                     block.total_bitplanes,
+                    output_capacity_mode,
                 )?;
+                max_tier1_output_capacity = max_tier1_output_capacity.max(output_capacity);
                 let output_offset =
                     u32::try_from(tier1_output_capacity_total).map_err(|_| Error::MetalKernel {
                         message: "J2K Metal batch Tier-1 output offset exceeds u32".to_string(),
@@ -15607,6 +22209,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     .ok_or_else(|| Error::MetalKernel {
                         message: "J2K Metal batch coefficient offset overflow".to_string(),
                     })?;
+                let segment_capacity = classic_encode_segment_capacity(
+                    classic_resident_style_flags,
+                    block.total_bitplanes,
+                );
                 tier1_jobs.push(J2kClassicEncodeBatchJob {
                     coefficient_offset,
                     output_offset,
@@ -15615,14 +22221,14 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     height: block.height,
                     sub_band_type: classic_encode_sub_band_code(block.sub_band_type),
                     total_bitplanes: u32::from(block.total_bitplanes),
-                    style_flags: 0,
+                    style_flags: classic_resident_style_flags,
                     output_capacity: u32::try_from(output_capacity).map_err(|_| {
                         Error::MetalKernel {
                             message: "J2K Metal batch Tier-1 output capacity exceeds u32"
                                 .to_string(),
                         }
                     })?,
-                    segment_capacity: u32::try_from(segment_capacity_per_job).map_err(|_| {
+                    segment_capacity: u32::try_from(segment_capacity).map_err(|_| {
                         Error::MetalKernel {
                             message: "J2K Metal batch Tier-1 segment capacity exceeds u32"
                                 .to_string(),
@@ -15635,7 +22241,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         message: "J2K Metal batch Tier-1 output buffer overflow".to_string(),
                     })?;
                 tier1_segment_capacity_total = tier1_segment_capacity_total
-                    .checked_add(segment_capacity_per_job)
+                    .checked_add(segment_capacity)
                     .ok_or_else(|| Error::MetalKernel {
                         message: "J2K Metal batch Tier-1 segment buffer overflow".to_string(),
                     })?;
@@ -15653,49 +22259,499 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             message: "J2K Metal batch Tier-1 job count exceeds u32".to_string(),
         })?;
         let tier1_job_buffer = owned_slice_buffer(&runtime.device, &tier1_jobs);
-        let tier1_output_buffer = runtime.device.new_buffer(
-            tier1_output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        let mut recyclable_shared_buffers = Vec::<(usize, Buffer)>::new();
+        let tier1_output_buffer = take_recyclable_private_buffer(
+            runtime,
+            tier1_output_capacity_total.max(1),
+            &mut recyclable_private_buffers,
         );
-        let tier1_status_buffer = runtime.device.new_buffer(
-            (tier1_jobs.len().max(1) * size_of::<J2kClassicEncodeStatus>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let tier1_status_buffer = take_recyclable_private_buffer(
+            runtime,
+            tier1_jobs.len().max(1) * size_of::<J2kClassicEncodeStatus>(),
+            &mut recyclable_private_buffers,
         );
-        let tier1_segment_buffer = runtime.device.new_buffer(
-            (tier1_segment_capacity_total.max(1) * size_of::<J2kClassicSegment>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let tier1_segment_buffer = take_recyclable_private_buffer(
+            runtime,
+            tier1_segment_capacity_total.max(1) * size_of::<J2kClassicSegment>(),
+            &mut recyclable_private_buffers,
         );
-        if tier1_job_count > 0 {
-            let encoder = command_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&runtime.classic_encode_code_blocks);
-            encoder.set_buffer(0, Some(&coefficient_buffer), 0);
-            encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
-            encoder.set_buffer(2, Some(&tier1_job_buffer), 0);
-            encoder.set_buffer(3, Some(&tier1_status_buffer), 0);
-            encoder.set_buffer(4, Some(&tier1_segment_buffer), 0);
-            encoder.set_bytes(
-                5,
-                size_of::<u32>() as u64,
-                (&raw const tier1_job_count).cast(),
-            );
-            encoder.dispatch_threads(
-                MTLSize {
-                    width: u64::from(tier1_job_count),
-                    height: 1,
-                    depth: 1,
-                },
-                MTLSize {
-                    width: runtime
-                        .classic_encode_code_blocks
-                        .thread_execution_width()
-                        .max(1),
-                    height: 1,
-                    depth: 1,
-                },
-            );
-            encoder.end_encoding();
+        drop(classic_tier1_setup_signpost);
+        if let Some(started) = classic_tier1_setup_started {
+            classic_tier1_setup_duration = started.elapsed();
         }
+        let classic_split_mq_byte_gpu_token_pack_requested =
+            classic_tier1_split_mq_byte_gpu_token_pack_requested();
+        let classic_split_mq_byte_gpu_token_pack_disabled =
+            classic_tier1_split_mq_byte_gpu_token_pack_disabled();
+        let classic_split_gpu_token_pack_requested = classic_tier1_split_gpu_token_pack_requested();
+        let classic_gpu_token_pack_requested = classic_tier1_gpu_token_pack_requested();
+        let use_classic_split_mq_byte_gpu_token_pack = if tier1_job_count > 0 {
+            if classic_split_mq_byte_gpu_token_pack_requested {
+                if !classic_tier1_gpu_token_pack_supported(&tier1_jobs) {
+                    return Err(Error::MetalKernel {
+                        message: "J2K Metal classic split MQ-byte GPU token-pack route currently supports only bypass_u16_32 resident jobs".to_string(),
+                    });
+                }
+                true
+            } else {
+                !classic_split_mq_byte_gpu_token_pack_disabled
+                    && !classic_split_gpu_token_pack_requested
+                    && !classic_gpu_token_pack_requested
+                    && classic_tier1_gpu_token_pack_supported(&tier1_jobs)
+            }
+        } else {
+            false
+        };
+        let use_classic_split_gpu_token_pack = if classic_split_gpu_token_pack_requested
+            && !use_classic_split_mq_byte_gpu_token_pack
+            && tier1_job_count > 0
+        {
+            if !classic_tier1_gpu_token_pack_supported(&tier1_jobs) {
+                return Err(Error::MetalKernel {
+                    message: "J2K Metal classic split GPU token-pack route currently supports only bypass_u16_32 resident jobs".to_string(),
+                });
+            }
+            true
+        } else {
+            false
+        };
+        let use_classic_gpu_token_pack = if !use_classic_split_mq_byte_gpu_token_pack
+            && !use_classic_split_gpu_token_pack
+            && classic_gpu_token_pack_requested
+            && tier1_job_count > 0
+        {
+            if !classic_tier1_gpu_token_pack_supported(&tier1_jobs) {
+                return Err(Error::MetalKernel {
+                    message: "J2K Metal classic GPU token-pack route currently supports only bypass_u16_32 resident jobs".to_string(),
+                });
+            }
+            true
+        } else {
+            false
+        };
+        let mut classic_gpu_token_pack_readback = None;
+        if tier1_job_count > 0 {
+            let command_encode_started = profile_stages.then(Instant::now);
+            let signpost =
+                hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_TIER1_COMMAND_ENCODE);
+            if use_classic_split_mq_byte_gpu_token_pack || use_classic_split_gpu_token_pack {
+                let token_buffers = dispatch_classic_tier1_split_token_emit_for_gpu_pack(
+                    runtime,
+                    &command_buffer,
+                    &coefficient_buffer,
+                    &tier1_job_buffer,
+                    &tier1_jobs,
+                    &mut recyclable_private_buffers,
+                    use_classic_split_mq_byte_gpu_token_pack,
+                )?;
+                if split_command_buffers {
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::ClassicTier1SplitTokenEmit,
+                        "signinum-j2k classic resident Tier-1 split token pack",
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
+                dispatch_classic_tier1_split_token_pack_from_gpu_tokens(
+                    runtime,
+                    &command_buffer,
+                    &tier1_job_buffer,
+                    &token_buffers,
+                    &tier1_output_buffer,
+                    &tier1_status_buffer,
+                    &tier1_segment_buffer,
+                );
+                drop(signpost);
+                if let Some(started) = command_encode_started {
+                    classic_block_encode_duration =
+                        classic_block_encode_duration.saturating_add(started.elapsed());
+                }
+                if split_command_buffers {
+                    let next_label = if profile_classic_tier1_density {
+                        "signinum-j2k classic resident Tier-1 density profile"
+                    } else if profile_classic_tier1_raw_pack {
+                        "signinum-j2k classic resident Tier-1 raw-pack profile"
+                    } else if profile_classic_tier1_arithmetic_pack {
+                        "signinum-j2k classic resident Tier-1 arithmetic-pack profile"
+                    } else if profile_classic_tier1_symbol_plan {
+                        "signinum-j2k classic resident Tier-1 symbol plan"
+                    } else if profile_classic_tier1_token_emit {
+                        "signinum-j2k classic resident Tier-1 token emit"
+                    } else if profile_classic_tier1_split_token_emit {
+                        "signinum-j2k classic resident Tier-1 split token emit"
+                    } else {
+                        "signinum-j2k classic resident packetization"
+                    };
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
+                        next_label,
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
+            } else if use_classic_gpu_token_pack {
+                let token_buffers = dispatch_classic_tier1_token_emit_for_gpu_pack(
+                    runtime,
+                    &command_buffer,
+                    &coefficient_buffer,
+                    &tier1_job_buffer,
+                    &tier1_jobs,
+                    &mut recyclable_private_buffers,
+                )?;
+                if split_command_buffers {
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::ClassicTier1TokenEmit,
+                        "signinum-j2k classic resident Tier-1 token pack",
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
+                dispatch_classic_tier1_token_pack_from_gpu_tokens(
+                    runtime,
+                    &command_buffer,
+                    &tier1_job_buffer,
+                    &token_buffers,
+                    &tier1_output_buffer,
+                    &tier1_status_buffer,
+                    &tier1_segment_buffer,
+                );
+                classic_gpu_token_pack_readback = schedule_classic_tier1_gpu_token_pack_readback(
+                    runtime,
+                    &command_buffer,
+                    &token_buffers,
+                    profile_stages,
+                )?;
+                drop(signpost);
+                if let Some(started) = command_encode_started {
+                    classic_block_encode_duration =
+                        classic_block_encode_duration.saturating_add(started.elapsed());
+                }
+                if split_command_buffers {
+                    let next_label = if profile_classic_tier1_density {
+                        "signinum-j2k classic resident Tier-1 density profile"
+                    } else if profile_classic_tier1_raw_pack {
+                        "signinum-j2k classic resident Tier-1 raw-pack profile"
+                    } else if profile_classic_tier1_arithmetic_pack {
+                        "signinum-j2k classic resident Tier-1 arithmetic-pack profile"
+                    } else if profile_classic_tier1_symbol_plan {
+                        "signinum-j2k classic resident Tier-1 symbol plan"
+                    } else if profile_classic_tier1_token_emit {
+                        "signinum-j2k classic resident Tier-1 token emit"
+                    } else if profile_classic_tier1_split_token_emit {
+                        "signinum-j2k classic resident Tier-1 split token emit"
+                    } else {
+                        "signinum-j2k classic resident packetization"
+                    };
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::ClassicTier1TokenPack,
+                        next_label,
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
+            } else {
+                let encoder = command_buffer.new_compute_command_encoder();
+                label_compute_encoder(encoder, "J2K Tier-1 encode");
+                let classic_encode_pipeline =
+                    classic_encode_code_blocks_pipeline(runtime, &tier1_jobs);
+                encoder.set_compute_pipeline_state(classic_encode_pipeline);
+                encoder.set_buffer(0, Some(&coefficient_buffer), 0);
+                encoder.set_buffer(1, Some(&tier1_output_buffer), 0);
+                encoder.set_buffer(2, Some(&tier1_job_buffer), 0);
+                encoder.set_buffer(3, Some(&tier1_status_buffer), 0);
+                encoder.set_buffer(4, Some(&tier1_segment_buffer), 0);
+                encoder.set_bytes(
+                    5,
+                    size_of::<u32>() as u64,
+                    (&raw const tier1_job_count).cast(),
+                );
+                encoder.dispatch_threads(
+                    MTLSize {
+                        width: u64::from(tier1_job_count),
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: classic_encode_pipeline.thread_execution_width().max(1),
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+                encoder.end_encoding();
+                drop(signpost);
+                if let Some(started) = command_encode_started {
+                    classic_block_encode_duration =
+                        classic_block_encode_duration.saturating_add(started.elapsed());
+                }
+                if split_command_buffers {
+                    let next_label = if profile_classic_tier1_density {
+                        "signinum-j2k classic resident Tier-1 density profile"
+                    } else if profile_classic_tier1_raw_pack {
+                        "signinum-j2k classic resident Tier-1 raw-pack profile"
+                    } else if profile_classic_tier1_arithmetic_pack {
+                        "signinum-j2k classic resident Tier-1 arithmetic-pack profile"
+                    } else if profile_classic_tier1_symbol_plan {
+                        "signinum-j2k classic resident Tier-1 symbol plan"
+                    } else if profile_classic_tier1_token_emit {
+                        "signinum-j2k classic resident Tier-1 token emit"
+                    } else if profile_classic_tier1_split_token_emit {
+                        "signinum-j2k classic resident Tier-1 split token emit"
+                    } else {
+                        "signinum-j2k classic resident packetization"
+                    };
+                    command_buffer = finish_resident_encode_split_command_buffer_timed(
+                        command_buffer,
+                        runtime,
+                        J2kResidentEncodeGpuStage::ClassicBlock,
+                        next_label,
+                        &mut gpu_stage_command_buffers,
+                        profile_stages,
+                        &mut classic_command_buffer_commit_duration,
+                    );
+                }
+            }
+        } else if split_command_buffers {
+            label_command_buffer(
+                &command_buffer,
+                "signinum-j2k classic resident packetization",
+            );
+        }
+        let classic_tier1_density_readback = if tier1_job_count > 0 {
+            let readback = dispatch_classic_tier1_density_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+            )?;
+            if readback.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_raw_pack {
+                    "signinum-j2k classic resident Tier-1 raw-pack profile"
+                } else if profile_classic_tier1_arithmetic_pack {
+                    "signinum-j2k classic resident Tier-1 arithmetic-pack profile"
+                } else if profile_classic_tier1_symbol_plan {
+                    "signinum-j2k classic resident Tier-1 symbol plan"
+                } else if profile_classic_tier1_token_emit {
+                    "signinum-j2k classic resident Tier-1 token emit"
+                } else if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1Density,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            readback
+        } else {
+            None
+        };
+        let classic_tier1_raw_pack_buffer = if tier1_job_count > 0 {
+            let buffer = dispatch_classic_tier1_raw_pack_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+                tier1_output_capacity_total,
+            )?;
+            if buffer.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_arithmetic_pack {
+                    "signinum-j2k classic resident Tier-1 arithmetic-pack profile"
+                } else if profile_classic_tier1_symbol_plan {
+                    "signinum-j2k classic resident Tier-1 symbol plan"
+                } else if profile_classic_tier1_token_emit {
+                    "signinum-j2k classic resident Tier-1 token emit"
+                } else if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1RawPack,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            buffer
+        } else {
+            None
+        };
+        let classic_tier1_arithmetic_pack_buffer = if tier1_job_count > 0 {
+            let buffer = dispatch_classic_tier1_arithmetic_pack_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+                tier1_output_capacity_total,
+            )?;
+            if buffer.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_symbol_plan {
+                    "signinum-j2k classic resident Tier-1 symbol plan"
+                } else if profile_classic_tier1_token_emit {
+                    "signinum-j2k classic resident Tier-1 token emit"
+                } else if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1ArithmeticPack,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            buffer
+        } else {
+            None
+        };
+        let classic_tier1_symbol_plan_readback = if tier1_job_count > 0 {
+            let readback = dispatch_classic_tier1_symbol_plan_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+            )?;
+            if readback.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_pass_plan {
+                    "signinum-j2k classic resident Tier-1 pass plan"
+                } else if profile_classic_tier1_token_emit {
+                    "signinum-j2k classic resident Tier-1 token emit"
+                } else if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1SymbolPlan,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            readback
+        } else {
+            None
+        };
+        let classic_tier1_pass_plan_readback = if tier1_job_count > 0 {
+            let readback = dispatch_classic_tier1_pass_plan_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+            )?;
+            if readback.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_token_emit {
+                    "signinum-j2k classic resident Tier-1 token emit"
+                } else if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1PassPlan,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            readback
+        } else {
+            None
+        };
+        let classic_tier1_token_emit_readback = if classic_gpu_token_pack_readback.is_some() {
+            classic_gpu_token_pack_readback
+        } else if tier1_job_count > 0 {
+            let readback = dispatch_classic_tier1_token_emit_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+            )?;
+            if readback.is_some() && split_command_buffers {
+                let next_label = if profile_classic_tier1_split_token_emit {
+                    "signinum-j2k classic resident Tier-1 split token emit"
+                } else {
+                    "signinum-j2k classic resident packetization"
+                };
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1TokenEmit,
+                    next_label,
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            readback
+        } else {
+            None
+        };
+        let classic_tier1_split_token_emit_readback = if tier1_job_count > 0 {
+            let readback = dispatch_classic_tier1_split_token_emit_profile(
+                runtime,
+                &command_buffer,
+                &coefficient_buffer,
+                &tier1_job_buffer,
+                &tier1_jobs,
+            )?;
+            if readback.is_some() && split_command_buffers {
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::ClassicTier1SplitTokenEmit,
+                    "signinum-j2k classic resident packetization",
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            }
+            readback
+        } else {
+            None
+        };
 
+        let classic_packet_plan_started = profile_stages.then(Instant::now);
+        let classic_packet_plan_signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN);
         let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
         let mut packet_subbands = Vec::<J2kPacketSubband>::new();
         let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
@@ -15705,6 +22761,8 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         let mut assembly_jobs =
             Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
         let mut packet_output_capacity_total = 0usize;
+        let mut packet_payload_copy_job_capacity_total = 0usize;
+        let mut max_payload_copy_jobs_per_tile = 0usize;
         let mut header_capacity_total = 0usize;
         let mut scratch_words_total = 0usize;
         let mut codestream_capacity_total = 0usize;
@@ -15721,6 +22779,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             let mut max_tree_nodes = 1usize;
             let mut local_subband_count = 0usize;
             let mut local_resident_block_count = 0usize;
+            let mut local_payload_copy_job_capacity = 0usize;
 
             for resolution in &tile.resolutions {
                 let subband_offset =
@@ -15854,13 +22913,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 for subband in &packet_subbands[local_subband_offset + subband_start
                     ..local_subband_offset + subband_start + subband_count]
                 {
+                    let subband_block_count =
+                        usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
+                            message: "J2K Metal batch descriptor block count exceeds usize"
+                                .to_string(),
+                        })?;
                     packet_block_count = packet_block_count
-                        .checked_add(usize::try_from(subband.block_count).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "J2K Metal batch descriptor block count exceeds usize"
-                                    .to_string(),
-                            }
-                        })?)
+                        .checked_add(subband_block_count)
                         .ok_or_else(|| Error::MetalKernel {
                             message: "J2K Metal batch descriptor block count overflow".to_string(),
                         })?;
@@ -15893,6 +22952,12 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         message: "J2K Metal batch descriptor state layout mismatch".to_string(),
                     });
                 }
+                local_payload_copy_job_capacity = local_payload_copy_job_capacity
+                    .checked_add(packet_block_count)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "J2K Metal batch packet payload-copy job count overflow"
+                            .to_string(),
+                    })?;
                 packet_descriptors.push(J2kPacketDescriptor {
                     packet_index: descriptor.packet_index,
                     state_index: descriptor.state_index,
@@ -15912,21 +22977,15 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 .ok_or_else(|| Error::MetalKernel {
                     message: "J2K Metal batch packet header capacity overflow".to_string(),
                 })?;
-            let packet_output_capacity = tile_tier1_output_capacities[tile_index]
-                .checked_add(
-                    header_capacity.saturating_mul(
-                        tile.packet_descriptors
-                            .len()
-                            .max(tile.resolutions.len())
-                            .max(1),
-                    ),
-                )
-                .and_then(|bytes| bytes.checked_add(1024))
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch packet output capacity overflow".to_string(),
-                })?;
+            let packet_output_capacity = classic_packet_output_capacity(
+                tile_tier1_output_capacities[tile_index],
+                header_capacity,
+                tile.packet_descriptors.len().max(tile.resolutions.len()),
+                tile.codestream,
+            )?;
             let codestream_capacity =
                 lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
+            let codestream_payload_offset = lossless_codestream_payload_offset(tile.codestream)?;
             let scratch_words =
                 max_tree_nodes
                     .checked_mul(6)
@@ -15934,10 +22993,18 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                         message: "J2K Metal batch scratch size overflow".to_string(),
                     })?;
 
-            let packet_output_offset = packet_output_capacity_total;
             let header_offset = header_capacity_total;
             let scratch_offset = scratch_words_total;
+            if tile.packet_descriptors.is_empty() {
+                local_payload_copy_job_capacity = local_resident_block_count;
+            }
+            let payload_copy_offset = packet_payload_copy_job_capacity_total;
             let codestream_offset = codestream_capacity_total;
+            let packet_output_offset = codestream_offset
+                .checked_add(codestream_payload_offset)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch direct packet output offset overflow".to_string(),
+                })?;
             packet_jobs.push(J2kBatchedPacketEncodeJob {
                 resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
                     Error::MetalKernel {
@@ -15975,6 +23042,18 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
                     message: "J2K Metal batch scratch offset exceeds u32".to_string(),
                 })?,
+                payload_copy_offset: u32::try_from(payload_copy_offset).map_err(|_| {
+                    Error::MetalKernel {
+                        message: "J2K Metal batch packet payload-copy offset exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                payload_copy_capacity: u32::try_from(local_payload_copy_job_capacity).map_err(
+                    |_| Error::MetalKernel {
+                        message: "J2K Metal batch packet payload-copy capacity exceeds u32"
+                            .to_string(),
+                    },
+                )?,
                 resolution_count: tile.resolution_count,
                 num_layers: u32::from(tile.num_layers),
                 num_components: u32::from(tile.num_components),
@@ -16029,6 +23108,9 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 ),
                 write_tlm: u32::from(tile.codestream.write_tlm),
                 high_throughput: 0,
+                code_block_style: classic_cod_block_style_from_flags(classic_resident_style_flags),
+                code_block_width_exp: u32::from(tile.codestream.code_block_width_exp),
+                code_block_height_exp: u32::from(tile.codestream.code_block_height_exp),
                 output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
                     Error::MetalKernel {
                         message: "J2K Metal batch codestream capacity exceeds u32".to_string(),
@@ -16042,6 +23124,13 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                 .ok_or_else(|| Error::MetalKernel {
                     message: "J2K Metal batch packet output total overflow".to_string(),
                 })?;
+            packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total
+                .checked_add(local_payload_copy_job_capacity)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch packet payload-copy job total overflow".to_string(),
+                })?;
+            max_payload_copy_jobs_per_tile =
+                max_payload_copy_jobs_per_tile.max(local_payload_copy_job_capacity);
             header_capacity_total = header_capacity_total
                 .checked_add(header_capacity)
                 .ok_or_else(|| Error::MetalKernel {
@@ -16059,32 +23148,44 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     message: "J2K Metal batch codestream total overflow".to_string(),
                 })?;
         }
+        drop(classic_packet_plan_signpost);
+        if let Some(started) = classic_packet_plan_started {
+            classic_packet_plan_duration = started.elapsed();
+        }
 
+        let classic_packet_buffer_setup_started = profile_stages.then(Instant::now);
+        let classic_packet_buffer_setup_signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_BUFFER_SETUP);
         let packet_resolution_buffer = copied_slice_buffer(&runtime.device, &packet_resolutions);
         let packet_subband_buffer = copied_slice_buffer(&runtime.device, &packet_subbands);
         let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
-        let packet_block_buffer = runtime.device.new_buffer(
-            (resident_blocks.len().max(1) * size_of::<J2kPacketBlock>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
         let packet_descriptor_buffer = copied_slice_buffer(&runtime.device, &packet_descriptors);
         let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
-        let packet_output_buffer = runtime.device.new_buffer(
-            packet_output_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let packet_payload_copy_job_buffer = take_recyclable_private_buffer(
+            runtime,
+            packet_payload_copy_job_capacity_total
+                .max(1)
+                .checked_mul(size_of::<J2kPacketPayloadCopyJob>())
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "J2K Metal batch packet payload-copy buffer size overflow".to_string(),
+                })?,
+            &mut recyclable_private_buffers,
         );
-        let header_buffer = runtime.device.new_buffer(
-            header_capacity_total.max(1) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let header_buffer = take_recyclable_private_buffer(
+            runtime,
+            header_capacity_total.max(1),
+            &mut recyclable_private_buffers,
         );
-        let scratch_buffer = runtime.device.new_buffer(
-            (scratch_words_total.max(1) * size_of::<u32>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let scratch_buffer = take_recyclable_private_buffer(
+            runtime,
+            scratch_words_total.max(1) * size_of::<u32>(),
+            &mut recyclable_private_buffers,
         );
         let packet_job_buffer = copied_slice_buffer(&runtime.device, &packet_jobs);
-        let packet_status_buffer = runtime.device.new_buffer(
-            (packet_jobs.len() * size_of::<J2kPacketEncodeStatus>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
+        let packet_status_buffer = zeroed_recyclable_shared_buffer(
+            runtime,
+            packet_jobs.len().max(1) * size_of::<J2kPacketEncodeStatus>(),
+            &mut recyclable_shared_buffers,
         );
         let codestream_job_buffer = copied_slice_buffer(&runtime.device, &assembly_jobs);
         let codestream_buffer = runtime.device.new_buffer(
@@ -16095,6 +23196,10 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             (assembly_jobs.len() * size_of::<J2kCodestreamAssemblyStatus>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
+        drop(classic_packet_buffer_setup_signpost);
+        if let Some(started) = classic_packet_buffer_setup_started {
+            classic_packet_buffer_setup_duration = started.elapsed();
+        }
 
         let resident_block_params = J2kResidentPacketBlockParams {
             block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
@@ -16102,52 +23207,36 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             })?,
             tier1_job_count,
         };
-        if !resident_blocks.is_empty() {
-            let encoder = command_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_classic);
-            encoder.set_buffer(0, Some(&resident_block_buffer), 0);
-            encoder.set_buffer(1, Some(&tier1_job_buffer), 0);
-            encoder.set_buffer(2, Some(&tier1_status_buffer), 0);
-            encoder.set_buffer(3, Some(&packet_block_buffer), 0);
-            encoder.set_bytes(
-                4,
-                size_of::<J2kResidentPacketBlockParams>() as u64,
-                (&raw const resident_block_params).cast(),
-            );
-            encoder.dispatch_threads(
-                MTLSize {
-                    width: resident_blocks.len() as u64,
-                    height: 1,
-                    depth: 1,
-                },
-                MTLSize {
-                    width: runtime
-                        .packet_block_prepare_resident_classic
-                        .thread_execution_width()
-                        .max(1),
-                    height: 1,
-                    depth: 1,
-                },
-            );
-            encoder.end_encoding();
-        }
 
         let tile_count = u64::try_from(packet_jobs.len()).map_err(|_| Error::MetalKernel {
             message: "J2K Metal batch tile count exceeds u64".to_string(),
         })?;
+        let command_encode_started = profile_stages.then(Instant::now);
+        let signpost =
+            hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKETIZATION_COMMAND_ENCODE);
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.packet_encode_batched);
+        label_compute_encoder(encoder, "J2K packetization");
+        encoder.set_compute_pipeline_state(&runtime.packet_encode_resident_classic_batched);
         encoder.set_buffer(0, Some(&packet_resolution_buffer), 0);
         encoder.set_buffer(1, Some(&packet_subband_buffer), 0);
-        encoder.set_buffer(2, Some(&packet_block_buffer), 0);
+        encoder.set_buffer(2, Some(&resident_block_buffer), 0);
         encoder.set_buffer(3, Some(&tier1_output_buffer), 0);
-        encoder.set_buffer(4, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(4, Some(&codestream_buffer), 0);
         encoder.set_buffer(5, Some(&header_buffer), 0);
         encoder.set_buffer(6, Some(&scratch_buffer), 0);
         encoder.set_buffer(7, Some(&packet_job_buffer), 0);
         encoder.set_buffer(8, Some(&packet_status_buffer), 0);
         encoder.set_buffer(9, Some(&packet_descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
+        encoder.set_buffer(11, Some(&packet_payload_copy_job_buffer), 0);
+        encoder.set_buffer(12, Some(&tier1_job_buffer), 0);
+        encoder.set_buffer(13, Some(&tier1_status_buffer), 0);
+        encoder.set_buffer(14, Some(&tier1_segment_buffer), 0);
+        encoder.set_bytes(
+            15,
+            size_of::<J2kResidentPacketBlockParams>() as u64,
+            (&raw const resident_block_params).cast(),
+        );
         encoder.dispatch_threads(
             MTLSize {
                 width: tile_count,
@@ -16156,7 +23245,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             },
             MTLSize {
                 width: runtime
-                    .packet_encode_batched
+                    .packet_encode_resident_classic_batched
                     .thread_execution_width()
                     .max(1),
                 height: 1,
@@ -16164,10 +23253,72 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             },
         );
         encoder.end_encoding();
+        drop(signpost);
+        if let Some(started) = command_encode_started {
+            packetization_duration = packetization_duration.saturating_add(started.elapsed());
+        }
+        if split_command_buffers {
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::Packetization,
+                "signinum-j2k classic resident packet payload copy",
+                &mut gpu_stage_command_buffers,
+                profile_stages,
+                &mut classic_command_buffer_commit_duration,
+            );
+        }
+        let packet_payload_copy_dispatched = dispatch_batched_packet_payload_copy(
+            runtime,
+            &command_buffer,
+            J2kBatchedPacketPayloadCopyDispatch {
+                payload_buffer: &tier1_output_buffer,
+                packet_output_buffer: &codestream_buffer,
+                packet_job_buffer: &packet_job_buffer,
+                packet_status_buffer: &packet_status_buffer,
+                packet_payload_copy_job_buffer: &packet_payload_copy_job_buffer,
+                tile_count,
+                max_payload_copy_jobs_per_tile: max_payload_copy_jobs_per_tile as u64,
+                label: "J2K packetization payload copy",
+                signpost_name: SIGNPOST_ENCODE_HYBRID_CLASSIC_PAYLOAD_COPY_COMMAND_ENCODE,
+            },
+        );
+        if split_command_buffers {
+            if packet_payload_copy_dispatched {
+                command_buffer = finish_resident_encode_split_command_buffer_timed(
+                    command_buffer,
+                    runtime,
+                    J2kResidentEncodeGpuStage::PacketPayloadCopy,
+                    "signinum-j2k classic resident codestream assembly",
+                    &mut gpu_stage_command_buffers,
+                    profile_stages,
+                    &mut classic_command_buffer_commit_duration,
+                );
+            } else {
+                label_command_buffer(
+                    &command_buffer,
+                    "signinum-j2k classic resident codestream assembly",
+                );
+            }
+        }
 
+        let max_packet_output_capacity = packet_jobs
+            .iter()
+            .map(|job| job.output_capacity)
+            .max()
+            .unwrap_or(0);
+        let max_packet_output_capacity_usize = usize::try_from(max_packet_output_capacity)
+            .map_err(|_| Error::MetalKernel {
+                message: "J2K Metal batch max packet output capacity exceeds usize".to_string(),
+            })?;
+        let command_encode_started = profile_stages.then(Instant::now);
+        let signpost = hybrid_stage_signpost(
+            SIGNPOST_ENCODE_HYBRID_CLASSIC_CODESTREAM_ASSEMBLY_COMMAND_ENCODE,
+        );
         let encoder = command_buffer.new_compute_command_encoder();
+        label_compute_encoder(encoder, "J2K codestream assembly");
         encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble_batched);
-        encoder.set_buffer(0, Some(&packet_output_buffer), 0);
+        encoder.set_buffer(0, Some(&codestream_buffer), 0);
         encoder.set_buffer(1, Some(&packet_status_buffer), 0);
         encoder.set_buffer(2, Some(&codestream_buffer), 0);
         encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
@@ -16188,10 +23339,134 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             },
         );
         encoder.end_encoding();
+        drop(signpost);
+        if split_command_buffers {
+            command_buffer = finish_resident_encode_split_command_buffer_timed(
+                command_buffer,
+                runtime,
+                J2kResidentEncodeGpuStage::CodestreamAssembly,
+                "signinum-j2k classic resident result readback",
+                &mut gpu_stage_command_buffers,
+                profile_stages,
+                &mut classic_command_buffer_commit_duration,
+            );
+        }
+        let codestream_payload_copy_dispatched = false;
+        if let Some(started) = command_encode_started {
+            codestream_assembly_duration =
+                codestream_assembly_duration.saturating_add(started.elapsed());
+        }
+        let tier1_status_readback = schedule_resident_tier1_status_readback(
+            runtime,
+            &command_buffer,
+            &tier1_status_buffer,
+            J2kResidentTier1StatusKind::Classic,
+            classic_resident_style_flags,
+            Some(&tier1_jobs),
+            tier1_jobs.len(),
+            size_of::<J2kClassicEncodeStatus>(),
+            profile_stages,
+        )?;
+        let final_commit_started = profile_stages.then(Instant::now);
         command_buffer.commit();
+        if let Some(started) = final_commit_started {
+            classic_command_buffer_commit_duration =
+                classic_command_buffer_commit_duration.saturating_add(started.elapsed());
+        }
+        if split_command_buffers && codestream_payload_copy_dispatched {
+            gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                stage: J2kResidentEncodeGpuStage::CodestreamPayloadCopy,
+                command_buffer: command_buffer.clone(),
+            });
+        }
 
-        let mut recyclable_private_buffers = Vec::<(usize, Buffer)>::new();
+        if profile_stages {
+            let mut prepare_command_buffer_ptrs = Vec::new();
+            for tile in &prepared_tiles {
+                let mut pushed_split_prepare = false;
+                for (stage, command_buffer) in [
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientDeinterleaveRct,
+                        tile.prepare_deinterleave_rct_command_buffer.as_ref(),
+                    ),
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientDwt53,
+                        tile.prepare_dwt53_command_buffer.as_ref(),
+                    ),
+                    (
+                        J2kResidentEncodeGpuStage::CoefficientExtract,
+                        tile.prepare_coefficient_extract_command_buffer.as_ref(),
+                    ),
+                ] {
+                    if let Some(command_buffer) = command_buffer {
+                        let ptr = command_buffer.as_ptr();
+                        if prepare_command_buffer_ptrs.contains(&ptr) {
+                            continue;
+                        }
+                        prepare_command_buffer_ptrs.push(ptr);
+                        pushed_split_prepare = true;
+                        gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                            stage,
+                            command_buffer: command_buffer.clone(),
+                        });
+                    }
+                }
+                for command_buffer in &tile.prepare_dwt53_vertical_command_buffers {
+                    let ptr = command_buffer.as_ptr();
+                    if prepare_command_buffer_ptrs.contains(&ptr) {
+                        continue;
+                    }
+                    prepare_command_buffer_ptrs.push(ptr);
+                    pushed_split_prepare = true;
+                    gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                        stage: J2kResidentEncodeGpuStage::CoefficientDwt53Vertical,
+                        command_buffer: command_buffer.clone(),
+                    });
+                }
+                for command_buffer in &tile.prepare_dwt53_horizontal_command_buffers {
+                    let ptr = command_buffer.as_ptr();
+                    if prepare_command_buffer_ptrs.contains(&ptr) {
+                        continue;
+                    }
+                    prepare_command_buffer_ptrs.push(ptr);
+                    pushed_split_prepare = true;
+                    gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                        stage: J2kResidentEncodeGpuStage::CoefficientDwt53Horizontal,
+                        command_buffer: command_buffer.clone(),
+                    });
+                }
+                if pushed_split_prepare {
+                    continue;
+                }
+                let ptr = tile.prepare_command_buffer.as_ptr();
+                if prepare_command_buffer_ptrs.contains(&ptr) {
+                    continue;
+                }
+                prepare_command_buffer_ptrs.push(ptr);
+                gpu_stage_command_buffers.push(J2kResidentEncodeGpuStageCommandBuffer {
+                    stage: J2kResidentEncodeGpuStage::CoefficientPrep,
+                    command_buffer: tile.prepare_command_buffer.clone(),
+                });
+            }
+        }
+
+        retained_command_buffers.extend(
+            gpu_stage_command_buffers
+                .iter()
+                .map(|stage_command_buffer| stage_command_buffer.command_buffer.clone()),
+        );
         for tile in prepared_tiles {
+            if let Some(command_buffer) = tile.prepare_deinterleave_rct_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
+            if let Some(command_buffer) = tile.prepare_dwt53_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
+            retained_command_buffers.extend(tile.prepare_dwt53_vertical_command_buffers);
+            retained_command_buffers.extend(tile.prepare_dwt53_horizontal_command_buffers);
+            if let Some(command_buffer) = tile.prepare_coefficient_extract_command_buffer {
+                retained_command_buffers.push(command_buffer);
+            }
             retained_command_buffers.push(tile.prepare_command_buffer);
             retained_buffers.push(tile.coefficient_buffer);
             retained_buffers.push(tile.deinterleave_status_buffer);
@@ -16205,18 +23480,50 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         retained_buffers.push(tier1_output_buffer);
         retained_buffers.push(tier1_status_buffer);
         retained_buffers.push(tier1_segment_buffer);
+        if let Some(buffer) = classic_tier1_raw_pack_buffer {
+            retained_buffers.push(buffer);
+        }
+        if let Some(buffer) = classic_tier1_arithmetic_pack_buffer {
+            retained_buffers.push(buffer);
+        }
         retained_buffers.push(packet_resolution_buffer);
         retained_buffers.push(packet_subband_buffer);
         retained_buffers.push(resident_block_buffer);
-        retained_buffers.push(packet_block_buffer);
         retained_buffers.push(packet_descriptor_buffer);
         retained_buffers.push(state_block_buffer);
-        retained_buffers.push(packet_output_buffer);
+        retained_buffers.push(packet_payload_copy_job_buffer);
         retained_buffers.push(header_buffer);
         retained_buffers.push(scratch_buffer);
         retained_buffers.push(packet_job_buffer);
-        retained_buffers.push(packet_status_buffer);
+        retained_buffers.push(packet_status_buffer.clone());
         retained_buffers.push(codestream_job_buffer);
+
+        stage_stats.classic_tier1_setup_duration = classic_tier1_setup_duration;
+        stage_stats.classic_block_encode_duration = classic_block_encode_duration;
+        stage_stats.classic_packet_plan_duration = classic_packet_plan_duration;
+        stage_stats.classic_packet_buffer_setup_duration = classic_packet_buffer_setup_duration;
+        stage_stats.classic_command_buffer_commit_duration = classic_command_buffer_commit_duration;
+        stage_stats.packet_block_prep_duration = packet_block_prep_duration;
+        stage_stats.packetization_duration = packetization_duration;
+        stage_stats.codestream_assembly_duration = codestream_assembly_duration;
+        stage_stats.packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total;
+        stage_stats.max_packet_payload_copy_jobs_per_tile = max_payload_copy_jobs_per_tile;
+        stage_stats.packet_payload_copy_launched_stripe_count_total = packet_jobs
+            .len()
+            .saturating_mul(max_payload_copy_jobs_per_tile)
+            .saturating_mul(PACKET_PAYLOAD_COPY_STRIPES_PER_JOB as usize);
+        stage_stats.tier1_output_capacity_total = tier1_output_capacity_total;
+        stage_stats.max_tier1_output_capacity = max_tier1_output_capacity;
+        stage_stats.tier1_segment_capacity_total = tier1_segment_capacity_total;
+        stage_stats.max_tier1_segment_capacity_per_block = tier1_jobs
+            .iter()
+            .map(|job| job.segment_capacity as usize)
+            .max()
+            .unwrap_or(0);
+        stage_stats.packet_output_capacity_total = packet_output_capacity_total;
+        stage_stats.max_packet_output_capacity = max_packet_output_capacity_usize;
+        stage_stats.codestream_payload_copy_launched_thread_count_total = 0;
+        stage_stats.code_block_count = tier1_jobs.len();
 
         Ok(J2kPendingResidentLosslessCodestreamBatch {
             device: runtime.device.clone(),
@@ -16224,11 +23531,24 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
             byte_offsets: codestream_offsets,
             capacities: codestream_capacities,
             status_buffer: codestream_status_buffer,
-            command_buffer: command_buffer.to_owned(),
+            packet_status_buffer,
+            tier1_status_readback,
+            classic_tier1_density_readback,
+            classic_tier1_symbol_plan_readback,
+            classic_tier1_pass_plan_readback,
+            classic_tier1_token_emit_readback,
+            classic_tier1_split_token_emit_readback,
+            classic_gpu_token_pack_used: use_classic_gpu_token_pack
+                || use_classic_split_gpu_token_pack
+                || use_classic_split_mq_byte_gpu_token_pack,
+            command_buffer: command_buffer.clone(),
             retained_command_buffers,
             _retained_buffers: retained_buffers,
             recyclable_private_buffers,
-            stage_stats: J2kResidentEncodeStageStats::default(),
+            recyclable_shared_buffers,
+            gpu_stage_command_buffers,
+            stage_stats,
+            codestream_payload_copy_dispatched,
             status_stage: "J2K batched codestream assembly",
             length_error: "J2K Metal batched codestream output length exceeds usize",
             capacity_error: "J2K Metal batched codestream output length exceeds buffer",
@@ -16858,7 +24178,8 @@ mod tests {
         execute_flattened_hybrid_cpu_tier1_direct_color_plan_batch_for_test,
         execute_hybrid_cpu_tier1_direct_color_plan_batch,
         flattened_hybrid_cpu_decode_batches_for_test, hybrid_cpu_decode_inputs_for_test,
-        hybrid_cpu_decode_worker_inits_for_test, hybrid_stacked_component_batches_for_test,
+        hybrid_cpu_decode_worker_count, hybrid_cpu_decode_worker_inits_for_test,
+        hybrid_repeated_output_blits_for_test, hybrid_stacked_component_batches_for_test,
         j2k_pack_kernel_name_for, j2k_pack_scale_arrays, output_shape_for,
         prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
         prepare_direct_grayscale_plan, prepared_direct_color_tier1_input_count,
@@ -16868,7 +24189,9 @@ mod tests {
         reset_direct_tier1_input_buffer_prepares_for_test,
         reset_flattened_hybrid_cpu_decode_batches_for_test,
         reset_hybrid_cpu_decode_inputs_for_test, reset_hybrid_cpu_decode_worker_inits_for_test,
-        reset_hybrid_stacked_component_batches_for_test, runtime_initialization_error,
+        reset_hybrid_repeated_output_blits_for_test,
+        reset_hybrid_stacked_component_batches_for_test, reset_shared_buffer_pool_misses_for_test,
+        runtime_initialization_error, shared_buffer_pool_misses_for_test,
         should_flatten_hybrid_cpu_tier1_color_batch, supports_stacked_direct_component_plane_batch,
         with_runtime_for_device, J2kClassicCleanupBatchJob, J2kClassicSegment,
         J2kRepeatedGrayStoreParams, MetalRuntime, PreparedClassicSubBand, PreparedDirectColorPlan,
@@ -16908,6 +24231,204 @@ mod tests {
     }
 
     #[test]
+    fn classic_encode_output_capacity_keeps_conservative_default() {
+        let capacity =
+            super::classic_encode_output_capacity(64, 64, 11).expect("classic output capacity");
+
+        assert_eq!(capacity, 64 * 64 * 11 * 8 + 4097);
+    }
+
+    #[test]
+    fn classic_encode_segment_capacity_uses_coding_style_bound() {
+        assert_eq!(super::classic_encode_segment_capacity(0, 16), 1);
+        assert_eq!(
+            super::classic_encode_segment_capacity(
+                super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+                9,
+            ),
+            11
+        );
+        assert_eq!(
+            super::classic_encode_segment_capacity(
+                super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+                16,
+            ),
+            25
+        );
+        assert_eq!(
+            super::classic_encode_segment_capacity(
+                super::J2K_CLASSIC_STYLE_TERMINATION_ON_EACH_PASS,
+                16,
+            ),
+            46
+        );
+    }
+
+    #[test]
+    fn classic_tier1_pass_class_counts_split_bypass_pass_types() {
+        let counts = super::classic_tier1_pass_class_counts(
+            23,
+            super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+        );
+
+        assert_eq!(counts.arithmetic, 14);
+        assert_eq!(counts.raw, 9);
+        assert_eq!(counts.cleanup, 8);
+        assert_eq!(counts.sigprop, 8);
+        assert_eq!(counts.magref, 7);
+        assert_eq!(counts.arithmetic_cleanup, 8);
+        assert_eq!(counts.arithmetic_sigprop, 3);
+        assert_eq!(counts.arithmetic_magref, 3);
+        assert_eq!(counts.raw_sigprop, 5);
+        assert_eq!(counts.raw_magref, 4);
+    }
+
+    #[test]
+    fn classic_tier1_pass_class_counts_style0_stays_arithmetic() {
+        let counts = super::classic_tier1_pass_class_counts(5, 0);
+
+        assert_eq!(counts.arithmetic, 5);
+        assert_eq!(counts.raw, 0);
+        assert_eq!(counts.cleanup, 2);
+        assert_eq!(counts.sigprop, 2);
+        assert_eq!(counts.magref, 1);
+        assert_eq!(counts.arithmetic_cleanup, 2);
+        assert_eq!(counts.arithmetic_sigprop, 2);
+        assert_eq!(counts.arithmetic_magref, 1);
+        assert_eq!(counts.raw_sigprop, 0);
+        assert_eq!(counts.raw_magref, 0);
+    }
+
+    #[test]
+    fn classic_tier1_scan_estimates_multiply_passes_by_block_area() {
+        let pass_counts = super::classic_tier1_pass_class_counts(
+            23,
+            super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+        );
+        let mut stats = super::J2kResidentEncodeStageStats::default();
+
+        super::accumulate_classic_tier1_scan_estimates(&mut stats, pass_counts, 32 * 32);
+
+        assert_eq!(stats.tier1_full_scan_coeff_visit_count_total, 23 * 1024);
+        assert_eq!(
+            stats.tier1_arithmetic_scan_coeff_visit_count_total,
+            14 * 1024
+        );
+        assert_eq!(stats.tier1_raw_scan_coeff_visit_count_total, 9 * 1024);
+        assert_eq!(stats.tier1_cleanup_scan_coeff_visit_count_total, 8 * 1024);
+        assert_eq!(stats.tier1_sigprop_scan_coeff_visit_count_total, 8 * 1024);
+        assert_eq!(stats.tier1_magref_scan_coeff_visit_count_total, 7 * 1024);
+        assert_eq!(stats.max_tier1_full_scan_coeff_visits_per_block, 23 * 1024);
+    }
+
+    #[test]
+    fn classic_packet_output_capacity_uses_raw_sample_bound_when_smaller() {
+        let codestream = super::J2kLosslessCodestreamAssemblyJob {
+            width: 512,
+            height: 512,
+            num_components: 3,
+            bit_depth: 8,
+            signed: false,
+            num_decomposition_levels: 3,
+            use_mct: true,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            progression_order: signinum_j2k_native::EncodeProgressionOrder::Lrcp,
+            write_tlm: false,
+            block_coding_mode: super::J2kLosslessCodestreamBlockCodingMode::Classic,
+        };
+        let header_capacity = 1024 * 256 + 4096;
+        let conservative_capacity = 12 * 1024 * 1024;
+        let packet_descriptor_count = 3;
+
+        let capacity = super::classic_packet_output_capacity(
+            conservative_capacity,
+            header_capacity,
+            packet_descriptor_count,
+            codestream,
+        )
+        .expect("classic packet capacity");
+
+        let raw_bytes = 512 * 512 * 3;
+        let descriptor_slack = packet_descriptor_count * 256;
+        assert_eq!(
+            capacity,
+            raw_bytes + header_capacity + descriptor_slack + 64 * 1024
+        );
+
+        let tiny_tier1_capacity = 4096;
+        let clamped = super::classic_packet_output_capacity(
+            tiny_tier1_capacity,
+            header_capacity,
+            packet_descriptor_count,
+            codestream,
+        )
+        .expect("classic packet capacity");
+        let conservative_packet_capacity =
+            tiny_tier1_capacity + header_capacity * packet_descriptor_count + 1024;
+        assert_eq!(clamped, conservative_packet_capacity);
+    }
+
+    #[test]
+    fn ht_encode_output_capacity_scales_with_code_block_area() {
+        let max_block = super::ht_encode_output_capacity(128, 128).expect("max HT output capacity");
+        assert_eq!(max_block, super::J2K_HT_ENCODE_BASE_OUTPUT_SIZE);
+
+        let smaller_block =
+            super::ht_encode_output_capacity(32, 32).expect("scaled HT output capacity");
+        assert!(smaller_block < max_block / 2);
+        assert!(smaller_block >= 8192);
+    }
+
+    #[test]
+    fn classic_encode_pipeline_kind_prefers_style0_32_for_resident_jobs() {
+        let jobs = [super::J2kClassicEncodeBatchJob {
+            width: 32,
+            height: 32,
+            style_flags: 0,
+            ..super::J2kClassicEncodeBatchJob::default()
+        }];
+
+        assert_eq!(
+            super::classic_encode_code_blocks_pipeline_kind(&jobs),
+            super::J2kClassicEncodePipelineKind::Style0_32
+        );
+    }
+
+    #[test]
+    fn classic_encode_pipeline_kind_prefers_bypass_32_for_resident_jobs() {
+        let jobs = [super::J2kClassicEncodeBatchJob {
+            width: 32,
+            height: 32,
+            style_flags: super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+            total_bitplanes: 31,
+            ..super::J2kClassicEncodeBatchJob::default()
+        }];
+
+        assert_eq!(
+            super::classic_encode_code_blocks_pipeline_kind(&jobs),
+            super::J2kClassicEncodePipelineKind::Bypass32
+        );
+    }
+
+    #[test]
+    fn classic_encode_pipeline_kind_prefers_bypass_u16_32_for_low_bitplane_resident_jobs() {
+        let jobs = [super::J2kClassicEncodeBatchJob {
+            width: 32,
+            height: 32,
+            style_flags: super::J2K_CLASSIC_STYLE_SELECTIVE_ARITHMETIC_CODING_BYPASS,
+            total_bitplanes: 16,
+            ..super::J2kClassicEncodeBatchJob::default()
+        }];
+
+        assert_eq!(
+            super::classic_encode_code_blocks_pipeline_kind(&jobs),
+            super::J2kClassicEncodePipelineKind::BypassU16_32
+        );
+    }
+
+    #[test]
     fn with_runtime_for_device_reuses_cached_runtime_for_device() {
         let Some(device) = Device::system_default() else {
             return;
@@ -16919,6 +24440,25 @@ mod tests {
             .expect("second Metal runtime");
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runtime_reuses_recycled_shared_buffers() {
+        let Some(device) = Device::system_default() else {
+            return;
+        };
+        let runtime = MetalRuntime::new_with_device(&device).expect("Metal runtime");
+
+        reset_shared_buffer_pool_misses_for_test();
+        let first = runtime.take_shared_buffer(64);
+        runtime.recycle_shared_buffer(64, first);
+        let _second = runtime.take_shared_buffer(64);
+
+        assert_eq!(
+            shared_buffer_pool_misses_for_test(),
+            1,
+            "recycled shared metadata buffers should be reused instead of allocating again"
+        );
     }
 
     #[test]
@@ -17393,6 +24933,105 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_rgb8_reused_plan_caches_cpu_tier1_inputs_across_calls() {
+        let pixels = signinum_test_support::gradient_u8(32, 32, 3);
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&pixels, 32, 32, 3, 8, false, &options).expect("encode rgb8");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+        let plan = image
+            .build_direct_color_plan_with_context(&mut context)
+            .expect("direct color plan");
+        let prepared = Arc::new(prepare_direct_color_plan(&plan).expect("prepared color plan"));
+        let unique_tier1_inputs = prepared_direct_color_tier1_input_count(&prepared);
+        assert!(
+            unique_tier1_inputs > 0,
+            "fixture should have Tier-1 inputs to decode"
+        );
+        let _guard = HYBRID_COUNTER_TEST_LOCK
+            .lock()
+            .expect("hybrid counter lock");
+        reset_hybrid_cpu_decode_inputs_for_test();
+
+        for _ in 0..2 {
+            let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
+                &[prepared.clone(), prepared.clone()],
+                PixelFormat::Rgb8,
+            )
+            .expect("hybrid repeated RGB8 batch");
+            assert_eq!(surfaces.len(), 2);
+        }
+
+        assert_eq!(
+            hybrid_cpu_decode_inputs_for_test(),
+            unique_tier1_inputs,
+            "reusing the same RGB hybrid plan across calls should reuse decoded CPU Tier-1 coefficients"
+        );
+    }
+
+    #[test]
+    fn hybrid_rgb8_repeated_batch_decodes_once_and_blits_distinct_outputs() {
+        let pixels = signinum_test_support::gradient_u8(32, 32, 3);
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&pixels, 32, 32, 3, 8, false, &options).expect("encode rgb8");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+        let plan = image
+            .build_direct_color_plan_with_context(&mut context)
+            .expect("direct color plan");
+        let prepared = Arc::new(prepare_direct_color_plan(&plan).expect("prepared color plan"));
+        let _guard = HYBRID_COUNTER_TEST_LOCK
+            .lock()
+            .expect("hybrid counter lock");
+        reset_hybrid_repeated_output_blits_for_test();
+
+        let surfaces = execute_hybrid_cpu_tier1_direct_color_plan_batch(
+            &[
+                prepared.clone(),
+                prepared.clone(),
+                prepared.clone(),
+                prepared,
+            ],
+            PixelFormat::Rgb8,
+        )
+        .expect("hybrid repeated RGB8 batch");
+
+        assert_eq!(surfaces.len(), 4);
+        let surface_bytes = surfaces[0].as_bytes().len();
+        let offsets = surfaces
+            .iter()
+            .map(|surface| surface.metal_buffer().expect("resident Metal surface").1)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            offsets,
+            (0..surfaces.len())
+                .map(|index| index * surface_bytes)
+                .collect::<Vec<_>>(),
+            "repeated outputs must retain distinct Metal buffer offsets"
+        );
+        for surface in &surfaces[1..] {
+            assert_eq!(
+                surface.as_bytes(),
+                surfaces[0].as_bytes(),
+                "repeated outputs should remain byte-identical"
+            );
+        }
+        assert_eq!(
+            hybrid_repeated_output_blits_for_test(),
+            2,
+            "repeated RGB hybrid batches should duplicate packed output surfaces with logarithmic Metal blit ranges"
+        );
+    }
+
+    #[test]
     fn hybrid_rgb8_distinct_batch_keeps_tier1_inputs_separate() {
         let options = EncodeOptions {
             reversible: true,
@@ -17540,6 +25179,20 @@ mod tests {
         assert!(
             should_flatten_hybrid_cpu_tier1_color_batch(&large_distinct),
             "large distinct RGB explicit hybrid batches measured faster with flattened Tier-1"
+        );
+    }
+
+    #[test]
+    fn hybrid_cpu_decode_worker_count_allows_two_way_small_batch_parallelism() {
+        let available = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        if available < 2 {
+            return;
+        }
+
+        assert_eq!(
+            hybrid_cpu_decode_worker_count(2),
+            2,
+            "two independent hybrid CPU Tier-1 inputs should be able to use two workers"
         );
     }
 

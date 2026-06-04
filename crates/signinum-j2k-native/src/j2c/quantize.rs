@@ -109,6 +109,11 @@ impl QuantStepSize {
 
 /// Compute the exact irreversible 9/7 quantization step tuple the native encoder
 /// writes for one subband under a global plus per-subband profile.
+///
+/// # Panics
+///
+/// Panics if the internal quantization step exponent is not clamped to the
+/// JPEG 2000 exponent range before conversion.
 #[must_use]
 pub fn irreversible_quantization_step_for_subband(
     bit_depth: u8,

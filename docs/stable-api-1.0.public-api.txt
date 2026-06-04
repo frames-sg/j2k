@@ -1536,6 +1536,11 @@ pub enum signinum_jpeg::transcode::JpegDctCodingMode
 pub signinum_jpeg::transcode::JpegDctCodingMode::BaselineSequential
 pub signinum_jpeg::transcode::JpegDctCodingMode::Progressive
 #[non_exhaustive] pub struct signinum_jpeg::transcode::DctExtractOptions
+pub signinum_jpeg::transcode::DctExtractOptions::retain_quantized_blocks: bool
+impl signinum_jpeg::transcode::DctExtractOptions
+pub const fn signinum_jpeg::transcode::DctExtractOptions::dequantized_only() -> Self
+impl core::default::Default for signinum_jpeg::transcode::DctExtractOptions
+pub fn signinum_jpeg::transcode::DctExtractOptions::default() -> Self
 pub struct signinum_jpeg::transcode::JpegDctComponent
 pub signinum_jpeg::transcode::JpegDctComponent::block_cols: u32
 pub signinum_jpeg::transcode::JpegDctComponent::block_rows: u32
@@ -3086,23 +3091,150 @@ pub signinum_j2k_metal::MetalLosslessEncodeResidency::coefficient_prep_used: boo
 pub signinum_j2k_metal::MetalLosslessEncodeResidency::packetization_used: bool
 pub struct signinum_j2k_metal::MetalLosslessEncodeStageStats
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::chunk_count: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_block_encode_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_block_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_command_buffer_commit_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_packet_buffer_setup_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_packet_plan_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_arithmetic_pack_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_density_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_pass_plan_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_raw_pack_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_setup_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_split_token_emit_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_symbol_plan_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_token_emit_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_token_pack_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::classic_tier1_token_pack_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::code_block_count: usize
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_assembly_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_assembly_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_payload_copy_active_thread_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_payload_copy_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_payload_copy_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_payload_copy_launched_thread_count_total: usize
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::codestream_wait_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_copy_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_deinterleave_rct_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_dwt53_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_dwt53_horizontal_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_dwt53_vertical_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_extract_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_extract_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_prep_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::coefficient_prep_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::deinterleave_rct_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::dwt53_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::gpu_elapsed_wall_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::host_readback_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::ht_block_encode_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::ht_block_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::ht_buffer_allocation_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::ht_command_encode_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::ht_table_build_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_packet_output_capacity: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_packet_output_used_bytes: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_packet_payload_copy_bytes_per_tile: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_packet_payload_copy_jobs_per_tile: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_packet_payload_copy_jobs_used_per_tile: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_coding_passes_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_full_scan_coeff_visits_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_missing_bitplanes_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_output_capacity: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_output_used_bytes: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_pass_plan_mq_symbols_per_pass: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_pass_plan_raw_bits_per_pass: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_segment_capacity_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_segments_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_symbol_plan_mq_symbols_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_symbol_plan_packed_token_bytes_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_symbol_plan_raw_bits_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_token_emit_segments_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_token_emit_token_bytes_per_block: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::max_tier1_token_pack_output_bytes_per_block: usize
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_block_prep_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_block_prep_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_output_capacity_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_output_used_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_active_stripe_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_gpu_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_job_capacity_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_job_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_large_job_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_launched_stripe_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_medium_job_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packet_payload_copy_small_job_count_total: usize
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packetization_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::packetization_gpu_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::plan_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::prepare_submit_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::result_codestream_collect_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::result_harvest_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::result_private_recycle_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::result_shared_recycle_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::result_status_copy_duration: core::time::Duration
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::sync_wait_duration: core::time::Duration
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_cleanup_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_magref_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_magref_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_sigprop_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_sigprop_new_significant_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_arithmetic_sigprop_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_new_significant_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_rlc_stripe_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_rlc_zero_stripe_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_cleanup_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_coding_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_full_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_magref_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_magref_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_magref_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_missing_bitplane_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_nonzero_block_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_output_capacity_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_output_used_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_pass_plan_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_pass_plan_nonempty_mq_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_pass_plan_nonempty_raw_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_pass_plan_raw_bit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_magref_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_magref_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_sigprop_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_sigprop_new_significant_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_raw_sigprop_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_segment_capacity_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_segment_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_sigprop_active_candidate_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_sigprop_new_significant_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_sigprop_pass_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_sigprop_scan_coeff_visit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_cleanup_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_cleanup_sign_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_magref_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_mq_symbol_hash_xor: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_packed_token_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_raw_bit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_raw_bit_hash_xor: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_raw_magref_bit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_raw_sigprop_bit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_sigprop_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_symbol_plan_sigprop_sign_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_mq_symbol_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_mq_symbol_hash_xor: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_raw_bit_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_raw_bit_hash_xor: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_segment_count_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_emit_token_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_token_pack_output_bytes_total: usize
+pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tier1_zero_block_count_total: usize
 pub signinum_j2k_metal::MetalLosslessEncodeStageStats::tile_count: usize
 impl signinum_j2k_metal::MetalLosslessEncodeStageStats
 pub fn signinum_j2k_metal::MetalLosslessEncodeStageStats::add_assign(&mut self, Self)
@@ -3362,7 +3494,9 @@ pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::ht_code_block_dispatches(&
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::packetization_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::packetization_dispatches(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_forward_rct(self, bool) -> Self
+pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_ht_subband(self, bool) -> Self
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_packetization(self, bool) -> Self
+pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::prefer_cpu_quantize_subband(self, bool) -> Self
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::quantize_subband_attempts(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::quantize_subband_dispatches(&self) -> usize
 pub fn signinum_j2k_cuda::CudaEncodeStageAccelerator::reset_collected_stage_timings(&mut self)
@@ -3529,6 +3663,8 @@ pub fn signinum_j2k_cuda::CudaSurfaceStats::kernel_dispatches(self) -> usize
 pub struct signinum_j2k_cuda::J2kDecoder<'a>
 impl<'a> signinum_j2k_cuda::J2kDecoder<'a>
 pub fn signinum_j2k_cuda::J2kDecoder<'a>::build_cuda_htj2k_grayscale_plan_with_profile(&mut self, signinum_core::pixel::PixelFormat) -> core::result::Result<(signinum_j2k_cuda::CudaHtj2kDecodePlan, signinum_j2k_cuda::CudaHtj2kProfileReport), signinum_j2k_cuda::Error>
+pub fn signinum_j2k_cuda::J2kDecoder<'a>::decode_batch_to_device_with_session(&[&[u8]], signinum_core::pixel::PixelFormat, &mut signinum_j2k_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<signinum_j2k_cuda::Surface>, signinum_j2k_cuda::Error>
+pub fn signinum_j2k_cuda::J2kDecoder<'a>::decode_batch_to_device_with_session_and_profile(&[&[u8]], signinum_core::pixel::PixelFormat, &mut signinum_j2k_cuda::CudaSession) -> core::result::Result<(alloc::vec::Vec<signinum_j2k_cuda::Surface>, signinum_j2k_cuda::CudaHtj2kProfileReport), signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::J2kDecoder<'a>::decode_region_scaled_to_cpu_staged_cuda_surface_with_session(&mut self, signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale, &mut signinum_j2k_cuda::CudaSession) -> core::result::Result<signinum_j2k_cuda::Surface, signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::J2kDecoder<'a>::decode_region_to_cpu_staged_cuda_surface_with_session(&mut self, signinum_core::pixel::PixelFormat, signinum_core::types::Rect, &mut signinum_j2k_cuda::CudaSession) -> core::result::Result<signinum_j2k_cuda::Surface, signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::J2kDecoder<'a>::decode_scaled_to_cpu_staged_cuda_surface_with_session(&mut self, signinum_core::pixel::PixelFormat, signinum_core::scale::Downscale, &mut signinum_j2k_cuda::CudaSession) -> core::result::Result<signinum_j2k_cuda::Surface, signinum_j2k_cuda::Error>
@@ -3565,6 +3701,8 @@ pub struct signinum_j2k_cuda::Surface
 impl signinum_j2k_cuda::Surface
 pub fn signinum_j2k_cuda::Surface::as_host_bytes(&self) -> core::option::Option<&[u8]>
 pub fn signinum_j2k_cuda::Surface::cuda_surface(&self) -> core::option::Option<signinum_j2k_cuda::CudaSurface<'_>>
+pub fn signinum_j2k_cuda::Surface::download_batch_tight(&[Self]) -> core::result::Result<alloc::vec::Vec<u8>, signinum_j2k_cuda::Error>
+pub fn signinum_j2k_cuda::Surface::download_batch_tight_into(&[Self], &mut [u8]) -> core::result::Result<(), signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::Surface::download_into(&self, &mut [u8], usize) -> core::result::Result<(), signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::Surface::download_into_profiled(&self, &mut [u8], usize) -> core::result::Result<u128, signinum_j2k_cuda::Error>
 pub fn signinum_j2k_cuda::Surface::pitch_bytes(&self) -> usize
@@ -3587,6 +3725,11 @@ pub mod signinum_transcode::accelerator
 pub use signinum_transcode::accelerator::IrreversibleQuantizationSubbandScales
 pub use signinum_transcode::accelerator::J2kSubBandType
 pub use signinum_transcode::accelerator::PreencodedHtj2k97CodeBlock
+pub use signinum_transcode::accelerator::PreencodedHtj2k97CompactCodeBlock
+pub use signinum_transcode::accelerator::PreencodedHtj2k97CompactComponent
+pub use signinum_transcode::accelerator::PreencodedHtj2k97CompactImage
+pub use signinum_transcode::accelerator::PreencodedHtj2k97CompactResolution
+pub use signinum_transcode::accelerator::PreencodedHtj2k97CompactSubband
 pub use signinum_transcode::accelerator::PreencodedHtj2k97Component
 pub use signinum_transcode::accelerator::PreencodedHtj2k97Resolution
 pub use signinum_transcode::accelerator::PreencodedHtj2k97Subband
@@ -3597,6 +3740,10 @@ pub use signinum_transcode::accelerator::PrequantizedHtj2k97Resolution
 pub use signinum_transcode::accelerator::PrequantizedHtj2k97Subband
 pub struct signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator
 impl signinum_transcode::accelerator::DctToWaveletStageAccelerator for signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt53(&mut self, signinum_transcode::accelerator::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct53_2d::Dwt53TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt97(&mut self, signinum_transcode::accelerator::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt97_batch(&mut self, &[signinum_transcode::accelerator::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>>, &'static str>
@@ -3607,6 +3754,17 @@ pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<signinum_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_dwt97_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
+pub struct signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'a, 'j>
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch::jobs: &'j [signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'a>]
+pub struct signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'a>
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::block_cols: usize
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::block_rows: usize
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::dequantized_blocks: &'a [[i16; 64]]
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::height: usize
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::width: usize
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::x_rsiz: u8
+pub signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob::y_rsiz: u8
 pub struct signinum_transcode::accelerator::DctGridToDwt53Job<'a>
 pub signinum_transcode::accelerator::DctGridToDwt53Job::block_cols: usize
 pub signinum_transcode::accelerator::DctGridToDwt53Job::block_rows: usize
@@ -3636,7 +3794,11 @@ pub signinum_transcode::accelerator::DctGridToReversibleDwt53Job::width: usize
 pub struct signinum_transcode::accelerator::Dwt97BatchStageTimings
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::column_lift_us: u128
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_codeblock_dispatches: usize
+pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_compact_us: u128
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_encode_us: u128
+pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_kernel_us: u128
+pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_output_readback_us: u128
+pub signinum_transcode::accelerator::Dwt97BatchStageTimings::ht_status_readback_us: u128
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::idct_row_lift_us: u128
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::pack_upload_us: u128
 pub signinum_transcode::accelerator::Dwt97BatchStageTimings::quantize_codeblock_us: u128
@@ -3648,6 +3810,12 @@ pub signinum_transcode::accelerator::Htj2k97CodeBlockOptions::code_block_width_e
 pub signinum_transcode::accelerator::Htj2k97CodeBlockOptions::guard_bits: u8
 pub signinum_transcode::accelerator::Htj2k97CodeBlockOptions::irreversible_quantization_scale: f32
 pub signinum_transcode::accelerator::Htj2k97CodeBlockOptions::irreversible_quantization_subband_scales: signinum_j2k_native::j2c::quantize::IrreversibleQuantizationSubbandScales
+pub struct signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch
+pub signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch::components: alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97CompactComponent>
+pub signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch::payload: alloc::vec::Vec<u8>
+pub struct signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups
+pub signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups::groups: alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97CompactComponent>>
+pub signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups::payload: alloc::vec::Vec<u8>
 pub struct signinum_transcode::accelerator::RayonReversibleDwt53Accelerator
 impl signinum_transcode::accelerator::RayonReversibleDwt53Accelerator
 pub const fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::reversible_dwt53_attempts(&self) -> usize
@@ -3655,6 +3823,10 @@ pub const fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::r
 pub const fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::reversible_dwt53_batch_dispatches(&self) -> usize
 pub const fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::reversible_dwt53_dispatches(&self) -> usize
 impl signinum_transcode::accelerator::DctToWaveletStageAccelerator for signinum_transcode::accelerator::RayonReversibleDwt53Accelerator
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt53(&mut self, signinum_transcode::accelerator::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct53_2d::Dwt53TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt97(&mut self, signinum_transcode::accelerator::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt97_batch(&mut self, &[signinum_transcode::accelerator::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>>, &'static str>
@@ -3665,6 +3837,7 @@ pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_gri
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<signinum_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_dwt97_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
 pub struct signinum_transcode::accelerator::ReversibleDwt53FirstLevel
 pub signinum_transcode::accelerator::ReversibleDwt53FirstLevel::hh: alloc::vec::Vec<i32>
 pub signinum_transcode::accelerator::ReversibleDwt53FirstLevel::high_height: usize
@@ -3675,6 +3848,10 @@ pub signinum_transcode::accelerator::ReversibleDwt53FirstLevel::ll: alloc::vec::
 pub signinum_transcode::accelerator::ReversibleDwt53FirstLevel::low_height: usize
 pub signinum_transcode::accelerator::ReversibleDwt53FirstLevel::low_width: usize
 pub trait signinum_transcode::accelerator::DctToWaveletStageAccelerator
+pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch>, &'static str>
+pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups>, &'static str>
+pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>, &'static str>
+pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>>, &'static str>
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_to_dwt53(&mut self, signinum_transcode::accelerator::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct53_2d::Dwt53TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_to_dwt97(&mut self, signinum_transcode::accelerator::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_to_dwt97_batch(&mut self, &[signinum_transcode::accelerator::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>>, &'static str>
@@ -3685,7 +3862,12 @@ pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_t
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<signinum_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::supports_dwt97_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub fn signinum_transcode::accelerator::DctToWaveletStageAccelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
 impl signinum_transcode::accelerator::DctToWaveletStageAccelerator for signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>, &'static str>
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt53(&mut self, signinum_transcode::accelerator::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct53_2d::Dwt53TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt97(&mut self, signinum_transcode::accelerator::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct_grid_to_dwt97_batch(&mut self, &[signinum_transcode::accelerator::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>>, &'static str>
@@ -3696,7 +3878,12 @@ pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::dct
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<signinum_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_dwt97_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub fn signinum_transcode::accelerator::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
 impl signinum_transcode::accelerator::DctToWaveletStageAccelerator for signinum_transcode::accelerator::RayonReversibleDwt53Accelerator
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatch>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<signinum_transcode::accelerator::PreencodedHtj2k97CompactBatchGroups>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockJob<'_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>, &'static str>
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_preencoded_batch_groups(&mut self, &[signinum_transcode::accelerator::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], signinum_transcode::accelerator::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<signinum_j2k_native::j2c::encode::PreencodedHtj2k97Component>>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt53(&mut self, signinum_transcode::accelerator::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct53_2d::Dwt53TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt97(&mut self, signinum_transcode::accelerator::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>, &'static str>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_grid_to_dwt97_batch(&mut self, &[signinum_transcode::accelerator::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<signinum_transcode::dct97_2d::Dwt97TwoDimensional<f64>>>, &'static str>
@@ -3707,6 +3894,7 @@ pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::dct_gri
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::last_dwt97_batch_stage_timings(&self) -> core::option::Option<signinum_transcode::accelerator::Dwt97BatchStageTimings>
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_dwt97_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_htj2k97_codeblock_batch(&self) -> bool
+pub fn signinum_transcode::accelerator::RayonReversibleDwt53Accelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
 pub fn signinum_transcode::accelerator::idct_blocks_to_signed_samples_rayon(&[[i16; 64]]) -> alloc::vec::Vec<[i32; 64]>
 pub fn signinum_transcode::accelerator::reversible_dwt53_first_level_from_block_samples(&[[i32; 64]], usize, usize, usize, usize) -> core::result::Result<signinum_transcode::accelerator::ReversibleDwt53FirstLevel, &'static str>
 pub mod signinum_transcode::corpus_validation
@@ -4089,7 +4277,11 @@ pub signinum_transcode::TranscodeTimingReport::dicom_final_write_us: u128
 pub signinum_transcode::TranscodeTimingReport::dicom_spool_write_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_column_lift_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_codeblock_dispatches: usize
+pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_compact_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_encode_us: u128
+pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_kernel_us: u128
+pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_output_readback_us: u128
+pub signinum_transcode::TranscodeTimingReport::dwt97_batch_ht_status_readback_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_idct_row_lift_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_pack_upload_us: u128
 pub signinum_transcode::TranscodeTimingReport::dwt97_batch_quantize_codeblock_us: u128
@@ -4525,6 +4717,16 @@ pub signinum_j2k_native::HtCodeBlockDecodeJob::roi_shift: u8
 pub signinum_j2k_native::HtCodeBlockDecodeJob::strict: bool
 pub signinum_j2k_native::HtCodeBlockDecodeJob::stripe_causal: bool
 pub signinum_j2k_native::HtCodeBlockDecodeJob::width: u32
+pub struct signinum_j2k_native::HtCodeBlockDecodeProfile
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::blocks: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::cleanup_bytes: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::cleanup_us: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::mag_sgn_us: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::magref_us: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::refinement_blocks: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::refinement_bytes: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::sigma_us: u128
+pub signinum_j2k_native::HtCodeBlockDecodeProfile::sigprop_us: u128
 pub struct signinum_j2k_native::HtCodeBlockDecodeWorkspace
 impl signinum_j2k_native::HtCodeBlockDecodeWorkspace
 pub fn signinum_j2k_native::HtCodeBlockDecodeWorkspace::coefficient_capacity(&self) -> usize
@@ -4620,6 +4822,13 @@ pub signinum_j2k_native::J2kCodeBlockDecodeJob::style: signinum_j2k_native::J2kC
 pub signinum_j2k_native::J2kCodeBlockDecodeJob::sub_band_type: signinum_j2k_native::J2kSubBandType
 pub signinum_j2k_native::J2kCodeBlockDecodeJob::total_bitplanes: u8
 pub signinum_j2k_native::J2kCodeBlockDecodeJob::width: u32
+pub struct signinum_j2k_native::J2kCodeBlockDecodeProfile
+pub signinum_j2k_native::J2kCodeBlockDecodeProfile::bypass_us: u128
+pub signinum_j2k_native::J2kCodeBlockDecodeProfile::cleanup_us: u128
+pub signinum_j2k_native::J2kCodeBlockDecodeProfile::magref_us: u128
+pub signinum_j2k_native::J2kCodeBlockDecodeProfile::output_convert_us: u128
+pub signinum_j2k_native::J2kCodeBlockDecodeProfile::sigprop_us: u128
+pub struct signinum_j2k_native::J2kCodeBlockDecodeWorkspace
 pub struct signinum_j2k_native::J2kCodeBlockSegment
 pub signinum_j2k_native::J2kCodeBlockSegment::data_length: u32
 pub signinum_j2k_native::J2kCodeBlockSegment::data_offset: u32
@@ -4878,6 +5087,12 @@ pub signinum_j2k_native::J2kTier1CodeBlockEncodeJob::style: signinum_j2k_native:
 pub signinum_j2k_native::J2kTier1CodeBlockEncodeJob::sub_band_type: signinum_j2k_native::J2kSubBandType
 pub signinum_j2k_native::J2kTier1CodeBlockEncodeJob::total_bitplanes: u8
 pub signinum_j2k_native::J2kTier1CodeBlockEncodeJob::width: u32
+pub struct signinum_j2k_native::J2kTier1TokenSegment
+pub signinum_j2k_native::J2kTier1TokenSegment::end_coding_pass: u8
+pub signinum_j2k_native::J2kTier1TokenSegment::start_coding_pass: u8
+pub signinum_j2k_native::J2kTier1TokenSegment::token_bit_count: u32
+pub signinum_j2k_native::J2kTier1TokenSegment::token_bit_offset: u32
+pub signinum_j2k_native::J2kTier1TokenSegment::use_arithmetic: bool
 pub struct signinum_j2k_native::PrecomputedHtj2k53Component
 pub signinum_j2k_native::PrecomputedHtj2k53Component::dwt: signinum_j2k_native::J2kForwardDwt53Output
 pub signinum_j2k_native::PrecomputedHtj2k53Component::x_rsiz: u8
@@ -4902,6 +5117,33 @@ pub struct signinum_j2k_native::PreencodedHtj2k97CodeBlock
 pub signinum_j2k_native::PreencodedHtj2k97CodeBlock::encoded: signinum_j2k_native::EncodedHtJ2kCodeBlock
 pub signinum_j2k_native::PreencodedHtj2k97CodeBlock::height: u32
 pub signinum_j2k_native::PreencodedHtj2k97CodeBlock::width: u32
+pub struct signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::cleanup_length: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::height: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::num_coding_passes: u8
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::num_zero_bitplanes: u8
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::payload_range: core::ops::range::Range<usize>
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::refinement_length: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock::width: u32
+pub struct signinum_j2k_native::PreencodedHtj2k97CompactComponent
+pub signinum_j2k_native::PreencodedHtj2k97CompactComponent::resolutions: alloc::vec::Vec<signinum_j2k_native::PreencodedHtj2k97CompactResolution>
+pub signinum_j2k_native::PreencodedHtj2k97CompactComponent::x_rsiz: u8
+pub signinum_j2k_native::PreencodedHtj2k97CompactComponent::y_rsiz: u8
+pub struct signinum_j2k_native::PreencodedHtj2k97CompactImage
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::bit_depth: u8
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::components: alloc::vec::Vec<signinum_j2k_native::PreencodedHtj2k97CompactComponent>
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::height: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::payload: alloc::vec::Vec<u8>
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::signed: bool
+pub signinum_j2k_native::PreencodedHtj2k97CompactImage::width: u32
+pub struct signinum_j2k_native::PreencodedHtj2k97CompactResolution
+pub signinum_j2k_native::PreencodedHtj2k97CompactResolution::subbands: alloc::vec::Vec<signinum_j2k_native::PreencodedHtj2k97CompactSubband>
+pub struct signinum_j2k_native::PreencodedHtj2k97CompactSubband
+pub signinum_j2k_native::PreencodedHtj2k97CompactSubband::code_blocks: alloc::vec::Vec<signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock>
+pub signinum_j2k_native::PreencodedHtj2k97CompactSubband::num_cbs_x: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactSubband::num_cbs_y: u32
+pub signinum_j2k_native::PreencodedHtj2k97CompactSubband::sub_band_type: signinum_j2k_native::J2kSubBandType
+pub signinum_j2k_native::PreencodedHtj2k97CompactSubband::total_bitplanes: u8
 pub struct signinum_j2k_native::PreencodedHtj2k97Component
 pub signinum_j2k_native::PreencodedHtj2k97Component::resolutions: alloc::vec::Vec<signinum_j2k_native::PreencodedHtj2k97Resolution>
 pub signinum_j2k_native::PreencodedHtj2k97Component::x_rsiz: u8
@@ -5001,8 +5243,12 @@ pub fn signinum_j2k_native::collect_ht_cleanup_encode_distribution(&[i32], u32, 
 pub fn signinum_j2k_native::decode_ht_code_block_scalar(signinum_j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::decode_ht_code_block_scalar_until_phase(signinum_j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], signinum_j2k_native::HtCodeBlockDecodePhaseLimit) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::decode_ht_code_block_scalar_with_workspace(signinum_j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], &mut signinum_j2k_native::HtCodeBlockDecodeWorkspace) -> signinum_j2k_native::error::Result<()>
+pub fn signinum_j2k_native::decode_ht_code_block_scalar_with_workspace_profiled(signinum_j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], &mut signinum_j2k_native::HtCodeBlockDecodeWorkspace, &mut signinum_j2k_native::HtCodeBlockDecodeProfile) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::decode_ht_sigprop_benchmark_state(&mut signinum_j2k_native::HtSigPropBenchmarkState, &mut [u32]) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::decode_j2k_code_block_scalar(signinum_j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32]) -> signinum_j2k_native::error::Result<()>
+pub fn signinum_j2k_native::decode_j2k_code_block_scalar_profiled(signinum_j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32], &mut signinum_j2k_native::J2kCodeBlockDecodeProfile) -> signinum_j2k_native::error::Result<()>
+pub fn signinum_j2k_native::decode_j2k_code_block_scalar_with_workspace(signinum_j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32], &mut signinum_j2k_native::J2kCodeBlockDecodeWorkspace) -> signinum_j2k_native::error::Result<()>
+pub fn signinum_j2k_native::decode_j2k_code_block_scalar_with_workspace_profiled(signinum_j2k_native::J2kCodeBlockDecodeJob<'_>, &mut [f32], &mut signinum_j2k_native::J2kCodeBlockDecodeWorkspace, &mut signinum_j2k_native::J2kCodeBlockDecodeProfile) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::decode_j2k_sub_band_scalar(signinum_j2k_native::J2kSubBandDecodeJob<'_>, &mut [f32]) -> signinum_j2k_native::error::Result<()>
 pub fn signinum_j2k_native::deinterleave_reference(&[u8], usize, u8, u8, bool) -> alloc::vec::Vec<alloc::vec::Vec<f32>>
 pub fn signinum_j2k_native::encode(&[u8], u32, u32, u8, u8, bool, &signinum_j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
@@ -5015,8 +5261,11 @@ pub fn signinum_j2k_native::encode_precomputed_htj2k_53_with_accelerator(&signin
 pub fn signinum_j2k_native::encode_precomputed_htj2k_53_with_mct(&signinum_j2k_native::PrecomputedHtj2k53Image, &signinum_j2k_native::EncodeOptions, bool) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_precomputed_htj2k_53_with_mct_and_accelerator(&signinum_j2k_native::PrecomputedHtj2k53Image, &signinum_j2k_native::EncodeOptions, bool, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_precomputed_htj2k_97(&signinum_j2k_native::PrecomputedHtj2k97Image, &signinum_j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn signinum_j2k_native::encode_precomputed_htj2k_97_batch_with_accelerator(&[signinum_j2k_native::PrecomputedHtj2k97Image], &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, &'static str>
 pub fn signinum_j2k_native::encode_precomputed_htj2k_97_with_accelerator(&signinum_j2k_native::PrecomputedHtj2k97Image, &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_preencoded_htj2k_97(&signinum_j2k_native::PreencodedHtj2k97Image, &signinum_j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn signinum_j2k_native::encode_preencoded_htj2k_97_compact_owned_with_accelerator(signinum_j2k_native::PreencodedHtj2k97CompactImage, &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
+pub fn signinum_j2k_native::encode_preencoded_htj2k_97_owned_with_accelerator(signinum_j2k_native::PreencodedHtj2k97Image, &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_preencoded_htj2k_97_with_accelerator(&signinum_j2k_native::PreencodedHtj2k97Image, &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_prequantized_htj2k_97(&signinum_j2k_native::PrequantizedHtj2k97Image, &signinum_j2k_native::EncodeOptions) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn signinum_j2k_native::encode_prequantized_htj2k_97_with_accelerator(&signinum_j2k_native::PrequantizedHtj2k97Image, &signinum_j2k_native::EncodeOptions, &mut impl signinum_j2k_native::J2kEncodeStageAccelerator) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
@@ -5034,6 +5283,7 @@ pub fn signinum_j2k_native::ht_vlc_table0() -> &'static [u16; 1024]
 pub fn signinum_j2k_native::ht_vlc_table1() -> &'static [u16; 1024]
 pub fn signinum_j2k_native::idwt_band_index(u32, u32, bool) -> u32
 pub fn signinum_j2k_native::irreversible_quantization_step_for_subband(u8, u8, f32, signinum_j2k_native::IrreversibleQuantizationSubbandScales, signinum_j2k_native::J2kSubBandType) -> signinum_j2k_native::IrreversibleQuantizationStep
+pub fn signinum_j2k_native::pack_j2k_code_block_scalar_from_tier1_tokens(&[u8], &[signinum_j2k_native::J2kTier1TokenSegment], u8, u8) -> core::result::Result<signinum_j2k_native::EncodedJ2kCodeBlock, &'static str>
 pub fn signinum_j2k_native::prepare_ht_sigprop_benchmark_state(signinum_j2k_native::HtCodeBlockDecodeJob<'_>) -> signinum_j2k_native::error::Result<signinum_j2k_native::HtSigPropBenchmarkState>
 pub fn signinum_j2k_native::quantize_reversible_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
 pub type signinum_j2k_native::J2kDirectBandId = u32
@@ -5082,12 +5332,19 @@ pub signinum_cuda_runtime::CudaError::Unavailable
 pub signinum_cuda_runtime::CudaError::Unavailable::message: alloc::string::String
 #[non_exhaustive] pub enum signinum_cuda_runtime::CudaKernelName
 pub signinum_cuda_runtime::CudaKernelName::CopyU8
+pub signinum_cuda_runtime::CudaKernelName::Htj2kCompactCodeblocks
 pub signinum_cuda_runtime::CudaKernelName::Htj2kDecodeCodeblocks
+pub signinum_cuda_runtime::CudaKernelName::Htj2kDecodeCodeblocksMultiCleanupDequantize
 pub signinum_cuda_runtime::CudaKernelName::Htj2kEncodeCodeblock
 pub signinum_cuda_runtime::CudaKernelName::Htj2kEncodeCodeblocks
+pub signinum_cuda_runtime::CudaKernelName::Htj2kEncodeCodeblocksMultiInput
+pub signinum_cuda_runtime::CudaKernelName::Htj2kEncodeCodeblocksMultiInputCleanup
+pub signinum_cuda_runtime::CudaKernelName::Htj2kEncodeCodeblocksMultiInputCleanup64
 pub signinum_cuda_runtime::CudaKernelName::Htj2kPacketizeCleanup
 pub signinum_cuda_runtime::CudaKernelName::J2kDeinterleaveToF32
+pub signinum_cuda_runtime::CudaKernelName::J2kDequantizeHtj2kCleanupJobsMulti
 pub signinum_cuda_runtime::CudaKernelName::J2kDequantizeHtj2kCodeblocks
+pub signinum_cuda_runtime::CudaKernelName::J2kDequantizeHtj2kCodeblocksMulti
 pub signinum_cuda_runtime::CudaKernelName::J2kForwardDwt53Horizontal
 pub signinum_cuda_runtime::CudaKernelName::J2kForwardDwt53Vertical
 pub signinum_cuda_runtime::CudaKernelName::J2kForwardDwt97Horizontal
@@ -5098,9 +5355,14 @@ pub signinum_cuda_runtime::CudaKernelName::J2kIdwtHorizontal
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtHorizontal53
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtHorizontal97
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtInterleave
+pub signinum_cuda_runtime::CudaKernelName::J2kIdwtInterleaveHorizontal53Multi
+pub signinum_cuda_runtime::CudaKernelName::J2kIdwtInterleaveHorizontal97Multi
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical53
+pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical53Multi
 pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical97
+pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical97Multi
+pub signinum_cuda_runtime::CudaKernelName::J2kIdwtVertical97MultiCols4
 pub signinum_cuda_runtime::CudaKernelName::J2kInverseDwtSingle
 pub signinum_cuda_runtime::CudaKernelName::J2kInverseMct
 pub signinum_cuda_runtime::CudaKernelName::J2kQuantizeSubband
@@ -5108,34 +5370,70 @@ pub signinum_cuda_runtime::CudaKernelName::J2kQuantizeSubbandStrided
 pub signinum_cuda_runtime::CudaKernelName::J2kStoreGray16
 pub signinum_cuda_runtime::CudaKernelName::J2kStoreGray8
 pub signinum_cuda_runtime::CudaKernelName::J2kStoreRgb16
+pub signinum_cuda_runtime::CudaKernelName::J2kStoreRgb16Mct
 pub signinum_cuda_runtime::CudaKernelName::J2kStoreRgb8
+pub signinum_cuda_runtime::CudaKernelName::J2kStoreRgb8Mct
+pub signinum_cuda_runtime::CudaKernelName::J2kStoreRgb8MctBatch
 pub struct signinum_cuda_runtime::CudaBufferPool
 impl signinum_cuda_runtime::CudaBufferPool
 pub fn signinum_cuda_runtime::CudaBufferPool::cached_count(&self) -> core::result::Result<usize, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaBufferPool::new(signinum_cuda_runtime::CudaContext) -> Self
 pub fn signinum_cuda_runtime::CudaBufferPool::take(&self, usize) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::take_with_trace(&self, usize) -> core::result::Result<(signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaBufferPoolTakeTrace), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload(&self, &[u8]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload_f32(&self, &[f32]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload_f32_pinned(&self, &[f32]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload_i16(&self, &[i16]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload_i16_pinned(&self, &[i16]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaBufferPool::upload_pinned(&self, &[u8]) -> core::result::Result<signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub struct signinum_cuda_runtime::CudaBufferPoolTakeTrace
+pub signinum_cuda_runtime::CudaBufferPoolTakeTrace::allocation_byte_len: usize
+pub signinum_cuda_runtime::CudaBufferPoolTakeTrace::free_count_before: usize
+pub signinum_cuda_runtime::CudaBufferPoolTakeTrace::requested_len: usize
+pub signinum_cuda_runtime::CudaBufferPoolTakeTrace::reused: bool
+pub signinum_cuda_runtime::CudaBufferPoolTakeTrace::scanned_count: usize
 pub struct signinum_cuda_runtime::CudaContext
 impl signinum_cuda_runtime::CudaContext
 pub fn signinum_cuda_runtime::CudaContext::allocate(&self, usize) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::allocate_htj2k_codeblock_coefficients_with_pool(&self, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::best_fit_buffer_pool(&self) -> signinum_cuda_runtime::CudaBufferPool
 pub fn signinum_cuda_runtime::CudaContext::buffer_pool(&self) -> signinum_cuda_runtime::CudaBufferPool
 pub fn signinum_cuda_runtime::CudaContext::copy_device_to_device_with_kernel(&self, &signinum_cuda_runtime::CudaDeviceBuffer) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::copy_with_kernel(&self, &[u8]) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::create_event(&self) -> core::result::Result<signinum_cuda_runtime::CudaEvent, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::create_stream(&self) -> core::result::Result<signinum_cuda_runtime::CudaStream, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks(&self, &[u8], &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], signinum_cuda_runtime::CudaHtj2kDecodeTables<'_>, usize) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &signinum_cuda_runtime::CudaBufferPool, bool) -> core::result::Result<(signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaHtj2kDecodeStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaQueuedHtj2kCleanup, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCleanupTarget<'_>], &signinum_cuda_runtime::CudaBufferPool, bool) -> core::result::Result<(signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaHtj2kDecodeStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_cleanup_with_resources_untimed_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_untimed(&self, &[u8], &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], signinum_cuda_runtime::CudaHtj2kDecodeTables<'_>, usize) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources_untimed(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources_untimed_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_batch_with_nvjpeg(&self, &[(&[u8], (u32, u32))]) -> core::result::Result<alloc::vec::Vec<signinum_cuda_runtime::CudaKernelOutput>, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_with_nvjpeg(&self, &[u8], (u32, u32)) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock(&self, &[i32], u32, u32, u8, signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident_with_resources(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_with_resources(&self, &[i32], u32, u32, u8, &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks(&self, &[i32], &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob], signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(&self, &[signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget<'_>], &signinum_cuda_runtime::CudaHtj2kEncodeResources, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(&self, &[signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget<'_>], &signinum_cuda_runtime::CudaHtj2kEncodeResources, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_resident(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob], signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_resident_with_resources(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_resident_with_resources_and_pool(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblocks_with_resources(&self, &[i32], &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_deinterleave_to_f32(&self, &[u8], usize, u8, u8, bool) -> core::result::Result<signinum_cuda_runtime::CudaJ2kDeinterleavedComponents, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_deinterleave_to_f32_resident(&self, &[u8], usize, u8, u8, bool) -> core::result::Result<signinum_cuda_runtime::CudaJ2kResidentComponents, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_dequantize_htj2k_codeblocks_multi_device(&self, &[signinum_cuda_runtime::CudaHtj2kDequantizeTarget<'_>]) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_dequantize_htj2k_codeblocks_multi_device_untimed_with_pool(&self, &[signinum_cuda_runtime::CudaHtj2kDequantizeTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(&self, &[signinum_cuda_runtime::CudaHtj2kDequantizeTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_dequantize_queued_htj2k_cleanup_with_pool(&self, &signinum_cuda_runtime::CudaQueuedHtj2kCleanup) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_dwt53(&self, &[f32], u32, u32, u8) -> core::result::Result<signinum_cuda_runtime::CudaDwt53Output, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_dwt53_resident_component(&self, &signinum_cuda_runtime::CudaJ2kResidentComponents, u8, u32, u32, u8) -> core::result::Result<signinum_cuda_runtime::CudaResidentDwt53Output, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_dwt97(&self, &[f32], u32, u32, u8) -> core::result::Result<signinum_cuda_runtime::CudaDwt97Output, signinum_cuda_runtime::CudaError>
@@ -5144,7 +5442,14 @@ pub fn signinum_cuda_runtime::CudaContext::j2k_forward_ict(&self, &mut [f32], &m
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_ict_resident(&self, &mut signinum_cuda_runtime::CudaJ2kResidentComponents) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_rct(&self, &mut [f32], &mut [f32], &mut [f32]) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_forward_rct_resident(&self, &mut signinum_cuda_runtime::CudaJ2kResidentComponents) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_device_enqueue_with_pool(&self, &[signinum_cuda_runtime::CudaJ2kIdwtTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaQueuedExecution, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_device_untimed_with_pool(&self, &[signinum_cuda_runtime::CudaJ2kIdwtTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_device_with_pool(&self, &[signinum_cuda_runtime::CudaJ2kIdwtTarget<'_>], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_batch_sequence_enqueue_with_pool(&self, &[&[signinum_cuda_runtime::CudaJ2kIdwtTarget<'_>]], &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaQueuedExecution, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kIdwtJob) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device_untimed(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kIdwtJob) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device_untimed_with_pool(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kIdwtJob, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_dwt_single_device_with_pool(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kIdwtJob, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_inverse_mct_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kInverseMctJob) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_quantize_subband(&self, &[f32], signinum_cuda_runtime::CudaJ2kQuantizeJob) -> core::result::Result<signinum_cuda_runtime::CudaJ2kQuantizedSubband, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_quantize_subband_region_resident(&self, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kQuantizeSubbandRegionJob) -> core::result::Result<signinum_cuda_runtime::CudaJ2kResidentQuantizedSubband, signinum_cuda_runtime::CudaError>
@@ -5152,19 +5457,26 @@ pub fn signinum_cuda_runtime::CudaContext::j2k_quantize_subband_resident(&self, 
 pub fn signinum_cuda_runtime::CudaContext::j2k_store_gray16_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreGray16Job) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_store_gray8_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreGray8Job) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb16_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreRgb16Job) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb16_mct_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreRgb16MctJob) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb8_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreRgb8Job) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb8_mct_batch_contiguous_device(&self, &[signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget<'_>]) -> core::result::Result<signinum_cuda_runtime::CudaKernelContiguousBatchOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb8_mct_batch_device(&self, &[signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget<'_>]) -> core::result::Result<signinum_cuda_runtime::CudaKernelBatchOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_store_rgb8_mct_device(&self, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, &signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaJ2kStoreRgb8MctJob) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::packetize_htj2k_cleanup_packets(&self, &[u8], &[signinum_cuda_runtime::CudaHtj2kPacketizationPacket], &[signinum_cuda_runtime::CudaHtj2kPacketizationSubband], &[signinum_cuda_runtime::CudaHtj2kPacketizationBlock]) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kPacketizedTile, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::packetize_htj2k_cleanup_packets_with_tag_state(&self, &[u8], &[signinum_cuda_runtime::CudaHtj2kPacketizationPacket], &[signinum_cuda_runtime::CudaHtj2kPacketizationSubband], &[signinum_cuda_runtime::CudaHtj2kPacketizationBlock], &[signinum_cuda_runtime::CudaHtj2kPacketizationSubbandTagState], &[signinum_cuda_runtime::CudaHtj2kPacketizationTagNodeState]) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kPacketizedTile, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::pinned_host_buffer(&self, usize) -> core::result::Result<signinum_cuda_runtime::CudaPinnedHostBuffer, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::preload_kernel_module(&self, signinum_cuda_runtime::CudaKernelName) -> core::result::Result<signinum_cuda_runtime::CudaKernelModule, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::synchronize(&self) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::system_default() -> core::result::Result<Self, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::time_default_stream_named_us<T>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, signinum_cuda_runtime::CudaError>) -> core::result::Result<(T, u128), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::time_default_stream_named_us_if<T>(&self, bool, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, signinum_cuda_runtime::CudaError>) -> core::result::Result<(T, u128), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::time_default_stream_us<T>(&self, impl core::ops::function::FnOnce() -> core::result::Result<T, signinum_cuda_runtime::CudaError>) -> core::result::Result<(T, u128), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload(&self, &[u8]) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_f32(&self, &[f32]) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_f32_pinned(&self, &[f32]) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_htj2k_decode_resources(&self, &[u8], signinum_cuda_runtime::CudaHtj2kDecodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeResources, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables(&self, &[u8], &signinum_cuda_runtime::CudaHtj2kDecodeTableResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeResources, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::upload_htj2k_decode_resources_with_tables_and_pool(&self, &[u8], &signinum_cuda_runtime::CudaHtj2kDecodeTableResources, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeResources, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_htj2k_decode_table_resources(&self, signinum_cuda_runtime::CudaHtj2kDecodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeTableResources, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_htj2k_encode_resources(&self, signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodeResources, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::upload_i32_pinned(&self, &[i32]) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_cuda_runtime::CudaError>
@@ -5174,8 +5486,12 @@ impl signinum_cuda_runtime::CudaContext
 pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_dwt97(&self, &[f32], usize, usize, usize, usize) -> core::result::Result<signinum_cuda_runtime::CudaTranscodeDwt97Bands, signinum_cuda_runtime::CudaError>
 impl signinum_cuda_runtime::CudaContext
 pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_dwt97_batch(&self, &[f32], usize, usize, usize, usize, usize) -> core::result::Result<(alloc::vec::Vec<signinum_cuda_runtime::CudaTranscodeDwt97Bands>, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_dwt97_batch_with_pool(&self, &[f32], usize, usize, usize, usize, usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<(alloc::vec::Vec<signinum_cuda_runtime::CudaTranscodeDwt97Bands>, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_htj2k97_codeblock_batch(&self, &[f32], usize, usize, usize, usize, usize, signinum_cuda_runtime::CudaHtj2k97QuantizeParams) -> core::result::Result<(signinum_cuda_runtime::CudaHtj2k97CodeblockBands, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_htj2k97_codeblock_batch_resident(&self, &[f32], usize, usize, usize, usize, usize, signinum_cuda_runtime::CudaHtj2k97QuantizeParams) -> core::result::Result<(signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(&self, &[f32], usize, usize, usize, usize, usize, signinum_cuda_runtime::CudaHtj2k97QuantizeParams, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<(signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_htj2k97_codeblock_batch_with_pool(&self, &[f32], usize, usize, usize, usize, usize, signinum_cuda_runtime::CudaHtj2k97QuantizeParams, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<(signinum_cuda_runtime::CudaHtj2k97CodeblockBands, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(&self, &[i16], usize, usize, usize, usize, usize, signinum_cuda_runtime::CudaHtj2k97QuantizeParams, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<(signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands, signinum_cuda_runtime::CudaDwt97BatchStageTimings), signinum_cuda_runtime::CudaError>
 impl signinum_cuda_runtime::CudaContext
 pub fn signinum_cuda_runtime::CudaContext::j2k_transcode_reversible_dwt53(&self, &[i16], usize, usize, usize, usize) -> core::result::Result<signinum_cuda_runtime::CudaTranscodeReversible53Bands, signinum_cuda_runtime::CudaError>
 impl core::fmt::Debug for signinum_cuda_runtime::CudaContext
@@ -5184,12 +5500,16 @@ pub struct signinum_cuda_runtime::CudaDeviceBuffer
 impl signinum_cuda_runtime::CudaDeviceBuffer
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::byte_len(&self) -> usize
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::copy_range_to_host(&self, usize, &mut [u8]) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaDeviceBuffer::copy_range_to_host_uninit(&self, usize, &mut [core::mem::maybe_uninit::MaybeUninit<u8>]) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::copy_to_host(&self, &mut [u8]) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::device_ptr(&self) -> u64
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::typed_view<T>(&self) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBufferView<'_, T>, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::typed_view_mut<T>(&mut self) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBufferViewMut<'_, T>, signinum_cuda_runtime::CudaError>
 impl core::ops::drop::Drop for signinum_cuda_runtime::CudaDeviceBuffer
 pub fn signinum_cuda_runtime::CudaDeviceBuffer::drop(&mut self)
+pub struct signinum_cuda_runtime::CudaDeviceBufferRange
+pub signinum_cuda_runtime::CudaDeviceBufferRange::len: usize
+pub signinum_cuda_runtime::CudaDeviceBufferRange::offset: usize
 pub struct signinum_cuda_runtime::CudaDeviceBufferView<'a, T>
 impl<T> signinum_cuda_runtime::CudaDeviceBufferView<'_, T>
 pub fn signinum_cuda_runtime::CudaDeviceBufferView<'_, T>::device_ptr(&self) -> u64
@@ -5252,13 +5572,13 @@ pub signinum_cuda_runtime::CudaHtj2k97CodeblockBands::ll: alloc::vec::Vec<i32>
 pub signinum_cuda_runtime::CudaHtj2k97CodeblockBands::low_height: usize
 pub signinum_cuda_runtime::CudaHtj2k97CodeblockBands::low_width: usize
 pub struct signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands
-pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::hh: signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::hh: signinum_cuda_runtime::CudaPooledDeviceBuffer
 pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::high_height: usize
 pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::high_width: usize
-pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::hl: signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::hl: signinum_cuda_runtime::CudaPooledDeviceBuffer
 pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::item_count: usize
-pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::lh: signinum_cuda_runtime::CudaDeviceBuffer
-pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::ll: signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::lh: signinum_cuda_runtime::CudaPooledDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::ll: signinum_cuda_runtime::CudaPooledDeviceBuffer
 pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::low_height: usize
 pub signinum_cuda_runtime::CudaHtj2k97DeviceCodeblockBands::low_width: usize
 pub struct signinum_cuda_runtime::CudaHtj2k97QuantizeParams
@@ -5268,6 +5588,10 @@ pub signinum_cuda_runtime::CudaHtj2k97QuantizeParams::inv_delta_hh: f32
 pub signinum_cuda_runtime::CudaHtj2k97QuantizeParams::inv_delta_hl: f32
 pub signinum_cuda_runtime::CudaHtj2k97QuantizeParams::inv_delta_lh: f32
 pub signinum_cuda_runtime::CudaHtj2k97QuantizeParams::inv_delta_ll: f32
+pub struct signinum_cuda_runtime::CudaHtj2kCleanupTarget<'a>
+pub signinum_cuda_runtime::CudaHtj2kCleanupTarget::coefficients: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2kCleanupTarget::jobs: &'a [signinum_cuda_runtime::CudaHtj2kCodeBlockJob]
+pub signinum_cuda_runtime::CudaHtj2kCleanupTarget::output_words: usize
 pub struct signinum_cuda_runtime::CudaHtj2kCodeBlockJob
 pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::cleanup_length: u32
 pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::dequantization_step: f32
@@ -5282,6 +5606,24 @@ pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::payload_offset: u64
 pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::refinement_length: u32
 pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::stripe_causal: bool
 pub signinum_cuda_runtime::CudaHtj2kCodeBlockJob::width: u32
+pub struct signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock
+impl signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::cleanup_length(&self) -> u32
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::into_parts(self) -> (core::ops::range::Range<usize>, u32, u32, u8, u8)
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::num_coding_passes(&self) -> u8
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::num_zero_bitplanes(&self) -> u8
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::payload_range(&self) -> core::ops::range::Range<usize>
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::refinement_length(&self) -> u32
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::stage_timings(&self) -> signinum_cuda_runtime::CudaHtj2kEncodeStageTimings
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock::status(&self) -> signinum_cuda_runtime::CudaHtj2kEncodeStatus
+pub struct signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks
+impl signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks::code_blocks(&self) -> &[signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock]
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks::into_payload_and_code_blocks(self) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlock>)
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks::payload(&self) -> &[u8]
+pub fn signinum_cuda_runtime::CudaHtj2kCompactEncodedCodeBlocks::stage_timings(&self) -> signinum_cuda_runtime::CudaHtj2kEncodeStageTimings
 pub struct signinum_cuda_runtime::CudaHtj2kDecodeOutput
 impl signinum_cuda_runtime::CudaHtj2kDecodeOutput
 pub fn signinum_cuda_runtime::CudaHtj2kDecodeOutput::coefficients(&self) -> &signinum_cuda_runtime::CudaDeviceBuffer
@@ -5294,12 +5636,17 @@ pub struct signinum_cuda_runtime::CudaHtj2kDecodeStageTimings
 pub signinum_cuda_runtime::CudaHtj2kDecodeStageTimings::dequant_us: u128
 pub signinum_cuda_runtime::CudaHtj2kDecodeStageTimings::ht_cleanup_us: u128
 pub signinum_cuda_runtime::CudaHtj2kDecodeStageTimings::ht_refine_us: u128
+pub signinum_cuda_runtime::CudaHtj2kDecodeStageTimings::status_d2h_us: u128
 pub struct signinum_cuda_runtime::CudaHtj2kDecodeTableResources
 pub struct signinum_cuda_runtime::CudaHtj2kDecodeTables<'a>
 pub signinum_cuda_runtime::CudaHtj2kDecodeTables::uvlc_table0: &'a [u16; 320]
 pub signinum_cuda_runtime::CudaHtj2kDecodeTables::uvlc_table1: &'a [u16; 256]
 pub signinum_cuda_runtime::CudaHtj2kDecodeTables::vlc_table0: &'a [u16; 1024]
 pub signinum_cuda_runtime::CudaHtj2kDecodeTables::vlc_table1: &'a [u16; 1024]
+pub struct signinum_cuda_runtime::CudaHtj2kDequantizeTarget<'a>
+pub signinum_cuda_runtime::CudaHtj2kDequantizeTarget::coefficients: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2kDequantizeTarget::jobs: &'a [signinum_cuda_runtime::CudaHtj2kCodeBlockJob]
+pub signinum_cuda_runtime::CudaHtj2kDequantizeTarget::output_words: usize
 pub struct signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob
 pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob::coefficient_offset: u32
 pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob::height: u32
@@ -5313,9 +5660,17 @@ pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob::height: u32
 pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob::target_coding_passes: u8
 pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob::total_bitplanes: u8
 pub signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob::width: u32
+pub struct signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget<'a>
+pub signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget::coefficient_count: usize
+pub signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget::coefficients: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaHtj2kEncodeResidentTarget::jobs: &'a [signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockJob]
 pub struct signinum_cuda_runtime::CudaHtj2kEncodeResources
 pub struct signinum_cuda_runtime::CudaHtj2kEncodeStageTimings
+pub signinum_cuda_runtime::CudaHtj2kEncodeStageTimings::ht_compact_us: u128
 pub signinum_cuda_runtime::CudaHtj2kEncodeStageTimings::ht_encode_us: u128
+pub signinum_cuda_runtime::CudaHtj2kEncodeStageTimings::ht_kernel_us: u128
+pub signinum_cuda_runtime::CudaHtj2kEncodeStageTimings::ht_output_readback_us: u128
+pub signinum_cuda_runtime::CudaHtj2kEncodeStageTimings::ht_status_readback_us: u128
 #[repr(C)] pub struct signinum_cuda_runtime::CudaHtj2kEncodeStatus
 pub signinum_cuda_runtime::CudaHtj2kEncodeStatus::code: u32
 pub signinum_cuda_runtime::CudaHtj2kEncodeStatus::data_len: u32
@@ -5336,6 +5691,7 @@ impl signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::cleanup_length(&self) -> u32
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::data(&self) -> &[u8]
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::into_parts(self) -> (alloc::vec::Vec<u8>, u32, u32, u8, u8)
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::num_coding_passes(&self) -> u8
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::num_zero_bitplanes(&self) -> u8
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock::refinement_length(&self) -> u32
@@ -5345,6 +5701,7 @@ pub struct signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks
 impl signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks::code_blocks(&self) -> &[signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock]
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks::into_code_blocks(self) -> alloc::vec::Vec<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock>
 pub fn signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks::stage_timings(&self) -> signinum_cuda_runtime::CudaHtj2kEncodeStageTimings
 #[repr(C)] pub struct signinum_cuda_runtime::CudaHtj2kPacketizationBlock
 pub signinum_cuda_runtime::CudaHtj2kPacketizationBlock::cleanup_length: u32
@@ -5410,6 +5767,13 @@ pub signinum_cuda_runtime::CudaJ2kIdwtJob::irreversible97: u32
 pub signinum_cuda_runtime::CudaJ2kIdwtJob::lh_rect: signinum_cuda_runtime::CudaJ2kRect
 pub signinum_cuda_runtime::CudaJ2kIdwtJob::ll_rect: signinum_cuda_runtime::CudaJ2kRect
 pub signinum_cuda_runtime::CudaJ2kIdwtJob::rect: signinum_cuda_runtime::CudaJ2kRect
+pub struct signinum_cuda_runtime::CudaJ2kIdwtTarget<'a>
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::hh: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::hl: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::job: signinum_cuda_runtime::CudaJ2kIdwtJob
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::lh: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::ll: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kIdwtTarget::output: &'a signinum_cuda_runtime::CudaDeviceBuffer
 #[repr(C)] pub struct signinum_cuda_runtime::CudaJ2kInverseMctJob
 pub signinum_cuda_runtime::CudaJ2kInverseMctJob::addend0: f32
 pub signinum_cuda_runtime::CudaJ2kInverseMctJob::addend1: f32
@@ -5497,6 +5861,9 @@ pub signinum_cuda_runtime::CudaJ2kStoreRgb16Job::source_x2: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb16Job::source_y0: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb16Job::source_y1: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb16Job::source_y2: u32
+#[repr(C)] pub struct signinum_cuda_runtime::CudaJ2kStoreRgb16MctJob
+pub signinum_cuda_runtime::CudaJ2kStoreRgb16MctJob::irreversible97: u32
+pub signinum_cuda_runtime::CudaJ2kStoreRgb16MctJob::store: signinum_cuda_runtime::CudaJ2kStoreRgb16Job
 #[repr(C)] pub struct signinum_cuda_runtime::CudaJ2kStoreRgb8Job
 pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::addend0: f32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::addend1: f32
@@ -5520,6 +5887,25 @@ pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::source_x2: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::source_y0: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::source_y1: u32
 pub signinum_cuda_runtime::CudaJ2kStoreRgb8Job::source_y2: u32
+#[repr(C)] pub struct signinum_cuda_runtime::CudaJ2kStoreRgb8MctJob
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctJob::irreversible97: u32
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctJob::store: signinum_cuda_runtime::CudaJ2kStoreRgb8Job
+pub struct signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget<'a>
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget::job: signinum_cuda_runtime::CudaJ2kStoreRgb8MctJob
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget::plane0: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget::plane1: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub signinum_cuda_runtime::CudaJ2kStoreRgb8MctTarget::plane2: &'a signinum_cuda_runtime::CudaDeviceBuffer
+pub struct signinum_cuda_runtime::CudaKernelBatchOutput
+impl signinum_cuda_runtime::CudaKernelBatchOutput
+pub fn signinum_cuda_runtime::CudaKernelBatchOutput::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaKernelBatchOutput::into_parts(self) -> (alloc::vec::Vec<signinum_cuda_runtime::CudaDeviceBuffer>, signinum_cuda_runtime::CudaExecutionStats)
+pub fn signinum_cuda_runtime::CudaKernelBatchOutput::outputs(&self) -> &[signinum_cuda_runtime::CudaDeviceBuffer]
+pub struct signinum_cuda_runtime::CudaKernelContiguousBatchOutput
+impl signinum_cuda_runtime::CudaKernelContiguousBatchOutput
+pub fn signinum_cuda_runtime::CudaKernelContiguousBatchOutput::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaKernelContiguousBatchOutput::into_parts(self) -> (signinum_cuda_runtime::CudaDeviceBuffer, alloc::vec::Vec<signinum_cuda_runtime::CudaDeviceBufferRange>, signinum_cuda_runtime::CudaExecutionStats)
+pub fn signinum_cuda_runtime::CudaKernelContiguousBatchOutput::output(&self) -> &signinum_cuda_runtime::CudaDeviceBuffer
+pub fn signinum_cuda_runtime::CudaKernelContiguousBatchOutput::ranges(&self) -> &[signinum_cuda_runtime::CudaDeviceBufferRange]
 pub struct signinum_cuda_runtime::CudaKernelModule
 impl signinum_cuda_runtime::CudaKernelModule
 pub fn signinum_cuda_runtime::CudaKernelModule::entrypoint(&self) -> &'static str
@@ -5543,9 +5929,31 @@ impl signinum_cuda_runtime::CudaPooledDeviceBuffer
 pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::allocation_byte_len(&self) -> usize
 pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::as_device_buffer(&self) -> core::option::Option<&signinum_cuda_runtime::CudaDeviceBuffer>
 pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::byte_len(&self) -> usize
+pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::copy_to_host(&self, &mut [u8]) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::device_ptr(&self) -> u64
 impl core::ops::drop::Drop for signinum_cuda_runtime::CudaPooledDeviceBuffer
 pub fn signinum_cuda_runtime::CudaPooledDeviceBuffer::drop(&mut self)
+pub struct signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput
+impl signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput
+pub fn signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput::coefficients(&self) -> core::option::Option<&signinum_cuda_runtime::CudaDeviceBuffer>
+pub fn signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput::into_parts(self) -> (signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaExecutionStats, alloc::vec::Vec<signinum_cuda_runtime::CudaHtj2kStatus>)
+pub fn signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput::stage_timings(&self) -> signinum_cuda_runtime::CudaHtj2kDecodeStageTimings
+pub fn signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput::statuses(&self) -> &[signinum_cuda_runtime::CudaHtj2kStatus]
+pub struct signinum_cuda_runtime::CudaPooledKernelOutput
+impl signinum_cuda_runtime::CudaPooledKernelOutput
+pub fn signinum_cuda_runtime::CudaPooledKernelOutput::buffer(&self) -> core::option::Option<&signinum_cuda_runtime::CudaDeviceBuffer>
+pub fn signinum_cuda_runtime::CudaPooledKernelOutput::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaPooledKernelOutput::into_parts(self) -> (signinum_cuda_runtime::CudaPooledDeviceBuffer, signinum_cuda_runtime::CudaExecutionStats)
+pub struct signinum_cuda_runtime::CudaQueuedExecution
+impl signinum_cuda_runtime::CudaQueuedExecution
+pub fn signinum_cuda_runtime::CudaQueuedExecution::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaQueuedExecution::resource_count(&self) -> usize
+pub struct signinum_cuda_runtime::CudaQueuedHtj2kCleanup
+impl signinum_cuda_runtime::CudaQueuedHtj2kCleanup
+pub fn signinum_cuda_runtime::CudaQueuedHtj2kCleanup::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats
+pub fn signinum_cuda_runtime::CudaQueuedHtj2kCleanup::finish(self) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaQueuedHtj2kCleanup::resource_count(&self) -> usize
 pub struct signinum_cuda_runtime::CudaResidentDwt53Output
 impl signinum_cuda_runtime::CudaResidentDwt53Output
 pub fn signinum_cuda_runtime::CudaResidentDwt53Output::buffer(&self) -> &signinum_cuda_runtime::CudaDeviceBuffer

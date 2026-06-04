@@ -2,7 +2,12 @@
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex, OnceLock},
+    time::Instant,
+};
 
 use metal::Device;
 use rayon::prelude::*;
@@ -17,13 +22,37 @@ use crate::{direct, Error, J2kDecoder, Surface};
 
 pub(crate) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
+const METAL_PROFILE_DECODE_LABEL_ENV: &str = "SIGNINUM_J2K_METAL_PROFILE_DECODE_LABEL";
+const REGION_SCALED_COLOR_PLAN_CACHE_CAP: usize = 128;
+
+static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
+    Mutex<HashMap<u64, Arc<crate::compute::PreparedDirectColorPlan>>>,
+> = OnceLock::new();
 
 #[cfg(test)]
 static REGION_SCALED_COLOR_PLAN_BUILDS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static REGION_SCALED_COLOR_PLAN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn region_scaled_color_plan_test_lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    REGION_SCALED_COLOR_PLAN_TEST_LOCK
+        .lock()
+        .expect("region scaled color plan test lock")
+}
 
 #[cfg(test)]
 pub(crate) fn reset_region_scaled_color_plan_builds_for_test() {
     REGION_SCALED_COLOR_PLAN_BUILDS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_region_scaled_color_plan_cache_for_test() {
+    if let Some(cache) = REGION_SCALED_COLOR_PLAN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -197,11 +226,7 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device(
     }
 
     if let Some((input, roi, scale)) = repeated_region_scaled_request(requests) {
-        let plan = Arc::new(build_region_scaled_direct_color_plan(
-            input.as_ref(),
-            roi,
-            scale,
-        )?);
+        let plan = build_region_scaled_direct_color_plan_cached(input.as_ref(), roi, scale)?;
         let plans = vec![plan; requests.len()];
         return crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt);
     }
@@ -209,7 +234,7 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device(
     let plans = requests
         .par_iter()
         .map(|(input, roi, scale)| {
-            build_region_scaled_direct_color_plan(input.as_ref(), *roi, *scale).map(Arc::new)
+            build_region_scaled_direct_color_plan_cached(input.as_ref(), *roi, *scale)
         })
         .collect::<Result<Vec<_>, _>>()?;
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
@@ -237,7 +262,7 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device(
         });
     }
 
-    let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
+    let plan = build_region_scaled_direct_color_plan_cached(input, roi, scale)?;
     let plans = vec![plan; count];
     crate::compute::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
 }
@@ -351,6 +376,58 @@ fn build_region_scaled_direct_color_plan(
     Ok(prepared)
 }
 
+fn build_region_scaled_direct_color_plan_cached(
+    input: &[u8],
+    roi: Rect,
+    scale: Downscale,
+) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
+    let cache_key = region_scaled_color_plan_cache_key(input, roi, scale);
+    if let Some(plan) = cached_region_scaled_direct_color_plan(cache_key) {
+        return Ok(plan);
+    }
+
+    let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
+    store_region_scaled_direct_color_plan(cache_key, plan.clone());
+    Ok(plan)
+}
+
+fn region_scaled_color_plan_cache_key(input: &[u8], roi: Rect, scale: Downscale) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    input.len().hash(&mut hasher);
+    input.hash(&mut hasher);
+    roi.hash(&mut hasher);
+    scale.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn cached_region_scaled_direct_color_plan(
+    key: u64,
+) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
+    let cache = REGION_SCALED_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = cache.lock().ok()?;
+    guard.get(&key).cloned()
+}
+
+fn store_region_scaled_direct_color_plan(
+    key: u64,
+    plan: Arc<crate::compute::PreparedDirectColorPlan>,
+) {
+    let cache = REGION_SCALED_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        evict_one_region_scaled_color_plan_if_needed(&mut guard);
+        guard.insert(key, plan);
+    }
+}
+
+fn evict_one_region_scaled_color_plan_if_needed<T>(cache: &mut HashMap<u64, T>) {
+    if cache.len() < REGION_SCALED_COLOR_PLAN_CACHE_CAP {
+        return;
+    }
+    if let Some(key) = cache.keys().next().copied() {
+        cache.remove(&key);
+    }
+}
+
 fn elapsed_us(started: Instant) -> u128 {
     started.elapsed().as_micros()
 }
@@ -366,6 +443,7 @@ fn emit_region_scaled_color_plan_build_timings(
         return;
     }
 
+    let label = decode_profile_label();
     for (stage, elapsed_us) in [
         ("native_image", native_image_us),
         ("direct_color_plan", direct_plan_us),
@@ -373,9 +451,65 @@ fn emit_region_scaled_color_plan_build_timings(
         ("crop_prepared_plan", crop_us),
         ("plan_total", total_us),
     ] {
+        let processor = plan_stage_processor(stage);
+        let metric = plan_stage_metric(stage);
+        let metric_kind = plan_stage_metric_kind(stage);
+        let aggregation = plan_stage_aggregation(stage);
         eprintln!(
-            "signinum_profile codec=j2k op=decode path=metal_direct_hybrid_plan stage={stage} fmt=Rgb batch_count=1 elapsed_us={elapsed_us}"
+            "signinum_profile codec=j2k op=decode path=metal_cpu_hybrid_plan pipeline=decode_hybrid label={label} stage={stage} processor={processor} metric={metric} metric_kind={metric_kind} aggregation={aggregation} fmt=Rgb batch_count=1 elapsed_us={elapsed_us}"
         );
+    }
+}
+
+fn decode_profile_label() -> String {
+    std::env::var(METAL_PROFILE_DECODE_LABEL_ENV)
+        .ok()
+        .filter(|label| !label.is_empty())
+        .map_or_else(
+            || "unlabeled".to_string(),
+            |label| sanitize_profile_label(&label),
+        )
+}
+
+fn sanitize_profile_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn plan_stage_processor(stage: &str) -> &'static str {
+    match stage {
+        "native_image" | "direct_color_plan" | "prepare_cpu_upload" | "crop_prepared_plan" => "cpu",
+        _ => "hybrid",
+    }
+}
+
+fn plan_stage_metric(stage: &str) -> &'static str {
+    match stage {
+        "native_image" => "native_image_us",
+        "direct_color_plan" => "direct_color_plan_us",
+        "prepare_cpu_upload" => "prepare_cpu_upload_us",
+        "crop_prepared_plan" => "crop_prepared_plan_us",
+        "plan_total" => "plan_total_us",
+        _ => "wall_us",
+    }
+}
+
+fn plan_stage_metric_kind(_stage: &str) -> &'static str {
+    "wall_elapsed"
+}
+
+fn plan_stage_aggregation(stage: &str) -> &'static str {
+    match stage {
+        "plan_total" => "inclusive",
+        _ => "exclusive",
     }
 }
 
@@ -406,8 +540,36 @@ fn is_direct_region_scaled_runtime_fallback_error(error: &Error) -> bool {
 mod tests {
     use super::*;
 
+    fn encoded_rgb8_tile_for_region_scaled_plan_cache(seed: u8) -> Arc<[u8]> {
+        let mut pixels = signinum_test_support::gradient_u8(64, 64, 3);
+        for pixel in pixels.chunks_exact_mut(3) {
+            pixel[0] = pixel[0].wrapping_add(seed);
+            pixel[1] = pixel[1].wrapping_add(seed.wrapping_mul(3));
+            pixel[2] = pixel[2].wrapping_add(seed.wrapping_mul(5));
+        }
+        let options = signinum_j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..signinum_j2k_native::EncodeOptions::default()
+        };
+        Arc::<[u8]>::from(
+            signinum_j2k_native::encode(&pixels, 64, 64, 3, 8, false, &options)
+                .expect("encode rgb8"),
+        )
+    }
+
+    fn region_scaled_plan_cache_roi() -> Rect {
+        Rect {
+            x: 8,
+            y: 8,
+            w: 32,
+            h: 32,
+        }
+    }
+
     #[test]
     fn known_repeated_region_scaled_color_batch_builds_one_plan() {
+        let _guard = region_scaled_color_plan_test_lock_for_test();
         reset_region_scaled_color_plan_builds_for_test();
         let input = Arc::<[u8]>::from([1_u8, 2, 3, 4]);
         let roi = Rect {
@@ -431,6 +593,7 @@ mod tests {
 
     #[test]
     fn known_repeated_region_scaled_color_batch_rejects_zero_count() {
+        let _guard = region_scaled_color_plan_test_lock_for_test();
         reset_region_scaled_color_plan_builds_for_test();
         let result = decode_repeated_region_scaled_color_batch_direct_to_device(
             &[1_u8, 2, 3, 4],
@@ -447,5 +610,71 @@ mod tests {
 
         assert!(matches!(result, Err(Error::MetalKernel { .. })));
         assert_eq!(region_scaled_color_plan_builds_for_test(), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn known_repeated_region_scaled_color_batch_reuses_cached_plan_across_calls() {
+        if Device::system_default().is_none() {
+            eprintln!("skipping repeated color plan cache test: no Metal device");
+            return;
+        }
+
+        let _guard = region_scaled_color_plan_test_lock_for_test();
+        let input = encoded_rgb8_tile_for_region_scaled_plan_cache(17);
+        let roi = region_scaled_plan_cache_roi();
+        reset_region_scaled_color_plan_cache_for_test();
+        reset_region_scaled_color_plan_builds_for_test();
+
+        for _ in 0..2 {
+            let surfaces = decode_repeated_region_scaled_color_batch_direct_to_device(
+                input.as_ref(),
+                roi,
+                Downscale::Quarter,
+                PixelFormat::Rgb8,
+                4,
+            )
+            .expect("repeated RGB region-scaled batch");
+            assert_eq!(surfaces.len(), 4);
+        }
+
+        assert_eq!(
+            region_scaled_color_plan_builds_for_test(),
+            1,
+            "same RGB ROI+scaled batch should reuse the prepared direct color plan across calls"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn known_distinct_region_scaled_color_batch_reuses_cached_plans_across_calls() {
+        if Device::system_default().is_none() {
+            eprintln!("skipping distinct color plan cache test: no Metal device");
+            return;
+        }
+
+        let _guard = region_scaled_color_plan_test_lock_for_test();
+        let first = encoded_rgb8_tile_for_region_scaled_plan_cache(29);
+        let second = encoded_rgb8_tile_for_region_scaled_plan_cache(43);
+        let roi = region_scaled_plan_cache_roi();
+        let requests = vec![
+            (first, roi, Downscale::Quarter),
+            (second, roi, Downscale::Quarter),
+        ];
+        reset_region_scaled_color_plan_cache_for_test();
+        reset_region_scaled_color_plan_builds_for_test();
+
+        for _ in 0..2 {
+            let surfaces =
+                decode_region_scaled_color_batch_direct_to_device(&requests, PixelFormat::Rgb8)
+                    .expect("distinct RGB region-scaled batch");
+            assert_eq!(surfaces.len(), requests.len());
+        }
+
+        assert_eq!(
+            region_scaled_color_plan_builds_for_test(),
+            2,
+            "same distinct RGB ROI+scaled inputs should reuse prepared direct color plans across calls"
+        );
     }
 }

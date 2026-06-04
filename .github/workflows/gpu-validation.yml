@@ -77,8 +77,6 @@ jobs:
       - run: cargo test -p signinum-jpeg-metal --all-targets
       - run: cargo test -p signinum-j2k-metal --all-targets
       - run: cargo bench -p signinum-jpeg-metal --no-run
-      - run: cargo bench -p signinum-j2k-metal --no-run
-      - run: cargo bench -p signinum-j2k-metal --bench encode_stages --no-run
       - run: cargo bench -p signinum --bench facade --features metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
@@ -88,12 +86,6 @@ jobs:
         run: cargo bench -p signinum-jpeg-metal --bench device_upload -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         run: cargo bench -p signinum-jpeg-metal --bench compare -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p signinum-j2k-metal --bench compare -- --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          SIGNINUM_REQUIRE_METAL_BENCH: "1"
-        run: cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         run: cargo bench -p signinum --bench facade --features metal -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
 

@@ -44,6 +44,20 @@ use crate::CudaTranscodeError;
 const NOT_WIRED: CudaTranscodeError =
     CudaTranscodeError::UnsupportedJob("signinum-transcode-cuda kernel not yet wired");
 
+type GroupedPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97Component>)>;
+type GroupedCompactPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97CompactComponent>)>;
+type ResidentPreencodedGroups = (
+    GroupedPreencodedComponents,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
+type ResidentCompactPreencodedGroups = (
+    Vec<u8>,
+    GroupedCompactPreencodedComponents,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
+
 /// A process-wide CUDA context, created on first use and reused thereafter.
 ///
 /// `CudaContext::system_default()` creates a fresh context every call, and the
@@ -1057,6 +1071,7 @@ impl Htj2k97ComponentJob for DctGridI16ToHtj2k97CodeBlockJob<'_> {
     }
 }
 
+#[allow(clippy::similar_names)]
 fn assemble_preencoded_components<J: Htj2k97ComponentJob>(
     jobs: &[J],
     ll_subbands: Vec<PreencodedHtj2k97Subband>,
@@ -1095,6 +1110,7 @@ fn assemble_preencoded_components<J: Htj2k97ComponentJob>(
     Ok(components)
 }
 
+#[allow(clippy::similar_names)]
 fn assemble_compact_preencoded_components<J: Htj2k97ComponentJob>(
     jobs: &[J],
     ll_subbands: Vec<PreencodedHtj2k97CompactSubband>,
@@ -1301,14 +1317,7 @@ fn device_band_groups_to_preencoded_components<J: Htj2k97ComponentJob>(
     pool: &CudaBufferPool,
     groups: &[ResidentDeviceGroup<'_, J>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<
-    (
-        Vec<(usize, Vec<PreencodedHtj2k97Component>)>,
-        CudaHtj2kEncodeStageTimings,
-        usize,
-    ),
-    CudaTranscodeError,
-> {
+) -> Result<ResidentPreencodedGroups, CudaTranscodeError> {
     let group_plans = groups
         .iter()
         .map(|group| {
@@ -1411,15 +1420,7 @@ fn device_band_groups_to_compact_preencoded_components<J: Htj2k97ComponentJob>(
     pool: &CudaBufferPool,
     groups: &[ResidentDeviceGroup<'_, J>],
     options: Htj2k97CodeBlockOptions,
-) -> Result<
-    (
-        Vec<u8>,
-        Vec<(usize, Vec<PreencodedHtj2k97CompactComponent>)>,
-        CudaHtj2kEncodeStageTimings,
-        usize,
-    ),
-    CudaTranscodeError,
-> {
+) -> Result<ResidentCompactPreencodedGroups, CudaTranscodeError> {
     let group_plans = groups
         .iter()
         .map(|group| {
@@ -1521,14 +1522,14 @@ fn device_band_groups_to_compact_preencoded_components<J: Htj2k97ComponentJob>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resident_subband_encode_plan<'a>(
-    coefficients: &'a CudaPooledDeviceBuffer,
+fn resident_subband_encode_plan(
+    coefficients: &CudaPooledDeviceBuffer,
     item_count: usize,
     width: usize,
     height: usize,
     sub_band_type: J2kSubBandType,
     options: Htj2k97CodeBlockOptions,
-) -> Result<ResidentSubbandEncodePlan<'a>, CudaTranscodeError> {
+) -> Result<ResidentSubbandEncodePlan<'_>, CudaTranscodeError> {
     let coefficient_buffer = coefficients
         .as_device_buffer()
         .ok_or(CudaTranscodeError::Kernel(
@@ -1912,6 +1913,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn assemble_preencoded_components_moves_subband_payloads_without_clone() {
         let jobs = [TestComponentJob {
             x_rsiz: 1,

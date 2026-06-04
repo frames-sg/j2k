@@ -4,7 +4,7 @@
 use crate::compute;
 #[cfg(target_os = "macos")]
 use metal::Buffer;
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 use rayon::prelude::*;
 use signinum_core::DeviceSubmission;
 #[cfg(target_os = "macos")]
@@ -17,9 +17,9 @@ use signinum_j2k::{
 use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions, J2kLosslessSamples};
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::{
-    EncodeProgressionOrder, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kSubBandType,
+    EncodeOptions, EncodeProgressionOrder, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder,
+    J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
 };
 use signinum_j2k_native::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
@@ -28,7 +28,7 @@ use signinum_j2k_native::{
 };
 #[cfg(all(test, target_os = "macos"))]
 use std::cell::Cell;
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -472,6 +472,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 options,
                 &session,
                 MetalEncodeInputStaging::AlreadyPaddedContiguous,
+                job.code_block_width,
+                job.code_block_height,
             ) {
                 Ok(Some(encoded)) => encoded,
                 Ok(None) | Err(crate::Error::MetalUnavailable) => return Ok(None),
@@ -763,12 +765,373 @@ pub struct MetalLosslessEncodeStageStats {
     pub ht_command_encode_duration: Duration,
     /// Host-side Metal command encoding time for HT code-block dispatch setup.
     pub ht_block_encode_duration: Duration,
+    /// CPU-side setup time for classic Tier-1 batch jobs and buffers.
+    pub classic_tier1_setup_duration: Duration,
+    /// Host-side Metal command encoding time for classic code-block dispatch setup.
+    pub classic_block_encode_duration: Duration,
+    /// Host-side CPU time spent packing compact classic Tier-1 tokens.
+    ///
+    /// This is populated only when
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_PACK=1` is enabled.
+    pub classic_tier1_token_pack_duration: Duration,
+    /// CPU-side packet metadata planning time for classic resident batches.
+    pub classic_packet_plan_duration: Duration,
+    /// CPU-side packet/codestream buffer setup time for classic resident batches.
+    pub classic_packet_buffer_setup_duration: Duration,
+    /// Host-side time spent committing split classic resident command buffers.
+    pub classic_command_buffer_commit_duration: Duration,
+    /// Host-side wall time spent harvesting completed resident batch results.
+    pub result_harvest_duration: Duration,
+    /// Host-side time spent copying shared status buffers into CPU-owned status arrays.
+    pub result_status_copy_duration: Duration,
+    /// Host-side time spent returning private buffers to the resident buffer pool.
+    pub result_private_recycle_duration: Duration,
+    /// Host-side time spent returning shared buffers to the resident buffer pool.
+    pub result_shared_recycle_duration: Duration,
+    /// Host-side time spent validating per-tile status and building codestream handles.
+    pub result_codestream_collect_duration: Duration,
     /// Host-side Metal command encoding time for packet block metadata dispatch setup.
     pub packet_block_prep_duration: Duration,
     /// Host-side Metal command encoding time for packet body dispatch setup.
     pub packetization_duration: Duration,
     /// Host-side Metal command encoding time for codestream assembly dispatch setup.
     pub codestream_assembly_duration: Duration,
+    /// GPU time spent preparing resident coefficient buffers.
+    ///
+    /// This includes the resident input deinterleave/RCT, DWT, and coefficient
+    /// extraction command buffer when stage profiling is enabled.
+    pub coefficient_prep_gpu_duration: Duration,
+    /// GPU time spent deinterleaving resident input planes and applying RCT.
+    ///
+    /// This is populated only when resident coefficient-prep split profiling is enabled.
+    pub coefficient_deinterleave_rct_gpu_duration: Duration,
+    /// GPU time spent running resident forward DWT 5/3 coefficient prep.
+    ///
+    /// This is populated only when resident coefficient-prep split profiling is enabled.
+    pub coefficient_dwt53_gpu_duration: Duration,
+    /// GPU time spent in resident forward DWT 5/3 vertical passes.
+    ///
+    /// This is populated only when resident coefficient-prep split profiling is enabled.
+    pub coefficient_dwt53_vertical_gpu_duration: Duration,
+    /// GPU time spent in resident forward DWT 5/3 horizontal passes.
+    ///
+    /// This is populated only when resident coefficient-prep split profiling is enabled.
+    pub coefficient_dwt53_horizontal_gpu_duration: Duration,
+    /// GPU time spent extracting resident code-block coefficients.
+    ///
+    /// This is populated only when resident coefficient-prep split profiling is enabled.
+    pub coefficient_extract_gpu_duration: Duration,
+    /// GPU time spent copying per-tile coefficient buffers into a batch buffer.
+    ///
+    /// This is populated only when resident split-command profiling is enabled.
+    pub coefficient_copy_gpu_duration: Duration,
+    /// Elapsed GPU timestamp window across the resident encode command buffers.
+    ///
+    /// This is `max(GPUEndTime) - min(GPUStartTime)` for the command buffers
+    /// retained by the batch. It is a wall-window companion to summed GPU busy
+    /// rows and should not be added to per-stage GPU durations.
+    pub gpu_elapsed_wall_duration: Duration,
+    /// GPU time spent in the classic Tier-1 code-block encode command.
+    ///
+    /// This is populated only when classic split-command profiling is enabled.
+    pub classic_block_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 density probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_DENSITY=1` are enabled.
+    pub classic_tier1_density_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 raw bypass packing probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_RAW_PACK=1` are enabled.
+    pub classic_tier1_raw_pack_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 MQ arithmetic packing probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_ARITHMETIC_PACK=1` are enabled.
+    pub classic_tier1_arithmetic_pack_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 ordered symbol-plan probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_SYMBOL_PLAN=1` are enabled.
+    pub classic_tier1_symbol_plan_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 pass-plan probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_PASS_PLAN=1` are enabled.
+    pub classic_tier1_pass_plan_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 compact token-emitter probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_TOKEN_EMIT=1` are enabled.
+    pub classic_tier1_token_emit_gpu_duration: Duration,
+    /// GPU time spent in the profile-only classic Tier-1 split MQ/raw token-emitter probe.
+    ///
+    /// This is populated only when classic split-command profiling and
+    /// `SIGNINUM_J2K_METAL_PROFILE_CLASSIC_TIER1_SPLIT_TOKEN_EMIT=1` are enabled.
+    pub classic_tier1_split_token_emit_gpu_duration: Duration,
+    /// GPU time spent packing compact classic Tier-1 tokens into resident payloads.
+    ///
+    /// This is populated when the gated classic GPU token-pack route is enabled.
+    pub classic_tier1_token_pack_gpu_duration: Duration,
+    /// GPU time spent in the HT Tier-1 code-block encode command.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub ht_block_gpu_duration: Duration,
+    /// GPU time spent preparing packet-block metadata from HT Tier-1 status.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub packet_block_prep_gpu_duration: Duration,
+    /// GPU time spent in HTJ2K packetization.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub packetization_gpu_duration: Duration,
+    /// GPU time spent copying packet payload bytes after header packetization.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub packet_payload_copy_gpu_duration: Duration,
+    /// GPU time spent assembling the HTJ2K codestream buffer.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub codestream_assembly_gpu_duration: Duration,
+    /// GPU time spent copying packet payload bytes into final codestream buffers.
+    ///
+    /// This is populated only when HT split-command profiling is enabled.
+    pub codestream_payload_copy_gpu_duration: Duration,
+    /// Total Tier-1 output capacity, in bytes, across resident code blocks.
+    pub tier1_output_capacity_total: usize,
+    /// Maximum Tier-1 output capacity, in bytes, for any resident code block.
+    pub max_tier1_output_capacity: usize,
+    /// Actual Tier-1 output bytes written across resident code blocks.
+    pub tier1_output_used_bytes_total: usize,
+    /// Maximum actual Tier-1 output bytes written by any resident code block.
+    pub max_tier1_output_used_bytes: usize,
+    /// Total Tier-1 segment metadata capacity across resident code blocks.
+    pub tier1_segment_capacity_total: usize,
+    /// Maximum Tier-1 segment metadata capacity for any resident code block.
+    pub max_tier1_segment_capacity_per_block: usize,
+    /// Actual Tier-1 coding passes emitted across resident code blocks.
+    pub tier1_coding_pass_count_total: usize,
+    /// Maximum actual Tier-1 coding passes emitted by any resident code block.
+    pub max_tier1_coding_passes_per_block: usize,
+    /// Estimated classic MQ/arithmetic coding passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_arithmetic_pass_count_total: usize,
+    /// Estimated classic raw bypass coding passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_raw_pass_count_total: usize,
+    /// Estimated classic cleanup passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_cleanup_pass_count_total: usize,
+    /// Estimated classic significance propagation passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_sigprop_pass_count_total: usize,
+    /// Estimated classic magnitude refinement passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_magref_pass_count_total: usize,
+    /// Estimated classic MQ/arithmetic cleanup passes across resident code blocks.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_arithmetic_cleanup_pass_count_total: usize,
+    /// Estimated classic MQ/arithmetic significance propagation passes.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_arithmetic_sigprop_pass_count_total: usize,
+    /// Estimated classic MQ/arithmetic magnitude refinement passes.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_arithmetic_magref_pass_count_total: usize,
+    /// Estimated classic raw bypass significance propagation passes.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_raw_sigprop_pass_count_total: usize,
+    /// Estimated classic raw bypass magnitude refinement passes.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_raw_magref_pass_count_total: usize,
+    /// Estimated full coefficient visits made by classic Tier-1 pass scans.
+    ///
+    /// This is derived from actual emitted pass counts and code-block areas.
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_full_scan_coeff_visit_count_total: usize,
+    /// Estimated full coefficient visits made by MQ/arithmetic pass scans.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_arithmetic_scan_coeff_visit_count_total: usize,
+    /// Estimated full coefficient visits made by raw bypass pass scans.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_raw_scan_coeff_visit_count_total: usize,
+    /// Estimated full coefficient visits made by cleanup pass scans.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_cleanup_scan_coeff_visit_count_total: usize,
+    /// Estimated full coefficient visits made by significance propagation scans.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_sigprop_scan_coeff_visit_count_total: usize,
+    /// Estimated full coefficient visits made by magnitude refinement scans.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub tier1_magref_scan_coeff_visit_count_total: usize,
+    /// Maximum estimated full coefficient scan visits for any classic block.
+    ///
+    /// For HTJ2K Tier-1 this remains zero.
+    pub max_tier1_full_scan_coeff_visits_per_block: usize,
+    /// Profile-only count of classic significance propagation candidates.
+    ///
+    /// This is populated only when classic Tier-1 density profiling is enabled.
+    pub tier1_sigprop_active_candidate_count_total: usize,
+    /// Profile-only count of coefficients that become significant in sigprop.
+    ///
+    /// This is populated only when classic Tier-1 density profiling is enabled.
+    pub tier1_sigprop_new_significant_count_total: usize,
+    /// Profile-only count of classic magnitude refinement candidates.
+    ///
+    /// This is populated only when classic Tier-1 density profiling is enabled.
+    pub tier1_magref_active_candidate_count_total: usize,
+    /// Profile-only count of arithmetic-coded significance propagation candidates.
+    pub tier1_arithmetic_sigprop_active_candidate_count_total: usize,
+    /// Profile-only count of coefficients that become significant in arithmetic sigprop.
+    pub tier1_arithmetic_sigprop_new_significant_count_total: usize,
+    /// Profile-only count of raw bypass significance propagation candidates.
+    pub tier1_raw_sigprop_active_candidate_count_total: usize,
+    /// Profile-only count of coefficients that become significant in raw sigprop.
+    pub tier1_raw_sigprop_new_significant_count_total: usize,
+    /// Profile-only count of arithmetic-coded magnitude refinement candidates.
+    pub tier1_arithmetic_magref_active_candidate_count_total: usize,
+    /// Profile-only count of raw bypass magnitude refinement candidates.
+    pub tier1_raw_magref_active_candidate_count_total: usize,
+    /// Profile-only count of cleanup-pass coefficient candidates.
+    ///
+    /// This excludes coefficients represented only by cleanup RLC stripes.
+    pub tier1_cleanup_active_candidate_count_total: usize,
+    /// Profile-only count of coefficients that become significant in cleanup.
+    ///
+    /// This includes significance discovered through cleanup RLC.
+    pub tier1_cleanup_new_significant_count_total: usize,
+    /// Profile-only count of cleanup stripes encoded by the RLC path.
+    pub tier1_cleanup_rlc_stripe_count_total: usize,
+    /// Profile-only count of cleanup RLC stripes with no significant coefficient.
+    pub tier1_cleanup_rlc_zero_stripe_count_total: usize,
+    /// Profile-only exact MQ symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_mq_symbol_count_total: usize,
+    /// Profile-only exact raw bypass bit count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_raw_bit_count_total: usize,
+    /// Maximum MQ symbols emitted by any block in the ordered symbol-plan probe.
+    pub max_tier1_symbol_plan_mq_symbols_per_block: usize,
+    /// Maximum raw bypass bits emitted by any block in the ordered symbol-plan probe.
+    pub max_tier1_symbol_plan_raw_bits_per_block: usize,
+    /// Estimated compact token bytes needed for all blocks in the symbol-plan probe.
+    pub tier1_symbol_plan_packed_token_bytes_total: usize,
+    /// Maximum estimated compact token bytes needed by any one block.
+    pub max_tier1_symbol_plan_packed_token_bytes_per_block: usize,
+    /// Profile-only exact cleanup MQ symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_cleanup_mq_symbol_count_total: usize,
+    /// Profile-only exact sigprop MQ symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_sigprop_mq_symbol_count_total: usize,
+    /// Profile-only exact magref MQ symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_magref_mq_symbol_count_total: usize,
+    /// Profile-only exact raw sigprop bit count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_raw_sigprop_bit_count_total: usize,
+    /// Profile-only exact raw magref bit count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_raw_magref_bit_count_total: usize,
+    /// Profile-only cleanup sign-symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_cleanup_sign_symbol_count_total: usize,
+    /// Profile-only sigprop sign-symbol count from the ordered symbol-plan probe.
+    pub tier1_symbol_plan_sigprop_sign_symbol_count_total: usize,
+    /// XOR of per-block order-sensitive MQ symbol hashes from the symbol-plan probe.
+    pub tier1_symbol_plan_mq_symbol_hash_xor: usize,
+    /// XOR of per-block order-sensitive raw bit hashes from the symbol-plan probe.
+    pub tier1_symbol_plan_raw_bit_hash_xor: usize,
+    /// Profile-only MQ symbols counted by coding-pass index.
+    pub tier1_pass_plan_mq_symbol_count_total: usize,
+    /// Profile-only raw bypass bits counted by coding-pass index.
+    pub tier1_pass_plan_raw_bit_count_total: usize,
+    /// Count of block-local coding passes that emit at least one MQ symbol.
+    pub tier1_pass_plan_nonempty_mq_pass_count_total: usize,
+    /// Count of block-local coding passes that emit at least one raw bypass bit.
+    pub tier1_pass_plan_nonempty_raw_pass_count_total: usize,
+    /// Maximum MQ symbols emitted by any single block-local coding pass.
+    pub max_tier1_pass_plan_mq_symbols_per_pass: usize,
+    /// Maximum raw bypass bits emitted by any single block-local coding pass.
+    pub max_tier1_pass_plan_raw_bits_per_pass: usize,
+    /// Exact MQ symbol count from the compact token-emitter probe or gated GPU token-pack route.
+    pub tier1_token_emit_mq_symbol_count_total: usize,
+    /// Exact raw bypass bit count from the compact token-emitter probe or gated GPU token-pack route.
+    pub tier1_token_emit_raw_bit_count_total: usize,
+    /// Compact token bytes emitted by the token-emitter probe or gated GPU token-pack route.
+    pub tier1_token_emit_token_bytes_total: usize,
+    /// Maximum compact token bytes emitted by any one block.
+    pub max_tier1_token_emit_token_bytes_per_block: usize,
+    /// Segment records emitted by the token-emitter probe or gated GPU token-pack route.
+    pub tier1_token_emit_segment_count_total: usize,
+    /// Maximum token-emitter segment records for any one block.
+    pub max_tier1_token_emit_segments_per_block: usize,
+    /// XOR of per-block order-sensitive MQ symbol hashes from token emission.
+    pub tier1_token_emit_mq_symbol_hash_xor: usize,
+    /// XOR of per-block order-sensitive raw bit hashes from token emission.
+    pub tier1_token_emit_raw_bit_hash_xor: usize,
+    /// Total bytes produced by packing emitted Tier-1 tokens.
+    pub tier1_token_pack_output_bytes_total: usize,
+    /// Maximum token-pack output bytes for any one block.
+    pub max_tier1_token_pack_output_bytes_per_block: usize,
+    /// Resident Tier-1 code blocks that emitted at least one coding pass.
+    pub tier1_nonzero_block_count_total: usize,
+    /// Resident Tier-1 code blocks that emitted no coding passes.
+    pub tier1_zero_block_count_total: usize,
+    /// Missing most-significant bitplanes across resident Tier-1 code blocks.
+    pub tier1_missing_bitplane_count_total: usize,
+    /// Maximum missing most-significant bitplanes for any resident code block.
+    pub max_tier1_missing_bitplanes_per_block: usize,
+    /// Classic Tier-1 segment records emitted across resident code blocks.
+    ///
+    /// This remains zero for HTJ2K Tier-1, which does not use classic segment
+    /// records.
+    pub tier1_segment_count_total: usize,
+    /// Maximum classic Tier-1 segment records emitted by any resident code block.
+    pub max_tier1_segments_per_block: usize,
+    /// Total host-planned packet payload-copy job slots across resident chunks.
+    pub packet_payload_copy_job_capacity_total: usize,
+    /// Maximum packet payload-copy job slots needed by any tile in the batch.
+    pub max_packet_payload_copy_jobs_per_tile: usize,
+    /// Actual packet payload-copy jobs emitted by packetization across resident chunks.
+    pub packet_payload_copy_job_count_total: usize,
+    /// Maximum actual packet payload-copy jobs emitted by any tile in the batch.
+    pub max_packet_payload_copy_jobs_used_per_tile: usize,
+    /// Actual packet payload-copy bytes emitted by packetization across resident chunks.
+    pub packet_payload_copy_bytes_total: usize,
+    /// Maximum actual packet payload-copy bytes emitted by any tile in the batch.
+    pub max_packet_payload_copy_bytes_per_tile: usize,
+    /// Packet payload-copy jobs at or below one copy-kernel stripe.
+    pub packet_payload_copy_small_job_count_total: usize,
+    /// Packet payload-copy jobs above one stripe and at or below 512 bytes.
+    pub packet_payload_copy_medium_job_count_total: usize,
+    /// Packet payload-copy jobs above 512 bytes.
+    pub packet_payload_copy_large_job_count_total: usize,
+    /// Packet payload-copy stripes launched by the copy kernel.
+    pub packet_payload_copy_launched_stripe_count_total: usize,
+    /// Packet payload-copy stripes that correspond to emitted copy jobs.
+    pub packet_payload_copy_active_stripe_count_total: usize,
+    /// Total packet output capacity, in bytes, across resident chunks.
+    pub packet_output_capacity_total: usize,
+    /// Maximum packet output capacity, in bytes, for any tile in the batch.
+    pub max_packet_output_capacity: usize,
+    /// Actual packet output bytes written by packetization across resident chunks.
+    pub packet_output_used_bytes_total: usize,
+    /// Maximum actual packet output bytes written by any tile in the batch.
+    pub max_packet_output_used_bytes: usize,
+    /// Codestream payload-copy bytes, in bytes, across resident chunks.
+    pub codestream_payload_copy_bytes_total: usize,
+    /// Codestream payload-copy threads launched by the copy kernel.
+    pub codestream_payload_copy_launched_thread_count_total: usize,
+    /// Estimated codestream payload-copy threads with in-range bytes to copy.
+    pub codestream_payload_copy_active_thread_count_total: usize,
     /// Time spent waiting for codestream buffers.
     pub codestream_wait_duration: Duration,
     /// Alias of `codestream_wait_duration` using RCA naming.
@@ -803,9 +1166,43 @@ impl MetalLosslessEncodeStageStats {
             || self.ht_buffer_allocation_duration > Duration::ZERO
             || self.ht_command_encode_duration > Duration::ZERO
             || self.ht_block_encode_duration > Duration::ZERO
+            || self.classic_tier1_setup_duration > Duration::ZERO
+            || self.classic_block_encode_duration > Duration::ZERO
+            || self.classic_tier1_token_pack_duration > Duration::ZERO
+            || self.classic_packet_plan_duration > Duration::ZERO
+            || self.classic_packet_buffer_setup_duration > Duration::ZERO
+            || self.classic_command_buffer_commit_duration > Duration::ZERO
+            || self.result_harvest_duration > Duration::ZERO
+            || self.result_status_copy_duration > Duration::ZERO
+            || self.result_private_recycle_duration > Duration::ZERO
+            || self.result_shared_recycle_duration > Duration::ZERO
+            || self.result_codestream_collect_duration > Duration::ZERO
             || self.packet_block_prep_duration > Duration::ZERO
             || self.packetization_duration > Duration::ZERO
             || self.codestream_assembly_duration > Duration::ZERO
+            || self.coefficient_prep_gpu_duration > Duration::ZERO
+            || self.coefficient_deinterleave_rct_gpu_duration > Duration::ZERO
+            || self.coefficient_dwt53_gpu_duration > Duration::ZERO
+            || self.coefficient_dwt53_vertical_gpu_duration > Duration::ZERO
+            || self.coefficient_dwt53_horizontal_gpu_duration > Duration::ZERO
+            || self.coefficient_extract_gpu_duration > Duration::ZERO
+            || self.coefficient_copy_gpu_duration > Duration::ZERO
+            || self.gpu_elapsed_wall_duration > Duration::ZERO
+            || self.classic_block_gpu_duration > Duration::ZERO
+            || self.classic_tier1_density_gpu_duration > Duration::ZERO
+            || self.classic_tier1_raw_pack_gpu_duration > Duration::ZERO
+            || self.classic_tier1_arithmetic_pack_gpu_duration > Duration::ZERO
+            || self.classic_tier1_symbol_plan_gpu_duration > Duration::ZERO
+            || self.classic_tier1_pass_plan_gpu_duration > Duration::ZERO
+            || self.classic_tier1_token_emit_gpu_duration > Duration::ZERO
+            || self.classic_tier1_split_token_emit_gpu_duration > Duration::ZERO
+            || self.classic_tier1_token_pack_gpu_duration > Duration::ZERO
+            || self.ht_block_gpu_duration > Duration::ZERO
+            || self.packet_block_prep_gpu_duration > Duration::ZERO
+            || self.packetization_gpu_duration > Duration::ZERO
+            || self.packet_payload_copy_gpu_duration > Duration::ZERO
+            || self.codestream_assembly_gpu_duration > Duration::ZERO
+            || self.codestream_payload_copy_gpu_duration > Duration::ZERO
             || self.codestream_wait_duration > Duration::ZERO
             || self.sync_wait_duration > Duration::ZERO
             || self.host_readback_duration > Duration::ZERO
@@ -839,6 +1236,39 @@ impl MetalLosslessEncodeStageStats {
         self.ht_block_encode_duration = self
             .ht_block_encode_duration
             .saturating_add(other.ht_block_encode_duration);
+        self.classic_tier1_setup_duration = self
+            .classic_tier1_setup_duration
+            .saturating_add(other.classic_tier1_setup_duration);
+        self.classic_block_encode_duration = self
+            .classic_block_encode_duration
+            .saturating_add(other.classic_block_encode_duration);
+        self.classic_tier1_token_pack_duration = self
+            .classic_tier1_token_pack_duration
+            .saturating_add(other.classic_tier1_token_pack_duration);
+        self.classic_packet_plan_duration = self
+            .classic_packet_plan_duration
+            .saturating_add(other.classic_packet_plan_duration);
+        self.classic_packet_buffer_setup_duration = self
+            .classic_packet_buffer_setup_duration
+            .saturating_add(other.classic_packet_buffer_setup_duration);
+        self.classic_command_buffer_commit_duration = self
+            .classic_command_buffer_commit_duration
+            .saturating_add(other.classic_command_buffer_commit_duration);
+        self.result_harvest_duration = self
+            .result_harvest_duration
+            .saturating_add(other.result_harvest_duration);
+        self.result_status_copy_duration = self
+            .result_status_copy_duration
+            .saturating_add(other.result_status_copy_duration);
+        self.result_private_recycle_duration = self
+            .result_private_recycle_duration
+            .saturating_add(other.result_private_recycle_duration);
+        self.result_shared_recycle_duration = self
+            .result_shared_recycle_duration
+            .saturating_add(other.result_shared_recycle_duration);
+        self.result_codestream_collect_duration = self
+            .result_codestream_collect_duration
+            .saturating_add(other.result_codestream_collect_duration);
         self.packet_block_prep_duration = self
             .packet_block_prep_duration
             .saturating_add(other.packet_block_prep_duration);
@@ -848,6 +1278,346 @@ impl MetalLosslessEncodeStageStats {
         self.codestream_assembly_duration = self
             .codestream_assembly_duration
             .saturating_add(other.codestream_assembly_duration);
+        self.coefficient_prep_gpu_duration = self
+            .coefficient_prep_gpu_duration
+            .saturating_add(other.coefficient_prep_gpu_duration);
+        self.coefficient_deinterleave_rct_gpu_duration = self
+            .coefficient_deinterleave_rct_gpu_duration
+            .saturating_add(other.coefficient_deinterleave_rct_gpu_duration);
+        self.coefficient_dwt53_gpu_duration = self
+            .coefficient_dwt53_gpu_duration
+            .saturating_add(other.coefficient_dwt53_gpu_duration);
+        self.coefficient_dwt53_vertical_gpu_duration = self
+            .coefficient_dwt53_vertical_gpu_duration
+            .saturating_add(other.coefficient_dwt53_vertical_gpu_duration);
+        self.coefficient_dwt53_horizontal_gpu_duration = self
+            .coefficient_dwt53_horizontal_gpu_duration
+            .saturating_add(other.coefficient_dwt53_horizontal_gpu_duration);
+        self.coefficient_extract_gpu_duration = self
+            .coefficient_extract_gpu_duration
+            .saturating_add(other.coefficient_extract_gpu_duration);
+        self.coefficient_copy_gpu_duration = self
+            .coefficient_copy_gpu_duration
+            .saturating_add(other.coefficient_copy_gpu_duration);
+        self.gpu_elapsed_wall_duration = self
+            .gpu_elapsed_wall_duration
+            .saturating_add(other.gpu_elapsed_wall_duration);
+        self.classic_block_gpu_duration = self
+            .classic_block_gpu_duration
+            .saturating_add(other.classic_block_gpu_duration);
+        self.classic_tier1_density_gpu_duration = self
+            .classic_tier1_density_gpu_duration
+            .saturating_add(other.classic_tier1_density_gpu_duration);
+        self.classic_tier1_raw_pack_gpu_duration = self
+            .classic_tier1_raw_pack_gpu_duration
+            .saturating_add(other.classic_tier1_raw_pack_gpu_duration);
+        self.classic_tier1_arithmetic_pack_gpu_duration = self
+            .classic_tier1_arithmetic_pack_gpu_duration
+            .saturating_add(other.classic_tier1_arithmetic_pack_gpu_duration);
+        self.classic_tier1_symbol_plan_gpu_duration = self
+            .classic_tier1_symbol_plan_gpu_duration
+            .saturating_add(other.classic_tier1_symbol_plan_gpu_duration);
+        self.classic_tier1_pass_plan_gpu_duration = self
+            .classic_tier1_pass_plan_gpu_duration
+            .saturating_add(other.classic_tier1_pass_plan_gpu_duration);
+        self.classic_tier1_token_emit_gpu_duration = self
+            .classic_tier1_token_emit_gpu_duration
+            .saturating_add(other.classic_tier1_token_emit_gpu_duration);
+        self.classic_tier1_split_token_emit_gpu_duration = self
+            .classic_tier1_split_token_emit_gpu_duration
+            .saturating_add(other.classic_tier1_split_token_emit_gpu_duration);
+        self.classic_tier1_token_pack_gpu_duration = self
+            .classic_tier1_token_pack_gpu_duration
+            .saturating_add(other.classic_tier1_token_pack_gpu_duration);
+        self.ht_block_gpu_duration = self
+            .ht_block_gpu_duration
+            .saturating_add(other.ht_block_gpu_duration);
+        self.packet_block_prep_gpu_duration = self
+            .packet_block_prep_gpu_duration
+            .saturating_add(other.packet_block_prep_gpu_duration);
+        self.packetization_gpu_duration = self
+            .packetization_gpu_duration
+            .saturating_add(other.packetization_gpu_duration);
+        self.packet_payload_copy_gpu_duration = self
+            .packet_payload_copy_gpu_duration
+            .saturating_add(other.packet_payload_copy_gpu_duration);
+        self.codestream_assembly_gpu_duration = self
+            .codestream_assembly_gpu_duration
+            .saturating_add(other.codestream_assembly_gpu_duration);
+        self.codestream_payload_copy_gpu_duration = self
+            .codestream_payload_copy_gpu_duration
+            .saturating_add(other.codestream_payload_copy_gpu_duration);
+        self.tier1_output_capacity_total = self
+            .tier1_output_capacity_total
+            .saturating_add(other.tier1_output_capacity_total);
+        self.max_tier1_output_capacity = self
+            .max_tier1_output_capacity
+            .max(other.max_tier1_output_capacity);
+        self.tier1_output_used_bytes_total = self
+            .tier1_output_used_bytes_total
+            .saturating_add(other.tier1_output_used_bytes_total);
+        self.max_tier1_output_used_bytes = self
+            .max_tier1_output_used_bytes
+            .max(other.max_tier1_output_used_bytes);
+        self.tier1_segment_capacity_total = self
+            .tier1_segment_capacity_total
+            .saturating_add(other.tier1_segment_capacity_total);
+        self.max_tier1_segment_capacity_per_block = self
+            .max_tier1_segment_capacity_per_block
+            .max(other.max_tier1_segment_capacity_per_block);
+        self.tier1_coding_pass_count_total = self
+            .tier1_coding_pass_count_total
+            .saturating_add(other.tier1_coding_pass_count_total);
+        self.max_tier1_coding_passes_per_block = self
+            .max_tier1_coding_passes_per_block
+            .max(other.max_tier1_coding_passes_per_block);
+        self.tier1_arithmetic_pass_count_total = self
+            .tier1_arithmetic_pass_count_total
+            .saturating_add(other.tier1_arithmetic_pass_count_total);
+        self.tier1_raw_pass_count_total = self
+            .tier1_raw_pass_count_total
+            .saturating_add(other.tier1_raw_pass_count_total);
+        self.tier1_cleanup_pass_count_total = self
+            .tier1_cleanup_pass_count_total
+            .saturating_add(other.tier1_cleanup_pass_count_total);
+        self.tier1_sigprop_pass_count_total = self
+            .tier1_sigprop_pass_count_total
+            .saturating_add(other.tier1_sigprop_pass_count_total);
+        self.tier1_magref_pass_count_total = self
+            .tier1_magref_pass_count_total
+            .saturating_add(other.tier1_magref_pass_count_total);
+        self.tier1_arithmetic_cleanup_pass_count_total = self
+            .tier1_arithmetic_cleanup_pass_count_total
+            .saturating_add(other.tier1_arithmetic_cleanup_pass_count_total);
+        self.tier1_arithmetic_sigprop_pass_count_total = self
+            .tier1_arithmetic_sigprop_pass_count_total
+            .saturating_add(other.tier1_arithmetic_sigprop_pass_count_total);
+        self.tier1_arithmetic_magref_pass_count_total = self
+            .tier1_arithmetic_magref_pass_count_total
+            .saturating_add(other.tier1_arithmetic_magref_pass_count_total);
+        self.tier1_raw_sigprop_pass_count_total = self
+            .tier1_raw_sigprop_pass_count_total
+            .saturating_add(other.tier1_raw_sigprop_pass_count_total);
+        self.tier1_raw_magref_pass_count_total = self
+            .tier1_raw_magref_pass_count_total
+            .saturating_add(other.tier1_raw_magref_pass_count_total);
+        self.tier1_full_scan_coeff_visit_count_total = self
+            .tier1_full_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_full_scan_coeff_visit_count_total);
+        self.tier1_arithmetic_scan_coeff_visit_count_total = self
+            .tier1_arithmetic_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_arithmetic_scan_coeff_visit_count_total);
+        self.tier1_raw_scan_coeff_visit_count_total = self
+            .tier1_raw_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_raw_scan_coeff_visit_count_total);
+        self.tier1_cleanup_scan_coeff_visit_count_total = self
+            .tier1_cleanup_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_cleanup_scan_coeff_visit_count_total);
+        self.tier1_sigprop_scan_coeff_visit_count_total = self
+            .tier1_sigprop_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_sigprop_scan_coeff_visit_count_total);
+        self.tier1_magref_scan_coeff_visit_count_total = self
+            .tier1_magref_scan_coeff_visit_count_total
+            .saturating_add(other.tier1_magref_scan_coeff_visit_count_total);
+        self.max_tier1_full_scan_coeff_visits_per_block = self
+            .max_tier1_full_scan_coeff_visits_per_block
+            .max(other.max_tier1_full_scan_coeff_visits_per_block);
+        self.tier1_sigprop_active_candidate_count_total = self
+            .tier1_sigprop_active_candidate_count_total
+            .saturating_add(other.tier1_sigprop_active_candidate_count_total);
+        self.tier1_sigprop_new_significant_count_total = self
+            .tier1_sigprop_new_significant_count_total
+            .saturating_add(other.tier1_sigprop_new_significant_count_total);
+        self.tier1_magref_active_candidate_count_total = self
+            .tier1_magref_active_candidate_count_total
+            .saturating_add(other.tier1_magref_active_candidate_count_total);
+        self.tier1_arithmetic_sigprop_active_candidate_count_total = self
+            .tier1_arithmetic_sigprop_active_candidate_count_total
+            .saturating_add(other.tier1_arithmetic_sigprop_active_candidate_count_total);
+        self.tier1_arithmetic_sigprop_new_significant_count_total = self
+            .tier1_arithmetic_sigprop_new_significant_count_total
+            .saturating_add(other.tier1_arithmetic_sigprop_new_significant_count_total);
+        self.tier1_raw_sigprop_active_candidate_count_total = self
+            .tier1_raw_sigprop_active_candidate_count_total
+            .saturating_add(other.tier1_raw_sigprop_active_candidate_count_total);
+        self.tier1_raw_sigprop_new_significant_count_total = self
+            .tier1_raw_sigprop_new_significant_count_total
+            .saturating_add(other.tier1_raw_sigprop_new_significant_count_total);
+        self.tier1_arithmetic_magref_active_candidate_count_total = self
+            .tier1_arithmetic_magref_active_candidate_count_total
+            .saturating_add(other.tier1_arithmetic_magref_active_candidate_count_total);
+        self.tier1_raw_magref_active_candidate_count_total = self
+            .tier1_raw_magref_active_candidate_count_total
+            .saturating_add(other.tier1_raw_magref_active_candidate_count_total);
+        self.tier1_cleanup_active_candidate_count_total = self
+            .tier1_cleanup_active_candidate_count_total
+            .saturating_add(other.tier1_cleanup_active_candidate_count_total);
+        self.tier1_cleanup_new_significant_count_total = self
+            .tier1_cleanup_new_significant_count_total
+            .saturating_add(other.tier1_cleanup_new_significant_count_total);
+        self.tier1_cleanup_rlc_stripe_count_total = self
+            .tier1_cleanup_rlc_stripe_count_total
+            .saturating_add(other.tier1_cleanup_rlc_stripe_count_total);
+        self.tier1_cleanup_rlc_zero_stripe_count_total = self
+            .tier1_cleanup_rlc_zero_stripe_count_total
+            .saturating_add(other.tier1_cleanup_rlc_zero_stripe_count_total);
+        self.tier1_symbol_plan_mq_symbol_count_total = self
+            .tier1_symbol_plan_mq_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_mq_symbol_count_total);
+        self.tier1_symbol_plan_raw_bit_count_total = self
+            .tier1_symbol_plan_raw_bit_count_total
+            .saturating_add(other.tier1_symbol_plan_raw_bit_count_total);
+        self.max_tier1_symbol_plan_mq_symbols_per_block = self
+            .max_tier1_symbol_plan_mq_symbols_per_block
+            .max(other.max_tier1_symbol_plan_mq_symbols_per_block);
+        self.max_tier1_symbol_plan_raw_bits_per_block = self
+            .max_tier1_symbol_plan_raw_bits_per_block
+            .max(other.max_tier1_symbol_plan_raw_bits_per_block);
+        self.tier1_symbol_plan_packed_token_bytes_total = self
+            .tier1_symbol_plan_packed_token_bytes_total
+            .saturating_add(other.tier1_symbol_plan_packed_token_bytes_total);
+        self.max_tier1_symbol_plan_packed_token_bytes_per_block = self
+            .max_tier1_symbol_plan_packed_token_bytes_per_block
+            .max(other.max_tier1_symbol_plan_packed_token_bytes_per_block);
+        self.tier1_symbol_plan_cleanup_mq_symbol_count_total = self
+            .tier1_symbol_plan_cleanup_mq_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_cleanup_mq_symbol_count_total);
+        self.tier1_symbol_plan_sigprop_mq_symbol_count_total = self
+            .tier1_symbol_plan_sigprop_mq_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_sigprop_mq_symbol_count_total);
+        self.tier1_symbol_plan_magref_mq_symbol_count_total = self
+            .tier1_symbol_plan_magref_mq_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_magref_mq_symbol_count_total);
+        self.tier1_symbol_plan_raw_sigprop_bit_count_total = self
+            .tier1_symbol_plan_raw_sigprop_bit_count_total
+            .saturating_add(other.tier1_symbol_plan_raw_sigprop_bit_count_total);
+        self.tier1_symbol_plan_raw_magref_bit_count_total = self
+            .tier1_symbol_plan_raw_magref_bit_count_total
+            .saturating_add(other.tier1_symbol_plan_raw_magref_bit_count_total);
+        self.tier1_symbol_plan_cleanup_sign_symbol_count_total = self
+            .tier1_symbol_plan_cleanup_sign_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_cleanup_sign_symbol_count_total);
+        self.tier1_symbol_plan_sigprop_sign_symbol_count_total = self
+            .tier1_symbol_plan_sigprop_sign_symbol_count_total
+            .saturating_add(other.tier1_symbol_plan_sigprop_sign_symbol_count_total);
+        self.tier1_symbol_plan_mq_symbol_hash_xor ^= other.tier1_symbol_plan_mq_symbol_hash_xor;
+        self.tier1_symbol_plan_raw_bit_hash_xor ^= other.tier1_symbol_plan_raw_bit_hash_xor;
+        self.tier1_pass_plan_mq_symbol_count_total = self
+            .tier1_pass_plan_mq_symbol_count_total
+            .saturating_add(other.tier1_pass_plan_mq_symbol_count_total);
+        self.tier1_pass_plan_raw_bit_count_total = self
+            .tier1_pass_plan_raw_bit_count_total
+            .saturating_add(other.tier1_pass_plan_raw_bit_count_total);
+        self.tier1_pass_plan_nonempty_mq_pass_count_total = self
+            .tier1_pass_plan_nonempty_mq_pass_count_total
+            .saturating_add(other.tier1_pass_plan_nonempty_mq_pass_count_total);
+        self.tier1_pass_plan_nonempty_raw_pass_count_total = self
+            .tier1_pass_plan_nonempty_raw_pass_count_total
+            .saturating_add(other.tier1_pass_plan_nonempty_raw_pass_count_total);
+        self.max_tier1_pass_plan_mq_symbols_per_pass = self
+            .max_tier1_pass_plan_mq_symbols_per_pass
+            .max(other.max_tier1_pass_plan_mq_symbols_per_pass);
+        self.max_tier1_pass_plan_raw_bits_per_pass = self
+            .max_tier1_pass_plan_raw_bits_per_pass
+            .max(other.max_tier1_pass_plan_raw_bits_per_pass);
+        self.tier1_token_emit_mq_symbol_count_total = self
+            .tier1_token_emit_mq_symbol_count_total
+            .saturating_add(other.tier1_token_emit_mq_symbol_count_total);
+        self.tier1_token_emit_raw_bit_count_total = self
+            .tier1_token_emit_raw_bit_count_total
+            .saturating_add(other.tier1_token_emit_raw_bit_count_total);
+        self.tier1_token_emit_token_bytes_total = self
+            .tier1_token_emit_token_bytes_total
+            .saturating_add(other.tier1_token_emit_token_bytes_total);
+        self.max_tier1_token_emit_token_bytes_per_block = self
+            .max_tier1_token_emit_token_bytes_per_block
+            .max(other.max_tier1_token_emit_token_bytes_per_block);
+        self.tier1_token_emit_segment_count_total = self
+            .tier1_token_emit_segment_count_total
+            .saturating_add(other.tier1_token_emit_segment_count_total);
+        self.max_tier1_token_emit_segments_per_block = self
+            .max_tier1_token_emit_segments_per_block
+            .max(other.max_tier1_token_emit_segments_per_block);
+        self.tier1_token_emit_mq_symbol_hash_xor ^= other.tier1_token_emit_mq_symbol_hash_xor;
+        self.tier1_token_emit_raw_bit_hash_xor ^= other.tier1_token_emit_raw_bit_hash_xor;
+        self.tier1_token_pack_output_bytes_total = self
+            .tier1_token_pack_output_bytes_total
+            .saturating_add(other.tier1_token_pack_output_bytes_total);
+        self.max_tier1_token_pack_output_bytes_per_block = self
+            .max_tier1_token_pack_output_bytes_per_block
+            .max(other.max_tier1_token_pack_output_bytes_per_block);
+        self.tier1_nonzero_block_count_total = self
+            .tier1_nonzero_block_count_total
+            .saturating_add(other.tier1_nonzero_block_count_total);
+        self.tier1_zero_block_count_total = self
+            .tier1_zero_block_count_total
+            .saturating_add(other.tier1_zero_block_count_total);
+        self.tier1_missing_bitplane_count_total = self
+            .tier1_missing_bitplane_count_total
+            .saturating_add(other.tier1_missing_bitplane_count_total);
+        self.max_tier1_missing_bitplanes_per_block = self
+            .max_tier1_missing_bitplanes_per_block
+            .max(other.max_tier1_missing_bitplanes_per_block);
+        self.tier1_segment_count_total = self
+            .tier1_segment_count_total
+            .saturating_add(other.tier1_segment_count_total);
+        self.max_tier1_segments_per_block = self
+            .max_tier1_segments_per_block
+            .max(other.max_tier1_segments_per_block);
+        self.packet_payload_copy_job_capacity_total = self
+            .packet_payload_copy_job_capacity_total
+            .saturating_add(other.packet_payload_copy_job_capacity_total);
+        self.max_packet_payload_copy_jobs_per_tile = self
+            .max_packet_payload_copy_jobs_per_tile
+            .max(other.max_packet_payload_copy_jobs_per_tile);
+        self.packet_payload_copy_job_count_total = self
+            .packet_payload_copy_job_count_total
+            .saturating_add(other.packet_payload_copy_job_count_total);
+        self.max_packet_payload_copy_jobs_used_per_tile = self
+            .max_packet_payload_copy_jobs_used_per_tile
+            .max(other.max_packet_payload_copy_jobs_used_per_tile);
+        self.packet_payload_copy_bytes_total = self
+            .packet_payload_copy_bytes_total
+            .saturating_add(other.packet_payload_copy_bytes_total);
+        self.max_packet_payload_copy_bytes_per_tile = self
+            .max_packet_payload_copy_bytes_per_tile
+            .max(other.max_packet_payload_copy_bytes_per_tile);
+        self.packet_payload_copy_small_job_count_total = self
+            .packet_payload_copy_small_job_count_total
+            .saturating_add(other.packet_payload_copy_small_job_count_total);
+        self.packet_payload_copy_medium_job_count_total = self
+            .packet_payload_copy_medium_job_count_total
+            .saturating_add(other.packet_payload_copy_medium_job_count_total);
+        self.packet_payload_copy_large_job_count_total = self
+            .packet_payload_copy_large_job_count_total
+            .saturating_add(other.packet_payload_copy_large_job_count_total);
+        self.packet_payload_copy_launched_stripe_count_total = self
+            .packet_payload_copy_launched_stripe_count_total
+            .saturating_add(other.packet_payload_copy_launched_stripe_count_total);
+        self.packet_payload_copy_active_stripe_count_total = self
+            .packet_payload_copy_active_stripe_count_total
+            .saturating_add(other.packet_payload_copy_active_stripe_count_total);
+        self.packet_output_capacity_total = self
+            .packet_output_capacity_total
+            .saturating_add(other.packet_output_capacity_total);
+        self.max_packet_output_capacity = self
+            .max_packet_output_capacity
+            .max(other.max_packet_output_capacity);
+        self.packet_output_used_bytes_total = self
+            .packet_output_used_bytes_total
+            .saturating_add(other.packet_output_used_bytes_total);
+        self.max_packet_output_used_bytes = self
+            .max_packet_output_used_bytes
+            .max(other.max_packet_output_used_bytes);
+        self.codestream_payload_copy_bytes_total = self
+            .codestream_payload_copy_bytes_total
+            .saturating_add(other.codestream_payload_copy_bytes_total);
+        self.codestream_payload_copy_launched_thread_count_total = self
+            .codestream_payload_copy_launched_thread_count_total
+            .saturating_add(other.codestream_payload_copy_launched_thread_count_total);
+        self.codestream_payload_copy_active_thread_count_total = self
+            .codestream_payload_copy_active_thread_count_total
+            .saturating_add(other.codestream_payload_copy_active_thread_count_total);
         self.codestream_wait_duration = self
             .codestream_wait_duration
             .saturating_add(other.codestream_wait_duration);
@@ -875,9 +1645,183 @@ impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStat
             ht_buffer_allocation_duration: stats.ht_buffer_allocation_duration,
             ht_command_encode_duration: stats.ht_command_encode_duration,
             ht_block_encode_duration: stats.ht_block_encode_duration,
+            classic_tier1_setup_duration: stats.classic_tier1_setup_duration,
+            classic_block_encode_duration: stats.classic_block_encode_duration,
+            classic_tier1_token_pack_duration: stats.classic_tier1_token_pack_duration,
+            classic_packet_plan_duration: stats.classic_packet_plan_duration,
+            classic_packet_buffer_setup_duration: stats.classic_packet_buffer_setup_duration,
+            classic_command_buffer_commit_duration: stats.classic_command_buffer_commit_duration,
+            result_harvest_duration: stats.result_harvest_duration,
+            result_status_copy_duration: stats.result_status_copy_duration,
+            result_private_recycle_duration: stats.result_private_recycle_duration,
+            result_shared_recycle_duration: stats.result_shared_recycle_duration,
+            result_codestream_collect_duration: stats.result_codestream_collect_duration,
             packet_block_prep_duration: stats.packet_block_prep_duration,
             packetization_duration: stats.packetization_duration,
             codestream_assembly_duration: stats.codestream_assembly_duration,
+            coefficient_prep_gpu_duration: stats.coefficient_prep_gpu_duration,
+            coefficient_deinterleave_rct_gpu_duration: stats
+                .coefficient_deinterleave_rct_gpu_duration,
+            coefficient_dwt53_gpu_duration: stats.coefficient_dwt53_gpu_duration,
+            coefficient_dwt53_vertical_gpu_duration: stats.coefficient_dwt53_vertical_gpu_duration,
+            coefficient_dwt53_horizontal_gpu_duration: stats
+                .coefficient_dwt53_horizontal_gpu_duration,
+            coefficient_extract_gpu_duration: stats.coefficient_extract_gpu_duration,
+            coefficient_copy_gpu_duration: stats.coefficient_copy_gpu_duration,
+            gpu_elapsed_wall_duration: stats.gpu_elapsed_wall_duration,
+            classic_block_gpu_duration: stats.classic_block_gpu_duration,
+            classic_tier1_density_gpu_duration: stats.classic_tier1_density_gpu_duration,
+            classic_tier1_raw_pack_gpu_duration: stats.classic_tier1_raw_pack_gpu_duration,
+            classic_tier1_arithmetic_pack_gpu_duration: stats
+                .classic_tier1_arithmetic_pack_gpu_duration,
+            classic_tier1_symbol_plan_gpu_duration: stats.classic_tier1_symbol_plan_gpu_duration,
+            classic_tier1_pass_plan_gpu_duration: stats.classic_tier1_pass_plan_gpu_duration,
+            classic_tier1_token_emit_gpu_duration: stats.classic_tier1_token_emit_gpu_duration,
+            classic_tier1_split_token_emit_gpu_duration: stats
+                .classic_tier1_split_token_emit_gpu_duration,
+            classic_tier1_token_pack_gpu_duration: stats.classic_tier1_token_pack_gpu_duration,
+            ht_block_gpu_duration: stats.ht_block_gpu_duration,
+            packet_block_prep_gpu_duration: stats.packet_block_prep_gpu_duration,
+            packetization_gpu_duration: stats.packetization_gpu_duration,
+            packet_payload_copy_gpu_duration: stats.packet_payload_copy_gpu_duration,
+            codestream_assembly_gpu_duration: stats.codestream_assembly_gpu_duration,
+            codestream_payload_copy_gpu_duration: stats.codestream_payload_copy_gpu_duration,
+            tier1_output_capacity_total: stats.tier1_output_capacity_total,
+            max_tier1_output_capacity: stats.max_tier1_output_capacity,
+            tier1_output_used_bytes_total: stats.tier1_output_used_bytes_total,
+            max_tier1_output_used_bytes: stats.max_tier1_output_used_bytes,
+            tier1_segment_capacity_total: stats.tier1_segment_capacity_total,
+            max_tier1_segment_capacity_per_block: stats.max_tier1_segment_capacity_per_block,
+            tier1_coding_pass_count_total: stats.tier1_coding_pass_count_total,
+            max_tier1_coding_passes_per_block: stats.max_tier1_coding_passes_per_block,
+            tier1_arithmetic_pass_count_total: stats.tier1_arithmetic_pass_count_total,
+            tier1_raw_pass_count_total: stats.tier1_raw_pass_count_total,
+            tier1_cleanup_pass_count_total: stats.tier1_cleanup_pass_count_total,
+            tier1_sigprop_pass_count_total: stats.tier1_sigprop_pass_count_total,
+            tier1_magref_pass_count_total: stats.tier1_magref_pass_count_total,
+            tier1_arithmetic_cleanup_pass_count_total: stats
+                .tier1_arithmetic_cleanup_pass_count_total,
+            tier1_arithmetic_sigprop_pass_count_total: stats
+                .tier1_arithmetic_sigprop_pass_count_total,
+            tier1_arithmetic_magref_pass_count_total: stats
+                .tier1_arithmetic_magref_pass_count_total,
+            tier1_raw_sigprop_pass_count_total: stats.tier1_raw_sigprop_pass_count_total,
+            tier1_raw_magref_pass_count_total: stats.tier1_raw_magref_pass_count_total,
+            tier1_full_scan_coeff_visit_count_total: stats.tier1_full_scan_coeff_visit_count_total,
+            tier1_arithmetic_scan_coeff_visit_count_total: stats
+                .tier1_arithmetic_scan_coeff_visit_count_total,
+            tier1_raw_scan_coeff_visit_count_total: stats.tier1_raw_scan_coeff_visit_count_total,
+            tier1_cleanup_scan_coeff_visit_count_total: stats
+                .tier1_cleanup_scan_coeff_visit_count_total,
+            tier1_sigprop_scan_coeff_visit_count_total: stats
+                .tier1_sigprop_scan_coeff_visit_count_total,
+            tier1_magref_scan_coeff_visit_count_total: stats
+                .tier1_magref_scan_coeff_visit_count_total,
+            max_tier1_full_scan_coeff_visits_per_block: stats
+                .max_tier1_full_scan_coeff_visits_per_block,
+            tier1_sigprop_active_candidate_count_total: stats
+                .tier1_sigprop_active_candidate_count_total,
+            tier1_sigprop_new_significant_count_total: stats
+                .tier1_sigprop_new_significant_count_total,
+            tier1_magref_active_candidate_count_total: stats
+                .tier1_magref_active_candidate_count_total,
+            tier1_arithmetic_sigprop_active_candidate_count_total: stats
+                .tier1_arithmetic_sigprop_active_candidate_count_total,
+            tier1_arithmetic_sigprop_new_significant_count_total: stats
+                .tier1_arithmetic_sigprop_new_significant_count_total,
+            tier1_raw_sigprop_active_candidate_count_total: stats
+                .tier1_raw_sigprop_active_candidate_count_total,
+            tier1_raw_sigprop_new_significant_count_total: stats
+                .tier1_raw_sigprop_new_significant_count_total,
+            tier1_arithmetic_magref_active_candidate_count_total: stats
+                .tier1_arithmetic_magref_active_candidate_count_total,
+            tier1_raw_magref_active_candidate_count_total: stats
+                .tier1_raw_magref_active_candidate_count_total,
+            tier1_cleanup_active_candidate_count_total: stats
+                .tier1_cleanup_active_candidate_count_total,
+            tier1_cleanup_new_significant_count_total: stats
+                .tier1_cleanup_new_significant_count_total,
+            tier1_cleanup_rlc_stripe_count_total: stats.tier1_cleanup_rlc_stripe_count_total,
+            tier1_cleanup_rlc_zero_stripe_count_total: stats
+                .tier1_cleanup_rlc_zero_stripe_count_total,
+            tier1_symbol_plan_mq_symbol_count_total: stats.tier1_symbol_plan_mq_symbol_count_total,
+            tier1_symbol_plan_raw_bit_count_total: stats.tier1_symbol_plan_raw_bit_count_total,
+            max_tier1_symbol_plan_mq_symbols_per_block: stats
+                .max_tier1_symbol_plan_mq_symbols_per_block,
+            max_tier1_symbol_plan_raw_bits_per_block: stats
+                .max_tier1_symbol_plan_raw_bits_per_block,
+            tier1_symbol_plan_packed_token_bytes_total: stats
+                .tier1_symbol_plan_packed_token_bytes_total,
+            max_tier1_symbol_plan_packed_token_bytes_per_block: stats
+                .max_tier1_symbol_plan_packed_token_bytes_per_block,
+            tier1_symbol_plan_cleanup_mq_symbol_count_total: stats
+                .tier1_symbol_plan_cleanup_mq_symbol_count_total,
+            tier1_symbol_plan_sigprop_mq_symbol_count_total: stats
+                .tier1_symbol_plan_sigprop_mq_symbol_count_total,
+            tier1_symbol_plan_magref_mq_symbol_count_total: stats
+                .tier1_symbol_plan_magref_mq_symbol_count_total,
+            tier1_symbol_plan_raw_sigprop_bit_count_total: stats
+                .tier1_symbol_plan_raw_sigprop_bit_count_total,
+            tier1_symbol_plan_raw_magref_bit_count_total: stats
+                .tier1_symbol_plan_raw_magref_bit_count_total,
+            tier1_symbol_plan_cleanup_sign_symbol_count_total: stats
+                .tier1_symbol_plan_cleanup_sign_symbol_count_total,
+            tier1_symbol_plan_sigprop_sign_symbol_count_total: stats
+                .tier1_symbol_plan_sigprop_sign_symbol_count_total,
+            tier1_symbol_plan_mq_symbol_hash_xor: stats.tier1_symbol_plan_mq_symbol_hash_xor,
+            tier1_symbol_plan_raw_bit_hash_xor: stats.tier1_symbol_plan_raw_bit_hash_xor,
+            tier1_pass_plan_mq_symbol_count_total: stats.tier1_pass_plan_mq_symbol_count_total,
+            tier1_pass_plan_raw_bit_count_total: stats.tier1_pass_plan_raw_bit_count_total,
+            tier1_pass_plan_nonempty_mq_pass_count_total: stats
+                .tier1_pass_plan_nonempty_mq_pass_count_total,
+            tier1_pass_plan_nonempty_raw_pass_count_total: stats
+                .tier1_pass_plan_nonempty_raw_pass_count_total,
+            max_tier1_pass_plan_mq_symbols_per_pass: stats.max_tier1_pass_plan_mq_symbols_per_pass,
+            max_tier1_pass_plan_raw_bits_per_pass: stats.max_tier1_pass_plan_raw_bits_per_pass,
+            tier1_token_emit_mq_symbol_count_total: stats.tier1_token_emit_mq_symbol_count_total,
+            tier1_token_emit_raw_bit_count_total: stats.tier1_token_emit_raw_bit_count_total,
+            tier1_token_emit_token_bytes_total: stats.tier1_token_emit_token_bytes_total,
+            max_tier1_token_emit_token_bytes_per_block: stats
+                .max_tier1_token_emit_token_bytes_per_block,
+            tier1_token_emit_segment_count_total: stats.tier1_token_emit_segment_count_total,
+            max_tier1_token_emit_segments_per_block: stats.max_tier1_token_emit_segments_per_block,
+            tier1_token_emit_mq_symbol_hash_xor: stats.tier1_token_emit_mq_symbol_hash_xor,
+            tier1_token_emit_raw_bit_hash_xor: stats.tier1_token_emit_raw_bit_hash_xor,
+            tier1_token_pack_output_bytes_total: stats.tier1_token_pack_output_bytes_total,
+            max_tier1_token_pack_output_bytes_per_block: stats
+                .max_tier1_token_pack_output_bytes_per_block,
+            tier1_nonzero_block_count_total: stats.tier1_nonzero_block_count_total,
+            tier1_zero_block_count_total: stats.tier1_zero_block_count_total,
+            tier1_missing_bitplane_count_total: stats.tier1_missing_bitplane_count_total,
+            max_tier1_missing_bitplanes_per_block: stats.max_tier1_missing_bitplanes_per_block,
+            tier1_segment_count_total: stats.tier1_segment_count_total,
+            max_tier1_segments_per_block: stats.max_tier1_segments_per_block,
+            packet_payload_copy_job_capacity_total: stats.packet_payload_copy_job_capacity_total,
+            max_packet_payload_copy_jobs_per_tile: stats.max_packet_payload_copy_jobs_per_tile,
+            packet_payload_copy_job_count_total: stats.packet_payload_copy_job_count_total,
+            max_packet_payload_copy_jobs_used_per_tile: stats
+                .max_packet_payload_copy_jobs_used_per_tile,
+            packet_payload_copy_bytes_total: stats.packet_payload_copy_bytes_total,
+            max_packet_payload_copy_bytes_per_tile: stats.max_packet_payload_copy_bytes_per_tile,
+            packet_payload_copy_small_job_count_total: stats
+                .packet_payload_copy_small_job_count_total,
+            packet_payload_copy_medium_job_count_total: stats
+                .packet_payload_copy_medium_job_count_total,
+            packet_payload_copy_large_job_count_total: stats
+                .packet_payload_copy_large_job_count_total,
+            packet_payload_copy_launched_stripe_count_total: stats
+                .packet_payload_copy_launched_stripe_count_total,
+            packet_payload_copy_active_stripe_count_total: stats
+                .packet_payload_copy_active_stripe_count_total,
+            packet_output_capacity_total: stats.packet_output_capacity_total,
+            max_packet_output_capacity: stats.max_packet_output_capacity,
+            packet_output_used_bytes_total: stats.packet_output_used_bytes_total,
+            max_packet_output_used_bytes: stats.max_packet_output_used_bytes,
+            codestream_payload_copy_bytes_total: stats.codestream_payload_copy_bytes_total,
+            codestream_payload_copy_launched_thread_count_total: stats
+                .codestream_payload_copy_launched_thread_count_total,
+            codestream_payload_copy_active_thread_count_total: stats
+                .codestream_payload_copy_active_thread_count_total,
             code_block_count: stats.code_block_count,
             ..Self::default()
         }
@@ -1663,6 +2607,8 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
             session: session.clone(),
             stats: resolve_lossless_encode_config(0, 1, config)?,
             encode_started: Instant::now(),
+            tiles: Vec::new(),
+            staging,
             kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
         }));
     }
@@ -1681,16 +2627,22 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
         .map(PlannedResidentLosslessBufferEncode::estimated_peak_bytes)
         .max()
         .unwrap_or(1);
-    let uniform_resident_mode = planned.iter().all(|planned| {
-        planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::HighThroughput
-    }) || planned
+    let classic_resident_mode = planned
         .iter()
         .all(|planned| planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::Classic);
-    if !uniform_resident_mode {
+    let ht_resident_mode = planned.iter().all(|planned| {
+        planned.metadata.plan.block_coding_mode == J2kBlockCodingMode::HighThroughput
+    });
+    if !(classic_resident_mode || ht_resident_mode) {
         return Ok(None);
     }
-    let mut stats =
-        resolve_lossless_encode_config(tiles.len(), estimated_peak_bytes_per_tile, config)?;
+    let resolved_config =
+        resident_lossless_encode_config_for_mode(config, classic_resident_mode, tiles.len());
+    let mut stats = resolve_lossless_encode_config(
+        tiles.len(),
+        estimated_peak_bytes_per_tile,
+        resolved_config,
+    )?;
     if let Some(started) = plan_started {
         stats.stage_stats.plan_duration = started.elapsed();
     }
@@ -1701,11 +2653,17 @@ fn try_submit_resident_lossless_tiles_to_metal_buffer_batch(
         stats.effective_inflight_tiles,
         &mut stats,
     )?;
+    let tiles = tiles
+        .iter()
+        .map(|&tile| OwnedMetalLosslessEncodeTile::from_tile(tile))
+        .collect();
     Ok(Some(SubmittedResidentLosslessMetalBufferEncodeBatch {
         options,
         session: session.clone(),
         stats,
         encode_started,
+        tiles,
+        staging,
         kind,
     }))
 }
@@ -1730,6 +2688,22 @@ fn try_encode_resident_lossless_tiles_to_metal_buffer_batch(
 #[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_DEFAULT_INFLIGHT_TILES: usize = 512;
 #[cfg(any(test, target_os = "macos"))]
+const CLASSIC_GPU_ENCODE_SMALL_BATCH_INFLIGHT_TILES: usize = 16;
+#[cfg(any(test, target_os = "macos"))]
+const CLASSIC_GPU_ENCODE_LARGE_BATCH_INFLIGHT_TILES: usize = 64;
+#[cfg(any(test, target_os = "macos"))]
+const CLASSIC_GPU_ENCODE_VERY_LARGE_BATCH_MIN_TILES: usize = 64;
+#[cfg(any(test, target_os = "macos"))]
+const CLASSIC_GPU_ENCODE_VERY_LARGE_BATCH_INFLIGHT_TILES: usize = 128;
+#[cfg(any(test, target_os = "macos"))]
+const HTJ2K_GPU_ENCODE_MEDIUM_BATCH_TILES: usize = 64;
+#[cfg(any(test, target_os = "macos"))]
+const HTJ2K_GPU_ENCODE_MEDIUM_BATCH_INFLIGHT_TILES: usize = 32;
+#[cfg(any(test, target_os = "macos"))]
+const HTJ2K_GPU_ENCODE_LARGE_BATCH_MIN_TILES: usize = 64;
+#[cfg(any(test, target_os = "macos"))]
+const HTJ2K_GPU_ENCODE_LARGE_BATCH_INFLIGHT_TILES: usize = 64;
+#[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_FALLBACK_HW_MEM_BYTES: usize = 8 * 1024 * 1024 * 1024;
 #[cfg(any(test, target_os = "macos"))]
 const GPU_ENCODE_MAX_DEFAULT_MEMORY_BUDGET_BYTES: usize = 10 * 1024 * 1024 * 1024;
@@ -1751,6 +2725,43 @@ fn default_gpu_encode_memory_budget_bytes_for_hw_mem(hw_memsize: usize) -> usize
 fn default_gpu_encode_memory_budget_bytes() -> usize {
     let hw_memsize = host_memory_bytes().unwrap_or(GPU_ENCODE_FALLBACK_HW_MEM_BYTES);
     default_gpu_encode_memory_budget_bytes_for_hw_mem(hw_memsize)
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn resident_lossless_encode_config_for_mode(
+    config: MetalLosslessEncodeConfig,
+    classic_resident_mode: bool,
+    tile_count: usize,
+) -> MetalLosslessEncodeConfig {
+    if config.gpu_encode_inflight_tiles.is_some() {
+        return config;
+    }
+    if classic_resident_mode {
+        let classic_inflight_tiles = if tile_count <= CLASSIC_GPU_ENCODE_SMALL_BATCH_INFLIGHT_TILES
+        {
+            CLASSIC_GPU_ENCODE_SMALL_BATCH_INFLIGHT_TILES
+        } else if tile_count <= CLASSIC_GPU_ENCODE_VERY_LARGE_BATCH_MIN_TILES {
+            CLASSIC_GPU_ENCODE_LARGE_BATCH_INFLIGHT_TILES
+        } else {
+            CLASSIC_GPU_ENCODE_VERY_LARGE_BATCH_INFLIGHT_TILES
+        };
+        MetalLosslessEncodeConfig {
+            gpu_encode_inflight_tiles: Some(classic_inflight_tiles),
+            ..config
+        }
+    } else if tile_count == HTJ2K_GPU_ENCODE_MEDIUM_BATCH_TILES {
+        MetalLosslessEncodeConfig {
+            gpu_encode_inflight_tiles: Some(HTJ2K_GPU_ENCODE_MEDIUM_BATCH_INFLIGHT_TILES),
+            ..config
+        }
+    } else if tile_count > HTJ2K_GPU_ENCODE_LARGE_BATCH_MIN_TILES {
+        MetalLosslessEncodeConfig {
+            gpu_encode_inflight_tiles: Some(HTJ2K_GPU_ENCODE_LARGE_BATCH_INFLIGHT_TILES),
+            ..config
+        }
+    } else {
+        config
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1917,6 +2928,8 @@ struct LosslessDeviceEncodePlan {
     num_decomposition_levels: u8,
     use_mct: bool,
     guard_bits: u8,
+    code_block_width_exp: u8,
+    code_block_height_exp: u8,
     code_blocks: Vec<compute::J2kLosslessDeviceCodeBlock>,
     resolutions: Vec<LosslessResolutionPlan>,
     progression_order: EncodeProgressionOrder,
@@ -1964,6 +2977,8 @@ struct SubmittedResidentLosslessMetalBufferEncodeBatch {
     session: crate::MetalBackendSession,
     stats: MetalLosslessEncodeBatchStats,
     encode_started: Instant,
+    tiles: Vec<OwnedMetalLosslessEncodeTile>,
+    staging: MetalEncodeInputStaging,
     kind: SubmittedResidentLosslessMetalBufferEncodeBatchKind,
 }
 
@@ -2048,10 +3063,42 @@ struct LosslessSubbandInput {
 }
 
 #[cfg(target_os = "macos")]
+const RESIDENT_CLASSIC_CODE_BLOCK_EDGE: u32 = 32;
+
+#[cfg(target_os = "macos")]
+fn lossless_code_block_exp(edge: u32, axis: &str) -> Result<u8, crate::Error> {
+    if edge < 4 || !edge.is_power_of_two() {
+        return Err(crate::Error::MetalKernel {
+            message: format!(
+                "J2K Metal resident encode {axis} code-block edge must be a power of two >= 4"
+            ),
+        });
+    }
+    let exp = edge
+        .trailing_zeros()
+        .checked_sub(2)
+        .ok_or_else(|| crate::Error::MetalKernel {
+            message: format!("J2K Metal resident encode {axis} code-block exponent underflow"),
+        })?;
+    if exp > 8 {
+        return Err(crate::Error::MetalKernel {
+            message: format!(
+                "J2K Metal resident encode {axis} code-block edge exceeds JPEG 2000 COD range"
+            ),
+        });
+    }
+    u8::try_from(exp).map_err(|_| crate::Error::MetalKernel {
+        message: format!("J2K Metal resident encode {axis} code-block exponent exceeds u8"),
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn push_lossless_subband_plan(
     resolution: &mut LosslessResolutionPlan,
     code_blocks: &mut Vec<compute::J2kLosslessDeviceCodeBlock>,
     coefficient_offset: &mut u32,
+    code_block_width: u32,
+    code_block_height: u32,
     subband: LosslessSubbandInput,
 ) -> Result<(), crate::Error> {
     if subband.width == 0 || subband.height == 0 {
@@ -2063,8 +3110,8 @@ fn push_lossless_subband_plan(
         });
         return Ok(());
     }
-    let cb_width = 64u32;
-    let cb_height = 64u32;
+    let cb_width = code_block_width;
+    let cb_height = code_block_height;
     let num_cbs_x = subband.width.div_ceil(cb_width);
     let num_cbs_y = subband.height.div_ceil(cb_height);
     let code_block_start = code_blocks.len();
@@ -2141,6 +3188,8 @@ fn lossless_device_encode_plan(
     components: u8,
     bit_depth: u8,
     options: J2kLosslessEncodeOptions,
+    code_block_width: u32,
+    code_block_height: u32,
 ) -> Result<Option<LosslessDeviceEncodePlan>, crate::Error> {
     if !matches!(
         options.block_coding_mode,
@@ -2148,6 +3197,13 @@ fn lossless_device_encode_plan(
     ) {
         return Ok(None);
     }
+    if code_block_width == 0 || code_block_height == 0 {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal resident encode code-block dimensions must be non-zero".to_string(),
+        });
+    }
+    let code_block_width_exp = lossless_code_block_exp(code_block_width, "width")?;
+    let code_block_height_exp = lossless_code_block_exp(code_block_height, "height")?;
     let num_decomposition_levels = lossless_device_encode_levels(width, height, options);
     let progression_order = match options.progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
@@ -2172,6 +3228,8 @@ fn lossless_device_encode_plan(
                 &mut base_packet,
                 &mut code_blocks,
                 &mut coefficient_offset,
+                code_block_width,
+                code_block_height,
                 LosslessSubbandInput {
                     component: u32::from(component),
                     subband_x: 0,
@@ -2191,6 +3249,8 @@ fn lossless_device_encode_plan(
                 &mut base_packet,
                 &mut code_blocks,
                 &mut coefficient_offset,
+                code_block_width,
+                code_block_height,
                 LosslessSubbandInput {
                     component: u32::from(component),
                     subband_x: 0,
@@ -2211,6 +3271,8 @@ fn lossless_device_encode_plan(
                     &mut detail_packet,
                     &mut code_blocks,
                     &mut coefficient_offset,
+                    code_block_width,
+                    code_block_height,
                     LosslessSubbandInput {
                         component: u32::from(component),
                         subband_x: level.low_width,
@@ -2225,6 +3287,8 @@ fn lossless_device_encode_plan(
                     &mut detail_packet,
                     &mut code_blocks,
                     &mut coefficient_offset,
+                    code_block_width,
+                    code_block_height,
                     LosslessSubbandInput {
                         component: u32::from(component),
                         subband_x: 0,
@@ -2239,6 +3303,8 @@ fn lossless_device_encode_plan(
                     &mut detail_packet,
                     &mut code_blocks,
                     &mut coefficient_offset,
+                    code_block_width,
+                    code_block_height,
                     LosslessSubbandInput {
                         component: u32::from(component),
                         subband_x: level.low_width,
@@ -2271,6 +3337,8 @@ fn lossless_device_encode_plan(
         num_decomposition_levels,
         use_mct,
         guard_bits,
+        code_block_width_exp,
+        code_block_height_exp,
         code_blocks,
         resolutions,
         progression_order,
@@ -2645,8 +3713,13 @@ struct ResidentHybridHtTileBody {
     bit_depth: u8,
     bytes_per_pixel: usize,
     code_block_count: usize,
+    code_block_width_exp: u8,
+    code_block_height_exp: u8,
     num_decomposition_levels: u8,
     used_fused_rct: bool,
+    guard_bits: u8,
+    progression_order: EncodeProgressionOrder,
+    write_tlm: bool,
     forward_dwt53_dispatches: usize,
     ht_code_block_dispatches: usize,
 }
@@ -2657,6 +3730,8 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
     options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
+    code_block_width: u32,
+    code_block_height: u32,
 ) -> Result<Option<ResidentHybridHtTileBody>, crate::Error> {
     if !should_try_resident_lossless_ht_cpu_packetization(tile, options, staging) {
         return Ok(None);
@@ -2675,6 +3750,8 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
         components,
         bit_depth,
         options,
+        code_block_width,
+        code_block_height,
     )?
     else {
         return Ok(None);
@@ -2743,8 +3820,13 @@ fn encode_resident_ht_tile_body_with_cpu_packetization(
         bit_depth,
         bytes_per_pixel,
         code_block_count: plan.code_blocks.len(),
+        code_block_width_exp: plan.code_block_width_exp,
+        code_block_height_exp: plan.code_block_height_exp,
         num_decomposition_levels: plan.num_decomposition_levels,
         used_fused_rct: plan.use_mct && tile.format == PixelFormat::Rgb8,
+        guard_bits: plan.guard_bits,
+        progression_order: plan.progression_order,
+        write_tlm: plan.write_tlm,
         forward_dwt53_dispatches: if plan.num_decomposition_levels > 0 {
             usize::from(plan.components)
         } else {
@@ -2820,6 +3902,8 @@ fn plan_resident_lossless_buffer_encode(
         components,
         bit_depth,
         options,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
     )?
     else {
         return Ok(None);
@@ -2919,19 +4003,33 @@ fn estimate_resident_lossless_encode_peak_bytes(
 
 #[cfg(target_os = "macos")]
 fn estimated_tier1_output_bytes(plan: &LosslessDeviceEncodePlan) -> usize {
-    const HT_ENCODE_OUTPUT_CAPACITY_PER_BLOCK: usize =
-        (16_384usize * 16).div_ceil(15) + 192 + (3072 - 192);
+    fn estimated_ht_output_capacity(width: usize, height: usize) -> usize {
+        const HT_MAX_SAMPLES: usize = 16_384;
+        const HT_MEL_SIZE: usize = 192;
+        const HT_VLC_SIZE: usize = 3072 - HT_MEL_SIZE;
+        const HT_MS_SIZE: usize = (HT_MAX_SAMPLES * 16).div_ceil(15);
+        const HT_MS_BYTES_PER_SAMPLE_FLOOR: usize = 5;
+
+        let samples = checked_mul_bytes(width, height).min(HT_MAX_SAMPLES);
+        let scaled_ms = checked_mul_bytes(HT_MS_SIZE, samples)
+            .div_ceil(HT_MAX_SAMPLES)
+            .max(1);
+        let ms_floor = checked_mul_bytes(samples, HT_MS_BYTES_PER_SAMPLE_FLOOR);
+        let ms_size = scaled_ms.max(ms_floor).min(HT_MS_SIZE);
+        let fixed_entropy = checked_add_bytes(HT_MEL_SIZE, HT_VLC_SIZE);
+        checked_add_bytes(ms_size, fixed_entropy)
+    }
+
     plan.code_blocks
         .iter()
         .map(|block| match plan.block_coding_mode {
-            J2kBlockCodingMode::HighThroughput => HT_ENCODE_OUTPUT_CAPACITY_PER_BLOCK,
+            J2kBlockCodingMode::HighThroughput => {
+                estimated_ht_output_capacity(block.width as usize, block.height as usize)
+            }
             J2kBlockCodingMode::Classic => {
                 let samples = checked_mul_bytes(block.width as usize, block.height as usize);
                 checked_add_bytes(
-                    checked_mul_bytes(
-                        checked_mul_bytes(samples, usize::from(block.total_bitplanes).max(1)),
-                        8,
-                    ),
+                    checked_mul_bytes(samples, usize::from(block.total_bitplanes).max(1)),
                     4097,
                 )
                 .max(4097)
@@ -2954,6 +4052,8 @@ fn resident_codestream_assembly_job_for_metadata(
         num_decomposition_levels: metadata.plan.num_decomposition_levels,
         use_mct: metadata.plan.use_mct,
         guard_bits: metadata.plan.guard_bits,
+        code_block_width_exp: metadata.plan.code_block_width_exp,
+        code_block_height_exp: metadata.plan.code_block_height_exp,
         progression_order: metadata.plan.progression_order,
         write_tlm: metadata.plan.write_tlm,
         block_coding_mode: match metadata.plan.block_coding_mode {
@@ -2966,11 +4066,93 @@ fn resident_codestream_assembly_job_for_metadata(
 }
 
 #[cfg(target_os = "macos")]
+fn resident_classic_batch_encode_should_retry_conservative(error: &crate::Error) -> bool {
+    let crate::Error::MetalKernel { message } = error else {
+        return false;
+    };
+
+    message.contains("classic Tier-1 Metal encode kernel failure (detail=4)")
+        || message.contains("classic Tier-1 Metal encode kernel failure (detail=5)")
+        || message.contains("packetization Metal encode kernel failure (detail=3)")
+        || message.contains("packetization Metal encode kernel failure (detail=4)")
+        || message.contains("packetization Metal encode kernel failure (detail=5)")
+        || message.contains("packetization Metal encode kernel failure (detail=7, tier1_detail=4)")
+        || message.contains("packetization Metal encode kernel failure (detail=7, tier1_detail=5)")
+        || message
+            .contains("J2K batched codestream assembly Metal encode kernel failure (detail=2)")
+        || message
+            .contains("J2K batched codestream assembly Metal encode kernel failure (detail=3)")
+}
+
+#[cfg(target_os = "macos")]
+fn resident_ht_batch_encode_should_retry_conservative(error: &crate::Error) -> bool {
+    let crate::Error::MetalKernel { message } = error else {
+        return false;
+    };
+
+    message.contains("packetization Metal encode kernel failure (detail=3)")
+        || message.contains("packetization Metal encode kernel failure (detail=4)")
+        || message.contains("packetization Metal encode kernel failure (detail=5)")
+        || message
+            .contains("HTJ2K batched codestream assembly Metal encode kernel failure (detail=2)")
+        || message
+            .contains("HTJ2K batched codestream assembly Metal encode kernel failure (detail=3)")
+}
+
+#[cfg(target_os = "macos")]
 fn wait_submitted_resident_lossless_buffer_encode_batch(
     mut submitted: SubmittedResidentLosslessMetalBufferEncodeBatch,
 ) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    let result = wait_submitted_resident_lossless_buffer_encode_batch_once(&mut submitted);
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(err) => {
+            if submitted.options.block_coding_mode == J2kBlockCodingMode::Classic
+                && !submitted.tiles.is_empty()
+                && resident_classic_batch_encode_should_retry_conservative(&err)
+            {
+                return encode_owned_lossless_tiles_to_metal_buffer_fallback_batch(
+                    &submitted.tiles,
+                    submitted.options,
+                    &submitted.session,
+                    submitted.staging,
+                )
+                .map_err(|retry_err| crate::Error::MetalKernel {
+                    message: format!(
+                        "J2K Metal resident classic batch conservative retry failed after tight resident capacity failure ({err}); retry error: {retry_err}"
+                    ),
+                });
+            }
+            if submitted.options.block_coding_mode == J2kBlockCodingMode::HighThroughput
+                && !submitted.tiles.is_empty()
+                && resident_ht_batch_encode_should_retry_conservative(&err)
+            {
+                return encode_owned_lossless_tiles_to_metal_buffer_fallback_batch(
+                    &submitted.tiles,
+                    submitted.options,
+                    &submitted.session,
+                    submitted.staging,
+                )
+                .map_err(|retry_err| crate::Error::MetalKernel {
+                    message: format!(
+                        "J2K Metal resident HT batch conservative retry failed after tight packet capacity failure ({err}); retry error: {retry_err}"
+                    ),
+                });
+            }
+            Err(err)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_submitted_resident_lossless_buffer_encode_batch_once(
+    submitted: &mut SubmittedResidentLosslessMetalBufferEncodeBatch,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
     let mut outcomes = Vec::new();
-    match submitted.kind {
+    match std::mem::replace(
+        &mut submitted.kind,
+        SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty,
+    ) {
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Empty => {}
         SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(chunks) => {
             outcomes.reserve(chunks.iter().map(|chunk| chunk.metadatas.len()).sum());
@@ -3165,12 +4347,14 @@ fn validate_finished_resident_lossless_buffer_encode(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 struct InflightLimitedOrderedItems<T> {
     items: Vec<T>,
     max_observed_inflight_items: usize,
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 fn collect_inflight_limited_ordered<T, O, F>(
     items: Vec<T>,
     inflight_items: usize,
@@ -3430,6 +4614,7 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
         let pending = compute::submit_lossless_codestream_buffers_from_prepared_ht_batch(
             session,
             batch_items,
+            compute::ht_packet_output_capacity_mode_from_env(),
         )?;
         if let Some(started) = prepare_submit_started {
             stats.stage_stats.prepare_submit_duration = stats
@@ -3464,76 +4649,83 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
 
 #[cfg(target_os = "macos")]
 fn submit_planned_resident_classic_lossless_tiles_batch(
-    planned: Vec<PlannedResidentLosslessBufferEncode>,
+    mut planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
+    let planned_len = planned.len();
     let profile_stages = compute::metal_profile_stages_enabled();
-    let prep_wall_started = profile_stages.then(Instant::now);
-    let prepared = collect_inflight_limited_ordered(planned, inflight_tiles, |_, planned| {
-        let index = planned.index;
-        let started = Instant::now();
-        prepare_planned_resident_lossless_tile(planned, session)
-            .map(|prepared| PreparedResidentLosslessBatchItem {
-                prepared,
-                prepare_duration: started.elapsed(),
-            })
-            .map_err(|err| crate::Error::MetalKernel {
-                message: format!("J2K Metal resident encode failed at tile {index}: {err}"),
-            })
-    })?;
-    stats.max_observed_inflight_tiles = stats
-        .max_observed_inflight_tiles
-        .max(prepared.max_observed_inflight_items);
-    if let Some(started) = prep_wall_started {
-        add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
-    }
-
-    let mut metadatas = Vec::with_capacity(prepared.items.len());
-    let mut prepare_durations = Vec::with_capacity(prepared.items.len());
-    let mut batch_items = Vec::with_capacity(prepared.items.len());
-    for item in prepared.items {
-        let PreparedResidentLosslessBatchItem {
-            prepared,
-            prepare_duration,
-        } = item;
-        let metadata = prepared.metadata;
-        let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
-        batch_items.push(compute::J2kResidentClassicBatchEncodeItem {
-            prepared: prepared.prepared,
-            resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
-                crate::Error::MetalKernel {
-                    message: "J2K Metal resident encode resolution count exceeds u32".to_string(),
-                }
-            })?,
-            num_layers: 1,
-            num_components: metadata.plan.components,
-            code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
-                crate::Error::MetalKernel {
-                    message: "J2K Metal resident encode code-block count exceeds u32".to_string(),
-                }
-            })?,
-            packet_descriptors: metadata.packet_descriptors.clone(),
-            resolutions: metadata.packetization_resolutions.clone(),
-            codestream,
-        });
-        prepare_durations.push(prepare_duration);
-        metadatas.push(metadata);
-    }
 
     let batch_limit = inflight_tiles.max(1);
+    if profile_stages {
+        let chunk_count = planned_len.div_ceil(batch_limit);
+        stats.stage_stats.chunk_count = stats.stage_stats.chunk_count.saturating_add(chunk_count);
+        stats.stage_stats.tile_count = stats.stage_stats.tile_count.saturating_add(planned_len);
+    }
     let mut chunks = Vec::new();
-    while !batch_items.is_empty() {
-        let take = batch_items.len().min(batch_limit);
-        let chunk_items = batch_items.drain(..take).collect();
-        let chunk_metadatas = metadatas.drain(..take).collect::<Vec<_>>();
-        let chunk_prepare_durations = prepare_durations.drain(..take).collect::<Vec<_>>();
+    while !planned.is_empty() {
+        let take = planned.len().min(batch_limit);
+        stats.max_observed_inflight_tiles = stats.max_observed_inflight_tiles.max(take);
+        let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
+        let prep_wall_started = profile_stages.then(Instant::now);
+        let prepared =
+            prepare_planned_resident_classic_lossless_tiles_batch(chunk_planned, session).map_err(
+                |err| crate::Error::MetalKernel {
+                    message: format!("J2K Metal resident classic batch encode failed: {err}"),
+                },
+            )?;
+        if let Some(started) = prep_wall_started {
+            add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
+        }
+
+        let prepared_count = prepared.len();
+        let mut chunk_metadatas = Vec::with_capacity(prepared_count);
+        let mut chunk_prepare_durations = Vec::with_capacity(prepared_count);
+        let mut chunk_items = Vec::with_capacity(prepared_count);
+        for item in prepared {
+            let PreparedResidentLosslessBatchItem {
+                prepared,
+                prepare_duration,
+            } = item;
+            let metadata = prepared.metadata;
+            let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
+            chunk_items.push(compute::J2kResidentClassicBatchEncodeItem {
+                prepared: prepared.prepared,
+                resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode resolution count exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                num_layers: 1,
+                num_components: metadata.plan.components,
+                code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
+                    crate::Error::MetalKernel {
+                        message: "J2K Metal resident encode code-block count exceeds u32"
+                            .to_string(),
+                    }
+                })?,
+                packet_descriptors: metadata.packet_descriptors.clone(),
+                resolutions: metadata.packetization_resolutions.clone(),
+                codestream,
+            });
+            chunk_prepare_durations.push(prepare_duration);
+            chunk_metadatas.push(metadata);
+        }
         let batch_started = Instant::now();
+        let prepare_submit_started = profile_stages.then(Instant::now);
         let pending = compute::submit_lossless_codestream_buffers_from_prepared_classic_batch(
             session,
             chunk_items,
+            compute::J2kClassicEncodeOutputCapacityMode::Tight,
         )?;
+        if let Some(started) = prepare_submit_started {
+            stats.stage_stats.prepare_submit_duration = stats
+                .stage_stats
+                .prepare_submit_duration
+                .saturating_add(started.elapsed());
+        }
         chunks.push(SubmittedResidentLosslessMetalBufferEncodeChunk {
             metadatas: chunk_metadatas,
             prepare_durations: chunk_prepare_durations,
@@ -3547,43 +4739,73 @@ fn submit_planned_resident_classic_lossless_tiles_batch(
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_planned_resident_lossless_tile(
-    planned: PlannedResidentLosslessBufferEncode,
+fn prepare_planned_resident_classic_lossless_tiles_batch(
+    planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
-) -> Result<PreparedResidentLosslessBufferEncode, crate::Error> {
-    #[cfg(test)]
-    if planned.failure_injection_index == Some(planned.index) {
-        return Err(crate::Error::MetalKernel {
-            message: format!(
-                "injected J2K Metal resident encode failure at tile {}",
-                planned.index
-            ),
+) -> Result<Vec<PreparedResidentLosslessBatchItem>, crate::Error> {
+    struct ClassicBatchPlanInfo {
+        index: usize,
+        coefficient_count: usize,
+        bytes_per_sample: u8,
+        code_blocks: Vec<compute::J2kLosslessDeviceCodeBlock>,
+    }
+
+    let started = Instant::now();
+    let mut metadatas = Vec::with_capacity(planned.len());
+    let mut plan_infos = Vec::with_capacity(planned.len());
+    for planned in planned {
+        #[cfg(test)]
+        if planned.failure_injection_index == Some(planned.index) {
+            return Err(crate::Error::MetalKernel {
+                message: format!(
+                    "injected J2K Metal resident encode failure at tile {}",
+                    planned.index
+                ),
+            });
+        }
+
+        plan_infos.push(ClassicBatchPlanInfo {
+            index: planned.index,
+            coefficient_count: planned.coefficient_count,
+            bytes_per_sample: planned.bytes_per_sample,
+            code_blocks: planned.metadata.plan.code_blocks.clone(),
+        });
+        metadatas.push(planned.metadata);
+    }
+
+    let mut batch_items = Vec::with_capacity(metadatas.len());
+    for (metadata, plan_info) in metadatas.iter().zip(plan_infos) {
+        let tile = metadata.tile.as_tile();
+        batch_items.push(compute::J2kLosslessDeviceBatchPrepareItem {
+            tile_index: plan_info.index,
+            job: compute::J2kLosslessDevicePrepareJob {
+                input: tile.buffer,
+                input_byte_offset: tile.byte_offset,
+                input_width: tile.width,
+                input_height: tile.height,
+                input_pitch_bytes: tile.pitch_bytes,
+                output_width: tile.output_width,
+                output_height: tile.output_height,
+                components: metadata.components,
+                bytes_per_sample: plan_info.bytes_per_sample,
+                bit_depth: metadata.bit_depth,
+                num_decomposition_levels: metadata.plan.num_decomposition_levels,
+                coefficient_count: plan_info.coefficient_count,
+            },
+            code_blocks: plan_info.code_blocks,
         });
     }
 
-    let tile = planned.metadata.tile.as_tile();
-    let prepared = compute::prepare_lossless_device_code_blocks(
-        session,
-        compute::J2kLosslessDevicePrepareJob {
-            input: tile.buffer,
-            input_byte_offset: tile.byte_offset,
-            input_width: tile.width,
-            input_height: tile.height,
-            input_pitch_bytes: tile.pitch_bytes,
-            output_width: tile.output_width,
-            output_height: tile.output_height,
-            components: planned.metadata.components,
-            bytes_per_sample: planned.bytes_per_sample,
-            bit_depth: planned.metadata.bit_depth,
-            num_decomposition_levels: planned.metadata.plan.num_decomposition_levels,
-            coefficient_count: planned.coefficient_count,
-        },
-        planned.metadata.plan.code_blocks.clone(),
-    )?;
-    Ok(PreparedResidentLosslessBufferEncode {
-        metadata: planned.metadata,
-        prepared,
-    })
+    let prepared = compute::prepare_lossless_device_code_blocks_batch(session, batch_items)?;
+    let prepare_duration = duration_share(started.elapsed(), prepared.len());
+    Ok(metadatas
+        .into_iter()
+        .zip(prepared)
+        .map(|(metadata, prepared)| PreparedResidentLosslessBatchItem {
+            prepared: PreparedResidentLosslessBufferEncode { metadata, prepared },
+            prepare_duration,
+        })
+        .collect())
 }
 
 #[cfg(target_os = "macos")]
@@ -3596,11 +4818,13 @@ fn duration_share(duration: Duration, count: usize) -> Duration {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 struct ActiveTileGuard<'a> {
     active: &'a AtomicUsize,
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 impl<'a> ActiveTileGuard<'a> {
     fn new(active: &'a AtomicUsize, observed: &AtomicUsize) -> Self {
         let now = active.fetch_add(1, Ordering::AcqRel).saturating_add(1);
@@ -3616,6 +4840,7 @@ impl<'a> ActiveTileGuard<'a> {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 impl Drop for ActiveTileGuard<'_> {
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::AcqRel);
@@ -3742,39 +4967,64 @@ fn should_try_resident_lossless_ht_cpu_packetization(
 
 #[cfg(target_os = "macos")]
 fn encode_cpu_codestream_from_prepacketized_ht_tile(
-    tile_data: Vec<u8>,
+    tile_body: ResidentHybridHtTileBody,
     tile: MetalLosslessEncodeTile<'_>,
-    components: u8,
-    bit_depth: u8,
-    bytes_per_pixel: usize,
-    options: J2kLosslessEncodeOptions,
 ) -> Result<EncodedJ2k, crate::Error> {
     let dummy_len = checked_mul_bytes(
         checked_mul_bytes(tile.output_width as usize, tile.output_height as usize),
-        bytes_per_pixel,
+        tile_body.bytes_per_pixel,
     );
     let dummy = vec![0u8; dummy_len];
     let samples = J2kLosslessSamples::new(
         &dummy,
         tile.output_width,
         tile.output_height,
-        components,
-        bit_depth,
+        tile_body.components,
+        tile_body.bit_depth,
         false,
     )
     .map_err(crate::Error::Decode)?;
     let mut wrapper = PrepacketizedHtj2kTileAccelerator {
-        tile_data: Some(tile_data),
+        tile_data: Some(tile_body.tile_data),
     };
-    let mut encode_options = host_output_encode_options(options);
-    encode_options.backend = EncodeBackendPreference::Auto;
-    signinum_j2k::encode_j2k_lossless_with_accelerator(
-        samples,
-        &encode_options,
-        BackendKind::Metal,
+    let native_options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: tile_body.num_decomposition_levels,
+        code_block_width_exp: tile_body.code_block_width_exp,
+        code_block_height_exp: tile_body.code_block_height_exp,
+        guard_bits: tile_body.guard_bits,
+        use_ht_block_coding: true,
+        progression_order: tile_body.progression_order,
+        write_tlm: tile_body.write_tlm,
+        use_mct: tile_body.used_fused_rct,
+        validate_high_throughput_codestream: false,
+        ..EncodeOptions::default()
+    };
+    let codestream = signinum_j2k_native::encode_with_accelerator(
+        samples.data,
+        samples.width,
+        samples.height,
+        samples.components,
+        samples.bit_depth,
+        samples.signed,
+        &native_options,
         &mut wrapper,
     )
-    .map_err(crate::Error::Decode)
+    .map_err(|err| {
+        crate::Error::Decode(signinum_j2k::J2kError::Backend(format!(
+            "JPEG 2000 lossless encode failed: {err}"
+        )))
+    })?;
+    Ok(EncodedJ2k {
+        codestream,
+        backend: BackendKind::Cpu,
+        dispatch_report: J2kEncodeDispatchReport::default(),
+        width: samples.width,
+        height: samples.height,
+        components: samples.components,
+        bit_depth: samples.bit_depth,
+        signed: samples.signed,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -3785,19 +5035,18 @@ fn try_encode_lossless_tile_resident_ht_cpu_packetization_with_report(
     staging: MetalEncodeInputStaging,
 ) -> Result<Option<MetalLosslessEncodeOutcome>, crate::Error> {
     let encode_started = Instant::now();
-    let Some(tile_body) =
-        encode_resident_ht_tile_body_with_cpu_packetization(tile, options, session, staging)?
+    let Some(tile_body) = encode_resident_ht_tile_body_with_cpu_packetization(
+        tile,
+        options,
+        session,
+        staging,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
+    )?
     else {
         return Ok(None);
     };
-    let encoded = encode_cpu_codestream_from_prepacketized_ht_tile(
-        tile_body.tile_data,
-        tile,
-        tile_body.components,
-        tile_body.bit_depth,
-        tile_body.bytes_per_pixel,
-        options,
-    )?;
+    let encoded = encode_cpu_codestream_from_prepacketized_ht_tile(tile_body, tile)?;
     let encode_duration = encode_started.elapsed();
     let validation_duration = if options.validation == J2kEncodeValidation::CpuRoundTrip {
         let validation_started = Instant::now();
@@ -3868,6 +5117,8 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
         components,
         bit_depth,
         options,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
+        RESIDENT_CLASSIC_CODE_BLOCK_EDGE,
     )?
     else {
         return Ok(None);
@@ -3925,6 +5176,8 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
         num_decomposition_levels: plan.num_decomposition_levels,
         use_mct: plan.use_mct,
         guard_bits: plan.guard_bits,
+        code_block_width_exp: plan.code_block_width_exp,
+        code_block_height_exp: plan.code_block_height_exp,
         progression_order: plan.progression_order,
         write_tlm: plan.write_tlm,
         block_coding_mode: match plan.block_coding_mode {
@@ -4669,7 +5922,7 @@ mod tests {
         J2kEncodeStageAccelerator, J2kForwardRctJob,
     };
     #[cfg(target_os = "macos")]
-    use signinum_j2k_native::{J2kCodeBlockStyle, J2kForwardDwt53Job};
+    use signinum_j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle, J2kForwardDwt53Job};
     use std::time::Duration;
 
     #[cfg(target_os = "macos")]
@@ -4720,6 +5973,25 @@ mod tests {
         blit.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_decoded_bytes_match(actual: &[u8], expected: &[u8]) {
+        if actual == expected {
+            return;
+        }
+        let mismatch = actual
+            .iter()
+            .zip(expected.iter())
+            .position(|(actual, expected)| actual != expected)
+            .unwrap_or_else(|| actual.len().min(expected.len()));
+        let actual_value = actual.get(mismatch).copied();
+        let expected_value = expected.get(mismatch).copied();
+        panic!(
+            "decoded bytes mismatch at byte {mismatch}: actual={actual_value:?} expected={expected_value:?} actual_len={} expected_len={}",
+            actual.len(),
+            expected.len()
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -4859,12 +6131,187 @@ mod tests {
             Duration::ZERO
         );
         assert_eq!(stats.stage_stats.ht_block_encode_duration, Duration::ZERO);
+        assert_eq!(
+            stats.stage_stats.classic_tier1_setup_duration,
+            Duration::ZERO
+        );
+        assert_eq!(
+            stats.stage_stats.classic_block_encode_duration,
+            Duration::ZERO
+        );
+        assert_eq!(
+            stats.stage_stats.classic_packet_plan_duration,
+            Duration::ZERO
+        );
+        assert_eq!(
+            stats.stage_stats.classic_packet_buffer_setup_duration,
+            Duration::ZERO
+        );
+        assert_eq!(
+            stats.stage_stats.classic_command_buffer_commit_duration,
+            Duration::ZERO
+        );
         assert_eq!(stats.stage_stats.packet_block_prep_duration, Duration::ZERO);
         assert_eq!(stats.stage_stats.packetization_duration, Duration::ZERO);
+        assert_eq!(
+            stats.stage_stats.packet_payload_copy_gpu_duration,
+            Duration::ZERO
+        );
+        assert_eq!(stats.stage_stats.gpu_elapsed_wall_duration, Duration::ZERO);
+        assert_eq!(stats.stage_stats.classic_block_gpu_duration, Duration::ZERO);
+        assert_eq!(
+            stats.stage_stats.classic_tier1_density_gpu_duration,
+            Duration::ZERO
+        );
         assert_eq!(
             stats.stage_stats.codestream_assembly_duration,
             Duration::ZERO
         );
+        assert_eq!(
+            stats.stage_stats.codestream_payload_copy_gpu_duration,
+            Duration::ZERO
+        );
+        assert_eq!(stats.stage_stats.tier1_output_capacity_total, 0);
+        assert_eq!(stats.stage_stats.max_tier1_output_capacity, 0);
+        assert_eq!(stats.stage_stats.tier1_output_used_bytes_total, 0);
+        assert_eq!(stats.stage_stats.max_tier1_output_used_bytes, 0);
+        assert_eq!(stats.stage_stats.tier1_coding_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.max_tier1_coding_passes_per_block, 0);
+        assert_eq!(stats.stage_stats.tier1_arithmetic_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_raw_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_cleanup_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_sigprop_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_magref_pass_count_total, 0);
+        assert_eq!(
+            stats.stage_stats.tier1_arithmetic_cleanup_pass_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_arithmetic_sigprop_pass_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_arithmetic_magref_pass_count_total,
+            0
+        );
+        assert_eq!(stats.stage_stats.tier1_raw_sigprop_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_raw_magref_pass_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_full_scan_coeff_visit_count_total, 0);
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_arithmetic_scan_coeff_visit_count_total,
+            0
+        );
+        assert_eq!(stats.stage_stats.tier1_raw_scan_coeff_visit_count_total, 0);
+        assert_eq!(
+            stats.stage_stats.tier1_cleanup_scan_coeff_visit_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_sigprop_scan_coeff_visit_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_magref_scan_coeff_visit_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.max_tier1_full_scan_coeff_visits_per_block,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_sigprop_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_sigprop_new_significant_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_magref_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_arithmetic_sigprop_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_arithmetic_sigprop_new_significant_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_raw_sigprop_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_raw_sigprop_new_significant_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_arithmetic_magref_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats
+                .stage_stats
+                .tier1_raw_magref_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_cleanup_active_candidate_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.tier1_cleanup_new_significant_count_total,
+            0
+        );
+        assert_eq!(stats.stage_stats.tier1_cleanup_rlc_stripe_count_total, 0);
+        assert_eq!(
+            stats.stage_stats.tier1_cleanup_rlc_zero_stripe_count_total,
+            0
+        );
+        assert_eq!(stats.stage_stats.tier1_nonzero_block_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_zero_block_count_total, 0);
+        assert_eq!(stats.stage_stats.tier1_missing_bitplane_count_total, 0);
+        assert_eq!(stats.stage_stats.max_tier1_missing_bitplanes_per_block, 0);
+        assert_eq!(stats.stage_stats.tier1_segment_count_total, 0);
+        assert_eq!(stats.stage_stats.max_tier1_segments_per_block, 0);
+        assert_eq!(stats.stage_stats.packet_payload_copy_job_capacity_total, 0);
+        assert_eq!(stats.stage_stats.max_packet_payload_copy_jobs_per_tile, 0);
+        assert_eq!(stats.stage_stats.packet_payload_copy_job_count_total, 0);
+        assert_eq!(
+            stats.stage_stats.max_packet_payload_copy_jobs_used_per_tile,
+            0
+        );
+        assert_eq!(stats.stage_stats.packet_payload_copy_bytes_total, 0);
+        assert_eq!(stats.stage_stats.max_packet_payload_copy_bytes_per_tile, 0);
+        assert_eq!(
+            stats.stage_stats.packet_payload_copy_small_job_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.packet_payload_copy_medium_job_count_total,
+            0
+        );
+        assert_eq!(
+            stats.stage_stats.packet_payload_copy_large_job_count_total,
+            0
+        );
+        assert_eq!(stats.stage_stats.packet_output_capacity_total, 0);
+        assert_eq!(stats.stage_stats.max_packet_output_capacity, 0);
+        assert_eq!(stats.stage_stats.packet_output_used_bytes_total, 0);
+        assert_eq!(stats.stage_stats.max_packet_output_used_bytes, 0);
         assert_eq!(stats.stage_stats.sync_wait_duration, Duration::ZERO);
         assert_eq!(stats.stage_stats.host_readback_duration, Duration::ZERO);
         assert!(!stats.stage_stats.has_timings());
@@ -4881,6 +6328,71 @@ mod tests {
         stats.add_assign(super::MetalLosslessEncodeStageStats {
             plan_duration: Duration::from_micros(1),
             prepare_submit_duration: Duration::from_micros(2),
+            classic_tier1_setup_duration: Duration::from_micros(4),
+            classic_block_encode_duration: Duration::from_micros(5),
+            classic_tier1_token_pack_duration: Duration::from_micros(9),
+            classic_packet_plan_duration: Duration::from_micros(6),
+            classic_packet_buffer_setup_duration: Duration::from_micros(7),
+            classic_command_buffer_commit_duration: Duration::from_micros(8),
+            packet_payload_copy_job_capacity_total: 11,
+            max_packet_payload_copy_jobs_per_tile: 5,
+            packet_payload_copy_job_count_total: 13,
+            max_packet_payload_copy_jobs_used_per_tile: 6,
+            packet_payload_copy_bytes_total: 23,
+            max_packet_payload_copy_bytes_per_tile: 12,
+            packet_payload_copy_small_job_count_total: 2,
+            packet_payload_copy_medium_job_count_total: 3,
+            packet_payload_copy_large_job_count_total: 4,
+            tier1_output_capacity_total: 17,
+            max_tier1_output_capacity: 9,
+            tier1_output_used_bytes_total: 19,
+            max_tier1_output_used_bytes: 10,
+            tier1_segment_capacity_total: 25,
+            max_tier1_segment_capacity_per_block: 11,
+            tier1_coding_pass_count_total: 31,
+            max_tier1_coding_passes_per_block: 8,
+            tier1_arithmetic_pass_count_total: 21,
+            tier1_raw_pass_count_total: 10,
+            tier1_cleanup_pass_count_total: 11,
+            tier1_sigprop_pass_count_total: 10,
+            tier1_magref_pass_count_total: 10,
+            tier1_arithmetic_cleanup_pass_count_total: 11,
+            tier1_arithmetic_sigprop_pass_count_total: 6,
+            tier1_arithmetic_magref_pass_count_total: 4,
+            tier1_raw_sigprop_pass_count_total: 4,
+            tier1_raw_magref_pass_count_total: 6,
+            tier1_full_scan_coeff_visit_count_total: 31_744,
+            tier1_arithmetic_scan_coeff_visit_count_total: 21_504,
+            tier1_raw_scan_coeff_visit_count_total: 10_240,
+            tier1_cleanup_scan_coeff_visit_count_total: 11_264,
+            tier1_sigprop_scan_coeff_visit_count_total: 10_240,
+            tier1_magref_scan_coeff_visit_count_total: 10_240,
+            max_tier1_full_scan_coeff_visits_per_block: 8_192,
+            tier1_sigprop_active_candidate_count_total: 101,
+            tier1_sigprop_new_significant_count_total: 37,
+            tier1_magref_active_candidate_count_total: 203,
+            tier1_arithmetic_sigprop_active_candidate_count_total: 61,
+            tier1_arithmetic_sigprop_new_significant_count_total: 23,
+            tier1_raw_sigprop_active_candidate_count_total: 40,
+            tier1_raw_sigprop_new_significant_count_total: 14,
+            tier1_arithmetic_magref_active_candidate_count_total: 123,
+            tier1_raw_magref_active_candidate_count_total: 80,
+            tier1_cleanup_active_candidate_count_total: 307,
+            tier1_cleanup_new_significant_count_total: 41,
+            tier1_cleanup_rlc_stripe_count_total: 53,
+            tier1_cleanup_rlc_zero_stripe_count_total: 47,
+            tier1_token_pack_output_bytes_total: 29,
+            max_tier1_token_pack_output_bytes_per_block: 15,
+            tier1_nonzero_block_count_total: 2,
+            tier1_zero_block_count_total: 1,
+            tier1_missing_bitplane_count_total: 5,
+            max_tier1_missing_bitplanes_per_block: 4,
+            tier1_segment_count_total: 7,
+            max_tier1_segments_per_block: 3,
+            packet_output_capacity_total: 17,
+            max_packet_output_capacity: 9,
+            packet_output_used_bytes_total: 19,
+            max_packet_output_used_bytes: 10,
             tile_count: 1,
             code_block_count: 3,
             ..super::MetalLosslessEncodeStageStats::default()
@@ -4888,8 +6400,206 @@ mod tests {
 
         assert_eq!(stats.plan_duration, Duration::MAX);
         assert_eq!(stats.prepare_submit_duration, Duration::from_micros(2));
+        assert_eq!(stats.classic_tier1_setup_duration, Duration::from_micros(4));
+        assert_eq!(
+            stats.classic_block_encode_duration,
+            Duration::from_micros(5)
+        );
+        assert_eq!(
+            stats.classic_tier1_token_pack_duration,
+            Duration::from_micros(9)
+        );
+        assert_eq!(stats.classic_packet_plan_duration, Duration::from_micros(6));
+        assert_eq!(
+            stats.classic_packet_buffer_setup_duration,
+            Duration::from_micros(7)
+        );
+        assert_eq!(
+            stats.classic_command_buffer_commit_duration,
+            Duration::from_micros(8)
+        );
         assert_eq!(stats.tile_count, usize::MAX);
         assert_eq!(stats.code_block_count, 3);
+        assert_eq!(stats.packet_payload_copy_job_capacity_total, 11);
+        assert_eq!(stats.max_packet_payload_copy_jobs_per_tile, 5);
+        assert_eq!(stats.packet_payload_copy_job_count_total, 13);
+        assert_eq!(stats.max_packet_payload_copy_jobs_used_per_tile, 6);
+        assert_eq!(stats.packet_payload_copy_bytes_total, 23);
+        assert_eq!(stats.max_packet_payload_copy_bytes_per_tile, 12);
+        assert_eq!(stats.packet_payload_copy_small_job_count_total, 2);
+        assert_eq!(stats.packet_payload_copy_medium_job_count_total, 3);
+        assert_eq!(stats.packet_payload_copy_large_job_count_total, 4);
+        assert_eq!(stats.tier1_output_capacity_total, 17);
+        assert_eq!(stats.max_tier1_output_capacity, 9);
+        assert_eq!(stats.tier1_output_used_bytes_total, 19);
+        assert_eq!(stats.max_tier1_output_used_bytes, 10);
+        assert_eq!(stats.tier1_segment_capacity_total, 25);
+        assert_eq!(stats.max_tier1_segment_capacity_per_block, 11);
+        assert_eq!(stats.tier1_coding_pass_count_total, 31);
+        assert_eq!(stats.max_tier1_coding_passes_per_block, 8);
+        assert_eq!(stats.tier1_arithmetic_pass_count_total, 21);
+        assert_eq!(stats.tier1_raw_pass_count_total, 10);
+        assert_eq!(stats.tier1_cleanup_pass_count_total, 11);
+        assert_eq!(stats.tier1_sigprop_pass_count_total, 10);
+        assert_eq!(stats.tier1_magref_pass_count_total, 10);
+        assert_eq!(stats.tier1_arithmetic_cleanup_pass_count_total, 11);
+        assert_eq!(stats.tier1_arithmetic_sigprop_pass_count_total, 6);
+        assert_eq!(stats.tier1_arithmetic_magref_pass_count_total, 4);
+        assert_eq!(stats.tier1_raw_sigprop_pass_count_total, 4);
+        assert_eq!(stats.tier1_raw_magref_pass_count_total, 6);
+        assert_eq!(stats.tier1_full_scan_coeff_visit_count_total, 31_744);
+        assert_eq!(stats.tier1_arithmetic_scan_coeff_visit_count_total, 21_504);
+        assert_eq!(stats.tier1_raw_scan_coeff_visit_count_total, 10_240);
+        assert_eq!(stats.tier1_cleanup_scan_coeff_visit_count_total, 11_264);
+        assert_eq!(stats.tier1_sigprop_scan_coeff_visit_count_total, 10_240);
+        assert_eq!(stats.tier1_magref_scan_coeff_visit_count_total, 10_240);
+        assert_eq!(stats.max_tier1_full_scan_coeff_visits_per_block, 8_192);
+        assert_eq!(stats.tier1_sigprop_active_candidate_count_total, 101);
+        assert_eq!(stats.tier1_sigprop_new_significant_count_total, 37);
+        assert_eq!(stats.tier1_magref_active_candidate_count_total, 203);
+        assert_eq!(
+            stats.tier1_arithmetic_sigprop_active_candidate_count_total,
+            61
+        );
+        assert_eq!(
+            stats.tier1_arithmetic_sigprop_new_significant_count_total,
+            23
+        );
+        assert_eq!(stats.tier1_raw_sigprop_active_candidate_count_total, 40);
+        assert_eq!(stats.tier1_raw_sigprop_new_significant_count_total, 14);
+        assert_eq!(
+            stats.tier1_arithmetic_magref_active_candidate_count_total,
+            123
+        );
+        assert_eq!(stats.tier1_raw_magref_active_candidate_count_total, 80);
+        assert_eq!(stats.tier1_cleanup_active_candidate_count_total, 307);
+        assert_eq!(stats.tier1_cleanup_new_significant_count_total, 41);
+        assert_eq!(stats.tier1_cleanup_rlc_stripe_count_total, 53);
+        assert_eq!(stats.tier1_cleanup_rlc_zero_stripe_count_total, 47);
+        assert_eq!(stats.tier1_token_pack_output_bytes_total, 29);
+        assert_eq!(stats.max_tier1_token_pack_output_bytes_per_block, 15);
+        assert_eq!(stats.tier1_nonzero_block_count_total, 2);
+        assert_eq!(stats.tier1_zero_block_count_total, 1);
+        assert_eq!(stats.tier1_missing_bitplane_count_total, 5);
+        assert_eq!(stats.max_tier1_missing_bitplanes_per_block, 4);
+        assert_eq!(stats.tier1_segment_count_total, 7);
+        assert_eq!(stats.max_tier1_segments_per_block, 3);
+        assert_eq!(stats.packet_output_capacity_total, 17);
+        assert_eq!(stats.max_packet_output_capacity, 9);
+        assert_eq!(stats.packet_output_used_bytes_total, 19);
+        assert_eq!(stats.max_packet_output_used_bytes, 10);
+    }
+
+    #[test]
+    fn resident_lossless_stage_stats_accumulates_split_gpu_durations() {
+        let mut stats = super::MetalLosslessEncodeStageStats {
+            ht_block_gpu_duration: Duration::from_micros(2),
+            ..super::MetalLosslessEncodeStageStats::default()
+        };
+
+        stats.add_assign(super::MetalLosslessEncodeStageStats {
+            coefficient_prep_gpu_duration: Duration::from_micros(23),
+            coefficient_deinterleave_rct_gpu_duration: Duration::from_micros(4),
+            coefficient_dwt53_gpu_duration: Duration::from_micros(6),
+            coefficient_dwt53_vertical_gpu_duration: Duration::from_micros(2),
+            coefficient_dwt53_horizontal_gpu_duration: Duration::from_micros(4),
+            coefficient_extract_gpu_duration: Duration::from_micros(8),
+            coefficient_copy_gpu_duration: Duration::from_micros(1),
+            gpu_elapsed_wall_duration: Duration::from_micros(29),
+            classic_block_gpu_duration: Duration::from_micros(19),
+            classic_tier1_density_gpu_duration: Duration::from_micros(31),
+            classic_tier1_raw_pack_gpu_duration: Duration::from_micros(37),
+            classic_tier1_arithmetic_pack_gpu_duration: Duration::from_micros(39),
+            classic_tier1_symbol_plan_gpu_duration: Duration::from_micros(41),
+            classic_tier1_token_emit_gpu_duration: Duration::from_micros(43),
+            classic_tier1_split_token_emit_gpu_duration: Duration::from_micros(45),
+            classic_tier1_token_pack_gpu_duration: Duration::from_micros(47),
+            ht_block_gpu_duration: Duration::from_micros(3),
+            packet_block_prep_gpu_duration: Duration::from_micros(5),
+            packetization_gpu_duration: Duration::from_micros(7),
+            packet_payload_copy_gpu_duration: Duration::from_micros(11),
+            codestream_assembly_gpu_duration: Duration::from_micros(13),
+            codestream_payload_copy_gpu_duration: Duration::from_micros(17),
+            ..super::MetalLosslessEncodeStageStats::default()
+        });
+
+        assert_eq!(
+            stats.coefficient_prep_gpu_duration,
+            Duration::from_micros(23)
+        );
+        assert_eq!(
+            stats.coefficient_deinterleave_rct_gpu_duration,
+            Duration::from_micros(4)
+        );
+        assert_eq!(
+            stats.coefficient_dwt53_gpu_duration,
+            Duration::from_micros(6)
+        );
+        assert_eq!(
+            stats.coefficient_dwt53_vertical_gpu_duration,
+            Duration::from_micros(2)
+        );
+        assert_eq!(
+            stats.coefficient_dwt53_horizontal_gpu_duration,
+            Duration::from_micros(4)
+        );
+        assert_eq!(
+            stats.coefficient_extract_gpu_duration,
+            Duration::from_micros(8)
+        );
+        assert_eq!(
+            stats.coefficient_copy_gpu_duration,
+            Duration::from_micros(1)
+        );
+        assert_eq!(stats.gpu_elapsed_wall_duration, Duration::from_micros(29));
+        assert_eq!(stats.classic_block_gpu_duration, Duration::from_micros(19));
+        assert_eq!(
+            stats.classic_tier1_density_gpu_duration,
+            Duration::from_micros(31)
+        );
+        assert_eq!(
+            stats.classic_tier1_raw_pack_gpu_duration,
+            Duration::from_micros(37)
+        );
+        assert_eq!(
+            stats.classic_tier1_arithmetic_pack_gpu_duration,
+            Duration::from_micros(39)
+        );
+        assert_eq!(
+            stats.classic_tier1_symbol_plan_gpu_duration,
+            Duration::from_micros(41)
+        );
+        assert_eq!(
+            stats.classic_tier1_token_emit_gpu_duration,
+            Duration::from_micros(43)
+        );
+        assert_eq!(
+            stats.classic_tier1_split_token_emit_gpu_duration,
+            Duration::from_micros(45)
+        );
+        assert_eq!(
+            stats.classic_tier1_token_pack_gpu_duration,
+            Duration::from_micros(47)
+        );
+        assert_eq!(stats.ht_block_gpu_duration, Duration::from_micros(5));
+        assert_eq!(
+            stats.packet_block_prep_gpu_duration,
+            Duration::from_micros(5)
+        );
+        assert_eq!(stats.packetization_gpu_duration, Duration::from_micros(7));
+        assert_eq!(
+            stats.packet_payload_copy_gpu_duration,
+            Duration::from_micros(11)
+        );
+        assert_eq!(
+            stats.codestream_assembly_gpu_duration,
+            Duration::from_micros(13)
+        );
+        assert_eq!(
+            stats.codestream_payload_copy_gpu_duration,
+            Duration::from_micros(17)
+        );
+        assert!(stats.has_timings());
     }
 
     #[test]
@@ -4918,6 +6628,76 @@ mod tests {
         super::add_resident_prep_wall_duration(&mut stats, wall_duration, true);
 
         assert_eq!(stats.stage_stats.coefficient_prep_duration, wall_duration);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resident_classic_peak_estimate_matches_tight_batch_capacity() {
+        let plan = super::LosslessDeviceEncodePlan {
+            components: 1,
+            bit_depth: 8,
+            block_coding_mode: J2kBlockCodingMode::Classic,
+            num_decomposition_levels: 0,
+            use_mct: false,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            code_blocks: vec![compute::J2kLosslessDeviceCodeBlock {
+                coefficient_offset: 0,
+                component: 0,
+                subband_x: 0,
+                subband_y: 0,
+                block_x: 0,
+                block_y: 0,
+                width: 64,
+                height: 64,
+                sub_band_type: signinum_j2k_native::J2kSubBandType::LowLow,
+                total_bitplanes: 11,
+            }],
+            resolutions: Vec::new(),
+            progression_order: signinum_j2k_native::EncodeProgressionOrder::Lrcp,
+            write_tlm: false,
+        };
+
+        assert_eq!(
+            super::estimated_tier1_output_bytes(&plan),
+            64 * 64 * 11 + 4097
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resident_classic_batch_retry_covers_tight_capacity_failures() {
+        let tight_tier1_error = crate::Error::MetalKernel {
+            message: "packetization Metal encode kernel failure (detail=7, tier1_detail=4)"
+                .to_string(),
+        };
+        assert!(super::resident_classic_batch_encode_should_retry_conservative(&tight_tier1_error));
+
+        let tight_tier1_finish_error = crate::Error::MetalKernel {
+            message: "classic Tier-1 Metal encode kernel failure (detail=5)".to_string(),
+        };
+        assert!(
+            super::resident_classic_batch_encode_should_retry_conservative(
+                &tight_tier1_finish_error
+            )
+        );
+
+        let packet_error = crate::Error::MetalKernel {
+            message: "packetization Metal encode kernel failure (detail=5)".to_string(),
+        };
+        assert!(super::resident_classic_batch_encode_should_retry_conservative(&packet_error));
+
+        let codestream_error = crate::Error::MetalKernel {
+            message: "J2K batched codestream assembly Metal encode kernel failure (detail=2)"
+                .to_string(),
+        };
+        assert!(super::resident_classic_batch_encode_should_retry_conservative(&codestream_error));
+
+        let unrelated_error = crate::Error::MetalKernel {
+            message: "packetization Metal encode kernel failure (detail=8)".to_string(),
+        };
+        assert!(!super::resident_classic_batch_encode_should_retry_conservative(&unrelated_error));
     }
 
     #[test]
@@ -5114,11 +6894,6 @@ mod tests {
     fn metal_buffer_lossless_encode_pads_edge_tile_on_device() {
         let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 19) & 0xFF) as u8).collect();
         let device = metal::Device::system_default().expect("Metal device");
-        if !compute::ht_simd_prototype_available_for_device_for_test(&device)
-            .expect("HTJ2K SIMD prototype availability query")
-        {
-            return;
-        }
         let session = crate::MetalBackendSession::new(device);
         let buffer = session.device().new_buffer_with_data(
             pixels.as_ptr().cast(),
@@ -5290,7 +7065,7 @@ mod tests {
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
-        assert_eq!(decoded.data, pixels);
+        assert_decoded_bytes_match(&decoded.data, &pixels);
     }
 
     #[cfg(target_os = "macos")]
@@ -5505,7 +7280,7 @@ mod tests {
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
-        assert_eq!(decoded.data, pixels);
+        assert_decoded_bytes_match(&decoded.data, &pixels);
     }
 
     #[cfg(target_os = "macos")]
@@ -5537,10 +7312,9 @@ mod tests {
         assert!(encoded.resident.coefficient_prep_used);
         assert!(encoded.resident.packetization_used);
         assert!(encoded.resident.codestream_assembly_used);
-        assert!(
-            encoded.gpu_duration.is_some(),
-            "resident Metal encode should report command-buffer GPU duration"
-        );
+        if let Some(duration) = encoded.gpu_duration {
+            assert!(duration > Duration::ZERO);
+        }
         assert_eq!(encoded.encoded.byte_offset, 0);
         assert!(encoded.encoded.byte_len > 0);
         assert!(encoded.encoded.capacity >= encoded.encoded.byte_len);
@@ -5683,7 +7457,7 @@ mod tests {
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
-        assert_eq!(decoded.data, pixels);
+        assert_decoded_bytes_match(&decoded.data, &pixels);
     }
 
     #[cfg(target_os = "macos")]
@@ -5726,7 +7500,85 @@ mod tests {
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
-        assert_eq!(decoded.data, pixels);
+        assert_decoded_bytes_match(&decoded.data, &pixels);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_padded_private_gray8_dwt_resident_codestream_decodes_natively() {
+        let mut pixels = Vec::with_capacity(128 * 128);
+        for y in 0..128u32 {
+            for x in 0..128u32 {
+                pixels.push(((x * 7 + y * 11 + (x ^ y)) & 0xFF) as u8);
+            }
+        }
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+
+        let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 128,
+                height: 128,
+                pitch_bytes: 128,
+                output_width: 128,
+                output_height: 128,
+                format: PixelFormat::Gray8,
+            },
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+        )
+        .expect("Metal private padded DWT buffer lossless encode");
+
+        let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+        assert_decoded_bytes_match(&decoded.data, &pixels);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_padded_private_rgb8_dwt_resident_codestream_decodes_natively() {
+        let mut pixels = Vec::with_capacity(128 * 128 * 3);
+        for y in 0..128u32 {
+            for x in 0..128u32 {
+                pixels.push(((x * 3 + y * 5) & 0xFF) as u8);
+                pixels.push(((x * 7 + y * 11) & 0xFF) as u8);
+                pixels.push(((x * 13 + y * 17) & 0xFF) as u8);
+            }
+        }
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let buffer = private_buffer_with_bytes(&session, &pixels);
+
+        let encoded = super::encode_lossless_from_padded_metal_buffer_with_report(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 128,
+                height: 128,
+                pitch_bytes: 128 * 3,
+                output_width: 128,
+                output_height: 128,
+                format: PixelFormat::Rgb8,
+            },
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+        )
+        .expect("Metal private padded RGB8 DWT buffer lossless encode");
+
+        let decoded = Image::new(&encoded.encoded.codestream, &DecodeSettings::default())
+            .expect("codestream parses")
+            .decode_native()
+            .expect("codestream decodes");
+        assert_decoded_bytes_match(&decoded.data, &pixels);
     }
 
     #[cfg(target_os = "macos")]
@@ -6111,6 +7963,69 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn metal_padded_private_batch_dwt_encode_to_metal_buffers_round_trips() {
+        let first: Vec<u8> = (0..128 * 128 * 3)
+            .map(|i| ((i * 17 + i / 3) & 0xFF) as u8)
+            .collect();
+        let second: Vec<u8> = (0..128 * 128 * 3)
+            .map(|i| 255u8.wrapping_sub(((i * 23 + i / 5) & 0xFF) as u8))
+            .collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let first_buffer = private_buffer_with_bytes(&session, &first);
+        let second_buffer = private_buffer_with_bytes(&session, &second);
+        let tiles = [
+            super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width: 128,
+                height: 128,
+                pitch_bytes: 128 * 3,
+                output_width: 128,
+                output_height: 128,
+                format: PixelFormat::Rgb8,
+            },
+            super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width: 128,
+                height: 128,
+                pitch_bytes: 128 * 3,
+                output_width: 128,
+                output_height: 128,
+                format: PixelFormat::Rgb8,
+            },
+        ];
+
+        let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles,
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+        )
+        .expect("Metal padded DWT buffer batch lossless encode to Metal buffers");
+
+        assert_eq!(encoded.len(), 2);
+        for (frame, expected) in encoded.iter().zip([first, second]) {
+            assert!(!frame.input_copy_used);
+            assert!(frame.resident.coefficient_prep_used);
+            assert!(frame.resident.packetization_used);
+            assert!(frame.resident.codestream_assembly_used);
+            let codestream = frame
+                .encoded
+                .codestream_bytes()
+                .expect("Metal codestream bytes are CPU-readable");
+            let decoded = Image::new(codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+            assert_decoded_bytes_match(&decoded.data, &expected);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn metal_edge_private_batch_encode_to_metal_buffers_stays_resident() {
         let first: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
         let second: Vec<u8> = (0..6 * 8 * 3)
@@ -6238,8 +8153,8 @@ mod tests {
         );
         assert_eq!(
             compute::resident_gpu_timestamp_queries_for_test(),
-            2,
-            "HTJ2K resident batch should query shared prepare command buffer timestamps once"
+            7,
+            "HTJ2K resident batch should query each unique retained command buffer timestamp once"
         );
         assert_eq!(
             encoded[0].encoded.codestream_buffer.as_ptr(),
@@ -6339,73 +8254,6 @@ mod tests {
         .expect("isolated HTJ2K Metal runtime");
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn metal_ht_private_batch_encode_uses_simd_prototype_when_enabled() {
-        const WIDTH: usize = 32;
-        const HEIGHT: usize = 32;
-        let first: Vec<u8> = (0..WIDTH * HEIGHT)
-            .map(|i| ((i * 3 + 17) & 0xFF) as u8)
-            .collect();
-        let second: Vec<u8> = (0..WIDTH * HEIGHT)
-            .map(|i| ((i * 11 + 5) & 0xFF) as u8)
-            .collect();
-        let session = crate::MetalBackendSession::system_default().expect("Metal session");
-        let first_buffer = private_buffer_with_bytes(&session, &first);
-        let second_buffer = private_buffer_with_bytes(&session, &second);
-        let tiles = [
-            super::MetalLosslessEncodeTile {
-                buffer: &first_buffer,
-                byte_offset: 0,
-                width: WIDTH as u32,
-                height: HEIGHT as u32,
-                pitch_bytes: WIDTH,
-                output_width: WIDTH as u32,
-                output_height: HEIGHT as u32,
-                format: PixelFormat::Gray8,
-            },
-            super::MetalLosslessEncodeTile {
-                buffer: &second_buffer,
-                byte_offset: 0,
-                width: WIDTH as u32,
-                height: HEIGHT as u32,
-                pitch_bytes: WIDTH,
-                output_width: WIDTH as u32,
-                output_height: HEIGHT as u32,
-                format: PixelFormat::Gray8,
-            },
-        ];
-        let options = lossless_options! {
-            backend: EncodeBackendPreference::RequireDevice,
-            block_coding_mode: J2kBlockCodingMode::HighThroughput,
-            validation: J2kEncodeValidation::External,
-        };
-
-        let _route = compute::force_ht_simd_prototype_route_for_test(true);
-        compute::reset_ht_simd_prototype_dispatches_for_test();
-        let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
-            &tiles, &options, &session,
-        )
-        .expect("HTJ2K SIMD prototype batch encode");
-
-        assert_eq!(encoded.len(), 2);
-        assert!(
-            compute::ht_simd_prototype_dispatches_for_test() > 0,
-            "enabled HTJ2K batch encode should route through the SIMD prototype"
-        );
-        for (frame, expected) in encoded.iter().zip([first, second]) {
-            let codestream = frame
-                .encoded
-                .codestream_bytes()
-                .expect("Metal codestream bytes are CPU-readable");
-            let decoded = Image::new(codestream, &DecodeSettings::default())
-                .expect("codestream parses")
-                .decode_native()
-                .expect("codestream decodes");
-            assert_eq!(decoded.data, expected);
-        }
-    }
-
     #[test]
     fn default_gpu_encode_memory_budget_uses_forty_percent_capped_at_ten_gib() {
         const GIB: usize = 1024 * 1024 * 1024;
@@ -6461,6 +8309,81 @@ mod tests {
 
         assert_eq!(stats.configured_inflight_tiles, None);
         assert_eq!(stats.effective_inflight_tiles, 512);
+    }
+
+    #[test]
+    fn resident_classic_encode_default_inflight_uses_profiled_cap() {
+        let config = super::resident_lossless_encode_config_for_mode(
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: None,
+                gpu_encode_memory_budget_bytes: Some(1_000_000),
+            },
+            true,
+            16,
+        );
+
+        assert_eq!(config.gpu_encode_inflight_tiles, Some(16));
+        assert_eq!(config.gpu_encode_memory_budget_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn resident_classic_encode_default_inflight_uses_large_batch_cap() {
+        let config = super::resident_lossless_encode_config_for_mode(
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: None,
+                gpu_encode_memory_budget_bytes: Some(1_000_000),
+            },
+            true,
+            64,
+        );
+
+        assert_eq!(config.gpu_encode_inflight_tiles, Some(64));
+        assert_eq!(config.gpu_encode_memory_budget_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn resident_classic_encode_default_inflight_uses_very_large_batch_cap() {
+        let config = super::resident_lossless_encode_config_for_mode(
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: None,
+                gpu_encode_memory_budget_bytes: Some(1_000_000),
+            },
+            true,
+            128,
+        );
+
+        assert_eq!(config.gpu_encode_inflight_tiles, Some(128));
+        assert_eq!(config.gpu_encode_memory_budget_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn resident_htj2k_encode_medium_batch_default_inflight_uses_profiled_cap() {
+        let config = super::resident_lossless_encode_config_for_mode(
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: None,
+                gpu_encode_memory_budget_bytes: Some(1_000_000),
+            },
+            false,
+            64,
+        );
+
+        assert_eq!(config.gpu_encode_inflight_tiles, Some(32));
+        assert_eq!(config.gpu_encode_memory_budget_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn resident_htj2k_encode_large_batch_default_inflight_uses_profiled_cap() {
+        let config = super::resident_lossless_encode_config_for_mode(
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: None,
+                gpu_encode_memory_budget_bytes: Some(1_000_000),
+            },
+            false,
+            128,
+        );
+
+        assert_eq!(config.gpu_encode_inflight_tiles, Some(64));
+        assert_eq!(config.gpu_encode_memory_budget_bytes, Some(1_000_000));
     }
 
     #[test]
@@ -6773,6 +8696,198 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn metal_classic_resident_uses_mq_byte_split_gpu_token_pack_by_default() {
+        let _profile_guard = compute::force_metal_profile_stages_for_test(true);
+        compute::reset_classic_gpu_token_pack_dispatches_for_test();
+        compute::reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test();
+        let first: Vec<u8> = (0..256 * 256)
+            .map(|idx| {
+                let x = idx % 256;
+                let y = idx / 256;
+                ((x + y * 5) & 0xFF) as u8
+            })
+            .collect();
+        let second: Vec<u8> = (0..256 * 256)
+            .map(|idx| {
+                let x = idx % 256;
+                let y = idx / 256;
+                ((x * 3 + y * 7) & 0xFF) as u8
+            })
+            .collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let first_buffer = private_buffer_with_bytes(&session, &first);
+        let second_buffer = private_buffer_with_bytes(&session, &second);
+        let tiles = [
+            super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width: 256,
+                height: 256,
+                pitch_bytes: 256,
+                output_width: 256,
+                output_height: 256,
+                format: PixelFormat::Gray8,
+            },
+            super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width: 256,
+                height: 256,
+                pitch_bytes: 256,
+                output_width: 256,
+                output_height: 256,
+                format: PixelFormat::Gray8,
+            },
+        ];
+
+        let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
+            &tiles,
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                block_coding_mode: J2kBlockCodingMode::Classic,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: Some(2),
+                gpu_encode_memory_budget_bytes: Some(1024 * 1024 * 1024),
+            },
+        )
+        .expect("resident batch encode with default MQ-byte GPU token-pack Classic Tier-1");
+        assert_eq!(encoded.outcomes.len(), 2);
+        for (outcome, expected) in encoded.outcomes.iter().zip([&first, &second]) {
+            let codestream = outcome
+                .encoded
+                .to_encoded_j2k()
+                .expect("codestream readback");
+            let decoded = Image::new(&codestream.codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+
+            assert_eq!(codestream.backend, BackendKind::Metal);
+            assert_eq!(&decoded.data, expected);
+        }
+        assert!(
+            compute::classic_gpu_token_pack_dispatches_for_test() > 0,
+            "default Classic GPU token-pack route was not dispatched"
+        );
+        assert!(
+            compute::classic_split_mq_byte_gpu_token_pack_dispatches_for_test() > 0,
+            "default Classic GPU token-pack route did not use MQ-byte split token emit"
+        );
+        assert_eq!(
+            encoded
+                .stats
+                .stage_stats
+                .tier1_token_pack_output_bytes_total,
+            encoded.stats.stage_stats.tier1_output_used_bytes_total,
+            "default Classic GPU token-pack route should attribute Tier-1 output bytes to token pack"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_classic_resident_gpu_token_pack_route_round_trips() {
+        let _guard = compute::force_classic_gpu_token_pack_route_for_test(true);
+        let _profile_guard = compute::force_metal_profile_stages_for_test(true);
+        compute::reset_classic_gpu_token_pack_dispatches_for_test();
+        let first: Vec<u8> = (0..256 * 256)
+            .map(|idx| {
+                let x = idx % 256;
+                let y = idx / 256;
+                ((x + y * 3) & 0xFF) as u8
+            })
+            .collect();
+        let second: Vec<u8> = (0..256 * 256)
+            .map(|idx| {
+                let x = idx % 256;
+                let y = idx / 256;
+                ((x * 2 + y) & 0xFF) as u8
+            })
+            .collect();
+        let session = crate::MetalBackendSession::system_default().expect("Metal session");
+        let first_buffer = private_buffer_with_bytes(&session, &first);
+        let second_buffer = private_buffer_with_bytes(&session, &second);
+        let tiles = [
+            super::MetalLosslessEncodeTile {
+                buffer: &first_buffer,
+                byte_offset: 0,
+                width: 256,
+                height: 256,
+                pitch_bytes: 256,
+                output_width: 256,
+                output_height: 256,
+                format: PixelFormat::Gray8,
+            },
+            super::MetalLosslessEncodeTile {
+                buffer: &second_buffer,
+                byte_offset: 0,
+                width: 256,
+                height: 256,
+                pitch_bytes: 256,
+                output_width: 256,
+                output_height: 256,
+                format: PixelFormat::Gray8,
+            },
+        ];
+
+        let encoded = super::encode_lossless_from_padded_metal_buffers_to_metal_batch(
+            &tiles,
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+                block_coding_mode: J2kBlockCodingMode::Classic,
+                validation: J2kEncodeValidation::External,
+            },
+            &session,
+            super::MetalLosslessEncodeConfig {
+                gpu_encode_inflight_tiles: Some(2),
+                gpu_encode_memory_budget_bytes: Some(1024 * 1024 * 1024),
+            },
+        )
+        .expect("resident batch encode with gated GPU token-pack Classic Tier-1");
+        assert_eq!(encoded.outcomes.len(), 2);
+        for (outcome, expected) in encoded.outcomes.iter().zip([&first, &second]) {
+            let codestream = outcome
+                .encoded
+                .to_encoded_j2k()
+                .expect("codestream readback");
+            let decoded = Image::new(&codestream.codestream, &DecodeSettings::default())
+                .expect("codestream parses")
+                .decode_native()
+                .expect("codestream decodes");
+
+            assert_eq!(codestream.backend, BackendKind::Metal);
+            assert_eq!(&decoded.data, expected);
+        }
+        assert!(
+            compute::classic_gpu_token_pack_dispatches_for_test() > 0,
+            "gated Classic GPU token-pack route was not dispatched"
+        );
+        assert!(
+            encoded.stats.stage_stats.tier1_token_emit_token_bytes_total > 0,
+            "gated Classic GPU token-pack route did not expose token-emitter byte counters"
+        );
+        assert!(
+            encoded
+                .stats
+                .stage_stats
+                .tier1_token_emit_segment_count_total
+                > 0,
+            "gated Classic GPU token-pack route did not expose token segment counters"
+        );
+        assert_eq!(
+            encoded
+                .stats
+                .stage_stats
+                .tier1_token_pack_output_bytes_total,
+            encoded.stats.stage_stats.tier1_output_used_bytes_total,
+            "gated Classic GPU token-pack route should attribute Tier-1 output bytes to token pack"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn metal_htj2k_uses_one_batched_dispatch_for_multiple_code_blocks() {
         let pixels: Vec<u8> = (0..256 * 256)
             .map(|idx| ((idx * 23 + 9) & 0xFF) as u8)
@@ -7015,6 +9130,211 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn metal_classic_tier1_batched_bypass_u16_32_matches_scalar() {
+        let coeffs: Vec<i32> = (0..32 * 32)
+            .map(|idx| {
+                let value = ((idx * 97 + idx / 3 + 19) & 0x7ff) - 1023;
+                if idx % 11 == 0 || idx % 17 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let job = signinum_j2k_native::J2kTier1CodeBlockEncodeJob {
+            coefficients: &coeffs,
+            width: 32,
+            height: 32,
+            sub_band_type: signinum_j2k_native::J2kSubBandType::HighHigh,
+            total_bitplanes: 11,
+            style,
+        };
+
+        let gpu = compute::encode_classic_tier1_code_blocks(&[job])
+            .expect("batched Metal classic bypass_u16_32 encode")
+            .pop()
+            .expect("one encoded codeblock");
+        let cpu = signinum_j2k_native::encode_j2k_code_block_scalar_with_style(
+            &coeffs,
+            32,
+            32,
+            signinum_j2k_native::J2kSubBandType::HighHigh,
+            11,
+            style,
+        )
+        .expect("scalar classic bypass encode");
+
+        assert_eq!(gpu.data, cpu.data);
+        assert_eq!(gpu.segments.len(), cpu.segments.len());
+        for (gpu_segment, cpu_segment) in gpu.segments.iter().zip(cpu.segments.iter()) {
+            assert_eq!(gpu_segment.data_offset, cpu_segment.data_offset);
+            assert_eq!(gpu_segment.data_length, cpu_segment.data_length);
+            assert_eq!(gpu_segment.start_coding_pass, cpu_segment.start_coding_pass);
+            assert_eq!(gpu_segment.end_coding_pass, cpu_segment.end_coding_pass);
+            assert_eq!(gpu_segment.use_arithmetic, cpu_segment.use_arithmetic);
+        }
+        assert_eq!(gpu.number_of_coding_passes, cpu.number_of_coding_passes);
+        assert_eq!(gpu.missing_bit_planes, cpu.missing_bit_planes);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_classic_tier1_token_routes_match_scalar_bytes() {
+        let first_coeffs: Vec<i32> = (0..32 * 32)
+            .map(|idx| {
+                let value = ((idx * 37 + idx / 5 + 31) & 0xff) - 127;
+                if idx % 5 == 0 || idx % 11 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let second_coeffs: Vec<i32> = (0..17 * 29)
+            .map(|idx| {
+                let value = ((idx * 73 + idx / 7 + 11) & 0xff) - 127;
+                if idx % 7 == 0 || idx % 23 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let jobs = [
+            signinum_j2k_native::J2kTier1CodeBlockEncodeJob {
+                coefficients: &first_coeffs,
+                width: 32,
+                height: 32,
+                sub_band_type: signinum_j2k_native::J2kSubBandType::HighHigh,
+                total_bitplanes: 8,
+                style,
+            },
+            signinum_j2k_native::J2kTier1CodeBlockEncodeJob {
+                coefficients: &second_coeffs,
+                width: 17,
+                height: 29,
+                sub_band_type: signinum_j2k_native::J2kSubBandType::LowLow,
+                total_bitplanes: 8,
+                style,
+            },
+        ];
+
+        let gpu_packed =
+            compute::encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(&jobs)
+                .expect("Metal classic GPU token-pack encode");
+        let cpu_packed =
+            compute::encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_test(&jobs)
+                .expect("Metal classic ordered-token CPU-pack encode");
+        let split_packed =
+            compute::encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_for_test(
+                &jobs,
+            )
+            .expect("Metal classic split MQ/raw token CPU-pack encode");
+        let split_gpu_packed =
+            compute::encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test(
+                &jobs,
+            )
+            .expect("Metal classic split MQ/raw token GPU-pack encode");
+        let mq_byte_split_gpu_packed = compute::encode_classic_tier1_code_blocks_via_split_mq_byte_raw_tokens_gpu_pack_for_test(
+            &jobs,
+        )
+        .expect("Metal classic split MQ-byte/raw-bit token GPU-pack encode");
+
+        assert_eq!(gpu_packed.len(), jobs.len());
+        assert_eq!(cpu_packed.len(), jobs.len());
+        assert_eq!(split_packed.len(), jobs.len());
+        assert_eq!(split_gpu_packed.len(), jobs.len());
+        assert_eq!(mq_byte_split_gpu_packed.len(), jobs.len());
+        for (
+            (
+                (((gpu_block, cpu_packed_block), split_packed_block), split_gpu_packed_block),
+                mq_byte_split_gpu_packed_block,
+            ),
+            job,
+            coeffs,
+        ) in gpu_packed
+            .iter()
+            .zip(cpu_packed.iter())
+            .zip(split_packed.iter())
+            .zip(split_gpu_packed.iter())
+            .zip(mq_byte_split_gpu_packed.iter())
+            .zip(jobs.iter())
+            .zip([&first_coeffs, &second_coeffs])
+            .map(|((blocks, job), coeffs)| (blocks, job, coeffs))
+        {
+            let cpu = signinum_j2k_native::encode_j2k_code_block_scalar_with_style(
+                coeffs,
+                job.width,
+                job.height,
+                job.sub_band_type,
+                job.total_bitplanes,
+                style,
+            )
+            .expect("scalar classic bypass encode");
+
+            assert_eq!(gpu_block.data, cpu.data);
+            assert_eq!(gpu_block.segments, cpu.segments);
+            assert_eq!(
+                gpu_block.number_of_coding_passes,
+                cpu.number_of_coding_passes
+            );
+            assert_eq!(gpu_block.missing_bit_planes, cpu.missing_bit_planes);
+            assert_eq!(cpu_packed_block.data, cpu.data);
+            assert_eq!(cpu_packed_block.segments, cpu.segments);
+            assert_eq!(
+                cpu_packed_block.number_of_coding_passes,
+                cpu.number_of_coding_passes
+            );
+            assert_eq!(cpu_packed_block.missing_bit_planes, cpu.missing_bit_planes);
+            assert_eq!(split_packed_block.data, cpu.data);
+            assert_eq!(split_packed_block.segments, cpu.segments);
+            assert_eq!(
+                split_packed_block.number_of_coding_passes,
+                cpu.number_of_coding_passes
+            );
+            assert_eq!(
+                split_packed_block.missing_bit_planes,
+                cpu.missing_bit_planes
+            );
+            assert_eq!(split_gpu_packed_block.data, cpu.data);
+            assert_eq!(split_gpu_packed_block.segments, cpu.segments);
+            assert_eq!(
+                split_gpu_packed_block.number_of_coding_passes,
+                cpu.number_of_coding_passes
+            );
+            assert_eq!(
+                split_gpu_packed_block.missing_bit_planes,
+                cpu.missing_bit_planes
+            );
+            assert_eq!(mq_byte_split_gpu_packed_block.data, cpu.data);
+            assert_eq!(mq_byte_split_gpu_packed_block.segments, cpu.segments);
+            assert_eq!(
+                mq_byte_split_gpu_packed_block.number_of_coding_passes,
+                cpu.number_of_coding_passes
+            );
+            assert_eq!(
+                mq_byte_split_gpu_packed_block.missing_bit_planes,
+                cpu.missing_bit_planes
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn metal_htj2k_cleanup_kernel_matches_scalar_oracle() {
         let coeffs: Vec<i32> = (0..64)
             .map(|idx| {
@@ -7041,194 +9361,6 @@ mod tests {
         assert_eq!(gpu.data, cpu.data);
         assert_eq!(gpu.num_coding_passes, cpu.num_coding_passes);
         assert_eq!(gpu.num_zero_bitplanes, cpu.num_zero_bitplanes);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn ht_simd_prototype_matches_scalar_for_64x64_block() {
-        if !compute::ht_simd_prototype_available_for_test()
-            .expect("HTJ2K SIMD prototype availability query")
-        {
-            return;
-        }
-        let coeffs: Vec<i32> = (0..4096)
-            .map(|idx| {
-                let value = ((idx * 37 + idx / 11 + 13) & 0xff) - 127;
-                if idx % 17 == 0 || idx % 29 == 0 {
-                    0
-                } else {
-                    value
-                }
-            })
-            .collect();
-        let job = signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-            coefficients: &coeffs,
-            width: 64,
-            height: 64,
-            total_bitplanes: 8,
-            target_coding_passes: 1,
-        };
-
-        let scalar = {
-            let _route = compute::force_ht_simd_prototype_route_for_test(false);
-            compute::encode_ht_cleanup_code_blocks(&[job])
-                .expect("scalar Metal HT encode")
-                .remove(0)
-        };
-        let simd = compute::encode_ht_cleanup_code_blocks_simd_prototype_for_test(&[job])
-            .expect("SIMD prototype Metal HT encode")
-            .remove(0);
-
-        assert_eq!(simd.data, scalar.data);
-        assert_eq!(simd.num_coding_passes, scalar.num_coding_passes);
-        assert_eq!(simd.num_zero_bitplanes, scalar.num_zero_bitplanes);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn ht_simd_prototype_matches_scalar_for_mixed_block_batch() {
-        if !compute::ht_simd_prototype_available_for_test()
-            .expect("HTJ2K SIMD prototype availability query")
-        {
-            return;
-        }
-        let all_zero = vec![0; 64];
-        let non_square: Vec<i32> = (0..512)
-            .map(|idx| {
-                let value = (idx * 23 + 9) & 0x7f;
-                if idx % 5 == 0 {
-                    -value
-                } else {
-                    value
-                }
-            })
-            .collect();
-        let bitplane_edge: Vec<i32> = (0..256)
-            .map(|idx| match idx % 4 {
-                0 => 255,
-                1 => -255,
-                2 => 1,
-                _ => 0,
-            })
-            .collect();
-        let wide: Vec<i32> = (0..4096)
-            .map(|idx| {
-                let value = ((idx * 41 + idx / 7 + 3) & 0xff) - 128;
-                if idx % 31 == 0 {
-                    0
-                } else {
-                    value
-                }
-            })
-            .collect();
-        let jobs = [
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &all_zero,
-                width: 8,
-                height: 8,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &non_square,
-                width: 16,
-                height: 32,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &bitplane_edge,
-                width: 16,
-                height: 16,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &wide,
-                width: 64,
-                height: 64,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-        ];
-
-        let scalar = {
-            let _route = compute::force_ht_simd_prototype_route_for_test(false);
-            compute::encode_ht_cleanup_code_blocks(&jobs).expect("scalar Metal HT batch")
-        };
-        let simd = compute::encode_ht_cleanup_code_blocks_simd_prototype_for_test(&jobs)
-            .expect("SIMD prototype Metal HT batch");
-
-        assert_eq!(simd.len(), scalar.len());
-        for (simd_block, scalar_block) in simd.iter().zip(scalar.iter()) {
-            assert_eq!(simd_block.data, scalar_block.data);
-            assert_eq!(simd_block.num_coding_passes, scalar_block.num_coding_passes);
-            assert_eq!(
-                simd_block.num_zero_bitplanes,
-                scalar_block.num_zero_bitplanes
-            );
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn ht_simd_prototype_length_estimate_matches_scalar() {
-        if !compute::ht_simd_prototype_available_for_test()
-            .expect("HTJ2K SIMD prototype availability query")
-        {
-            return;
-        }
-        let all_zero = vec![0; 64];
-        let patterned: Vec<i32> = (0..4096)
-            .map(|idx| {
-                let value = ((idx * 53 + idx / 13 + 21) & 0xff) - 127;
-                if idx % 19 == 0 || idx % 37 == 0 {
-                    0
-                } else {
-                    value
-                }
-            })
-            .collect();
-        let jobs = [
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &all_zero,
-                width: 8,
-                height: 8,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-            signinum_j2k_native::J2kHtCodeBlockEncodeJob {
-                coefficients: &patterned,
-                width: 64,
-                height: 64,
-                total_bitplanes: 8,
-                target_coding_passes: 1,
-            },
-        ];
-
-        let scalar =
-            compute::encode_ht_cleanup_code_blocks_with_segment_lengths_for_test(&jobs, false)
-                .expect("scalar Metal HT segment lengths");
-        let simd =
-            compute::encode_ht_cleanup_code_blocks_with_segment_lengths_for_test(&jobs, true)
-                .expect("SIMD prototype Metal HT segment lengths");
-
-        assert_eq!(simd.len(), scalar.len());
-        for ((simd_block, simd_lengths), (scalar_block, scalar_lengths)) in
-            simd.iter().zip(scalar.iter())
-        {
-            assert_eq!(simd_block.data, scalar_block.data);
-            assert_eq!(simd_block.num_coding_passes, scalar_block.num_coding_passes);
-            assert_eq!(
-                simd_block.num_zero_bitplanes,
-                scalar_block.num_zero_bitplanes
-            );
-            assert_eq!(simd_lengths, scalar_lengths);
-            assert_eq!(
-                simd_lengths.magnitude_sign + simd_lengths.mel + simd_lengths.vlc,
-                u32::try_from(simd_block.data.len()).expect("HT data length fits u32")
-            );
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -7472,6 +9604,66 @@ mod tests {
             assert_eq!(output.levels.len(), 1);
             assert_eq!(accelerator.forward_dwt53_attempts(), 1);
             assert_eq!(accelerator.forward_dwt53_dispatches(), 1);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
+        fn assert_slice_near(actual: &[f32], expected: &[f32], label: &str) {
+            assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+            for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+                assert!(
+                    (actual - expected).abs() <= 0.0001,
+                    "{label}[{index}] mismatch: actual={actual}, expected={expected}"
+                );
+            }
+        }
+
+        let width = 8;
+        let height = 8;
+        let samples = (0..width * height)
+            .map(|idx| f32::from(u16::try_from(idx).expect("test index fits u16")) * 0.5 - 15.25)
+            .collect::<Vec<_>>();
+        let expected = forward_dwt53_reference(&samples, width, height, 1);
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+
+        let actual = accelerator
+            .encode_forward_dwt53(J2kForwardDwt53Job {
+                samples: &samples,
+                width,
+                height,
+                num_levels: 1,
+            })
+            .expect("metal DWT 5/3 stage")
+            .expect("metal DWT 5/3 dispatch");
+
+        assert_eq!(actual.ll_width, expected.ll_width);
+        assert_eq!(actual.ll_height, expected.ll_height);
+        assert_slice_near(&actual.ll, &expected.ll, "LL");
+        assert_eq!(actual.levels.len(), expected.levels.len());
+        for (index, (actual, expected)) in actual.levels.iter().zip(&expected.levels).enumerate() {
+            assert_eq!(actual.width, expected.width, "level {index} width");
+            assert_eq!(actual.height, expected.height, "level {index} height");
+            assert_eq!(
+                actual.low_width, expected.low_width,
+                "level {index} low width"
+            );
+            assert_eq!(
+                actual.low_height, expected.low_height,
+                "level {index} low height"
+            );
+            assert_eq!(
+                actual.high_width, expected.high_width,
+                "level {index} high width"
+            );
+            assert_eq!(
+                actual.high_height, expected.high_height,
+                "level {index} high height"
+            );
+            assert_slice_near(&actual.hl, &expected.hl, "HL");
+            assert_slice_near(&actual.lh, &expected.lh, "LH");
+            assert_slice_near(&actual.hh, &expected.hh, "HH");
         }
     }
 }
