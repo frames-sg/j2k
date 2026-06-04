@@ -3436,7 +3436,10 @@ mod tests {
 
     #[test]
     fn classic_scalar_profiled_decode_matches_unprofiled_decode() {
-        let total_bitplanes = 6;
+        let width = 64u32;
+        let height = 64u32;
+        let sample_count = width as usize * height as usize;
+        let total_bitplanes = 12;
         let style = J2kCodeBlockStyle {
             selective_arithmetic_coding_bypass: false,
             reset_context_probabilities: false,
@@ -3444,10 +3447,10 @@ mod tests {
             vertically_causal_context: false,
             segmentation_symbols: false,
         };
-        let coefficients = (0..64)
+        let coefficients = (0..sample_count)
             .map(|idx| {
-                let value = (idx % 17) - 8;
-                if idx % 5 == 0 {
+                let value = i32::try_from((idx * 37) % 4095).expect("sample value fits i32") - 2048;
+                if idx % 17 == 0 {
                     0
                 } else {
                     value
@@ -3456,8 +3459,8 @@ mod tests {
             .collect::<Vec<_>>();
         let encoded = encode_j2k_code_block_scalar_with_style(
             &coefficients,
-            8,
-            8,
+            width,
+            height,
             J2kSubBandType::LowLow,
             total_bitplanes,
             style,
@@ -3466,9 +3469,9 @@ mod tests {
         let job = J2kCodeBlockDecodeJob {
             data: &encoded.data,
             segments: &encoded.segments,
-            width: 8,
-            height: 8,
-            output_stride: 8,
+            width,
+            height,
+            output_stride: width as usize,
             missing_bit_planes: encoded.missing_bit_planes,
             number_of_coding_passes: encoded.number_of_coding_passes,
             total_bitplanes,
@@ -3478,8 +3481,8 @@ mod tests {
             strict: true,
             dequantization_step: 1.0,
         };
-        let mut expected = vec![0.0_f32; 64];
-        let mut actual = vec![0.0_f32; 64];
+        let mut expected = vec![0.0_f32; sample_count];
+        let mut actual = vec![0.0_f32; sample_count];
         let mut profile = J2kCodeBlockDecodeProfile::default();
 
         decode_j2k_code_block_scalar(job, &mut expected).expect("unprofiled classic decode");

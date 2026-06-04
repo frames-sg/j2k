@@ -235,7 +235,20 @@ fn build_component_plan_from_storage(
             .ok_or(DecodingError::UnsupportedFeature(
                 "direct component decomposition index is out of range",
             ))?;
-    let mut steps = Vec::new();
+    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
+    let active_decomposition_count = decompositions
+        .len()
+        .saturating_sub(header.skipped_resolution_levels as usize);
+    let sub_band_step_count = (0..component_info.num_resolution_levels()
+        - header.skipped_resolution_levels)
+        .map(|resolution| {
+            tile_decompositions
+                .sub_band_iter(resolution, &storage.decompositions)
+                .count()
+        })
+        .sum::<usize>();
+    let mut steps =
+        Vec::with_capacity(sub_band_step_count + active_decomposition_count.saturating_add(1));
     let mut next_band_id: J2kDirectBandId = 0;
     let mut sub_band_ids = vec![None; storage.sub_bands.len()];
 
@@ -263,10 +276,7 @@ fn build_component_plan_from_storage(
     let mut current_ll_rect = storage.sub_bands[tile_decompositions.first_ll_sub_band].rect;
     let mut current_ll_band_id = sub_band_ids[tile_decompositions.first_ll_sub_band]
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
-    let decompositions = &decompositions[..decompositions
-        .len()
-        .saturating_sub(header.skipped_resolution_levels as usize)];
+    let decompositions = &decompositions[..active_decomposition_count];
     for decomposition in decompositions {
         let hl = &storage.sub_bands[decomposition.sub_bands[0]];
         let lh = &storage.sub_bands[decomposition.sub_bands[1]];
@@ -397,7 +407,7 @@ fn build_grayscale_sub_band_step(
             .parameters
             .code_block_style
             .vertically_causal_context;
-        let mut jobs = Vec::new();
+        let mut jobs = Vec::with_capacity(direct_sub_band_job_capacity(sub_band, storage));
         for precinct in sub_band
             .precincts
             .clone()
@@ -496,7 +506,7 @@ fn build_grayscale_sub_band_step(
             .segmentation_symbols,
     };
 
-    let mut jobs = Vec::new();
+    let mut jobs = Vec::with_capacity(direct_sub_band_job_capacity(sub_band, storage));
     for precinct in sub_band
         .precincts
         .clone()
@@ -544,6 +554,14 @@ fn build_grayscale_sub_band_step(
             jobs,
         },
     )))
+}
+
+fn direct_sub_band_job_capacity(sub_band: &SubBand, storage: &DecompositionStorage<'_>) -> usize {
+    sub_band
+        .precincts
+        .clone()
+        .map(|idx| storage.precincts[idx].code_blocks.len())
+        .sum()
 }
 
 fn collect_classic_code_block_data(

@@ -237,6 +237,7 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
     let cases = [
         FacadeMatrixCase {

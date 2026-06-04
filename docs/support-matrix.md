@@ -59,7 +59,8 @@ failure paths for externally supplied image data.
 A published benchmark is any benchmark result or comparator claim included in
 the root README, crate READMEs, release notes, or documentation. Published
 claims must record the command, host, compiler, crate revision, input source,
-comparator availability, comparator version, comparator path, and skipped rows.
+command environment, skipped rows, and comparator availability, comparator
+version, and comparator path when a comparator is part of the claim.
 
 OpenJPEG and Grok comparator claims are publication-eligible only when the J2K
 comparator run prints comparator availability, comparator version, comparator

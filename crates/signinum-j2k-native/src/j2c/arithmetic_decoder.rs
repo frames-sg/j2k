@@ -279,6 +279,7 @@ impl<'a> ArithmeticDecoder<'a> {
 pub(crate) struct ArithmeticDecoderContext(u8);
 
 impl ArithmeticDecoderContext {
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline(always)]
     pub(crate) fn index(self) -> u32 {
         (self.0 & 0x7F) as u32

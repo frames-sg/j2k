@@ -1390,6 +1390,7 @@ fn compact_preencoded_batch_disabled() -> bool {
     std::env::var_os("SIGNINUM_CUDA_DISABLE_COMPACT_PREENCODED").is_some()
 }
 
+#[allow(clippy::too_many_lines)]
 fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelerator>(
     groups: &[Vec<BatchComponentRef>],
     tiles: &mut [Float97BatchTile],
@@ -4165,9 +4166,9 @@ mod tests {
 
     #[derive(Default)]
     struct CountingHtBatchEncodeAccelerator {
-        ht_batches: usize,
-        ht_jobs: usize,
-        ht_single_blocks: usize,
+        batches: usize,
+        jobs: usize,
+        single_blocks: usize,
     }
 
     impl J2kEncodeStageAccelerator for CountingHtBatchEncodeAccelerator {
@@ -4175,8 +4176,8 @@ mod tests {
             &mut self,
             jobs: &[J2kHtCodeBlockEncodeJob<'_>],
         ) -> Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
-            self.ht_batches = self.ht_batches.saturating_add(1);
-            self.ht_jobs = self.ht_jobs.saturating_add(jobs.len());
+            self.batches = self.batches.saturating_add(1);
+            self.jobs = self.jobs.saturating_add(jobs.len());
             Ok(None)
         }
 
@@ -4184,7 +4185,7 @@ mod tests {
             &mut self,
             _job: J2kHtCodeBlockEncodeJob<'_>,
         ) -> Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
-            self.ht_single_blocks = self.ht_single_blocks.saturating_add(1);
+            self.single_blocks = self.single_blocks.saturating_add(1);
             Ok(None)
         }
     }
@@ -4210,9 +4211,9 @@ mod tests {
             let encoded = encoded.expect("precomputed batch tile encodes");
             assert!(encoded.codestream.starts_with(&[0xff, 0x4f]));
         }
-        assert_eq!(accelerator.ht_batches, 1);
-        assert!(accelerator.ht_jobs > 0);
-        assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+        assert_eq!(accelerator.batches, 1);
+        assert!(accelerator.jobs > 0);
+        assert_eq!(accelerator.single_blocks, accelerator.jobs);
     }
 
     #[test]

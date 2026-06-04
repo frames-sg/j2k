@@ -4567,7 +4567,7 @@ fn encode_prepared_resolution_packets_layered(
             let location = classic_locations
                 .get(assignment_idx)
                 .ok_or("classic PCRD assignment location mismatch")?;
-            let LayeredPreparedBlock::Classic { segment_layers, .. } = &mut layered_packets
+            let block = layered_packets
                 .get_mut(location.packet_idx)
                 .ok_or("classic PCRD packet index mismatch")?
                 .subbands
@@ -4575,8 +4575,8 @@ fn encode_prepared_resolution_packets_layered(
                 .ok_or("classic PCRD subband index mismatch")?
                 .blocks
                 .get_mut(location.block_idx)
-                .ok_or("classic PCRD block index mismatch")?
-            else {
+                .ok_or("classic PCRD block index mismatch")?;
+            let LayeredPreparedBlock::Classic { segment_layers, .. } = block else {
                 return Err("classic PCRD assignment referenced HT block");
             };
             let segment_layer = segment_layers
@@ -4596,7 +4596,7 @@ fn encode_prepared_resolution_packets_layered(
             let location = ht_locations
                 .get(assignment_idx)
                 .ok_or("HTJ2K segment assignment location mismatch")?;
-            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = &mut layered_packets
+            let block = layered_packets
                 .get_mut(location.packet_idx)
                 .ok_or("HTJ2K packet index mismatch")?
                 .subbands
@@ -4604,8 +4604,8 @@ fn encode_prepared_resolution_packets_layered(
                 .ok_or("HTJ2K subband index mismatch")?
                 .blocks
                 .get_mut(location.block_idx)
-                .ok_or("HTJ2K block index mismatch")?
-            else {
+                .ok_or("HTJ2K block index mismatch")?;
+            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = block else {
                 return Err("HTJ2K segment assignment referenced classic block");
             };
             *target_layer = layer;

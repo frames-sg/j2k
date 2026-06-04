@@ -780,26 +780,29 @@ impl J2kAdaptiveRoutePlanner {
         let stages = J2kAdaptiveStage::ALL
             .into_iter()
             .map(|stage| {
-                let mut decision = if let Some(backend) = backend {
-                    let end_to_end_passed = benchmarks
-                        .end_to_end_for(backend)
-                        .is_some_and(|evidence| evidence.passes(self.policy));
-                    self.stage_decision(workload, stage, backend, benchmarks, end_to_end_passed)
-                } else {
-                    let logical_owner = workload.logical_owner_for(stage);
-                    J2kAdaptiveStageDecision {
-                        stage,
-                        logical_owner,
-                        selected_backend: BackendKind::Cpu,
-                        gate_status: if logical_owner == J2kAdaptiveStageOwner::Gpu {
-                            J2kAdaptiveStageGateStatus::BenchmarkGateMissing
-                        } else {
-                            J2kAdaptiveStageGateStatus::CpuShaped
-                        },
-                        improvement_percent: None,
-                        rca_reason: None,
-                    }
-                };
+                let mut decision = backend.map_or_else(
+                    || {
+                        let logical_owner = workload.logical_owner_for(stage);
+                        J2kAdaptiveStageDecision {
+                            stage,
+                            logical_owner,
+                            selected_backend: BackendKind::Cpu,
+                            gate_status: if logical_owner == J2kAdaptiveStageOwner::Gpu {
+                                J2kAdaptiveStageGateStatus::BenchmarkGateMissing
+                            } else {
+                                J2kAdaptiveStageGateStatus::CpuShaped
+                            },
+                            improvement_percent: None,
+                            rca_reason: None,
+                        }
+                    },
+                    |backend| {
+                        let end_to_end_passed = benchmarks
+                            .end_to_end_for(backend)
+                            .is_some_and(|evidence| evidence.passes(self.policy));
+                        self.stage_decision(workload, stage, backend, benchmarks, end_to_end_passed)
+                    },
+                );
                 decision.selected_backend = BackendKind::Cpu;
                 decision
             })

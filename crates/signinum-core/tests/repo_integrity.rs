@@ -482,8 +482,14 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
         );
     }
 
+    let forbidden_j2k_metal_compare_bench = [
+        "cargo bench -p ",
+        "signinum-j2k-metal",
+        " --bench compare --no-run",
+    ]
+    .concat();
     for forbidden in [
-        "cargo bench -p signinum-j2k-metal --bench compare --no-run",
+        forbidden_j2k_metal_compare_bench.as_str(),
         "cargo bench -p signinum-jpeg --no-run",
         "cargo test -p signinum-jpeg-metal",
         "cargo test -p signinum-j2k-metal",
@@ -1012,45 +1018,59 @@ fn benchmark_docs_define_publication_gate_for_openjpeg_and_grok() {
 }
 
 #[test]
-fn j2k_compare_bench_exposes_fair_comparator_controls() {
+fn j2k_metal_bench_surface_stays_clean_after_reset() {
     let root = repo_root();
-    let compare_bench =
-        fs::read_to_string(root.join("crates/signinum-j2k-metal/benches/compare.rs"))
-            .expect("read J2K compare benchmark");
-    let compare_common =
-        fs::read_to_string(root.join("crates/signinum-j2k-metal/benches/common/mod.rs"))
-            .expect("read J2K compare benchmark helpers");
+    let cargo_toml = fs::read_to_string(root.join("crates/signinum-j2k-metal/Cargo.toml"))
+        .expect("read J2K Metal manifest");
+    let bench_docs = fs::read_to_string(root.join("docs/bench.md")).expect("read bench docs");
     let openjpeg = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/openjpeg.rs"))
         .expect("read OpenJPEG comparator");
     let grok = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/grok.rs"))
         .expect("read Grok comparator");
 
-    for required in [
-        "print_comparator_run_context",
-        "signinum_decode_serial",
-        "signinum_decode_region_serial",
-        "signinum_decode_scaled_serial",
-        "signinum_decode_region_scaled_serial",
-        "openjpeg_decode_external_tile_batch_region_scaled",
-        "grok_decode_external_tile_batch_region_scaled",
+    assert!(
+        !cargo_toml.contains("[[bench]]"),
+        "signinum-j2k-metal bench targets must stay reset until new profiling benches are added"
+    );
+
+    for forbidden in [
+        "criterion =",
+        "signinum-j2k-compare =",
+        "name = \"device_upload\"",
+        "name = \"compare\"",
+        "name = \"encode_stages\"",
+        "name = \"decode_stages\"",
     ] {
         assert!(
-            compare_bench.contains(required),
-            "J2K compare bench must contain `{required}`"
+            !cargo_toml.contains(forbidden),
+            "signinum-j2k-metal manifest must not contain legacy bench entry `{forbidden}`"
         );
     }
 
-    for required in [
-        "SIGNINUM_J2K_COMPARE_THREADS",
-        "j2k_compare_workers",
-        "TileBatchOptions { workers",
-    ] {
+    let benches_dir = root.join("crates/signinum-j2k-metal/benches");
+    if benches_dir.exists() {
+        let stale_entries: Vec<_> = fs::read_dir(&benches_dir)
+            .expect("read J2K Metal benches dir")
+            .map(|entry| {
+                let path = entry.expect("read J2K Metal bench entry").path();
+                path.strip_prefix(root)
+                    .expect("bench entry under repo root")
+                    .display()
+                    .to_string()
+            })
+            .collect();
         assert!(
-            compare_common.contains(required),
-            "J2K compare helpers must contain `{required}`"
+            stale_entries.is_empty(),
+            "signinum-j2k-metal benches dir must stay empty after reset: {stale_entries:?}"
         );
     }
 
+    let removed_j2k_metal_bench_command =
+        ["cargo bench -p ", "signinum-j2k-metal", " --bench"].concat();
+    assert!(
+        !bench_docs.contains(&removed_j2k_metal_bench_command),
+        "bench docs must not publish removed signinum-j2k-metal bench commands"
+    );
     assert!(
         openjpeg.contains("pub fn version"),
         "OpenJPEG comparator must expose version metadata"

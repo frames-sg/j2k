@@ -411,7 +411,6 @@ fn bench_build() -> Result<(), String> {
         "cuda-runtime",
         "--no-run",
     ])?;
-    run_cargo(&["bench", "-p", "signinum-j2k-metal", "--no-run"])?;
     run_cargo(&[
         "bench",
         "-p",
@@ -1300,8 +1299,6 @@ mod tests {
         let jpeg_encode_bench = "crates/signinum-jpeg/benches/encode_cpu.rs";
         let cuda_decode_bench = "crates/signinum-j2k-cuda/benches/htj2k_decode.rs";
         let cuda_encode_bench = "crates/signinum-j2k-cuda/benches/htj2k_encode.rs";
-        let metal_common_bench = "crates/signinum-j2k-metal/benches/common/mod.rs";
-        let metal_compare_bench = "crates/signinum-j2k-metal/benches/compare.rs";
         let native_bench = "crates/signinum-j2k-native/benches/tier1_bitplane.rs";
         let native_sigprop_bench = "crates/signinum-j2k-native/benches/htj2k_sigprop_phase.rs";
         let native_fixture =
@@ -1309,7 +1306,6 @@ mod tests {
         fs::create_dir_all(source.join("crates/signinum-j2k/benches")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-jpeg/benches")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/signinum-j2k-metal/benches/common")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-native/benches")).unwrap();
         fs::create_dir_all(source.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-jpeg")).unwrap();
@@ -1317,7 +1313,6 @@ mod tests {
         fs::create_dir_all(target.join("crates/signinum-j2k/benches")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-jpeg/benches")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k-metal/benches/common")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-native/benches")).unwrap();
         fs::create_dir_all(target.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
         fs::write(
@@ -1339,16 +1334,6 @@ mod tests {
         fs::write(source.join(jpeg_encode_bench), "current jpeg encode bench").unwrap();
         fs::write(source.join(cuda_decode_bench), "current cuda decode bench").unwrap();
         fs::write(source.join(cuda_encode_bench), "current cuda encode bench").unwrap();
-        fs::write(
-            source.join(metal_common_bench),
-            "current metal common bench",
-        )
-        .unwrap();
-        fs::write(
-            source.join(metal_compare_bench),
-            "current metal compare bench",
-        )
-        .unwrap();
         fs::write(source.join(native_bench), "current native bench").unwrap();
         fs::write(source.join(native_sigprop_bench), "current sigprop bench").unwrap();
         fs::write(source.join(native_fixture), "current fixture").unwrap();
@@ -1356,8 +1341,6 @@ mod tests {
         fs::write(target.join(jpeg_encode_bench), "old jpeg encode bench").unwrap();
         fs::write(target.join(cuda_decode_bench), "old cuda decode bench").unwrap();
         fs::write(target.join(cuda_encode_bench), "old cuda encode bench").unwrap();
-        fs::write(target.join(metal_common_bench), "old metal common bench").unwrap();
-        fs::write(target.join(metal_compare_bench), "old metal compare bench").unwrap();
         fs::write(target.join(native_bench), "old native bench").unwrap();
         fs::write(target.join(native_sigprop_bench), "old sigprop bench").unwrap();
         fs::write(target.join(native_fixture), "old fixture").unwrap();
@@ -1392,14 +1375,6 @@ mod tests {
                 && target_cuda_manifest.contains("name = \"htj2k_encode\"")
                 && target_cuda_manifest.contains("required-features = [\"cuda-runtime\"]"),
             "baseline overlay must register CUDA HTJ2K Criterion benches"
-        );
-        assert_eq!(
-            fs::read_to_string(target.join(metal_common_bench)).unwrap(),
-            "current metal common bench"
-        );
-        assert_eq!(
-            fs::read_to_string(target.join(metal_compare_bench)).unwrap(),
-            "current metal compare bench"
         );
         assert_eq!(
             fs::read_to_string(target.join(native_bench)).unwrap(),
