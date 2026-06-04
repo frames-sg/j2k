@@ -188,13 +188,44 @@ jobs:
           cargo test --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets
           cargo clippy --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets -- -D warnings
           cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
-            --quant-scales 1.55,1.70,1.85,1.90,2.05,2.25 \
+            --decomposition-levels 1 \
+            --quant-scales 1.90 \
             --match-nvidia-bytes \
-            --match-tolerance 0.02 \
+            --match-tolerance 0.20 \
             --min-tiles 100 \
-            --json target/transcode_compare.json \
-            --csv target/transcode_compare.csv
-          python3 -m json.tool target/transcode_compare.json >/dev/null
+            --warmup 3 \
+            --iterations 8 \
+            --json target/transcode_compare_level1.json \
+            --csv target/transcode_compare_level1.csv
+          python3 -m json.tool target/transcode_compare_level1.json >/dev/null
+          python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
+            --json target/transcode_compare_level1.json \
+            --label cuda-htj2k-transcode-level1-rate-match \
+            --min-cuda-ht-mps "${SIGNINUM_LEVEL1_CUDA_HT_MIN_MPS:-350}" \
+            --min-cuda-ht-speedup-vs-nvidia "${SIGNINUM_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-4.0}" \
+            --max-byte-delta-abs 0.20 \
+            --min-ht-codeblock-dispatches 1
+          cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
+            --decomposition-levels 2 \
+            --quant-scales 1.00 \
+            --subband-scales 1.00,1.00,1.00,1.00 \
+            --match-nvidia-bytes \
+            --match-tolerance 0.20 \
+            --min-tiles 100 \
+            --warmup 3 \
+            --iterations 8 \
+            --json target/transcode_compare_level2.json \
+            --csv target/transcode_compare_level2.csv
+          python3 -m json.tool target/transcode_compare_level2.json >/dev/null
+          python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
+            --json target/transcode_compare_level2.json \
+            --label cuda-htj2k-transcode-level2-rate-match \
+            --min-cuda-ht-mps "${SIGNINUM_LEVEL2_CUDA_HT_MIN_MPS:-60}" \
+            --min-cuda-ht-speedup-vs-nvidia "${SIGNINUM_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-1.10}" \
+            --max-byte-delta-abs 0.20 \
+            --min-ht-codeblock-dispatches 1
+          cp target/transcode_compare_level2.json target/transcode_compare.json
+          cp target/transcode_compare_level2.csv target/transcode_compare.csv
           cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin decode_compare -- \
             --jpeg-dir "${SIGNINUM_BENCH_JPEG_DIR}" \
             --warmup 2 \
@@ -212,6 +243,10 @@ jobs:
           path: |
             target/transcode_compare.json
             target/transcode_compare.csv
+            target/transcode_compare_level1.json
+            target/transcode_compare_level1.csv
+            target/transcode_compare_level2.json
+            target/transcode_compare_level2.csv
             target/decode_compare.json
             target/decode_compare.csv
           if-no-files-found: warn

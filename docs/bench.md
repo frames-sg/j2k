@@ -184,6 +184,16 @@ acceptance floor; `--max-inputs` is the workload cap. This gate is an internal
 comparator against an external CUDA codec library, not a replacement for the
 Criterion route gates above.
 
+CUDA JPEG -> HTJ2K transcode comparison is documented with the standalone
+`tests/nvidia-baseline` manifest because it depends on nvJPEG and nvJPEG2000.
+The comparison is Signinum's coefficient-domain JPEG -> HTJ2K transform path
+against NVIDIA's nvJPEG decode-to-pixels plus nvJPEG2000 HT encode path.
+nvJPEG2000 does not expose an equivalent coefficient-domain transcode API, so
+the gate is scoped to end-to-end JPEG -> HTJ2K throughput at similar output
+bytes, with PSNR reported beside speed. The exact WSL commands, checked-in
+JSON/CSV artifacts, and CI thresholds live in
+`tests/nvidia-baseline/README.md`.
+
 ## Compared operations
 
 - `inspect`
