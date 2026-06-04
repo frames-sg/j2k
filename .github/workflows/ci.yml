@@ -44,10 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: ${{ matrix.package }}
+          baseline-rev: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           release-type: patch
 
   docs:
