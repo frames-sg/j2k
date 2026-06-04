@@ -256,13 +256,13 @@ fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
 
     assert_eq!(resident_batch.report.failed_tiles, 0);
     assert_eq!(resident_batch.report.timings.cpu_fallback_jobs, 0);
-    assert!(
+    assert_eq!(
         resident_batch
             .report
             .timings
-            .dwt97_batch_ht_codeblock_dispatches
-            > 0,
-        "resident path must dispatch CUDA HT code-block encode"
+            .dwt97_batch_ht_codeblock_dispatches,
+        1,
+        "resident path should share one CUDA HT code-block encode across compatible batch groups"
     );
     assert_eq!(
         resident_batch.report.timings.dwt97_batch_readback_us, 0,

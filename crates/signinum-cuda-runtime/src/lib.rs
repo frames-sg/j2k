@@ -9,20 +9,21 @@
 mod kernels;
 mod nvjpeg;
 
-#[cfg(feature = "cuda-profiling")]
-use std::sync::OnceLock;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::c_void,
     os::raw::{c_char, c_int, c_uint},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
 use kernels::{
     copy_u8_launch_geometry, htj2k_codeblock_launch_geometry,
     htj2k_codeblock_sample_launch_geometry, htj2k_encode_codeblock_launch_geometry,
     htj2k_packetize_launch_geometry, j2k_dwt53_launch_geometry, j2k_forward_rct_launch_geometry,
-    CudaKernel,
+    j2k_idwt_multi_1d_launch_geometry, j2k_idwt_multi_coop_axis_launch_geometry,
+    j2k_idwt_multi_coop_columns_launch_geometry, j2k_idwt_multi_coop_launch_geometry,
+    j2k_store_batch_launch_geometry, CudaKernel,
 };
 use libloading::Library;
 
@@ -37,6 +38,25 @@ type CuEvent = *mut c_void;
 
 const CUDA_SUCCESS: CuResult = 0;
 const PINNED_UPLOAD_STAGING_POOL_MAX: usize = 8;
+const PINNED_POOLED_I16_UPLOAD_MAX_BYTES: usize = 4 * 1024 * 1024;
+const DWT97_ROW_LIFT_MAX_WIDTH: i32 = 1024;
+const DWT97_ROW_LIFT_COOP_THREADS_X: c_uint = 128;
+const DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK: c_uint = 4;
+const CUDA_IDWT_TRACE_ENV_VAR: &str = "SIGNINUM_CUDA_IDWT_TRACE";
+const DWT97_FUSED_COLUMN_QUANTIZE_DISABLE_ENV_VAR: &str =
+    "SIGNINUM_CUDA_DISABLE_DWT97_FUSED_COLUMN_QUANTIZE";
+static CUDA_STAGE_TIMINGS_DISABLED: OnceLock<bool> = OnceLock::new();
+static DWT97_FUSED_COLUMN_QUANTIZE_DISABLED: OnceLock<bool> = OnceLock::new();
+
+fn cuda_stage_timings_disabled() -> bool {
+    *CUDA_STAGE_TIMINGS_DISABLED
+        .get_or_init(|| std::env::var_os("SIGNINUM_CUDA_DISABLE_STAGE_TIMINGS").is_some())
+}
+
+fn dwt97_fused_column_quantize_disabled() -> bool {
+    *DWT97_FUSED_COLUMN_QUANTIZE_DISABLED
+        .get_or_init(|| std::env::var_os(DWT97_FUSED_COLUMN_QUANTIZE_DISABLE_ENV_VAR).is_some())
+}
 
 type CuInit = unsafe extern "C" fn(c_uint) -> CuResult;
 type CuDeviceGetCount = unsafe extern "C" fn(*mut c_int) -> CuResult;
@@ -626,6 +646,60 @@ struct CudaHtj2kCodeBlockKernelJob {
     stripe_causal: u32,
 }
 
+/// One output buffer and its code-block jobs for batched HTJ2K cleanup decode.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaHtj2kCleanupTarget<'a> {
+    /// Device buffer receiving decoded integer coefficient bits.
+    pub coefficients: &'a CudaDeviceBuffer,
+    /// Code-block jobs that write into `coefficients`.
+    pub jobs: &'a [CudaHtj2kCodeBlockJob],
+    /// Number of coefficient words available in `coefficients`.
+    pub output_words: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CudaHtj2kCleanupMultiKernelJob {
+    output_ptr: u64,
+    coded_offset: u32,
+    width: u32,
+    height: u32,
+    coded_len: u32,
+    cleanup_length: u32,
+    refinement_length: u32,
+    missing_msbs: u32,
+    num_bitplanes: u32,
+    number_of_coding_passes: u32,
+    output_stride: u32,
+    output_offset: u32,
+    dequantization_step: f32,
+    stripe_causal: u32,
+}
+
+/// One output buffer and its code-block jobs for batched HTJ2K dequantization.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaHtj2kDequantizeTarget<'a> {
+    /// Device buffer containing decoded integer coefficient bits.
+    pub coefficients: &'a CudaDeviceBuffer,
+    /// Code-block jobs that write into `coefficients`.
+    pub jobs: &'a [CudaHtj2kCodeBlockJob],
+    /// Number of coefficient words available in `coefficients`.
+    pub output_words: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CudaHtj2kDequantizeKernelJob {
+    output_ptr: u64,
+    width: u32,
+    height: u32,
+    output_stride: u32,
+    output_offset: u32,
+    num_bitplanes: u32,
+    reserved: u32,
+    dequantization_step: f32,
+}
+
 /// Static HTJ2K entropy lookup tables uploaded for CUDA code-block decode.
 #[derive(Clone, Copy, Debug)]
 pub struct CudaHtj2kDecodeTables<'a> {
@@ -686,6 +760,8 @@ pub struct CudaHtj2kDecodeStageTimings {
     pub ht_refine_us: u128,
     /// Sign/magnitude dequantization time, in microseconds.
     pub dequant_us: u128,
+    /// Host-observed status download time, in microseconds.
+    pub status_d2h_us: u128,
 }
 
 /// Device-resident HTJ2K entropy decode result.
@@ -724,6 +800,48 @@ impl CudaHtj2kDecodeOutput {
     }
 }
 
+/// Device-resident HTJ2K entropy decode result borrowed from a CUDA buffer pool.
+#[derive(Debug)]
+pub struct CudaPooledHtj2kDecodeOutput {
+    coefficients: CudaPooledDeviceBuffer,
+    execution: CudaExecutionStats,
+    statuses: Vec<CudaHtj2kStatus>,
+    stage_timings: CudaHtj2kDecodeStageTimings,
+}
+
+impl CudaPooledHtj2kDecodeOutput {
+    /// Device buffer containing decoded f32 coefficients.
+    pub fn coefficients(&self) -> Option<&CudaDeviceBuffer> {
+        self.coefficients.as_device_buffer()
+    }
+
+    /// CUDA execution counters for the decode dispatch.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Per-code-block kernel status rows downloaded after dispatch.
+    pub fn statuses(&self) -> &[CudaHtj2kStatus] {
+        &self.statuses
+    }
+
+    /// CUDA event timings for the decode stages inside this output.
+    pub fn stage_timings(&self) -> CudaHtj2kDecodeStageTimings {
+        self.stage_timings
+    }
+
+    /// Split output into pooled device coefficients, execution counters, and statuses.
+    pub fn into_parts(
+        self,
+    ) -> (
+        CudaPooledDeviceBuffer,
+        CudaExecutionStats,
+        Vec<CudaHtj2kStatus>,
+    ) {
+        (self.coefficients, self.execution, self.statuses)
+    }
+}
+
 /// Device-resident static HTJ2K cleanup decode lookup tables.
 #[derive(Clone, Debug)]
 pub struct CudaHtj2kDecodeTableResources {
@@ -741,9 +859,24 @@ struct CudaHtj2kDecodeTableResourceInner {
 /// Device-resident HTJ2K decode payload plus shared lookup tables reused across sub-band dispatches.
 #[derive(Debug)]
 pub struct CudaHtj2kDecodeResources {
-    payload: CudaDeviceBuffer,
+    payload: CudaHtj2kDecodePayload,
     payload_len: usize,
     tables: CudaHtj2kDecodeTableResources,
+}
+
+#[derive(Debug)]
+enum CudaHtj2kDecodePayload {
+    Owned(CudaDeviceBuffer),
+    Pooled(CudaPooledDeviceBuffer),
+}
+
+impl CudaHtj2kDecodePayload {
+    fn buffer(&self) -> Result<&CudaDeviceBuffer, CudaError> {
+        match self {
+            Self::Owned(buffer) => Ok(buffer),
+            Self::Pooled(buffer) => pooled_device_buffer(buffer),
+        }
+    }
 }
 
 /// Device-resident HTJ2K cleanup encode lookup tables reused across sub-band dispatches.
@@ -822,6 +955,17 @@ pub struct CudaHtj2kEncodeCodeBlockRegionJob {
     pub target_coding_passes: u8,
 }
 
+/// Resident coefficient buffer and jobs for a multi-input HTJ2K encode batch.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaHtj2kEncodeResidentTarget<'a> {
+    /// Device buffer containing quantized i32 coefficients.
+    pub coefficients: &'a CudaDeviceBuffer,
+    /// Number of i32 coefficients available in `coefficients`.
+    pub coefficient_count: usize,
+    /// Code-block jobs that read from `coefficients`.
+    pub jobs: &'a [CudaHtj2kEncodeCodeBlockJob],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct CudaHtj2kEncodeKernelJob {
@@ -833,6 +977,29 @@ struct CudaHtj2kEncodeKernelJob {
     output_offset: u32,
     output_capacity: u32,
     target_coding_passes: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CudaHtj2kEncodeMultiInputKernelJob {
+    coefficient_ptr: u64,
+    coefficient_offset: u32,
+    coefficient_stride: u32,
+    width: u32,
+    height: u32,
+    total_bitplanes: u32,
+    output_offset: u32,
+    output_capacity: u32,
+    target_coding_passes: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CudaHtj2kEncodeCompactJob {
+    source_offset: u32,
+    compact_offset: u32,
+    data_len: u32,
+    reserved: u32,
 }
 
 /// Status written by the CUDA HTJ2K code-block cleanup-pass encoder.
@@ -867,8 +1034,36 @@ impl CudaHtj2kEncodeStatus {
 /// CUDA event timings for HTJ2K cleanup-pass encode stages.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CudaHtj2kEncodeStageTimings {
-    /// HT cleanup-pass encode dispatch plus required result readback time, in microseconds.
+    /// Total HT cleanup-pass encode, compaction, and required result readback time, in microseconds.
     pub ht_encode_us: u128,
+    /// HT cleanup-pass encode kernel time, in microseconds.
+    pub ht_kernel_us: u128,
+    /// Status-buffer device-to-host readback time, in microseconds.
+    pub ht_status_readback_us: u128,
+    /// Encoded-byte compaction kernel time, in microseconds.
+    pub ht_compact_us: u128,
+    /// Compacted encoded-byte device-to-host readback time, in microseconds.
+    pub ht_output_readback_us: u128,
+}
+
+impl CudaHtj2kEncodeStageTimings {
+    fn from_parts(
+        ht_kernel_us: u128,
+        ht_status_readback_us: u128,
+        ht_compact_us: u128,
+        ht_output_readback_us: u128,
+    ) -> Self {
+        Self {
+            ht_encode_us: ht_kernel_us
+                .saturating_add(ht_status_readback_us)
+                .saturating_add(ht_compact_us)
+                .saturating_add(ht_output_readback_us),
+            ht_kernel_us,
+            ht_status_readback_us,
+            ht_compact_us,
+            ht_output_readback_us,
+        }
+    }
 }
 
 /// Host-visible HTJ2K cleanup-pass encode result produced by a CUDA kernel.
@@ -914,6 +1109,28 @@ impl CudaHtj2kEncodedCodeBlock {
         u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX)
     }
 
+    /// Consume this code block and return its encoded payload plus segment
+    /// metadata.
+    pub fn into_parts(self) -> (Vec<u8>, u32, u32, u8, u8) {
+        let cleanup_length = if self.status.number_of_coding_passes <= 1 {
+            self.status.data_len
+        } else {
+            self.status.reserved0
+        };
+        let refinement_length = if self.status.number_of_coding_passes <= 1 {
+            0
+        } else {
+            self.status.reserved1
+        };
+        (
+            self.data,
+            cleanup_length,
+            refinement_length,
+            u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX),
+            u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX),
+        )
+    }
+
     /// Kernel status row downloaded after dispatch.
     pub fn status(&self) -> CudaHtj2kEncodeStatus {
         self.status
@@ -944,6 +1161,11 @@ impl CudaHtj2kEncodedCodeBlocks {
         &self.code_blocks
     }
 
+    /// Consume the batch and return its per-code-block outputs.
+    pub fn into_code_blocks(self) -> Vec<CudaHtj2kEncodedCodeBlock> {
+        self.code_blocks
+    }
+
     /// CUDA execution counters for the batch encode dispatch.
     pub fn execution(&self) -> CudaExecutionStats {
         self.execution
@@ -952,6 +1174,160 @@ impl CudaHtj2kEncodedCodeBlocks {
     /// CUDA event timings for the batch encode dispatch.
     pub fn stage_timings(&self) -> CudaHtj2kEncodeStageTimings {
         self.stage_timings
+    }
+}
+
+/// Host-visible compact HTJ2K cleanup-pass encode metadata for one code block.
+#[derive(Debug)]
+pub struct CudaHtj2kCompactEncodedCodeBlock {
+    payload_range: std::ops::Range<usize>,
+    status: CudaHtj2kEncodeStatus,
+    execution: CudaExecutionStats,
+    stage_timings: CudaHtj2kEncodeStageTimings,
+}
+
+impl CudaHtj2kCompactEncodedCodeBlock {
+    /// Encoded cleanup-pass payload range in the batch payload.
+    pub fn payload_range(&self) -> std::ops::Range<usize> {
+        self.payload_range.clone()
+    }
+
+    /// HTJ2K cleanup segment length in bytes.
+    pub fn cleanup_length(&self) -> u32 {
+        if self.status.number_of_coding_passes <= 1 {
+            self.status.data_len
+        } else {
+            self.status.reserved0
+        }
+    }
+
+    /// HTJ2K refinement segment length in bytes.
+    pub fn refinement_length(&self) -> u32 {
+        if self.status.number_of_coding_passes <= 1 {
+            0
+        } else {
+            self.status.reserved1
+        }
+    }
+
+    /// Number of coding passes in the encoded payload.
+    pub fn num_coding_passes(&self) -> u8 {
+        u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX)
+    }
+
+    /// Number of missing most-significant bitplanes.
+    pub fn num_zero_bitplanes(&self) -> u8 {
+        u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX)
+    }
+
+    /// Consume this code block and return its payload range plus segment metadata.
+    pub fn into_parts(self) -> (std::ops::Range<usize>, u32, u32, u8, u8) {
+        let cleanup_length = if self.status.number_of_coding_passes <= 1 {
+            self.status.data_len
+        } else {
+            self.status.reserved0
+        };
+        let refinement_length = if self.status.number_of_coding_passes <= 1 {
+            0
+        } else {
+            self.status.reserved1
+        };
+        (
+            self.payload_range,
+            cleanup_length,
+            refinement_length,
+            u8::try_from(self.status.number_of_coding_passes).unwrap_or(u8::MAX),
+            u8::try_from(self.status.missing_bit_planes).unwrap_or(u8::MAX),
+        )
+    }
+
+    /// Kernel status row downloaded after dispatch.
+    pub fn status(&self) -> CudaHtj2kEncodeStatus {
+        self.status
+    }
+
+    /// CUDA execution counters for the encode dispatch.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// CUDA event timings for the encode dispatch.
+    pub fn stage_timings(&self) -> CudaHtj2kEncodeStageTimings {
+        self.stage_timings
+    }
+}
+
+/// Host-visible compact HTJ2K cleanup-pass encode batch produced by one CUDA
+/// kernel dispatch.
+#[derive(Debug)]
+pub struct CudaHtj2kCompactEncodedCodeBlocks {
+    payload: Vec<u8>,
+    code_blocks: Vec<CudaHtj2kCompactEncodedCodeBlock>,
+    execution: CudaExecutionStats,
+    stage_timings: CudaHtj2kEncodeStageTimings,
+}
+
+impl CudaHtj2kCompactEncodedCodeBlocks {
+    /// Compact encoded payload shared by all code-block ranges.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Encoded cleanup code-block metadata, in submitted-job order.
+    pub fn code_blocks(&self) -> &[CudaHtj2kCompactEncodedCodeBlock] {
+        &self.code_blocks
+    }
+
+    /// Consume the batch and return its payload plus per-code-block metadata.
+    pub fn into_payload_and_code_blocks(self) -> (Vec<u8>, Vec<CudaHtj2kCompactEncodedCodeBlock>) {
+        (self.payload, self.code_blocks)
+    }
+
+    /// CUDA execution counters for the batch encode dispatch.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// CUDA event timings for the batch encode dispatch.
+    pub fn stage_timings(&self) -> CudaHtj2kEncodeStageTimings {
+        self.stage_timings
+    }
+
+    fn into_owned_code_blocks(self) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+        let Self {
+            payload,
+            code_blocks,
+            execution,
+            stage_timings,
+        } = self;
+        let code_blocks = code_blocks
+            .into_iter()
+            .map(|block| {
+                let CudaHtj2kCompactEncodedCodeBlock {
+                    payload_range,
+                    status,
+                    execution,
+                    stage_timings,
+                } = block;
+                if payload_range.start > payload_range.end || payload_range.end > payload.len() {
+                    return Err(CudaError::LengthTooLarge {
+                        len: payload_range.end,
+                    });
+                }
+                Ok(CudaHtj2kEncodedCodeBlock {
+                    data: payload[payload_range].to_vec(),
+                    status,
+                    execution,
+                    stage_timings,
+                })
+            })
+            .collect::<Result<Vec<_>, CudaError>>()?;
+
+        Ok(CudaHtj2kEncodedCodeBlocks {
+            code_blocks,
+            execution,
+            stage_timings,
+        })
     }
 }
 
@@ -1140,6 +1516,34 @@ pub struct CudaJ2kIdwtJob {
     pub irreversible97: u32,
 }
 
+/// One output buffer and input band set for batched inverse DWT.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaJ2kIdwtTarget<'a> {
+    /// LL input band.
+    pub ll: &'a CudaDeviceBuffer,
+    /// HL input band.
+    pub hl: &'a CudaDeviceBuffer,
+    /// LH input band.
+    pub lh: &'a CudaDeviceBuffer,
+    /// HH input band.
+    pub hh: &'a CudaDeviceBuffer,
+    /// Output buffer for the reconstructed band.
+    pub output: &'a CudaDeviceBuffer,
+    /// IDWT geometry and transform metadata.
+    pub job: CudaJ2kIdwtJob,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CudaJ2kIdwtMultiKernelJob {
+    ll_ptr: u64,
+    hl_ptr: u64,
+    lh_ptr: u64,
+    hh_ptr: u64,
+    output_ptr: u64,
+    job: CudaJ2kIdwtJob,
+}
+
 /// Grayscale store dispatch from f32 component samples to tightly packed Gray8.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1310,6 +1714,49 @@ pub struct CudaJ2kStoreRgb16Job {
     pub bit_depth2: u32,
     /// Nonzero to write RGBA16 with opaque alpha; zero writes RGB16.
     pub rgba: u32,
+}
+
+/// Fused inverse RCT/ICT and packed RGB8/RGBA8 store dispatch.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CudaJ2kStoreRgb8MctJob {
+    /// RGB/RGBA store geometry, addends, bit depths, and alpha mode.
+    pub store: CudaJ2kStoreRgb8Job,
+    /// Nonzero for irreversible ICT; zero for reversible RCT.
+    pub irreversible97: u32,
+}
+
+/// One fused inverse MCT plus RGB8/RGBA8 store item for a batched dispatch.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaJ2kStoreRgb8MctTarget<'a> {
+    /// Source component plane 0.
+    pub plane0: &'a CudaDeviceBuffer,
+    /// Source component plane 1.
+    pub plane1: &'a CudaDeviceBuffer,
+    /// Source component plane 2.
+    pub plane2: &'a CudaDeviceBuffer,
+    /// Store geometry and inverse MCT parameters.
+    pub job: CudaJ2kStoreRgb8MctJob,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CudaJ2kStoreRgb8MctBatchJob {
+    plane0_ptr: CuDevicePtr,
+    plane1_ptr: CuDevicePtr,
+    plane2_ptr: CuDevicePtr,
+    output_ptr: CuDevicePtr,
+    job: CudaJ2kStoreRgb8MctJob,
+}
+
+/// Fused inverse RCT/ICT and packed RGB16/RGBA16 store dispatch.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CudaJ2kStoreRgb16MctJob {
+    /// RGB/RGBA store geometry, addends, bit depths, and alpha mode.
+    pub store: CudaJ2kStoreRgb16Job,
+    /// Nonzero for irreversible ICT; zero for reversible RCT.
+    pub irreversible97: u32,
 }
 
 impl CudaContext {
@@ -1636,7 +2083,22 @@ impl CudaContext {
     ) -> Result<CudaHtj2kDecodeResources, CudaError> {
         self.inner.set_current()?;
         Ok(CudaHtj2kDecodeResources {
-            payload: self.upload_pinned(payload)?,
+            payload: CudaHtj2kDecodePayload::Owned(self.upload_pinned(payload)?),
+            payload_len: payload.len(),
+            tables: tables.clone(),
+        })
+    }
+
+    /// Upload an HTJ2K decode payload into a pooled buffer while reusing already resident cleanup tables.
+    pub fn upload_htj2k_decode_resources_with_tables_and_pool(
+        &self,
+        payload: &[u8],
+        tables: &CudaHtj2kDecodeTableResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kDecodeResources, CudaError> {
+        self.inner.set_current()?;
+        Ok(CudaHtj2kDecodeResources {
+            payload: CudaHtj2kDecodePayload::Pooled(pool.upload_pinned(payload)?),
             payload_len: payload.len(),
             tables: tables.clone(),
         })
@@ -1680,6 +2142,254 @@ impl CudaContext {
         self.decode_htj2k_codeblocks_with_resources_impl(resources, jobs, output_words, false)
     }
 
+    /// Decode HTJ2K code blocks using resident resources and caller-owned
+    /// transient buffer reuse.
+    pub fn decode_htj2k_codeblocks_with_resources_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
+            resources,
+            jobs,
+            output_words,
+            pool,
+            true,
+            true,
+        )
+    }
+
+    /// Decode HTJ2K code blocks using resident resources and caller-owned
+    /// transient buffer reuse, without CUDA event timings.
+    pub fn decode_htj2k_codeblocks_with_resources_untimed_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
+            resources,
+            jobs,
+            output_words,
+            pool,
+            false,
+            true,
+        )
+    }
+
+    /// Decode HTJ2K cleanup passes into resident coefficient buffers using
+    /// caller-owned transient buffer reuse. Dequantization is left to a later
+    /// dispatch.
+    pub fn decode_htj2k_codeblocks_cleanup_with_resources_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
+            resources,
+            jobs,
+            output_words,
+            pool,
+            true,
+            false,
+        )
+    }
+
+    /// Decode HTJ2K cleanup passes into resident coefficient buffers using
+    /// caller-owned transient buffer reuse, without CUDA event timings.
+    pub fn decode_htj2k_codeblocks_cleanup_with_resources_untimed_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.decode_htj2k_codeblocks_with_resources_and_pool_impl(
+            resources,
+            jobs,
+            output_words,
+            pool,
+            false,
+            false,
+        )
+    }
+
+    /// Allocate and initialize an HTJ2K coefficient output buffer without
+    /// launching entropy cleanup decode. This is used when cleanup work is
+    /// batched across multiple output buffers.
+    pub fn allocate_htj2k_codeblock_coefficients_with_pool(
+        &self,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.inner.set_current()?;
+        let output_bytes = output_words
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(CudaError::LengthTooLarge { len: output_words })?;
+        let coefficients = pool.take(output_bytes)?;
+        let coefficient_buffer = pooled_device_buffer(&coefficients)?;
+        if htj2k_decode_needs_zero_fill(jobs, output_words)? {
+            self.memset_d32(coefficient_buffer, 0, output_words)?;
+        }
+        Ok(CudaPooledHtj2kDecodeOutput {
+            coefficients,
+            execution: CudaExecutionStats::default(),
+            statuses: Vec::new(),
+            stage_timings: CudaHtj2kDecodeStageTimings::default(),
+        })
+    }
+
+    /// Decode HTJ2K cleanup passes for multiple output buffers with one CUDA
+    /// dispatch. Dequantization is left to a later dispatch.
+    pub fn decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        targets: &[CudaHtj2kCleanupTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(
+            resources, targets, pool, false,
+        )
+        .map(|(execution, _timings)| execution)
+    }
+
+    /// Enqueue HTJ2K cleanup passes for multiple output buffers with one CUDA
+    /// dispatch. The returned value must be kept live until `finish` validates
+    /// the kernel statuses after the default stream has completed.
+    pub fn decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        targets: &[CudaHtj2kCleanupTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaQueuedHtj2kCleanup, CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = htj2k_cleanup_multi_kernel_jobs(targets, resources.payload_len)?;
+        if kernel_jobs.is_empty() {
+            return Ok(CudaQueuedHtj2kCleanup {
+                resources: Vec::new(),
+                status_buffer: None,
+                status_count: 0,
+                kernel_name: "signinum_htj2k_decode_codeblocks_multi",
+                execution: CudaExecutionStats::default(),
+            });
+        }
+        let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
+
+        let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
+        let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
+        let launch_result = self.launch_htj2k_decode_codeblocks_multi_async(
+            decode_kernel,
+            resources.payload.buffer()?,
+            pooled_device_buffer(&jobs_buffer)?,
+            &resources.tables.inner.vlc_table0,
+            &resources.tables.inner.vlc_table1,
+            &resources.tables.inner.uvlc_table0,
+            &resources.tables.inner.uvlc_table1,
+            pooled_device_buffer(&status_buffer)?,
+            kernel_jobs.len(),
+        );
+        if let Err(error) = launch_result {
+            let _ = self.synchronize();
+            return Err(error);
+        }
+
+        Ok(CudaQueuedHtj2kCleanup {
+            resources: vec![jobs_buffer],
+            status_buffer: Some(status_buffer),
+            status_count: kernel_jobs.len(),
+            kernel_name: decode_kernel_name,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Decode HTJ2K cleanup passes for multiple output buffers with one CUDA
+    /// dispatch and return optional host-side timing splits.
+    ///
+    /// Dequantization is left to a later dispatch. When `collect_stage_timings`
+    /// is false, the cleanup kernel launch is left asynchronous and the
+    /// mandatory status readback remains the completion point.
+    pub fn decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool_timed(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        targets: &[CudaHtj2kCleanupTarget<'_>],
+        pool: &CudaBufferPool,
+        collect_stage_timings: bool,
+    ) -> Result<(CudaExecutionStats, CudaHtj2kDecodeStageTimings), CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = htj2k_cleanup_multi_kernel_jobs(targets, resources.payload_len)?;
+        if kernel_jobs.is_empty() {
+            return Ok((
+                CudaExecutionStats::default(),
+                CudaHtj2kDecodeStageTimings::default(),
+            ));
+        }
+
+        let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
+        let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
+        let (decode_kernel, decode_kernel_name) = htj2k_decode_multi_kernel_for_jobs(&kernel_jobs);
+        if collect_stage_timings {
+            self.launch_htj2k_decode_codeblocks_multi(
+                decode_kernel,
+                resources.payload.buffer()?,
+                pooled_device_buffer(&jobs_buffer)?,
+                &resources.tables.inner.vlc_table0,
+                &resources.tables.inner.vlc_table1,
+                &resources.tables.inner.uvlc_table0,
+                &resources.tables.inner.uvlc_table1,
+                pooled_device_buffer(&status_buffer)?,
+                kernel_jobs.len(),
+            )?;
+        } else {
+            self.launch_htj2k_decode_codeblocks_multi_async(
+                decode_kernel,
+                resources.payload.buffer()?,
+                pooled_device_buffer(&jobs_buffer)?,
+                &resources.tables.inner.vlc_table0,
+                &resources.tables.inner.vlc_table1,
+                &resources.tables.inner.uvlc_table0,
+                &resources.tables.inner.uvlc_table1,
+                pooled_device_buffer(&status_buffer)?,
+                kernel_jobs.len(),
+            )?;
+        }
+
+        let mut statuses = vec![CudaHtj2kStatus::default(); kernel_jobs.len()];
+        let status_d2h_start = collect_stage_timings.then(Instant::now);
+        status_buffer.copy_to_host(htj2k_statuses_as_bytes_mut(&mut statuses))?;
+        let status_d2h_us = status_d2h_start.map_or(0, |start| start.elapsed().as_micros());
+        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+            return Err(CudaError::KernelStatus {
+                kernel: decode_kernel_name,
+                code: status.code,
+                detail: status.detail,
+            });
+        }
+
+        Ok((
+            CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+            CudaHtj2kDecodeStageTimings {
+                status_d2h_us,
+                ..CudaHtj2kDecodeStageTimings::default()
+            },
+        ))
+    }
+
     fn decode_htj2k_codeblocks_with_resources_impl(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -1706,16 +2416,7 @@ impl CudaContext {
 
         let kernel_jobs = htj2k_kernel_jobs(jobs, resources.payload_len, output_words)?;
         let jobs_buffer = self.upload(htj2k_jobs_as_bytes(&kernel_jobs))?;
-        let initial_statuses = vec![
-            CudaHtj2kStatus {
-                code: HTJ2K_STATUS_UNSUPPORTED,
-                detail: 0,
-                reserved0: 0,
-                reserved1: 0,
-            };
-            jobs.len()
-        ];
-        let status_buffer = self.upload(htj2k_statuses_as_bytes(&initial_statuses))?;
+        let status_buffer = self.allocate(htj2k_statuses_byte_len(jobs.len())?)?;
 
         let has_refinement = jobs
             .iter()
@@ -1757,6 +2458,98 @@ impl CudaContext {
                 ht_cleanup_us,
                 ht_refine_us: if has_refinement { ht_cleanup_us } else { 0 },
                 dequant_us,
+                ..CudaHtj2kDecodeStageTimings::default()
+            },
+        })
+    }
+
+    fn decode_htj2k_codeblocks_with_resources_and_pool_impl(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        jobs: &[CudaHtj2kCodeBlockJob],
+        output_words: usize,
+        pool: &CudaBufferPool,
+        collect_stage_timings: bool,
+        dequantize: bool,
+    ) -> Result<CudaPooledHtj2kDecodeOutput, CudaError> {
+        self.inner.set_current()?;
+        let output_bytes = output_words
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(CudaError::LengthTooLarge { len: output_words })?;
+        let coefficients = pool.take(output_bytes)?;
+        let coefficient_buffer = pooled_device_buffer(&coefficients)?;
+        if htj2k_decode_needs_zero_fill(jobs, output_words)? {
+            self.memset_d32(coefficient_buffer, 0, output_words)?;
+        }
+        if jobs.is_empty() {
+            return Ok(CudaPooledHtj2kDecodeOutput {
+                coefficients,
+                execution: CudaExecutionStats::default(),
+                statuses: Vec::new(),
+                stage_timings: CudaHtj2kDecodeStageTimings::default(),
+            });
+        }
+
+        let kernel_jobs = htj2k_kernel_jobs(jobs, resources.payload_len, output_words)?;
+        let jobs_buffer = pool.upload(htj2k_jobs_as_bytes(&kernel_jobs))?;
+        let status_buffer = pool.take(htj2k_statuses_byte_len(jobs.len())?)?;
+
+        let has_refinement = jobs
+            .iter()
+            .any(|job| job.refinement_length > 0 || job.number_of_coding_passes > 1);
+        let jobs_device = pooled_device_buffer(&jobs_buffer)?;
+        let status_device = pooled_device_buffer(&status_buffer)?;
+        let (ht_cleanup_us, dequant_us, kernel_dispatches) = if dequantize {
+            let (ht_cleanup_us, dequant_us) = self.submit_htj2k_decode_and_dequantize(
+                resources,
+                coefficient_buffer,
+                jobs_device,
+                status_device,
+                jobs.len(),
+                collect_stage_timings,
+            )?;
+            (ht_cleanup_us, dequant_us, 2)
+        } else {
+            let ht_cleanup_us = self.submit_htj2k_decode_cleanup(
+                resources,
+                coefficient_buffer,
+                jobs_device,
+                status_device,
+                jobs.len(),
+                collect_stage_timings,
+            )?;
+            (ht_cleanup_us, 0, 1)
+        };
+
+        let mut statuses = vec![CudaHtj2kStatus::default(); jobs.len()];
+        if let Err(error) = status_buffer.copy_to_host(htj2k_statuses_as_bytes_mut(&mut statuses)) {
+            if !collect_stage_timings {
+                let _ = self.synchronize();
+            }
+            return Err(error);
+        }
+        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+            return Err(CudaError::KernelStatus {
+                kernel: "signinum_htj2k_decode_codeblocks",
+                code: status.code,
+                detail: status.detail,
+            });
+        }
+
+        Ok(CudaPooledHtj2kDecodeOutput {
+            coefficients,
+            execution: CudaExecutionStats {
+                kernel_dispatches,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: kernel_dispatches,
+                hardware_decode: false,
+            },
+            statuses,
+            stage_timings: CudaHtj2kDecodeStageTimings {
+                ht_cleanup_us,
+                ht_refine_us: if has_refinement { ht_cleanup_us } else { 0 },
+                dequant_us,
+                ..CudaHtj2kDecodeStageTimings::default()
             },
         })
     }
@@ -1770,13 +2563,39 @@ impl CudaContext {
         job_count: usize,
         collect_stage_timings: bool,
     ) -> Result<(u128, u128), CudaError> {
+        let ht_cleanup_us = self.submit_htj2k_decode_cleanup(
+            resources,
+            coefficients,
+            jobs_buffer,
+            status_buffer,
+            job_count,
+            collect_stage_timings,
+        )?;
+        let dequant_us = self.submit_htj2k_dequantize_htj2k_codeblocks(
+            coefficients,
+            jobs_buffer,
+            job_count,
+            collect_stage_timings,
+        )?;
+        Ok((ht_cleanup_us, dequant_us))
+    }
+
+    fn submit_htj2k_decode_cleanup(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        coefficients: &CudaDeviceBuffer,
+        jobs_buffer: &CudaDeviceBuffer,
+        status_buffer: &CudaDeviceBuffer,
+        job_count: usize,
+        collect_stage_timings: bool,
+    ) -> Result<u128, CudaError> {
         let ((), ht_cleanup_us) = self.time_default_stream_named_us_if(
             collect_stage_timings,
             "signinum.htj2k.decode.cleanup",
             || {
                 if !collect_stage_timings {
                     return self.launch_htj2k_decode_codeblocks_async(
-                        &resources.payload,
+                        resources.payload.buffer()?,
                         coefficients,
                         jobs_buffer,
                         &resources.tables.inner.vlc_table0,
@@ -1788,7 +2607,7 @@ impl CudaContext {
                     );
                 }
                 self.launch_htj2k_decode_codeblocks(
-                    &resources.payload,
+                    resources.payload.buffer()?,
                     coefficients,
                     jobs_buffer,
                     &resources.tables.inner.vlc_table0,
@@ -1800,6 +2619,16 @@ impl CudaContext {
                 )
             },
         )?;
+        Ok(ht_cleanup_us)
+    }
+
+    fn submit_htj2k_dequantize_htj2k_codeblocks(
+        &self,
+        coefficients: &CudaDeviceBuffer,
+        jobs_buffer: &CudaDeviceBuffer,
+        job_count: usize,
+        collect_stage_timings: bool,
+    ) -> Result<u128, CudaError> {
         let ((), dequant_us) = match self.time_default_stream_named_us_if(
             collect_stage_timings,
             "signinum.htj2k.decode.dequantize",
@@ -1827,7 +2656,91 @@ impl CudaContext {
                 return Err(error);
             }
         };
-        Ok((ht_cleanup_us, dequant_us))
+        Ok(dequant_us)
+    }
+
+    /// Dequantize HTJ2K code-block outputs that live in multiple device buffers
+    /// with one CUDA dispatch.
+    pub fn j2k_dequantize_htj2k_codeblocks_multi_device(
+        &self,
+        targets: &[CudaHtj2kDequantizeTarget<'_>],
+    ) -> Result<CudaExecutionStats, CudaError> {
+        let pool = self.buffer_pool();
+        self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(targets, &pool)
+    }
+
+    /// Dequantize HTJ2K code-block outputs that live in multiple device buffers
+    /// with one CUDA dispatch, reusing caller-owned transient storage.
+    pub fn j2k_dequantize_htj2k_codeblocks_multi_device_with_pool(
+        &self,
+        targets: &[CudaHtj2kDequantizeTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_impl(targets, pool, true)
+    }
+
+    /// Dequantize HTJ2K code-block outputs in multiple device buffers without
+    /// CUDA event timings. The launch is still synchronized before returning
+    /// so the pooled job upload cannot be reused while the kernel reads it.
+    pub fn j2k_dequantize_htj2k_codeblocks_multi_device_untimed_with_pool(
+        &self,
+        targets: &[CudaHtj2kDequantizeTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_impl(targets, pool, true)
+    }
+
+    /// Dequantize HTJ2K cleanup outputs using the metadata buffer already held
+    /// live by a queued cleanup launch.
+    pub fn j2k_dequantize_queued_htj2k_cleanup_with_pool(
+        &self,
+        cleanup: &CudaQueuedHtj2kCleanup,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.inner.set_current()?;
+        if cleanup.status_count == 0 {
+            return Ok(CudaExecutionStats::default());
+        }
+        let Some(jobs_buffer) = cleanup.resources.first() else {
+            return Err(CudaError::InvalidArgument {
+                message: "queued HTJ2K cleanup has no metadata buffer".to_string(),
+            });
+        };
+        self.launch_j2k_dequantize_htj2k_cleanup_jobs_multi_with_sync(
+            pooled_device_buffer(jobs_buffer)?,
+            cleanup.status_count,
+            true,
+        )?;
+        Ok(CudaExecutionStats {
+            kernel_dispatches: 1,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 1,
+            hardware_decode: false,
+        })
+    }
+
+    fn j2k_dequantize_htj2k_codeblocks_multi_device_with_pool_impl(
+        &self,
+        targets: &[CudaHtj2kDequantizeTarget<'_>],
+        pool: &CudaBufferPool,
+        synchronize_each_launch: bool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = htj2k_dequantize_kernel_jobs(targets)?;
+        if kernel_jobs.is_empty() {
+            return Ok(CudaExecutionStats::default());
+        }
+        let jobs_buffer = pool.upload(htj2k_dequantize_jobs_as_bytes(&kernel_jobs))?;
+        self.launch_j2k_dequantize_htj2k_codeblocks_multi_with_sync(
+            pooled_device_buffer(&jobs_buffer)?,
+            kernel_jobs.len(),
+            synchronize_each_launch,
+        )?;
+        Ok(CudaExecutionStats {
+            kernel_dispatches: 1,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 1,
+            hardware_decode: false,
+        })
     }
 
     fn decode_empty_htj2k_codeblocks(
@@ -1920,8 +2833,9 @@ impl CudaContext {
                     &status_buffer,
                 )
             })?;
-        let ((status, data), readback_us) =
-            self.time_default_stream_named_us("signinum.htj2k.encode.codeblock.readback", || {
+        let (status, status_readback_us) = self.time_default_stream_named_us(
+            "signinum.htj2k.encode.codeblock.status_readback",
+            || {
                 let mut status = CudaHtj2kEncodeStatus::default();
                 status_buffer.copy_to_host(htj2k_encode_status_as_bytes_mut(&mut status))?;
                 if !status.is_ok() {
@@ -1931,18 +2845,32 @@ impl CudaContext {
                         detail: status.detail,
                     });
                 }
-                let data_len = usize::try_from(status.data_len)
-                    .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-                if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
-                    return Err(CudaError::LengthTooLarge { len: data_len });
-                }
-                let mut data = vec![0u8; data_len];
-                output_buffer.copy_range_to_host(0, &mut data)?;
-                Ok((status, data))
-            })?;
-        let stage_timings = CudaHtj2kEncodeStageTimings {
-            ht_encode_us: ht_encode_us.saturating_add(readback_us),
+                Ok(status)
+            },
+        )?;
+        let data_len = usize::try_from(status.data_len)
+            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+        if data_len > HTJ2K_ENCODE_OUTPUT_CAPACITY {
+            return Err(CudaError::LengthTooLarge { len: data_len });
+        }
+        let (data, output_readback_us) = if data_len == 0 {
+            (Vec::new(), 0)
+        } else {
+            self.time_default_stream_named_us(
+                "signinum.htj2k.encode.codeblock.output_readback",
+                || {
+                    let mut data = vec![0u8; data_len];
+                    output_buffer.copy_range_to_host(0, &mut data)?;
+                    Ok(data)
+                },
+            )?
         };
+        let stage_timings = CudaHtj2kEncodeStageTimings::from_parts(
+            ht_encode_us,
+            status_readback_us,
+            0,
+            output_readback_us,
+        );
 
         Ok(CudaHtj2kEncodedCodeBlock {
             data,
@@ -2018,6 +2946,26 @@ impl CudaContext {
         jobs: &[CudaHtj2kEncodeCodeBlockJob],
         resources: &CudaHtj2kEncodeResources,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+        let pool = self.buffer_pool();
+        self.encode_htj2k_codeblocks_resident_with_resources_and_pool(
+            coefficients,
+            coefficient_count,
+            jobs,
+            resources,
+            &pool,
+        )
+    }
+
+    /// Encode multiple cleanup-pass code blocks from resident coefficients with
+    /// lookup table reuse and caller-owned transient buffer reuse.
+    pub fn encode_htj2k_codeblocks_resident_with_resources_and_pool(
+        &self,
+        coefficients: &CudaDeviceBuffer,
+        coefficient_count: usize,
+        jobs: &[CudaHtj2kEncodeCodeBlockJob],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         if jobs.is_empty() {
             return Ok(CudaHtj2kEncodedCodeBlocks {
                 code_blocks: Vec::new(),
@@ -2037,12 +2985,53 @@ impl CudaContext {
             });
         }
 
+        let kernel_jobs = htj2k_encode_kernel_jobs(jobs, coefficient_count)?;
         self.inner.set_current()?;
-        self.encode_htj2k_codeblocks_device_with_resources(
+        self.encode_htj2k_kernel_jobs_device_with_resources_and_pool(
             coefficients,
-            coefficient_count,
-            jobs,
+            &kernel_jobs,
             resources,
+            pool,
+        )
+    }
+
+    /// Encode multiple cleanup-pass code-block batches from independent
+    /// resident coefficient buffers with one CUDA dispatch.
+    pub fn encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(
+        &self,
+        targets: &[CudaHtj2kEncodeResidentTarget<'_>],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+        self.encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(
+            targets, resources, pool,
+        )?
+        .into_owned_code_blocks()
+    }
+
+    /// Encode multiple cleanup-pass code-block batches from independent resident
+    /// coefficient buffers with one CUDA dispatch, returning one compact payload
+    /// plus per-block ranges.
+    pub fn encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(
+        &self,
+        targets: &[CudaHtj2kEncodeResidentTarget<'_>],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kCompactEncodedCodeBlocks, CudaError> {
+        let kernel_jobs = htj2k_encode_multi_input_kernel_jobs(targets)?;
+        if kernel_jobs.is_empty() {
+            return Ok(CudaHtj2kCompactEncodedCodeBlocks {
+                payload: Vec::new(),
+                code_blocks: Vec::new(),
+                execution: CudaExecutionStats::default(),
+                stage_timings: CudaHtj2kEncodeStageTimings::default(),
+            });
+        }
+        self.inner.set_current()?;
+        self.encode_htj2k_multi_input_kernel_jobs_device_compact_with_resources_and_pool(
+            &kernel_jobs,
+            resources,
+            pool,
         )
     }
 
@@ -2071,6 +3060,26 @@ impl CudaContext {
         jobs: &[CudaHtj2kEncodeCodeBlockRegionJob],
         resources: &CudaHtj2kEncodeResources,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+        let pool = self.buffer_pool();
+        self.encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
+            coefficients,
+            coefficient_count,
+            jobs,
+            resources,
+            &pool,
+        )
+    }
+
+    /// Encode strided resident code-block regions with pre-uploaded lookup
+    /// tables and caller-owned transient buffer reuse.
+    pub fn encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
+        &self,
+        coefficients: &CudaDeviceBuffer,
+        coefficient_count: usize,
+        jobs: &[CudaHtj2kEncodeCodeBlockRegionJob],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         if jobs.is_empty() {
             return Ok(CudaHtj2kEncodedCodeBlocks {
                 code_blocks: Vec::new(),
@@ -2092,7 +3101,12 @@ impl CudaContext {
 
         let kernel_jobs = htj2k_encode_region_kernel_jobs(jobs, coefficient_count)?;
         self.inner.set_current()?;
-        self.encode_htj2k_kernel_jobs_device_with_resources(coefficients, &kernel_jobs, resources)
+        self.encode_htj2k_kernel_jobs_device_with_resources_and_pool(
+            coefficients,
+            &kernel_jobs,
+            resources,
+            pool,
+        )
     }
 
     fn encode_htj2k_codeblocks_device_with_resources(
@@ -2110,11 +3124,29 @@ impl CudaContext {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn encode_htj2k_kernel_jobs_device_with_resources(
         &self,
         coefficient_buffer: &CudaDeviceBuffer,
         kernel_jobs: &[CudaHtj2kEncodeKernelJob],
         resources: &CudaHtj2kEncodeResources,
+    ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
+        let pool = self.buffer_pool();
+        self.encode_htj2k_kernel_jobs_device_with_resources_and_pool(
+            coefficient_buffer,
+            kernel_jobs,
+            resources,
+            &pool,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn encode_htj2k_kernel_jobs_device_with_resources_and_pool(
+        &self,
+        coefficient_buffer: &CudaDeviceBuffer,
+        kernel_jobs: &[CudaHtj2kEncodeKernelJob],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
     ) -> Result<CudaHtj2kEncodedCodeBlocks, CudaError> {
         let output_bytes = kernel_jobs
             .last()
@@ -2126,32 +3158,26 @@ impl CudaContext {
             .transpose()?
             .unwrap_or(0);
 
-        let jobs_buffer = self.upload(htj2k_encode_jobs_as_bytes(kernel_jobs))?;
-        let output_buffer = self.allocate(output_bytes)?;
-        let initial_statuses = vec![
-            CudaHtj2kEncodeStatus {
-                code: HTJ2K_STATUS_UNSUPPORTED,
-                ..CudaHtj2kEncodeStatus::default()
-            };
-            kernel_jobs.len()
-        ];
-        let status_buffer = self.upload(htj2k_encode_statuses_as_bytes(&initial_statuses))?;
+        let jobs_buffer = pool.upload(htj2k_encode_jobs_as_bytes(kernel_jobs))?;
+        let output_buffer = pool.take(output_bytes)?;
+        let status_buffer = pool.take(htj2k_encode_statuses_byte_len(kernel_jobs.len())?)?;
 
         let ((), ht_encode_us) =
             self.time_default_stream_named_us("signinum.htj2k.encode.codeblocks", || {
                 self.launch_htj2k_encode_codeblocks(
                     coefficient_buffer,
-                    &output_buffer,
-                    &jobs_buffer,
+                    pooled_device_buffer(&output_buffer)?,
+                    pooled_device_buffer(&jobs_buffer)?,
                     &resources.vlc_table0,
                     &resources.vlc_table1,
                     &resources.uvlc_table,
-                    &status_buffer,
+                    pooled_device_buffer(&status_buffer)?,
                     kernel_jobs.len(),
                 )
             })?;
-        let (mut code_blocks, readback_us) =
-            self.time_default_stream_named_us("signinum.htj2k.encode.codeblocks.readback", || {
+        let (statuses, status_readback_us) = self.time_default_stream_named_us(
+            "signinum.htj2k.encode.codeblocks.status_readback",
+            || {
                 let mut statuses = vec![CudaHtj2kEncodeStatus::default(); kernel_jobs.len()];
                 status_buffer.copy_to_host(htj2k_encode_statuses_as_bytes_mut(&mut statuses))?;
                 if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
@@ -2161,55 +3187,259 @@ impl CudaContext {
                         detail: status.detail,
                     });
                 }
+                Ok(statuses)
+            },
+        )?;
 
-                let mut output = vec![0u8; output_bytes];
-                if output_bytes != 0 {
-                    output_buffer.copy_to_host(&mut output)?;
-                }
-
-                statuses
-                    .into_iter()
-                    .zip(kernel_jobs.iter())
-                    .map(|(status, job)| {
-                        let data_len = usize::try_from(status.data_len)
-                            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
-                        if data_len > job.output_capacity as usize {
-                            return Err(CudaError::LengthTooLarge { len: data_len });
-                        }
-                        let start = job.output_offset as usize;
-                        let end = start
-                            .checked_add(data_len)
-                            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
-                        if end > output_bytes {
-                            return Err(CudaError::LengthTooLarge { len: end });
-                        }
-                        let data = output[start..end].to_vec();
-                        Ok(CudaHtj2kEncodedCodeBlock {
-                            data,
-                            status,
-                            execution: CudaExecutionStats {
-                                kernel_dispatches: 1,
-                                copy_kernel_dispatches: 0,
-                                decode_kernel_dispatches: 0,
-                                hardware_decode: false,
-                            },
-                            stage_timings: CudaHtj2kEncodeStageTimings::default(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, CudaError>>()
-            })?;
-        let stage_timings = CudaHtj2kEncodeStageTimings {
-            ht_encode_us: ht_encode_us.saturating_add(readback_us),
+        let (compact_jobs, compact_output_bytes) =
+            htj2k_encode_compact_jobs(&statuses, kernel_jobs)?;
+        let compact_output_buffer = pool.take(compact_output_bytes)?;
+        let compact_dispatched = compact_output_bytes != 0;
+        let compact_us = if compact_dispatched {
+            let compact_jobs_buffer =
+                pool.upload(htj2k_encode_compact_jobs_as_bytes(&compact_jobs))?;
+            let ((), compact_us) = self.time_default_stream_named_us(
+                "signinum.htj2k.encode.codeblocks.compact",
+                || {
+                    self.launch_htj2k_compact_codeblocks(
+                        pooled_device_buffer(&output_buffer)?,
+                        pooled_device_buffer(&compact_output_buffer)?,
+                        pooled_device_buffer(&compact_jobs_buffer)?,
+                        compact_jobs.len(),
+                    )
+                },
+            )?;
+            compact_us
+        } else {
+            0
         };
+        let (output, output_readback_us) = if compact_output_bytes == 0 {
+            (Vec::new(), 0)
+        } else {
+            self.time_default_stream_named_us(
+                "signinum.htj2k.encode.codeblocks.output_readback",
+                || copy_pooled_bytes_to_vec_uninit(&compact_output_buffer, compact_output_bytes),
+            )?
+        };
+
+        let mut code_blocks = statuses
+            .into_iter()
+            .zip(kernel_jobs.iter())
+            .zip(compact_jobs.iter())
+            .map(|((status, job), compact_job)| {
+                let data_len = usize::try_from(status.data_len)
+                    .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+                if data_len > job.output_capacity as usize {
+                    return Err(CudaError::LengthTooLarge { len: data_len });
+                }
+                let start = compact_job.compact_offset as usize;
+                let end = start
+                    .checked_add(data_len)
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+                if end > compact_output_bytes {
+                    return Err(CudaError::LengthTooLarge { len: end });
+                }
+                let data = output[start..end].to_vec();
+                Ok(CudaHtj2kEncodedCodeBlock {
+                    data,
+                    status,
+                    execution: CudaExecutionStats {
+                        kernel_dispatches: 1,
+                        copy_kernel_dispatches: usize::from(compact_dispatched),
+                        decode_kernel_dispatches: 0,
+                        hardware_decode: false,
+                    },
+                    stage_timings: CudaHtj2kEncodeStageTimings::default(),
+                })
+            })
+            .collect::<Result<Vec<_>, CudaError>>()?;
+        let stage_timings = CudaHtj2kEncodeStageTimings::from_parts(
+            ht_encode_us,
+            status_readback_us,
+            compact_us,
+            output_readback_us,
+        );
         for block in &mut code_blocks {
             block.stage_timings = stage_timings;
         }
+        let copy_kernel_dispatches =
+            usize::from(code_blocks.iter().any(|block| !block.data().is_empty()));
 
         Ok(CudaHtj2kEncodedCodeBlocks {
             code_blocks,
             execution: CudaExecutionStats {
                 kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
+                copy_kernel_dispatches,
+                decode_kernel_dispatches: 0,
+                hardware_decode: false,
+            },
+            stage_timings,
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn encode_htj2k_multi_input_kernel_jobs_device_compact_with_resources_and_pool(
+        &self,
+        kernel_jobs: &[CudaHtj2kEncodeMultiInputKernelJob],
+        resources: &CudaHtj2kEncodeResources,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaHtj2kCompactEncodedCodeBlocks, CudaError> {
+        let output_bytes = kernel_jobs
+            .last()
+            .map(|job| {
+                (job.output_offset as usize)
+                    .checked_add(job.output_capacity as usize)
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })
+            })
+            .transpose()?
+            .unwrap_or(0);
+
+        let jobs_buffer = pool.upload(htj2k_encode_multi_input_jobs_as_bytes(kernel_jobs))?;
+        let output_buffer = pool.take(output_bytes)?;
+        let status_buffer = pool.take(htj2k_encode_statuses_byte_len(kernel_jobs.len())?)?;
+        let cleanup_only = kernel_jobs.iter().all(|job| job.target_coding_passes == 1);
+        let cleanup_only_64 = cleanup_only
+            && kernel_jobs
+                .iter()
+                .all(|job| job.width == 64 && job.height == 64 && job.coefficient_stride == 64);
+        let status_kernel = if cleanup_only_64 {
+            "signinum_htj2k_encode_codeblocks_multi_input_cleanup_64"
+        } else if cleanup_only {
+            "signinum_htj2k_encode_codeblocks_multi_input_cleanup"
+        } else {
+            "signinum_htj2k_encode_codeblocks_multi_input"
+        };
+
+        let ((), ht_encode_us) = self.time_default_stream_named_us(
+            "signinum.htj2k.encode.codeblocks.multi_input",
+            || {
+                if cleanup_only_64 {
+                    self.launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
+                        pooled_device_buffer(&output_buffer)?,
+                        pooled_device_buffer(&jobs_buffer)?,
+                        &resources.vlc_table0,
+                        &resources.vlc_table1,
+                        &resources.uvlc_table,
+                        pooled_device_buffer(&status_buffer)?,
+                        kernel_jobs.len(),
+                    )
+                } else if cleanup_only {
+                    self.launch_htj2k_encode_codeblocks_multi_input_cleanup(
+                        pooled_device_buffer(&output_buffer)?,
+                        pooled_device_buffer(&jobs_buffer)?,
+                        &resources.vlc_table0,
+                        &resources.vlc_table1,
+                        &resources.uvlc_table,
+                        pooled_device_buffer(&status_buffer)?,
+                        kernel_jobs.len(),
+                    )
+                } else {
+                    self.launch_htj2k_encode_codeblocks_multi_input(
+                        pooled_device_buffer(&output_buffer)?,
+                        pooled_device_buffer(&jobs_buffer)?,
+                        &resources.vlc_table0,
+                        &resources.vlc_table1,
+                        &resources.uvlc_table,
+                        pooled_device_buffer(&status_buffer)?,
+                        kernel_jobs.len(),
+                    )
+                }
+            },
+        )?;
+        let (statuses, status_readback_us) = self.time_default_stream_named_us(
+            "signinum.htj2k.encode.codeblocks.multi_input.status_readback",
+            || {
+                let mut statuses = vec![CudaHtj2kEncodeStatus::default(); kernel_jobs.len()];
+                status_buffer.copy_to_host(htj2k_encode_statuses_as_bytes_mut(&mut statuses))?;
+                if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+                    return Err(CudaError::KernelStatus {
+                        kernel: status_kernel,
+                        code: status.code,
+                        detail: status.detail,
+                    });
+                }
+                Ok(statuses)
+            },
+        )?;
+
+        let (compact_jobs, compact_output_bytes) =
+            htj2k_encode_compact_jobs_multi_input(&statuses, kernel_jobs)?;
+        let compact_output_buffer = pool.take(compact_output_bytes)?;
+        let compact_dispatched = compact_output_bytes != 0;
+        let compact_us = if compact_dispatched {
+            let compact_jobs_buffer =
+                pool.upload(htj2k_encode_compact_jobs_as_bytes(&compact_jobs))?;
+            let ((), compact_us) = self.time_default_stream_named_us(
+                "signinum.htj2k.encode.codeblocks.multi_input.compact",
+                || {
+                    self.launch_htj2k_compact_codeblocks(
+                        pooled_device_buffer(&output_buffer)?,
+                        pooled_device_buffer(&compact_output_buffer)?,
+                        pooled_device_buffer(&compact_jobs_buffer)?,
+                        compact_jobs.len(),
+                    )
+                },
+            )?;
+            compact_us
+        } else {
+            0
+        };
+        let (output, output_readback_us) = if compact_output_bytes == 0 {
+            (Vec::new(), 0)
+        } else {
+            self.time_default_stream_named_us(
+                "signinum.htj2k.encode.codeblocks.multi_input.output_readback",
+                || copy_pooled_bytes_to_vec_uninit(&compact_output_buffer, compact_output_bytes),
+            )?
+        };
+
+        let mut code_blocks = statuses
+            .into_iter()
+            .zip(kernel_jobs.iter())
+            .zip(compact_jobs.iter())
+            .map(|((status, job), compact_job)| {
+                let data_len = usize::try_from(status.data_len)
+                    .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+                if data_len > job.output_capacity as usize {
+                    return Err(CudaError::LengthTooLarge { len: data_len });
+                }
+                let start = compact_job.compact_offset as usize;
+                let end = start
+                    .checked_add(data_len)
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+                if end > compact_output_bytes {
+                    return Err(CudaError::LengthTooLarge { len: end });
+                }
+                Ok(CudaHtj2kCompactEncodedCodeBlock {
+                    payload_range: start..end,
+                    status,
+                    execution: CudaExecutionStats {
+                        kernel_dispatches: 1,
+                        copy_kernel_dispatches: usize::from(compact_dispatched),
+                        decode_kernel_dispatches: 0,
+                        hardware_decode: false,
+                    },
+                    stage_timings: CudaHtj2kEncodeStageTimings::default(),
+                })
+            })
+            .collect::<Result<Vec<_>, CudaError>>()?;
+        let stage_timings = CudaHtj2kEncodeStageTimings::from_parts(
+            ht_encode_us,
+            status_readback_us,
+            compact_us,
+            output_readback_us,
+        );
+        for block in &mut code_blocks {
+            block.stage_timings = stage_timings;
+        }
+        let copy_kernel_dispatches = usize::from(!output.is_empty());
+
+        Ok(CudaHtj2kCompactEncodedCodeBlocks {
+            payload: output,
+            code_blocks,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches,
                 decode_kernel_dispatches: 0,
                 hardware_decode: false,
             },
@@ -2376,6 +3606,391 @@ impl CudaContext {
         self.j2k_inverse_dwt_single_device_impl(ll, hl, lh, hh, job, false)
     }
 
+    /// Apply one inverse JPEG 2000 DWT decomposition with caller-owned
+    /// transient buffer reuse.
+    pub fn j2k_inverse_dwt_single_device_with_pool(
+        &self,
+        ll: &CudaDeviceBuffer,
+        hl: &CudaDeviceBuffer,
+        lh: &CudaDeviceBuffer,
+        hh: &CudaDeviceBuffer,
+        job: CudaJ2kIdwtJob,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledKernelOutput, CudaError> {
+        self.j2k_inverse_dwt_single_device_with_pool_impl(ll, hl, lh, hh, job, true, pool)
+    }
+
+    /// Apply one inverse JPEG 2000 DWT decomposition with caller-owned
+    /// transient buffer reuse and without per-kernel synchronizes.
+    pub fn j2k_inverse_dwt_single_device_untimed_with_pool(
+        &self,
+        ll: &CudaDeviceBuffer,
+        hl: &CudaDeviceBuffer,
+        lh: &CudaDeviceBuffer,
+        hh: &CudaDeviceBuffer,
+        job: CudaJ2kIdwtJob,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledKernelOutput, CudaError> {
+        self.j2k_inverse_dwt_single_device_with_pool_impl(ll, hl, lh, hh, job, false, pool)
+    }
+
+    /// Apply inverse JPEG 2000 DWT decompositions for multiple independent
+    /// targets using one dispatch per parallel stage.
+    pub fn j2k_inverse_dwt_batch_device_with_pool(
+        &self,
+        targets: &[CudaJ2kIdwtTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.j2k_inverse_dwt_batch_device_with_pool_impl(targets, pool, true)
+    }
+
+    /// Apply inverse JPEG 2000 DWT decompositions for multiple independent
+    /// targets without per-stage synchronizes.
+    pub fn j2k_inverse_dwt_batch_device_untimed_with_pool(
+        &self,
+        targets: &[CudaJ2kIdwtTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.j2k_inverse_dwt_batch_device_with_pool_impl(targets, pool, false)
+    }
+
+    /// Enqueue batched inverse JPEG 2000 DWT decompositions without
+    /// synchronizing. The returned value must be kept live until the default
+    /// stream has been synchronized by the caller.
+    pub fn j2k_inverse_dwt_batch_device_enqueue_with_pool(
+        &self,
+        targets: &[CudaJ2kIdwtTarget<'_>],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaQueuedExecution, CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = j2k_idwt_multi_kernel_jobs(targets)?;
+        if kernel_jobs.is_empty() {
+            return Ok(CudaQueuedExecution {
+                resources: Vec::new(),
+                execution: CudaExecutionStats::default(),
+            });
+        }
+        let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&kernel_jobs))?;
+        let jobs_device = pooled_device_buffer(&jobs_buffer)?;
+        let max_width = kernel_jobs
+            .iter()
+            .map(|job| job.job.rect.x1.saturating_sub(job.job.rect.x0))
+            .max()
+            .unwrap_or(0);
+        let max_height = kernel_jobs
+            .iter()
+            .map(|job| job.job.rect.y1.saturating_sub(job.job.rect.y0))
+            .max()
+            .unwrap_or(0);
+        let kernel_mode = idwt_batch_kernel_mode(&kernel_jobs, max_width, max_height);
+        let interleave_horizontal_result = match kernel_mode {
+            CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
+                .launch_j2k_idwt_interleave_horizontal_53_multi(
+                    jobs_device,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    false,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                .launch_j2k_idwt_interleave_horizontal_97_multi_ptr(
+                    jobs_device.device_ptr(),
+                    max_width as usize,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    false,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Generic => self
+                .launch_j2k_idwt_interleave_horizontal_multi(
+                    jobs_device,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    false,
+                ),
+        };
+        if let Err(error) = interleave_horizontal_result {
+            let _ = self.synchronize();
+            return Err(error);
+        }
+        let vertical_result = match kernel_mode {
+            CudaJ2kIdwtBatchKernelMode::Cooperative53 => self.launch_j2k_idwt_vertical_53_multi(
+                jobs_device,
+                max_width as usize,
+                kernel_jobs.len(),
+                false,
+            ),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                .launch_j2k_idwt_vertical_97_multi_ptr(
+                    jobs_device.device_ptr(),
+                    max_width as usize,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    false,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Generic => self.launch_j2k_idwt_vertical_multi(
+                jobs_device,
+                max_width as usize,
+                kernel_jobs.len(),
+                false,
+            ),
+        };
+        if let Err(error) = vertical_result {
+            let _ = self.synchronize();
+            return Err(error);
+        }
+
+        Ok(CudaQueuedExecution {
+            resources: vec![jobs_buffer],
+            execution: CudaExecutionStats {
+                kernel_dispatches: 2,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 2,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Enqueue a sequence of batched inverse JPEG 2000 DWT stages while
+    /// uploading all stage job metadata in one device buffer. The returned
+    /// value must be kept live until the default stream has been synchronized
+    /// by the caller.
+    pub fn j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
+        &self,
+        target_batches: &[&[CudaJ2kIdwtTarget<'_>]],
+        pool: &CudaBufferPool,
+    ) -> Result<CudaQueuedExecution, CudaError> {
+        self.inner.set_current()?;
+        let mut all_jobs = Vec::new();
+        let mut batches = Vec::new();
+        for targets in target_batches {
+            let kernel_jobs = j2k_idwt_multi_kernel_jobs(targets)?;
+            if kernel_jobs.is_empty() {
+                continue;
+            }
+            let start = all_jobs.len();
+            let count = kernel_jobs.len();
+            let max_width = kernel_jobs
+                .iter()
+                .map(|job| job.job.rect.x1.saturating_sub(job.job.rect.x0))
+                .max()
+                .unwrap_or(0);
+            let max_height = kernel_jobs
+                .iter()
+                .map(|job| job.job.rect.y1.saturating_sub(job.job.rect.y0))
+                .max()
+                .unwrap_or(0);
+            let kernel_mode = idwt_batch_kernel_mode(&kernel_jobs, max_width, max_height);
+            all_jobs.extend(kernel_jobs);
+            batches.push((start, count, max_width, max_height, kernel_mode));
+        }
+        if all_jobs.is_empty() {
+            return Ok(CudaQueuedExecution {
+                resources: Vec::new(),
+                execution: CudaExecutionStats::default(),
+            });
+        }
+
+        let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&all_jobs))?;
+        let jobs_base = pooled_device_buffer(&jobs_buffer)?.device_ptr();
+        let job_size = std::mem::size_of::<CudaJ2kIdwtMultiKernelJob>();
+        let mut kernel_dispatches = 0usize;
+        let trace_enabled = cuda_idwt_trace_enabled();
+        for (stage_index, (start, count, max_width, max_height, kernel_mode)) in
+            batches.into_iter().enumerate()
+        {
+            let byte_offset = start
+                .checked_mul(job_size)
+                .ok_or(CudaError::LengthTooLarge { len: start })?;
+            let jobs_ptr = jobs_base
+                .checked_add(byte_offset as u64)
+                .ok_or(CudaError::LengthTooLarge { len: byte_offset })?;
+            let trace_start = if trace_enabled {
+                let event = self.create_event()?;
+                event.record_default_stream()?;
+                Some(event)
+            } else {
+                None
+            };
+            let interleave_horizontal_result = match kernel_mode {
+                CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
+                    .launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
+                        jobs_ptr,
+                        max_height as usize,
+                        count,
+                        false,
+                    ),
+                CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                    .launch_j2k_idwt_interleave_horizontal_97_multi_ptr(
+                        jobs_ptr,
+                        max_width as usize,
+                        max_height as usize,
+                        count,
+                        false,
+                    ),
+                CudaJ2kIdwtBatchKernelMode::Generic => self
+                    .launch_j2k_idwt_interleave_horizontal_multi_ptr(
+                        jobs_ptr,
+                        max_height as usize,
+                        count,
+                        false,
+                    ),
+            };
+            if let Err(error) = interleave_horizontal_result {
+                let _ = self.synchronize();
+                return Err(error);
+            }
+            kernel_dispatches = kernel_dispatches.saturating_add(1);
+
+            let vertical_result = match kernel_mode {
+                CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
+                    .launch_j2k_idwt_vertical_53_multi_ptr(
+                        jobs_ptr,
+                        max_width as usize,
+                        count,
+                        false,
+                    ),
+                CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                    .launch_j2k_idwt_vertical_97_multi_ptr(
+                        jobs_ptr,
+                        max_width as usize,
+                        max_height as usize,
+                        count,
+                        false,
+                    ),
+                CudaJ2kIdwtBatchKernelMode::Generic => self.launch_j2k_idwt_vertical_multi_ptr(
+                    jobs_ptr,
+                    max_width as usize,
+                    count,
+                    false,
+                ),
+            };
+            if let Err(error) = vertical_result {
+                let _ = self.synchronize();
+                return Err(error);
+            }
+            kernel_dispatches = kernel_dispatches.saturating_add(1);
+            if let Some(trace_start) = trace_start {
+                let trace_end = self.create_event()?;
+                trace_end.record_default_stream()?;
+                trace_end.synchronize()?;
+                let elapsed_us = elapsed_event_us_ceil(&trace_start, &trace_end)?;
+                let end = start.saturating_add(count);
+                let row = idwt_batch_trace_row(
+                    stage_index,
+                    &all_jobs[start..end],
+                    max_width,
+                    max_height,
+                    kernel_mode,
+                    elapsed_us,
+                );
+                eprintln!("{}", format_idwt_batch_trace_row(row));
+            }
+        }
+
+        Ok(CudaQueuedExecution {
+            resources: vec![jobs_buffer],
+            execution: CudaExecutionStats {
+                kernel_dispatches,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: kernel_dispatches,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    fn j2k_inverse_dwt_batch_device_with_pool_impl(
+        &self,
+        targets: &[CudaJ2kIdwtTarget<'_>],
+        pool: &CudaBufferPool,
+        synchronize_each_launch: bool,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = j2k_idwt_multi_kernel_jobs(targets)?;
+        if kernel_jobs.is_empty() {
+            return Ok(CudaExecutionStats::default());
+        }
+        let jobs_buffer = pool.upload(idwt_multi_jobs_as_bytes(&kernel_jobs))?;
+        let jobs_device = pooled_device_buffer(&jobs_buffer)?;
+        let max_width = kernel_jobs
+            .iter()
+            .map(|job| job.job.rect.x1.saturating_sub(job.job.rect.x0))
+            .max()
+            .unwrap_or(0);
+        let max_height = kernel_jobs
+            .iter()
+            .map(|job| job.job.rect.y1.saturating_sub(job.job.rect.y0))
+            .max()
+            .unwrap_or(0);
+        let kernel_mode = idwt_batch_kernel_mode(&kernel_jobs, max_width, max_height);
+        let interleave_horizontal_result = match kernel_mode {
+            CudaJ2kIdwtBatchKernelMode::Cooperative53 => self
+                .launch_j2k_idwt_interleave_horizontal_53_multi(
+                    jobs_device,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    synchronize_each_launch,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                .launch_j2k_idwt_interleave_horizontal_97_multi_ptr(
+                    jobs_device.device_ptr(),
+                    max_width as usize,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    synchronize_each_launch,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Generic => self
+                .launch_j2k_idwt_interleave_horizontal_multi(
+                    jobs_device,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    synchronize_each_launch,
+                ),
+        };
+        if let Err(error) = interleave_horizontal_result {
+            if !synchronize_each_launch {
+                let _ = self.synchronize();
+            }
+            return Err(error);
+        }
+        let vertical_result = match kernel_mode {
+            CudaJ2kIdwtBatchKernelMode::Cooperative53 => self.launch_j2k_idwt_vertical_53_multi(
+                jobs_device,
+                max_width as usize,
+                kernel_jobs.len(),
+                synchronize_each_launch,
+            ),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97 => self
+                .launch_j2k_idwt_vertical_97_multi_ptr(
+                    jobs_device.device_ptr(),
+                    max_width as usize,
+                    max_height as usize,
+                    kernel_jobs.len(),
+                    synchronize_each_launch,
+                ),
+            CudaJ2kIdwtBatchKernelMode::Generic => self.launch_j2k_idwt_vertical_multi(
+                jobs_device,
+                max_width as usize,
+                kernel_jobs.len(),
+                synchronize_each_launch,
+            ),
+        };
+        if let Err(error) = vertical_result {
+            if !synchronize_each_launch {
+                let _ = self.synchronize();
+            }
+            return Err(error);
+        }
+        if !synchronize_each_launch {
+            self.synchronize()?;
+        }
+
+        Ok(CudaExecutionStats {
+            kernel_dispatches: 2,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 2,
+            hardware_decode: false,
+        })
+    }
+
     fn j2k_inverse_dwt_single_device_impl(
         &self,
         ll: &CudaDeviceBuffer,
@@ -2446,6 +4061,101 @@ impl CudaContext {
             self.synchronize()?;
         }
         Ok(CudaKernelOutput {
+            buffer: output,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 3,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 3,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn j2k_inverse_dwt_single_device_with_pool_impl(
+        &self,
+        ll: &CudaDeviceBuffer,
+        hl: &CudaDeviceBuffer,
+        lh: &CudaDeviceBuffer,
+        hh: &CudaDeviceBuffer,
+        job: CudaJ2kIdwtJob,
+        synchronize_each_launch: bool,
+        pool: &CudaBufferPool,
+    ) -> Result<CudaPooledKernelOutput, CudaError> {
+        let width = job.rect.x1.saturating_sub(job.rect.x0);
+        let height = job.rect.y1.saturating_sub(job.rect.y0);
+        let output_words = checked_image_words(width, height, 1)?;
+        let output = pool.take(output_words * std::mem::size_of::<f32>())?;
+        let output_buffer = pooled_device_buffer(&output)?;
+        if output_words == 0 {
+            return Ok(CudaPooledKernelOutput {
+                buffer: output,
+                execution: CudaExecutionStats::default(),
+            });
+        }
+
+        let job_buffer = pool.upload(idwt_job_as_bytes(&job))?;
+        let job_device_buffer = pooled_device_buffer(&job_buffer)?;
+        let (horizontal_kernel, vertical_kernel) = if job.irreversible97 == 0 {
+            (
+                CudaKernel::J2kIdwtHorizontal53,
+                CudaKernel::J2kIdwtVertical53,
+            )
+        } else {
+            (
+                CudaKernel::J2kIdwtHorizontal97,
+                CudaKernel::J2kIdwtVertical97,
+            )
+        };
+        if synchronize_each_launch {
+            self.launch_j2k_idwt_interleave(
+                [ll, hl, lh, hh],
+                output_buffer,
+                job_device_buffer,
+                width,
+                height,
+            )?;
+            self.launch_j2k_idwt_horizontal(
+                horizontal_kernel,
+                output_buffer,
+                job_device_buffer,
+                height as usize,
+            )?;
+            self.launch_j2k_idwt_vertical(
+                vertical_kernel,
+                output_buffer,
+                job_device_buffer,
+                width as usize,
+            )?;
+        } else {
+            self.launch_j2k_idwt_interleave_async(
+                [ll, hl, lh, hh],
+                output_buffer,
+                job_device_buffer,
+                width,
+                height,
+            )?;
+            if let Err(error) = self.launch_j2k_idwt_horizontal_async(
+                horizontal_kernel,
+                output_buffer,
+                job_device_buffer,
+                height as usize,
+            ) {
+                let _ = self.synchronize();
+                return Err(error);
+            }
+            if let Err(error) = self.launch_j2k_idwt_vertical_async(
+                vertical_kernel,
+                output_buffer,
+                job_device_buffer,
+                width as usize,
+            ) {
+                let _ = self.synchronize();
+                return Err(error);
+            }
+            self.synchronize()?;
+        }
+        Ok(CudaPooledKernelOutput {
             buffer: output,
             execution: CudaExecutionStats {
                 kernel_dispatches: 3,
@@ -2702,6 +4412,348 @@ impl CudaContext {
 
         let job_buffer = self.upload(store_rgb16_job_as_bytes(&job))?;
         self.launch_j2k_store_rgb16(plane0, plane1, plane2, &output, &job_buffer, pixels)?;
+        Ok(CudaKernelOutput {
+            buffer: output,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Apply inverse RCT/ICT and store tightly packed RGB8/RGBA8 in one dispatch.
+    pub fn j2k_store_rgb8_mct_device(
+        &self,
+        plane0: &CudaDeviceBuffer,
+        plane1: &CudaDeviceBuffer,
+        plane2: &CudaDeviceBuffer,
+        job: CudaJ2kStoreRgb8MctJob,
+    ) -> Result<CudaKernelOutput, CudaError> {
+        let store = job.store;
+        let channels = if store.rgba == 0 { 3 } else { 4 };
+        let output_bytes = checked_image_words(store.output_width, store.output_height, channels)?;
+        let output = self.allocate(output_bytes)?;
+        let pixels = checked_image_words(store.copy_width, store.copy_height, 1)?;
+        if output_bytes == 0 || pixels == 0 {
+            return Ok(CudaKernelOutput {
+                buffer: output,
+                execution: CudaExecutionStats::default(),
+            });
+        }
+        validate_store_rgb8_plane(
+            plane0,
+            store.input_width0,
+            store.source_x0,
+            store.source_y0,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        validate_store_rgb8_plane(
+            plane1,
+            store.input_width1,
+            store.source_x1,
+            store.source_y1,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        validate_store_rgb8_plane(
+            plane2,
+            store.input_width2,
+            store.source_x2,
+            store.source_y2,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        let dst_end = (store.output_y as usize)
+            .checked_add(store.copy_height as usize)
+            .and_then(|end_y| {
+                (store.output_x as usize)
+                    .checked_add(store.copy_width as usize)
+                    .map(|end_x| (end_x, end_y))
+            })
+            .ok_or(CudaError::LengthTooLarge { len: output_bytes })?;
+        if dst_end.0 > store.output_width as usize || dst_end.1 > store.output_height as usize {
+            return Err(CudaError::LengthTooLarge { len: output_bytes });
+        }
+
+        let job_buffer = self.upload(store_rgb8_mct_job_as_bytes(&job))?;
+        self.launch_j2k_store_rgb8_mct(plane0, plane1, plane2, &output, &job_buffer, pixels)?;
+        Ok(CudaKernelOutput {
+            buffer: output,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
+    /// in one dispatch.
+    pub fn j2k_store_rgb8_mct_batch_device(
+        &self,
+        targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
+    ) -> Result<CudaKernelBatchOutput, CudaError> {
+        if targets.is_empty() {
+            return Ok(CudaKernelBatchOutput {
+                outputs: Vec::new(),
+                execution: CudaExecutionStats::default(),
+            });
+        }
+
+        let mut outputs = Vec::with_capacity(targets.len());
+        let mut kernel_jobs = Vec::with_capacity(targets.len());
+        let mut max_pixels = 0usize;
+        for target in targets {
+            let store = target.job.store;
+            let channels = if store.rgba == 0 { 3 } else { 4 };
+            let output_bytes =
+                checked_image_words(store.output_width, store.output_height, channels)?;
+            let output = self.allocate(output_bytes)?;
+            let pixels = checked_image_words(store.copy_width, store.copy_height, 1)?;
+            if output_bytes != 0 && pixels != 0 {
+                validate_store_rgb8_plane(
+                    target.plane0,
+                    store.input_width0,
+                    store.source_x0,
+                    store.source_y0,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                validate_store_rgb8_plane(
+                    target.plane1,
+                    store.input_width1,
+                    store.source_x1,
+                    store.source_y1,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                validate_store_rgb8_plane(
+                    target.plane2,
+                    store.input_width2,
+                    store.source_x2,
+                    store.source_y2,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                let dst_end = (store.output_y as usize)
+                    .checked_add(store.copy_height as usize)
+                    .and_then(|end_y| {
+                        (store.output_x as usize)
+                            .checked_add(store.copy_width as usize)
+                            .map(|end_x| (end_x, end_y))
+                    })
+                    .ok_or(CudaError::LengthTooLarge { len: output_bytes })?;
+                if dst_end.0 > store.output_width as usize
+                    || dst_end.1 > store.output_height as usize
+                {
+                    return Err(CudaError::LengthTooLarge { len: output_bytes });
+                }
+                max_pixels = max_pixels.max(pixels);
+            }
+            kernel_jobs.push(CudaJ2kStoreRgb8MctBatchJob {
+                plane0_ptr: target.plane0.device_ptr(),
+                plane1_ptr: target.plane1.device_ptr(),
+                plane2_ptr: target.plane2.device_ptr(),
+                output_ptr: output.device_ptr(),
+                job: target.job,
+            });
+            outputs.push(output);
+        }
+        if max_pixels == 0 {
+            return Ok(CudaKernelBatchOutput {
+                outputs,
+                execution: CudaExecutionStats::default(),
+            });
+        }
+
+        let jobs_buffer = self.upload(store_rgb8_mct_batch_jobs_as_bytes(&kernel_jobs))?;
+        self.launch_j2k_store_rgb8_mct_batch(&jobs_buffer, max_pixels, kernel_jobs.len())?;
+        Ok(CudaKernelBatchOutput {
+            outputs,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
+    /// into one contiguous device allocation in one dispatch.
+    pub fn j2k_store_rgb8_mct_batch_contiguous_device(
+        &self,
+        targets: &[CudaJ2kStoreRgb8MctTarget<'_>],
+    ) -> Result<CudaKernelContiguousBatchOutput, CudaError> {
+        let mut ranges = Vec::with_capacity(targets.len());
+        let mut total_bytes = 0usize;
+        let mut max_pixels = 0usize;
+        for target in targets {
+            let store = target.job.store;
+            let channels = if store.rgba == 0 { 3 } else { 4 };
+            let output_bytes =
+                checked_image_words(store.output_width, store.output_height, channels)?;
+            let pixels = checked_image_words(store.copy_width, store.copy_height, 1)?;
+            if output_bytes != 0 && pixels != 0 {
+                validate_store_rgb8_plane(
+                    target.plane0,
+                    store.input_width0,
+                    store.source_x0,
+                    store.source_y0,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                validate_store_rgb8_plane(
+                    target.plane1,
+                    store.input_width1,
+                    store.source_x1,
+                    store.source_y1,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                validate_store_rgb8_plane(
+                    target.plane2,
+                    store.input_width2,
+                    store.source_x2,
+                    store.source_y2,
+                    store.copy_width,
+                    store.copy_height,
+                )?;
+                let dst_end = (store.output_y as usize)
+                    .checked_add(store.copy_height as usize)
+                    .and_then(|end_y| {
+                        (store.output_x as usize)
+                            .checked_add(store.copy_width as usize)
+                            .map(|end_x| (end_x, end_y))
+                    })
+                    .ok_or(CudaError::LengthTooLarge { len: output_bytes })?;
+                if dst_end.0 > store.output_width as usize
+                    || dst_end.1 > store.output_height as usize
+                {
+                    return Err(CudaError::LengthTooLarge { len: output_bytes });
+                }
+                max_pixels = max_pixels.max(pixels);
+            }
+            let offset = total_bytes;
+            total_bytes = total_bytes
+                .checked_add(output_bytes)
+                .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+            ranges.push(CudaDeviceBufferRange {
+                offset,
+                len: output_bytes,
+            });
+        }
+
+        let output = self.allocate(total_bytes)?;
+        if targets.is_empty() || max_pixels == 0 {
+            return Ok(CudaKernelContiguousBatchOutput {
+                output,
+                ranges,
+                execution: CudaExecutionStats::default(),
+            });
+        }
+
+        let base_ptr = output.device_ptr();
+        let kernel_jobs = targets
+            .iter()
+            .zip(ranges.iter())
+            .map(|(target, range)| {
+                let output_ptr = base_ptr
+                    .checked_add(
+                        u64::try_from(range.offset)
+                            .map_err(|_| CudaError::LengthTooLarge { len: range.offset })?,
+                    )
+                    .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+                Ok(CudaJ2kStoreRgb8MctBatchJob {
+                    plane0_ptr: target.plane0.device_ptr(),
+                    plane1_ptr: target.plane1.device_ptr(),
+                    plane2_ptr: target.plane2.device_ptr(),
+                    output_ptr,
+                    job: target.job,
+                })
+            })
+            .collect::<Result<Vec<_>, CudaError>>()?;
+        let jobs_buffer = self.upload(store_rgb8_mct_batch_jobs_as_bytes(&kernel_jobs))?;
+        self.launch_j2k_store_rgb8_mct_batch(&jobs_buffer, max_pixels, kernel_jobs.len())?;
+        Ok(CudaKernelContiguousBatchOutput {
+            output,
+            ranges,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    /// Apply inverse RCT/ICT and store tightly packed RGB16/RGBA16 in one dispatch.
+    pub fn j2k_store_rgb16_mct_device(
+        &self,
+        plane0: &CudaDeviceBuffer,
+        plane1: &CudaDeviceBuffer,
+        plane2: &CudaDeviceBuffer,
+        job: CudaJ2kStoreRgb16MctJob,
+    ) -> Result<CudaKernelOutput, CudaError> {
+        let store = job.store;
+        let channels = if store.rgba == 0 { 3 } else { 4 };
+        let output_samples =
+            checked_image_words(store.output_width, store.output_height, channels)?;
+        let output_bytes = output_samples
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or(CudaError::LengthTooLarge {
+                len: output_samples,
+            })?;
+        let output = self.allocate(output_bytes)?;
+        let pixels = checked_image_words(store.copy_width, store.copy_height, 1)?;
+        if output_bytes == 0 || pixels == 0 {
+            return Ok(CudaKernelOutput {
+                buffer: output,
+                execution: CudaExecutionStats::default(),
+            });
+        }
+        validate_store_rgb8_plane(
+            plane0,
+            store.input_width0,
+            store.source_x0,
+            store.source_y0,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        validate_store_rgb8_plane(
+            plane1,
+            store.input_width1,
+            store.source_x1,
+            store.source_y1,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        validate_store_rgb8_plane(
+            plane2,
+            store.input_width2,
+            store.source_x2,
+            store.source_y2,
+            store.copy_width,
+            store.copy_height,
+        )?;
+        let dst_end = (store.output_y as usize)
+            .checked_add(store.copy_height as usize)
+            .and_then(|end_y| {
+                (store.output_x as usize)
+                    .checked_add(store.copy_width as usize)
+                    .map(|end_x| (end_x, end_y))
+            })
+            .ok_or(CudaError::LengthTooLarge { len: output_bytes })?;
+        if dst_end.0 > store.output_width as usize || dst_end.1 > store.output_height as usize {
+            return Err(CudaError::LengthTooLarge { len: output_bytes });
+        }
+
+        let job_buffer = self.upload(store_rgb16_mct_job_as_bytes(&job))?;
+        self.launch_j2k_store_rgb16_mct(plane0, plane1, plane2, &output, &job_buffer, pixels)?;
         Ok(CudaKernelOutput {
             buffer: output,
             execution: CudaExecutionStats {
@@ -3789,6 +5841,8 @@ impl CudaContext {
         let mut uvlc_table0_ptr = uvlc_table0.device_ptr();
         let mut uvlc_table1_ptr = uvlc_table1.device_ptr();
         let mut statuses_ptr = statuses.device_ptr();
+        let mut job_count = c_uint::try_from(job_count)
+            .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
         let mut params = [
             (&raw mut payload_ptr).cast::<c_void>(),
             (&raw mut coefficients_ptr).cast::<c_void>(),
@@ -3798,9 +5852,114 @@ impl CudaContext {
             (&raw mut uvlc_table0_ptr).cast::<c_void>(),
             (&raw mut uvlc_table1_ptr).cast::<c_void>(),
             (&raw mut statuses_ptr).cast::<c_void>(),
+            (&raw mut job_count).cast::<c_void>(),
         ];
-        let geometry = htj2k_codeblock_launch_geometry(job_count)
-            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        let geometry = htj2k_codeblock_launch_geometry(job_count as usize).ok_or(
+            CudaError::LengthTooLarge {
+                len: job_count as usize,
+            },
+        )?;
+
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    fn launch_htj2k_decode_codeblocks_multi(
+        &self,
+        kernel: CudaKernel,
+        payload: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table0: &CudaDeviceBuffer,
+        uvlc_table1: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        self.launch_htj2k_decode_codeblocks_multi_with_sync(
+            kernel,
+            payload,
+            jobs,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table0,
+            uvlc_table1,
+            statuses,
+            job_count,
+            true,
+        )
+    }
+
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    fn launch_htj2k_decode_codeblocks_multi_async(
+        &self,
+        kernel: CudaKernel,
+        payload: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table0: &CudaDeviceBuffer,
+        uvlc_table1: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        self.launch_htj2k_decode_codeblocks_multi_with_sync(
+            kernel,
+            payload,
+            jobs,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table0,
+            uvlc_table1,
+            statuses,
+            job_count,
+            false,
+        )
+    }
+
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    fn launch_htj2k_decode_codeblocks_multi_with_sync(
+        &self,
+        kernel: CudaKernel,
+        payload: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table0: &CudaDeviceBuffer,
+        uvlc_table1: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(kernel)?;
+        let mut payload_ptr = payload.device_ptr();
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut vlc_table0_ptr = vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = vlc_table1.device_ptr();
+        let mut uvlc_table0_ptr = uvlc_table0.device_ptr();
+        let mut uvlc_table1_ptr = uvlc_table1.device_ptr();
+        let mut statuses_ptr = statuses.device_ptr();
+        let mut job_count = c_uint::try_from(job_count)
+            .map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+        let mut params = [
+            (&raw mut payload_ptr).cast::<c_void>(),
+            (&raw mut jobs_ptr).cast::<c_void>(),
+            (&raw mut vlc_table0_ptr).cast::<c_void>(),
+            (&raw mut vlc_table1_ptr).cast::<c_void>(),
+            (&raw mut uvlc_table0_ptr).cast::<c_void>(),
+            (&raw mut uvlc_table1_ptr).cast::<c_void>(),
+            (&raw mut statuses_ptr).cast::<c_void>(),
+            (&raw mut job_count).cast::<c_void>(),
+        ];
+        let geometry = htj2k_codeblock_launch_geometry(job_count as usize).ok_or(
+            CudaError::LengthTooLarge {
+                len: job_count as usize,
+            },
+        )?;
 
         if synchronize {
             self.launch_kernel(function, geometry, &mut params)
@@ -3843,6 +6002,48 @@ impl CudaContext {
             (&raw mut coefficients_ptr).cast::<c_void>(),
             (&raw mut jobs_ptr).cast::<c_void>(),
         ];
+        let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_dequantize_htj2k_codeblocks_multi_with_sync(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kDequantizeHtj2kCodeblocksMulti)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_dequantize_htj2k_cleanup_jobs_multi_with_sync(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kDequantizeHtj2kCleanupJobsMulti)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
         let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
             .ok_or(CudaError::LengthTooLarge { len: job_count })?;
 
@@ -3928,6 +6129,140 @@ impl CudaContext {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn launch_htj2k_encode_codeblocks_multi_input(
+        &self,
+        output: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInput)?;
+        let mut output_ptr = output.device_ptr();
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut vlc_table0_ptr = vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = uvlc_table.device_ptr();
+        let mut statuses_ptr = statuses.device_ptr();
+        let mut job_count_u64 =
+            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+        let mut params = [
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut jobs_ptr).cast::<c_void>(),
+            (&raw mut vlc_table0_ptr).cast::<c_void>(),
+            (&raw mut vlc_table1_ptr).cast::<c_void>(),
+            (&raw mut uvlc_table_ptr).cast::<c_void>(),
+            (&raw mut statuses_ptr).cast::<c_void>(),
+            (&raw mut job_count_u64).cast::<c_void>(),
+        ];
+        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_htj2k_encode_codeblocks_multi_input_cleanup(
+        &self,
+        output: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup)?;
+        let mut output_ptr = output.device_ptr();
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut vlc_table0_ptr = vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = uvlc_table.device_ptr();
+        let mut statuses_ptr = statuses.device_ptr();
+        let mut job_count_u64 =
+            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+        let mut params = [
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut jobs_ptr).cast::<c_void>(),
+            (&raw mut vlc_table0_ptr).cast::<c_void>(),
+            (&raw mut vlc_table1_ptr).cast::<c_void>(),
+            (&raw mut uvlc_table_ptr).cast::<c_void>(),
+            (&raw mut statuses_ptr).cast::<c_void>(),
+            (&raw mut job_count_u64).cast::<c_void>(),
+        ];
+        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
+        &self,
+        output: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        vlc_table0: &CudaDeviceBuffer,
+        vlc_table1: &CudaDeviceBuffer,
+        uvlc_table: &CudaDeviceBuffer,
+        statuses: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64)?;
+        let mut output_ptr = output.device_ptr();
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut vlc_table0_ptr = vlc_table0.device_ptr();
+        let mut vlc_table1_ptr = vlc_table1.device_ptr();
+        let mut uvlc_table_ptr = uvlc_table.device_ptr();
+        let mut statuses_ptr = statuses.device_ptr();
+        let mut job_count_u64 =
+            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+        let mut params = [
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut jobs_ptr).cast::<c_void>(),
+            (&raw mut vlc_table0_ptr).cast::<c_void>(),
+            (&raw mut vlc_table1_ptr).cast::<c_void>(),
+            (&raw mut uvlc_table_ptr).cast::<c_void>(),
+            (&raw mut statuses_ptr).cast::<c_void>(),
+            (&raw mut job_count_u64).cast::<c_void>(),
+        ];
+        let geometry = htj2k_encode_codeblock_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    fn launch_htj2k_compact_codeblocks(
+        &self,
+        scratch: &CudaDeviceBuffer,
+        compact: &CudaDeviceBuffer,
+        jobs: &CudaDeviceBuffer,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::Htj2kCompactCodeblocks)?;
+        let mut scratch_ptr = scratch.device_ptr();
+        let mut compact_ptr = compact.device_ptr();
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut job_count_u64 =
+            u64::try_from(job_count).map_err(|_| CudaError::LengthTooLarge { len: job_count })?;
+        let mut params = [
+            (&raw mut scratch_ptr).cast::<c_void>(),
+            (&raw mut compact_ptr).cast::<c_void>(),
+            (&raw mut jobs_ptr).cast::<c_void>(),
+            (&raw mut job_count_u64).cast::<c_void>(),
+        ];
+        let geometry = htj2k_codeblock_sample_launch_geometry(job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn launch_htj2k_packetize_cleanup(
         &self,
         payload: &CudaDeviceBuffer,
@@ -4005,6 +6340,100 @@ impl CudaContext {
         height: u32,
     ) -> Result<(), CudaError> {
         self.launch_j2k_idwt_interleave_with_sync(bands, output, job, width, height, false)
+    }
+
+    fn launch_j2k_idwt_interleave_horizontal_multi(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_rows: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        self.launch_j2k_idwt_interleave_horizontal_multi_ptr(
+            jobs.device_ptr(),
+            max_rows,
+            job_count,
+            synchronize,
+        )
+    }
+
+    fn launch_j2k_idwt_interleave_horizontal_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_rows: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kIdwtInterleaveHorizontalMulti)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_idwt_multi_1d_launch_geometry(max_rows, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_idwt_interleave_horizontal_53_multi(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_rows: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        self.launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
+            jobs.device_ptr(),
+            max_rows,
+            job_count,
+            synchronize,
+        )
+    }
+
+    fn launch_j2k_idwt_interleave_horizontal_53_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_rows: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kIdwtInterleaveHorizontal53Multi)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_idwt_multi_coop_launch_geometry(max_rows, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_idwt_interleave_horizontal_97_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_width: usize,
+        max_rows: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kIdwtInterleaveHorizontal97Multi)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_idwt_multi_coop_axis_launch_geometry(max_rows, max_width, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
     }
 
     fn launch_j2k_idwt_interleave_with_sync(
@@ -4107,6 +6536,113 @@ impl CudaContext {
         columns: usize,
     ) -> Result<(), CudaError> {
         self.launch_j2k_idwt_vertical_with_sync(kernel, output, job, columns, false)
+    }
+
+    fn launch_j2k_idwt_vertical_multi(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_columns: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        self.launch_j2k_idwt_vertical_multi_ptr(
+            jobs.device_ptr(),
+            max_columns,
+            job_count,
+            synchronize,
+        )
+    }
+
+    fn launch_j2k_idwt_vertical_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_columns: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kIdwtVerticalMulti)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_idwt_multi_1d_launch_geometry(max_columns, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_idwt_vertical_53_multi(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_columns: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        self.launch_j2k_idwt_vertical_53_multi_ptr(
+            jobs.device_ptr(),
+            max_columns,
+            job_count,
+            synchronize,
+        )
+    }
+
+    fn launch_j2k_idwt_vertical_53_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_columns: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kIdwtVertical53Multi)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_idwt_multi_coop_launch_geometry(max_columns, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
+    }
+
+    fn launch_j2k_idwt_vertical_97_multi_ptr(
+        &self,
+        jobs_ptr: CuDevicePtr,
+        max_columns: usize,
+        max_height: usize,
+        job_count: usize,
+        synchronize: bool,
+    ) -> Result<(), CudaError> {
+        const COLUMNS_PER_BLOCK: usize = 4;
+        const MIN_COLS4_JOBS: usize = 64;
+        let (kernel, geometry) = if job_count >= MIN_COLS4_JOBS && max_height <= 256 {
+            let geometry = j2k_idwt_multi_coop_columns_launch_geometry(
+                max_columns,
+                max_height,
+                job_count,
+                COLUMNS_PER_BLOCK,
+            )
+            .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+            (CudaKernel::J2kIdwtVertical97MultiCols4, geometry)
+        } else {
+            let geometry =
+                j2k_idwt_multi_coop_axis_launch_geometry(max_columns, max_height, job_count)
+                    .ok_or(CudaError::LengthTooLarge { len: job_count })?;
+            (CudaKernel::J2kIdwtVertical97Multi, geometry)
+        };
+        let function = self.inner.kernel_function(kernel)?;
+        let mut jobs_ptr = jobs_ptr;
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        if synchronize {
+            self.launch_kernel(function, geometry, &mut params)
+        } else {
+            self.launch_kernel_async(function, geometry, &mut params)
+        }
     }
 
     fn launch_j2k_idwt_vertical_with_sync(
@@ -4236,6 +6772,76 @@ impl CudaContext {
         pixels: usize,
     ) -> Result<(), CudaError> {
         let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb16)?;
+        let mut plane0_ptr = plane0.device_ptr();
+        let mut plane1_ptr = plane1.device_ptr();
+        let mut plane2_ptr = plane2.device_ptr();
+        let mut output_ptr = output.device_ptr();
+        let mut job_ptr = job.device_ptr();
+        let mut params = [
+            (&raw mut plane0_ptr).cast::<c_void>(),
+            (&raw mut plane1_ptr).cast::<c_void>(),
+            (&raw mut plane2_ptr).cast::<c_void>(),
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut job_ptr).cast::<c_void>(),
+        ];
+        let geometry = j2k_forward_rct_launch_geometry(pixels)
+            .ok_or(CudaError::LengthTooLarge { len: pixels })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_j2k_store_rgb8_mct(
+        &self,
+        plane0: &CudaDeviceBuffer,
+        plane1: &CudaDeviceBuffer,
+        plane2: &CudaDeviceBuffer,
+        output: &CudaDeviceBuffer,
+        job: &CudaDeviceBuffer,
+        pixels: usize,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb8Mct)?;
+        let mut plane0_ptr = plane0.device_ptr();
+        let mut plane1_ptr = plane1.device_ptr();
+        let mut plane2_ptr = plane2.device_ptr();
+        let mut output_ptr = output.device_ptr();
+        let mut job_ptr = job.device_ptr();
+        let mut params = [
+            (&raw mut plane0_ptr).cast::<c_void>(),
+            (&raw mut plane1_ptr).cast::<c_void>(),
+            (&raw mut plane2_ptr).cast::<c_void>(),
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut job_ptr).cast::<c_void>(),
+        ];
+        let geometry = j2k_forward_rct_launch_geometry(pixels)
+            .ok_or(CudaError::LengthTooLarge { len: pixels })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_j2k_store_rgb8_mct_batch(
+        &self,
+        jobs: &CudaDeviceBuffer,
+        max_pixels: usize,
+        job_count: usize,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kStoreRgb8MctBatch)?;
+        let mut jobs_ptr = jobs.device_ptr();
+        let mut params = [(&raw mut jobs_ptr).cast::<c_void>()];
+        let geometry = j2k_store_batch_launch_geometry(max_pixels, job_count)
+            .ok_or(CudaError::LengthTooLarge { len: max_pixels })?;
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    fn launch_j2k_store_rgb16_mct(
+        &self,
+        plane0: &CudaDeviceBuffer,
+        plane1: &CudaDeviceBuffer,
+        plane2: &CudaDeviceBuffer,
+        output: &CudaDeviceBuffer,
+        job: &CudaDeviceBuffer,
+        pixels: usize,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb16Mct)?;
         let mut plane0_ptr = plane0.device_ptr();
         let mut plane1_ptr = plane1.device_ptr();
         let mut plane2_ptr = plane2.device_ptr();
@@ -4424,6 +7030,9 @@ impl CudaContext {
         work: impl FnOnce() -> Result<T, CudaError>,
     ) -> Result<(T, u128), CudaError> {
         self.inner.set_current()?;
+        if cuda_stage_timings_disabled() {
+            return work().map(|output| (output, 0));
+        }
         let start = self.create_event()?;
         let end = self.create_event()?;
         start.record_default_stream()?;
@@ -4505,6 +7114,12 @@ impl CudaContext {
     pub fn buffer_pool(&self) -> CudaBufferPool {
         CudaBufferPool::new(self.clone())
     }
+
+    /// Create a reusable best-fit device-buffer pool for workloads with many
+    /// same-sized intermediate buffers.
+    pub fn best_fit_buffer_pool(&self) -> CudaBufferPool {
+        CudaBufferPool::new_size_buckets(self.clone())
+    }
 }
 
 impl std::fmt::Debug for CudaContext {
@@ -4541,8 +7156,16 @@ pub enum CudaKernelName {
     Htj2kDecodeCodeblocks,
     /// JPEG 2000 HTJ2K coefficient dequantization kernel.
     J2kDequantizeHtj2kCodeblocks,
+    /// JPEG 2000 HTJ2K multi-buffer coefficient dequantization kernel.
+    J2kDequantizeHtj2kCodeblocksMulti,
+    /// JPEG 2000 HTJ2K multi-buffer dequantization from cleanup metadata.
+    J2kDequantizeHtj2kCleanupJobsMulti,
     /// JPEG 2000 inverse DWT band interleave kernel.
     J2kIdwtInterleave,
+    /// JPEG 2000 fused band interleave and reversible 5/3 horizontal lifting kernel.
+    J2kIdwtInterleaveHorizontal53Multi,
+    /// JPEG 2000 fused band interleave and irreversible 9/7 horizontal lifting kernel.
+    J2kIdwtInterleaveHorizontal97Multi,
     /// JPEG 2000 inverse DWT horizontal lifting kernel.
     J2kIdwtHorizontal,
     /// JPEG 2000 inverse 5/3 DWT horizontal lifting kernel.
@@ -4551,6 +7174,12 @@ pub enum CudaKernelName {
     J2kIdwtHorizontal97,
     /// JPEG 2000 inverse DWT vertical lifting kernel.
     J2kIdwtVertical,
+    /// JPEG 2000 reversible 5/3 vertical lifting multi-target kernel.
+    J2kIdwtVertical53Multi,
+    /// JPEG 2000 irreversible 9/7 vertical lifting multi-target kernel.
+    J2kIdwtVertical97Multi,
+    /// JPEG 2000 irreversible 9/7 vertical lifting multi-target 4-column kernel.
+    J2kIdwtVertical97MultiCols4,
     /// JPEG 2000 inverse 5/3 DWT vertical lifting kernel.
     J2kIdwtVertical53,
     /// JPEG 2000 inverse 9/7 DWT vertical lifting kernel.
@@ -4565,12 +7194,26 @@ pub enum CudaKernelName {
     J2kStoreGray16,
     /// JPEG 2000 RGB/RGBA 8-bit store kernel.
     J2kStoreRgb8,
+    /// JPEG 2000 fused inverse MCT and RGB/RGBA 8-bit store kernel.
+    J2kStoreRgb8Mct,
+    /// JPEG 2000 batched fused inverse MCT and RGB/RGBA 8-bit store kernel.
+    J2kStoreRgb8MctBatch,
     /// JPEG 2000 RGB/RGBA 16-bit store kernel.
     J2kStoreRgb16,
+    /// JPEG 2000 fused inverse MCT and RGB/RGBA 16-bit store kernel.
+    J2kStoreRgb16Mct,
     /// HTJ2K single code-block encode kernel.
     Htj2kEncodeCodeblock,
     /// HTJ2K batched code-block encode kernel.
     Htj2kEncodeCodeblocks,
+    /// HTJ2K batched multi-input code-block encode kernel.
+    Htj2kEncodeCodeblocksMultiInput,
+    /// HTJ2K cleanup-only batched multi-input code-block encode kernel.
+    Htj2kEncodeCodeblocksMultiInputCleanup,
+    /// HTJ2K cleanup-only batched multi-input 64x64 code-block encode kernel.
+    Htj2kEncodeCodeblocksMultiInputCleanup64,
+    /// HTJ2K batched code-block output compaction kernel.
+    Htj2kCompactCodeblocks,
     /// HTJ2K packet header/body assembly kernel.
     Htj2kPacketizeCleanup,
 }
@@ -4590,11 +7233,26 @@ impl CudaKernelName {
             Self::J2kQuantizeSubbandStrided => CudaKernel::J2kQuantizeSubbandStrided,
             Self::Htj2kDecodeCodeblocks => CudaKernel::Htj2kDecodeCodeblocks,
             Self::J2kDequantizeHtj2kCodeblocks => CudaKernel::J2kDequantizeHtj2kCodeblocks,
+            Self::J2kDequantizeHtj2kCodeblocksMulti => {
+                CudaKernel::J2kDequantizeHtj2kCodeblocksMulti
+            }
+            Self::J2kDequantizeHtj2kCleanupJobsMulti => {
+                CudaKernel::J2kDequantizeHtj2kCleanupJobsMulti
+            }
             Self::J2kIdwtInterleave => CudaKernel::J2kIdwtInterleave,
+            Self::J2kIdwtInterleaveHorizontal53Multi => {
+                CudaKernel::J2kIdwtInterleaveHorizontal53Multi
+            }
+            Self::J2kIdwtInterleaveHorizontal97Multi => {
+                CudaKernel::J2kIdwtInterleaveHorizontal97Multi
+            }
             Self::J2kIdwtHorizontal => CudaKernel::J2kIdwtHorizontal,
             Self::J2kIdwtHorizontal53 => CudaKernel::J2kIdwtHorizontal53,
             Self::J2kIdwtHorizontal97 => CudaKernel::J2kIdwtHorizontal97,
             Self::J2kIdwtVertical => CudaKernel::J2kIdwtVertical,
+            Self::J2kIdwtVertical53Multi => CudaKernel::J2kIdwtVertical53Multi,
+            Self::J2kIdwtVertical97Multi => CudaKernel::J2kIdwtVertical97Multi,
+            Self::J2kIdwtVertical97MultiCols4 => CudaKernel::J2kIdwtVertical97MultiCols4,
             Self::J2kIdwtVertical53 => CudaKernel::J2kIdwtVertical53,
             Self::J2kIdwtVertical97 => CudaKernel::J2kIdwtVertical97,
             Self::J2kInverseDwtSingle => CudaKernel::J2kInverseDwtSingle,
@@ -4602,9 +7260,20 @@ impl CudaKernelName {
             Self::J2kStoreGray8 => CudaKernel::J2kStoreGray8,
             Self::J2kStoreGray16 => CudaKernel::J2kStoreGray16,
             Self::J2kStoreRgb8 => CudaKernel::J2kStoreRgb8,
+            Self::J2kStoreRgb8Mct => CudaKernel::J2kStoreRgb8Mct,
+            Self::J2kStoreRgb8MctBatch => CudaKernel::J2kStoreRgb8MctBatch,
             Self::J2kStoreRgb16 => CudaKernel::J2kStoreRgb16,
+            Self::J2kStoreRgb16Mct => CudaKernel::J2kStoreRgb16Mct,
             Self::Htj2kEncodeCodeblock => CudaKernel::Htj2kEncodeCodeblock,
             Self::Htj2kEncodeCodeblocks => CudaKernel::Htj2kEncodeCodeblocks,
+            Self::Htj2kEncodeCodeblocksMultiInput => CudaKernel::Htj2kEncodeCodeblocksMultiInput,
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup => {
+                CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup
+            }
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup64 => {
+                CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64
+            }
+            Self::Htj2kCompactCodeblocks => CudaKernel::Htj2kCompactCodeblocks,
             Self::Htj2kPacketizeCleanup => CudaKernel::Htj2kPacketizeCleanup,
         }
     }
@@ -4623,11 +7292,26 @@ impl CudaKernelName {
             Self::J2kQuantizeSubbandStrided => "signinum_j2k_quantize_subband_strided",
             Self::Htj2kDecodeCodeblocks => "signinum_htj2k_decode_codeblocks",
             Self::J2kDequantizeHtj2kCodeblocks => "signinum_j2k_dequantize_htj2k_codeblocks",
+            Self::J2kDequantizeHtj2kCodeblocksMulti => {
+                "signinum_j2k_dequantize_htj2k_codeblocks_multi"
+            }
+            Self::J2kDequantizeHtj2kCleanupJobsMulti => {
+                "signinum_j2k_dequantize_htj2k_cleanup_jobs_multi"
+            }
             Self::J2kIdwtInterleave => "signinum_j2k_idwt_interleave",
+            Self::J2kIdwtInterleaveHorizontal53Multi => {
+                "signinum_j2k_idwt_interleave_horizontal_53_multi"
+            }
+            Self::J2kIdwtInterleaveHorizontal97Multi => {
+                "signinum_j2k_idwt_interleave_horizontal_97_multi"
+            }
             Self::J2kIdwtHorizontal => "signinum_j2k_idwt_horizontal",
             Self::J2kIdwtHorizontal53 => "signinum_j2k_idwt_horizontal_53",
             Self::J2kIdwtHorizontal97 => "signinum_j2k_idwt_horizontal_97",
             Self::J2kIdwtVertical => "signinum_j2k_idwt_vertical",
+            Self::J2kIdwtVertical53Multi => "signinum_j2k_idwt_vertical_53_multi",
+            Self::J2kIdwtVertical97Multi => "signinum_j2k_idwt_vertical_97_multi",
+            Self::J2kIdwtVertical97MultiCols4 => "signinum_j2k_idwt_vertical_97_multi_cols4",
             Self::J2kIdwtVertical53 => "signinum_j2k_idwt_vertical_53",
             Self::J2kIdwtVertical97 => "signinum_j2k_idwt_vertical_97",
             Self::J2kInverseDwtSingle => "signinum_j2k_inverse_dwt_single",
@@ -4635,9 +7319,20 @@ impl CudaKernelName {
             Self::J2kStoreGray8 => "signinum_j2k_store_gray8",
             Self::J2kStoreGray16 => "signinum_j2k_store_gray16",
             Self::J2kStoreRgb8 => "signinum_j2k_store_rgb8",
+            Self::J2kStoreRgb8Mct => "signinum_j2k_store_rgb8_mct",
+            Self::J2kStoreRgb8MctBatch => "signinum_j2k_store_rgb8_mct_batch",
             Self::J2kStoreRgb16 => "signinum_j2k_store_rgb16",
+            Self::J2kStoreRgb16Mct => "signinum_j2k_store_rgb16_mct",
             Self::Htj2kEncodeCodeblock => "signinum_htj2k_encode_codeblock",
             Self::Htj2kEncodeCodeblocks => "signinum_htj2k_encode_codeblocks",
+            Self::Htj2kEncodeCodeblocksMultiInput => "signinum_htj2k_encode_codeblocks_multi_input",
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup => {
+                "signinum_htj2k_encode_codeblocks_multi_input_cleanup"
+            }
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup64 => {
+                "signinum_htj2k_encode_codeblocks_multi_input_cleanup_64"
+            }
+            Self::Htj2kCompactCodeblocks => "signinum_htj2k_compact_codeblocks",
             Self::Htj2kPacketizeCleanup => "signinum_htj2k_packetize_cleanup",
         }
     }
@@ -4901,7 +7596,28 @@ pub struct CudaBufferPool {
 #[derive(Debug)]
 struct CudaBufferPoolInner {
     context: CudaContext,
-    free: Mutex<Vec<CudaDeviceBuffer>>,
+    free: Mutex<CudaBufferPoolFree>,
+}
+
+#[derive(Debug)]
+enum CudaBufferPoolFree {
+    FirstFit(Vec<CudaDeviceBuffer>),
+    SizeBuckets(BTreeMap<usize, Vec<CudaDeviceBuffer>>),
+}
+
+/// Diagnostics for one traced [`CudaBufferPool`] acquisition.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CudaBufferPoolTakeTrace {
+    /// Requested byte length for the checkout.
+    pub requested_len: usize,
+    /// Number of cached free buffers before the checkout.
+    pub free_count_before: usize,
+    /// Number of cached entries examined while finding a reusable buffer or allocating.
+    pub scanned_count: usize,
+    /// Whether the checkout reused a cached allocation.
+    pub reused: bool,
+    /// Actual allocation byte length backing the checkout.
+    pub allocation_byte_len: usize,
 }
 
 impl CudaBufferPool {
@@ -4910,7 +7626,16 @@ impl CudaBufferPool {
         Self {
             inner: Arc::new(CudaBufferPoolInner {
                 context,
-                free: Mutex::new(Vec::new()),
+                free: Mutex::new(CudaBufferPoolFree::FirstFit(Vec::new())),
+            }),
+        }
+    }
+
+    fn new_size_buckets(context: CudaContext) -> Self {
+        Self {
+            inner: Arc::new(CudaBufferPoolInner {
+                context,
+                free: Mutex::new(CudaBufferPoolFree::SizeBuckets(BTreeMap::new())),
             }),
         }
     }
@@ -4924,8 +7649,9 @@ impl CudaBufferPool {
             .map_err(|error| CudaError::StatePoisoned {
                 message: error.to_string(),
             })?;
-        let buffer = if let Some(index) = free.iter().position(|buffer| buffer.byte_len() >= len) {
-            free.swap_remove(index)
+        let (reusable_buffer, _) = pool_take_fit_buffer(&mut free, len);
+        let buffer = if let Some(buffer) = reusable_buffer {
+            buffer
         } else {
             drop(free);
             self.inner.context.allocate(len)?
@@ -4937,6 +7663,121 @@ impl CudaBufferPool {
         })
     }
 
+    /// Acquire a device buffer with diagnostics for profiling pool behavior.
+    pub fn take_with_trace(
+        &self,
+        len: usize,
+    ) -> Result<(CudaPooledDeviceBuffer, CudaBufferPoolTakeTrace), CudaError> {
+        let mut free = self
+            .inner
+            .free
+            .lock()
+            .map_err(|error| CudaError::StatePoisoned {
+                message: error.to_string(),
+            })?;
+        let free_count_before = free.cached_count();
+        let (reusable_buffer, scanned_count) = pool_take_fit_buffer(&mut free, len);
+        let reused = reusable_buffer.is_some();
+        let buffer = if let Some(buffer) = reusable_buffer {
+            buffer
+        } else {
+            drop(free);
+            self.inner.context.allocate(len)?
+        };
+        let allocation_byte_len = buffer.byte_len();
+        let trace = CudaBufferPoolTakeTrace {
+            requested_len: len,
+            free_count_before,
+            scanned_count,
+            reused,
+            allocation_byte_len,
+        };
+        Ok((
+            CudaPooledDeviceBuffer {
+                buffer: Some(buffer),
+                requested_len: len,
+                pool: self.inner.clone(),
+            },
+            trace,
+        ))
+    }
+
+    /// Upload host bytes into a pooled device buffer.
+    pub fn upload(&self, bytes: &[u8]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        let buffer = self.take(bytes.len())?;
+        if !bytes.is_empty() {
+            self.inner.context.inner.set_current()?;
+            // SAFETY: `buffer` is a live device allocation with at least
+            // `bytes.len()` bytes for this checkout, and `bytes` is valid for
+            // that many host bytes.
+            let result = unsafe {
+                (self.inner.context.inner.driver.cu_memcpy_htod)(
+                    buffer.device_ptr(),
+                    bytes.as_ptr().cast::<c_void>(),
+                    bytes.len(),
+                )
+            };
+            self.inner
+                .context
+                .inner
+                .driver
+                .check("cuMemcpyHtoD_v2", result)?;
+        }
+        Ok(buffer)
+    }
+
+    /// Upload host bytes through temporary page-locked staging into a pooled device buffer.
+    pub fn upload_pinned(&self, bytes: &[u8]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        if bytes.is_empty() {
+            return self.upload(bytes);
+        }
+
+        let buffer = self.take(bytes.len())?;
+        let mut staging = self.inner.context.take_pinned_upload_staging(bytes.len())?;
+        staging.as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
+        self.inner.context.inner.set_current()?;
+        // SAFETY: `buffer` is a live device allocation with at least
+        // `bytes.len()` bytes, and the pinned staging slice covers that range.
+        let upload_result = unsafe {
+            (self.inner.context.inner.driver.cu_memcpy_htod)(
+                buffer.device_ptr(),
+                staging.as_slice()[..bytes.len()].as_ptr().cast::<c_void>(),
+                bytes.len(),
+            )
+        };
+        let upload_result = self
+            .inner
+            .context
+            .inner
+            .driver
+            .check("cuMemcpyHtoD_v2", upload_result);
+        let recycle_result = self.inner.context.recycle_pinned_upload_staging(staging);
+        match (upload_result, recycle_result) {
+            (Ok(()), Ok(())) => Ok(buffer),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
+    /// Upload host `f32` samples into a pooled device buffer.
+    pub fn upload_f32(&self, samples: &[f32]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        self.upload(f32_slice_as_bytes(samples))
+    }
+
+    /// Upload host `f32` samples through pinned staging into a pooled device buffer.
+    pub fn upload_f32_pinned(&self, samples: &[f32]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        self.upload_pinned(f32_slice_as_bytes(samples))
+    }
+
+    /// Upload host `i16` samples into a pooled device buffer.
+    pub fn upload_i16(&self, samples: &[i16]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        self.upload(i16_slice_as_bytes(samples))
+    }
+
+    /// Upload host `i16` samples through pinned staging into a pooled device buffer.
+    pub fn upload_i16_pinned(&self, samples: &[i16]) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        self.upload_pinned(i16_slice_as_bytes(samples))
+    }
+
     /// Number of free buffers currently cached by the pool.
     pub fn cached_count(&self) -> Result<usize, CudaError> {
         Ok(self
@@ -4946,8 +7787,77 @@ impl CudaBufferPool {
             .map_err(|error| CudaError::StatePoisoned {
                 message: error.to_string(),
             })?
-            .len())
+            .cached_count())
     }
+}
+
+impl CudaBufferPoolFree {
+    fn cached_count(&self) -> usize {
+        match self {
+            Self::FirstFit(free) => free.len(),
+            Self::SizeBuckets(free) => free.values().map(Vec::len).sum(),
+        }
+    }
+}
+
+fn pool_take_fit_buffer(
+    free: &mut CudaBufferPoolFree,
+    len: usize,
+) -> (Option<CudaDeviceBuffer>, usize) {
+    match free {
+        CudaBufferPoolFree::FirstFit(free) => pool_take_first_fit_buffer(free, len),
+        CudaBufferPoolFree::SizeBuckets(free) => pool_take_size_bucket_buffer(free, len),
+    }
+}
+
+fn pool_take_first_fit_buffer(
+    free: &mut Vec<CudaDeviceBuffer>,
+    len: usize,
+) -> (Option<CudaDeviceBuffer>, usize) {
+    let mut examined = 0usize;
+    for (index, buffer) in free.iter().enumerate() {
+        examined = examined.saturating_add(1);
+        if buffer.byte_len() >= len {
+            return (Some(free.swap_remove(index)), examined);
+        }
+    }
+    (None, examined)
+}
+
+fn pool_take_size_bucket_buffer(
+    free: &mut BTreeMap<usize, Vec<CudaDeviceBuffer>>,
+    len: usize,
+) -> (Option<CudaDeviceBuffer>, usize) {
+    let Some(size) = free.range(len..).next().map(|(size, _)| *size) else {
+        return (None, usize::from(!free.is_empty()));
+    };
+    let buffer = free
+        .get_mut(&size)
+        .expect("selected CUDA buffer pool size bucket must exist")
+        .pop();
+    if free.get(&size).is_some_and(Vec::is_empty) {
+        free.remove(&size);
+    }
+    (buffer, 1)
+}
+
+#[cfg(test)]
+fn pool_fit_buffer_index_by_len<I>(lengths: I, len: usize) -> Option<usize>
+where
+    I: IntoIterator<Item = (usize, usize)>,
+{
+    let lengths = lengths.into_iter().collect::<Vec<_>>();
+    let mut left = 0usize;
+    let mut right = lengths.len();
+    while left < right {
+        let mid = left + (right - left) / 2;
+        if lengths[mid].1 < len {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    (left < lengths.len()).then_some(lengths[left].0)
 }
 
 /// Device buffer borrowed from a [`CudaBufferPool`].
@@ -4978,6 +7888,41 @@ impl CudaPooledDeviceBuffer {
     pub fn as_device_buffer(&self) -> Option<&CudaDeviceBuffer> {
         self.buffer.as_ref()
     }
+
+    /// Copy the requested bytes for this checkout into caller-owned host output.
+    pub fn copy_to_host(&self, out: &mut [u8]) -> Result<(), CudaError> {
+        if out.len() < self.requested_len {
+            return Err(CudaError::OutputTooSmall {
+                required: self.requested_len,
+                have: out.len(),
+            });
+        }
+        if self.requested_len == 0 {
+            return Ok(());
+        }
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or_else(|| CudaError::InvalidArgument {
+                message: "pooled CUDA buffer checkout is empty".to_string(),
+            })?;
+        buffer.context.inner.set_current()?;
+        // SAFETY: `buffer.ptr` is a live allocation with at least
+        // `requested_len` bytes for this checkout, and `out` was validated.
+        let result = unsafe {
+            (buffer.context.inner.driver.cu_memcpy_dtoh)(
+                out.as_mut_ptr().cast::<c_void>(),
+                buffer.ptr,
+                self.requested_len,
+            )
+        };
+        buffer
+            .context
+            .inner
+            .driver
+            .check("cuMemcpyDtoH_v2", result)?;
+        Ok(())
+    }
 }
 
 impl Drop for CudaPooledDeviceBuffer {
@@ -4985,7 +7930,12 @@ impl Drop for CudaPooledDeviceBuffer {
         if let Some(buffer) = self.buffer.take() {
             let free = self.pool.free.lock();
             match free {
-                Ok(mut free) => free.push(buffer),
+                Ok(mut free) => match &mut *free {
+                    CudaBufferPoolFree::FirstFit(free) => free.push(buffer),
+                    CudaBufferPoolFree::SizeBuckets(free) => {
+                        free.entry(buffer.byte_len()).or_default().push(buffer);
+                    }
+                },
                 Err(_) => drop(buffer),
             }
         }
@@ -4997,6 +7947,99 @@ impl Drop for CudaPooledDeviceBuffer {
 pub struct CudaKernelOutput {
     buffer: CudaDeviceBuffer,
     execution: CudaExecutionStats,
+}
+
+/// Multiple device buffers plus shared execution metadata from one batched kernel.
+#[derive(Debug)]
+pub struct CudaKernelBatchOutput {
+    outputs: Vec<CudaDeviceBuffer>,
+    execution: CudaExecutionStats,
+}
+
+/// One byte range inside a contiguous CUDA batch output allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaDeviceBufferRange {
+    /// Byte offset from the start of the contiguous allocation.
+    pub offset: usize,
+    /// Byte length for this output item.
+    pub len: usize,
+}
+
+/// One contiguous device buffer plus per-item ranges from one batched kernel.
+#[derive(Debug)]
+pub struct CudaKernelContiguousBatchOutput {
+    output: CudaDeviceBuffer,
+    ranges: Vec<CudaDeviceBufferRange>,
+    execution: CudaExecutionStats,
+}
+
+/// Pooled device buffer plus execution metadata.
+#[derive(Debug)]
+pub struct CudaPooledKernelOutput {
+    buffer: CudaPooledDeviceBuffer,
+    execution: CudaExecutionStats,
+}
+
+/// Enqueued CUDA work plus pooled resources that must stay live until the
+/// default stream is synchronized.
+#[derive(Debug)]
+pub struct CudaQueuedExecution {
+    resources: Vec<CudaPooledDeviceBuffer>,
+    execution: CudaExecutionStats,
+}
+
+impl CudaQueuedExecution {
+    /// CUDA execution counters for the enqueued work.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Number of pooled resource buffers held live for the queued work.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+}
+
+/// Enqueued HTJ2K cleanup work plus pooled resources/statuses that must stay
+/// live until `finish` validates kernel completion.
+#[derive(Debug)]
+pub struct CudaQueuedHtj2kCleanup {
+    resources: Vec<CudaPooledDeviceBuffer>,
+    status_buffer: Option<CudaPooledDeviceBuffer>,
+    status_count: usize,
+    kernel_name: &'static str,
+    execution: CudaExecutionStats,
+}
+
+impl CudaQueuedHtj2kCleanup {
+    /// CUDA execution counters for the enqueued cleanup work.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Number of pooled resource buffers held live for the queued cleanup work.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len() + usize::from(self.status_buffer.is_some())
+    }
+
+    /// Synchronize through status download and validate kernel statuses.
+    pub fn finish(self) -> Result<CudaExecutionStats, CudaError> {
+        let Some(status_buffer) = self.status_buffer else {
+            return Ok(self.execution);
+        };
+
+        let mut statuses = vec![CudaHtj2kStatus::default(); self.status_count];
+        status_buffer.copy_to_host(htj2k_statuses_as_bytes_mut(&mut statuses))?;
+        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+            return Err(CudaError::KernelStatus {
+                kernel: self.kernel_name,
+                code: status.code,
+                detail: status.detail,
+            });
+        }
+
+        Ok(self.execution)
+    }
 }
 
 /// Resident f32 component planes produced by CUDA JPEG 2000 encode preparation.
@@ -5390,6 +8433,181 @@ fn active_dwt53_buffers<'a>(
     }
 }
 
+fn j2k_idwt_multi_kernel_jobs(
+    targets: &[CudaJ2kIdwtTarget<'_>],
+) -> Result<Vec<CudaJ2kIdwtMultiKernelJob>, CudaError> {
+    let mut kernel_jobs = Vec::with_capacity(targets.len());
+    for target in targets {
+        let width = target.job.rect.x1.saturating_sub(target.job.rect.x0);
+        let height = target.job.rect.y1.saturating_sub(target.job.rect.y0);
+        if width == 0 || height == 0 {
+            continue;
+        }
+        ensure_idwt_buffer_len(target.output, target.job.rect)?;
+        ensure_idwt_buffer_len(target.ll, target.job.ll_rect)?;
+        ensure_idwt_buffer_len(target.hl, target.job.hl_rect)?;
+        ensure_idwt_buffer_len(target.lh, target.job.lh_rect)?;
+        ensure_idwt_buffer_len(target.hh, target.job.hh_rect)?;
+        kernel_jobs.push(CudaJ2kIdwtMultiKernelJob {
+            ll_ptr: target.ll.device_ptr(),
+            hl_ptr: target.hl.device_ptr(),
+            lh_ptr: target.lh.device_ptr(),
+            hh_ptr: target.hh.device_ptr(),
+            output_ptr: target.output.device_ptr(),
+            job: target.job,
+        });
+    }
+    Ok(kernel_jobs)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CudaJ2kIdwtBatchKernelMode {
+    Generic,
+    Cooperative53,
+    Cooperative97,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CudaJ2kIdwtBatchTraceRow {
+    stage_index: usize,
+    mode: CudaJ2kIdwtBatchKernelMode,
+    job_count: usize,
+    max_width: u32,
+    max_height: u32,
+    min_width: u32,
+    min_height: u32,
+    total_pixels: u64,
+    irreversible_jobs: usize,
+    elapsed_us: u128,
+}
+
+fn idwt_batch_kernel_mode(
+    kernel_jobs: &[CudaJ2kIdwtMultiKernelJob],
+    max_width: u32,
+    max_height: u32,
+) -> CudaJ2kIdwtBatchKernelMode {
+    const MAX_COOPERATIVE_DIMENSION: u32 = 512;
+    const MIN_COOPERATIVE_53_DIMENSION: u32 = 128;
+    const MIN_COOPERATIVE_97_DIMENSION: u32 = 64;
+    let bounded_cooperative_shape =
+        max_width <= MAX_COOPERATIVE_DIMENSION && max_height <= MAX_COOPERATIVE_DIMENSION;
+    if !bounded_cooperative_shape {
+        return CudaJ2kIdwtBatchKernelMode::Generic;
+    }
+    if kernel_jobs.iter().all(|job| job.job.irreversible97 == 0) {
+        if max_width >= MIN_COOPERATIVE_53_DIMENSION && max_height >= MIN_COOPERATIVE_53_DIMENSION {
+            CudaJ2kIdwtBatchKernelMode::Cooperative53
+        } else {
+            CudaJ2kIdwtBatchKernelMode::Generic
+        }
+    } else if kernel_jobs.iter().all(|job| job.job.irreversible97 != 0) {
+        if max_width >= MIN_COOPERATIVE_97_DIMENSION && max_height >= MIN_COOPERATIVE_97_DIMENSION {
+            CudaJ2kIdwtBatchKernelMode::Cooperative97
+        } else {
+            CudaJ2kIdwtBatchKernelMode::Generic
+        }
+    } else {
+        CudaJ2kIdwtBatchKernelMode::Generic
+    }
+}
+
+fn cuda_idwt_trace_enabled() -> bool {
+    std::env::var_os(CUDA_IDWT_TRACE_ENV_VAR).is_some()
+}
+
+fn idwt_batch_trace_row(
+    stage_index: usize,
+    kernel_jobs: &[CudaJ2kIdwtMultiKernelJob],
+    max_width: u32,
+    max_height: u32,
+    mode: CudaJ2kIdwtBatchKernelMode,
+    elapsed_us: u128,
+) -> CudaJ2kIdwtBatchTraceRow {
+    let mut min_width = u32::MAX;
+    let mut min_height = u32::MAX;
+    let mut total_pixels = 0u64;
+    let mut irreversible_jobs = 0usize;
+    for kernel_job in kernel_jobs {
+        let width = kernel_job
+            .job
+            .rect
+            .x1
+            .saturating_sub(kernel_job.job.rect.x0);
+        let height = kernel_job
+            .job
+            .rect
+            .y1
+            .saturating_sub(kernel_job.job.rect.y0);
+        min_width = min_width.min(width);
+        min_height = min_height.min(height);
+        total_pixels =
+            total_pixels.saturating_add(u64::from(width).saturating_mul(u64::from(height)));
+        if kernel_job.job.irreversible97 != 0 {
+            irreversible_jobs = irreversible_jobs.saturating_add(1);
+        }
+    }
+    if kernel_jobs.is_empty() {
+        min_width = 0;
+        min_height = 0;
+    }
+    CudaJ2kIdwtBatchTraceRow {
+        stage_index,
+        mode,
+        job_count: kernel_jobs.len(),
+        max_width,
+        max_height,
+        min_width,
+        min_height,
+        total_pixels,
+        irreversible_jobs,
+        elapsed_us,
+    }
+}
+
+fn format_idwt_batch_trace_row(row: CudaJ2kIdwtBatchTraceRow) -> String {
+    format!(
+        "signinum_profile codec=j2k op=cuda_idwt_batch path=decode \
+         stage_index={} mode={:?} job_count={} max_width={} max_height={} \
+         min_width={} min_height={} total_pixels={} irreversible_jobs={} elapsed_us={}",
+        row.stage_index,
+        row.mode,
+        row.job_count,
+        row.max_width,
+        row.max_height,
+        row.min_width,
+        row.min_height,
+        row.total_pixels,
+        row.irreversible_jobs,
+        row.elapsed_us
+    )
+}
+
+#[cfg(test)]
+fn idwt_batch_uses_cooperative_53(
+    kernel_jobs: &[CudaJ2kIdwtMultiKernelJob],
+    max_width: u32,
+    max_height: u32,
+) -> bool {
+    idwt_batch_kernel_mode(kernel_jobs, max_width, max_height)
+        == CudaJ2kIdwtBatchKernelMode::Cooperative53
+}
+
+fn ensure_idwt_buffer_len(buffer: &CudaDeviceBuffer, rect: CudaJ2kRect) -> Result<(), CudaError> {
+    let width = rect.x1.saturating_sub(rect.x0);
+    let height = rect.y1.saturating_sub(rect.y0);
+    let words = checked_image_words(width, height, 1)?;
+    let bytes = words
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(CudaError::LengthTooLarge { len: words })?;
+    if bytes > buffer.byte_len() {
+        return Err(CudaError::OutputTooSmall {
+            required: bytes,
+            have: buffer.byte_len(),
+        });
+    }
+    Ok(())
+}
+
 fn htj2k_kernel_jobs(
     jobs: &[CudaHtj2kCodeBlockJob],
     payload_len: usize,
@@ -5448,6 +8666,121 @@ fn htj2k_kernel_jobs(
             })
         })
         .collect()
+}
+
+fn htj2k_dequantize_kernel_jobs(
+    targets: &[CudaHtj2kDequantizeTarget<'_>],
+) -> Result<Vec<CudaHtj2kDequantizeKernelJob>, CudaError> {
+    let total_jobs = targets
+        .iter()
+        .try_fold(0usize, |count, target| count.checked_add(target.jobs.len()))
+        .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+    let mut kernel_jobs = Vec::with_capacity(total_jobs);
+    for target in targets {
+        let output_bytes = target
+            .output_words
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(CudaError::LengthTooLarge {
+                len: target.output_words,
+            })?;
+        if output_bytes > target.coefficients.byte_len() {
+            return Err(CudaError::LengthTooLarge { len: output_bytes });
+        }
+        for job in target.jobs {
+            let output_stride = job.output_stride as usize;
+            let output_offset = job.output_offset as usize;
+            let output_end = if job.height == 0 {
+                output_offset
+            } else {
+                output_offset
+                    .checked_add(output_stride.checked_mul(job.height as usize - 1).ok_or(
+                        CudaError::LengthTooLarge {
+                            len: target.output_words,
+                        },
+                    )?)
+                    .and_then(|last_row| last_row.checked_add(job.width as usize))
+                    .ok_or(CudaError::LengthTooLarge {
+                        len: target.output_words,
+                    })?
+            };
+            if output_end > target.output_words {
+                return Err(CudaError::LengthTooLarge {
+                    len: target.output_words,
+                });
+            }
+            kernel_jobs.push(CudaHtj2kDequantizeKernelJob {
+                output_ptr: target.coefficients.device_ptr(),
+                width: job.width,
+                height: job.height,
+                output_stride: job.output_stride,
+                output_offset: job.output_offset,
+                num_bitplanes: u32::from(job.num_bitplanes),
+                reserved: 0,
+                dequantization_step: job.dequantization_step,
+            });
+        }
+    }
+    Ok(kernel_jobs)
+}
+
+fn htj2k_cleanup_multi_kernel_jobs(
+    targets: &[CudaHtj2kCleanupTarget<'_>],
+    payload_len: usize,
+) -> Result<Vec<CudaHtj2kCleanupMultiKernelJob>, CudaError> {
+    let total_jobs = targets
+        .iter()
+        .try_fold(0usize, |count, target| count.checked_add(target.jobs.len()))
+        .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+    let mut kernel_jobs = Vec::with_capacity(total_jobs);
+    for target in targets {
+        let output_bytes = target
+            .output_words
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(CudaError::LengthTooLarge {
+                len: target.output_words,
+            })?;
+        if output_bytes > target.coefficients.byte_len() {
+            return Err(CudaError::LengthTooLarge { len: output_bytes });
+        }
+        for job in htj2k_kernel_jobs(target.jobs, payload_len, target.output_words)? {
+            kernel_jobs.push(CudaHtj2kCleanupMultiKernelJob {
+                output_ptr: target.coefficients.device_ptr(),
+                coded_offset: job.coded_offset,
+                width: job.width,
+                height: job.height,
+                coded_len: job.coded_len,
+                cleanup_length: job.cleanup_length,
+                refinement_length: job.refinement_length,
+                missing_msbs: job.missing_msbs,
+                num_bitplanes: job.num_bitplanes,
+                number_of_coding_passes: job.number_of_coding_passes,
+                output_stride: job.output_stride,
+                output_offset: job.output_offset,
+                dequantization_step: job.dequantization_step,
+                stripe_causal: job.stripe_causal,
+            });
+        }
+    }
+    Ok(kernel_jobs)
+}
+
+fn htj2k_decode_multi_kernel_for_jobs(
+    jobs: &[CudaHtj2kCleanupMultiKernelJob],
+) -> (CudaKernel, &'static str) {
+    let cleanup_only = jobs
+        .iter()
+        .all(|job| job.refinement_length == 0 && job.number_of_coding_passes <= 1);
+    if cleanup_only {
+        (
+            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly,
+            "signinum_htj2k_decode_codeblocks_multi_cleanup_only",
+        )
+    } else {
+        (
+            CudaKernel::Htj2kDecodeCodeblocksMulti,
+            "signinum_htj2k_decode_codeblocks_multi",
+        )
+    }
 }
 
 fn htj2k_decode_needs_zero_fill(
@@ -5517,6 +8850,71 @@ fn htj2k_encode_kernel_jobs(
     Ok(kernel_jobs)
 }
 
+fn htj2k_encode_multi_input_kernel_jobs(
+    targets: &[CudaHtj2kEncodeResidentTarget<'_>],
+) -> Result<Vec<CudaHtj2kEncodeMultiInputKernelJob>, CudaError> {
+    let job_count = targets
+        .iter()
+        .try_fold(0usize, |sum, target| sum.checked_add(target.jobs.len()))
+        .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+    let mut output_offset = 0usize;
+    let mut kernel_jobs = Vec::with_capacity(job_count);
+    for target in targets {
+        let available_coefficients = target.coefficients.typed_view::<i32>()?.len();
+        if available_coefficients < target.coefficient_count {
+            return Err(CudaError::OutputTooSmall {
+                required: target
+                    .coefficient_count
+                    .checked_mul(std::mem::size_of::<i32>())
+                    .ok_or(CudaError::LengthTooLarge {
+                        len: target.coefficient_count,
+                    })?,
+                have: target.coefficients.byte_len(),
+            });
+        }
+        for job in target.jobs {
+            validate_htj2k_encode_codeblock_shape(job.width, job.height)?;
+            let coefficient_offset = job.coefficient_offset as usize;
+            let coefficient_len = checked_image_words(job.width, job.height, 1)?;
+            let coefficient_end = coefficient_offset.checked_add(coefficient_len).ok_or(
+                CudaError::LengthTooLarge {
+                    len: target.coefficient_count,
+                },
+            )?;
+            if coefficient_end > target.coefficient_count {
+                return Err(CudaError::LengthTooLarge {
+                    len: coefficient_end,
+                });
+            }
+
+            let output_end = output_offset
+                .checked_add(HTJ2K_ENCODE_OUTPUT_CAPACITY)
+                .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+            if output_end > u32::MAX as usize {
+                return Err(CudaError::LengthTooLarge { len: output_end });
+            }
+            kernel_jobs.push(CudaHtj2kEncodeMultiInputKernelJob {
+                coefficient_ptr: target.coefficients.device_ptr(),
+                coefficient_offset: job.coefficient_offset,
+                coefficient_stride: job.width,
+                width: job.width,
+                height: job.height,
+                total_bitplanes: u32::from(job.total_bitplanes),
+                output_offset: u32::try_from(output_offset)
+                    .map_err(|_| CudaError::LengthTooLarge { len: output_offset })?,
+                output_capacity: u32::try_from(HTJ2K_ENCODE_OUTPUT_CAPACITY).map_err(|_| {
+                    CudaError::LengthTooLarge {
+                        len: HTJ2K_ENCODE_OUTPUT_CAPACITY,
+                    }
+                })?,
+                target_coding_passes: u32::from(job.target_coding_passes),
+            });
+            output_offset = output_end;
+        }
+    }
+    Ok(kernel_jobs)
+}
+
 fn htj2k_encode_region_kernel_jobs(
     jobs: &[CudaHtj2kEncodeCodeBlockRegionJob],
     coefficient_words: usize,
@@ -5576,6 +8974,106 @@ fn htj2k_encode_region_kernel_jobs(
     Ok(kernel_jobs)
 }
 
+fn htj2k_encode_compact_jobs(
+    statuses: &[CudaHtj2kEncodeStatus],
+    kernel_jobs: &[CudaHtj2kEncodeKernelJob],
+) -> Result<(Vec<CudaHtj2kEncodeCompactJob>, usize), CudaError> {
+    if statuses.len() != kernel_jobs.len() {
+        return Err(CudaError::InvalidArgument {
+            message: "HTJ2K encode status count does not match job count".to_string(),
+        });
+    }
+
+    let mut compact_offset = 0usize;
+    let mut compact_jobs = Vec::with_capacity(kernel_jobs.len());
+    for (status, job) in statuses.iter().zip(kernel_jobs) {
+        let data_len = usize::try_from(status.data_len)
+            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+        if data_len > job.output_capacity as usize {
+            return Err(CudaError::LengthTooLarge { len: data_len });
+        }
+        let source_end = (job.output_offset as usize)
+            .checked_add(data_len)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        let job_output_end = (job.output_offset as usize)
+            .checked_add(job.output_capacity as usize)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if source_end > job_output_end {
+            return Err(CudaError::LengthTooLarge { len: source_end });
+        }
+        compact_jobs.push(CudaHtj2kEncodeCompactJob {
+            source_offset: job.output_offset,
+            compact_offset: u32::try_from(compact_offset).map_err(|_| {
+                CudaError::LengthTooLarge {
+                    len: compact_offset,
+                }
+            })?,
+            data_len: status.data_len,
+            reserved: status.reserved2,
+        });
+        compact_offset = compact_offset
+            .checked_add(data_len)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if compact_offset > u32::MAX as usize {
+            return Err(CudaError::LengthTooLarge {
+                len: compact_offset,
+            });
+        }
+    }
+
+    Ok((compact_jobs, compact_offset))
+}
+
+fn htj2k_encode_compact_jobs_multi_input(
+    statuses: &[CudaHtj2kEncodeStatus],
+    kernel_jobs: &[CudaHtj2kEncodeMultiInputKernelJob],
+) -> Result<(Vec<CudaHtj2kEncodeCompactJob>, usize), CudaError> {
+    if statuses.len() != kernel_jobs.len() {
+        return Err(CudaError::InvalidArgument {
+            message: "HTJ2K encode status count does not match job count".to_string(),
+        });
+    }
+
+    let mut compact_offset = 0usize;
+    let mut compact_jobs = Vec::with_capacity(kernel_jobs.len());
+    for (status, job) in statuses.iter().zip(kernel_jobs) {
+        let data_len = usize::try_from(status.data_len)
+            .map_err(|_| CudaError::LengthTooLarge { len: usize::MAX })?;
+        if data_len > job.output_capacity as usize {
+            return Err(CudaError::LengthTooLarge { len: data_len });
+        }
+        let source_end = (job.output_offset as usize)
+            .checked_add(data_len)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        let job_output_end = (job.output_offset as usize)
+            .checked_add(job.output_capacity as usize)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if source_end > job_output_end {
+            return Err(CudaError::LengthTooLarge { len: source_end });
+        }
+        compact_jobs.push(CudaHtj2kEncodeCompactJob {
+            source_offset: job.output_offset,
+            compact_offset: u32::try_from(compact_offset).map_err(|_| {
+                CudaError::LengthTooLarge {
+                    len: compact_offset,
+                }
+            })?,
+            data_len: status.data_len,
+            reserved: status.reserved2,
+        });
+        compact_offset = compact_offset
+            .checked_add(data_len)
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if compact_offset > u32::MAX as usize {
+            return Err(CudaError::LengthTooLarge {
+                len: compact_offset,
+            });
+        }
+    }
+
+    Ok((compact_jobs, compact_offset))
+}
+
 fn validate_htj2k_encode_codeblock_shape(width: u32, height: u32) -> Result<(), CudaError> {
     let samples = usize::try_from(width)
         .ok()
@@ -5606,6 +9104,68 @@ impl CudaKernelOutput {
 
     /// Split output into device buffer and execution metadata.
     pub fn into_parts(self) -> (CudaDeviceBuffer, CudaExecutionStats) {
+        (self.buffer, self.execution)
+    }
+}
+
+impl CudaKernelBatchOutput {
+    /// Device buffers produced by the batched kernel.
+    pub fn outputs(&self) -> &[CudaDeviceBuffer] {
+        &self.outputs
+    }
+
+    /// CUDA execution counters for the batched kernel.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Split output into device buffers and execution metadata.
+    pub fn into_parts(self) -> (Vec<CudaDeviceBuffer>, CudaExecutionStats) {
+        (self.outputs, self.execution)
+    }
+}
+
+impl CudaKernelContiguousBatchOutput {
+    /// Contiguous device buffer produced by the batched kernel.
+    pub fn output(&self) -> &CudaDeviceBuffer {
+        &self.output
+    }
+
+    /// Per-item byte ranges inside the contiguous output buffer.
+    pub fn ranges(&self) -> &[CudaDeviceBufferRange] {
+        &self.ranges
+    }
+
+    /// CUDA execution counters for the batched kernel.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Split output into the contiguous buffer, per-item ranges, and execution metadata.
+    pub fn into_parts(
+        self,
+    ) -> (
+        CudaDeviceBuffer,
+        Vec<CudaDeviceBufferRange>,
+        CudaExecutionStats,
+    ) {
+        (self.output, self.ranges, self.execution)
+    }
+}
+
+impl CudaPooledKernelOutput {
+    /// Device buffer produced by the kernel.
+    pub fn buffer(&self) -> Option<&CudaDeviceBuffer> {
+        self.buffer.as_device_buffer()
+    }
+
+    /// CUDA execution counters for the kernel.
+    pub fn execution(&self) -> CudaExecutionStats {
+        self.execution
+    }
+
+    /// Split output into pooled device buffer and execution metadata.
+    pub fn into_parts(self) -> (CudaPooledDeviceBuffer, CudaExecutionStats) {
         (self.buffer, self.execution)
     }
 }
@@ -6006,13 +9566,13 @@ pub struct CudaHtj2k97CodeblockBands {
 #[derive(Debug)]
 pub struct CudaHtj2k97DeviceCodeblockBands {
     /// LL subband (`item_count * low_width * low_height`).
-    pub ll: CudaDeviceBuffer,
+    pub ll: CudaPooledDeviceBuffer,
     /// HL subband (`item_count * high_width * low_height`).
-    pub hl: CudaDeviceBuffer,
+    pub hl: CudaPooledDeviceBuffer,
     /// LH subband (`item_count * low_width * high_height`).
-    pub lh: CudaDeviceBuffer,
+    pub lh: CudaPooledDeviceBuffer,
     /// HH subband (`item_count * high_width * high_height`).
-    pub hh: CudaDeviceBuffer,
+    pub hh: CudaPooledDeviceBuffer,
     /// Number of items in the batch.
     pub item_count: usize,
     /// Width of horizontally low-pass bands.
@@ -6027,14 +9587,69 @@ pub struct CudaHtj2k97DeviceCodeblockBands {
 
 /// Device-resident 9/7 batch bands produced by the shared staged pipeline.
 struct Dwt97BatchDeviceBands {
-    ll: CudaDeviceBuffer,
-    lh: CudaDeviceBuffer,
-    hl: CudaDeviceBuffer,
-    hh: CudaDeviceBuffer,
+    ll: CudaPooledDeviceBuffer,
+    lh: CudaPooledDeviceBuffer,
+    hl: CudaPooledDeviceBuffer,
+    hh: CudaPooledDeviceBuffer,
     low_width: usize,
     low_height: usize,
     high_width: usize,
     high_height: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Dwt97BatchInput<'a> {
+    F32(&'a [f32]),
+    I16(&'a [i16]),
+}
+
+impl Dwt97BatchInput<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::F32(blocks) => blocks.len(),
+            Self::I16(blocks) => blocks.len(),
+        }
+    }
+
+    fn upload(self, pool: &CudaBufferPool) -> Result<CudaPooledDeviceBuffer, CudaError> {
+        match self {
+            Self::F32(blocks) => pool.upload_f32(blocks),
+            Self::I16(blocks) => {
+                let bytes = i16_slice_as_bytes(blocks);
+                if should_use_pinned_pooled_i16_upload(bytes.len()) {
+                    pool.upload_pinned(bytes)
+                } else {
+                    pool.upload(bytes)
+                }
+            }
+        }
+    }
+}
+
+fn should_use_pinned_pooled_i16_upload(byte_len: usize) -> bool {
+    byte_len <= PINNED_POOLED_I16_UPLOAD_MAX_BYTES
+}
+
+fn pooled_device_buffer(buffer: &CudaPooledDeviceBuffer) -> Result<&CudaDeviceBuffer, CudaError> {
+    buffer
+        .as_device_buffer()
+        .ok_or_else(|| CudaError::InvalidArgument {
+            message: "pooled CUDA buffer checkout is empty".to_string(),
+        })
+}
+
+fn copy_pooled_bytes_to_vec_uninit(
+    buffer: &CudaPooledDeviceBuffer,
+    byte_len: usize,
+) -> Result<Vec<u8>, CudaError> {
+    let mut out = Vec::with_capacity(byte_len);
+    pooled_device_buffer(buffer)?.copy_range_to_host_uninit(0, out.spare_capacity_mut())?;
+    // SAFETY: copy_range_to_host_uninit returned success after writing exactly
+    // byte_len initialized bytes into the Vec spare capacity.
+    unsafe {
+        out.set_len(byte_len);
+    }
+    Ok(out)
 }
 
 impl CudaContext {
@@ -6155,6 +9770,17 @@ impl CudaContext {
         Ok(out)
     }
 
+    fn download_pooled_f32_band(
+        buffer: &CudaPooledDeviceBuffer,
+        count: usize,
+    ) -> Result<Vec<f32>, CudaError> {
+        let mut out = vec![0f32; count];
+        if count != 0 {
+            buffer.copy_to_host(f32_slice_as_bytes_mut(&mut out))?;
+        }
+        Ok(out)
+    }
+
     fn launch_transcode_dwt97_idct(
         &self,
         dims: Reversible53Dims,
@@ -6266,9 +9892,28 @@ impl CudaContext {
         width: usize,
         height: usize,
     ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
+        let pool = self.buffer_pool();
+        self.j2k_transcode_dwt97_batch_with_pool(
+            blocks, item_count, block_cols, block_rows, width, height, &pool,
+        )
+    }
+
+    /// Compute a same-geometry batch of irreversible single-level 9/7 transforms
+    /// while reusing device buffers from `pool` for transient stage storage.
+    #[allow(clippy::too_many_arguments, clippy::similar_names)]
+    pub fn j2k_transcode_dwt97_batch_with_pool(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<(Vec<CudaTranscodeDwt97Bands>, CudaDwt97BatchStageTimings), CudaError> {
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
             .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height,
+                blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
         let Dwt97BatchDeviceBands {
             ll,
@@ -6287,10 +9932,10 @@ impl CudaContext {
         let hh_size = high_width * high_height;
 
         let (outputs, readback_us) = self.time_default_stream_us(|| {
-            let ll_all = Self::download_f32_band(&ll, item_count * ll_size)?;
-            let lh_all = Self::download_f32_band(&lh, item_count * lh_size)?;
-            let hl_all = Self::download_f32_band(&hl, item_count * hl_size)?;
-            let hh_all = Self::download_f32_band(&hh, item_count * hh_size)?;
+            let ll_all = Self::download_pooled_f32_band(&ll, item_count * ll_size)?;
+            let lh_all = Self::download_pooled_f32_band(&lh, item_count * lh_size)?;
+            let hl_all = Self::download_pooled_f32_band(&hl, item_count * hl_size)?;
+            let hh_all = Self::download_pooled_f32_band(&hh, item_count * hh_size)?;
             let mut outputs = Vec::with_capacity(item_count);
             for item in 0..item_count {
                 outputs.push(CudaTranscodeDwt97Bands {
@@ -6342,9 +9987,34 @@ impl CudaContext {
         height: usize,
         params: CudaHtj2k97QuantizeParams,
     ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let pool = self.buffer_pool();
+        self.j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
+            blocks, item_count, block_cols, block_rows, width, height, params, &pool,
+        )
+    }
+
+    /// Compute a same-geometry batch directly into device-resident
+    /// prequantized HTJ2K code-block coefficients while reusing transient stage
+    /// buffers from `pool`.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    pub fn j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        params: CudaHtj2k97QuantizeParams,
+        pool: &CudaBufferPool,
+    ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
             .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height,
+                blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
         let Dwt97BatchDeviceBands {
             ll,
@@ -6365,11 +10035,11 @@ impl CudaContext {
         let cb_w = to_i32(params.cb_width)?;
         let cb_h = to_i32(params.cb_height)?;
 
-        let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+        let alloc_i32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
             let bytes = count
                 .checked_mul(std::mem::size_of::<i32>())
                 .ok_or(CudaError::LengthTooLarge { len: count })?;
-            self.allocate(bytes)
+            pool.take(bytes)
         };
         let ll_size = low_width * low_height;
         let lh_size = low_width * high_height;
@@ -6384,8 +10054,8 @@ impl CudaContext {
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
             // One launch per subband, each with its own dims and inverse delta.
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &ll,
-                &ll_q,
+                pooled_device_buffer(&ll)?,
+                pooled_device_buffer(&ll_q)?,
                 to_i32(low_width)?,
                 to_i32(low_height)?,
                 cb_w,
@@ -6394,8 +10064,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &hl,
-                &hl_q,
+                pooled_device_buffer(&hl)?,
+                pooled_device_buffer(&hl_q)?,
                 to_i32(high_width)?,
                 to_i32(low_height)?,
                 cb_w,
@@ -6404,8 +10074,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &lh,
-                &lh_q,
+                pooled_device_buffer(&lh)?,
+                pooled_device_buffer(&lh_q)?,
                 to_i32(low_width)?,
                 to_i32(high_height)?,
                 cb_w,
@@ -6414,8 +10084,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &hh,
-                &hh_q,
+                pooled_device_buffer(&hh)?,
+                pooled_device_buffer(&hh_q)?,
                 to_i32(high_width)?,
                 to_i32(high_height)?,
                 cb_w,
@@ -6450,29 +10120,34 @@ impl CudaContext {
         ))
     }
 
-    /// Compute a same-geometry batch directly into prequantized HTJ2K code-block
-    /// coefficients: staged 9/7 followed by per-subband deadzone quantization
-    /// into code-block-major `i32` layout. `params` carries the per-subband
-    /// inverse step sizes (derived by the caller from the `signinum-transcode`
-    /// code-block oracle) and the code-block geometry.
+    /// Compute a same-geometry batch directly from `i16` dequantized DCT
+    /// coefficients into device-resident prequantized HTJ2K code-block
+    /// coefficients while reusing transient stage buffers from `pool`.
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
         clippy::similar_names
     )]
-    pub fn j2k_transcode_htj2k97_codeblock_batch(
+    pub fn j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
         &self,
-        blocks: &[f32],
+        blocks: &[i16],
         item_count: usize,
         block_cols: usize,
         block_rows: usize,
         width: usize,
         height: usize,
         params: CudaHtj2k97QuantizeParams,
-    ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        pool: &CudaBufferPool,
+    ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        if !dwt97_fused_column_quantize_disabled() {
+            return self.j2k_transcode_htj2k97_codeblock_i16_batch_resident_fused_with_pool(
+                blocks, item_count, block_cols, block_rows, width, height, params, pool,
+            );
+        }
+
         let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
-            .transcode_dwt97_batch_to_device(
-                blocks, item_count, block_cols, block_rows, width, height,
+            .transcode_dwt97_i16_batch_to_device(
+                blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
         let Dwt97BatchDeviceBands {
             ll,
@@ -6493,11 +10168,11 @@ impl CudaContext {
         let cb_w = to_i32(params.cb_width)?;
         let cb_h = to_i32(params.cb_height)?;
 
-        let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+        let alloc_i32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
             let bytes = count
                 .checked_mul(std::mem::size_of::<i32>())
                 .ok_or(CudaError::LengthTooLarge { len: count })?;
-            self.allocate(bytes)
+            pool.take(bytes)
         };
         let ll_size = low_width * low_height;
         let lh_size = low_width * high_height;
@@ -6510,10 +10185,9 @@ impl CudaContext {
         let hh_q = alloc_i32(item_count * hh_size)?;
 
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
-            // One launch per subband, each with its own dims and inverse delta.
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &ll,
-                &ll_q,
+                pooled_device_buffer(&ll)?,
+                pooled_device_buffer(&ll_q)?,
                 to_i32(low_width)?,
                 to_i32(low_height)?,
                 cb_w,
@@ -6522,8 +10196,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &hl,
-                &hl_q,
+                pooled_device_buffer(&hl)?,
+                pooled_device_buffer(&hl_q)?,
                 to_i32(high_width)?,
                 to_i32(low_height)?,
                 cb_w,
@@ -6532,8 +10206,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &lh,
-                &lh_q,
+                pooled_device_buffer(&lh)?,
+                pooled_device_buffer(&lh_q)?,
                 to_i32(low_width)?,
                 to_i32(high_height)?,
                 cb_w,
@@ -6542,8 +10216,8 @@ impl CudaContext {
                 items,
             )?;
             self.launch_transcode_dwt97_quantize_codeblocks(
-                &hh,
-                &hh_q,
+                pooled_device_buffer(&hh)?,
+                pooled_device_buffer(&hh_q)?,
                 to_i32(high_width)?,
                 to_i32(high_height)?,
                 cb_w,
@@ -6554,22 +10228,18 @@ impl CudaContext {
             Ok(())
         })?;
 
-        let (codeblocks, readback_us) = self.time_default_stream_us(|| {
-            Ok(CudaHtj2k97CodeblockBands {
-                ll: Self::download_i32_band(&ll_q, item_count * ll_size)?,
-                hl: Self::download_i32_band(&hl_q, item_count * hl_size)?,
-                lh: Self::download_i32_band(&lh_q, item_count * lh_size)?,
-                hh: Self::download_i32_band(&hh_q, item_count * hh_size)?,
+        Ok((
+            CudaHtj2k97DeviceCodeblockBands {
+                ll: ll_q,
+                hl: hl_q,
+                lh: lh_q,
+                hh: hh_q,
                 item_count,
                 low_width,
                 low_height,
                 high_width,
                 high_height,
-            })
-        })?;
-
-        Ok((
-            codeblocks,
+            },
             CudaDwt97BatchStageTimings {
                 pack_upload_us,
                 idct_row_lift_us,
@@ -6577,24 +10247,27 @@ impl CudaContext {
                 quantize_codeblock_us,
                 ht_encode_us: 0,
                 ht_codeblock_dispatches: 0,
-                readback_us,
+                readback_us: 0,
             },
         ))
     }
 
-    /// Run the shared staged 9/7 batch pipeline (alloc + upload, batched IDCT +
-    /// row lift, batched column lift) and return the device-resident bands plus
-    /// the three pre-readback stage timings.
-    #[allow(clippy::too_many_lines)]
-    fn transcode_dwt97_batch_to_device(
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    fn j2k_transcode_htj2k97_codeblock_i16_batch_resident_fused_with_pool(
         &self,
-        blocks: &[f32],
+        blocks: &[i16],
         item_count: usize,
         block_cols: usize,
         block_rows: usize,
         width: usize,
         height: usize,
-    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
+        params: CudaHtj2k97QuantizeParams,
+        pool: &CudaBufferPool,
+    ) -> Result<(CudaHtj2k97DeviceCodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
         if !TRANSCODE_PTX_BUILT_FROM_CUDA {
             return Err(CudaError::InvalidArgument {
                 message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
@@ -6651,14 +10324,401 @@ impl CudaContext {
         let blocks_per_item = to_i32(block_count)?;
         let low_height_i32 = to_i32(low_height)?;
         let high_height_i32 = to_i32(high_height)?;
+        let cb_w = to_i32(params.cb_width)?;
+        let cb_h = to_i32(params.cb_height)?;
 
         self.inner.set_current()?;
 
-        let alloc_f32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+        let alloc_f32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
             let bytes = count
                 .checked_mul(std::mem::size_of::<f32>())
                 .ok_or(CudaError::LengthTooLarge { len: count })?;
+            pool.take(bytes)
+        };
+        let alloc_i32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
+            pool.take(bytes)
+        };
+        let (buffers, pack_upload_us) = self.time_default_stream_us(|| {
+            let spatial = alloc_f32(item_count * width * height)?;
+            let row_low = alloc_f32(item_count * height * low_width)?;
+            let row_high = alloc_f32(item_count * height * high_width)?;
+            let blocks_dev = Dwt97BatchInput::I16(blocks).upload(pool)?;
+            Ok((spatial, row_low, row_high, blocks_dev))
+        })?;
+        let (spatial, row_low, row_high, blocks_dev) = buffers;
+
+        let ll_size = low_width * low_height;
+        let lh_size = low_width * high_height;
+        let hl_size = high_width * low_height;
+        let hh_size = high_width * high_height;
+
+        let ll_q = alloc_i32(item_count * ll_size)?;
+        let lh_q = alloc_i32(item_count * lh_size)?;
+        let hl_q = alloc_i32(item_count * hl_size)?;
+        let hh_q = alloc_i32(item_count * hh_size)?;
+
+        let ((), idct_row_lift_us) = self.time_default_stream_us(|| {
+            self.launch_transcode_dwt97_idct_i16_batch(
+                dims,
+                blocks_per_item,
+                items,
+                pooled_device_buffer(&blocks_dev)?,
+                pooled_device_buffer(&spatial)?,
+            )?;
+            self.launch_transcode_dwt97_row_lift_batch(
+                dims,
+                items,
+                pooled_device_buffer(&spatial)?,
+                pooled_device_buffer(&row_low)?,
+                pooled_device_buffer(&row_high)?,
+            )?;
+            Ok(())
+        })?;
+
+        let ((), column_quantize_us) = self.time_default_stream_us(|| {
+            if dims.low_width > 0 {
+                self.launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
+                    pooled_device_buffer(&row_low)?,
+                    dims.low_width,
+                    dims.height,
+                    low_height_i32,
+                    high_height_i32,
+                    items,
+                    pooled_device_buffer(&ll_q)?,
+                    pooled_device_buffer(&lh_q)?,
+                    cb_w,
+                    cb_h,
+                    params.inv_delta_ll,
+                    params.inv_delta_lh,
+                )?;
+            }
+            if dims.high_width > 0 {
+                self.launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
+                    pooled_device_buffer(&row_high)?,
+                    dims.high_width,
+                    dims.height,
+                    low_height_i32,
+                    high_height_i32,
+                    items,
+                    pooled_device_buffer(&hl_q)?,
+                    pooled_device_buffer(&hh_q)?,
+                    cb_w,
+                    cb_h,
+                    params.inv_delta_hl,
+                    params.inv_delta_hh,
+                )?;
+            }
+            Ok(())
+        })?;
+
+        Ok((
+            CudaHtj2k97DeviceCodeblockBands {
+                ll: ll_q,
+                hl: hl_q,
+                lh: lh_q,
+                hh: hh_q,
+                item_count,
+                low_width,
+                low_height,
+                high_width,
+                high_height,
+            },
+            CudaDwt97BatchStageTimings {
+                pack_upload_us,
+                idct_row_lift_us,
+                column_lift_us: 0,
+                quantize_codeblock_us: column_quantize_us,
+                ht_encode_us: 0,
+                ht_codeblock_dispatches: 0,
+                readback_us: 0,
+            },
+        ))
+    }
+
+    /// Compute a same-geometry batch directly into prequantized HTJ2K code-block
+    /// coefficients: staged 9/7 followed by per-subband deadzone quantization
+    /// into code-block-major `i32` layout. `params` carries the per-subband
+    /// inverse step sizes (derived by the caller from the `signinum-transcode`
+    /// code-block oracle) and the code-block geometry.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    pub fn j2k_transcode_htj2k97_codeblock_batch(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        params: CudaHtj2k97QuantizeParams,
+    ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let pool = self.buffer_pool();
+        self.j2k_transcode_htj2k97_codeblock_batch_with_pool(
+            blocks, item_count, block_cols, block_rows, width, height, params, &pool,
+        )
+    }
+
+    /// Compute a same-geometry batch directly into prequantized HTJ2K
+    /// code-block coefficients while reusing transient stage buffers from
+    /// `pool`.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    pub fn j2k_transcode_htj2k97_codeblock_batch_with_pool(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        params: CudaHtj2k97QuantizeParams,
+        pool: &CudaBufferPool,
+    ) -> Result<(CudaHtj2k97CodeblockBands, CudaDwt97BatchStageTimings), CudaError> {
+        let (bands, pack_upload_us, idct_row_lift_us, column_lift_us) = self
+            .transcode_dwt97_batch_to_device(
+                blocks, item_count, block_cols, block_rows, width, height, pool,
+            )?;
+        let Dwt97BatchDeviceBands {
+            ll,
+            lh,
+            hl,
+            hh,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        } = bands;
+
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let items =
+            u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
+        let cb_w = to_i32(params.cb_width)?;
+        let cb_h = to_i32(params.cb_height)?;
+
+        let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<i32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
             self.allocate(bytes)
+        };
+        let ll_size = low_width * low_height;
+        let lh_size = low_width * high_height;
+        let hl_size = high_width * low_height;
+        let hh_size = high_width * high_height;
+
+        let ll_q = alloc_i32(item_count * ll_size)?;
+        let lh_q = alloc_i32(item_count * lh_size)?;
+        let hl_q = alloc_i32(item_count * hl_size)?;
+        let hh_q = alloc_i32(item_count * hh_size)?;
+
+        let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
+            // One launch per subband, each with its own dims and inverse delta.
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                pooled_device_buffer(&ll)?,
+                &ll_q,
+                to_i32(low_width)?,
+                to_i32(low_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_ll,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                pooled_device_buffer(&hl)?,
+                &hl_q,
+                to_i32(high_width)?,
+                to_i32(low_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_hl,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                pooled_device_buffer(&lh)?,
+                &lh_q,
+                to_i32(low_width)?,
+                to_i32(high_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_lh,
+                items,
+            )?;
+            self.launch_transcode_dwt97_quantize_codeblocks(
+                pooled_device_buffer(&hh)?,
+                &hh_q,
+                to_i32(high_width)?,
+                to_i32(high_height)?,
+                cb_w,
+                cb_h,
+                params.inv_delta_hh,
+                items,
+            )?;
+            Ok(())
+        })?;
+
+        let (codeblocks, readback_us) = self.time_default_stream_us(|| {
+            Ok(CudaHtj2k97CodeblockBands {
+                ll: Self::download_i32_band(&ll_q, item_count * ll_size)?,
+                hl: Self::download_i32_band(&hl_q, item_count * hl_size)?,
+                lh: Self::download_i32_band(&lh_q, item_count * lh_size)?,
+                hh: Self::download_i32_band(&hh_q, item_count * hh_size)?,
+                item_count,
+                low_width,
+                low_height,
+                high_width,
+                high_height,
+            })
+        })?;
+
+        Ok((
+            codeblocks,
+            CudaDwt97BatchStageTimings {
+                pack_upload_us,
+                idct_row_lift_us,
+                column_lift_us,
+                quantize_codeblock_us,
+                ht_encode_us: 0,
+                ht_codeblock_dispatches: 0,
+                readback_us,
+            },
+        ))
+    }
+
+    /// Run the shared staged 9/7 batch pipeline (alloc + upload, batched IDCT +
+    /// row lift, batched column lift) and return the device-resident bands plus
+    /// the three pre-readback stage timings.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
+    fn transcode_dwt97_batch_to_device(
+        &self,
+        blocks: &[f32],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
+        self.transcode_dwt97_batch_input_to_device(
+            Dwt97BatchInput::F32(blocks),
+            item_count,
+            block_cols,
+            block_rows,
+            width,
+            height,
+            pool,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transcode_dwt97_i16_batch_to_device(
+        &self,
+        blocks: &[i16],
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
+        self.transcode_dwt97_batch_input_to_device(
+            Dwt97BatchInput::I16(blocks),
+            item_count,
+            block_cols,
+            block_rows,
+            width,
+            height,
+            pool,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
+    fn transcode_dwt97_batch_input_to_device(
+        &self,
+        input: Dwt97BatchInput<'_>,
+        item_count: usize,
+        block_cols: usize,
+        block_rows: usize,
+        width: usize,
+        height: usize,
+        pool: &CudaBufferPool,
+    ) -> Result<(Dwt97BatchDeviceBands, u128, u128, u128), CudaError> {
+        if !TRANSCODE_PTX_BUILT_FROM_CUDA {
+            return Err(CudaError::InvalidArgument {
+                message: "CUDA transcode kernels were not built (nvcc unavailable at build time)"
+                    .to_string(),
+            });
+        }
+        let block_count = block_cols
+            .checked_mul(block_rows)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_w = block_cols
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_cols })?;
+        let covered_h = block_rows
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: block_rows })?;
+        let per_item_coeffs = block_count
+            .checked_mul(64)
+            .ok_or(CudaError::LengthTooLarge { len: block_count })?;
+        let expected_coeffs =
+            per_item_coeffs
+                .checked_mul(item_count)
+                .ok_or(CudaError::LengthTooLarge {
+                    len: per_item_coeffs,
+                })?;
+        if item_count == 0
+            || width == 0
+            || height == 0
+            || width > covered_w
+            || height > covered_h
+            || input.len() != expected_coeffs
+        {
+            return Err(CudaError::InvalidArgument {
+                message: "9/7 transcode batch has unsupported grid geometry".to_string(),
+            });
+        }
+
+        let low_width = width.div_ceil(2);
+        let low_height = height.div_ceil(2);
+        let high_width = width / 2;
+        let high_height = height / 2;
+
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let dims = Reversible53Dims {
+            block_cols: to_i32(block_cols)?,
+            width: to_i32(width)?,
+            height: to_i32(height)?,
+            low_width: to_i32(low_width)?,
+            high_width: to_i32(high_width)?,
+        };
+        let items =
+            u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
+        let blocks_per_item = to_i32(block_count)?;
+        let low_height_i32 = to_i32(low_height)?;
+        let high_height_i32 = to_i32(high_height)?;
+
+        self.inner.set_current()?;
+
+        let alloc_f32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(CudaError::LengthTooLarge { len: count })?;
+            pool.take(bytes)
         };
 
         // Stage: allocate batch buffers and upload all blocks.
@@ -6670,21 +10730,36 @@ impl CudaContext {
             let lh = alloc_f32(item_count * low_width * high_height)?;
             let hl = alloc_f32(item_count * high_width * low_height)?;
             let hh = alloc_f32(item_count * high_width * high_height)?;
-            let blocks_dev = self.upload_f32(blocks)?;
+            let blocks_dev = input.upload(pool)?;
             Ok((spatial, row_low, row_high, ll, lh, hl, hh, blocks_dev))
         })?;
         let (spatial, row_low, row_high, ll, lh, hl, hh, blocks_dev) = buffers;
 
         // Stage: batched separable IDCT then horizontal 9/7 row lift.
         let ((), idct_row_lift_us) = self.time_default_stream_us(|| {
-            self.launch_transcode_dwt97_idct_batch(
+            match input {
+                Dwt97BatchInput::F32(_) => self.launch_transcode_dwt97_idct_batch(
+                    dims,
+                    blocks_per_item,
+                    items,
+                    pooled_device_buffer(&blocks_dev)?,
+                    pooled_device_buffer(&spatial)?,
+                )?,
+                Dwt97BatchInput::I16(_) => self.launch_transcode_dwt97_idct_i16_batch(
+                    dims,
+                    blocks_per_item,
+                    items,
+                    pooled_device_buffer(&blocks_dev)?,
+                    pooled_device_buffer(&spatial)?,
+                )?,
+            }
+            self.launch_transcode_dwt97_row_lift_batch(
                 dims,
-                blocks_per_item,
                 items,
-                &blocks_dev,
-                &spatial,
+                pooled_device_buffer(&spatial)?,
+                pooled_device_buffer(&row_low)?,
+                pooled_device_buffer(&row_high)?,
             )?;
-            self.launch_transcode_dwt97_row_lift_batch(dims, items, &spatial, &row_low, &row_high)?;
             Ok(())
         })?;
 
@@ -6692,26 +10767,26 @@ impl CudaContext {
         let ((), column_lift_us) = self.time_default_stream_us(|| {
             if dims.low_width > 0 {
                 self.launch_transcode_dwt97_column_lift_batch(
-                    &row_low,
+                    pooled_device_buffer(&row_low)?,
                     dims.low_width,
                     dims.height,
                     low_height_i32,
                     high_height_i32,
                     items,
-                    &ll,
-                    &lh,
+                    pooled_device_buffer(&ll)?,
+                    pooled_device_buffer(&lh)?,
                 )?;
             }
             if dims.high_width > 0 {
                 self.launch_transcode_dwt97_column_lift_batch(
-                    &row_high,
+                    pooled_device_buffer(&row_high)?,
                     dims.high_width,
                     dims.height,
                     low_height_i32,
                     high_height_i32,
                     items,
-                    &hl,
-                    &hh,
+                    pooled_device_buffer(&hl)?,
+                    pooled_device_buffer(&hh)?,
                 )?;
             }
             Ok(())
@@ -6771,6 +10846,43 @@ impl CudaContext {
         self.launch_kernel_async(function, geometry, &mut params)
     }
 
+    fn launch_transcode_dwt97_idct_i16_batch(
+        &self,
+        dims: Reversible53Dims,
+        blocks_per_item: i32,
+        items: u32,
+        blocks: &CudaDeviceBuffer,
+        spatial: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeDwt97IdctI16Batch)?;
+        let mut blocks_ptr = blocks.device_ptr();
+        let mut block_cols = dims.block_cols;
+        let mut width = dims.width;
+        let mut height = dims.height;
+        let mut blocks_per_item = blocks_per_item;
+        let mut spatial_ptr = spatial.device_ptr();
+        let mut params = [
+            (&raw mut blocks_ptr).cast::<c_void>(),
+            (&raw mut block_cols).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut height).cast::<c_void>(),
+            (&raw mut blocks_per_item).cast::<c_void>(),
+            (&raw mut spatial_ptr).cast::<c_void>(),
+        ];
+        let grid_w = u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let grid_h =
+            u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
+            .ok_or(CudaError::LengthTooLarge { len: 0 })?;
+        let geometry = kernels::CudaLaunchGeometry {
+            grid: (base.grid.0, base.grid.1, items),
+            block: base.block,
+        };
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
     fn launch_transcode_dwt97_row_lift_batch(
         &self,
         dims: Reversible53Dims,
@@ -6779,6 +10891,12 @@ impl CudaContext {
         row_low: &CudaDeviceBuffer,
         row_high: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
+        if dims.width <= DWT97_ROW_LIFT_MAX_WIDTH {
+            return self.launch_transcode_dwt97_row_lift_batch_coop(
+                dims, items, spatial, row_low, row_high,
+            );
+        }
+
         let function = self
             .inner
             .kernel_function(CudaKernel::TranscodeDwt97RowLiftBatch)?;
@@ -6804,6 +10922,49 @@ impl CudaContext {
         let geometry = kernels::CudaLaunchGeometry {
             grid: (base.grid.0, items, 1),
             block: base.block,
+        };
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_dwt97_row_lift_batch_coop(
+        &self,
+        dims: Reversible53Dims,
+        items: u32,
+        spatial: &CudaDeviceBuffer,
+        row_low: &CudaDeviceBuffer,
+        row_high: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeDwt97RowLiftBatchCoop)?;
+        let mut spatial_ptr = spatial.device_ptr();
+        let mut width = dims.width;
+        let mut height = dims.height;
+        let mut low_width = dims.low_width;
+        let mut high_width = dims.high_width;
+        let mut low_ptr = row_low.device_ptr();
+        let mut high_ptr = row_high.device_ptr();
+        let mut params = [
+            (&raw mut spatial_ptr).cast::<c_void>(),
+            (&raw mut width).cast::<c_void>(),
+            (&raw mut height).cast::<c_void>(),
+            (&raw mut low_width).cast::<c_void>(),
+            (&raw mut high_width).cast::<c_void>(),
+            (&raw mut low_ptr).cast::<c_void>(),
+            (&raw mut high_ptr).cast::<c_void>(),
+        ];
+        let rows =
+            usize::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        let rows_per_block = DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK as usize;
+        let grid_x = c_uint::try_from(rows.div_ceil(rows_per_block))
+            .map_err(|_| CudaError::LengthTooLarge { len: rows })?;
+        let geometry = kernels::CudaLaunchGeometry {
+            grid: (grid_x, items, 1),
+            block: (
+                DWT97_ROW_LIFT_COOP_THREADS_X,
+                DWT97_ROW_LIFT_COOP_ROWS_PER_BLOCK,
+                1,
+            ),
         };
         self.launch_kernel_async(function, geometry, &mut params)
     }
@@ -6843,6 +11004,63 @@ impl CudaContext {
             (&raw mut high_h).cast::<c_void>(),
             (&raw mut low_ptr).cast::<c_void>(),
             (&raw mut high_ptr).cast::<c_void>(),
+        ];
+        let base =
+            copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
+        let geometry = kernels::CudaLaunchGeometry {
+            grid: (base.grid.0, items, 1),
+            block: base.block,
+        };
+        self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_transcode_dwt97_column_lift_quantize_codeblocks_batch(
+        &self,
+        rows_buffer: &CudaDeviceBuffer,
+        band_width: i32,
+        height: i32,
+        low_height: i32,
+        high_height: i32,
+        items: u32,
+        low_out: &CudaDeviceBuffer,
+        high_out: &CudaDeviceBuffer,
+        cb_width: i32,
+        cb_height: i32,
+        inv_delta_low: f32,
+        inv_delta_high: f32,
+    ) -> Result<(), CudaError> {
+        let columns =
+            usize::try_from(band_width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
+        if columns == 0 {
+            return Ok(());
+        }
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch)?;
+        let mut rows_ptr = rows_buffer.device_ptr();
+        let mut band = band_width;
+        let mut rows = height;
+        let mut low_h = low_height;
+        let mut high_h = high_height;
+        let mut low_ptr = low_out.device_ptr();
+        let mut high_ptr = high_out.device_ptr();
+        let mut cb_w = cb_width;
+        let mut cb_h = cb_height;
+        let mut inv_low = inv_delta_low;
+        let mut inv_high = inv_delta_high;
+        let mut params = [
+            (&raw mut rows_ptr).cast::<c_void>(),
+            (&raw mut band).cast::<c_void>(),
+            (&raw mut rows).cast::<c_void>(),
+            (&raw mut low_h).cast::<c_void>(),
+            (&raw mut high_h).cast::<c_void>(),
+            (&raw mut low_ptr).cast::<c_void>(),
+            (&raw mut high_ptr).cast::<c_void>(),
+            (&raw mut cb_w).cast::<c_void>(),
+            (&raw mut cb_h).cast::<c_void>(),
+            (&raw mut inv_low).cast::<c_void>(),
+            (&raw mut inv_high).cast::<c_void>(),
         ];
         let base =
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
@@ -7026,6 +11244,44 @@ impl CudaDeviceBuffer {
             .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
         // SAFETY: `source` is inside this live device allocation, and `out`
         // is valid for the requested range length after the bounds check above.
+        self.context.inner.driver.check("cuMemcpyDtoH_v2", unsafe {
+            (self.context.inner.driver.cu_memcpy_dtoh)(
+                out.as_mut_ptr().cast::<c_void>(),
+                source,
+                out.len(),
+            )
+        })
+    }
+
+    /// Copy a byte range from this device buffer into uninitialized host output.
+    pub fn copy_range_to_host_uninit(
+        &self,
+        offset: usize,
+        out: &mut [std::mem::MaybeUninit<u8>],
+    ) -> Result<(), CudaError> {
+        let end = offset
+            .checked_add(out.len())
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        if end > self.len {
+            return Err(CudaError::OutputTooSmall {
+                required: end,
+                have: self.len,
+            });
+        }
+        if out.is_empty() {
+            return Ok(());
+        }
+
+        self.context.inner.set_current()?;
+        let source = self
+            .ptr
+            .checked_add(
+                u64::try_from(offset).map_err(|_| CudaError::LengthTooLarge { len: offset })?,
+            )
+            .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        // SAFETY: `source` is inside this live device allocation, and `out`
+        // points at writable spare capacity for exactly the requested byte
+        // count. The caller decides when those bytes become initialized.
         self.context.inner.driver.check("cuMemcpyDtoH_v2", unsafe {
             (self.context.inner.driver.cu_memcpy_dtoh)(
                 out.as_mut_ptr().cast::<c_void>(),
@@ -7233,6 +11489,17 @@ fn f32_slice_as_bytes_mut(samples: &mut [f32]) -> &mut [u8] {
     }
 }
 
+fn i16_slice_as_bytes(samples: &[i16]) -> &[u8] {
+    // SAFETY: i16 has no invalid bit patterns, and the output byte slice is
+    // read-only with the same lifetime as the input coefficients.
+    unsafe {
+        std::slice::from_raw_parts(
+            samples.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(samples),
+        )
+    }
+}
+
 fn i32_slice_as_bytes(samples: &[i32]) -> &[u8] {
     // SAFETY: i32 has no invalid bit patterns, and the output byte slice is
     // read-only with the same lifetime as the input coefficients.
@@ -7297,21 +11564,28 @@ fn htj2k_encode_status_as_bytes_mut(status: &mut CudaHtj2kEncodeStatus) -> &mut 
     }
 }
 
+fn htj2k_encode_statuses_byte_len(count: usize) -> Result<usize, CudaError> {
+    count
+        .checked_mul(std::mem::size_of::<CudaHtj2kEncodeStatus>())
+        .ok_or(CudaError::LengthTooLarge { len: count })
+}
+
 fn htj2k_encode_jobs_as_bytes(jobs: &[CudaHtj2kEncodeKernelJob]) -> &[u8] {
     // SAFETY: CudaHtj2kEncodeKernelJob is repr(C) integer POD data copied
     // directly to CUDA.
     unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
 }
 
-fn htj2k_encode_statuses_as_bytes(statuses: &[CudaHtj2kEncodeStatus]) -> &[u8] {
-    // SAFETY: CudaHtj2kEncodeStatus is repr(C) integer POD data copied directly
-    // to CUDA.
-    unsafe {
-        std::slice::from_raw_parts(
-            statuses.as_ptr().cast::<u8>(),
-            std::mem::size_of_val(statuses),
-        )
-    }
+fn htj2k_encode_multi_input_jobs_as_bytes(jobs: &[CudaHtj2kEncodeMultiInputKernelJob]) -> &[u8] {
+    // SAFETY: CudaHtj2kEncodeMultiInputKernelJob is repr(C) integer POD data
+    // copied directly to CUDA.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
+}
+
+fn htj2k_encode_compact_jobs_as_bytes(jobs: &[CudaHtj2kEncodeCompactJob]) -> &[u8] {
+    // SAFETY: CudaHtj2kEncodeCompactJob is repr(C) integer POD data copied
+    // directly to CUDA.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
 }
 
 fn htj2k_encode_statuses_as_bytes_mut(statuses: &mut [CudaHtj2kEncodeStatus]) -> &mut [u8] {
@@ -7401,15 +11675,22 @@ fn htj2k_jobs_as_bytes(jobs: &[CudaHtj2kCodeBlockKernelJob]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
 }
 
-fn htj2k_statuses_as_bytes(statuses: &[CudaHtj2kStatus]) -> &[u8] {
-    // SAFETY: CudaHtj2kStatus is repr(C) integer POD data, and the byte view is
-    // used only for a host-to-device copy.
-    unsafe {
-        std::slice::from_raw_parts(
-            statuses.as_ptr().cast::<u8>(),
-            std::mem::size_of_val(statuses),
-        )
-    }
+fn htj2k_cleanup_multi_jobs_as_bytes(jobs: &[CudaHtj2kCleanupMultiKernelJob]) -> &[u8] {
+    // SAFETY: CudaHtj2kCleanupMultiKernelJob is repr(C), plain integer/f32 POD
+    // data, and the byte view is used only for a host-to-device copy.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
+}
+
+fn htj2k_dequantize_jobs_as_bytes(jobs: &[CudaHtj2kDequantizeKernelJob]) -> &[u8] {
+    // SAFETY: CudaHtj2kDequantizeKernelJob is repr(C), plain integer/f32 POD
+    // data, and the byte view is used only for a host-to-device copy.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
+}
+
+fn htj2k_statuses_byte_len(count: usize) -> Result<usize, CudaError> {
+    count
+        .checked_mul(std::mem::size_of::<CudaHtj2kStatus>())
+        .ok_or(CudaError::LengthTooLarge { len: count })
 }
 
 fn htj2k_statuses_as_bytes_mut(statuses: &mut [CudaHtj2kStatus]) -> &mut [u8] {
@@ -7431,6 +11712,12 @@ fn idwt_job_as_bytes(job: &CudaJ2kIdwtJob) -> &[u8] {
             std::mem::size_of::<CudaJ2kIdwtJob>(),
         )
     }
+}
+
+fn idwt_multi_jobs_as_bytes(jobs: &[CudaJ2kIdwtMultiKernelJob]) -> &[u8] {
+    // SAFETY: CudaJ2kIdwtMultiKernelJob is repr(C), plain pointer/integer POD
+    // data, and the byte view is used only for a host-to-device copy.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
 }
 
 fn store_gray8_job_as_bytes(job: &CudaJ2kStoreGray8Job) -> &[u8] {
@@ -7479,6 +11766,31 @@ fn store_rgb16_job_as_bytes(job: &CudaJ2kStoreRgb16Job) -> &[u8] {
         std::slice::from_raw_parts(
             std::ptr::from_ref(job).cast::<u8>(),
             std::mem::size_of::<CudaJ2kStoreRgb16Job>(),
+        )
+    }
+}
+
+fn store_rgb8_mct_job_as_bytes(job: &CudaJ2kStoreRgb8MctJob) -> &[u8] {
+    // SAFETY: CudaJ2kStoreRgb8MctJob is repr(C) POD data copied directly to CUDA.
+    unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(job).cast::<u8>(),
+            std::mem::size_of::<CudaJ2kStoreRgb8MctJob>(),
+        )
+    }
+}
+
+fn store_rgb8_mct_batch_jobs_as_bytes(jobs: &[CudaJ2kStoreRgb8MctBatchJob]) -> &[u8] {
+    // SAFETY: CudaJ2kStoreRgb8MctBatchJob is repr(C) POD data copied directly to CUDA.
+    unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
+}
+
+fn store_rgb16_mct_job_as_bytes(job: &CudaJ2kStoreRgb16MctJob) -> &[u8] {
+    // SAFETY: CudaJ2kStoreRgb16MctJob is repr(C) POD data copied directly to CUDA.
+    unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(job).cast::<u8>(),
+            std::mem::size_of::<CudaJ2kStoreRgb16MctJob>(),
         )
     }
 }
@@ -7604,9 +11916,14 @@ fn checked_image_words(width: u32, height: u32, channels: usize) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        CudaContext, CudaError, CudaHtj2kDecodeTables, CudaHtj2kEncodeCodeBlockJob,
-        CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeTables, CudaJ2kIdwtJob,
-        CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaKernelName,
+        f32_slice_as_bytes_mut, format_idwt_batch_trace_row, idwt_batch_kernel_mode,
+        idwt_batch_trace_row, idwt_batch_uses_cooperative_53, pool_fit_buffer_index_by_len,
+        CudaContext, CudaError, CudaExecutionStats, CudaHtj2kCleanupMultiKernelJob,
+        CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables,
+        CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
+        CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
+        CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
+        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaKernelName, CudaQueuedHtj2kCleanup,
     };
 
     fn cuda_runtime_required() -> bool {
@@ -7658,6 +11975,21 @@ mod tests {
             .copy_range_to_host(2, &mut range)
             .expect("copy device range");
         assert_eq!(range, [7, 6, 5]);
+        let mut uninit_range = Vec::with_capacity(3);
+        ranged_upload
+            .copy_range_to_host_uninit(1, uninit_range.spare_capacity_mut())
+            .expect("copy device range into spare capacity");
+        // SAFETY: copy_range_to_host_uninit returned success after writing
+        // exactly three bytes into the Vec spare capacity.
+        unsafe {
+            uninit_range.set_len(3);
+        }
+        assert_eq!(uninit_range, [8, 7, 6]);
+        let pool = context.buffer_pool();
+        let pooled_upload = pool.upload(&[3u8, 1, 4, 1]).expect("pooled upload");
+        let pooled_output = super::copy_pooled_bytes_to_vec_uninit(&pooled_upload, 4)
+            .expect("copy pooled bytes into spare capacity");
+        assert_eq!(pooled_output, [3, 1, 4, 1]);
 
         let module = context
             .preload_kernel_module(CudaKernelName::CopyU8)
@@ -7680,12 +12012,126 @@ mod tests {
             assert_eq!(buffer.byte_len(), 32);
             assert!(buffer.allocation_byte_len() >= 32);
         }
-        assert_eq!(pool.cached_count().expect("cached count"), 1);
+        let cached_count = pool.cached_count().expect("cached count");
+        assert_eq!(cached_count, 1);
         {
             let buffer = pool.take(16).expect("reused pooled buffer");
             assert_eq!(buffer.byte_len(), 16);
             assert!(buffer.allocation_byte_len() >= 32);
         }
+
+        let samples = [1.25f32, -2.5, 3.75, 4.5];
+        {
+            let buffer = pool.upload_f32(&samples).expect("pooled f32 upload");
+            assert_eq!(
+                buffer.byte_len(),
+                samples.len() * std::mem::size_of::<f32>()
+            );
+            let mut downloaded = vec![0.0f32; samples.len()];
+            buffer
+                .copy_to_host(f32_slice_as_bytes_mut(&mut downloaded))
+                .expect("download pooled f32 upload");
+            assert_eq!(downloaded, samples);
+        }
+        let i16_samples = [-12i16, 7, 19, -4];
+        {
+            let buffer = pool
+                .upload_i16_pinned(&i16_samples)
+                .expect("pooled pinned i16 upload");
+            assert_eq!(
+                buffer.byte_len(),
+                i16_samples.len() * std::mem::size_of::<i16>()
+            );
+            let mut downloaded_bytes = vec![0u8; std::mem::size_of_val(&i16_samples)];
+            buffer
+                .copy_to_host(&mut downloaded_bytes)
+                .expect("download pooled pinned i16 upload");
+            let downloaded = downloaded_bytes
+                .chunks_exact(std::mem::size_of::<i16>())
+                .map(|chunk| i16::from_ne_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>();
+            assert_eq!(downloaded, i16_samples);
+        }
+        let cached_after_upload = pool.cached_count().expect("cached after upload");
+        assert!(cached_after_upload >= cached_count);
+    }
+
+    #[test]
+    fn pooled_i16_pinned_upload_is_size_gated() {
+        assert!(super::should_use_pinned_pooled_i16_upload(4 * 1024 * 1024));
+        assert!(!super::should_use_pinned_pooled_i16_upload(
+            4 * 1024 * 1024 + 1
+        ));
+    }
+
+    #[test]
+    fn pooled_buffer_selection_uses_smallest_sufficient_fit() {
+        let buffers = [(1usize, 32usize), (0, 64)];
+
+        assert_eq!(
+            pool_fit_buffer_index_by_len(buffers.iter().copied(), 16),
+            Some(1)
+        );
+        let mut large_pool = (0..1024).map(|index| (index, 8usize)).collect::<Vec<_>>();
+        large_pool[1022] = (1022, 32);
+        large_pool[1023] = (1023, 64);
+
+        assert_eq!(
+            pool_fit_buffer_index_by_len(large_pool.iter().copied(), 16),
+            Some(1022)
+        );
+        let mut recent_fit_pool = (0..4096).map(|index| (index, 8usize)).collect::<Vec<_>>();
+        recent_fit_pool[4094] = (4094, 32);
+        recent_fit_pool[4095] = (4095, 64);
+
+        assert_eq!(
+            pool_fit_buffer_index_by_len(recent_fit_pool.iter().copied(), 16),
+            Some(4094)
+        );
+        let fallback_pool = (0..4096)
+            .map(|index| {
+                if index < 3000 {
+                    (index, 8usize)
+                } else if index == 3000 {
+                    (index, 32)
+                } else {
+                    (index, 64)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            pool_fit_buffer_index_by_len(fallback_pool.iter().copied(), 16),
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn pooled_take_with_trace_reports_allocation_and_reuse_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let (fresh, fresh_trace) = pool.take_with_trace(32).expect("fresh traced take");
+
+        assert_eq!(fresh.byte_len(), 32);
+        assert_eq!(fresh_trace.requested_len, 32);
+        assert_eq!(fresh_trace.free_count_before, 0);
+        assert_eq!(fresh_trace.scanned_count, 0);
+        assert!(!fresh_trace.reused);
+        assert!(fresh_trace.allocation_byte_len >= 32);
+        drop(fresh);
+
+        let (reused, reuse_trace) = pool.take_with_trace(16).expect("reused traced take");
+
+        assert_eq!(reused.byte_len(), 16);
+        assert_eq!(reuse_trace.requested_len, 16);
+        assert_eq!(reuse_trace.free_count_before, 1);
+        assert_eq!(reuse_trace.scanned_count, 1);
+        assert!(reuse_trace.reused);
+        assert!(reuse_trace.allocation_byte_len >= 32);
     }
 
     #[test]
@@ -7708,6 +12154,93 @@ mod tests {
 
         assert_eq!(encoded.cleanup_length(), 7);
         assert_eq!(encoded.refinement_length(), 3);
+    }
+
+    #[test]
+    fn htj2k_encode_compact_jobs_pack_actual_payloads() {
+        let capacity = u32::try_from(super::HTJ2K_ENCODE_OUTPUT_CAPACITY)
+            .expect("HTJ2K encode output capacity fits u32");
+        let double_capacity = capacity
+            .checked_mul(2)
+            .expect("test output capacity fits u32");
+        let kernel_jobs = [
+            super::CudaHtj2kEncodeKernelJob {
+                coefficient_offset: 0,
+                coefficient_stride: 64,
+                width: 64,
+                height: 64,
+                total_bitplanes: 8,
+                output_offset: 0,
+                output_capacity: capacity,
+                target_coding_passes: 1,
+            },
+            super::CudaHtj2kEncodeKernelJob {
+                coefficient_offset: 4096,
+                coefficient_stride: 64,
+                width: 64,
+                height: 64,
+                total_bitplanes: 8,
+                output_offset: capacity,
+                output_capacity: capacity,
+                target_coding_passes: 1,
+            },
+            super::CudaHtj2kEncodeKernelJob {
+                coefficient_offset: 8192,
+                coefficient_stride: 64,
+                width: 64,
+                height: 64,
+                total_bitplanes: 8,
+                output_offset: double_capacity,
+                output_capacity: capacity,
+                target_coding_passes: 1,
+            },
+        ];
+        let statuses = [
+            super::CudaHtj2kEncodeStatus {
+                code: super::HTJ2K_STATUS_OK,
+                data_len: 12,
+                reserved2: 0x8001_8002,
+                ..super::CudaHtj2kEncodeStatus::default()
+            },
+            super::CudaHtj2kEncodeStatus {
+                code: super::HTJ2K_STATUS_OK,
+                data_len: 0,
+                ..super::CudaHtj2kEncodeStatus::default()
+            },
+            super::CudaHtj2kEncodeStatus {
+                code: super::HTJ2K_STATUS_OK,
+                data_len: 7,
+                ..super::CudaHtj2kEncodeStatus::default()
+            },
+        ];
+
+        let (compact_jobs, compact_len) =
+            super::htj2k_encode_compact_jobs(&statuses, &kernel_jobs).expect("valid compact jobs");
+
+        assert_eq!(compact_len, 19);
+        assert_eq!(
+            compact_jobs,
+            vec![
+                super::CudaHtj2kEncodeCompactJob {
+                    source_offset: 0,
+                    compact_offset: 0,
+                    data_len: 12,
+                    reserved: 0x8001_8002,
+                },
+                super::CudaHtj2kEncodeCompactJob {
+                    source_offset: capacity,
+                    compact_offset: 12,
+                    data_len: 0,
+                    reserved: 0,
+                },
+                super::CudaHtj2kEncodeCompactJob {
+                    source_offset: double_capacity,
+                    compact_offset: 12,
+                    data_len: 7,
+                    reserved: 0,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -7750,6 +12283,232 @@ mod tests {
 
         assert_eq!(encoded.execution().kernel_dispatches(), 1);
         assert_eq!(encoded.code_blocks().len(), 1);
+    }
+
+    #[test]
+    fn htj2k_encode_resident_region_reuses_pool_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let vlc_table0 = [0u16; 2048];
+        let vlc_table1 = [0u16; 2048];
+        let uvlc_table = vec![0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES];
+        let resources = context
+            .upload_htj2k_encode_resources(CudaHtj2kEncodeTables {
+                vlc_table0: &vlc_table0,
+                vlc_table1: &vlc_table1,
+                uvlc_table: &uvlc_table,
+            })
+            .expect("encode resources");
+        let coefficients = context
+            .upload_i32_pinned(&[0, 0, 0, 0])
+            .expect("resident coefficients");
+        let jobs = [CudaHtj2kEncodeCodeBlockRegionJob {
+            coefficient_offset: 0,
+            coefficient_stride: 2,
+            width: 2,
+            height: 2,
+            total_bitplanes: 1,
+            target_coding_passes: 1,
+        }];
+
+        let encoded = context
+            .encode_htj2k_codeblock_regions_resident_with_resources_and_pool(
+                &coefficients,
+                4,
+                &jobs,
+                &resources,
+                &pool,
+            )
+            .expect("pooled resource-backed resident HTJ2K encode");
+
+        assert_eq!(encoded.execution().kernel_dispatches(), 1);
+        assert_eq!(encoded.code_blocks().len(), 1);
+        assert!(pool.cached_count().expect("cached pooled encode buffers") >= 3);
+    }
+
+    #[test]
+    fn htj2k_encode_codeblocks_resident_reuses_pool_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let vlc_table0 = [0u16; 2048];
+        let vlc_table1 = [0u16; 2048];
+        let uvlc_table = vec![0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES];
+        let resources = context
+            .upload_htj2k_encode_resources(CudaHtj2kEncodeTables {
+                vlc_table0: &vlc_table0,
+                vlc_table1: &vlc_table1,
+                uvlc_table: &uvlc_table,
+            })
+            .expect("encode resources");
+        let coefficients = context
+            .upload_i32_pinned(&[0, 0, 0, 0])
+            .expect("resident coefficients");
+        let jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 2,
+            total_bitplanes: 1,
+            target_coding_passes: 1,
+        }];
+
+        let encoded = context
+            .encode_htj2k_codeblocks_resident_with_resources_and_pool(
+                &coefficients,
+                4,
+                &jobs,
+                &resources,
+                &pool,
+            )
+            .expect("pooled resource-backed resident HTJ2K codeblock encode");
+
+        assert_eq!(encoded.execution().kernel_dispatches(), 1);
+        assert_eq!(encoded.code_blocks().len(), 1);
+        assert!(pool.cached_count().expect("cached pooled encode buffers") >= 3);
+    }
+
+    #[test]
+    fn htj2k_encode_multi_resident_inputs_match_separate_batches_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let vlc_table0 = [0u16; 2048];
+        let vlc_table1 = [0u16; 2048];
+        let uvlc_table = vec![0u8; super::HTJ2K_UVLC_ENCODE_TABLE_BYTES];
+        let resources = context
+            .upload_htj2k_encode_resources(CudaHtj2kEncodeTables {
+                vlc_table0: &vlc_table0,
+                vlc_table1: &vlc_table1,
+                uvlc_table: &uvlc_table,
+            })
+            .expect("encode resources");
+        let first = context
+            .upload_i32_pinned(&[0, 0, 0, 0])
+            .expect("first resident coefficients");
+        let second = context
+            .upload_i32_pinned(&[0, 0])
+            .expect("second resident coefficients");
+        let first_jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 2,
+            total_bitplanes: 1,
+            target_coding_passes: 1,
+        }];
+        let second_jobs = [CudaHtj2kEncodeCodeBlockJob {
+            coefficient_offset: 0,
+            width: 2,
+            height: 1,
+            total_bitplanes: 1,
+            target_coding_passes: 1,
+        }];
+
+        let first_separate = context
+            .encode_htj2k_codeblocks_resident_with_resources_and_pool(
+                &first,
+                4,
+                &first_jobs,
+                &resources,
+                &pool,
+            )
+            .expect("first separate resident encode");
+        let second_separate = context
+            .encode_htj2k_codeblocks_resident_with_resources_and_pool(
+                &second,
+                2,
+                &second_jobs,
+                &resources,
+                &pool,
+            )
+            .expect("second separate resident encode");
+
+        let combined = context
+            .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(
+                &[
+                    CudaHtj2kEncodeResidentTarget {
+                        coefficients: &first,
+                        coefficient_count: 4,
+                        jobs: &first_jobs,
+                    },
+                    CudaHtj2kEncodeResidentTarget {
+                        coefficients: &second,
+                        coefficient_count: 2,
+                        jobs: &second_jobs,
+                    },
+                ],
+                &resources,
+                &pool,
+            )
+            .expect("combined resident encode");
+
+        assert_eq!(combined.execution().kernel_dispatches(), 1);
+        assert_eq!(combined.code_blocks().len(), 2);
+        assert_eq!(
+            combined.code_blocks()[0].data(),
+            first_separate.code_blocks()[0].data()
+        );
+        assert_eq!(
+            combined.code_blocks()[1].data(),
+            second_separate.code_blocks()[0].data()
+        );
+        let timings = combined.stage_timings();
+        assert_eq!(
+            timings.ht_encode_us,
+            timings
+                .ht_kernel_us
+                .saturating_add(timings.ht_status_readback_us)
+                .saturating_add(timings.ht_compact_us)
+                .saturating_add(timings.ht_output_readback_us)
+        );
+        assert!(timings.ht_kernel_us > 0);
+        assert!(timings.ht_status_readback_us > 0);
+    }
+
+    #[test]
+    fn htj2k97_resident_batch_returns_pooled_quantized_bands_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let blocks = vec![0.0f32; 64];
+        let params = super::CudaHtj2k97QuantizeParams {
+            inv_delta_ll: 1.0,
+            inv_delta_hl: 1.0,
+            inv_delta_lh: 1.0,
+            inv_delta_hh: 1.0,
+            cb_width: 64,
+            cb_height: 64,
+        };
+
+        let (bands, _) = context
+            .j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
+                &blocks, 1, 1, 1, 8, 8, params, &pool,
+            )
+            .expect("resident HTJ2K 9/7 codeblock batch");
+
+        assert!(bands.ll.as_device_buffer().is_some());
+        assert!(bands.hl.as_device_buffer().is_some());
+        assert!(bands.lh.as_device_buffer().is_some());
+        assert!(bands.hh.as_device_buffer().is_some());
+        let cached_while_bands_live = pool.cached_count().expect("cached buffers while live");
+
+        drop(bands);
+
+        assert!(
+            pool.cached_count().expect("cached buffers after drop") >= cached_while_bands_live + 4
+        );
     }
 
     #[test]
@@ -7979,8 +12738,24 @@ mod tests {
                 "signinum_j2k_dequantize_htj2k_codeblocks",
             ),
             (
+                CudaKernelName::J2kDequantizeHtj2kCodeblocksMulti,
+                "signinum_j2k_dequantize_htj2k_codeblocks_multi",
+            ),
+            (
+                CudaKernelName::J2kDequantizeHtj2kCleanupJobsMulti,
+                "signinum_j2k_dequantize_htj2k_cleanup_jobs_multi",
+            ),
+            (
                 CudaKernelName::J2kIdwtInterleave,
                 "signinum_j2k_idwt_interleave",
+            ),
+            (
+                CudaKernelName::J2kIdwtInterleaveHorizontal53Multi,
+                "signinum_j2k_idwt_interleave_horizontal_53_multi",
+            ),
+            (
+                CudaKernelName::J2kIdwtInterleaveHorizontal97Multi,
+                "signinum_j2k_idwt_interleave_horizontal_97_multi",
             ),
             (
                 CudaKernelName::J2kIdwtHorizontal,
@@ -7999,6 +12774,18 @@ mod tests {
                 "signinum_j2k_idwt_vertical",
             ),
             (
+                CudaKernelName::J2kIdwtVertical53Multi,
+                "signinum_j2k_idwt_vertical_53_multi",
+            ),
+            (
+                CudaKernelName::J2kIdwtVertical97Multi,
+                "signinum_j2k_idwt_vertical_97_multi",
+            ),
+            (
+                CudaKernelName::J2kIdwtVertical97MultiCols4,
+                "signinum_j2k_idwt_vertical_97_multi_cols4",
+            ),
+            (
                 CudaKernelName::J2kIdwtVertical53,
                 "signinum_j2k_idwt_vertical_53",
             ),
@@ -8014,7 +12801,19 @@ mod tests {
             (CudaKernelName::J2kStoreGray8, "signinum_j2k_store_gray8"),
             (CudaKernelName::J2kStoreGray16, "signinum_j2k_store_gray16"),
             (CudaKernelName::J2kStoreRgb8, "signinum_j2k_store_rgb8"),
+            (
+                CudaKernelName::J2kStoreRgb8Mct,
+                "signinum_j2k_store_rgb8_mct",
+            ),
+            (
+                CudaKernelName::J2kStoreRgb8MctBatch,
+                "signinum_j2k_store_rgb8_mct_batch",
+            ),
             (CudaKernelName::J2kStoreRgb16, "signinum_j2k_store_rgb16"),
+            (
+                CudaKernelName::J2kStoreRgb16Mct,
+                "signinum_j2k_store_rgb16_mct",
+            ),
             (
                 CudaKernelName::Htj2kEncodeCodeblock,
                 "signinum_htj2k_encode_codeblock",
@@ -8022,6 +12821,22 @@ mod tests {
             (
                 CudaKernelName::Htj2kEncodeCodeblocks,
                 "signinum_htj2k_encode_codeblocks",
+            ),
+            (
+                CudaKernelName::Htj2kEncodeCodeblocksMultiInput,
+                "signinum_htj2k_encode_codeblocks_multi_input",
+            ),
+            (
+                CudaKernelName::Htj2kEncodeCodeblocksMultiInputCleanup,
+                "signinum_htj2k_encode_codeblocks_multi_input_cleanup",
+            ),
+            (
+                CudaKernelName::Htj2kEncodeCodeblocksMultiInputCleanup64,
+                "signinum_htj2k_encode_codeblocks_multi_input_cleanup_64",
+            ),
+            (
+                CudaKernelName::Htj2kCompactCodeblocks,
+                "signinum_htj2k_compact_codeblocks",
             ),
             (
                 CudaKernelName::Htj2kPacketizeCleanup,
@@ -8073,6 +12888,50 @@ mod tests {
 
         assert_eq!(actual, vec![0.0; 8]);
         assert_eq!(output.execution().kernel_dispatches(), 0);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn htj2k_empty_codeblock_decode_reuses_pool_when_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let first_vlc = [0u16; 1024];
+        let later_vlc = [0u16; 1024];
+        let first_uvlc = [0u16; 320];
+        let later_uvlc = [0u16; 256];
+        let tables = context
+            .upload_htj2k_decode_table_resources(CudaHtj2kDecodeTables {
+                vlc_table0: &first_vlc,
+                vlc_table1: &later_vlc,
+                uvlc_table0: &first_uvlc,
+                uvlc_table1: &later_uvlc,
+            })
+            .expect("decode tables");
+        let resources = context
+            .upload_htj2k_decode_resources_with_tables(&[], &tables)
+            .expect("decode resources");
+
+        let output = context
+            .decode_htj2k_codeblocks_with_resources_and_pool(&resources, &[], 8, &pool)
+            .expect("pooled empty HTJ2K decode");
+        let mut actual = vec![f32::NAN; 8];
+        output
+            .coefficients()
+            .expect("pooled coefficients")
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut actual))
+            .expect("download coefficients");
+
+        assert_eq!(actual, vec![0.0; 8]);
+        assert_eq!(output.execution().kernel_dispatches(), 0);
+        let cached_while_live = pool.cached_count().expect("cached while live");
+
+        drop(output);
+
+        assert!(pool.cached_count().expect("cached after drop") > cached_while_live);
     }
 
     #[test]
@@ -8180,6 +13039,1621 @@ mod tests {
             .copy_to_host(super::f32_slice_as_bytes_mut(&mut actual))
             .expect("download inverse DWT");
         assert_eq!(actual, vec![7.0, 9.0, 10.0, 13.0]);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_single_reuses_pool_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&[10.0]))
+            .expect("upload LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&[2.0]))
+            .expect("upload HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0]))
+            .expect("upload LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&[1.0]))
+            .expect("upload HH");
+
+        let output = context
+            .j2k_inverse_dwt_single_device_with_pool(
+                &ll,
+                &hl,
+                &lh,
+                &hh,
+                CudaJ2kIdwtJob {
+                    rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 2,
+                        y1: 2,
+                    },
+                    ll_rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 1,
+                        y1: 1,
+                    },
+                    hl_rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 1,
+                        y1: 1,
+                    },
+                    lh_rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 1,
+                        y1: 1,
+                    },
+                    hh_rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 1,
+                        y1: 1,
+                    },
+                    irreversible97: 0,
+                },
+                &pool,
+            )
+            .expect("pooled CUDA inverse DWT");
+
+        assert_eq!(output.execution().kernel_dispatches(), 3);
+        let cached_while_live = pool.cached_count().expect("cached while live");
+
+        drop(output);
+
+        assert!(pool.cached_count().expect("cached after drop") > cached_while_live);
+    }
+
+    #[test]
+    fn idwt_cooperative_53_selection_requires_large_reversible_batches() {
+        let mut kernel_job = CudaJ2kIdwtMultiKernelJob {
+            ll_ptr: 0,
+            hl_ptr: 0,
+            lh_ptr: 0,
+            hh_ptr: 0,
+            output_ptr: 0,
+            job: CudaJ2kIdwtJob {
+                rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                ll_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                hl_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                lh_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                hh_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                irreversible97: 0,
+            },
+        };
+
+        assert!(!idwt_batch_uses_cooperative_53(&[kernel_job], 127, 128));
+        assert!(!idwt_batch_uses_cooperative_53(&[kernel_job], 128, 127));
+        assert!(idwt_batch_uses_cooperative_53(&[kernel_job], 128, 128));
+        assert!(idwt_batch_uses_cooperative_53(&[kernel_job], 512, 512));
+        assert!(!idwt_batch_uses_cooperative_53(&[kernel_job], 513, 128));
+        kernel_job.job.irreversible97 = 1;
+        assert!(!idwt_batch_uses_cooperative_53(&[kernel_job], 128, 128));
+    }
+
+    #[test]
+    fn idwt_cooperative_97_selection_requires_large_irreversible_batches() {
+        let mut kernel_job = CudaJ2kIdwtMultiKernelJob {
+            ll_ptr: 0,
+            hl_ptr: 0,
+            lh_ptr: 0,
+            hh_ptr: 0,
+            output_ptr: 0,
+            job: CudaJ2kIdwtJob {
+                rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                ll_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                hl_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                lh_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                hh_rect: CudaJ2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                },
+                irreversible97: 1,
+            },
+        };
+
+        assert_eq!(
+            idwt_batch_kernel_mode(&[kernel_job], 128, 128),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97
+        );
+        assert_eq!(
+            idwt_batch_kernel_mode(&[kernel_job], 64, 64),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97
+        );
+        assert_eq!(
+            idwt_batch_kernel_mode(&[kernel_job], 512, 512),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97
+        );
+        assert_eq!(
+            idwt_batch_kernel_mode(&[kernel_job], 63, 64),
+            CudaJ2kIdwtBatchKernelMode::Generic
+        );
+        assert_eq!(
+            idwt_batch_kernel_mode(&[kernel_job], 513, 128),
+            CudaJ2kIdwtBatchKernelMode::Generic
+        );
+        kernel_job.job.irreversible97 = 0;
+        assert_ne!(
+            idwt_batch_kernel_mode(&[kernel_job], 128, 128),
+            CudaJ2kIdwtBatchKernelMode::Cooperative97
+        );
+    }
+
+    #[test]
+    fn idwt_batch_trace_row_reports_stage_shape_and_mode() {
+        let kernel_jobs = [
+            CudaJ2kIdwtMultiKernelJob {
+                ll_ptr: 0,
+                hl_ptr: 0,
+                lh_ptr: 0,
+                hh_ptr: 0,
+                output_ptr: 0,
+                job: CudaJ2kIdwtJob {
+                    rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 128,
+                        y1: 96,
+                    },
+                    ll_rect: CudaJ2kRect::default(),
+                    hl_rect: CudaJ2kRect::default(),
+                    lh_rect: CudaJ2kRect::default(),
+                    hh_rect: CudaJ2kRect::default(),
+                    irreversible97: 1,
+                },
+            },
+            CudaJ2kIdwtMultiKernelJob {
+                ll_ptr: 0,
+                hl_ptr: 0,
+                lh_ptr: 0,
+                hh_ptr: 0,
+                output_ptr: 0,
+                job: CudaJ2kIdwtJob {
+                    rect: CudaJ2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 64,
+                        y1: 48,
+                    },
+                    ll_rect: CudaJ2kRect::default(),
+                    hl_rect: CudaJ2kRect::default(),
+                    lh_rect: CudaJ2kRect::default(),
+                    hh_rect: CudaJ2kRect::default(),
+                    irreversible97: 1,
+                },
+            },
+        ];
+
+        let row = idwt_batch_trace_row(
+            3,
+            &kernel_jobs,
+            128,
+            96,
+            CudaJ2kIdwtBatchKernelMode::Cooperative97,
+            42,
+        );
+
+        assert_eq!(
+            format_idwt_batch_trace_row(row),
+            "signinum_profile codec=j2k op=cuda_idwt_batch path=decode stage_index=3 mode=Cooperative97 job_count=2 max_width=128 max_height=96 min_width=64 min_height=48 total_pixels=15360 irreversible_jobs=2 elapsed_us=42"
+        );
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_empty_uses_no_dispatch_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(&[] as &[CudaJ2kIdwtTarget<'_>], &pool)
+            .expect("empty batched CUDA inverse DWT");
+
+        assert_eq!(execution.kernel_dispatches(), 0);
+        assert_eq!(execution.decode_kernel_dispatches(), 0);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_matches_expected_outputs_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&[10.0]))
+            .expect("upload LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&[2.0]))
+            .expect("upload HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0]))
+            .expect("upload LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&[1.0]))
+            .expect("upload HH");
+        let first_output = pool
+            .take(4 * std::mem::size_of::<f32>())
+            .expect("first batched IDWT output");
+        let second_output = pool
+            .take(4 * std::mem::size_of::<f32>())
+            .expect("second batched IDWT output");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            irreversible97: 0,
+        };
+
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[
+                    CudaJ2kIdwtTarget {
+                        ll: &ll,
+                        hl: &hl,
+                        lh: &lh,
+                        hh: &hh,
+                        output: first_output
+                            .as_device_buffer()
+                            .expect("first output device buffer"),
+                        job,
+                    },
+                    CudaJ2kIdwtTarget {
+                        ll: &ll,
+                        hl: &hl,
+                        lh: &lh,
+                        hh: &hh,
+                        output: second_output
+                            .as_device_buffer()
+                            .expect("second output device buffer"),
+                        job,
+                    },
+                ],
+                &pool,
+            )
+            .expect("batched CUDA inverse DWT");
+        assert_eq!(execution.kernel_dispatches(), 2);
+
+        let mut first_actual = vec![0.0f32; 4];
+        first_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut first_actual))
+            .expect("download first batched IDWT");
+        assert_eq!(first_actual, vec![7.0, 9.0, 10.0, 13.0]);
+        let mut second_actual = vec![0.0f32; 4];
+        second_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut second_actual))
+            .expect("download second batched IDWT");
+        assert_eq!(second_actual, vec![7.0, 9.0, 10.0, 13.0]);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&[10.0]))
+            .expect("upload odd LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&[2.0, 5.0]))
+            .expect("upload odd HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0, 7.0]))
+            .expect("upload odd LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&[1.0, 3.0, 6.0, 8.0]))
+            .expect("upload odd HH");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 1,
+                y0: 1,
+                x1: 4,
+                y1: 4,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 1,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 2,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            irreversible97: 0,
+        };
+
+        let single = context
+            .j2k_inverse_dwt_single_device_with_pool(&ll, &hl, &lh, &hh, job, &pool)
+            .expect("single CUDA inverse DWT");
+        assert_eq!(single.execution().kernel_dispatches(), 3);
+        let batch_output = pool
+            .take(9 * std::mem::size_of::<f32>())
+            .expect("odd batched IDWT output");
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: batch_output
+                        .as_device_buffer()
+                        .expect("odd batch output device buffer"),
+                    job,
+                }],
+                &pool,
+            )
+            .expect("odd-origin batched CUDA inverse DWT");
+        assert_eq!(execution.kernel_dispatches(), 2);
+
+        let mut single_actual = vec![0.0f32; 9];
+        single
+            .buffer()
+            .expect("single odd output device buffer")
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut single_actual))
+            .expect("download single odd IDWT");
+        let mut batch_actual = vec![0.0f32; 9];
+        batch_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut batch_actual))
+            .expect("download batch odd IDWT");
+        assert_eq!(batch_actual, single_actual);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let band_len = 64 * 64;
+        let ll_values: Vec<f32> = (0..band_len).map(|idx| (idx % 19) as f32).collect();
+        let hl_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 3) % 23) as f32).collect();
+        let lh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 5) % 29) as f32).collect();
+        let hh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 7) % 31) as f32).collect();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&ll_values))
+            .expect("upload large LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&hl_values))
+            .expect("upload large HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&lh_values))
+            .expect("upload large LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&hh_values))
+            .expect("upload large HH");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 128,
+                y1: 128,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 64,
+                y1: 64,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 64,
+                y1: 64,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 64,
+                y1: 64,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 64,
+                y1: 64,
+            },
+            irreversible97: 0,
+        };
+
+        let single = context
+            .j2k_inverse_dwt_single_device_with_pool(&ll, &hl, &lh, &hh, job, &pool)
+            .expect("large single CUDA inverse DWT");
+        let batch_output = pool
+            .take(128 * 128 * std::mem::size_of::<f32>())
+            .expect("large batched IDWT output");
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: batch_output
+                        .as_device_buffer()
+                        .expect("large batch output device buffer"),
+                    job,
+                }],
+                &pool,
+            )
+            .expect("large batched CUDA inverse DWT");
+        assert_eq!(execution.kernel_dispatches(), 2);
+
+        let mut single_actual = vec![0.0f32; 128 * 128];
+        single
+            .buffer()
+            .expect("large single output device buffer")
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut single_actual))
+            .expect("download large single IDWT");
+        let mut batch_actual = vec![0.0f32; 128 * 128];
+        batch_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut batch_actual))
+            .expect("download large batch IDWT");
+        assert_eq!(batch_actual, single_actual);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let band_len = 128 * 128;
+        let ll_values: Vec<f32> = (0..band_len)
+            .map(|idx| ((idx % 43) as f32) * 0.25)
+            .collect();
+        let hl_values: Vec<f32> = (0..band_len)
+            .map(|idx| (((idx * 3) % 47) as f32) * 0.125)
+            .collect();
+        let lh_values: Vec<f32> = (0..band_len)
+            .map(|idx| (((idx * 5) % 53) as f32) * 0.0625)
+            .collect();
+        let hh_values: Vec<f32> = (0..band_len)
+            .map(|idx| (((idx * 7) % 59) as f32) * 0.03125)
+            .collect();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&ll_values))
+            .expect("upload large irreversible LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&hl_values))
+            .expect("upload large irreversible HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&lh_values))
+            .expect("upload large irreversible LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&hh_values))
+            .expect("upload large irreversible HH");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 256,
+                y1: 256,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 128,
+                y1: 128,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 128,
+                y1: 128,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 128,
+                y1: 128,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 128,
+                y1: 128,
+            },
+            irreversible97: 1,
+        };
+
+        let single = context
+            .j2k_inverse_dwt_single_device_with_pool(&ll, &hl, &lh, &hh, job, &pool)
+            .expect("large irreversible single CUDA inverse DWT");
+        let batch_output = pool
+            .take(256 * 256 * std::mem::size_of::<f32>())
+            .expect("large irreversible batched IDWT output");
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: batch_output
+                        .as_device_buffer()
+                        .expect("large irreversible batch output device buffer"),
+                    job,
+                }],
+                &pool,
+            )
+            .expect("large irreversible batched CUDA inverse DWT");
+        assert_eq!(execution.kernel_dispatches(), 2);
+
+        let mut single_actual = vec![0.0f32; 256 * 256];
+        single
+            .buffer()
+            .expect("large irreversible single output device buffer")
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut single_actual))
+            .expect("download large irreversible single IDWT");
+        let mut batch_actual = vec![0.0f32; 256 * 256];
+        batch_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut batch_actual))
+            .expect("download large irreversible batch IDWT");
+        assert_eq!(batch_actual, single_actual);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let band_len = 256 * 256;
+        let ll_values: Vec<f32> = (0..band_len).map(|idx| (idx % 43) as f32).collect();
+        let hl_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 3) % 47) as f32).collect();
+        let lh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 5) % 53) as f32).collect();
+        let hh_values: Vec<f32> = (0..band_len).map(|idx| ((idx * 7) % 59) as f32).collect();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&ll_values))
+            .expect("upload 512 LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&hl_values))
+            .expect("upload 512 HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&lh_values))
+            .expect("upload 512 LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&hh_values))
+            .expect("upload 512 HH");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 512,
+                y1: 512,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 256,
+                y1: 256,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 256,
+                y1: 256,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 256,
+                y1: 256,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 256,
+                y1: 256,
+            },
+            irreversible97: 0,
+        };
+
+        let single = context
+            .j2k_inverse_dwt_single_device_with_pool(&ll, &hl, &lh, &hh, job, &pool)
+            .expect("512 single CUDA inverse DWT");
+        let batch_output = pool
+            .take(512 * 512 * std::mem::size_of::<f32>())
+            .expect("512 batched IDWT output");
+        let execution = context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: batch_output
+                        .as_device_buffer()
+                        .expect("512 batch output device buffer"),
+                    job,
+                }],
+                &pool,
+            )
+            .expect("512 batched CUDA inverse DWT");
+        assert_eq!(execution.kernel_dispatches(), 2);
+
+        let mut single_actual = vec![0.0f32; 512 * 512];
+        single
+            .buffer()
+            .expect("512 single output device buffer")
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut single_actual))
+            .expect("download 512 single IDWT");
+        let mut batch_actual = vec![0.0f32; 512 * 512];
+        batch_output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut batch_actual))
+            .expect("download 512 batch IDWT");
+        assert_eq!(batch_actual, single_actual);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_enqueue_matches_expected_outputs_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&[10.0]))
+            .expect("upload LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&[2.0]))
+            .expect("upload HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0]))
+            .expect("upload LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&[1.0]))
+            .expect("upload HH");
+        let output = pool
+            .take(4 * std::mem::size_of::<f32>())
+            .expect("batched IDWT output");
+        let job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            irreversible97: 0,
+        };
+
+        let queued = context
+            .j2k_inverse_dwt_batch_device_enqueue_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: output.as_device_buffer().expect("output device buffer"),
+                    job,
+                }],
+                &pool,
+            )
+            .expect("enqueue batched CUDA inverse DWT");
+        assert_eq!(queued.execution().kernel_dispatches(), 2);
+        context.synchronize().expect("queued IDWT completion");
+        drop(queued);
+
+        let mut actual = vec![0.0f32; 4];
+        output
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut actual))
+            .expect("download queued batched IDWT");
+        assert_eq!(actual, vec![7.0, 9.0, 10.0, 13.0]);
+    }
+
+    #[test]
+    fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let ll = context
+            .upload(super::f32_slice_as_bytes(&[10.0]))
+            .expect("upload LL");
+        let hl = context
+            .upload(super::f32_slice_as_bytes(&[2.0]))
+            .expect("upload HL");
+        let lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0]))
+            .expect("upload LH");
+        let hh = context
+            .upload(super::f32_slice_as_bytes(&[1.0]))
+            .expect("upload HH");
+        let stage2_hl = context
+            .upload(super::f32_slice_as_bytes(&[0.0, 1.0, 2.0, 3.0]))
+            .expect("upload stage2 HL");
+        let stage2_lh = context
+            .upload(super::f32_slice_as_bytes(&[4.0, 5.0, 6.0, 7.0]))
+            .expect("upload stage2 LH");
+        let stage2_hh = context
+            .upload(super::f32_slice_as_bytes(&[8.0, 9.0, 10.0, 11.0]))
+            .expect("upload stage2 HH");
+        let stage1_job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 1,
+            },
+            irreversible97: 0,
+        };
+        let stage2_job = CudaJ2kIdwtJob {
+            rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 4,
+                y1: 4,
+            },
+            ll_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            hl_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            lh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            hh_rect: CudaJ2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 2,
+                y1: 2,
+            },
+            irreversible97: 0,
+        };
+        let legacy_stage1 = pool
+            .take(4 * std::mem::size_of::<f32>())
+            .expect("legacy stage1 output");
+        let legacy_stage2 = pool
+            .take(16 * std::mem::size_of::<f32>())
+            .expect("legacy stage2 output");
+        let sequence_stage1 = pool
+            .take(4 * std::mem::size_of::<f32>())
+            .expect("sequence stage1 output");
+        let sequence_stage2 = pool
+            .take(16 * std::mem::size_of::<f32>())
+            .expect("sequence stage2 output");
+
+        context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: &ll,
+                    hl: &hl,
+                    lh: &lh,
+                    hh: &hh,
+                    output: legacy_stage1
+                        .as_device_buffer()
+                        .expect("legacy stage1 device buffer"),
+                    job: stage1_job,
+                }],
+                &pool,
+            )
+            .expect("legacy stage1 IDWT");
+        context
+            .j2k_inverse_dwt_batch_device_with_pool(
+                &[CudaJ2kIdwtTarget {
+                    ll: legacy_stage1
+                        .as_device_buffer()
+                        .expect("legacy stage1 device buffer"),
+                    hl: &stage2_hl,
+                    lh: &stage2_lh,
+                    hh: &stage2_hh,
+                    output: legacy_stage2
+                        .as_device_buffer()
+                        .expect("legacy stage2 device buffer"),
+                    job: stage2_job,
+                }],
+                &pool,
+            )
+            .expect("legacy stage2 IDWT");
+
+        let sequence_stage1_targets = [CudaJ2kIdwtTarget {
+            ll: &ll,
+            hl: &hl,
+            lh: &lh,
+            hh: &hh,
+            output: sequence_stage1
+                .as_device_buffer()
+                .expect("sequence stage1 device buffer"),
+            job: stage1_job,
+        }];
+        let sequence_stage2_targets = [CudaJ2kIdwtTarget {
+            ll: sequence_stage1
+                .as_device_buffer()
+                .expect("sequence stage1 device buffer"),
+            hl: &stage2_hl,
+            lh: &stage2_lh,
+            hh: &stage2_hh,
+            output: sequence_stage2
+                .as_device_buffer()
+                .expect("sequence stage2 device buffer"),
+            job: stage2_job,
+        }];
+        let queued = context
+            .j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
+                &[&sequence_stage1_targets, &sequence_stage2_targets],
+                &pool,
+            )
+            .expect("queued IDWT sequence");
+        assert_eq!(queued.execution().kernel_dispatches(), 4);
+        assert_eq!(queued.resource_count(), 1);
+        context
+            .synchronize()
+            .expect("queued IDWT sequence completion");
+        drop(queued);
+
+        let mut legacy_actual = vec![0.0f32; 16];
+        legacy_stage2
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut legacy_actual))
+            .expect("download legacy stage2 IDWT");
+        let mut sequence_actual = vec![0.0f32; 16];
+        sequence_stage2
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut sequence_actual))
+            .expect("download sequence stage2 IDWT");
+        assert_eq!(sequence_actual, legacy_actual);
+    }
+
+    #[test]
+    fn j2k_store_rgb8_mct_matches_inverse_mct_plus_store_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let plane0 = [16.0f32, 18.0, 21.0, 24.0];
+        let plane1 = [-3.0f32, 4.0, 5.0, -6.0];
+        let plane2 = [2.0f32, -1.0, 7.0, 3.0];
+        let legacy0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload legacy MCT plane 0");
+        let legacy1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload legacy MCT plane 1");
+        let legacy2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload legacy MCT plane 2");
+        let fused0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload fused MCT plane 0");
+        let fused1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload fused MCT plane 1");
+        let fused2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload fused MCT plane 2");
+        let addend = 128.0;
+
+        let mct_stats = context
+            .j2k_inverse_mct_device(
+                &legacy0,
+                &legacy1,
+                &legacy2,
+                super::CudaJ2kInverseMctJob {
+                    len: 4,
+                    irreversible97: 0,
+                    addend0: addend,
+                    addend1: addend,
+                    addend2: addend,
+                },
+            )
+            .expect("legacy inverse MCT");
+        assert_eq!(mct_stats.kernel_dispatches(), 1);
+        let store_job = super::CudaJ2kStoreRgb8Job {
+            input_width0: 2,
+            input_width1: 2,
+            input_width2: 2,
+            source_x0: 0,
+            source_y0: 0,
+            source_x1: 0,
+            source_y1: 0,
+            source_x2: 0,
+            source_y2: 0,
+            copy_width: 2,
+            copy_height: 2,
+            output_width: 2,
+            output_height: 2,
+            output_x: 0,
+            output_y: 0,
+            addend0: 0.0,
+            addend1: 0.0,
+            addend2: 0.0,
+            bit_depth0: 8,
+            bit_depth1: 8,
+            bit_depth2: 8,
+            rgba: 1,
+        };
+        let legacy_output = context
+            .j2k_store_rgb8_device(&legacy0, &legacy1, &legacy2, store_job)
+            .expect("legacy RGB8 store");
+        let fused_output = context
+            .j2k_store_rgb8_mct_device(
+                &fused0,
+                &fused1,
+                &fused2,
+                super::CudaJ2kStoreRgb8MctJob {
+                    store: super::CudaJ2kStoreRgb8Job {
+                        addend0: addend,
+                        addend1: addend,
+                        addend2: addend,
+                        ..store_job
+                    },
+                    irreversible97: 0,
+                },
+            )
+            .expect("fused RGB8 MCT store");
+
+        assert_eq!(legacy_output.execution().kernel_dispatches(), 1);
+        assert_eq!(fused_output.execution().kernel_dispatches(), 1);
+        let mut legacy_bytes = vec![0u8; 16];
+        legacy_output
+            .buffer()
+            .copy_to_host(&mut legacy_bytes)
+            .expect("download legacy RGB8");
+        let mut fused_bytes = vec![0u8; 16];
+        fused_output
+            .buffer()
+            .copy_to_host(&mut fused_bytes)
+            .expect("download fused RGB8");
+        assert_eq!(fused_bytes, legacy_bytes);
+    }
+
+    #[test]
+    fn j2k_store_rgb8_mct_batch_matches_separate_stores_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let plane0_a = [16.0f32, 18.0, 21.0, 24.0];
+        let plane1_a = [-3.0f32, 4.0, 5.0, -6.0];
+        let plane2_a = [2.0f32, -1.0, 7.0, 3.0];
+        let plane0_b = [3.0f32, 7.0, 11.0, 13.0];
+        let plane1_b = [5.0f32, -2.0, 9.0, 1.0];
+        let plane2_b = [-4.0f32, 6.0, 0.0, 8.0];
+
+        let plane0_a = context
+            .upload(super::f32_slice_as_bytes(&plane0_a))
+            .expect("upload plane 0 A");
+        let plane1_a = context
+            .upload(super::f32_slice_as_bytes(&plane1_a))
+            .expect("upload plane 1 A");
+        let plane2_a = context
+            .upload(super::f32_slice_as_bytes(&plane2_a))
+            .expect("upload plane 2 A");
+        let plane0_b = context
+            .upload(super::f32_slice_as_bytes(&plane0_b))
+            .expect("upload plane 0 B");
+        let plane1_b = context
+            .upload(super::f32_slice_as_bytes(&plane1_b))
+            .expect("upload plane 1 B");
+        let plane2_b = context
+            .upload(super::f32_slice_as_bytes(&plane2_b))
+            .expect("upload plane 2 B");
+
+        let store = super::CudaJ2kStoreRgb8Job {
+            input_width0: 2,
+            input_width1: 2,
+            input_width2: 2,
+            source_x0: 0,
+            source_y0: 0,
+            source_x1: 0,
+            source_y1: 0,
+            source_x2: 0,
+            source_y2: 0,
+            copy_width: 2,
+            copy_height: 2,
+            output_width: 2,
+            output_height: 2,
+            output_x: 0,
+            output_y: 0,
+            addend0: 128.0,
+            addend1: 128.0,
+            addend2: 128.0,
+            bit_depth0: 8,
+            bit_depth1: 8,
+            bit_depth2: 8,
+            rgba: 1,
+        };
+        let separate_a = context
+            .j2k_store_rgb8_mct_device(
+                &plane0_a,
+                &plane1_a,
+                &plane2_a,
+                super::CudaJ2kStoreRgb8MctJob {
+                    store,
+                    irreversible97: 0,
+                },
+            )
+            .expect("separate fused store A");
+        let separate_b = context
+            .j2k_store_rgb8_mct_device(
+                &plane0_b,
+                &plane1_b,
+                &plane2_b,
+                super::CudaJ2kStoreRgb8MctJob {
+                    store,
+                    irreversible97: 0,
+                },
+            )
+            .expect("separate fused store B");
+
+        let batched = context
+            .j2k_store_rgb8_mct_batch_device(&[
+                super::CudaJ2kStoreRgb8MctTarget {
+                    plane0: &plane0_a,
+                    plane1: &plane1_a,
+                    plane2: &plane2_a,
+                    job: super::CudaJ2kStoreRgb8MctJob {
+                        store,
+                        irreversible97: 0,
+                    },
+                },
+                super::CudaJ2kStoreRgb8MctTarget {
+                    plane0: &plane0_b,
+                    plane1: &plane1_b,
+                    plane2: &plane2_b,
+                    job: super::CudaJ2kStoreRgb8MctJob {
+                        store,
+                        irreversible97: 0,
+                    },
+                },
+            ])
+            .expect("batched fused store");
+
+        assert_eq!(batched.execution().kernel_dispatches(), 1);
+        assert_eq!(batched.outputs().len(), 2);
+        let mut separate_a_bytes = vec![0u8; 16];
+        separate_a
+            .buffer()
+            .copy_to_host(&mut separate_a_bytes)
+            .expect("download separate A");
+        let mut separate_b_bytes = vec![0u8; 16];
+        separate_b
+            .buffer()
+            .copy_to_host(&mut separate_b_bytes)
+            .expect("download separate B");
+        let mut batch_a_bytes = vec![0u8; 16];
+        batched.outputs()[0]
+            .copy_to_host(&mut batch_a_bytes)
+            .expect("download batch A");
+        let mut batch_b_bytes = vec![0u8; 16];
+        batched.outputs()[1]
+            .copy_to_host(&mut batch_b_bytes)
+            .expect("download batch B");
+        assert_eq!(batch_a_bytes, separate_a_bytes);
+        assert_eq!(batch_b_bytes, separate_b_bytes);
+    }
+
+    #[test]
+    fn j2k_store_rgb16_mct_matches_inverse_mct_plus_store_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let plane0 = [40.0f32, 44.0, 52.0, 55.0];
+        let plane1 = [-3.5f32, 1.25, 2.75, -4.0];
+        let plane2 = [5.0f32, -2.0, 1.5, 6.0];
+        let legacy0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload legacy ICT plane 0");
+        let legacy1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload legacy ICT plane 1");
+        let legacy2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload legacy ICT plane 2");
+        let fused0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload fused ICT plane 0");
+        let fused1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload fused ICT plane 1");
+        let fused2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload fused ICT plane 2");
+        let addend = 32768.0;
+
+        context
+            .j2k_inverse_mct_device(
+                &legacy0,
+                &legacy1,
+                &legacy2,
+                super::CudaJ2kInverseMctJob {
+                    len: 4,
+                    irreversible97: 1,
+                    addend0: addend,
+                    addend1: addend,
+                    addend2: addend,
+                },
+            )
+            .expect("legacy inverse ICT");
+        let store_job = super::CudaJ2kStoreRgb16Job {
+            input_width0: 2,
+            input_width1: 2,
+            input_width2: 2,
+            source_x0: 0,
+            source_y0: 0,
+            source_x1: 0,
+            source_y1: 0,
+            source_x2: 0,
+            source_y2: 0,
+            copy_width: 2,
+            copy_height: 2,
+            output_width: 2,
+            output_height: 2,
+            output_x: 0,
+            output_y: 0,
+            addend0: 0.0,
+            addend1: 0.0,
+            addend2: 0.0,
+            bit_depth0: 16,
+            bit_depth1: 16,
+            bit_depth2: 16,
+            rgba: 0,
+        };
+        let legacy_output = context
+            .j2k_store_rgb16_device(&legacy0, &legacy1, &legacy2, store_job)
+            .expect("legacy RGB16 store");
+        let fused_output = context
+            .j2k_store_rgb16_mct_device(
+                &fused0,
+                &fused1,
+                &fused2,
+                super::CudaJ2kStoreRgb16MctJob {
+                    store: super::CudaJ2kStoreRgb16Job {
+                        addend0: addend,
+                        addend1: addend,
+                        addend2: addend,
+                        ..store_job
+                    },
+                    irreversible97: 1,
+                },
+            )
+            .expect("fused RGB16 MCT store");
+
+        assert_eq!(legacy_output.execution().kernel_dispatches(), 1);
+        assert_eq!(fused_output.execution().kernel_dispatches(), 1);
+        let mut legacy_bytes = vec![0u8; 24];
+        legacy_output
+            .buffer()
+            .copy_to_host(&mut legacy_bytes)
+            .expect("download legacy RGB16");
+        let mut fused_bytes = vec![0u8; 24];
+        fused_output
+            .buffer()
+            .copy_to_host(&mut fused_bytes)
+            .expect("download fused RGB16");
+        assert_eq!(fused_bytes, legacy_bytes);
+    }
+
+    #[test]
+    fn j2k_dequantize_htj2k_codeblocks_multi_uses_one_dispatch_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let first = context
+            .upload(super::i32_slice_as_bytes(&[0, 0, 0, 0]))
+            .expect("upload first coefficients");
+        let second = context
+            .upload(super::i32_slice_as_bytes(&[0, 0]))
+            .expect("upload second coefficients");
+        let first_jobs = [CudaHtj2kCodeBlockJob {
+            payload_offset: 0,
+            width: 2,
+            height: 2,
+            payload_len: 0,
+            cleanup_length: 0,
+            refinement_length: 0,
+            missing_bit_planes: 0,
+            num_bitplanes: 1,
+            number_of_coding_passes: 1,
+            output_stride: 2,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: false,
+        }];
+        let second_jobs = [CudaHtj2kCodeBlockJob {
+            payload_offset: 0,
+            width: 2,
+            height: 1,
+            payload_len: 0,
+            cleanup_length: 0,
+            refinement_length: 0,
+            missing_bit_planes: 0,
+            num_bitplanes: 1,
+            number_of_coding_passes: 1,
+            output_stride: 2,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: false,
+        }];
+
+        let execution = context
+            .j2k_dequantize_htj2k_codeblocks_multi_device(&[
+                CudaHtj2kDequantizeTarget {
+                    coefficients: &first,
+                    jobs: &first_jobs,
+                    output_words: 4,
+                },
+                CudaHtj2kDequantizeTarget {
+                    coefficients: &second,
+                    jobs: &second_jobs,
+                    output_words: 2,
+                },
+            ])
+            .expect("multi-buffer HTJ2K dequant");
+        assert_eq!(execution.kernel_dispatches(), 1);
+
+        let mut first_actual = vec![f32::NAN; 4];
+        first
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut first_actual))
+            .expect("download first coefficients");
+        assert_eq!(first_actual, vec![0.0; 4]);
+        let mut second_actual = vec![f32::NAN; 2];
+        second
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut second_actual))
+            .expect("download second coefficients");
+        assert_eq!(second_actual, vec![0.0; 2]);
+    }
+
+    #[test]
+    fn queued_cleanup_metadata_dequantizes_without_second_job_upload_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let first = context
+            .upload(super::i32_slice_as_bytes(&[1, 0x8000_0002u32 as i32, 0, 3]))
+            .expect("upload first coefficients");
+        let second = context
+            .upload(super::i32_slice_as_bytes(&[4, 0x8000_0005u32 as i32]))
+            .expect("upload second coefficients");
+        let jobs = [
+            CudaHtj2kCleanupMultiKernelJob {
+                output_ptr: first.device_ptr(),
+                coded_offset: 0,
+                width: 2,
+                height: 2,
+                coded_len: 0,
+                cleanup_length: 0,
+                refinement_length: 0,
+                missing_msbs: 0,
+                num_bitplanes: 31,
+                number_of_coding_passes: 1,
+                output_stride: 2,
+                output_offset: 0,
+                dequantization_step: 0.5,
+                stripe_causal: 0,
+            },
+            CudaHtj2kCleanupMultiKernelJob {
+                output_ptr: second.device_ptr(),
+                coded_offset: 0,
+                width: 2,
+                height: 1,
+                coded_len: 0,
+                cleanup_length: 0,
+                refinement_length: 0,
+                missing_msbs: 0,
+                num_bitplanes: 31,
+                number_of_coding_passes: 1,
+                output_stride: 2,
+                output_offset: 0,
+                dequantization_step: 0.25,
+                stripe_causal: 0,
+            },
+        ];
+        let jobs_buffer = pool
+            .upload(super::htj2k_cleanup_multi_jobs_as_bytes(&jobs))
+            .expect("upload cleanup metadata");
+        let queued = CudaQueuedHtj2kCleanup {
+            resources: vec![jobs_buffer],
+            status_buffer: None,
+            status_count: jobs.len(),
+            kernel_name: "signinum_htj2k_decode_codeblocks_multi",
+            execution: CudaExecutionStats::default(),
+        };
+
+        let execution = context
+            .j2k_dequantize_queued_htj2k_cleanup_with_pool(&queued)
+            .expect("dequant from queued cleanup metadata");
+        assert_eq!(execution.kernel_dispatches(), 1);
+
+        let mut first_actual = vec![f32::NAN; 4];
+        first
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut first_actual))
+            .expect("download first coefficients");
+        assert_eq!(first_actual, vec![0.5, -1.0, 0.0, 1.5]);
+        let mut second_actual = vec![f32::NAN; 2];
+        second
+            .copy_to_host(super::f32_slice_as_bytes_mut(&mut second_actual))
+            .expect("download second coefficients");
+        assert_eq!(second_actual, vec![1.0, -1.25]);
+    }
+
+    #[test]
+    fn htj2k_decode_multi_kernel_routes_cleanup_only_jobs() {
+        let cleanup_job = CudaHtj2kCleanupMultiKernelJob {
+            output_ptr: 0,
+            coded_offset: 0,
+            width: 64,
+            height: 64,
+            coded_len: 8,
+            cleanup_length: 8,
+            refinement_length: 0,
+            missing_msbs: 0,
+            num_bitplanes: 8,
+            number_of_coding_passes: 1,
+            output_stride: 64,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: 0,
+        };
+        let (_, cleanup_kernel_name) = super::htj2k_decode_multi_kernel_for_jobs(&[cleanup_job]);
+        assert_eq!(
+            cleanup_kernel_name,
+            "signinum_htj2k_decode_codeblocks_multi_cleanup_only"
+        );
+
+        let mut refinement_job = cleanup_job;
+        refinement_job.refinement_length = 4;
+        refinement_job.number_of_coding_passes = 2;
+        let (_, generic_kernel_name) = super::htj2k_decode_multi_kernel_for_jobs(&[refinement_job]);
+        assert_eq!(
+            generic_kernel_name,
+            "signinum_htj2k_decode_codeblocks_multi"
+        );
+    }
+
+    #[test]
+    fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let first_vlc = [0u16; 1024];
+        let later_vlc = [0u16; 1024];
+        let first_uvlc = [0u16; 320];
+        let later_uvlc = [0u16; 256];
+        let tables = context
+            .upload_htj2k_decode_table_resources(CudaHtj2kDecodeTables {
+                vlc_table0: &first_vlc,
+                vlc_table1: &later_vlc,
+                uvlc_table0: &first_uvlc,
+                uvlc_table1: &later_uvlc,
+            })
+            .expect("decode tables");
+        let resources = context
+            .upload_htj2k_decode_resources_with_tables(&[], &tables)
+            .expect("decode resources");
+
+        let execution = context
+            .decode_htj2k_codeblocks_cleanup_multi_with_resources_and_pool(
+                &resources,
+                &[] as &[CudaHtj2kCleanupTarget<'_>],
+                &pool,
+            )
+            .expect("empty cleanup batch");
+
+        assert_eq!(execution.kernel_dispatches(), 0);
+        assert_eq!(execution.decode_kernel_dispatches(), 0);
+    }
+
+    #[test]
+    fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let pool = context.buffer_pool();
+        let first_vlc = [0u16; 1024];
+        let later_vlc = [0u16; 1024];
+        let first_uvlc = [0u16; 320];
+        let later_uvlc = [0u16; 256];
+        let tables = context
+            .upload_htj2k_decode_table_resources(CudaHtj2kDecodeTables {
+                vlc_table0: &first_vlc,
+                vlc_table1: &later_vlc,
+                uvlc_table0: &first_uvlc,
+                uvlc_table1: &later_uvlc,
+            })
+            .expect("decode tables");
+        let resources = context
+            .upload_htj2k_decode_resources_with_tables(&[], &tables)
+            .expect("decode resources");
+
+        let queued = context
+            .decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool(
+                &resources,
+                &[] as &[CudaHtj2kCleanupTarget<'_>],
+                &pool,
+            )
+            .expect("empty queued cleanup batch");
+        assert_eq!(queued.execution().kernel_dispatches(), 0);
+        assert_eq!(queued.execution().decode_kernel_dispatches(), 0);
+        assert_eq!(queued.resource_count(), 0);
+
+        let execution = queued.finish().expect("finish empty queued cleanup");
+        assert_eq!(execution.kernel_dispatches(), 0);
+        assert_eq!(execution.decode_kernel_dispatches(), 0);
     }
 
     #[test]

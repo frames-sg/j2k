@@ -13,23 +13,41 @@ pub(crate) enum CudaKernel {
     J2kQuantizeSubband,
     J2kQuantizeSubbandStrided,
     Htj2kDecodeCodeblocks,
+    Htj2kDecodeCodeblocksMulti,
+    Htj2kDecodeCodeblocksMultiCleanupOnly,
     J2kDequantizeHtj2kCodeblocks,
+    J2kDequantizeHtj2kCodeblocksMulti,
+    J2kDequantizeHtj2kCleanupJobsMulti,
     J2kIdwtInterleave,
+    J2kIdwtInterleaveHorizontalMulti,
+    J2kIdwtInterleaveHorizontal53Multi,
+    J2kIdwtInterleaveHorizontal97Multi,
     J2kIdwtHorizontal,
     J2kIdwtHorizontal53,
     J2kIdwtHorizontal97,
     J2kIdwtVertical,
+    J2kIdwtVerticalMulti,
+    J2kIdwtVertical53Multi,
+    J2kIdwtVertical97Multi,
+    J2kIdwtVertical97MultiCols4,
     J2kIdwtVertical53,
     J2kIdwtVertical97,
     Htj2kEncodeCodeblock,
     Htj2kEncodeCodeblocks,
+    Htj2kEncodeCodeblocksMultiInput,
+    Htj2kEncodeCodeblocksMultiInputCleanup,
+    Htj2kEncodeCodeblocksMultiInputCleanup64,
+    Htj2kCompactCodeblocks,
     Htj2kPacketizeCleanup,
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
     J2kStoreGray8,
     J2kStoreRgb16,
+    J2kStoreRgb16Mct,
     J2kStoreRgb8,
+    J2kStoreRgb8Mct,
+    J2kStoreRgb8MctBatch,
     // Coefficient-domain JPEG->HTJ2K transcode (signinum-transcode-cuda).
     TranscodeReversible53Idct,
     TranscodeReversible53VerticalLow,
@@ -40,9 +58,12 @@ pub(crate) enum CudaKernel {
     TranscodeDwt97RowLift,
     TranscodeDwt97ColumnLift,
     TranscodeDwt97IdctBatch,
+    TranscodeDwt97IdctI16Batch,
     TranscodeDwt97RowLiftBatch,
+    TranscodeDwt97RowLiftBatchCoop,
     TranscodeDwt97ColumnLiftBatch,
     TranscodeDwt97QuantizeCodeblocks,
+    TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,12 +86,23 @@ impl CudaKernel {
             | Self::J2kQuantizeSubband
             | Self::J2kQuantizeSubbandStrided => J2K_ENCODE_PTX,
             Self::Htj2kDecodeCodeblocks
+            | Self::Htj2kDecodeCodeblocksMulti
+            | Self::Htj2kDecodeCodeblocksMultiCleanupOnly
             | Self::J2kDequantizeHtj2kCodeblocks
+            | Self::J2kDequantizeHtj2kCodeblocksMulti
+            | Self::J2kDequantizeHtj2kCleanupJobsMulti
             | Self::J2kIdwtInterleave
+            | Self::J2kIdwtInterleaveHorizontalMulti
+            | Self::J2kIdwtInterleaveHorizontal53Multi
+            | Self::J2kIdwtInterleaveHorizontal97Multi
             | Self::J2kIdwtHorizontal
             | Self::J2kIdwtHorizontal53
             | Self::J2kIdwtHorizontal97
             | Self::J2kIdwtVertical
+            | Self::J2kIdwtVerticalMulti
+            | Self::J2kIdwtVertical53Multi
+            | Self::J2kIdwtVertical97Multi
+            | Self::J2kIdwtVertical97MultiCols4
             | Self::J2kIdwtVertical53
             | Self::J2kIdwtVertical97
             | Self::J2kInverseDwtSingle
@@ -78,9 +110,16 @@ impl CudaKernel {
             | Self::J2kStoreGray16
             | Self::J2kStoreGray8
             | Self::J2kStoreRgb16
-            | Self::J2kStoreRgb8 => HTJ2K_DECODE_PTX,
+            | Self::J2kStoreRgb16Mct
+            | Self::J2kStoreRgb8
+            | Self::J2kStoreRgb8Mct
+            | Self::J2kStoreRgb8MctBatch => HTJ2K_DECODE_PTX,
             Self::Htj2kEncodeCodeblock
             | Self::Htj2kEncodeCodeblocks
+            | Self::Htj2kEncodeCodeblocksMultiInput
+            | Self::Htj2kEncodeCodeblocksMultiInputCleanup
+            | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
+            | Self::Htj2kCompactCodeblocks
             | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
             Self::TranscodeReversible53Idct
             | Self::TranscodeReversible53VerticalLow
@@ -91,9 +130,12 @@ impl CudaKernel {
             | Self::TranscodeDwt97RowLift
             | Self::TranscodeDwt97ColumnLift
             | Self::TranscodeDwt97IdctBatch
+            | Self::TranscodeDwt97IdctI16Batch
             | Self::TranscodeDwt97RowLiftBatch
+            | Self::TranscodeDwt97RowLiftBatchCoop
             | Self::TranscodeDwt97ColumnLiftBatch
-            | Self::TranscodeDwt97QuantizeCodeblocks => TRANSCODE_PTX,
+            | Self::TranscodeDwt97QuantizeCodeblocks
+            | Self::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch => TRANSCODE_PTX,
         }
     }
 
@@ -110,23 +152,59 @@ impl CudaKernel {
             Self::J2kQuantizeSubband => b"signinum_j2k_quantize_subband\0",
             Self::J2kQuantizeSubbandStrided => b"signinum_j2k_quantize_subband_strided\0",
             Self::Htj2kDecodeCodeblocks => b"signinum_htj2k_decode_codeblocks\0",
+            Self::Htj2kDecodeCodeblocksMulti => b"signinum_htj2k_decode_codeblocks_multi\0",
+            Self::Htj2kDecodeCodeblocksMultiCleanupOnly => {
+                b"signinum_htj2k_decode_codeblocks_multi_cleanup_only\0"
+            }
             Self::J2kDequantizeHtj2kCodeblocks => b"signinum_j2k_dequantize_htj2k_codeblocks\0",
+            Self::J2kDequantizeHtj2kCodeblocksMulti => {
+                b"signinum_j2k_dequantize_htj2k_codeblocks_multi\0"
+            }
+            Self::J2kDequantizeHtj2kCleanupJobsMulti => {
+                b"signinum_j2k_dequantize_htj2k_cleanup_jobs_multi\0"
+            }
             Self::J2kIdwtInterleave => b"signinum_j2k_idwt_interleave\0",
+            Self::J2kIdwtInterleaveHorizontalMulti => {
+                b"signinum_j2k_idwt_interleave_horizontal_multi\0"
+            }
+            Self::J2kIdwtInterleaveHorizontal53Multi => {
+                b"signinum_j2k_idwt_interleave_horizontal_53_multi\0"
+            }
+            Self::J2kIdwtInterleaveHorizontal97Multi => {
+                b"signinum_j2k_idwt_interleave_horizontal_97_multi\0"
+            }
             Self::J2kIdwtHorizontal => b"signinum_j2k_idwt_horizontal\0",
             Self::J2kIdwtHorizontal53 => b"signinum_j2k_idwt_horizontal_53\0",
             Self::J2kIdwtHorizontal97 => b"signinum_j2k_idwt_horizontal_97\0",
             Self::J2kIdwtVertical => b"signinum_j2k_idwt_vertical\0",
+            Self::J2kIdwtVerticalMulti => b"signinum_j2k_idwt_vertical_multi\0",
+            Self::J2kIdwtVertical53Multi => b"signinum_j2k_idwt_vertical_53_multi\0",
+            Self::J2kIdwtVertical97Multi => b"signinum_j2k_idwt_vertical_97_multi\0",
+            Self::J2kIdwtVertical97MultiCols4 => b"signinum_j2k_idwt_vertical_97_multi_cols4\0",
             Self::J2kIdwtVertical53 => b"signinum_j2k_idwt_vertical_53\0",
             Self::J2kIdwtVertical97 => b"signinum_j2k_idwt_vertical_97\0",
             Self::Htj2kEncodeCodeblock => b"signinum_htj2k_encode_codeblock\0",
             Self::Htj2kEncodeCodeblocks => b"signinum_htj2k_encode_codeblocks\0",
+            Self::Htj2kEncodeCodeblocksMultiInput => {
+                b"signinum_htj2k_encode_codeblocks_multi_input\0"
+            }
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup => {
+                b"signinum_htj2k_encode_codeblocks_multi_input_cleanup\0"
+            }
+            Self::Htj2kEncodeCodeblocksMultiInputCleanup64 => {
+                b"signinum_htj2k_encode_codeblocks_multi_input_cleanup_64\0"
+            }
+            Self::Htj2kCompactCodeblocks => b"signinum_htj2k_compact_codeblocks\0",
             Self::Htj2kPacketizeCleanup => b"signinum_htj2k_packetize_cleanup\0",
             Self::J2kInverseDwtSingle => b"signinum_j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"signinum_j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"signinum_j2k_store_gray16\0",
             Self::J2kStoreGray8 => b"signinum_j2k_store_gray8\0",
             Self::J2kStoreRgb16 => b"signinum_j2k_store_rgb16\0",
+            Self::J2kStoreRgb16Mct => b"signinum_j2k_store_rgb16_mct\0",
             Self::J2kStoreRgb8 => b"signinum_j2k_store_rgb8\0",
+            Self::J2kStoreRgb8Mct => b"signinum_j2k_store_rgb8_mct\0",
+            Self::J2kStoreRgb8MctBatch => b"signinum_j2k_store_rgb8_mct_batch\0",
             Self::TranscodeReversible53Idct => b"transcode_reversible53_idct\0",
             Self::TranscodeReversible53VerticalLow => b"transcode_reversible53_vertical_low\0",
             Self::TranscodeReversible53VerticalHigh => b"transcode_reversible53_vertical_high\0",
@@ -138,9 +216,14 @@ impl CudaKernel {
             Self::TranscodeDwt97RowLift => b"transcode_dwt97_row_lift\0",
             Self::TranscodeDwt97ColumnLift => b"transcode_dwt97_column_lift\0",
             Self::TranscodeDwt97IdctBatch => b"transcode_dwt97_idct_batch\0",
+            Self::TranscodeDwt97IdctI16Batch => b"transcode_dwt97_idct_i16_batch\0",
             Self::TranscodeDwt97RowLiftBatch => b"transcode_dwt97_row_lift_batch\0",
+            Self::TranscodeDwt97RowLiftBatchCoop => b"transcode_dwt97_row_lift_batch_coop\0",
             Self::TranscodeDwt97ColumnLiftBatch => b"transcode_dwt97_column_lift_batch\0",
             Self::TranscodeDwt97QuantizeCodeblocks => b"transcode_dwt97_quantize_codeblocks\0",
+            Self::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch => {
+                b"transcode_dwt97_column_lift_quantize_codeblocks_batch\0"
+            }
         }
     }
 }
@@ -155,6 +238,8 @@ pub(crate) fn copy_u8_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> 
 
 const COPY_U8_THREADS: usize = 256;
 const COPY_U8_THREADS_CUDA: c_uint = 256;
+const J2K_IDWT_COOP_THREADS_SMALL_CUDA: c_uint = 256;
+const J2K_IDWT_COOP_THREADS_LARGE_CUDA: c_uint = 512;
 const J2K_ENCODE_THREADS_X: c_uint = 16;
 const J2K_ENCODE_THREADS_Y: c_uint = 16;
 const J2K_ENCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/j2k_encode_kernels.ptx"));
@@ -165,6 +250,10 @@ const HTJ2K_ENCODE_PTX: &[u8] =
 // Always resolves: build.rs writes a placeholder empty module when nvcc is
 // absent (the dispatch checks `signinum_cuda_transcode_ptx_built` before load).
 const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));
+const HTJ2K_DECODE_CODEBLOCK_THREADS: usize = 32;
+const HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA: c_uint = 32;
+const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
+const HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA: c_uint = 128;
 
 pub(crate) fn j2k_forward_rct_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
     let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
@@ -183,12 +272,86 @@ pub(crate) fn j2k_dwt53_launch_geometry(width: u32, height: u32) -> Option<CudaL
     })
 }
 
-pub(crate) fn htj2k_codeblock_launch_geometry(job_count: usize) -> Option<CudaLaunchGeometry> {
+pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
+    max_len: usize,
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    let blocks = c_uint::try_from(max_len.div_ceil(COPY_U8_THREADS)).ok()?;
     let jobs = c_uint::try_from(job_count).ok()?;
     Some(CudaLaunchGeometry {
-        grid: (jobs, 1, 1),
-        block: (1, 1, 1),
+        grid: (blocks, jobs, 1),
+        block: (COPY_U8_THREADS_CUDA, 1, 1),
     })
+}
+
+pub(crate) fn j2k_idwt_multi_coop_launch_geometry(
+    max_len: usize,
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    let lanes = c_uint::try_from(max_len).ok()?;
+    let jobs = c_uint::try_from(job_count).ok()?;
+    let threads = if max_len > COPY_U8_THREADS {
+        J2K_IDWT_COOP_THREADS_LARGE_CUDA
+    } else {
+        J2K_IDWT_COOP_THREADS_SMALL_CUDA
+    };
+    Some(CudaLaunchGeometry {
+        grid: (lanes, jobs, 1),
+        block: (threads, 1, 1),
+    })
+}
+
+pub(crate) fn j2k_idwt_multi_coop_axis_launch_geometry(
+    work_items: usize,
+    lane_count: usize,
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    let blocks = c_uint::try_from(work_items).ok()?;
+    let jobs = c_uint::try_from(job_count).ok()?;
+    let threads = if lane_count > COPY_U8_THREADS {
+        J2K_IDWT_COOP_THREADS_LARGE_CUDA
+    } else {
+        J2K_IDWT_COOP_THREADS_SMALL_CUDA
+    };
+    Some(CudaLaunchGeometry {
+        grid: (blocks, jobs, 1),
+        block: (threads, 1, 1),
+    })
+}
+
+pub(crate) fn j2k_idwt_multi_coop_columns_launch_geometry(
+    columns: usize,
+    rows: usize,
+    job_count: usize,
+    columns_per_block: usize,
+) -> Option<CudaLaunchGeometry> {
+    if rows == 0 || columns_per_block == 0 || rows.saturating_mul(columns_per_block) > 1024 {
+        return None;
+    }
+    let blocks = c_uint::try_from(columns.div_ceil(columns_per_block)).ok()?;
+    let jobs = c_uint::try_from(job_count).ok()?;
+    let block_x = c_uint::try_from(columns_per_block).ok()?;
+    let block_y = c_uint::try_from(rows).ok()?;
+    Some(CudaLaunchGeometry {
+        grid: (blocks, jobs, 1),
+        block: (block_x, block_y, 1),
+    })
+}
+
+pub(crate) fn htj2k_codeblock_launch_geometry(job_count: usize) -> Option<CudaLaunchGeometry> {
+    if job_count >= HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS {
+        let jobs = c_uint::try_from(job_count.div_ceil(HTJ2K_DECODE_CODEBLOCK_THREADS)).ok()?;
+        Some(CudaLaunchGeometry {
+            grid: (jobs, 1, 1),
+            block: (HTJ2K_DECODE_CODEBLOCK_THREADS_CUDA, 1, 1),
+        })
+    } else {
+        let jobs = c_uint::try_from(job_count).ok()?;
+        Some(CudaLaunchGeometry {
+            grid: (jobs, 1, 1),
+            block: (1, 1, 1),
+        })
+    }
 }
 
 pub(crate) fn htj2k_codeblock_sample_launch_geometry(
@@ -201,10 +364,26 @@ pub(crate) fn htj2k_codeblock_sample_launch_geometry(
     })
 }
 
+pub(crate) fn j2k_store_batch_launch_geometry(
+    max_pixels: usize,
+    job_count: usize,
+) -> Option<CudaLaunchGeometry> {
+    let blocks = c_uint::try_from(max_pixels.div_ceil(COPY_U8_THREADS)).ok()?;
+    let jobs = c_uint::try_from(job_count).ok()?;
+    Some(CudaLaunchGeometry {
+        grid: (blocks, jobs, 1),
+        block: (COPY_U8_THREADS_CUDA, 1, 1),
+    })
+}
+
 pub(crate) fn htj2k_encode_codeblock_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
-    htj2k_codeblock_sample_launch_geometry(job_count)
+    let jobs = c_uint::try_from(job_count).ok()?;
+    Some(CudaLaunchGeometry {
+        grid: (jobs, 1, 1),
+        block: (HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA, 1, 1),
+    })
 }
 
 pub(crate) fn htj2k_packetize_launch_geometry(packet_count: usize) -> Option<CudaLaunchGeometry> {
@@ -271,10 +450,21 @@ mod tests {
     }
 
     #[test]
+    fn htj2k_cleanup_decode_geometry_packs_large_batches_into_warps() {
+        let small_geometry = htj2k_codeblock_launch_geometry(1_200).expect("small geometry");
+        assert_eq!(small_geometry.grid, (1_200, 1, 1));
+        assert_eq!(small_geometry.block, (1, 1, 1));
+
+        let large_geometry = htj2k_codeblock_launch_geometry(2_048).expect("large geometry");
+        assert_eq!(large_geometry.grid, (64, 1, 1));
+        assert_eq!(large_geometry.block, (32, 1, 1));
+    }
+
+    #[test]
     fn htj2k_encode_geometry_uses_cooperative_threads_per_codeblock() {
-        let geometry = htj2k_encode_codeblock_launch_geometry(4).expect("geometry");
-        assert_eq!(geometry.grid, (4, 1, 1));
-        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+        let geometry = htj2k_encode_codeblock_launch_geometry(327).expect("geometry");
+        assert_eq!(geometry.grid, (327, 1, 1));
+        assert_eq!(geometry.block, (128, 1, 1));
     }
 
     #[test]
@@ -344,12 +534,40 @@ mod tests {
             b"signinum_htj2k_decode_codeblocks\0"
         );
         assert_eq!(
+            CudaKernel::Htj2kDecodeCodeblocksMulti.entrypoint(),
+            b"signinum_htj2k_decode_codeblocks_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly.entrypoint(),
+            b"signinum_htj2k_decode_codeblocks_multi_cleanup_only\0"
+        );
+        assert_eq!(
             CudaKernel::J2kDequantizeHtj2kCodeblocks.entrypoint(),
             b"signinum_j2k_dequantize_htj2k_codeblocks\0"
         );
         assert_eq!(
+            CudaKernel::J2kDequantizeHtj2kCodeblocksMulti.entrypoint(),
+            b"signinum_j2k_dequantize_htj2k_codeblocks_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kDequantizeHtj2kCleanupJobsMulti.entrypoint(),
+            b"signinum_j2k_dequantize_htj2k_cleanup_jobs_multi\0"
+        );
+        assert_eq!(
             CudaKernel::J2kIdwtInterleave.entrypoint(),
             b"signinum_j2k_idwt_interleave\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtInterleaveHorizontalMulti.entrypoint(),
+            b"signinum_j2k_idwt_interleave_horizontal_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtInterleaveHorizontal53Multi.entrypoint(),
+            b"signinum_j2k_idwt_interleave_horizontal_53_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtInterleaveHorizontal97Multi.entrypoint(),
+            b"signinum_j2k_idwt_interleave_horizontal_97_multi\0"
         );
         assert_eq!(
             CudaKernel::J2kIdwtHorizontal.entrypoint(),
@@ -358,6 +576,22 @@ mod tests {
         assert_eq!(
             CudaKernel::J2kIdwtVertical.entrypoint(),
             b"signinum_j2k_idwt_vertical\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtVerticalMulti.entrypoint(),
+            b"signinum_j2k_idwt_vertical_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtVertical53Multi.entrypoint(),
+            b"signinum_j2k_idwt_vertical_53_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtVertical97Multi.entrypoint(),
+            b"signinum_j2k_idwt_vertical_97_multi\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kIdwtVertical97MultiCols4.entrypoint(),
+            b"signinum_j2k_idwt_vertical_97_multi_cols4\0"
         );
         assert_eq!(
             CudaKernel::J2kInverseDwtSingle.entrypoint(),
@@ -380,19 +614,58 @@ mod tests {
             b"signinum_j2k_store_rgb8\0"
         );
         assert_eq!(
+            CudaKernel::J2kStoreRgb8Mct.entrypoint(),
+            b"signinum_j2k_store_rgb8_mct\0"
+        );
+        assert_eq!(
+            CudaKernel::J2kStoreRgb8MctBatch.entrypoint(),
+            b"signinum_j2k_store_rgb8_mct_batch\0"
+        );
+        assert_eq!(
             CudaKernel::J2kStoreRgb16.entrypoint(),
             b"signinum_j2k_store_rgb16\0"
         );
+        assert_eq!(
+            CudaKernel::J2kStoreRgb16Mct.entrypoint(),
+            b"signinum_j2k_store_rgb16_mct\0"
+        );
         let source =
             std::str::from_utf8(&HTJ2K_DECODE_PTX[..HTJ2K_DECODE_PTX.len() - 1]).expect("ptx utf8");
+        assert!(source.contains(".visible .entry signinum_htj2k_decode_codeblocks_multi("));
+        assert!(
+            source.contains(".visible .entry signinum_htj2k_decode_codeblocks_multi_cleanup_only(")
+        );
         assert!(source.contains(".visible .entry signinum_j2k_dequantize_htj2k_codeblocks("));
+        assert!(source.contains(".visible .entry signinum_j2k_dequantize_htj2k_codeblocks_multi("));
+        assert!(
+            source.contains(".visible .entry signinum_j2k_dequantize_htj2k_cleanup_jobs_multi(")
+        );
         assert!(source.contains(".visible .entry signinum_j2k_idwt_interleave("));
+        assert!(source.contains(".visible .entry signinum_j2k_idwt_interleave_horizontal_multi("));
+        assert!(
+            source.contains(".visible .entry signinum_j2k_idwt_interleave_horizontal_53_multi(")
+        );
+        assert!(
+            source.contains(".visible .entry signinum_j2k_idwt_interleave_horizontal_97_multi(")
+        );
         assert!(source.contains(".visible .entry signinum_j2k_idwt_horizontal("));
         assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical("));
+        assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical_multi("));
+        assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical_53_multi("));
+        assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical_97_multi("));
         assert!(source.contains(".visible .entry signinum_j2k_idwt_horizontal_53("));
         assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical_53("));
         assert!(source.contains(".visible .entry signinum_j2k_idwt_horizontal_97("));
         assert!(source.contains(".visible .entry signinum_j2k_idwt_vertical_97("));
+        assert!(source.contains(".visible .entry signinum_j2k_store_rgb8_mct("));
+        assert!(source.contains(".visible .entry signinum_j2k_store_rgb8_mct_batch("));
+        assert!(source.contains(".visible .entry signinum_j2k_store_rgb16_mct("));
+    }
+
+    #[test]
+    fn htj2k_decode_cleanup_kernels_guard_padded_launch_threads() {
+        let cuda_source = include_str!("htj2k_decode_kernels.cu");
+        assert!(cuda_source.contains("if (gid >= job_count)"));
     }
 
     #[test]
@@ -407,12 +680,32 @@ mod tests {
             b"signinum_htj2k_encode_codeblocks\0"
         );
         assert_eq!(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInput.entrypoint(),
+            b"signinum_htj2k_encode_codeblocks_multi_input\0"
+        );
+        assert_eq!(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup.entrypoint(),
+            b"signinum_htj2k_encode_codeblocks_multi_input_cleanup\0"
+        );
+        assert_eq!(
+            CudaKernel::Htj2kEncodeCodeblocksMultiInputCleanup64.entrypoint(),
+            b"signinum_htj2k_encode_codeblocks_multi_input_cleanup_64\0"
+        );
+        assert_eq!(
             CudaKernel::Htj2kPacketizeCleanup.entrypoint(),
             b"signinum_htj2k_packetize_cleanup\0"
         );
         let source =
             std::str::from_utf8(&HTJ2K_ENCODE_PTX[..HTJ2K_ENCODE_PTX.len() - 1]).expect("ptx utf8");
         assert!(source.contains(".visible .entry signinum_htj2k_encode_codeblocks("));
+        assert!(source.contains(".visible .entry signinum_htj2k_encode_codeblocks_multi_input("));
+        if cfg!(signinum_cuda_htj2k_encode_ptx_built) {
+            assert!(source
+                .contains(".visible .entry signinum_htj2k_encode_codeblocks_multi_input_cleanup("));
+            assert!(source.contains(
+                ".visible .entry signinum_htj2k_encode_codeblocks_multi_input_cleanup_64("
+            ));
+        }
         assert!(source.contains(".visible .entry signinum_htj2k_packetize_cleanup("));
         let cuda_source = include_str!("htj2k_encode_kernels.cu");
         assert!(cuda_source.contains("j2k_ht_reduce_max_magnitude_cooperative"));
@@ -428,6 +721,51 @@ mod tests {
         assert!(!cuda_source.contains(
             "j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_OK, 0u, 0u, 1u, params.total_bitplanes);"
         ));
+    }
+
+    #[test]
+    fn htj2k_encode_kernel_uses_width_bounded_cleanup_scratch_clear() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        assert!(cuda_source.contains("FIXED_64 ? 34u : j2k_ht_cleanup_scratch_entries(width)"));
+        assert!(cuda_source.contains(
+            "params.width == 64u && params.height == 64u && params.coefficient_stride == 64u"
+        ));
+        assert!(!cuda_source.contains("idx < 513u; ++idx"));
+    }
+
+    #[test]
+    fn htj2k_encode_kernel_uses_shared_cleanup_scratch() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        assert!(cuda_source.contains("__shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];"));
+        assert!(cuda_source.contains("__shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];"));
+        assert!(cuda_source.contains("cleanup_e_val,\n        cleanup_cx_val"));
+    }
+
+    #[test]
+    fn htj2k_encode_kernel_sizes_max_reduction_for_encode_launch_threads() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        assert!(cuda_source.contains("J2K_HT_ENCODE_THREADS = 128u"));
+        assert!(cuda_source.contains("__shared__ uint block_max[J2K_HT_ENCODE_THREADS];"));
+        assert!(!cuda_source.contains("__shared__ uint block_max[256];"));
+    }
+
+    #[test]
+    fn htj2k_encode_multi_input_kernel_declares_launch_bounds() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        let expected = concat!(
+            "extern \"C\" __global__ void __",
+            "launch_bounds__(J2K_HT_ENCODE_THREADS) ",
+            "signinum_htj2k_encode_codeblocks_multi_input"
+        );
+        assert!(cuda_source.contains(expected));
+        assert!(cuda_source.contains("signinum_htj2k_encode_codeblocks_multi_input_cleanup"));
+    }
+
+    #[test]
+    fn htj2k_encode_kernel_has_contiguous_max_reduction_fast_path() {
+        let cuda_source = include_str!("htj2k_encode_kernels.cu");
+        assert!(cuda_source.contains("if (coefficient_stride == width)"));
+        assert!(cuda_source.contains("j2k_classic_magnitude(coefficients[sample])"));
     }
 
     #[test]
@@ -449,8 +787,16 @@ mod tests {
             b"transcode_dwt97_idct_batch\0"
         );
         assert_eq!(
+            CudaKernel::TranscodeDwt97IdctI16Batch.entrypoint(),
+            b"transcode_dwt97_idct_i16_batch\0"
+        );
+        assert_eq!(
             CudaKernel::TranscodeDwt97RowLiftBatch.entrypoint(),
             b"transcode_dwt97_row_lift_batch\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97RowLiftBatchCoop.entrypoint(),
+            b"transcode_dwt97_row_lift_batch_coop\0"
         );
         assert_eq!(
             CudaKernel::TranscodeDwt97ColumnLiftBatch.entrypoint(),
@@ -459,6 +805,10 @@ mod tests {
         assert_eq!(
             CudaKernel::TranscodeDwt97QuantizeCodeblocks.entrypoint(),
             b"transcode_dwt97_quantize_codeblocks\0"
+        );
+        assert_eq!(
+            CudaKernel::TranscodeDwt97ColumnLiftQuantizeCodeblocksBatch.entrypoint(),
+            b"transcode_dwt97_column_lift_quantize_codeblocks_batch\0"
         );
         // All transcode kernels share the one translation unit's PTX.
         assert_eq!(
@@ -472,10 +822,45 @@ mod tests {
             let source = std::str::from_utf8(&TRANSCODE_PTX[..TRANSCODE_PTX.len() - 1])
                 .expect("transcode ptx utf8");
             assert!(source.contains(".visible .entry transcode_dwt97_idct_batch("));
+            assert!(source.contains(".visible .entry transcode_dwt97_idct_i16_batch("));
             assert!(source.contains(".visible .entry transcode_dwt97_row_lift_batch("));
+            assert!(source.contains(".visible .entry transcode_dwt97_row_lift_batch_coop("));
             assert!(source.contains(".visible .entry transcode_dwt97_column_lift_batch("));
             assert!(source.contains(".visible .entry transcode_dwt97_quantize_codeblocks("));
+            assert!(source.contains(
+                ".visible .entry transcode_dwt97_column_lift_quantize_codeblocks_batch("
+            ));
         }
+    }
+
+    #[test]
+    fn transcode_dwt97_idct_uses_precomputed_basis_table() {
+        let cuda_source = include_str!("transcode_kernels.cu");
+        assert!(cuda_source.contains("DWT97_IDCT8_BASIS"));
+        assert!(cuda_source.contains("DWT97_IDCT8_BASIS[sample_idx * 8 + freq]"));
+        assert!(!cuda_source.contains("sqrtf(1.0f / 8.0f)"));
+        assert!(!cuda_source.contains("cosf(angle)"));
+    }
+
+    #[test]
+    fn transcode_dwt97_idct_unrolls_fixed_basis_loops() {
+        let cuda_source = include_str!("transcode_kernels.cu");
+        assert!(cuda_source.contains("transcode_dwt97_idct_unroll_guard"));
+        assert!(
+            cuda_source.contains("#pragma unroll\n    for (int freq_y = 0; freq_y < 8; ++freq_y)")
+        );
+        assert!(cuda_source
+            .contains("#pragma unroll\n        for (int freq_x = 0; freq_x < 8; ++freq_x)"));
+    }
+
+    #[test]
+    fn transcode_dwt97_batch_row_lift_has_cooperative_kernel() {
+        let cuda_source = include_str!("transcode_kernels.cu");
+        assert!(cuda_source.contains("transcode_dwt97_row_lift_batch_coop("));
+        assert!(cuda_source.contains("DWT97_ROW_LIFT_MAX_WIDTH"));
+        assert!(cuda_source.contains(
+            "__shared__ f32 rows[DWT97_ROW_LIFT_ROWS_PER_BLOCK][DWT97_ROW_LIFT_MAX_WIDTH];"
+        ));
     }
 
     #[test]

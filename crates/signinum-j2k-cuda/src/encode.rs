@@ -124,6 +124,8 @@ pub struct CudaEncodeStageAccelerator {
     ht_code_block_attempts: usize,
     packetization_attempts: usize,
     prefer_cpu_forward_rct: bool,
+    prefer_cpu_ht_subband: bool,
+    prefer_cpu_quantize_subband: bool,
     prefer_cpu_packetization: bool,
     deinterleave_dispatches: usize,
     forward_rct_dispatches: usize,
@@ -182,6 +184,29 @@ impl CudaEncodeStageAccelerator {
     #[must_use]
     pub fn prefer_cpu_packetization(mut self, prefer_cpu_packetization: bool) -> Self {
         self.prefer_cpu_packetization = prefer_cpu_packetization;
+        self
+    }
+
+    /// Prefer host sub-band quantization while keeping batched CUDA HT code-block encode enabled.
+    ///
+    /// This avoids launching one CUDA quantize/subband path for every prepared
+    /// subband in multi-resolution precomputed transcode outputs, where the
+    /// many tiny launches cost more than CPU quantization.
+    #[must_use]
+    pub fn prefer_cpu_ht_subband(mut self, prefer_cpu_ht_subband: bool) -> Self {
+        self.prefer_cpu_ht_subband = prefer_cpu_ht_subband;
+        self
+    }
+
+    /// Prefer host sub-band quantization while keeping CUDA HT code-block encode enabled.
+    ///
+    /// Multi-resolution transcode workloads can contain thousands of small
+    /// subbands; for those, CPU quantization plus one batched HT code-block
+    /// encode per tile is currently faster than launching CUDA quantization for
+    /// every subband.
+    #[must_use]
+    pub fn prefer_cpu_quantize_subband(mut self, prefer_cpu_quantize_subband: bool) -> Self {
+        self.prefer_cpu_quantize_subband = prefer_cpu_quantize_subband;
         self
     }
 
@@ -1550,6 +1575,22 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         job: J2kQuantizeSubbandJob<'_>,
     ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
+        if self.prefer_cpu_quantize_subband {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_quantize_subband"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "prefer_cpu_quantize_subband"),
+                    ],
+                );
+            }
+            let _ = job;
+            return Ok(None);
+        }
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let (output, elapsed_us) = time_cuda_stage(
@@ -1874,6 +1915,21 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         self.ht_subband_attempts = self.ht_subband_attempts.saturating_add(1);
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(code_block_count);
+        if self.prefer_cpu_ht_subband {
+            if profile::gpu_route_profile_enabled() {
+                profile::emit_gpu_route_profile(
+                    "j2k",
+                    "gpu_route",
+                    "cuda",
+                    &[
+                        ("op", "encode_ht_subband"),
+                        ("decision", "cpu_fallback"),
+                        ("reason", "prefer_cpu_ht_subband"),
+                    ],
+                );
+            }
+            return Ok(None);
+        }
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let resources = self.cuda_encode_resources(&context)?;
@@ -3853,6 +3909,46 @@ mod tests {
             components,
             vec![vec![-128.0, -64.0], vec![0.0, -96.0], vec![127.0, -112.0]]
         );
+    }
+
+    #[test]
+    fn prefer_cpu_ht_subband_declines_fused_subband_but_counts_attempts() {
+        let mut accelerator = CudaEncodeStageAccelerator::default()
+            .prefer_cpu_ht_subband(true)
+            .prefer_cpu_quantize_subband(true);
+        let output = accelerator
+            .encode_ht_subband(signinum_j2k_native::J2kHtSubbandEncodeJob {
+                coefficients: &[0.0; 16],
+                width: 4,
+                height: 4,
+                step_exponent: 8,
+                step_mantissa: 0,
+                range_bits: 8,
+                reversible: false,
+                code_block_width: 4,
+                code_block_height: 4,
+                total_bitplanes: 9,
+            })
+            .expect("subband hook can decline");
+
+        assert!(output.is_none());
+        assert_eq!(accelerator.ht_subband_attempts, 1);
+        assert_eq!(accelerator.quantize_subband_attempts, 1);
+        assert_eq!(accelerator.ht_code_block_attempts, 1);
+        assert_eq!(accelerator.dispatch_report().total(), 0);
+
+        let quantized = accelerator
+            .encode_quantize_subband(signinum_j2k_native::J2kQuantizeSubbandJob {
+                coefficients: &[0.0; 16],
+                step_exponent: 8,
+                step_mantissa: 0,
+                range_bits: 8,
+                reversible: false,
+            })
+            .expect("quantize hook can decline");
+        assert!(quantized.is_none());
+        assert_eq!(accelerator.quantize_subband_attempts, 2);
+        assert_eq!(accelerator.dispatch_report().total(), 0);
     }
 
     #[cfg(feature = "cuda-runtime")]
