@@ -134,16 +134,20 @@ pub use j2c::encode::{
     encode, encode_htj2k, encode_precomputed_htj2k_53,
     encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_53_with_mct,
     encode_precomputed_htj2k_53_with_mct_and_accelerator, encode_precomputed_htj2k_97,
+    encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
-    encode_preencoded_htj2k_97_with_accelerator, encode_prequantized_htj2k_97,
-    encode_prequantized_htj2k_97_with_accelerator, encode_with_accelerator,
-    irreversible_quantization_step_for_subband, EncodeOptions, EncodeProgressionOrder,
-    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
+    encode_preencoded_htj2k_97_compact_owned_with_accelerator,
+    encode_preencoded_htj2k_97_owned_with_accelerator, encode_preencoded_htj2k_97_with_accelerator,
+    encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
+    encode_with_accelerator, irreversible_quantization_step_for_subband, EncodeOptions,
+    EncodeProgressionOrder, IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97Component,
-    PreencodedHtj2k97Image, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 
@@ -247,7 +251,7 @@ pub struct J2kCodeBlockStyle {
 }
 
 /// Adapter classic J2K coded segment for backend experimentation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kCodeBlockSegment {
     /// Byte offset of this segment within the combined payload.
     pub data_offset: u32,
@@ -258,6 +262,24 @@ pub struct J2kCodeBlockSegment {
     /// One-past-last coding pass covered by this segment.
     pub end_coding_pass: u8,
     /// Whether this segment is decoded through the arithmetic path.
+    pub use_arithmetic: bool,
+}
+
+/// Adapter Classic Tier-1 compact token segment for backend experimentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kTier1TokenSegment {
+    /// Bit offset of this segment within the compact token buffer.
+    pub token_bit_offset: u32,
+    /// Number of token bits in this segment.
+    ///
+    /// Arithmetic segments contain 6-bit MQ tokens. Raw bypass segments contain
+    /// one bit per raw bypass event.
+    pub token_bit_count: u32,
+    /// First coding pass covered by this segment.
+    pub start_coding_pass: u8,
+    /// One-past-last coding pass covered by this segment.
+    pub end_coding_pass: u8,
+    /// Whether this segment should be packed through the MQ arithmetic path.
     pub use_arithmetic: bool,
 }
 
@@ -1245,6 +1267,53 @@ pub fn encode_j2k_code_block_scalar_with_style(
     })
 }
 
+/// Adapter scalar Classic Tier-1 compact token packer for backend experimentation.
+///
+/// The token format matches the Metal Classic Tier-1 token-emitter prototype:
+/// arithmetic segments are 6-bit `(context_label, bit)` MQ tokens, while raw
+/// bypass segments are one bit per raw bypass event.
+pub fn pack_j2k_code_block_scalar_from_tier1_tokens(
+    token_bytes: &[u8],
+    token_segments: &[J2kTier1TokenSegment],
+    number_of_coding_passes: u8,
+    missing_bit_planes: u8,
+) -> core::result::Result<EncodedJ2kCodeBlock, &'static str> {
+    let internal_segments = token_segments
+        .iter()
+        .map(|segment| j2c::bitplane_encode::ClassicTier1TokenSegment {
+            token_bit_offset: segment.token_bit_offset,
+            token_bit_count: segment.token_bit_count,
+            start_coding_pass: segment.start_coding_pass,
+            end_coding_pass: segment.end_coding_pass,
+            use_arithmetic: segment.use_arithmetic,
+        })
+        .collect::<Vec<_>>();
+    let encoded = j2c::bitplane_encode::pack_classic_selective_bypass_tier1_tokens(
+        token_bytes,
+        &internal_segments,
+        number_of_coding_passes,
+        missing_bit_planes,
+    )?;
+    let segments = encoded
+        .segments
+        .into_iter()
+        .map(|segment| J2kCodeBlockSegment {
+            data_offset: segment.data_offset,
+            data_length: segment.data_length,
+            start_coding_pass: segment.start_coding_pass,
+            end_coding_pass: segment.end_coding_pass,
+            use_arithmetic: segment.use_arithmetic,
+        })
+        .collect();
+
+    Ok(EncodedJ2kCodeBlock {
+        data: encoded.data,
+        segments,
+        number_of_coding_passes: encoded.num_coding_passes,
+        missing_bit_planes: encoded.num_zero_bitplanes,
+    })
+}
+
 /// Adapter scalar HTJ2K cleanup-only encoder helper for backend experimentation.
 pub fn encode_ht_code_block_scalar(
     coefficients: &[i32],
@@ -1429,6 +1498,22 @@ pub fn decode_j2k_code_block_scalar(
     job: J2kCodeBlockDecodeJob<'_>,
     output: &mut [f32],
 ) -> Result<()> {
+    let mut workspace = J2kCodeBlockDecodeWorkspace::default();
+    decode_j2k_code_block_scalar_with_workspace(job, output, &mut workspace)
+}
+
+/// Reusable scratch for scalar classic J2K code-block decoding.
+#[derive(Default)]
+pub struct J2kCodeBlockDecodeWorkspace {
+    bit_plane_decode_context: j2c::bitplane::BitPlaneDecodeContext,
+}
+
+/// Adapter scalar classic J2K decoder helper that reuses caller-provided scratch.
+pub fn decode_j2k_code_block_scalar_with_workspace(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+) -> Result<()> {
     let required_len = if job.height == 0 {
         0
     } else {
@@ -1445,7 +1530,6 @@ pub fn decode_j2k_code_block_scalar(
     let sub_band_type = internal_j2k_sub_band_type(job.sub_band_type);
     let code_block_stride =
         usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-    let mut bit_plane_decode_context = j2c::bitplane::BitPlaneDecodeContext::default();
     let coded_bitplanes = add_roi_shift_to_bitplanes(
         job.total_bitplanes,
         job.roi_shift,
@@ -1463,10 +1547,11 @@ pub fn decode_j2k_code_block_scalar(
         sub_band_type,
         &style,
         job.strict,
-        &mut bit_plane_decode_context,
+        &mut workspace.bit_plane_decode_context,
     )?;
 
-    for (row_idx, coeff_row) in bit_plane_decode_context
+    for (row_idx, coeff_row) in workspace
+        .bit_plane_decode_context
         .coefficient_rows()
         .enumerate()
         .take(job.height as usize)
@@ -1478,6 +1563,106 @@ pub fn decode_j2k_code_block_scalar(
             *sample = coefficient as f32 * job.dequantization_step;
         }
     }
+
+    Ok(())
+}
+
+/// Adapter scalar classic J2K pass timings for backend experimentation.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kCodeBlockDecodeProfile {
+    /// Significance propagation pass elapsed time in microseconds.
+    pub sigprop_us: u128,
+    /// Magnitude refinement pass elapsed time in microseconds.
+    pub magref_us: u128,
+    /// Cleanup pass elapsed time in microseconds.
+    pub cleanup_us: u128,
+    /// Raw bypass pass elapsed time in microseconds.
+    pub bypass_us: u128,
+    /// Coefficient output conversion elapsed time in microseconds.
+    pub output_convert_us: u128,
+}
+
+impl J2kCodeBlockDecodeProfile {
+    fn add_native_stats(&mut self, stats: j2c::bitplane::J2kBlockDecodeStats) {
+        self.sigprop_us += stats.sigprop_us;
+        self.magref_us += stats.magref_us;
+        self.cleanup_us += stats.cleanup_us;
+        self.bypass_us += stats.bypass_us;
+    }
+}
+
+/// Adapter scalar classic J2K decoder helper that records pass timings.
+pub fn decode_j2k_code_block_scalar_profiled(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    profile: &mut J2kCodeBlockDecodeProfile,
+) -> Result<()> {
+    let mut workspace = J2kCodeBlockDecodeWorkspace::default();
+    decode_j2k_code_block_scalar_with_workspace_profiled(job, output, &mut workspace, profile)
+}
+
+/// Adapter scalar classic J2K decoder helper that records pass timings and reuses scratch.
+pub fn decode_j2k_code_block_scalar_with_workspace_profiled(
+    job: J2kCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+    profile: &mut J2kCodeBlockDecodeProfile,
+) -> Result<()> {
+    let required_len = if job.height == 0 {
+        0
+    } else {
+        job.output_stride
+            .checked_mul(job.height as usize - 1)
+            .and_then(|prefix| prefix.checked_add(job.width as usize))
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+    };
+    if output.len() < required_len {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+
+    let style = internal_j2k_code_block_style(job.style);
+    let sub_band_type = internal_j2k_sub_band_type(job.sub_band_type);
+    let code_block_stride =
+        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let coded_bitplanes = add_roi_shift_to_bitplanes(
+        job.total_bitplanes,
+        job.roi_shift,
+        MAX_CLASSIC_DECODE_BITPLANES,
+    )?;
+    let mut stats = j2c::bitplane::J2kBlockDecodeStats::default();
+
+    j2c::bitplane::decode_code_block_segments_validated_profiled(
+        job.data,
+        job.segments,
+        job.width,
+        job.height,
+        job.missing_bit_planes,
+        job.number_of_coding_passes,
+        coded_bitplanes,
+        sub_band_type,
+        &style,
+        job.strict,
+        &mut workspace.bit_plane_decode_context,
+        &mut stats,
+        true,
+    )?;
+    profile.add_native_stats(stats);
+
+    let output_convert_started = profile::profile_now(true);
+    for (row_idx, coeff_row) in workspace
+        .bit_plane_decode_context
+        .coefficient_rows()
+        .enumerate()
+        .take(job.height as usize)
+    {
+        let row_start = row_idx * job.output_stride;
+        let output_row = &mut output[row_start..row_start + code_block_stride];
+        for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
+            let coefficient = apply_roi_maxshift_inverse_i32(coefficient.get(), job.roi_shift);
+            *sample = coefficient as f32 * job.dequantization_step;
+        }
+    }
+    profile.output_convert_us += profile::elapsed_us(output_convert_started);
 
     Ok(())
 }
@@ -1590,6 +1775,43 @@ impl HtCodeBlockDecodeWorkspace {
     }
 }
 
+/// Adapter scalar HTJ2K phase timings for backend experimentation.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HtCodeBlockDecodeProfile {
+    /// Number of decoded HT code blocks.
+    pub blocks: u128,
+    /// Number of decoded HT code blocks with refinement data.
+    pub refinement_blocks: u128,
+    /// Total cleanup segment bytes consumed by decoded HT code blocks.
+    pub cleanup_bytes: u128,
+    /// Total refinement segment bytes consumed by decoded HT code blocks.
+    pub refinement_bytes: u128,
+    /// Cleanup phase elapsed time in microseconds.
+    pub cleanup_us: u128,
+    /// Magnitude/sign phase elapsed time in microseconds.
+    pub mag_sgn_us: u128,
+    /// Sigma build phase elapsed time in microseconds.
+    pub sigma_us: u128,
+    /// Significance propagation phase elapsed time in microseconds.
+    pub sigprop_us: u128,
+    /// Magnitude refinement phase elapsed time in microseconds.
+    pub magref_us: u128,
+}
+
+impl HtCodeBlockDecodeProfile {
+    fn add_native_stats(&mut self, stats: j2c::ht_block_decode::HtBlockDecodeStats) {
+        self.blocks += stats.blocks;
+        self.refinement_blocks += stats.refinement_blocks;
+        self.cleanup_bytes += stats.cleanup_bytes;
+        self.refinement_bytes += stats.refinement_bytes;
+        self.cleanup_us += stats.ht_cleanup_us;
+        self.mag_sgn_us += stats.ht_mag_sgn_us;
+        self.sigma_us += stats.ht_sigma_us;
+        self.sigprop_us += stats.ht_sigprop_us;
+        self.magref_us += stats.ht_magref_us;
+    }
+}
+
 /// Adapter scalar HTJ2K decoder helper that reuses caller-owned scratch buffers.
 pub fn decode_ht_code_block_scalar_with_workspace(
     job: HtCodeBlockDecodeJob<'_>,
@@ -1599,6 +1821,18 @@ pub fn decode_ht_code_block_scalar_with_workspace(
     decode_ht_code_block_scalar_for_phase_with_workspace::<
         { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
     >(job, output, workspace)
+}
+
+/// Adapter scalar HTJ2K decoder helper that reuses scratch and records phase timings.
+pub fn decode_ht_code_block_scalar_with_workspace_profiled(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    profile: &mut HtCodeBlockDecodeProfile,
+) -> Result<()> {
+    decode_ht_code_block_scalar_for_phase_with_workspace_profiled::<
+        { j2c::ht_block_decode::PHASE_LIMIT_MAGREF },
+    >(job, output, workspace, profile)
 }
 
 fn decode_ht_code_block_scalar_for_phase<const PHASE_LIMIT: u8>(
@@ -1654,6 +1888,74 @@ fn decode_ht_code_block_scalar_for_phase_with_workspace<const PHASE_LIMIT: u8>(
         None,
         false,
     )?;
+
+    for (row_idx, coeff_row) in workspace
+        .coefficients
+        .chunks_exact(code_block_stride)
+        .enumerate()
+        .take(job.height as usize)
+    {
+        let row_start = row_idx * job.output_stride;
+        let output_row = &mut output[row_start..row_start + code_block_stride];
+        for (coefficient, sample) in coeff_row.iter().copied().zip(output_row.iter_mut()) {
+            let coefficient =
+                j2c::ht_block_decode::coefficient_to_i32(coefficient, coded_bitplanes);
+            let coefficient = apply_roi_maxshift_inverse_i32(coefficient, job.roi_shift);
+            *sample = coefficient as f32 * job.dequantization_step;
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_ht_code_block_scalar_for_phase_with_workspace_profiled<const PHASE_LIMIT: u8>(
+    job: HtCodeBlockDecodeJob<'_>,
+    output: &mut [f32],
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+    profile: &mut HtCodeBlockDecodeProfile,
+) -> Result<()> {
+    let required_len = if job.height == 0 {
+        0
+    } else {
+        job.output_stride
+            .checked_mul(job.height as usize - 1)
+            .and_then(|prefix| prefix.checked_add(job.width as usize))
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+    };
+    if output.len() < required_len {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let code_block_stride =
+        usize::try_from(job.width).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+    let code_block_len = code_block_stride
+        .checked_mul(job.height as usize)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+
+    let segments = j2c::ht_block_decode::HtCodeBlockSegments::from_combined_payload(
+        job.data,
+        job.cleanup_length,
+        job.refinement_length,
+    )?;
+    let coded_bitplanes = add_roi_shift_to_bitplanes(job.num_bitplanes, job.roi_shift, 31)?;
+    workspace.coefficients.clear();
+    workspace.coefficients.resize(code_block_len, 0);
+    let mut stats = j2c::ht_block_decode::HtBlockDecodeStats::default();
+    j2c::ht_block_decode::decode_segments_validated_with_scratch_for_phase::<PHASE_LIMIT>(
+        &segments,
+        job.missing_bit_planes,
+        coded_bitplanes,
+        job.number_of_coding_passes,
+        job.stripe_causal,
+        job.strict,
+        &mut workspace.coefficients,
+        job.width,
+        job.height,
+        job.width,
+        &mut workspace.scratch,
+        Some(&mut stats),
+        true,
+    )?;
+    profile.add_native_stats(stats);
 
     for (row_idx, coeff_row) in workspace
         .coefficients
@@ -3075,6 +3377,181 @@ mod tests {
     }
 
     #[test]
+    fn classic_scalar_token_pack_matches_scalar_single_cleanup_block() {
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let scalar =
+            encode_j2k_code_block_scalar_with_style(&[1], 1, 1, J2kSubBandType::LowLow, 1, style)
+                .expect("encode scalar");
+        let token_bytes = pack_mq_test_tokens(&[(0, 1), (9, 0)]);
+        let packed = pack_j2k_code_block_scalar_from_tier1_tokens(
+            &token_bytes,
+            &[J2kTier1TokenSegment {
+                token_bit_offset: 0,
+                token_bit_count: 12,
+                start_coding_pass: 0,
+                end_coding_pass: 1,
+                use_arithmetic: true,
+            }],
+            scalar.number_of_coding_passes,
+            scalar.missing_bit_planes,
+        )
+        .expect("pack tokens");
+
+        assert_eq!(packed.data, scalar.data);
+        assert_eq!(packed.segments, scalar.segments);
+        assert_eq!(
+            packed.number_of_coding_passes,
+            scalar.number_of_coding_passes
+        );
+        assert_eq!(packed.missing_bit_planes, scalar.missing_bit_planes);
+    }
+
+    fn pack_mq_test_tokens(tokens: &[(u8, u8)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut current = 0u8;
+        let mut bits = 0u8;
+        for &(ctx, bit) in tokens {
+            let value = (ctx & 0x1F) | ((bit & 1) << 5);
+            for shift in (0..6).rev() {
+                current = (current << 1) | ((value >> shift) & 1);
+                bits += 1;
+                if bits == 8 {
+                    bytes.push(current);
+                    current = 0;
+                    bits = 0;
+                }
+            }
+        }
+        if bits != 0 {
+            bytes.push(current << (8 - bits));
+        }
+        bytes
+    }
+
+    #[test]
+    fn classic_scalar_profiled_decode_matches_unprofiled_decode() {
+        let width = 64u32;
+        let height = 64u32;
+        let sample_count = width as usize * height as usize;
+        let total_bitplanes = 12;
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: false,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let coefficients = (0..sample_count)
+            .map(|idx| {
+                let value = i32::try_from((idx * 37) % 4095).expect("sample value fits i32") - 2048;
+                if idx % 17 == 0 {
+                    0
+                } else {
+                    value
+                }
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_j2k_code_block_scalar_with_style(
+            &coefficients,
+            width,
+            height,
+            J2kSubBandType::LowLow,
+            total_bitplanes,
+            style,
+        )
+        .expect("encode classic block");
+        let job = J2kCodeBlockDecodeJob {
+            data: &encoded.data,
+            segments: &encoded.segments,
+            width,
+            height,
+            output_stride: width as usize,
+            missing_bit_planes: encoded.missing_bit_planes,
+            number_of_coding_passes: encoded.number_of_coding_passes,
+            total_bitplanes,
+            roi_shift: 0,
+            sub_band_type: J2kSubBandType::LowLow,
+            style,
+            strict: true,
+            dequantization_step: 1.0,
+        };
+        let mut expected = vec![0.0_f32; sample_count];
+        let mut actual = vec![0.0_f32; sample_count];
+        let mut profile = J2kCodeBlockDecodeProfile::default();
+
+        decode_j2k_code_block_scalar(job, &mut expected).expect("unprofiled classic decode");
+        decode_j2k_code_block_scalar_profiled(job, &mut actual, &mut profile)
+            .expect("profiled classic decode");
+
+        assert_eq!(actual, expected);
+        assert!(profile.cleanup_us > 0);
+    }
+
+    #[test]
+    fn classic_scalar_workspace_reuse_matches_fresh_decode() {
+        let total_bitplanes = 6;
+        let style = J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: false,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+        };
+        let mut workspace = J2kCodeBlockDecodeWorkspace::default();
+
+        for (width, height, seed) in [(8, 8, 0x31), (4, 16, 0x47)] {
+            let coefficients = (0..width * height)
+                .map(|idx| {
+                    let value = ((idx as i32 * seed) % 23) - 11;
+                    if idx % 7 == 0 {
+                        0
+                    } else {
+                        value
+                    }
+                })
+                .collect::<Vec<_>>();
+            let encoded = encode_j2k_code_block_scalar_with_style(
+                &coefficients,
+                width,
+                height,
+                J2kSubBandType::LowLow,
+                total_bitplanes,
+                style,
+            )
+            .expect("encode classic block");
+            let job = J2kCodeBlockDecodeJob {
+                data: &encoded.data,
+                segments: &encoded.segments,
+                width,
+                height,
+                output_stride: width as usize,
+                missing_bit_planes: encoded.missing_bit_planes,
+                number_of_coding_passes: encoded.number_of_coding_passes,
+                total_bitplanes,
+                roi_shift: 0,
+                sub_band_type: J2kSubBandType::LowLow,
+                style,
+                strict: true,
+                dequantization_step: 1.0,
+            };
+            let mut fresh = vec![0.0_f32; width as usize * height as usize];
+            let mut reused = vec![0.0_f32; width as usize * height as usize];
+
+            decode_j2k_code_block_scalar(job, &mut fresh).expect("fresh classic decode");
+            decode_j2k_code_block_scalar_with_workspace(job, &mut reused, &mut workspace)
+                .expect("workspace classic decode");
+
+            assert_eq!(reused, fresh);
+        }
+    }
+
+    #[test]
     fn scalar_packetization_rejects_overflowing_ht_refinement_lengths_without_panic() {
         let payload = [0x12];
         let block = J2kPacketizationCodeBlock {
@@ -4196,7 +4673,9 @@ mod tests {
             .borrowed();
         let mut fresh = vec![0.0_f32; job.width as usize * job.height as usize];
         let mut reused = vec![0.0_f32; fresh.len()];
+        let mut profiled = vec![0.0_f32; fresh.len()];
         let mut workspace = HtCodeBlockDecodeWorkspace::default();
+        let mut profile = HtCodeBlockDecodeProfile::default();
 
         decode_ht_code_block_scalar(job, &mut fresh).expect("fresh HT decode");
         decode_ht_code_block_scalar_with_workspace(job, &mut reused, &mut workspace)
@@ -4204,10 +4683,20 @@ mod tests {
         let first_capacity = workspace.coefficient_capacity();
         decode_ht_code_block_scalar_with_workspace(job, &mut reused, &mut workspace)
             .expect("second workspace HT decode");
+        decode_ht_code_block_scalar_with_workspace_profiled(
+            job,
+            &mut profiled,
+            &mut workspace,
+            &mut profile,
+        )
+        .expect("profiled workspace HT decode");
 
         assert_eq!(reused, fresh);
+        assert_eq!(profiled, fresh);
         assert!(first_capacity >= fresh.len());
         assert_eq!(workspace.coefficient_capacity(), first_capacity);
+        assert_eq!(profile.blocks, 1);
+        assert!(profile.cleanup_bytes > 0);
     }
 
     #[test]

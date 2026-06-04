@@ -49,6 +49,21 @@ fn fixture_ht_rgb8() -> (Vec<u8>, Vec<u8>) {
     (codestream, pixels)
 }
 
+fn fixture_ht_rgb8_pattern(width: u32, height: u32, seed: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+    for idx in 0..width * height {
+        pixels.push(u8::try_from((idx * seed + idx / 3) & 0xff).expect("red"));
+        pixels.push(u8::try_from((idx * (seed + 11) + 7) & 0xff).expect("green"));
+        pixels.push(u8::try_from((idx * (seed + 23) + 19) & 0xff).expect("blue"));
+    }
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 1,
+        ..EncodeOptions::default()
+    };
+    encode_htj2k(&pixels, width, height, 3, 8, false, &options).expect("encode patterned ht rgb8")
+}
+
 fn fixture_ht_rgb8_irreversible_97() -> Vec<u8> {
     let pixels: Vec<u8> = (0u16..4 * 4 * 3)
         .map(|idx| u8::try_from((idx * 17 + idx / 5) & 0xff).expect("masked value fits in u8"))
@@ -270,7 +285,8 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_runtime_required() {
     assert_resident_cuda_surface(&surface);
     assert!(report.dispatch_count > 0);
     assert!(report.ht_cleanup_us > 0);
-    assert!(report.dequant_us > 0);
+    assert_eq!(report.dequant_us, 0);
+    assert_eq!(report.detail.dequant_dispatch_count, 0);
     assert!(report.idwt_us > 0);
     assert!(report.store_us > 0);
     assert_eq!(report.residency, SurfaceResidency::CudaResidentDecode);
@@ -1094,6 +1110,12 @@ fn assert_resident_cuda_surface(surface: &signinum_j2k_cuda::Surface) {
     assert!(cuda.stats().decode_kernel_dispatches() > 0);
 }
 
+fn assert_cuda_batch_surface(surface: &signinum_j2k_cuda::Surface) {
+    let cuda = surface.cuda_surface().expect("cuda batch surface");
+    assert_ne!(cuda.device_ptr(), 0);
+    assert_eq!(cuda.stats().copy_kernel_dispatches(), 0);
+}
+
 #[test]
 fn submit_to_device_auto_falls_back_to_cpu_surface() {
     let bytes = fixture();
@@ -1373,20 +1395,127 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
         .expect("host decode");
     for surface in surfaces {
         assert_eq!(surface.dimensions(), (4, 4));
-        match surface.backend_kind() {
-            signinum_core::BackendKind::Cpu => {
-                assert_eq!(surface.as_host_bytes(), Some(expected.as_slice()));
-            }
-            signinum_core::BackendKind::Cuda => {
-                let mut downloaded = vec![0u8; surface.byte_len()];
-                surface
-                    .download_into(&mut downloaded, surface.pitch_bytes())
-                    .expect("download cuda surface");
-                assert_eq!(downloaded, expected);
-            }
-            signinum_core::BackendKind::Metal => panic!("J2K CUDA batch returned Metal surface"),
-        }
+        assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
+        assert_eq!(surface.as_host_bytes(), Some(expected.as_slice()));
     }
+}
+
+#[test]
+fn decode_tiles_to_device_cpu_preserves_host_residency() {
+    let bytes = fixture_ht_gray8();
+    let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
+    let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
+    let inputs = [bytes.as_slice(), bytes.as_slice()];
+
+    let surfaces = Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Gray8,
+        BackendRequest::Cpu,
+    )
+    .expect("CPU batch surfaces");
+
+    assert_eq!(surfaces.len(), inputs.len());
+    for surface in surfaces {
+        assert_eq!(surface.dimensions(), (4, 4));
+        assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cpu);
+        assert_eq!(surface.residency(), SurfaceResidency::Host);
+        assert!(surface.as_host_bytes().is_some());
+    }
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
+    let first = fixture_ht_rgb8_pattern(32, 32, 17);
+    let second = fixture_ht_rgb8_pattern(32, 32, 29);
+    let inputs = [first.as_slice(), second.as_slice()];
+    let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
+    let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
+
+    let surfaces = match Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+    ) {
+        Ok(surfaces) => surfaces,
+        Err(Error::CudaUnavailable) if !runtime_required() => return,
+        #[cfg(feature = "cuda-runtime")]
+        Err(Error::CudaRuntime { .. }) if !runtime_required() => return,
+        Err(error) => panic!("strict CUDA RGB8 batch decode failed: {error}"),
+    };
+
+    assert_eq!(surfaces.len(), inputs.len());
+    for surface in &surfaces {
+        assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cuda);
+        assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+        assert_eq!(surface.as_host_bytes(), None);
+        assert_cuda_batch_surface(surface);
+    }
+
+    let downloaded =
+        signinum_j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download tight batch");
+    let expected = inputs
+        .iter()
+        .flat_map(|input| {
+            let mut out = vec![0u8; 32 * 32 * 3];
+            J2kDecoder::new(input)
+                .expect("host decoder")
+                .decode_into(&mut out, 32 * 3, PixelFormat::Rgb8)
+                .expect("host decode");
+            out
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(downloaded, expected);
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
+    let first = fixture_ht_rgb8_pattern(32, 32, 31);
+    let second = fixture_ht_rgb8_pattern(32, 32, 47);
+    let inputs = [first.as_slice(), second.as_slice()];
+    let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
+    let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
+
+    let surfaces = match Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Rgba8,
+        BackendRequest::Cuda,
+    ) {
+        Ok(surfaces) => surfaces,
+        Err(Error::CudaUnavailable) if !runtime_required() => return,
+        #[cfg(feature = "cuda-runtime")]
+        Err(Error::CudaRuntime { .. }) if !runtime_required() => return,
+        Err(error) => panic!("strict CUDA Rgba8 batch decode failed: {error}"),
+    };
+
+    assert_eq!(surfaces.len(), inputs.len());
+    for surface in &surfaces {
+        assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cuda);
+        assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+        assert_eq!(surface.as_host_bytes(), None);
+        assert_cuda_batch_surface(surface);
+    }
+
+    let downloaded =
+        signinum_j2k_cuda::Surface::download_batch_tight(&surfaces).expect("download tight batch");
+    let expected = inputs
+        .iter()
+        .flat_map(|input| {
+            let mut out = vec![0u8; 32 * 32 * 4];
+            J2kDecoder::new(input)
+                .expect("host decoder")
+                .decode_into(&mut out, 32 * 4, PixelFormat::Rgba8)
+                .expect("host decode");
+            out
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(downloaded, expected);
 }
 
 #[test]

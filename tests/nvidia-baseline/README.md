@@ -83,3 +83,94 @@ encoder/state/params, and device RGB planes across tiles, but encodes tiles
 serially. The supported nvJPEG2000 encode API exposes `nvjpeg2kEncode` and
 `nvjpeg2kEncodeRetrieveBitstream`, not an encode-batch entry point, so report it
 as **reused-session serial** unless the runner headers prove otherwise.
+
+## CUDA JPEG -> HTJ2K transcode speed gate
+
+The CUDA transcode gate compares two different implementations of the same
+end-to-end operation:
+
+| Row | Operation |
+| --- | --- |
+| Signinum CUDA HT | JPEG entropy/DCT extraction, coefficient-domain DCT -> 9/7 HTJ2K transform, CUDA HT code-block encode, CPU packet assembly |
+| NVIDIA reused-session serial | nvJPEG decode to pixels, then nvJPEG2000 HT encode from those pixels |
+
+This is not a claim that NVIDIA exposes a matching coefficient-domain
+transcoder. It does not. The fair scope is JPEG -> HTJ2K end-to-end throughput
+at similar output bytes, with PSNR and per-channel PSNR reported beside the
+speed rows.
+
+The checked-in WSL evidence bundle is:
+
+```text
+tests/nvidia-baseline/artifacts/2026-06-03-cuda-transcode-rate-match/
+```
+
+The JSON files in that directory are the source of truth; CSV is included only
+for review convenience. The CI workflow regenerates equivalent JSON/CSV reports
+under `target/` and then runs `scripts/assert_transcode_perf.py` against the
+JSON.
+
+Level 1 rate-matched command:
+
+```bash
+cd /home/jcwal/signinum-codex-batch
+unset RUSTFLAGS
+export SIGNINUM_BENCH_JPEG_DIR=tests/nvidia-baseline/benchtiles/pancreas
+cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml \
+  --features nvjpeg2000 --bin transcode_compare -- \
+  --decomposition-levels 1 \
+  --quant-scales 1.90 \
+  --match-nvidia-bytes \
+  --match-tolerance 0.20 \
+  --min-tiles 64 \
+  --warmup 3 \
+  --iterations 8 \
+  --json /tmp/signinum_level1_ratematch_confirm_after_fixes.json \
+  --csv /tmp/signinum_level1_ratematch_confirm_after_fixes.csv
+```
+
+Observed on 2026-06-03:
+
+- Signinum CUDA HT: 441.0 MP/s, 16.197 ms, bytes -0.54% vs NVIDIA.
+- NVIDIA reused-session serial: 49.4 MP/s, 144.690 ms.
+- Aggregate PSNR: Signinum 47.63 dB, NVIDIA 49.19 dB.
+
+Level 2 rate-matched command:
+
+```bash
+cd /home/jcwal/signinum-codex-batch
+unset RUSTFLAGS
+export SIGNINUM_BENCH_JPEG_DIR=tests/nvidia-baseline/benchtiles/pancreas
+cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml \
+  --features nvjpeg2000 --bin transcode_compare -- \
+  --decomposition-levels 2 \
+  --quant-scales 1.00 \
+  --subband-scales 1.00,1.00,1.00,1.00 \
+  --match-nvidia-bytes \
+  --match-tolerance 0.20 \
+  --min-tiles 64 \
+  --warmup 3 \
+  --iterations 8 \
+  --json /tmp/signinum_level2_confirm_after_fixes.json \
+  --csv /tmp/signinum_level2_confirm_after_fixes.csv
+```
+
+Observed on 2026-06-03:
+
+- Signinum CUDA HT: 67.7 MP/s, 105.463 ms, bytes +0.13% vs NVIDIA.
+- Signinum CUDA transform + CPU HT: 74.0 MP/s, 96.527 ms.
+- NVIDIA reused-session serial: 51.3 MP/s, 139.243 ms.
+- Aggregate PSNR: Signinum 48.69 dB, NVIDIA 49.19 dB.
+
+CI thresholds are intentionally below the best observed numbers to avoid
+turning normal runner noise into false failures:
+
+| Gate | Default threshold |
+| --- | --- |
+| `SIGNINUM_LEVEL1_CUDA_HT_MIN_MPS` | 350 MP/s |
+| `SIGNINUM_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA` | 4.0x |
+| `SIGNINUM_LEVEL2_CUDA_HT_MIN_MPS` | 60 MP/s |
+| `SIGNINUM_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA` | 1.10x |
+
+The gate also requires at least one CUDA HT code-block dispatch and fails if
+the JSON byte delta exceeds the configured rate-match tolerance.

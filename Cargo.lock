@@ -954,13 +954,12 @@ dependencies = [
 name = "signinum-j2k-metal"
 version = "0.4.4"
 dependencies = [
- "criterion",
+ "cc",
  "libc",
  "metal",
  "rayon",
  "signinum-core",
  "signinum-j2k",
- "signinum-j2k-compare",
  "signinum-j2k-native",
  "signinum-profile",
  "signinum-test-support",

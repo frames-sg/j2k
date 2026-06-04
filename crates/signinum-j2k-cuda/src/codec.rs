@@ -26,6 +26,31 @@ impl ImageCodec for Codec {
 }
 
 impl Codec {
+    fn supports_cuda_batch_format(fmt: PixelFormat) -> bool {
+        matches!(
+            fmt,
+            PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16
+        )
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn decode_tiles_to_cuda_batch(
+        inputs: &[&[u8]],
+        fmt: PixelFormat,
+        session: &mut CudaSession,
+    ) -> Result<Vec<Surface>, Error> {
+        J2kDecoder::decode_batch_to_device_with_session(inputs, fmt, session)
+    }
+
+    #[cfg(not(feature = "cuda-runtime"))]
+    fn decode_tiles_to_cuda_batch(
+        _inputs: &[&[u8]],
+        _fmt: PixelFormat,
+        _session: &mut CudaSession,
+    ) -> Result<Vec<Surface>, Error> {
+        Err(Error::CudaUnavailable)
+    }
+
     fn decode_tile_to_surface_impl(
         ctx: &mut signinum_core::DecoderContext<CpuJ2kContext>,
         session: &mut CudaSession,
@@ -216,12 +241,80 @@ impl TileBatchDecodeManyDevice for Codec {
         backend: BackendRequest,
     ) -> Result<Vec<Self::DeviceSurface>, Self::Error> {
         validate_surface_request(backend)?;
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut session = CudaSession::default();
+        if matches!(backend, BackendRequest::Cuda) && Self::supports_cuda_batch_format(fmt) {
+            return Self::decode_tiles_to_cuda_batch(inputs, fmt, &mut session);
+        }
+
         inputs
             .iter()
             .map(|input| {
                 Self::decode_tile_to_surface_impl(ctx, &mut session, pool, input, fmt, backend)
             })
             .collect()
+    }
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod tests {
+    use signinum_core::{BackendRequest, DecoderContext, PixelFormat, TileBatchDecodeManyDevice};
+    use signinum_j2k_native::{encode_htj2k, EncodeOptions};
+
+    use super::{Codec, CpuJ2kContext, CpuJ2kScratchPool};
+    use crate::decoder::{
+        testing_cuda_htj2k_batch_decode_calls, testing_reset_cuda_htj2k_batch_decode_calls,
+    };
+    use crate::{Error, SurfaceResidency};
+
+    #[test]
+    fn explicit_cuda_rgb_many_decode_uses_batch_api_once() {
+        testing_reset_cuda_htj2k_batch_decode_calls();
+        let fixture = rgb8_htj2k_fixture(32, 32);
+        let inputs = [fixture.as_slice(), fixture.as_slice()];
+        let mut ctx = DecoderContext::<CpuJ2kContext>::new();
+        let mut pool = CpuJ2kScratchPool::new();
+
+        let result = Codec::decode_tiles_to_device(
+            &mut ctx,
+            &mut pool,
+            &inputs,
+            PixelFormat::Rgb8,
+            BackendRequest::Cuda,
+        );
+
+        assert_eq!(testing_cuda_htj2k_batch_decode_calls(), 1);
+        match result {
+            Ok(surfaces) => {
+                assert_eq!(surfaces.len(), inputs.len());
+                for surface in surfaces {
+                    assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+                    assert_eq!(surface.as_host_bytes(), None);
+                }
+            }
+            Err(Error::CudaUnavailable) => {
+                assert!(std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_none());
+            }
+            Err(error) => panic!("unexpected strict CUDA RGB batch error: {error}"),
+        }
+    }
+
+    fn rgb8_htj2k_fixture(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+        for idx in 0..width * height {
+            pixels.push(u8::try_from((idx * 17 + idx / 3) & 0xff).expect("red"));
+            pixels.push(u8::try_from((idx * 29 + 7) & 0xff).expect("green"));
+            pixels.push(u8::try_from((idx * 43 + 19) & 0xff).expect("blue"));
+        }
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        };
+        encode_htj2k(&pixels, width, height, 3, 8, false, &options)
+            .expect("encode RGB HTJ2K fixture")
     }
 }

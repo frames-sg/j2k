@@ -1,0 +1,4 @@
+row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,psnr_r,psnr_g,psnr_b,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches
+signinum_cuda_transform_cpu_ht,true,true,true,true,ok,1.000000,6241303,0.00131700,92.995812,18.824000,48.696854,48.693574,48.613040,50.470408,47.497531,2,327,0,0,0,0
+signinum_cuda_transform_cuda_ht_block_cpu_packet,false,true,true,true,ok,1.000000,6241303,0.00131700,102.621355,24.537000,48.696854,48.693574,48.613040,50.470408,47.497531,2,327,0,1,1,0
+nvidia_reused_session_serial,false,true,true,true,ok,,6233094,,128.587843,125.970592,49.196875,49.189384,48.946420,50.909822,48.152879,,,,,,

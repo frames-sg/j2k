@@ -4,6 +4,7 @@ description = "Metal device-output adapter for signinum-j2k"
 version = "0.4.4"
 edition.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -31,22 +32,11 @@ metal = "0.31"
 rayon = "1"
 
 [dev-dependencies]
-criterion = { workspace = true }
 rayon = "1"
-signinum-j2k-compare = { path = "../signinum-j2k-compare" }
 signinum-test-support = { path = "../signinum-test-support" }
 
-[[bench]]
-name = "device_upload"
-harness = false
-
-[[bench]]
-name = "compare"
-harness = false
-
-[[bench]]
-name = "encode_stages"
-harness = false
+[build-dependencies]
+cc = "1.2"
 
 [lints.rust]
 unsafe_code = "allow"

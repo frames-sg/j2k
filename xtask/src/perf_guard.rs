@@ -117,34 +117,6 @@ const BENCH_COMMANDS: &[BenchCommand] = &[
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-metal",
-        bench: "compare",
-        filter: Some("wsi_tile_batch_region_scaled_rgb_q4"),
-        features: None,
-        env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-    },
-    BenchCommand {
-        package: "signinum-j2k-metal",
-        bench: "compare",
-        filter: Some("htj2k_region_scaled_plan_build"),
-        features: None,
-        env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-    },
-    BenchCommand {
-        package: "signinum-j2k-metal",
-        bench: "compare",
-        filter: Some("htj2k_feeder_coalesce"),
-        features: None,
-        env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-    },
-    BenchCommand {
-        package: "signinum-j2k-metal",
-        bench: "compare",
-        filter: Some("htj2k_metal_route"),
-        features: None,
-        env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "1,2,4,16")],
-    },
-    BenchCommand {
         package: "signinum-j2k-cuda",
         bench: "htj2k_decode",
         filter: Some("j2k_cuda_htj2k_"),
@@ -162,8 +134,6 @@ const BENCH_COMMANDS: &[BenchCommand] = &[
 const BENCH_SOURCE_FILES: &[&str] = &[
     "crates/signinum-j2k/benches/public_api.rs",
     "crates/signinum-jpeg/benches/encode_cpu.rs",
-    "crates/signinum-j2k-metal/benches/common/mod.rs",
-    "crates/signinum-j2k-metal/benches/compare.rs",
     "crates/signinum-j2k-native/benches/tier1_bitplane.rs",
     "crates/signinum-j2k-native/benches/htj2k_sigprop_phase.rs",
     "crates/signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k",
@@ -471,13 +441,14 @@ fn is_enforced_perf_id(id: &str) -> bool {
                 || stable_id.starts_with("htj2k_refinement_block_decode/")
                 || stable_id.starts_with("htj2k_refinement_sigprop_phase/")
                 || stable_id.starts_with("htj2k_cpuupload_decode_batch/")
-                || stable_id.starts_with("htj2k_region_scaled_plan_build/")
-                || stable_id.starts_with("htj2k_feeder_coalesce/")
                 || stable_id.starts_with("j2k_public_decode/htj2k_")
                 || stable_id.contains("_htj2k_")
                 || stable_id.contains("/htj2k_")
         ) && !id.starts_with("htj2k_cleanup_encode_parallel_")
+            && !id.starts_with("htj2k_region_scaled_plan_build/")
+            && !id.starts_with("htj2k_feeder_coalesce/")
             && !id.starts_with("htj2k_metal_route/")
+            && !id.starts_with("wsi_tile_batch_region_scaled_rgb_q4/")
             && !id.starts_with("wsi_tile_batch_region_scaled_rgb_q4/signinum-cpu-staged-metal_"))
 }
 
@@ -928,20 +899,6 @@ mod tests {
     }
 
     #[test]
-    fn perf_guard_runs_repeated_rgb_resident_metal_benchmark() {
-        assert!(
-            BENCH_COMMANDS.contains(&BenchCommand {
-                package: "signinum-j2k-metal",
-                bench: "compare",
-                filter: Some("wsi_tile_batch_region_scaled_rgb_q4"),
-                features: None,
-                env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-            }),
-            "J2K perf guard must track the repeated RGB ROI+scaled resident Metal path"
-        );
-    }
-
-    #[test]
     fn perf_guard_tracks_htj2k_maturation_benchmarks() {
         let expected = [
             BenchCommand {
@@ -971,27 +928,6 @@ mod tests {
                 filter: None,
                 features: None,
                 env: &[],
-            },
-            BenchCommand {
-                package: "signinum-j2k-metal",
-                bench: "compare",
-                filter: Some("htj2k_region_scaled_plan_build"),
-                features: None,
-                env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-            },
-            BenchCommand {
-                package: "signinum-j2k-metal",
-                bench: "compare",
-                filter: Some("htj2k_feeder_coalesce"),
-                features: None,
-                env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
-            },
-            BenchCommand {
-                package: "signinum-j2k-metal",
-                bench: "compare",
-                filter: Some("htj2k_metal_route"),
-                features: None,
-                env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "1,2,4,16")],
             },
         ];
 
@@ -1060,11 +996,11 @@ mod tests {
     #[test]
     fn filtered_bench_command_passes_filter_before_quick_flag() {
         let command = BenchCommand {
-            package: "signinum-j2k-metal",
-            bench: "compare",
-            filter: Some("wsi_tile_batch_region_scaled_rgb_q4"),
+            package: "signinum-j2k-native",
+            bench: "tier1_bitplane",
+            filter: Some("htj2k_cleanup_encode/"),
             features: None,
-            env: &[("SIGNINUM_J2K_TILE_BATCH_SIZES", "16")],
+            env: &[],
         };
 
         assert_eq!(
@@ -1072,11 +1008,11 @@ mod tests {
             vec![
                 "bench",
                 "-p",
-                "signinum-j2k-metal",
+                "signinum-j2k-native",
                 "--bench",
-                "compare",
+                "tier1_bitplane",
                 "--",
-                "wsi_tile_batch_region_scaled_rgb_q4",
+                "htj2k_cleanup_encode/",
                 "--quick",
             ]
         );
@@ -1117,8 +1053,14 @@ mod tests {
         assert!(is_enforced_perf_id(
             "htj2k_cleanup_encode/encode_64x64/2459041792"
         ));
-        assert!(is_enforced_perf_id(
+        assert!(!is_enforced_perf_id(
             "wsi_tile_batch_region_scaled_rgb_q4/signinum_htj2k_rgb_512_batch_16"
+        ));
+        assert!(!is_enforced_perf_id(
+            "htj2k_region_scaled_plan_build/signinum-metal-resident"
+        ));
+        assert!(!is_enforced_perf_id(
+            "htj2k_feeder_coalesce/signinum-metal-resident"
         ));
         assert!(is_enforced_perf_id(
             "j2k_public_cpu_encode_matrix/rgb8_512_htj2k_external"

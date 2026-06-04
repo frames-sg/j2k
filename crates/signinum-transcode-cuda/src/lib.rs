@@ -20,10 +20,11 @@ mod cuda;
 use core::fmt;
 
 use signinum_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
-    DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
-    Htj2k97CodeBlockOptions, PreencodedHtj2k97Component, PrequantizedHtj2k97Component,
-    ReversibleDwt53FirstLevel,
+    DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
+    DctToWaveletStageAccelerator, Dwt97BatchStageTimings, Htj2k97CodeBlockOptions,
+    PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups, PreencodedHtj2k97Component,
+    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -305,6 +306,22 @@ fn htj2k97_codeblock_batch_total_samples(jobs: &[DctGridToHtj2k97CodeBlockJob<'_
     })
 }
 
+fn htj2k97_i16_codeblock_batch_total_samples(
+    jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+) -> usize {
+    jobs.iter().fold(0usize, |total, job| {
+        total.saturating_add(job.width.saturating_mul(job.height))
+    })
+}
+
+fn htj2k97_i16_codeblock_batch_group_total_samples(
+    groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+) -> usize {
+    groups.iter().fold(0usize, |total, group| {
+        total.saturating_add(htj2k97_i16_codeblock_batch_total_samples(group.jobs))
+    })
+}
+
 impl Default for CudaDctToWaveletStageAccelerator {
     fn default() -> Self {
         Self::for_auto()
@@ -321,6 +338,10 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     // layout, mirroring the local Metal backend.
     fn supports_htj2k97_codeblock_batch(&self) -> bool {
         true
+    }
+
+    fn supports_htj2k97_i16_preencoded_batch(&self) -> bool {
+        self.resident_ht_encode
     }
 
     fn dct_grid_to_reversible_dwt53(
@@ -566,6 +587,204 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
                         self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(error) => self.recover(error),
+            }
+        }
+    }
+
+    fn dct_grid_i16_to_htj2k97_preencoded_batch(
+        &mut self,
+        jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        if !self.resident_ht_encode {
+            return Ok(None);
+        }
+
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.htj2k97_codeblock_batch_attempts =
+            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.last_dwt97_batch_stage_timings = None;
+
+        if jobs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        if self.mode == CudaDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || htj2k97_i16_codeblock_batch_total_samples(jobs)
+                    < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = (jobs, options);
+            self.unavailable()
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        {
+            match cuda::dispatch_htj2k97_preencoded_i16_batch(jobs, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.htj2k97_codeblock_batch_dispatches =
+                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(error) => self.recover(error),
+            }
+        }
+    }
+
+    fn dct_grid_i16_to_htj2k97_compact_preencoded_batch(
+        &mut self,
+        jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, &'static str> {
+        if !self.resident_ht_encode {
+            return Ok(None);
+        }
+
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
+        self.htj2k97_codeblock_batch_attempts =
+            self.htj2k97_codeblock_batch_attempts.saturating_add(1);
+        self.last_dwt97_batch_stage_timings = None;
+
+        if jobs.is_empty() {
+            return Ok(Some(PreencodedHtj2k97CompactBatch {
+                payload: Vec::new(),
+                components: Vec::new(),
+            }));
+        }
+        if self.mode == CudaDispatchMode::Auto
+            && (jobs.len() < self.min_auto_dwt97_batch_jobs
+                || htj2k97_i16_codeblock_batch_total_samples(jobs)
+                    < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = (jobs, options);
+            self.unavailable()
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        {
+            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch(jobs, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
+                    self.htj2k97_codeblock_batch_dispatches =
+                        self.htj2k97_codeblock_batch_dispatches.saturating_add(1);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(error) => self.recover(error),
+            }
+        }
+    }
+
+    fn dct_grid_i16_to_htj2k97_preencoded_batch_groups(
+        &mut self,
+        groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, &'static str> {
+        if !self.resident_ht_encode {
+            return Ok(None);
+        }
+
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(groups.len());
+        self.htj2k97_codeblock_batch_attempts = self
+            .htj2k97_codeblock_batch_attempts
+            .saturating_add(groups.len());
+        self.last_dwt97_batch_stage_timings = None;
+
+        if groups.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let total_jobs = groups.iter().map(|group| group.jobs.len()).sum::<usize>();
+        if self.mode == CudaDispatchMode::Auto
+            && (total_jobs < self.min_auto_dwt97_batch_jobs
+                || htj2k97_i16_codeblock_batch_group_total_samples(groups)
+                    < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = (groups, options);
+            self.unavailable()
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        {
+            match cuda::dispatch_htj2k97_preencoded_i16_batch_groups(groups, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches =
+                        self.dwt97_batch_dispatches.saturating_add(groups.len());
+                    self.htj2k97_codeblock_batch_dispatches = self
+                        .htj2k97_codeblock_batch_dispatches
+                        .saturating_add(timings.ht_codeblock_dispatches);
+                    self.last_dwt97_batch_stage_timings = Some(timings);
+                    Ok(Some(output))
+                }
+                Err(error) => self.recover(error),
+            }
+        }
+    }
+
+    fn dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(
+        &mut self,
+        groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+        options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, &'static str> {
+        if !self.resident_ht_encode {
+            return Ok(None);
+        }
+
+        self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(groups.len());
+        self.htj2k97_codeblock_batch_attempts = self
+            .htj2k97_codeblock_batch_attempts
+            .saturating_add(groups.len());
+        self.last_dwt97_batch_stage_timings = None;
+
+        if groups.is_empty() {
+            return Ok(Some(PreencodedHtj2k97CompactBatchGroups {
+                payload: Vec::new(),
+                groups: Vec::new(),
+            }));
+        }
+        let total_jobs = groups.iter().map(|group| group.jobs.len()).sum::<usize>();
+        if self.mode == CudaDispatchMode::Auto
+            && (total_jobs < self.min_auto_dwt97_batch_jobs
+                || htj2k97_i16_codeblock_batch_group_total_samples(groups)
+                    < self.min_auto_dwt97_batch_samples)
+        {
+            return Ok(None);
+        }
+
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let _ = (groups, options);
+            self.unavailable()
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        {
+            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch_groups(groups, options) {
+                Ok((output, timings)) => {
+                    self.dwt97_batch_dispatches =
+                        self.dwt97_batch_dispatches.saturating_add(groups.len());
+                    self.htj2k97_codeblock_batch_dispatches = self
+                        .htj2k97_codeblock_batch_dispatches
+                        .saturating_add(timings.ht_codeblock_dispatches);
                     self.last_dwt97_batch_stage_timings = Some(timings);
                     Ok(Some(output))
                 }

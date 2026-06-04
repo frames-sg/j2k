@@ -202,14 +202,19 @@ impl CudaHtj2kDecodePlan {
         output_origin: (u32, u32),
         output_dimensions: (u32, u32),
     ) -> Result<Self, Error> {
-        let mut payload = Vec::new();
-        let mut code_blocks = Vec::new();
-        let mut subbands = Vec::new();
-        let mut idwt_steps = Vec::new();
-        let mut store_steps = Vec::new();
+        let capacity_hint = cuda_plan_capacity_hint(plan)?;
+        let mut payload = Vec::with_capacity(capacity_hint.payload_bytes);
+        let mut code_blocks = Vec::with_capacity(capacity_hint.code_blocks);
+        let mut subbands = Vec::with_capacity(capacity_hint.subbands);
+        let mut idwt_steps = Vec::with_capacity(capacity_hint.idwt_steps);
+        let mut store_steps = Vec::with_capacity(capacity_hint.store_steps);
         let mut transform = None;
         let mut saw_classic = false;
-        let required_regions = required_regions_for_direct_plan(plan)?;
+        let required_regions = if output_origin == (0, 0) && output_dimensions == plan.dimensions {
+            None
+        } else {
+            Some(required_regions_for_direct_plan(plan)?)
+        };
 
         for step in &plan.steps {
             match step {
@@ -251,18 +256,20 @@ impl CudaHtj2kDecodePlan {
                                 reason: PLAN_PAYLOAD_TOO_LARGE,
                             }
                         })?;
-                        if !required_regions
-                            .get(&subband.band_id)
-                            .is_some_and(|required| {
-                                required.intersects(
-                                    job.output_x,
-                                    job.output_y,
-                                    job.width,
-                                    job.height,
-                                )
-                            })
-                        {
-                            continue;
+                        if let Some(required_regions) = &required_regions {
+                            if !required_regions
+                                .get(&subband.band_id)
+                                .is_some_and(|required| {
+                                    required.intersects(
+                                        job.output_x,
+                                        job.output_y,
+                                        job.width,
+                                        job.height,
+                                    )
+                                })
+                            {
+                                continue;
+                            }
                         }
                         if job.roi_shift != 0 {
                             return Err(Error::UnsupportedCudaRequest {
@@ -408,6 +415,20 @@ impl CudaHtj2kDecodePlan {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "cuda-runtime"), allow(dead_code))]
+    pub(crate) fn rebase_payload_offsets(&mut self, base: u64) -> Result<(), Error> {
+        for block in &mut self.code_blocks {
+            block.payload_offset =
+                block
+                    .payload_offset
+                    .checked_add(base)
+                    .ok_or(Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    })?;
+        }
+        Ok(())
+    }
+
     /// Flat code-block metadata.
     pub fn code_blocks(&self) -> &[CudaHtj2kCodeBlock] {
         &self.code_blocks
@@ -432,6 +453,46 @@ impl CudaHtj2kDecodePlan {
     pub fn dispatch_count_hint(&self) -> usize {
         self.code_blocks.len()
     }
+}
+
+#[derive(Debug, Default)]
+struct CudaPlanCapacityHint {
+    payload_bytes: usize,
+    code_blocks: usize,
+    subbands: usize,
+    idwt_steps: usize,
+    store_steps: usize,
+}
+
+fn cuda_plan_capacity_hint(plan: &J2kDirectGrayscalePlan) -> Result<CudaPlanCapacityHint, Error> {
+    let mut hint = CudaPlanCapacityHint::default();
+    for step in &plan.steps {
+        match step {
+            J2kDirectGrayscaleStep::HtSubBand(subband) => {
+                hint.subbands = hint.subbands.saturating_add(1);
+                hint.code_blocks = hint.code_blocks.checked_add(subband.jobs.len()).ok_or(
+                    Error::UnsupportedCudaRequest {
+                        reason: PLAN_PAYLOAD_TOO_LARGE,
+                    },
+                )?;
+                for job in &subband.jobs {
+                    hint.payload_bytes = hint.payload_bytes.checked_add(job.data.len()).ok_or(
+                        Error::UnsupportedCudaRequest {
+                            reason: PLAN_PAYLOAD_TOO_LARGE,
+                        },
+                    )?;
+                }
+            }
+            J2kDirectGrayscaleStep::ClassicSubBand(_) => {}
+            J2kDirectGrayscaleStep::Idwt(_) => {
+                hint.idwt_steps = hint.idwt_steps.saturating_add(1);
+            }
+            J2kDirectGrayscaleStep::Store(_) => {
+                hint.store_steps = hint.store_steps.saturating_add(1);
+            }
+        }
+    }
+    Ok(hint)
 }
 
 fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {
@@ -793,6 +854,80 @@ mod tests {
             .expect("CUDA plan")
     }
 
+    fn two_block_direct_plan() -> J2kDirectGrayscalePlan {
+        J2kDirectGrayscalePlan {
+            dimensions: (2, 1),
+            bit_depth: 8,
+            steps: vec![
+                J2kDirectGrayscaleStep::HtSubBand(HtOwnedSubBandPlan {
+                    band_id: 0,
+                    rect: J2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 2,
+                        y1: 1,
+                    },
+                    width: 2,
+                    height: 1,
+                    jobs: vec![
+                        HtOwnedCodeBlockBatchJob {
+                            output_x: 0,
+                            output_y: 0,
+                            data: vec![1],
+                            cleanup_length: 1,
+                            refinement_length: 0,
+                            width: 1,
+                            height: 1,
+                            output_stride: 2,
+                            missing_bit_planes: 0,
+                            number_of_coding_passes: 1,
+                            num_bitplanes: 8,
+                            roi_shift: 0,
+                            stripe_causal: false,
+                            strict: true,
+                            dequantization_step: 1.0,
+                        },
+                        HtOwnedCodeBlockBatchJob {
+                            output_x: 1,
+                            output_y: 0,
+                            data: vec![2],
+                            cleanup_length: 1,
+                            refinement_length: 0,
+                            width: 1,
+                            height: 1,
+                            output_stride: 2,
+                            missing_bit_planes: 0,
+                            number_of_coding_passes: 1,
+                            num_bitplanes: 8,
+                            roi_shift: 0,
+                            stripe_causal: false,
+                            strict: true,
+                            dequantization_step: 1.0,
+                        },
+                    ],
+                }),
+                J2kDirectGrayscaleStep::Store(J2kDirectStoreStep {
+                    input_band_id: 0,
+                    input_rect: J2kRect {
+                        x0: 0,
+                        y0: 0,
+                        x1: 2,
+                        y1: 1,
+                    },
+                    source_x: 0,
+                    source_y: 0,
+                    copy_width: 2,
+                    copy_height: 1,
+                    output_width: 2,
+                    output_height: 1,
+                    output_x: 0,
+                    output_y: 0,
+                    addend: 128.0,
+                }),
+            ],
+        }
+    }
+
     #[test]
     fn append_payload_to_shared_offsets_blocks_and_drains_local_payload() {
         let mut first = one_block_plan(vec![1, 2]);
@@ -811,5 +946,44 @@ mod tests {
         assert!(second.payload().is_empty());
         assert_eq!(first.code_blocks()[0].payload_offset, 0);
         assert_eq!(second.code_blocks()[0].payload_offset, 2);
+    }
+
+    #[test]
+    fn rebase_payload_offsets_preserves_shared_payload_for_larger_batch() {
+        let mut plan = one_block_plan(vec![7, 8]);
+        let mut shared = Vec::new();
+        plan.append_payload_to_shared(&mut shared)
+            .expect("append local payload");
+
+        plan.rebase_payload_offsets(4096).expect("rebase payload");
+
+        assert_eq!(shared, vec![7, 8]);
+        assert_eq!(plan.code_blocks()[0].payload_offset, 4096);
+    }
+
+    #[test]
+    fn full_frame_plan_keeps_all_blocks_while_region_plan_prunes() {
+        let direct = two_block_direct_plan();
+        let full =
+            CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+                .expect("full CUDA plan");
+        let mut region_direct = two_block_direct_plan();
+        let J2kDirectGrayscaleStep::Store(store) = &mut region_direct.steps[1] else {
+            panic!("expected store fixture");
+        };
+        store.source_x = 1;
+        store.copy_width = 1;
+        store.output_x = 1;
+        let region = CudaHtj2kDecodePlan::from_grayscale_direct_plan_region(
+            &region_direct,
+            PixelFormat::Gray8,
+            (1, 0),
+            (1, 1),
+        )
+        .expect("region CUDA plan");
+
+        assert_eq!(full.code_blocks().len(), 2);
+        assert_eq!(region.code_blocks().len(), 1);
+        assert_eq!(region.code_blocks()[0].output_x, 1);
     }
 }

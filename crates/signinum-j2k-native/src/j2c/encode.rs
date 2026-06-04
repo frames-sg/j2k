@@ -8,6 +8,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
+use core::ops::Range;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -416,6 +417,76 @@ pub struct PreencodedHtj2k97CodeBlock {
     pub encoded: EncodedHtJ2kCodeBlock,
 }
 
+/// Preencoded irreversible 9/7 HTJ2K code-block image backed by one compact
+/// payload buffer.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactImage {
+    /// Reference-grid image width.
+    pub width: u32,
+    /// Reference-grid image height.
+    pub height: u32,
+    /// Component precision in bits.
+    pub bit_depth: u8,
+    /// Whether component samples are signed.
+    pub signed: bool,
+    /// Contiguous encoded code-block payload bytes.
+    pub payload: Vec<u8>,
+    /// Components at their native resolution.
+    pub components: Vec<PreencodedHtj2k97CompactComponent>,
+}
+
+/// Preencoded compact irreversible 9/7 HTJ2K component.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactComponent {
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+    /// Resolution packets for this component, ordered from lowest to highest.
+    pub resolutions: Vec<PreencodedHtj2k97CompactResolution>,
+}
+
+/// One component resolution's compact preencoded HTJ2K subbands.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactResolution {
+    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
+    pub subbands: Vec<PreencodedHtj2k97CompactSubband>,
+}
+
+/// One compact preencoded HTJ2K subband split into code-blocks.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactSubband {
+    /// Subband kind.
+    pub sub_band_type: J2kSubBandType,
+    /// Number of code-blocks in the x direction.
+    pub num_cbs_x: u32,
+    /// Number of code-blocks in the y direction.
+    pub num_cbs_y: u32,
+    /// Total bitplanes declared for every code-block in this subband.
+    pub total_bitplanes: u8,
+    /// Code-block metadata in row-major code-block order.
+    pub code_blocks: Vec<PreencodedHtj2k97CompactCodeBlock>,
+}
+
+/// One compact preencoded HTJ2K code-block.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactCodeBlock {
+    /// Code-block width in coefficients.
+    pub width: u32,
+    /// Code-block height in coefficients.
+    pub height: u32,
+    /// Byte range into the image-level compact payload.
+    pub payload_range: Range<usize>,
+    /// HTJ2K cleanup segment length in bytes.
+    pub cleanup_length: u32,
+    /// HTJ2K refinement segment length in bytes.
+    pub refinement_length: u32,
+    /// Number of coding passes in the encoded payload.
+    pub num_coding_passes: u8,
+    /// Number of missing most-significant bitplanes.
+    pub num_zero_bitplanes: u8,
+}
+
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
 /// codestream.
 ///
@@ -605,6 +676,85 @@ pub fn encode_precomputed_htj2k_97_with_accelerator(
         &precomputed_options,
         &mut precomputed_accelerator,
     )
+}
+
+/// Encode multiple precomputed irreversible 9/7 wavelet images while sharing
+/// one HT code-block batch across all prepared tiles.
+pub fn encode_precomputed_htj2k_97_batch_with_accelerator(
+    images: &[PrecomputedHtj2k97Image],
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<Vec<u8>>, &'static str> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+    if options.num_layers != 1 {
+        return Err("batch precomputed 9/7 encode currently supports one quality layer");
+    }
+
+    let mut prepared_images = prepare_precomputed_htj2k97_images_for_batch(images, options)?;
+    let mut all_packets = Vec::new();
+    for prepared in &mut prepared_images {
+        prepared.packet_count = prepared.prepared_packets.len();
+        all_packets.append(&mut prepared.prepared_packets);
+    }
+
+    let mut encoded_packets =
+        encode_prepared_resolution_packets(all_packets, accelerator)?.into_iter();
+    let mut codestreams = Vec::with_capacity(prepared_images.len());
+    for prepared in prepared_images {
+        let mut resolution_packets = Vec::with_capacity(prepared.packet_count);
+        for _ in 0..prepared.packet_count {
+            resolution_packets.push(
+                encoded_packets
+                    .next()
+                    .ok_or("encoded packet count mismatch")?,
+            );
+        }
+        let scalar_packet_descriptors = scalar_packet_descriptors(&prepared.packet_descriptors);
+        let packetized_tile =
+            packet_encode::form_tile_bitstream_with_descriptors_lengths_and_markers(
+                &mut resolution_packets,
+                &scalar_packet_descriptors,
+                packet_encode::PacketMarkerOptions {
+                    write_sop: prepared.params.write_sop,
+                    write_eph: prepared.params.write_eph,
+                },
+            )?;
+        codestreams.push(codestream_write::write_codestream_with_packet_lengths(
+            &prepared.params,
+            &packetized_tile.data,
+            &prepared.quant_params,
+            &packetized_tile.packet_lengths,
+        ));
+    }
+    if encoded_packets.next().is_some() {
+        return Err("encoded packet count mismatch");
+    }
+
+    Ok(codestreams)
+}
+
+#[cfg(feature = "parallel")]
+fn prepare_precomputed_htj2k97_images_for_batch(
+    images: &[PrecomputedHtj2k97Image],
+    options: &EncodeOptions,
+) -> Result<Vec<PreparedPrecomputedHtj2k97Image>, &'static str> {
+    images
+        .par_iter()
+        .map(|image| prepare_precomputed_htj2k97_image_for_batch(image, options))
+        .collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn prepare_precomputed_htj2k97_images_for_batch(
+    images: &[PrecomputedHtj2k97Image],
+    options: &EncodeOptions,
+) -> Result<Vec<PreparedPrecomputedHtj2k97Image>, &'static str> {
+    images
+        .iter()
+        .map(|image| prepare_precomputed_htj2k97_image_for_batch(image, options))
+        .collect()
 }
 
 /// Encode prequantized irreversible 9/7 code-block coefficients into an HTJ2K
@@ -885,6 +1035,282 @@ pub fn encode_preencoded_htj2k_97_with_accelerator(
     ))
 }
 
+/// Encode preencoded irreversible 9/7 HTJ2K code-block payloads into a
+/// codestream, consuming the image so code-block payloads can move into packet
+/// preparation without cloning.
+pub fn encode_preencoded_htj2k_97_owned_with_accelerator(
+    image: PreencodedHtj2k97Image,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    validate_irreversible_quantization_profile(options)?;
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+
+    let width = image.width;
+    let height = image.height;
+    let bit_depth = image.bit_depth;
+    let signed = image.signed;
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = preencoded_97_level_count(&image.components)?;
+    let guard_bits = options.guard_bits.max(2);
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        bit_depth,
+        num_levels,
+        false,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    validate_preencoded_htj2k97_image(&image, guard_bits, &step_sizes)?;
+
+    let component_sampling = image
+        .components
+        .iter()
+        .map(|component| (component.x_rsiz, component.y_rsiz))
+        .collect::<Vec<_>>();
+    let mut preencoded_options = options.clone();
+    preencoded_options.num_decomposition_levels = num_levels;
+    preencoded_options.reversible = false;
+    preencoded_options.use_ht_block_coding = true;
+    preencoded_options.use_mct = false;
+    preencoded_options.validate_high_throughput_codestream = false;
+    preencoded_options.component_sampling = Some(component_sampling);
+
+    let component_resolution_packets = image
+        .components
+        .into_iter()
+        .enumerate()
+        .map(|(component_idx, component)| {
+            prepared_resolution_packets_from_preencoded_component_owned(component_idx, component)
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let prepared_resolution_packets =
+        ordered_prepared_resolution_packets(component_resolution_packets, &preencoded_options)?;
+    let packet_descriptors = packet_descriptors_for_order(
+        &prepared_resolution_packets,
+        1,
+        preencoded_options.progression_order,
+    )?;
+    let mut resolution_packets =
+        encode_prepared_resolution_packets(prepared_resolution_packets, accelerator)?;
+    let packetization_resolutions = public_packetization_resolutions(&resolution_packets);
+    let packetization_job = J2kPacketizationEncodeJob {
+        resolution_count: resolution_packets.len() as u32,
+        num_layers: 1,
+        num_components,
+        code_block_count: count_code_blocks(&resolution_packets)?,
+        progression_order: public_packetization_progression_order(
+            preencoded_options.progression_order,
+        ),
+        packet_descriptors: &packet_descriptors,
+        resolutions: &packetization_resolutions,
+    };
+    let tile_data = accelerator
+        .encode_packetization(packetization_job)?
+        .unwrap_or_else(|| {
+            packet_encode::form_tile_bitstream(&mut resolution_packets, 1, num_components)
+        });
+
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+    let params = EncodeParams {
+        width,
+        height,
+        tile_width: width,
+        tile_height: height,
+        num_components,
+        bit_depth,
+        signed,
+        num_decomposition_levels: num_levels,
+        reversible: false,
+        code_block_width_exp: preencoded_options.code_block_width_exp,
+        code_block_height_exp: preencoded_options.code_block_height_exp,
+        num_layers: 1,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        progression_order: preencoded_options.progression_order,
+        write_tlm: preencoded_options.write_tlm,
+        write_plt: preencoded_options.write_plt,
+        write_plm: preencoded_options.write_plm,
+        write_sop: preencoded_options.write_sop,
+        write_eph: preencoded_options.write_eph,
+        terminate_coding_passes: false,
+        component_sampling: preencoded_options
+            .component_sampling
+            .clone()
+            .ok_or("component sampling missing")?,
+        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
+    };
+
+    Ok(codestream_write::write_codestream(
+        &params,
+        &tile_data,
+        &quant_params,
+    ))
+}
+
+/// Encode compact preencoded irreversible 9/7 HTJ2K code-block payloads into a
+/// codestream, borrowing code-block ranges from one image-level payload buffer
+/// during packetization.
+pub fn encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+    image: PreencodedHtj2k97CompactImage,
+    options: &EncodeOptions,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> Result<Vec<u8>, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    validate_irreversible_quantization_profile(options)?;
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+
+    let width = image.width;
+    let height = image.height;
+    let bit_depth = image.bit_depth;
+    let signed = image.signed;
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = preencoded_compact_97_level_count(&image.components)?;
+    let guard_bits = options.guard_bits.max(2);
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        bit_depth,
+        num_levels,
+        false,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    validate_preencoded_compact_htj2k97_image(&image, guard_bits, &step_sizes)?;
+
+    let component_sampling = image
+        .components
+        .iter()
+        .map(|component| (component.x_rsiz, component.y_rsiz))
+        .collect::<Vec<_>>();
+    let mut preencoded_options = options.clone();
+    preencoded_options.num_decomposition_levels = num_levels;
+    preencoded_options.reversible = false;
+    preencoded_options.use_ht_block_coding = true;
+    preencoded_options.use_mct = false;
+    preencoded_options.validate_high_throughput_codestream = false;
+    preencoded_options.component_sampling = Some(component_sampling);
+
+    let PreencodedHtj2k97CompactImage {
+        payload,
+        components,
+        ..
+    } = image;
+    let component_resolution_packets = components
+        .iter()
+        .enumerate()
+        .map(|(component_idx, component)| {
+            prepared_resolution_packets_from_preencoded_compact_component(
+                component_idx,
+                component,
+                &payload,
+            )
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let prepared_resolution_packets = ordered_prepared_compact_resolution_packets(
+        component_resolution_packets,
+        &preencoded_options,
+    )?;
+    let packet_descriptors = packet_descriptors_for_compact_order(
+        &prepared_resolution_packets,
+        1,
+        preencoded_options.progression_order,
+    )?;
+    let packetization_resolutions =
+        public_packetization_resolutions_from_compact(&prepared_resolution_packets);
+    let packetization_job = J2kPacketizationEncodeJob {
+        resolution_count: packetization_resolutions.len() as u32,
+        num_layers: 1,
+        num_components,
+        code_block_count: count_compact_code_blocks(&prepared_resolution_packets)?,
+        progression_order: public_packetization_progression_order(
+            preencoded_options.progression_order,
+        ),
+        packet_descriptors: &packet_descriptors,
+        resolutions: &packetization_resolutions,
+    };
+    let tile_data = accelerator
+        .encode_packetization(packetization_job)?
+        .map_or_else(
+            || crate::encode_j2k_packetization_scalar(packetization_job),
+            Ok,
+        )?;
+
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+    let params = EncodeParams {
+        width,
+        height,
+        tile_width: width,
+        tile_height: height,
+        num_components,
+        bit_depth,
+        signed,
+        num_decomposition_levels: num_levels,
+        reversible: false,
+        code_block_width_exp: preencoded_options.code_block_width_exp,
+        code_block_height_exp: preencoded_options.code_block_height_exp,
+        num_layers: 1,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        progression_order: preencoded_options.progression_order,
+        write_tlm: preencoded_options.write_tlm,
+        write_plt: preencoded_options.write_plt,
+        write_plm: preencoded_options.write_plm,
+        write_sop: preencoded_options.write_sop,
+        write_eph: preencoded_options.write_eph,
+        terminate_coding_passes: false,
+        component_sampling: preencoded_options
+            .component_sampling
+            .clone()
+            .ok_or("component sampling missing")?,
+        precinct_exponents: precinct_exponents_for_options(&preencoded_options, num_levels)?,
+    };
+
+    Ok(codestream_write::write_codestream(
+        &params,
+        &tile_data,
+        &quant_params,
+    ))
+}
+
 fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<(), &'static str> {
     for component in &image.components {
         let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
@@ -1069,6 +1495,25 @@ fn preencoded_97_level_count(
     u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
 }
 
+fn preencoded_compact_97_level_count(
+    components: &[PreencodedHtj2k97CompactComponent],
+) -> Result<u8, &'static str> {
+    let first = components
+        .first()
+        .ok_or("unsupported component count")?
+        .resolutions
+        .len()
+        .checked_sub(1)
+        .ok_or("preencoded components must contain at least one decomposition level")?;
+    if components
+        .iter()
+        .any(|component| component.resolutions.len() != first + 1)
+    {
+        return Err("preencoded components must use the same decomposition level count");
+    }
+    u8::try_from(first).map_err(|_| "decomposition level count exceeds u8")
+}
+
 fn validate_prequantized_htj2k97_image(
     image: &PrequantizedHtj2k97Image,
     guard_bits: u8,
@@ -1128,6 +1573,41 @@ fn validate_preencoded_htj2k97_image(
                 ],
                 guard_bits,
                 &step_sizes[step_base..step_base + 3],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_preencoded_compact_htj2k97_image(
+    image: &PreencodedHtj2k97CompactImage,
+    guard_bits: u8,
+    step_sizes: &[QuantStepSize],
+) -> Result<(), &'static str> {
+    for component in &image.components {
+        if component.resolutions.is_empty() {
+            return Err("preencoded components must contain at least one resolution");
+        }
+        validate_preencoded_compact_resolution(
+            &component.resolutions[0],
+            &[J2kSubBandType::LowLow],
+            guard_bits,
+            &step_sizes[0..1],
+            image.payload.len(),
+        )?;
+        for (level_index, resolution) in component.resolutions.iter().enumerate().skip(1) {
+            let step_base = 1 + (level_index - 1) * 3;
+            validate_preencoded_compact_resolution(
+                resolution,
+                &[
+                    J2kSubBandType::HighLow,
+                    J2kSubBandType::LowHigh,
+                    J2kSubBandType::HighHigh,
+                ],
+                guard_bits,
+                &step_sizes[step_base..step_base + 3],
+                image.payload.len(),
             )?;
         }
     }
@@ -1237,11 +1717,103 @@ fn validate_preencoded_resolution(
     Ok(())
 }
 
+fn validate_preencoded_compact_resolution(
+    resolution: &PreencodedHtj2k97CompactResolution,
+    expected_subbands: &[J2kSubBandType],
+    guard_bits: u8,
+    step_sizes: &[QuantStepSize],
+    payload_len: usize,
+) -> Result<(), &'static str> {
+    if resolution.subbands.len() != expected_subbands.len() {
+        return Err("preencoded resolution subband count mismatch");
+    }
+    for ((subband, expected_subband), step_size) in resolution
+        .subbands
+        .iter()
+        .zip(expected_subbands)
+        .zip(step_sizes)
+    {
+        if subband.sub_band_type != *expected_subband {
+            return Err("preencoded resolution subband order mismatch");
+        }
+        let expected_blocks = subband
+            .num_cbs_x
+            .checked_mul(subband.num_cbs_y)
+            .ok_or("preencoded code-block count overflow")?;
+        if expected_blocks == 0 {
+            if subband.total_bitplanes != 0 || !subband.code_blocks.is_empty() {
+                return Err("empty preencoded subbands must not contain code-block data");
+            }
+            continue;
+        }
+        debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+        let expected_total_bitplanes = guard_bits
+            .saturating_add(step_size.exponent as u8)
+            .saturating_sub(1);
+        if subband.total_bitplanes != expected_total_bitplanes {
+            return Err("preencoded subband bitplane count mismatch");
+        }
+        if usize::try_from(expected_blocks).map_err(|_| "preencoded code-block count overflow")?
+            != subband.code_blocks.len()
+        {
+            return Err("preencoded code-block count mismatch");
+        }
+        for block in &subband.code_blocks {
+            if block.width == 0 || block.height == 0 {
+                return Err("preencoded code-block dimensions must be non-zero");
+            }
+            validate_preencoded_compact_code_block_payload(
+                block,
+                payload_len,
+                subband.total_bitplanes,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_preencoded_code_block_payload(
     block: &EncodedHtJ2kCodeBlock,
     total_bitplanes: u8,
 ) -> Result<(), &'static str> {
     let data_len = u32::try_from(block.data.len()).map_err(|_| "HTJ2K payload too large")?;
+    if block.num_coding_passes == 0 {
+        if data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
+            return Err("empty HTJ2K code-block payload metadata mismatch");
+        }
+        if block.num_zero_bitplanes != total_bitplanes {
+            return Err("empty HTJ2K code-block zero-bitplane count mismatch");
+        }
+        return Ok(());
+    }
+    if block.num_coding_passes > 164 {
+        return Err("HTJ2K code-block coding pass count out of range");
+    }
+    if block.num_zero_bitplanes >= total_bitplanes {
+        return Err("HTJ2K code-block zero-bitplane count out of range");
+    }
+    let segment_len = block
+        .cleanup_length
+        .checked_add(block.refinement_length)
+        .ok_or("HTJ2K payload segment length overflow")?;
+    if segment_len != data_len {
+        return Err("HTJ2K payload segment length mismatch");
+    }
+    Ok(())
+}
+
+fn validate_preencoded_compact_code_block_payload(
+    block: &PreencodedHtj2k97CompactCodeBlock,
+    payload_len: usize,
+    total_bitplanes: u8,
+) -> Result<(), &'static str> {
+    if block.payload_range.start > block.payload_range.end || block.payload_range.end > payload_len
+    {
+        return Err("HTJ2K payload range out of bounds");
+    }
+    let data_len = u32::try_from(block.payload_range.end - block.payload_range.start)
+        .map_err(|_| "HTJ2K payload too large")?;
     if block.num_coding_passes == 0 {
         if data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
             return Err("empty HTJ2K code-block payload metadata mismatch");
@@ -1383,6 +1955,57 @@ fn prepared_resolution_packets_from_preencoded_component(
         .collect()
 }
 
+fn prepared_resolution_packets_from_preencoded_component_owned(
+    component_idx: usize,
+    component: PreencodedHtj2k97Component,
+) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    component
+        .resolutions
+        .into_iter()
+        .enumerate()
+        .map(|(resolution_idx, resolution)| {
+            Ok(PreparedResolutionPacket {
+                component: component_idx,
+                resolution: u32::try_from(resolution_idx)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
+                subbands: resolution
+                    .subbands
+                    .into_iter()
+                    .map(prepared_subband_from_preencoded_owned)
+                    .collect::<Result<Vec<_>, &'static str>>()?,
+            })
+        })
+        .collect()
+}
+
+fn prepared_resolution_packets_from_preencoded_compact_component<'a>(
+    component_idx: usize,
+    component: &'a PreencodedHtj2k97CompactComponent,
+    payload: &'a [u8],
+) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
+    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    component
+        .resolutions
+        .iter()
+        .enumerate()
+        .map(|(resolution_idx, resolution)| {
+            Ok(PreparedCompactResolutionPacket {
+                component: component_idx,
+                resolution: u32::try_from(resolution_idx)
+                    .map_err(|_| "resolution index exceeds u32")?,
+                precinct: 0,
+                subbands: resolution
+                    .subbands
+                    .iter()
+                    .map(|subband| prepared_subband_from_preencoded_compact(subband, payload))
+                    .collect::<Result<Vec<_>, &'static str>>()?,
+            })
+        })
+        .collect()
+}
+
 fn prepared_subband_from_preencoded(
     subband: &PreencodedHtj2k97Subband,
 ) -> Result<PreparedEncodeSubband, &'static str> {
@@ -1430,6 +2053,102 @@ fn prepared_subband_from_preencoded(
         total_bitplanes: subband.total_bitplanes,
         block_coding_mode: BlockCodingMode::HighThroughput,
     })
+}
+
+fn prepared_subband_from_preencoded_owned(
+    subband: PreencodedHtj2k97Subband,
+) -> Result<PreparedEncodeSubband, &'static str> {
+    let code_block_width = subband
+        .code_blocks
+        .iter()
+        .map(|block| block.width)
+        .max()
+        .unwrap_or(0);
+    let code_block_height = subband
+        .code_blocks
+        .iter()
+        .map(|block| block.height)
+        .max()
+        .unwrap_or(0);
+    let width = precomputed_subband_width(
+        subband.num_cbs_x,
+        subband.code_blocks.iter().map(|block| block.width),
+    );
+    let height = precomputed_subband_height(
+        subband.num_cbs_x,
+        subband.num_cbs_y,
+        subband.code_blocks.iter().map(|block| block.height),
+    );
+    let code_blocks = subband
+        .code_blocks
+        .into_iter()
+        .map(|block| {
+            let PreencodedHtj2k97CodeBlock {
+                width,
+                height,
+                encoded,
+            } = block;
+            (
+                PreparedEncodeCodeBlock {
+                    coefficients: Vec::new(),
+                    width,
+                    height,
+                },
+                encoded,
+            )
+        })
+        .collect::<Vec<_>>();
+    let (code_blocks, preencoded_ht_code_blocks): (Vec<_>, Vec<_>) =
+        code_blocks.into_iter().unzip();
+
+    Ok(PreparedEncodeSubband {
+        code_blocks,
+        preencoded_ht_code_blocks: Some(preencoded_ht_code_blocks),
+        num_cbs_x: subband.num_cbs_x,
+        num_cbs_y: subband.num_cbs_y,
+        code_block_width,
+        code_block_height,
+        width,
+        height,
+        sub_band_type: internal_sub_band_type(subband.sub_band_type),
+        total_bitplanes: subband.total_bitplanes,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+    })
+}
+
+fn prepared_subband_from_preencoded_compact<'a>(
+    subband: &'a PreencodedHtj2k97CompactSubband,
+    payload: &'a [u8],
+) -> Result<PreparedCompactSubband<'a>, &'static str> {
+    let code_blocks = subband
+        .code_blocks
+        .iter()
+        .map(|block| {
+            Ok(PreparedCompactCodeBlock {
+                data: compact_payload_slice(payload, &block.payload_range)?,
+                cleanup_length: block.cleanup_length,
+                refinement_length: block.refinement_length,
+                num_coding_passes: block.num_coding_passes,
+                num_zero_bitplanes: block.num_zero_bitplanes,
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+
+    Ok(PreparedCompactSubband {
+        code_blocks,
+        num_cbs_x: subband.num_cbs_x,
+        num_cbs_y: subband.num_cbs_y,
+    })
+}
+
+fn compact_payload_slice<'a>(
+    payload: &'a [u8],
+    range: &Range<usize>,
+) -> Result<&'a [u8], &'static str> {
+    if range.start > range.end || range.end > payload.len() {
+        return Err("HTJ2K payload range out of bounds");
+    }
+    Ok(&payload[range.clone()])
 }
 
 fn zero_pixel_buffer(
@@ -2593,6 +3312,19 @@ fn count_code_blocks(resolution_packets: &[ResolutionPacket]) -> Result<u32, &'s
     u32::try_from(count).map_err(|_| "packetization code-block count exceeds u32")
 }
 
+fn count_compact_code_blocks(
+    resolution_packets: &[PreparedCompactResolutionPacket<'_>],
+) -> Result<u32, &'static str> {
+    let count = resolution_packets
+        .iter()
+        .flat_map(|resolution| resolution.subbands.iter())
+        .try_fold(0usize, |acc, subband| {
+            acc.checked_add(subband.code_blocks.len())
+                .ok_or("packetization code-block count overflow")
+        })?;
+    u32::try_from(count).map_err(|_| "packetization code-block count exceeds u32")
+}
+
 fn split_component_resolution_packets_by_precinct(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
     width: u32,
@@ -2876,6 +3608,34 @@ fn packet_descriptors_for_order(
     Ok(descriptors)
 }
 
+fn packet_descriptors_for_compact_order(
+    packets: &[PreparedCompactResolutionPacket<'_>],
+    num_layers: u8,
+    progression_order: EncodeProgressionOrder,
+) -> Result<Vec<J2kPacketizationPacketDescriptor>, &'static str> {
+    if num_layers != 1 {
+        return Err("encode currently prepares one packet contribution layer");
+    }
+    let mut descriptors = packets
+        .iter()
+        .enumerate()
+        .map(|(packet_index, packet)| {
+            Ok(J2kPacketizationPacketDescriptor {
+                packet_index: u32::try_from(packet_index)
+                    .map_err(|_| "packet descriptor index exceeds u32")?,
+                state_index: u32::try_from(packet_index)
+                    .map_err(|_| "packet descriptor state index exceeds u32")?,
+                layer: 0,
+                resolution: packet.resolution,
+                component: packet.component,
+                precinct: packet.precinct,
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    sort_packet_descriptors_for_progression(&mut descriptors, progression_order);
+    Ok(descriptors)
+}
+
 fn ordered_prepared_resolution_packets(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
     options: &EncodeOptions,
@@ -2888,6 +3648,22 @@ fn ordered_prepared_resolution_packets(
         }
         EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
             component_ordered_prepared_resolution_packets(component_resolution_packets)
+        }
+    }
+}
+
+fn ordered_prepared_compact_resolution_packets<'a>(
+    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'a>>>,
+    options: &EncodeOptions,
+) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
+    match options.progression_order {
+        EncodeProgressionOrder::Lrcp
+        | EncodeProgressionOrder::Rlcp
+        | EncodeProgressionOrder::Rpcl => {
+            lrcp_ordered_prepared_compact_resolution_packets(component_resolution_packets)
+        }
+        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
+            component_ordered_prepared_compact_resolution_packets(component_resolution_packets)
         }
     }
 }
@@ -2925,9 +3701,61 @@ fn lrcp_ordered_prepared_resolution_packets(
     Ok(resolution_packets)
 }
 
+fn lrcp_ordered_prepared_compact_resolution_packets<'a>(
+    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'a>>>,
+) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
+    let resolution_count = component_resolution_packets
+        .first()
+        .map_or(0usize, alloc::vec::Vec::len);
+    let mut component_iters: Vec<_> = component_resolution_packets
+        .into_iter()
+        .map(alloc::vec::Vec::into_iter)
+        .collect();
+    let mut resolution_packets =
+        Vec::with_capacity(resolution_count.saturating_mul(component_iters.len()));
+
+    for _resolution in 0..resolution_count {
+        for component in &mut component_iters {
+            resolution_packets.push(
+                component
+                    .next()
+                    .ok_or("component packet resolution count mismatch")?,
+            );
+        }
+    }
+
+    if component_iters
+        .iter_mut()
+        .any(|component| component.next().is_some())
+    {
+        return Err("component packet resolution count mismatch");
+    }
+
+    Ok(resolution_packets)
+}
+
 fn component_ordered_prepared_resolution_packets(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
 ) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let resolution_count = component_resolution_packets
+        .first()
+        .map_or(0usize, alloc::vec::Vec::len);
+    let mut resolution_packets =
+        Vec::with_capacity(resolution_count.saturating_mul(component_resolution_packets.len()));
+
+    for component in component_resolution_packets {
+        if component.len() != resolution_count {
+            return Err("component packet resolution count mismatch");
+        }
+        resolution_packets.extend(component);
+    }
+
+    Ok(resolution_packets)
+}
+
+fn component_ordered_prepared_compact_resolution_packets<'a>(
+    component_resolution_packets: Vec<Vec<PreparedCompactResolutionPacket<'a>>>,
+) -> Result<Vec<PreparedCompactResolutionPacket<'a>>, &'static str> {
     let resolution_count = component_resolution_packets
         .first()
         .map_or(0usize, alloc::vec::Vec::len);
@@ -3006,6 +3834,38 @@ fn public_packetization_resolutions(
         .collect()
 }
 
+fn public_packetization_resolutions_from_compact<'a>(
+    resolution_packets: &'a [PreparedCompactResolutionPacket<'a>],
+) -> Vec<J2kPacketizationResolution<'a>> {
+    resolution_packets
+        .iter()
+        .map(|resolution| J2kPacketizationResolution {
+            subbands: resolution
+                .subbands
+                .iter()
+                .map(|subband| J2kPacketizationSubband {
+                    code_blocks: subband
+                        .code_blocks
+                        .iter()
+                        .map(|code_block| J2kPacketizationCodeBlock {
+                            data: code_block.data,
+                            ht_cleanup_length: code_block.cleanup_length,
+                            ht_refinement_length: code_block.refinement_length,
+                            num_coding_passes: code_block.num_coding_passes,
+                            num_zero_bitplanes: code_block.num_zero_bitplanes,
+                            previously_included: false,
+                            l_block: 3,
+                            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+                        })
+                        .collect(),
+                    num_cbs_x: subband.num_cbs_x,
+                    num_cbs_y: subband.num_cbs_y,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn public_packetization_block_coding_mode(
     block_coding_mode: BlockCodingMode,
 ) -> J2kPacketizationBlockCodingMode {
@@ -3042,6 +3902,244 @@ struct PreparedResolutionPacket {
     resolution: u32,
     precinct: u64,
     subbands: Vec<PreparedEncodeSubband>,
+}
+
+struct PreparedCompactCodeBlock<'a> {
+    data: &'a [u8],
+    cleanup_length: u32,
+    refinement_length: u32,
+    num_coding_passes: u8,
+    num_zero_bitplanes: u8,
+}
+
+struct PreparedCompactSubband<'a> {
+    code_blocks: Vec<PreparedCompactCodeBlock<'a>>,
+    num_cbs_x: u32,
+    num_cbs_y: u32,
+}
+
+struct PreparedCompactResolutionPacket<'a> {
+    component: u8,
+    resolution: u32,
+    precinct: u64,
+    subbands: Vec<PreparedCompactSubband<'a>>,
+}
+
+struct PreparedPrecomputedHtj2k97Image {
+    params: EncodeParams,
+    quant_params: Vec<(u16, u16)>,
+    packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
+    packet_count: usize,
+    prepared_packets: Vec<PreparedResolutionPacket>,
+}
+
+fn prepare_precomputed_htj2k97_image_for_batch(
+    image: &PrecomputedHtj2k97Image,
+    options: &EncodeOptions,
+) -> Result<PreparedPrecomputedHtj2k97Image, &'static str> {
+    if image.width == 0 || image.height == 0 {
+        return Err("invalid dimensions");
+    }
+    if image.components.is_empty() || image.components.len() > 4 {
+        return Err("unsupported component count");
+    }
+    if image.bit_depth == 0 || image.bit_depth > 16 {
+        return Err("unsupported bit depth");
+    }
+    validate_irreversible_quantization_profile(options)?;
+    if image
+        .components
+        .iter()
+        .any(|component| component.x_rsiz == 0 || component.y_rsiz == 0)
+    {
+        return Err("component sampling factors must be non-zero");
+    }
+    validate_precomputed_dwt97_geometry(image)?;
+
+    let num_components =
+        u8::try_from(image.components.len()).map_err(|_| "unsupported component count")?;
+    let num_levels = precomputed_97_level_count(&image.components)?;
+    let guard_bits = options.guard_bits.max(2);
+    let step_sizes = quantize::compute_step_sizes_with_irreversible_profile(
+        image.bit_depth,
+        num_levels,
+        false,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+    );
+    let quant_params: Vec<(u16, u16)> = step_sizes
+        .iter()
+        .map(|s| (s.exponent, s.mantissa))
+        .collect();
+    let cb_width = 1u32 << (options.code_block_width_exp + 2);
+    let cb_height = 1u32 << (options.code_block_height_exp + 2);
+    let component_sampling = image
+        .components
+        .iter()
+        .map(|component| (component.x_rsiz, component.y_rsiz))
+        .collect::<Vec<_>>();
+    let mut precomputed_options = options.clone();
+    precomputed_options.num_decomposition_levels = num_levels;
+    precomputed_options.reversible = false;
+    precomputed_options.use_ht_block_coding = true;
+    precomputed_options.use_mct = false;
+    precomputed_options.validate_high_throughput_codestream = false;
+    precomputed_options.component_sampling = Some(component_sampling.clone());
+    let precinct_exponents = precinct_exponents_for_options(&precomputed_options, num_levels)?;
+    let params = EncodeParams {
+        width: image.width,
+        height: image.height,
+        tile_width: image.width,
+        tile_height: image.height,
+        num_components,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        num_decomposition_levels: num_levels,
+        reversible: false,
+        code_block_width_exp: precomputed_options.code_block_width_exp,
+        code_block_height_exp: precomputed_options.code_block_height_exp,
+        num_layers: 1,
+        use_mct: false,
+        guard_bits,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        progression_order: precomputed_options.progression_order,
+        write_tlm: precomputed_options.write_tlm,
+        write_plt: precomputed_options.write_plt,
+        write_plm: precomputed_options.write_plm,
+        write_sop: precomputed_options.write_sop,
+        write_eph: precomputed_options.write_eph,
+        terminate_coding_passes: false,
+        component_sampling,
+        precinct_exponents,
+    };
+
+    let component_resolution_packets = image
+        .components
+        .iter()
+        .enumerate()
+        .map(|(component_idx, component)| {
+            prepared_resolution_packets_from_precomputed_97_component(
+                component_idx,
+                component,
+                &step_sizes,
+                image.bit_depth,
+                guard_bits,
+                cb_width,
+                cb_height,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let component_resolution_packets = split_component_resolution_packets_by_precinct(
+        component_resolution_packets,
+        image.width,
+        image.height,
+        num_levels,
+        &params.precinct_exponents,
+    )?;
+    let prepared_packets =
+        ordered_prepared_resolution_packets(component_resolution_packets, &precomputed_options)?;
+    let packet_descriptors =
+        packet_descriptors_for_order(&prepared_packets, 1, precomputed_options.progression_order)?;
+
+    Ok(PreparedPrecomputedHtj2k97Image {
+        params,
+        quant_params,
+        packet_descriptors,
+        packet_count: 0,
+        prepared_packets,
+    })
+}
+
+fn prepared_resolution_packets_from_precomputed_97_component(
+    component_idx: usize,
+    component: &PrecomputedHtj2k97Component,
+    step_sizes: &[QuantStepSize],
+    bit_depth: u8,
+    guard_bits: u8,
+    cb_width: u32,
+    cb_height: u32,
+) -> Result<Vec<PreparedResolutionPacket>, &'static str> {
+    let component_idx = u8::try_from(component_idx).map_err(|_| "component index exceeds u8")?;
+    let mut packets = Vec::with_capacity(component.dwt.levels.len() + 1);
+    packets.push(PreparedResolutionPacket {
+        component: component_idx,
+        resolution: 0,
+        precinct: 0,
+        subbands: vec![prepare_subband_cpu_quantized(
+            &component.dwt.ll,
+            component.dwt.ll_width,
+            component.dwt.ll_height,
+            step_sizes
+                .first()
+                .ok_or("irreversible quantization step missing")?,
+            bit_depth,
+            guard_bits,
+            false,
+            BlockCodingMode::HighThroughput,
+            cb_width,
+            cb_height,
+            SubBandType::LowLow,
+        )?],
+    });
+
+    for (level_idx, level) in component.dwt.levels.iter().enumerate() {
+        let step_base = 1 + level_idx * 3;
+        packets.push(PreparedResolutionPacket {
+            component: component_idx,
+            resolution: u32::try_from(level_idx + 1).map_err(|_| "resolution index exceeds u32")?,
+            precinct: 0,
+            subbands: vec![
+                prepare_subband_cpu_quantized(
+                    &level.hl,
+                    level.high_width,
+                    level.low_height,
+                    step_sizes
+                        .get(step_base)
+                        .ok_or("irreversible quantization step missing")?,
+                    bit_depth,
+                    guard_bits,
+                    false,
+                    BlockCodingMode::HighThroughput,
+                    cb_width,
+                    cb_height,
+                    SubBandType::HighLow,
+                )?,
+                prepare_subband_cpu_quantized(
+                    &level.lh,
+                    level.low_width,
+                    level.high_height,
+                    step_sizes
+                        .get(step_base + 1)
+                        .ok_or("irreversible quantization step missing")?,
+                    bit_depth,
+                    guard_bits,
+                    false,
+                    BlockCodingMode::HighThroughput,
+                    cb_width,
+                    cb_height,
+                    SubBandType::LowHigh,
+                )?,
+                prepare_subband_cpu_quantized(
+                    &level.hh,
+                    level.high_width,
+                    level.high_height,
+                    step_sizes
+                        .get(step_base + 2)
+                        .ok_or("irreversible quantization step missing")?,
+                    bit_depth,
+                    guard_bits,
+                    false,
+                    BlockCodingMode::HighThroughput,
+                    cb_width,
+                    cb_height,
+                    SubBandType::HighHigh,
+                )?,
+            ],
+        });
+    }
+
+    Ok(packets)
 }
 
 fn copy_code_block_coefficients(
@@ -3167,6 +4265,85 @@ fn prepare_subband(
             let cbw = x1 - x0;
             let cbh = y1 - y0;
 
+            let cb_coeffs = copy_code_block_coefficients(
+                &quantized,
+                width as usize,
+                x0 as usize,
+                y0 as usize,
+                cbw as usize,
+                cbh as usize,
+            );
+
+            code_blocks.push(PreparedEncodeCodeBlock {
+                coefficients: cb_coeffs,
+                width: cbw,
+                height: cbh,
+            });
+        }
+    }
+
+    Ok(PreparedEncodeSubband {
+        code_blocks,
+        preencoded_ht_code_blocks: None,
+        num_cbs_x,
+        num_cbs_y,
+        code_block_width: cb_width,
+        code_block_height: cb_height,
+        width,
+        height,
+        sub_band_type,
+        total_bitplanes,
+        block_coding_mode,
+    })
+}
+
+fn prepare_subband_cpu_quantized(
+    coefficients: &[f32],
+    width: u32,
+    height: u32,
+    step_size: &QuantStepSize,
+    bit_depth: u8,
+    guard_bits: u8,
+    reversible: bool,
+    block_coding_mode: BlockCodingMode,
+    cb_width: u32,
+    cb_height: u32,
+    sub_band_type: SubBandType,
+) -> Result<PreparedEncodeSubband, &'static str> {
+    if width == 0 || height == 0 {
+        return Ok(PreparedEncodeSubband {
+            code_blocks: Vec::new(),
+            preencoded_ht_code_blocks: None,
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+            code_block_width: cb_width,
+            code_block_height: cb_height,
+            width,
+            height,
+            sub_band_type,
+            total_bitplanes: 0,
+            block_coding_mode,
+        });
+    }
+
+    let range_bits = subband_range_bits(bit_depth, sub_band_type);
+    debug_assert!(step_size.exponent <= u16::from(u8::MAX));
+    let total_bitplanes = guard_bits
+        .saturating_add(step_size.exponent as u8)
+        .saturating_sub(1);
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let quantized = quantize::quantize_subband(coefficients, step_size, range_bits, reversible);
+    let mut code_blocks = Vec::with_capacity((num_cbs_x * num_cbs_y) as usize);
+
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let x1 = (x0 + cb_width).min(width);
+            let y1 = (y0 + cb_height).min(height);
+            let cbw = x1 - x0;
+            let cbh = y1 - y0;
             let cb_coeffs = copy_code_block_coefficients(
                 &quantized,
                 width as usize,
@@ -3390,7 +4567,7 @@ fn encode_prepared_resolution_packets_layered(
             let location = classic_locations
                 .get(assignment_idx)
                 .ok_or("classic PCRD assignment location mismatch")?;
-            let LayeredPreparedBlock::Classic { segment_layers, .. } = &mut layered_packets
+            let block = layered_packets
                 .get_mut(location.packet_idx)
                 .ok_or("classic PCRD packet index mismatch")?
                 .subbands
@@ -3398,8 +4575,8 @@ fn encode_prepared_resolution_packets_layered(
                 .ok_or("classic PCRD subband index mismatch")?
                 .blocks
                 .get_mut(location.block_idx)
-                .ok_or("classic PCRD block index mismatch")?
-            else {
+                .ok_or("classic PCRD block index mismatch")?;
+            let LayeredPreparedBlock::Classic { segment_layers, .. } = block else {
                 return Err("classic PCRD assignment referenced HT block");
             };
             let segment_layer = segment_layers
@@ -3419,7 +4596,7 @@ fn encode_prepared_resolution_packets_layered(
             let location = ht_locations
                 .get(assignment_idx)
                 .ok_or("HTJ2K segment assignment location mismatch")?;
-            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = &mut layered_packets
+            let block = layered_packets
                 .get_mut(location.packet_idx)
                 .ok_or("HTJ2K packet index mismatch")?
                 .subbands
@@ -3427,8 +4604,8 @@ fn encode_prepared_resolution_packets_layered(
                 .ok_or("HTJ2K subband index mismatch")?
                 .blocks
                 .get_mut(location.block_idx)
-                .ok_or("HTJ2K block index mismatch")?
-            else {
+                .ok_or("HTJ2K block index mismatch")?;
+            let LayeredPreparedBlock::HighThroughput { target_layer, .. } = block else {
                 return Err("HTJ2K segment assignment referenced classic block");
             };
             *target_layer = layer;
@@ -4464,6 +5641,146 @@ fn max_decomposition_levels(width: u32, height: u32) -> u8 {
 mod tests {
     use super::*;
 
+    fn test_preencoded_subband_payload(marker: u8) -> PreencodedHtj2k97Subband {
+        PreencodedHtj2k97Subband {
+            sub_band_type: J2kSubBandType::LowLow,
+            num_cbs_x: 1,
+            num_cbs_y: 1,
+            total_bitplanes: 8,
+            code_blocks: vec![PreencodedHtj2k97CodeBlock {
+                width: 1,
+                height: 1,
+                encoded: crate::EncodedHtJ2kCodeBlock {
+                    data: vec![marker; 8],
+                    cleanup_length: 8,
+                    refinement_length: 0,
+                    num_coding_passes: 1,
+                    num_zero_bitplanes: 0,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn prepared_subband_from_owned_preencoded_moves_payload_without_clone() {
+        let subband = test_preencoded_subband_payload(7);
+        let original_ptr = subband.code_blocks[0].encoded.data.as_ptr() as usize;
+
+        let prepared =
+            prepared_subband_from_preencoded_owned(subband).expect("owned preencoded subband");
+        let prepared_blocks = prepared
+            .preencoded_ht_code_blocks
+            .expect("preencoded payloads");
+
+        assert_eq!(prepared_blocks[0].data.as_ptr() as usize, original_ptr);
+        assert!(prepared.code_blocks[0].coefficients.is_empty());
+    }
+
+    #[test]
+    fn compact_preencoded_packetization_borrows_payload_ranges() {
+        #[derive(Default)]
+        struct RecordingPacketizationAccelerator {
+            payload_base: usize,
+            observed_offsets: Vec<usize>,
+            observed_lengths: Vec<usize>,
+        }
+
+        impl crate::J2kEncodeStageAccelerator for RecordingPacketizationAccelerator {
+            fn encode_packetization(
+                &mut self,
+                job: crate::J2kPacketizationEncodeJob<'_>,
+            ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+                for code_block in job
+                    .resolutions
+                    .iter()
+                    .flat_map(|resolution| resolution.subbands.iter())
+                    .flat_map(|subband| subband.code_blocks.iter())
+                    .filter(|code_block| !code_block.data.is_empty())
+                {
+                    self.observed_offsets
+                        .push((code_block.data.as_ptr() as usize) - self.payload_base);
+                    self.observed_lengths.push(code_block.data.len());
+                }
+                Ok(Some(crate::encode_j2k_packetization_scalar(job)?))
+            }
+        }
+
+        let (preencoded, options) = sample_preencoded_htj2k97_for_test();
+        let expected = encode_preencoded_htj2k_97(&preencoded, &options).expect("owned preencoded");
+        let mut payload = Vec::new();
+        let mut expected_offsets = Vec::new();
+        let mut expected_lengths = Vec::new();
+        let components = preencoded
+            .components
+            .iter()
+            .map(|component| PreencodedHtj2k97CompactComponent {
+                x_rsiz: component.x_rsiz,
+                y_rsiz: component.y_rsiz,
+                resolutions: component
+                    .resolutions
+                    .iter()
+                    .map(|resolution| PreencodedHtj2k97CompactResolution {
+                        subbands: resolution
+                            .subbands
+                            .iter()
+                            .map(|subband| PreencodedHtj2k97CompactSubband {
+                                sub_band_type: subband.sub_band_type,
+                                num_cbs_x: subband.num_cbs_x,
+                                num_cbs_y: subband.num_cbs_y,
+                                total_bitplanes: subband.total_bitplanes,
+                                code_blocks: subband
+                                    .code_blocks
+                                    .iter()
+                                    .map(|block| {
+                                        let start = payload.len();
+                                        payload.extend_from_slice(&block.encoded.data);
+                                        let end = payload.len();
+                                        if start != end {
+                                            expected_offsets.push(start);
+                                            expected_lengths.push(end - start);
+                                        }
+                                        PreencodedHtj2k97CompactCodeBlock {
+                                            width: block.width,
+                                            height: block.height,
+                                            payload_range: start..end,
+                                            cleanup_length: block.encoded.cleanup_length,
+                                            refinement_length: block.encoded.refinement_length,
+                                            num_coding_passes: block.encoded.num_coding_passes,
+                                            num_zero_bitplanes: block.encoded.num_zero_bitplanes,
+                                        }
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let compact = PreencodedHtj2k97CompactImage {
+            width: preencoded.width,
+            height: preencoded.height,
+            bit_depth: preencoded.bit_depth,
+            signed: preencoded.signed,
+            payload,
+            components,
+        };
+        let mut accelerator = RecordingPacketizationAccelerator {
+            payload_base: compact.payload.as_ptr() as usize,
+            ..Default::default()
+        };
+
+        let actual = encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+            compact,
+            &options,
+            &mut accelerator,
+        )
+        .expect("compact preencoded");
+
+        assert_eq!(actual, expected);
+        assert_eq!(accelerator.observed_offsets, expected_offsets);
+        assert_eq!(accelerator.observed_lengths, expected_lengths);
+    }
+
     #[test]
     fn test_encode_8bit_gray() {
         let width = 8u32;
@@ -4762,6 +6079,37 @@ mod tests {
         .expect("prequantized 9/7 encode accepts encode accelerator");
 
         assert!(encoded.starts_with(&[0xff, 0x4f]));
+        assert_eq!(accelerator.forward_dwt53, 0);
+        assert_eq!(accelerator.forward_dwt97, 0);
+        assert_eq!(accelerator.ht_batches, 1);
+        assert!(accelerator.ht_jobs > 0);
+        assert_eq!(accelerator.ht_single_blocks, accelerator.ht_jobs);
+    }
+
+    #[test]
+    fn precomputed_htj2k97_batch_offers_all_ht_code_blocks_in_one_accelerator_call() {
+        let image = sample_precomputed_htj2k97_image();
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+        let mut accelerator = CountingHtEncodeAccelerator::default();
+
+        let encoded = encode_precomputed_htj2k_97_batch_with_accelerator(
+            &[image.clone(), image],
+            &options,
+            &mut accelerator,
+        )
+        .expect("batch precomputed 9/7 encode accepts encode accelerator");
+
+        assert_eq!(encoded.len(), 2);
+        assert!(encoded
+            .iter()
+            .all(|codestream| codestream.starts_with(&[0xff, 0x4f])));
         assert_eq!(accelerator.forward_dwt53, 0);
         assert_eq!(accelerator.forward_dwt97, 0);
         assert_eq!(accelerator.ht_batches, 1);

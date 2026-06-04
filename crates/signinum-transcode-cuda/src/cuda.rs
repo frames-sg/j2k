@@ -11,11 +11,15 @@
 
 use signinum_j2k_native::EncodedHtJ2kCodeBlock;
 use signinum_transcode::accelerator::{
-    DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
-    DctGridToReversibleDwt53Job, Dwt97BatchStageTimings, Htj2k97CodeBlockOptions, J2kSubBandType,
-    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
-    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
+    DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
+    DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
+    Dwt97BatchStageTimings, Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97CodeBlock,
+    PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
+    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband, ReversibleDwt53FirstLevel,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -26,9 +30,11 @@ use signinum_transcode::htj2k97_codeblock_oracle::{
 use std::sync::OnceLock;
 
 use signinum_cuda_runtime::{
-    transcode_kernels_built, CudaContext, CudaDwt97BatchStageTimings, CudaHtj2k97CodeblockBands,
-    CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97QuantizeParams, CudaHtj2kEncodeCodeBlockJob,
-    CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaTranscodeDwt97Bands,
+    transcode_kernels_built, CudaBufferPool, CudaContext, CudaDwt97BatchStageTimings,
+    CudaHtj2k97CodeblockBands, CudaHtj2k97DeviceCodeblockBands, CudaHtj2k97QuantizeParams,
+    CudaHtj2kCompactEncodedCodeBlock, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeResidentTarget,
+    CudaHtj2kEncodeResources, CudaHtj2kEncodeStageTimings, CudaHtj2kEncodeTables,
+    CudaHtj2kEncodedCodeBlock, CudaPooledDeviceBuffer, CudaTranscodeDwt97Bands,
     CudaTranscodeReversible53Bands,
 };
 
@@ -37,6 +43,20 @@ use crate::CudaTranscodeError;
 /// Returned until a given kernel path is wired to `signinum-cuda-runtime`.
 const NOT_WIRED: CudaTranscodeError =
     CudaTranscodeError::UnsupportedJob("signinum-transcode-cuda kernel not yet wired");
+
+type GroupedPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97Component>)>;
+type GroupedCompactPreencodedComponents = Vec<(usize, Vec<PreencodedHtj2k97CompactComponent>)>;
+type ResidentPreencodedGroups = (
+    GroupedPreencodedComponents,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
+type ResidentCompactPreencodedGroups = (
+    Vec<u8>,
+    GroupedCompactPreencodedComponents,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
 
 /// A process-wide CUDA context, created on first use and reused thereafter.
 ///
@@ -57,6 +77,19 @@ fn shared_context() -> Result<CudaContext, CudaTranscodeError> {
         .get()
         .cloned()
         .ok_or(CudaTranscodeError::CudaUnavailable)
+}
+
+fn shared_buffer_pool(
+    context: &CudaContext,
+) -> Result<&'static CudaBufferPool, CudaTranscodeError> {
+    static POOL: OnceLock<CudaBufferPool> = OnceLock::new();
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    let _ = POOL.set(context.buffer_pool());
+    POOL.get().ok_or(CudaTranscodeError::Kernel(
+        "CUDA transcode buffer pool unavailable",
+    ))
 }
 
 /// Flatten `&[[i16; 64]]` into the contiguous `&[i16]` the runtime job expects.
@@ -138,6 +171,12 @@ fn append_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]], out: &mut Vec<f32>) {
     }
 }
 
+/// Append natural-order dequantized i16 DCT blocks directly to the contiguous
+/// i16 coefficient buffer the runtime kernels consume.
+fn append_i16_blocks(blocks: &[[i16; 64]], out: &mut Vec<i16>) {
+    out.extend_from_slice(flatten_blocks(blocks));
+}
+
 /// Flatten one job's DCT blocks into a fresh contiguous `f32` buffer.
 fn flatten_f64_blocks_to_f32(blocks: &[[[f64; 8]; 8]]) -> Vec<f32> {
     let mut out = Vec::with_capacity(blocks.len() * 64);
@@ -153,9 +192,63 @@ fn map_batch_timings(timings: CudaDwt97BatchStageTimings) -> Dwt97BatchStageTimi
         column_lift_us: timings.column_lift_us,
         quantize_codeblock_us: timings.quantize_codeblock_us,
         ht_encode_us: timings.ht_encode_us,
+        ht_kernel_us: 0,
+        ht_status_readback_us: 0,
+        ht_compact_us: 0,
+        ht_output_readback_us: 0,
         ht_codeblock_dispatches: timings.ht_codeblock_dispatches,
         readback_us: timings.readback_us,
     }
+}
+
+fn set_ht_encode_timings(
+    timings: &mut Dwt97BatchStageTimings,
+    ht_timings: CudaHtj2kEncodeStageTimings,
+) {
+    timings.ht_encode_us = ht_timings.ht_encode_us;
+    timings.ht_kernel_us = ht_timings.ht_kernel_us;
+    timings.ht_status_readback_us = ht_timings.ht_status_readback_us;
+    timings.ht_compact_us = ht_timings.ht_compact_us;
+    timings.ht_output_readback_us = ht_timings.ht_output_readback_us;
+}
+
+fn add_ht_encode_timings(
+    timings: &mut Dwt97BatchStageTimings,
+    ht_timings: CudaHtj2kEncodeStageTimings,
+) {
+    timings.ht_encode_us = timings.ht_encode_us.saturating_add(ht_timings.ht_encode_us);
+    timings.ht_kernel_us = timings.ht_kernel_us.saturating_add(ht_timings.ht_kernel_us);
+    timings.ht_status_readback_us = timings
+        .ht_status_readback_us
+        .saturating_add(ht_timings.ht_status_readback_us);
+    timings.ht_compact_us = timings
+        .ht_compact_us
+        .saturating_add(ht_timings.ht_compact_us);
+    timings.ht_output_readback_us = timings
+        .ht_output_readback_us
+        .saturating_add(ht_timings.ht_output_readback_us);
+}
+
+fn accumulate_batch_timings(total: &mut Dwt97BatchStageTimings, next: Dwt97BatchStageTimings) {
+    total.pack_upload_us = total.pack_upload_us.saturating_add(next.pack_upload_us);
+    total.idct_row_lift_us = total.idct_row_lift_us.saturating_add(next.idct_row_lift_us);
+    total.column_lift_us = total.column_lift_us.saturating_add(next.column_lift_us);
+    total.quantize_codeblock_us = total
+        .quantize_codeblock_us
+        .saturating_add(next.quantize_codeblock_us);
+    total.ht_encode_us = total.ht_encode_us.saturating_add(next.ht_encode_us);
+    total.ht_kernel_us = total.ht_kernel_us.saturating_add(next.ht_kernel_us);
+    total.ht_status_readback_us = total
+        .ht_status_readback_us
+        .saturating_add(next.ht_status_readback_us);
+    total.ht_compact_us = total.ht_compact_us.saturating_add(next.ht_compact_us);
+    total.ht_output_readback_us = total
+        .ht_output_readback_us
+        .saturating_add(next.ht_output_readback_us);
+    total.ht_codeblock_dispatches = total
+        .ht_codeblock_dispatches
+        .saturating_add(next.ht_codeblock_dispatches);
+    total.readback_us = total.readback_us.saturating_add(next.readback_us);
 }
 
 fn dwt97_bands_to_f64(bands: CudaTranscodeDwt97Bands) -> Dwt97TwoDimensional<f64> {
@@ -232,13 +325,14 @@ pub(crate) fn dispatch_dwt97_batch(
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let (bands, timings) = context
-        .j2k_transcode_dwt97_batch(
+        .j2k_transcode_dwt97_batch_with_pool(
             &blocks,
             jobs.len(),
             first.block_cols,
             first.block_rows,
             first.width,
             first.height,
+            shared_buffer_pool(&context)?,
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 batch transcode dispatch failed"))?;
     let outputs = bands.into_iter().map(dwt97_bands_to_f64).collect();
@@ -413,7 +507,7 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
     let (codeblock_bands, timings) = context
-        .j2k_transcode_htj2k97_codeblock_batch(
+        .j2k_transcode_htj2k97_codeblock_batch_with_pool(
             &blocks,
             jobs.len(),
             first.block_cols,
@@ -421,6 +515,7 @@ pub(crate) fn dispatch_htj2k97_codeblock_batch(
             first.width,
             first.height,
             params,
+            shared_buffer_pool(&context)?,
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 code-block batch dispatch failed"))?;
 
@@ -459,8 +554,9 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
     for job in jobs {
         append_f64_blocks_to_f32(job.blocks, &mut blocks);
     }
-    let (device_bands, mut timings) = context
-        .j2k_transcode_htj2k97_codeblock_batch_resident(
+    let pool = shared_buffer_pool(&context)?;
+    let (device_bands, cuda_timings) = context
+        .j2k_transcode_htj2k97_codeblock_batch_resident_with_pool(
             &blocks,
             jobs.len(),
             first.block_cols,
@@ -468,15 +564,338 @@ pub(crate) fn dispatch_htj2k97_preencoded_batch(
             first.width,
             first.height,
             params,
+            pool,
         )
         .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident batch dispatch failed"))?;
+    let mut timings = map_batch_timings(cuda_timings);
 
     let resources = shared_encode_resources(&context)?;
-    let (components, ht_encode_us, ht_dispatches) =
-        device_bands_to_preencoded_components(&context, resources, &device_bands, jobs, options)?;
-    timings.ht_encode_us = ht_encode_us;
+    let (components, ht_timings, ht_dispatches) = device_bands_to_preencoded_components(
+        &context,
+        resources,
+        pool,
+        &device_bands,
+        jobs,
+        options,
+    )?;
+    set_ht_encode_timings(&mut timings, ht_timings);
     timings.ht_codeblock_dispatches = ht_dispatches;
-    Ok((components, map_batch_timings(timings)))
+    Ok((components, timings))
+}
+
+pub(crate) fn dispatch_htj2k97_preencoded_i16_batch(
+    jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(Vec<PreencodedHtj2k97Component>, Dwt97BatchStageTimings), CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    validate_htj2k97_codeblock_options(options)?;
+    let context = shared_context()?;
+
+    let Some(first) = jobs.first() else {
+        return Ok((Vec::new(), Dwt97BatchStageTimings::default()));
+    };
+
+    let uniform = jobs.iter().all(|job| {
+        job.block_cols == first.block_cols
+            && job.block_rows == first.block_rows
+            && job.width == first.width
+            && job.height == first.height
+    });
+    if !uniform {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 resident HT i16 batch requires uniform job geometry",
+        ));
+    }
+
+    let params = htj2k97_quantize_params(options)?;
+    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        append_i16_blocks(job.dequantized_blocks, &mut blocks);
+    }
+    let pool = shared_buffer_pool(&context)?;
+    let (device_bands, cuda_timings) = context
+        .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
+            &blocks,
+            jobs.len(),
+            first.block_cols,
+            first.block_rows,
+            first.width,
+            first.height,
+            params,
+            pool,
+        )
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident i16 batch dispatch failed"))?;
+    let mut timings = map_batch_timings(cuda_timings);
+
+    let resources = shared_encode_resources(&context)?;
+    let (components, ht_timings, ht_dispatches) = device_bands_to_preencoded_components(
+        &context,
+        resources,
+        pool,
+        &device_bands,
+        jobs,
+        options,
+    )?;
+    set_ht_encode_timings(&mut timings, ht_timings);
+    timings.ht_codeblock_dispatches = ht_dispatches;
+    Ok((components, timings))
+}
+
+pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch(
+    jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(PreencodedHtj2k97CompactBatch, Dwt97BatchStageTimings), CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    validate_htj2k97_codeblock_options(options)?;
+    let context = shared_context()?;
+
+    let Some(first) = jobs.first() else {
+        return Ok((
+            PreencodedHtj2k97CompactBatch {
+                payload: Vec::new(),
+                components: Vec::new(),
+            },
+            Dwt97BatchStageTimings::default(),
+        ));
+    };
+
+    let uniform = jobs.iter().all(|job| {
+        job.block_cols == first.block_cols
+            && job.block_rows == first.block_rows
+            && job.width == first.width
+            && job.height == first.height
+    });
+    if !uniform {
+        return Err(CudaTranscodeError::UnsupportedJob(
+            "CUDA 9/7 resident HT i16 batch requires uniform job geometry",
+        ));
+    }
+
+    let params = htj2k97_quantize_params(options)?;
+    let mut blocks = Vec::with_capacity(jobs.len() * first.block_cols * first.block_rows * 64);
+    for job in jobs {
+        append_i16_blocks(job.dequantized_blocks, &mut blocks);
+    }
+    let pool = shared_buffer_pool(&context)?;
+    let (device_bands, cuda_timings) = context
+        .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
+            &blocks,
+            jobs.len(),
+            first.block_cols,
+            first.block_rows,
+            first.width,
+            first.height,
+            params,
+            pool,
+        )
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA 9/7 resident i16 batch dispatch failed"))?;
+    let mut timings = map_batch_timings(cuda_timings);
+
+    let resources = shared_encode_resources(&context)?;
+    let (batch, ht_timings, ht_dispatches) = device_bands_to_compact_preencoded_batch(
+        &context,
+        resources,
+        pool,
+        &device_bands,
+        jobs,
+        options,
+    )?;
+    set_ht_encode_timings(&mut timings, ht_timings);
+    timings.ht_codeblock_dispatches = ht_dispatches;
+    Ok((batch, timings))
+}
+
+pub(crate) fn dispatch_htj2k97_preencoded_i16_batch_groups(
+    groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(Vec<Vec<PreencodedHtj2k97Component>>, Dwt97BatchStageTimings), CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    validate_htj2k97_codeblock_options(options)?;
+    let context = shared_context()?;
+    let params = htj2k97_quantize_params(options)?;
+    let pool = shared_buffer_pool(&context)?;
+    let mut timings = Dwt97BatchStageTimings::default();
+    let mut outputs = std::iter::repeat_with(|| None)
+        .take(groups.len())
+        .collect::<Vec<Option<Vec<PreencodedHtj2k97Component>>>>();
+    let mut device_groups = Vec::new();
+
+    for (group_index, group) in groups.iter().enumerate() {
+        let Some(first) = group.jobs.first() else {
+            outputs[group_index] = Some(Vec::new());
+            continue;
+        };
+        let uniform = group.jobs.iter().all(|job| {
+            job.block_cols == first.block_cols
+                && job.block_rows == first.block_rows
+                && job.width == first.width
+                && job.height == first.height
+        });
+        if !uniform {
+            return Err(CudaTranscodeError::UnsupportedJob(
+                "CUDA grouped 9/7 resident HT i16 batches require uniform geometry inside each group",
+            ));
+        }
+
+        let mut blocks =
+            Vec::with_capacity(group.jobs.len() * first.block_cols * first.block_rows * 64);
+        for job in group.jobs {
+            append_i16_blocks(job.dequantized_blocks, &mut blocks);
+        }
+        let (bands, group_timings) = context
+            .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
+                &blocks,
+                group.jobs.len(),
+                first.block_cols,
+                first.block_rows,
+                first.width,
+                first.height,
+                params,
+                pool,
+            )
+            .map_err(|_| {
+                CudaTranscodeError::Kernel("CUDA grouped 9/7 resident i16 batch dispatch failed")
+            })?;
+        accumulate_batch_timings(&mut timings, map_batch_timings(group_timings));
+        device_groups.push(ResidentDeviceGroup {
+            group_index,
+            bands,
+            jobs: group.jobs,
+        });
+    }
+
+    if !device_groups.is_empty() {
+        let resources = shared_encode_resources(&context)?;
+        let (encoded_groups, ht_timings, ht_dispatches) =
+            device_band_groups_to_preencoded_components(
+                &context,
+                resources,
+                pool,
+                &device_groups,
+                options,
+            )?;
+        add_ht_encode_timings(&mut timings, ht_timings);
+        timings.ht_codeblock_dispatches = timings
+            .ht_codeblock_dispatches
+            .saturating_add(ht_dispatches);
+        for (group_index, components) in encoded_groups {
+            outputs[group_index] = Some(components);
+        }
+    }
+
+    let outputs = outputs
+        .into_iter()
+        .map(|components| {
+            components.ok_or(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident HT output group missing",
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((outputs, timings))
+}
+
+pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch_groups(
+    groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(PreencodedHtj2k97CompactBatchGroups, Dwt97BatchStageTimings), CudaTranscodeError> {
+    if !transcode_kernels_built() {
+        return Err(CudaTranscodeError::CudaUnavailable);
+    }
+    validate_htj2k97_codeblock_options(options)?;
+    let context = shared_context()?;
+    let params = htj2k97_quantize_params(options)?;
+    let pool = shared_buffer_pool(&context)?;
+    let mut timings = Dwt97BatchStageTimings::default();
+    let mut outputs = std::iter::repeat_with(|| None)
+        .take(groups.len())
+        .collect::<Vec<Option<Vec<PreencodedHtj2k97CompactComponent>>>>();
+    let mut device_groups = Vec::new();
+
+    for (group_index, group) in groups.iter().enumerate() {
+        let Some(first) = group.jobs.first() else {
+            outputs[group_index] = Some(Vec::new());
+            continue;
+        };
+        let uniform = group.jobs.iter().all(|job| {
+            job.block_cols == first.block_cols
+                && job.block_rows == first.block_rows
+                && job.width == first.width
+                && job.height == first.height
+        });
+        if !uniform {
+            return Err(CudaTranscodeError::UnsupportedJob(
+                "CUDA grouped 9/7 resident HT i16 batches require uniform geometry inside each group",
+            ));
+        }
+
+        let mut blocks =
+            Vec::with_capacity(group.jobs.len() * first.block_cols * first.block_rows * 64);
+        for job in group.jobs {
+            append_i16_blocks(job.dequantized_blocks, &mut blocks);
+        }
+        let (bands, group_timings) = context
+            .j2k_transcode_htj2k97_codeblock_i16_batch_resident_with_pool(
+                &blocks,
+                group.jobs.len(),
+                first.block_cols,
+                first.block_rows,
+                first.width,
+                first.height,
+                params,
+                pool,
+            )
+            .map_err(|_| {
+                CudaTranscodeError::Kernel("CUDA grouped 9/7 resident i16 batch dispatch failed")
+            })?;
+        accumulate_batch_timings(&mut timings, map_batch_timings(group_timings));
+        device_groups.push(ResidentDeviceGroup {
+            group_index,
+            bands,
+            jobs: group.jobs,
+        });
+    }
+
+    let mut payload = Vec::new();
+    if !device_groups.is_empty() {
+        let resources = shared_encode_resources(&context)?;
+        let (encoded_payload, encoded_groups, ht_timings, ht_dispatches) =
+            device_band_groups_to_compact_preencoded_components(
+                &context,
+                resources,
+                pool,
+                &device_groups,
+                options,
+            )?;
+        payload = encoded_payload;
+        add_ht_encode_timings(&mut timings, ht_timings);
+        timings.ht_codeblock_dispatches = timings
+            .ht_codeblock_dispatches
+            .saturating_add(ht_dispatches);
+        for (group_index, components) in encoded_groups {
+            outputs[group_index] = Some(components);
+        }
+    }
+
+    let groups = outputs
+        .into_iter()
+        .map(|components| {
+            components.ok_or(CudaTranscodeError::Kernel(
+                "CUDA grouped 9/7 resident compact HT output group missing",
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((
+        PreencodedHtj2k97CompactBatchGroups { payload, groups },
+        timings,
+    ))
 }
 
 fn htj2k97_quantize_params(
@@ -496,101 +915,626 @@ fn htj2k97_quantize_params(
 }
 
 #[allow(clippy::similar_names, clippy::too_many_lines)]
-fn device_bands_to_preencoded_components(
+fn device_bands_to_preencoded_components<J: Htj2k97ComponentJob>(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
     bands: &CudaHtj2k97DeviceCodeblockBands,
-    jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
+    jobs: &[J],
     options: Htj2k97CodeBlockOptions,
-) -> Result<(Vec<PreencodedHtj2k97Component>, u128, usize), CudaTranscodeError> {
+) -> Result<
+    (
+        Vec<PreencodedHtj2k97Component>,
+        CudaHtj2kEncodeStageTimings,
+        usize,
+    ),
+    CudaTranscodeError,
+> {
     if bands.item_count != jobs.len() {
         return Err(CudaTranscodeError::Kernel(
             "CUDA resident 9/7 band item count mismatch",
         ));
     }
 
-    let (ll_subbands, mut ht_encode_us, mut dispatches) = encode_resident_subband(
-        context,
-        resources,
-        &bands.ll,
-        bands.item_count,
-        bands.low_width,
-        bands.low_height,
-        J2kSubBandType::LowLow,
-        options,
+    let (ll_subbands, hl_subbands, lh_subbands, hh_subbands, ht_timings, dispatches) =
+        encode_resident_subbands(context, resources, pool, bands, bands.item_count, options)?;
+
+    let components =
+        assemble_preencoded_components(jobs, ll_subbands, hl_subbands, lh_subbands, hh_subbands)?;
+
+    Ok((components, ht_timings, dispatches))
+}
+
+#[allow(clippy::similar_names, clippy::too_many_lines)]
+fn device_bands_to_compact_preencoded_batch<J: Htj2k97ComponentJob>(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
+    bands: &CudaHtj2k97DeviceCodeblockBands,
+    jobs: &[J],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<
+    (
+        PreencodedHtj2k97CompactBatch,
+        CudaHtj2kEncodeStageTimings,
+        usize,
+    ),
+    CudaTranscodeError,
+> {
+    if bands.item_count != jobs.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident 9/7 band item count mismatch",
+        ));
+    }
+
+    let (payload, ll_subbands, hl_subbands, lh_subbands, hh_subbands, ht_timings, dispatches) =
+        encode_resident_compact_subbands(
+            context,
+            resources,
+            pool,
+            bands,
+            bands.item_count,
+            options,
+        )?;
+
+    let components = assemble_compact_preencoded_components(
+        jobs,
+        ll_subbands,
+        hl_subbands,
+        lh_subbands,
+        hh_subbands,
     )?;
-    let (hl_subbands, hl_us, hl_dispatches) = encode_resident_subband(
-        context,
-        resources,
-        &bands.hl,
-        bands.item_count,
-        bands.high_width,
-        bands.low_height,
-        J2kSubBandType::HighLow,
-        options,
-    )?;
-    ht_encode_us = ht_encode_us.saturating_add(hl_us);
-    dispatches = dispatches.saturating_add(hl_dispatches);
-    let (lh_subbands, lh_us, lh_dispatches) = encode_resident_subband(
-        context,
-        resources,
-        &bands.lh,
-        bands.item_count,
-        bands.low_width,
-        bands.high_height,
-        J2kSubBandType::LowHigh,
-        options,
-    )?;
-    ht_encode_us = ht_encode_us.saturating_add(lh_us);
-    dispatches = dispatches.saturating_add(lh_dispatches);
-    let (hh_subbands, hh_us, hh_dispatches) = encode_resident_subband(
-        context,
-        resources,
-        &bands.hh,
-        bands.item_count,
-        bands.high_width,
-        bands.high_height,
-        J2kSubBandType::HighHigh,
-        options,
-    )?;
-    ht_encode_us = ht_encode_us.saturating_add(hh_us);
-    dispatches = dispatches.saturating_add(hh_dispatches);
+
+    Ok((
+        PreencodedHtj2k97CompactBatch {
+            payload,
+            components,
+        },
+        ht_timings,
+        dispatches,
+    ))
+}
+
+type ResidentSubbands = (
+    Vec<PreencodedHtj2k97Subband>,
+    Vec<PreencodedHtj2k97Subband>,
+    Vec<PreencodedHtj2k97Subband>,
+    Vec<PreencodedHtj2k97Subband>,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
+
+type CompactResidentSubbands = (
+    Vec<u8>,
+    Vec<PreencodedHtj2k97CompactSubband>,
+    Vec<PreencodedHtj2k97CompactSubband>,
+    Vec<PreencodedHtj2k97CompactSubband>,
+    Vec<PreencodedHtj2k97CompactSubband>,
+    CudaHtj2kEncodeStageTimings,
+    usize,
+);
+
+struct ResidentDeviceGroup<'a, J> {
+    group_index: usize,
+    bands: CudaHtj2k97DeviceCodeblockBands,
+    jobs: &'a [J],
+}
+
+struct ResidentSubbandEncodePlan<'a> {
+    coefficients: &'a signinum_cuda_runtime::CudaDeviceBuffer,
+    coefficient_count: usize,
+    jobs: Vec<CudaHtj2kEncodeCodeBlockJob>,
+    shapes: Vec<(u32, u32)>,
+    sub_band_type: J2kSubBandType,
+    num_cbs_x: usize,
+    num_cbs_y: usize,
+    total_bitplanes: u8,
+}
+
+struct ResidentSubbandGroupPlans<'a, J> {
+    group_index: usize,
+    jobs: &'a [J],
+    ll: ResidentSubbandEncodePlan<'a>,
+    hl: ResidentSubbandEncodePlan<'a>,
+    lh: ResidentSubbandEncodePlan<'a>,
+    hh: ResidentSubbandEncodePlan<'a>,
+}
+
+impl<'a, J> ResidentSubbandGroupPlans<'a, J> {
+    fn plans(&self) -> [&ResidentSubbandEncodePlan<'a>; 4] {
+        [&self.ll, &self.hl, &self.lh, &self.hh]
+    }
+}
+
+trait Htj2k97ComponentJob {
+    fn x_rsiz(&self) -> u8;
+    fn y_rsiz(&self) -> u8;
+}
+
+impl Htj2k97ComponentJob for DctGridToHtj2k97CodeBlockJob<'_> {
+    fn x_rsiz(&self) -> u8 {
+        self.x_rsiz
+    }
+
+    fn y_rsiz(&self) -> u8 {
+        self.y_rsiz
+    }
+}
+
+impl Htj2k97ComponentJob for DctGridI16ToHtj2k97CodeBlockJob<'_> {
+    fn x_rsiz(&self) -> u8 {
+        self.x_rsiz
+    }
+
+    fn y_rsiz(&self) -> u8 {
+        self.y_rsiz
+    }
+}
+
+#[allow(clippy::similar_names)]
+fn assemble_preencoded_components<J: Htj2k97ComponentJob>(
+    jobs: &[J],
+    ll_subbands: Vec<PreencodedHtj2k97Subband>,
+    hl_subbands: Vec<PreencodedHtj2k97Subband>,
+    lh_subbands: Vec<PreencodedHtj2k97Subband>,
+    hh_subbands: Vec<PreencodedHtj2k97Subband>,
+) -> Result<Vec<PreencodedHtj2k97Component>, CudaTranscodeError> {
+    if ll_subbands.len() != jobs.len()
+        || hl_subbands.len() != jobs.len()
+        || lh_subbands.len() != jobs.len()
+        || hh_subbands.len() != jobs.len()
+    {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K component assembly count mismatch",
+        ));
+    }
 
     let components = jobs
         .iter()
-        .enumerate()
-        .map(|(idx, job)| PreencodedHtj2k97Component {
-            x_rsiz: job.x_rsiz,
-            y_rsiz: job.y_rsiz,
+        .zip(ll_subbands)
+        .zip(hl_subbands)
+        .zip(lh_subbands)
+        .zip(hh_subbands)
+        .map(|((((job, ll), hl), lh), hh)| PreencodedHtj2k97Component {
+            x_rsiz: job.x_rsiz(),
+            y_rsiz: job.y_rsiz(),
             resolutions: vec![
+                PreencodedHtj2k97Resolution { subbands: vec![ll] },
                 PreencodedHtj2k97Resolution {
-                    subbands: vec![ll_subbands[idx].clone()],
-                },
-                PreencodedHtj2k97Resolution {
-                    subbands: vec![
-                        hl_subbands[idx].clone(),
-                        lh_subbands[idx].clone(),
-                        hh_subbands[idx].clone(),
-                    ],
+                    subbands: vec![hl, lh, hh],
                 },
             ],
         })
         .collect();
 
-    Ok((components, ht_encode_us, dispatches))
+    Ok(components)
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn encode_resident_subband(
+#[allow(clippy::similar_names)]
+fn assemble_compact_preencoded_components<J: Htj2k97ComponentJob>(
+    jobs: &[J],
+    ll_subbands: Vec<PreencodedHtj2k97CompactSubband>,
+    hl_subbands: Vec<PreencodedHtj2k97CompactSubband>,
+    lh_subbands: Vec<PreencodedHtj2k97CompactSubband>,
+    hh_subbands: Vec<PreencodedHtj2k97CompactSubband>,
+) -> Result<Vec<PreencodedHtj2k97CompactComponent>, CudaTranscodeError> {
+    if ll_subbands.len() != jobs.len()
+        || hl_subbands.len() != jobs.len()
+        || lh_subbands.len() != jobs.len()
+        || hh_subbands.len() != jobs.len()
+    {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K compact component assembly count mismatch",
+        ));
+    }
+
+    let components = jobs
+        .iter()
+        .zip(ll_subbands)
+        .zip(hl_subbands)
+        .zip(lh_subbands)
+        .zip(hh_subbands)
+        .map(
+            |((((job, ll), hl), lh), hh)| PreencodedHtj2k97CompactComponent {
+                x_rsiz: job.x_rsiz(),
+                y_rsiz: job.y_rsiz(),
+                resolutions: vec![
+                    PreencodedHtj2k97CompactResolution { subbands: vec![ll] },
+                    PreencodedHtj2k97CompactResolution {
+                        subbands: vec![hl, lh, hh],
+                    },
+                ],
+            },
+        )
+        .collect();
+
+    Ok(components)
+}
+
+fn encode_resident_subbands(
     context: &CudaContext,
     resources: &CudaHtj2kEncodeResources,
-    coefficients: &signinum_cuda_runtime::CudaDeviceBuffer,
+    pool: &CudaBufferPool,
+    bands: &CudaHtj2k97DeviceCodeblockBands,
+    item_count: usize,
+    options: Htj2k97CodeBlockOptions,
+) -> Result<ResidentSubbands, CudaTranscodeError> {
+    let plans = [
+        resident_subband_encode_plan(
+            &bands.ll,
+            item_count,
+            bands.low_width,
+            bands.low_height,
+            J2kSubBandType::LowLow,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hl,
+            item_count,
+            bands.high_width,
+            bands.low_height,
+            J2kSubBandType::HighLow,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.lh,
+            item_count,
+            bands.low_width,
+            bands.high_height,
+            J2kSubBandType::LowHigh,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hh,
+            item_count,
+            bands.high_width,
+            bands.high_height,
+            J2kSubBandType::HighHigh,
+            options,
+        )?,
+    ];
+    let targets: Vec<_> = plans
+        .iter()
+        .filter(|plan| !plan.jobs.is_empty())
+        .map(|plan| CudaHtj2kEncodeResidentTarget {
+            coefficients: plan.coefficients,
+            coefficient_count: plan.coefficient_count,
+            jobs: &plan.jobs,
+        })
+        .collect();
+    let encoded = context
+        .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(&targets, resources, pool)
+        .map_err(|_| CudaTranscodeError::Kernel("CUDA resident multi-input HTJ2K encode failed"))?;
+    let expected_blocks = plans.iter().map(|plan| plan.jobs.len()).sum::<usize>();
+    if encoded.code_blocks().len() != expected_blocks {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident multi-input HTJ2K encode returned wrong block count",
+        ));
+    }
+    let ht_timings = encoded.stage_timings();
+    let dispatches = encoded.execution().kernel_dispatches();
+    let mut encoded_blocks = encoded.into_code_blocks().into_iter();
+
+    let ll = split_resident_subband_blocks(&plans[0], item_count, &mut encoded_blocks)?;
+    let hl = split_resident_subband_blocks(&plans[1], item_count, &mut encoded_blocks)?;
+    let lh = split_resident_subband_blocks(&plans[2], item_count, &mut encoded_blocks)?;
+    let hh = split_resident_subband_blocks(&plans[3], item_count, &mut encoded_blocks)?;
+    if encoded_blocks.next().is_some() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident multi-input HTJ2K output count mismatch",
+        ));
+    }
+
+    Ok((ll, hl, lh, hh, ht_timings, dispatches))
+}
+
+fn encode_resident_compact_subbands(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
+    bands: &CudaHtj2k97DeviceCodeblockBands,
+    item_count: usize,
+    options: Htj2k97CodeBlockOptions,
+) -> Result<CompactResidentSubbands, CudaTranscodeError> {
+    let plans = [
+        resident_subband_encode_plan(
+            &bands.ll,
+            item_count,
+            bands.low_width,
+            bands.low_height,
+            J2kSubBandType::LowLow,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hl,
+            item_count,
+            bands.high_width,
+            bands.low_height,
+            J2kSubBandType::HighLow,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.lh,
+            item_count,
+            bands.low_width,
+            bands.high_height,
+            J2kSubBandType::LowHigh,
+            options,
+        )?,
+        resident_subband_encode_plan(
+            &bands.hh,
+            item_count,
+            bands.high_width,
+            bands.high_height,
+            J2kSubBandType::HighHigh,
+            options,
+        )?,
+    ];
+    let targets: Vec<_> = plans
+        .iter()
+        .filter(|plan| !plan.jobs.is_empty())
+        .map(|plan| CudaHtj2kEncodeResidentTarget {
+            coefficients: plan.coefficients,
+            coefficient_count: plan.coefficient_count,
+            jobs: &plan.jobs,
+        })
+        .collect();
+    let encoded = context
+        .encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(
+            &targets, resources, pool,
+        )
+        .map_err(|_| {
+            CudaTranscodeError::Kernel("CUDA resident compact multi-input HTJ2K encode failed")
+        })?;
+    let expected_blocks = plans.iter().map(|plan| plan.jobs.len()).sum::<usize>();
+    if encoded.code_blocks().len() != expected_blocks {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident compact multi-input HTJ2K encode returned wrong block count",
+        ));
+    }
+    let ht_timings = encoded.stage_timings();
+    let dispatches = encoded.execution().kernel_dispatches();
+    let (payload, encoded_blocks) = encoded.into_payload_and_code_blocks();
+    let mut encoded_blocks = encoded_blocks.into_iter();
+
+    let ll = split_resident_compact_subband_blocks(&plans[0], item_count, &mut encoded_blocks)?;
+    let hl = split_resident_compact_subband_blocks(&plans[1], item_count, &mut encoded_blocks)?;
+    let lh = split_resident_compact_subband_blocks(&plans[2], item_count, &mut encoded_blocks)?;
+    let hh = split_resident_compact_subband_blocks(&plans[3], item_count, &mut encoded_blocks)?;
+    if encoded_blocks.next().is_some() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident compact multi-input HTJ2K output count mismatch",
+        ));
+    }
+
+    Ok((payload, ll, hl, lh, hh, ht_timings, dispatches))
+}
+
+#[allow(clippy::similar_names)]
+fn device_band_groups_to_preencoded_components<J: Htj2k97ComponentJob>(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
+    groups: &[ResidentDeviceGroup<'_, J>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<ResidentPreencodedGroups, CudaTranscodeError> {
+    let group_plans = groups
+        .iter()
+        .map(|group| {
+            if group.bands.item_count != group.jobs.len() {
+                return Err(CudaTranscodeError::Kernel(
+                    "CUDA grouped resident 9/7 band item count mismatch",
+                ));
+            }
+            Ok(ResidentSubbandGroupPlans {
+                group_index: group.group_index,
+                jobs: group.jobs,
+                ll: resident_subband_encode_plan(
+                    &group.bands.ll,
+                    group.bands.item_count,
+                    group.bands.low_width,
+                    group.bands.low_height,
+                    J2kSubBandType::LowLow,
+                    options,
+                )?,
+                hl: resident_subband_encode_plan(
+                    &group.bands.hl,
+                    group.bands.item_count,
+                    group.bands.high_width,
+                    group.bands.low_height,
+                    J2kSubBandType::HighLow,
+                    options,
+                )?,
+                lh: resident_subband_encode_plan(
+                    &group.bands.lh,
+                    group.bands.item_count,
+                    group.bands.low_width,
+                    group.bands.high_height,
+                    J2kSubBandType::LowHigh,
+                    options,
+                )?,
+                hh: resident_subband_encode_plan(
+                    &group.bands.hh,
+                    group.bands.item_count,
+                    group.bands.high_width,
+                    group.bands.high_height,
+                    J2kSubBandType::HighHigh,
+                    options,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, CudaTranscodeError>>()?;
+
+    let targets = group_plans
+        .iter()
+        .flat_map(ResidentSubbandGroupPlans::plans)
+        .filter(|plan| !plan.jobs.is_empty())
+        .map(|plan| CudaHtj2kEncodeResidentTarget {
+            coefficients: plan.coefficients,
+            coefficient_count: plan.coefficient_count,
+            jobs: &plan.jobs,
+        })
+        .collect::<Vec<_>>();
+    let encoded = context
+        .encode_htj2k_codeblocks_multi_resident_with_resources_and_pool(&targets, resources, pool)
+        .map_err(|_| {
+            CudaTranscodeError::Kernel("CUDA grouped resident multi-input HTJ2K encode failed")
+        })?;
+    let expected_blocks = group_plans
+        .iter()
+        .flat_map(ResidentSubbandGroupPlans::plans)
+        .map(|plan| plan.jobs.len())
+        .sum::<usize>();
+    if encoded.code_blocks().len() != expected_blocks {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA grouped resident multi-input HTJ2K encode returned wrong block count",
+        ));
+    }
+    let ht_timings = encoded.stage_timings();
+    let dispatches = encoded.execution().kernel_dispatches();
+    let mut encoded_blocks = encoded.into_code_blocks().into_iter();
+    let mut outputs = Vec::with_capacity(group_plans.len());
+
+    for group in &group_plans {
+        let item_count = group.jobs.len();
+        let ll = split_resident_subband_blocks(&group.ll, item_count, &mut encoded_blocks)?;
+        let hl = split_resident_subband_blocks(&group.hl, item_count, &mut encoded_blocks)?;
+        let lh = split_resident_subband_blocks(&group.lh, item_count, &mut encoded_blocks)?;
+        let hh = split_resident_subband_blocks(&group.hh, item_count, &mut encoded_blocks)?;
+        let components = assemble_preencoded_components(group.jobs, ll, hl, lh, hh)?;
+        outputs.push((group.group_index, components));
+    }
+    if encoded_blocks.next().is_some() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA grouped resident multi-input HTJ2K output count mismatch",
+        ));
+    }
+
+    Ok((outputs, ht_timings, dispatches))
+}
+
+#[allow(clippy::similar_names)]
+fn device_band_groups_to_compact_preencoded_components<J: Htj2k97ComponentJob>(
+    context: &CudaContext,
+    resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
+    groups: &[ResidentDeviceGroup<'_, J>],
+    options: Htj2k97CodeBlockOptions,
+) -> Result<ResidentCompactPreencodedGroups, CudaTranscodeError> {
+    let group_plans = groups
+        .iter()
+        .map(|group| {
+            if group.bands.item_count != group.jobs.len() {
+                return Err(CudaTranscodeError::Kernel(
+                    "CUDA grouped resident 9/7 band item count mismatch",
+                ));
+            }
+            Ok(ResidentSubbandGroupPlans {
+                group_index: group.group_index,
+                jobs: group.jobs,
+                ll: resident_subband_encode_plan(
+                    &group.bands.ll,
+                    group.bands.item_count,
+                    group.bands.low_width,
+                    group.bands.low_height,
+                    J2kSubBandType::LowLow,
+                    options,
+                )?,
+                hl: resident_subband_encode_plan(
+                    &group.bands.hl,
+                    group.bands.item_count,
+                    group.bands.high_width,
+                    group.bands.low_height,
+                    J2kSubBandType::HighLow,
+                    options,
+                )?,
+                lh: resident_subband_encode_plan(
+                    &group.bands.lh,
+                    group.bands.item_count,
+                    group.bands.low_width,
+                    group.bands.high_height,
+                    J2kSubBandType::LowHigh,
+                    options,
+                )?,
+                hh: resident_subband_encode_plan(
+                    &group.bands.hh,
+                    group.bands.item_count,
+                    group.bands.high_width,
+                    group.bands.high_height,
+                    J2kSubBandType::HighHigh,
+                    options,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, CudaTranscodeError>>()?;
+
+    let targets = group_plans
+        .iter()
+        .flat_map(ResidentSubbandGroupPlans::plans)
+        .filter(|plan| !plan.jobs.is_empty())
+        .map(|plan| CudaHtj2kEncodeResidentTarget {
+            coefficients: plan.coefficients,
+            coefficient_count: plan.coefficient_count,
+            jobs: &plan.jobs,
+        })
+        .collect::<Vec<_>>();
+    let encoded = context
+        .encode_htj2k_codeblocks_multi_resident_compact_with_resources_and_pool(
+            &targets, resources, pool,
+        )
+        .map_err(|_| {
+            CudaTranscodeError::Kernel(
+                "CUDA grouped resident compact multi-input HTJ2K encode failed",
+            )
+        })?;
+    let expected_blocks = group_plans
+        .iter()
+        .flat_map(ResidentSubbandGroupPlans::plans)
+        .map(|plan| plan.jobs.len())
+        .sum::<usize>();
+    if encoded.code_blocks().len() != expected_blocks {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA grouped resident compact multi-input HTJ2K encode returned wrong block count",
+        ));
+    }
+    let ht_timings = encoded.stage_timings();
+    let dispatches = encoded.execution().kernel_dispatches();
+    let (payload, encoded_blocks) = encoded.into_payload_and_code_blocks();
+    let mut encoded_blocks = encoded_blocks.into_iter();
+    let mut outputs = Vec::with_capacity(group_plans.len());
+
+    for group in &group_plans {
+        let item_count = group.jobs.len();
+        let ll = split_resident_compact_subband_blocks(&group.ll, item_count, &mut encoded_blocks)?;
+        let hl = split_resident_compact_subband_blocks(&group.hl, item_count, &mut encoded_blocks)?;
+        let lh = split_resident_compact_subband_blocks(&group.lh, item_count, &mut encoded_blocks)?;
+        let hh = split_resident_compact_subband_blocks(&group.hh, item_count, &mut encoded_blocks)?;
+        let components = assemble_compact_preencoded_components(group.jobs, ll, hl, lh, hh)?;
+        outputs.push((group.group_index, components));
+    }
+    if encoded_blocks.next().is_some() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA grouped resident compact multi-input HTJ2K output count mismatch",
+        ));
+    }
+
+    Ok((payload, outputs, ht_timings, dispatches))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resident_subband_encode_plan(
+    coefficients: &CudaPooledDeviceBuffer,
     item_count: usize,
     width: usize,
     height: usize,
     sub_band_type: J2kSubBandType,
     options: Htj2k97CodeBlockOptions,
-) -> Result<(Vec<PreencodedHtj2k97Subband>, u128, usize), CudaTranscodeError> {
+) -> Result<ResidentSubbandEncodePlan<'_>, CudaTranscodeError> {
+    let coefficient_buffer = coefficients
+        .as_device_buffer()
+        .ok_or(CudaTranscodeError::Kernel(
+            "CUDA resident 9/7 pooled band checkout missing",
+        ))?;
     let cb_width = htj2k97_code_block_dim(options.code_block_width_exp)?;
     let cb_height = htj2k97_code_block_dim(options.code_block_height_exp)?;
     let num_cbs_x = if width == 0 {
@@ -603,23 +1547,20 @@ fn encode_resident_subband(
     } else {
         height.div_ceil(cb_height)
     };
+    let total_bitplanes = htj2k97_subband_total_bitplanes(options, sub_band_type);
     if width == 0 || height == 0 {
-        return Ok((
-            (0..item_count)
-                .map(|_| PreencodedHtj2k97Subband {
-                    sub_band_type,
-                    num_cbs_x: 0,
-                    num_cbs_y: 0,
-                    total_bitplanes: 0,
-                    code_blocks: Vec::new(),
-                })
-                .collect(),
-            0,
-            0,
-        ));
+        return Ok(ResidentSubbandEncodePlan {
+            coefficients: coefficient_buffer,
+            coefficient_count: 0,
+            jobs: Vec::new(),
+            shapes: Vec::new(),
+            sub_band_type,
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+            total_bitplanes,
+        });
     }
 
-    let total_bitplanes = htj2k97_subband_total_bitplanes(options, sub_band_type);
     let item_stride = width.checked_mul(height).ok_or(CudaTranscodeError::Kernel(
         "CUDA resident 9/7 band dimensions overflow",
     ))?;
@@ -663,68 +1604,133 @@ fn encode_resident_subband(
         }
     }
 
-    let encoded = context
-        .encode_htj2k_codeblocks_resident_with_resources(
-            coefficients,
-            coefficient_count,
-            &encode_jobs,
-            resources,
-        )
-        .map_err(|_| CudaTranscodeError::Kernel("CUDA resident HTJ2K encode failed"))?;
-    if encoded.code_blocks().len() != encode_jobs.len() {
-        return Err(CudaTranscodeError::Kernel(
-            "CUDA resident HTJ2K encode returned wrong block count",
-        ));
-    }
+    Ok(ResidentSubbandEncodePlan {
+        coefficients: coefficient_buffer,
+        coefficient_count,
+        jobs: encode_jobs,
+        shapes,
+        sub_band_type,
+        num_cbs_x,
+        num_cbs_y,
+        total_bitplanes,
+    })
+}
 
-    let blocks_per_item = num_cbs_x
-        .checked_mul(num_cbs_y)
-        .ok_or(CudaTranscodeError::Kernel(
-            "CUDA resident HTJ2K code-block count overflow",
-        ))?;
-    let mut encoded_iter = encoded.code_blocks().iter();
-    let mut shape_iter = shapes.into_iter();
+fn split_resident_subband_blocks(
+    plan: &ResidentSubbandEncodePlan<'_>,
+    item_count: usize,
+    encoded_blocks: &mut impl Iterator<Item = CudaHtj2kEncodedCodeBlock>,
+) -> Result<Vec<PreencodedHtj2k97Subband>, CudaTranscodeError> {
+    let blocks_per_item =
+        plan.num_cbs_x
+            .checked_mul(plan.num_cbs_y)
+            .ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident HTJ2K code-block count overflow",
+            ))?;
+    let mut shape_index = 0usize;
     let mut subbands = Vec::with_capacity(item_count);
     for _ in 0..item_count {
         let mut code_blocks = Vec::with_capacity(blocks_per_item);
         for _ in 0..blocks_per_item {
-            let (width, height) = shape_iter.next().ok_or(CudaTranscodeError::Kernel(
-                "CUDA resident HTJ2K shape count mismatch",
-            ))?;
-            let encoded = encoded_iter.next().ok_or(CudaTranscodeError::Kernel(
+            let (width, height) =
+                *plan
+                    .shapes
+                    .get(shape_index)
+                    .ok_or(CudaTranscodeError::Kernel(
+                        "CUDA resident HTJ2K shape count mismatch",
+                    ))?;
+            shape_index = shape_index.saturating_add(1);
+            let encoded = encoded_blocks.next().ok_or(CudaTranscodeError::Kernel(
                 "CUDA resident HTJ2K output count mismatch",
             ))?;
+            let (data, cleanup_length, refinement_length, num_coding_passes, num_zero_bitplanes) =
+                encoded.into_parts();
             code_blocks.push(PreencodedHtj2k97CodeBlock {
                 width,
                 height,
                 encoded: EncodedHtJ2kCodeBlock {
-                    data: encoded.data().to_vec(),
-                    cleanup_length: encoded.cleanup_length(),
-                    refinement_length: encoded.refinement_length(),
-                    num_coding_passes: encoded.num_coding_passes(),
-                    num_zero_bitplanes: encoded.num_zero_bitplanes(),
+                    data,
+                    cleanup_length,
+                    refinement_length,
+                    num_coding_passes,
+                    num_zero_bitplanes,
                 },
             });
         }
         subbands.push(PreencodedHtj2k97Subband {
-            sub_band_type,
-            num_cbs_x: to_u32(num_cbs_x)?,
-            num_cbs_y: to_u32(num_cbs_y)?,
-            total_bitplanes,
+            sub_band_type: plan.sub_band_type,
+            num_cbs_x: to_u32(plan.num_cbs_x)?,
+            num_cbs_y: to_u32(plan.num_cbs_y)?,
+            total_bitplanes: plan.total_bitplanes,
             code_blocks,
         });
     }
-    if encoded_iter.next().is_some() || shape_iter.next().is_some() {
+    if shape_index != plan.shapes.len() {
         return Err(CudaTranscodeError::Kernel(
-            "CUDA resident HTJ2K output count mismatch",
+            "CUDA resident HTJ2K shape count mismatch",
         ));
     }
+    Ok(subbands)
+}
 
-    Ok((
-        subbands,
-        encoded.stage_timings().ht_encode_us,
-        encoded.execution().kernel_dispatches(),
-    ))
+fn split_resident_compact_subband_blocks(
+    plan: &ResidentSubbandEncodePlan<'_>,
+    item_count: usize,
+    encoded_blocks: &mut impl Iterator<Item = CudaHtj2kCompactEncodedCodeBlock>,
+) -> Result<Vec<PreencodedHtj2k97CompactSubband>, CudaTranscodeError> {
+    let blocks_per_item =
+        plan.num_cbs_x
+            .checked_mul(plan.num_cbs_y)
+            .ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident HTJ2K compact code-block count overflow",
+            ))?;
+    let mut shape_index = 0usize;
+    let mut subbands = Vec::with_capacity(item_count);
+    for _ in 0..item_count {
+        let mut code_blocks = Vec::with_capacity(blocks_per_item);
+        for _ in 0..blocks_per_item {
+            let (width, height) =
+                *plan
+                    .shapes
+                    .get(shape_index)
+                    .ok_or(CudaTranscodeError::Kernel(
+                        "CUDA resident HTJ2K compact shape count mismatch",
+                    ))?;
+            shape_index = shape_index.saturating_add(1);
+            let encoded = encoded_blocks.next().ok_or(CudaTranscodeError::Kernel(
+                "CUDA resident HTJ2K compact output count mismatch",
+            ))?;
+            let (
+                payload_range,
+                cleanup_length,
+                refinement_length,
+                num_coding_passes,
+                num_zero_bitplanes,
+            ) = encoded.into_parts();
+            code_blocks.push(PreencodedHtj2k97CompactCodeBlock {
+                width,
+                height,
+                payload_range,
+                cleanup_length,
+                refinement_length,
+                num_coding_passes,
+                num_zero_bitplanes,
+            });
+        }
+        subbands.push(PreencodedHtj2k97CompactSubband {
+            sub_band_type: plan.sub_band_type,
+            num_cbs_x: to_u32(plan.num_cbs_x)?,
+            num_cbs_y: to_u32(plan.num_cbs_y)?,
+            total_bitplanes: plan.total_bitplanes,
+            code_blocks,
+        });
+    }
+    if shape_index != plan.shapes.len() {
+        return Err(CudaTranscodeError::Kernel(
+            "CUDA resident HTJ2K compact shape count mismatch",
+        ));
+    }
+    Ok(subbands)
 }
 
 fn to_u32(value: usize) -> Result<u32, CudaTranscodeError> {
@@ -861,4 +1867,107 @@ fn htj2k97_code_block_dim(exp_minus_two: u8) -> Result<usize, CudaTranscodeError
         .ok_or(CudaTranscodeError::UnsupportedJob(
             "CUDA 9/7 code-block exponent is too large",
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestComponentJob {
+        x_rsiz: u8,
+        y_rsiz: u8,
+    }
+
+    impl Htj2k97ComponentJob for TestComponentJob {
+        fn x_rsiz(&self) -> u8 {
+            self.x_rsiz
+        }
+
+        fn y_rsiz(&self) -> u8 {
+            self.y_rsiz
+        }
+    }
+
+    fn test_subband(sub_band_type: J2kSubBandType, marker: u8) -> PreencodedHtj2k97Subband {
+        PreencodedHtj2k97Subband {
+            sub_band_type,
+            num_cbs_x: 1,
+            num_cbs_y: 1,
+            total_bitplanes: 8,
+            code_blocks: vec![PreencodedHtj2k97CodeBlock {
+                width: 1,
+                height: 1,
+                encoded: EncodedHtJ2kCodeBlock {
+                    data: vec![marker; 8],
+                    cleanup_length: 8,
+                    refinement_length: 0,
+                    num_coding_passes: 1,
+                    num_zero_bitplanes: 0,
+                },
+            }],
+        }
+    }
+
+    fn payload_ptr(subband: &PreencodedHtj2k97Subband) -> usize {
+        subband.code_blocks[0].encoded.data.as_ptr() as usize
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn assemble_preencoded_components_moves_subband_payloads_without_clone() {
+        let jobs = [TestComponentJob {
+            x_rsiz: 1,
+            y_rsiz: 2,
+        }];
+        let ll = vec![test_subband(J2kSubBandType::LowLow, 1)];
+        let hl = vec![test_subband(J2kSubBandType::HighLow, 2)];
+        let lh = vec![test_subband(J2kSubBandType::LowHigh, 3)];
+        let hh = vec![test_subband(J2kSubBandType::HighHigh, 4)];
+        let ll_ptr = payload_ptr(&ll[0]);
+        let hl_ptr = payload_ptr(&hl[0]);
+        let lh_ptr = payload_ptr(&lh[0]);
+        let hh_ptr = payload_ptr(&hh[0]);
+
+        let components = assemble_preencoded_components(&jobs, ll, hl, lh, hh).expect("components");
+
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].x_rsiz, 1);
+        assert_eq!(components[0].y_rsiz, 2);
+        assert_eq!(
+            payload_ptr(&components[0].resolutions[0].subbands[0]),
+            ll_ptr
+        );
+        assert_eq!(
+            payload_ptr(&components[0].resolutions[1].subbands[0]),
+            hl_ptr
+        );
+        assert_eq!(
+            payload_ptr(&components[0].resolutions[1].subbands[1]),
+            lh_ptr
+        );
+        assert_eq!(
+            payload_ptr(&components[0].resolutions[1].subbands[2]),
+            hh_ptr
+        );
+    }
+
+    #[test]
+    fn append_i16_blocks_preserves_prefix_and_flattens_blocks() {
+        let mut first = [0i16; 64];
+        first[0] = -7;
+        first[63] = 42;
+        let mut second = [0i16; 64];
+        second[1] = 9;
+        second[62] = -11;
+        let mut out = vec![123];
+
+        append_i16_blocks(&[first, second], &mut out);
+
+        assert_eq!(out[0], 123);
+        assert_eq!(out.len(), 1 + 128);
+        assert_eq!(out[1], -7);
+        assert_eq!(out[64], 42);
+        assert_eq!(out[66], 9);
+        assert_eq!(out[127], -11);
+    }
 }
