@@ -341,6 +341,24 @@ __device__ inline uint coefficient_to_float_bits(uint value, uint k_max, float s
     return __float_as_uint(coefficient_to_float(value, k_max, scale));
 }
 
+template <bool DEQUANTIZE>
+__device__ inline uint decoded_cleanup_sample_bits(uint value, const J2kHtCleanupParams &params) {
+    if (DEQUANTIZE) {
+        return coefficient_to_float_bits(value, params.num_bitplanes, params.dequantization_step);
+    }
+    return value;
+}
+
+template <bool DEQUANTIZE>
+__device__ inline void store_decoded_cleanup_sample(
+    uint *decoded_data,
+    uint index,
+    uint value,
+    const J2kHtCleanupParams &params
+) {
+    decoded_data[index] = decoded_cleanup_sample_bits<DEQUANTIZE>(value, params);
+}
+
 __device__ inline void decode_mag_sgn_sample_with_vn(
     ForwardBitReader &magsgn,
     uint inf,
@@ -368,7 +386,7 @@ __device__ inline void decode_mag_sgn_sample_with_vn(
     value |= (v_n + 2u) << (p - 1u);
 }
 
-template <bool CLEANUP_ONLY>
+template <bool CLEANUP_ONLY, bool DEQUANTIZE = false>
 __device__ inline void decode_ht_cleanup_impl(
     const uchar *coded_data,
     uint *decoded_data,
@@ -387,6 +405,11 @@ __device__ inline void decode_ht_cleanup_impl(
     }
     if (CLEANUP_ONLY && params.refinement_length != 0u) {
         set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 17u);
+        return;
+    }
+    if (DEQUANTIZE && (!CLEANUP_ONLY || params.number_of_coding_passes > 1u ||
+        params.refinement_length != 0u)) {
+        set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 18u);
         return;
     }
 
@@ -609,13 +632,18 @@ __device__ inline void decode_ht_cleanup_impl(
             uint value0 = 0u;
             uint ignored_vn = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 0u, uq, p, value0, ignored_vn);
-            decoded_data[dp] = value0;
+            store_decoded_cleanup_sample<DEQUANTIZE>(decoded_data, dp, value0, params);
 
             uint value1 = 0u;
             uint v_n1 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 1u, uq, p, value1, v_n1);
             if (second_row_present) {
-                decoded_data[dp + stride] = value1;
+                store_decoded_cleanup_sample<DEQUANTIZE>(
+                    decoded_data,
+                    dp + stride,
+                    value1,
+                    params
+                );
             }
             v_n_scratch[vp] = prev_v_n | v_n1;
             prev_v_n = 0u;
@@ -629,13 +657,18 @@ __device__ inline void decode_ht_cleanup_impl(
 
             uint value2 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 2u, uq, p, value2, ignored_vn);
-            decoded_data[dp] = value2;
+            store_decoded_cleanup_sample<DEQUANTIZE>(decoded_data, dp, value2, params);
 
             uint value3 = 0u;
             uint v_n3 = 0u;
             decode_mag_sgn_sample_with_vn(magsgn, inf, 3u, uq, p, value3, v_n3);
             if (second_row_present) {
-                decoded_data[dp + stride] = value3;
+                store_decoded_cleanup_sample<DEQUANTIZE>(
+                    decoded_data,
+                    dp + stride,
+                    value3,
+                    params
+                );
             }
             prev_v_n = v_n3;
             dp += 1u;
@@ -671,13 +704,23 @@ __device__ inline void decode_ht_cleanup_impl(
                 uint value0 = 0u;
                 uint ignored_vn = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 0u, uq, p, value0, ignored_vn);
-                decoded_data[local_dp] = value0;
+                store_decoded_cleanup_sample<DEQUANTIZE>(
+                    decoded_data,
+                    local_dp,
+                    value0,
+                    params
+                );
 
                 uint value1 = 0u;
                 uint v_n1 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 1u, uq, p, value1, v_n1);
                 if (local_second_row_present) {
-                    decoded_data[local_dp + stride] = value1;
+                    store_decoded_cleanup_sample<DEQUANTIZE>(
+                        decoded_data,
+                        local_dp + stride,
+                        value1,
+                        params
+                    );
                 }
                 v_n_scratch[local_vp] = local_prev_v_n | v_n1;
                 local_prev_v_n = 0u;
@@ -691,13 +734,23 @@ __device__ inline void decode_ht_cleanup_impl(
 
                 uint value2 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 2u, uq, p, value2, ignored_vn);
-                decoded_data[local_dp] = value2;
+                store_decoded_cleanup_sample<DEQUANTIZE>(
+                    decoded_data,
+                    local_dp,
+                    value2,
+                    params
+                );
 
                 uint value3 = 0u;
                 uint v_n3 = 0u;
                 decode_mag_sgn_sample_with_vn(magsgn, inf, 3u, uq, p, value3, v_n3);
                 if (local_second_row_present) {
-                    decoded_data[local_dp + stride] = value3;
+                    store_decoded_cleanup_sample<DEQUANTIZE>(
+                        decoded_data,
+                        local_dp + stride,
+                        value3,
+                        params
+                    );
                 }
                 local_prev_v_n = v_n3;
                 local_dp += 1u;
@@ -2630,6 +2683,49 @@ extern "C" __global__ void signinum_htj2k_decode_codeblocks_multi_cleanup_only(
     params.stripe_causal = job.stripe_causal;
 
     decode_ht_cleanup_impl<true>(
+        coded_data + job.coded_offset,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status + gid
+    );
+}
+
+extern "C" __global__ void signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize(
+    const uchar *coded_data,
+    const J2kHtCleanupMultiBatchJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const ushort *uvlc_table0,
+    const ushort *uvlc_table1,
+    J2kHtStatus *status,
+    uint job_count
+) {
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= job_count) {
+        return;
+    }
+    const J2kHtCleanupMultiBatchJob job = jobs[gid];
+    uint *decoded_data = reinterpret_cast<uint *>(static_cast<uintptr_t>(job.output_ptr));
+
+    J2kHtCleanupParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coded_len = job.coded_len;
+    params.cleanup_length = job.cleanup_length;
+    params.refinement_length = job.refinement_length;
+    params.missing_msbs = job.missing_msbs;
+    params.num_bitplanes = job.num_bitplanes;
+    params.number_of_coding_passes = job.number_of_coding_passes;
+    params.output_stride = job.output_stride;
+    params.output_offset = job.output_offset;
+    params.dequantization_step = job.dequantization_step;
+    params.stripe_causal = job.stripe_causal;
+
+    decode_ht_cleanup_impl<true, true>(
         coded_data + job.coded_offset,
         decoded_data,
         params,

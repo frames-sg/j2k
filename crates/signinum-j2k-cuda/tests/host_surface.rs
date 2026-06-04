@@ -285,7 +285,8 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_runtime_required() {
     assert_resident_cuda_surface(&surface);
     assert!(report.dispatch_count > 0);
     assert!(report.ht_cleanup_us > 0);
-    assert!(report.dequant_us > 0);
+    assert_eq!(report.dequant_us, 0);
+    assert_eq!(report.detail.dequant_dispatch_count, 0);
     assert!(report.idwt_us > 0);
     assert!(report.store_us > 0);
     assert_eq!(report.residency, SurfaceResidency::CudaResidentDecode);

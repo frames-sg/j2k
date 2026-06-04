@@ -336,9 +336,27 @@ fn tight_cuda_download_len(
     (stride == pitch_bytes && out_len >= byte_len).then_some(byte_len)
 }
 
+impl DeviceSurface for Surface {
+    fn backend_kind(&self) -> BackendKind {
+        self.backend
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    fn pixel_format(&self) -> PixelFormat {
+        self.fmt
+    }
+
+    fn byte_len(&self) -> usize {
+        self.pitch_bytes * self.dimensions.1 as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{tight_cuda_download_len, Storage, Surface, SurfaceResidency};
+    use super::{tight_cuda_download_len, CudaSurfaceStats, Storage, Surface, SurfaceResidency};
     use signinum_core::{BackendKind, PixelFormat};
 
     #[test]
@@ -355,7 +373,7 @@ mod tests {
                 dimensions: (2, 1),
                 fmt: PixelFormat::Gray8,
                 pitch_bytes: 2,
-                stats: Default::default(),
+                stats: CudaSurfaceStats::default(),
                 storage: Storage::Host(vec![1, 2]),
             },
             Surface {
@@ -364,7 +382,7 @@ mod tests {
                 dimensions: (1, 1),
                 fmt: PixelFormat::Rgb8,
                 pitch_bytes: 3,
-                stats: Default::default(),
+                stats: CudaSurfaceStats::default(),
                 storage: Storage::Host(vec![3, 4, 5]),
             },
         ];
@@ -372,23 +390,5 @@ mod tests {
         let tight = Surface::download_batch_tight(&surfaces).expect("batch download");
 
         assert_eq!(tight, vec![1, 2, 3, 4, 5]);
-    }
-}
-
-impl DeviceSurface for Surface {
-    fn backend_kind(&self) -> BackendKind {
-        self.backend
-    }
-
-    fn dimensions(&self) -> (u32, u32) {
-        self.dimensions
-    }
-
-    fn pixel_format(&self) -> PixelFormat {
-        self.fmt
-    }
-
-    fn byte_len(&self) -> usize {
-        self.pitch_bytes * self.dimensions.1 as usize
     }
 }
