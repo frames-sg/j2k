@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use core::convert::Infallible;
 #[cfg(all(test, feature = "cuda-runtime"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::Cell;
+use core::convert::Infallible;
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
@@ -61,16 +61,18 @@ const CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE: &str =
 const CUDA_IDWT_TRACE_ENV_VAR: &str = "SIGNINUM_CUDA_IDWT_TRACE";
 
 #[cfg(all(test, feature = "cuda-runtime"))]
-static CUDA_HTJ2K_BATCH_DECODE_CALLS: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static CUDA_HTJ2K_BATCH_DECODE_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn testing_reset_cuda_htj2k_batch_decode_calls() {
-    CUDA_HTJ2K_BATCH_DECODE_CALLS.store(0, Ordering::SeqCst);
+    CUDA_HTJ2K_BATCH_DECODE_CALLS.with(|calls| calls.set(0));
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn testing_cuda_htj2k_batch_decode_calls() -> usize {
-    CUDA_HTJ2K_BATCH_DECODE_CALLS.load(Ordering::SeqCst)
+    CUDA_HTJ2K_BATCH_DECODE_CALLS.with(Cell::get)
 }
 
 #[cfg(any(test, feature = "cuda-runtime"))]
@@ -1047,7 +1049,7 @@ fn decode_batch_to_cuda_resident_surface_with_profile_control(
     collect_stage_timings: bool,
 ) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
     #[cfg(all(test, feature = "cuda-runtime"))]
-    CUDA_HTJ2K_BATCH_DECODE_CALLS.fetch_add(1, Ordering::SeqCst);
+    CUDA_HTJ2K_BATCH_DECODE_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
 
     let collect_stage_timings = collect_stage_timings || profile::profile_stages_enabled();
     if inputs.is_empty() {
@@ -2455,6 +2457,21 @@ fn htj2k_batched_dequant_dispatches(target_count: usize) -> usize {
     usize::from(target_count > 0)
 }
 
+#[cfg(any(feature = "cuda-runtime", test))]
+fn htj2k_batched_cleanup_dequant_dispatches(
+    target_count: usize,
+    fused_cleanup_dequant: bool,
+) -> (usize, usize) {
+    if target_count == 0 {
+        return (0, 0);
+    }
+    if fused_cleanup_dequant {
+        (1, 0)
+    } else {
+        (1, 1)
+    }
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn decode_cuda_component_plan_with_resources(
     context: &signinum_cuda_runtime::CudaContext,
@@ -2586,6 +2603,58 @@ fn run_component_cleanup_dequant_batches(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    if !has_refinement {
+        let stage_start = profile::profile_now(collect_stage_timings);
+        let ((stats, runtime_timings), fused_us) = context
+            .time_default_stream_named_us_if(
+                collect_stage_timings,
+                "signinum.htj2k.decode.cleanup_dequantize.batch",
+                || {
+                    context
+                        .decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(
+                            decode_resources,
+                            &cleanup_targets,
+                            pool,
+                            collect_stage_timings,
+                        )
+                },
+            )
+            .map_err(cuda_error)?;
+        let stage_wall_us = profile::elapsed_us(stage_start);
+        let (cleanup_dispatches, dequant_dispatches) =
+            htj2k_batched_cleanup_dequant_dispatches(pending_count, true);
+        {
+            let accounting = &mut component_work[accounting_index];
+            accounting.timings.h2d = accounting
+                .timings
+                .h2d
+                .saturating_add(stage_wall_us.saturating_sub(fused_us));
+            accounting.timings.ht_cleanup = accounting.timings.ht_cleanup.saturating_add(fused_us);
+            accounting.timings.status_d2h = accounting
+                .timings
+                .status_d2h
+                .saturating_add(runtime_timings.status_d2h_us);
+            accounting.timings.ht_dispatch_count = accounting
+                .timings
+                .ht_dispatch_count
+                .saturating_add(cleanup_dispatches);
+            accounting.timings.dequant_dispatch_count = accounting
+                .timings
+                .dequant_dispatch_count
+                .saturating_add(dequant_dispatches);
+            accounting.dispatches = accounting
+                .dispatches
+                .saturating_add(stats.kernel_dispatches());
+            accounting.decode_dispatches = accounting
+                .decode_dispatches
+                .saturating_add(stats.decode_kernel_dispatches());
+        }
+
+        for work in component_work {
+            work.pending_dequant_bands.clear();
+        }
+        return Ok(());
+    }
     let mut queued_cleanup: Option<CudaQueuedHtj2kCleanup> = None;
     let stage_start = profile::profile_now(collect_stage_timings);
     let (stats, cleanup_us, status_d2h_us) = if collect_stage_timings {
@@ -3104,6 +3173,7 @@ fn pooled_cuda_buffer(buffer: &CudaPooledDeviceBuffer) -> Result<&CudaDeviceBuff
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[allow(clippy::needless_pass_by_value)]
 fn cuda_invalid_decode_plan(error: Error) -> CudaError {
     CudaError::InvalidArgument {
         message: error.to_string(),
@@ -3136,8 +3206,8 @@ fn cuda_idwt_job_from_step(step: &CudaHtj2kIdwtStep) -> CudaJ2kIdwtJob {
 mod tests {
     use super::{
         build_cuda_htj2k_color_plans_from_bytes_with_profile, can_batch_color_idwt,
-        cuda_code_block_job_from_plan_block, htj2k_batched_cleanup_dispatches,
-        htj2k_batched_dequant_dispatches, CudaDecodeStageTimings,
+        cuda_code_block_job_from_plan_block, htj2k_batched_cleanup_dequant_dispatches,
+        htj2k_batched_cleanup_dispatches, htj2k_batched_dequant_dispatches, CudaDecodeStageTimings,
     };
     use signinum_core::PixelFormat;
     use signinum_j2k_native::{
@@ -3181,6 +3251,11 @@ mod tests {
         assert_eq!(htj2k_batched_dequant_dispatches(0), 0);
         assert_eq!(htj2k_batched_dequant_dispatches(1), 1);
         assert_eq!(htj2k_batched_dequant_dispatches(3), 1);
+        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(0, true), (0, 0));
+        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(1, true), (1, 0));
+        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(3, true), (1, 0));
+        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(1, false), (1, 1));
+        assert_eq!(htj2k_batched_cleanup_dequant_dispatches(3, false), (1, 1));
     }
 
     #[test]
@@ -3238,7 +3313,7 @@ mod tests {
 
         assert_eq!(surfaces.len(), 2);
         assert_eq!(report.detail.ht_dispatch_count, 1);
-        assert_eq!(report.detail.dequant_dispatch_count, 1);
+        assert_eq!(report.detail.dequant_dispatch_count, 0);
         assert_eq!(report.detail.store_dispatch_count, 1);
         let batch_pixels_tight =
             crate::Surface::download_batch_tight(&surfaces).expect("download tight CUDA batch");

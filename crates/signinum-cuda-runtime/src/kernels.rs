@@ -15,6 +15,7 @@ pub(crate) enum CudaKernel {
     Htj2kDecodeCodeblocks,
     Htj2kDecodeCodeblocksMulti,
     Htj2kDecodeCodeblocksMultiCleanupOnly,
+    Htj2kDecodeCodeblocksMultiCleanupDequantize,
     J2kDequantizeHtj2kCodeblocks,
     J2kDequantizeHtj2kCodeblocksMulti,
     J2kDequantizeHtj2kCleanupJobsMulti,
@@ -88,6 +89,7 @@ impl CudaKernel {
             Self::Htj2kDecodeCodeblocks
             | Self::Htj2kDecodeCodeblocksMulti
             | Self::Htj2kDecodeCodeblocksMultiCleanupOnly
+            | Self::Htj2kDecodeCodeblocksMultiCleanupDequantize
             | Self::J2kDequantizeHtj2kCodeblocks
             | Self::J2kDequantizeHtj2kCodeblocksMulti
             | Self::J2kDequantizeHtj2kCleanupJobsMulti
@@ -155,6 +157,9 @@ impl CudaKernel {
             Self::Htj2kDecodeCodeblocksMulti => b"signinum_htj2k_decode_codeblocks_multi\0",
             Self::Htj2kDecodeCodeblocksMultiCleanupOnly => {
                 b"signinum_htj2k_decode_codeblocks_multi_cleanup_only\0"
+            }
+            Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
+                b"signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize\0"
             }
             Self::J2kDequantizeHtj2kCodeblocks => b"signinum_j2k_dequantize_htj2k_codeblocks\0",
             Self::J2kDequantizeHtj2kCodeblocksMulti => {
@@ -527,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn htj2k_decode_kernel_metadata_matches_generated_ptx() {
         assert_eq!(HTJ2K_DECODE_PTX.last(), Some(&0));
         assert_eq!(
@@ -540,6 +546,10 @@ mod tests {
         assert_eq!(
             CudaKernel::Htj2kDecodeCodeblocksMultiCleanupOnly.entrypoint(),
             b"signinum_htj2k_decode_codeblocks_multi_cleanup_only\0"
+        );
+        assert_eq!(
+            CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize.entrypoint(),
+            b"signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize\0"
         );
         assert_eq!(
             CudaKernel::J2kDequantizeHtj2kCodeblocks.entrypoint(),
@@ -635,6 +645,13 @@ mod tests {
         assert!(
             source.contains(".visible .entry signinum_htj2k_decode_codeblocks_multi_cleanup_only(")
         );
+        assert!(source.contains(
+            ".visible .entry signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize("
+        ));
+        let cuda_source = include_str!("htj2k_decode_kernels.cu");
+        assert!(cuda_source.contains(
+            "extern \"C\" __global__ void signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize("
+        ));
         assert!(source.contains(".visible .entry signinum_j2k_dequantize_htj2k_codeblocks("));
         assert!(source.contains(".visible .entry signinum_j2k_dequantize_htj2k_codeblocks_multi("));
         assert!(

@@ -2390,6 +2390,86 @@ impl CudaContext {
         ))
     }
 
+    /// Decode HTJ2K cleanup-only passes and dequantize their coefficients in
+    /// one CUDA dispatch. Targets containing refinement passes are rejected so
+    /// callers can fall back to cleanup followed by dequantization.
+    pub fn decode_htj2k_codeblocks_cleanup_dequantize_multi_with_resources_and_pool_timed(
+        &self,
+        resources: &CudaHtj2kDecodeResources,
+        targets: &[CudaHtj2kCleanupTarget<'_>],
+        pool: &CudaBufferPool,
+        collect_stage_timings: bool,
+    ) -> Result<(CudaExecutionStats, CudaHtj2kDecodeStageTimings), CudaError> {
+        self.inner.set_current()?;
+        let kernel_jobs = htj2k_cleanup_multi_kernel_jobs(targets, resources.payload_len)?;
+        if kernel_jobs.is_empty() {
+            return Ok((
+                CudaExecutionStats::default(),
+                CudaHtj2kDecodeStageTimings::default(),
+            ));
+        }
+        let Some((decode_kernel, decode_kernel_name)) =
+            htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&kernel_jobs)
+        else {
+            return Err(CudaError::InvalidArgument {
+                message: "fused HTJ2K cleanup/dequantize requires cleanup-only jobs".to_string(),
+            });
+        };
+
+        let jobs_buffer = pool.upload(htj2k_cleanup_multi_jobs_as_bytes(&kernel_jobs))?;
+        let status_buffer = pool.take(htj2k_statuses_byte_len(kernel_jobs.len())?)?;
+        if collect_stage_timings {
+            self.launch_htj2k_decode_codeblocks_multi(
+                decode_kernel,
+                resources.payload.buffer()?,
+                pooled_device_buffer(&jobs_buffer)?,
+                &resources.tables.inner.vlc_table0,
+                &resources.tables.inner.vlc_table1,
+                &resources.tables.inner.uvlc_table0,
+                &resources.tables.inner.uvlc_table1,
+                pooled_device_buffer(&status_buffer)?,
+                kernel_jobs.len(),
+            )?;
+        } else {
+            self.launch_htj2k_decode_codeblocks_multi_async(
+                decode_kernel,
+                resources.payload.buffer()?,
+                pooled_device_buffer(&jobs_buffer)?,
+                &resources.tables.inner.vlc_table0,
+                &resources.tables.inner.vlc_table1,
+                &resources.tables.inner.uvlc_table0,
+                &resources.tables.inner.uvlc_table1,
+                pooled_device_buffer(&status_buffer)?,
+                kernel_jobs.len(),
+            )?;
+        }
+
+        let mut statuses = vec![CudaHtj2kStatus::default(); kernel_jobs.len()];
+        let status_d2h_start = collect_stage_timings.then(Instant::now);
+        status_buffer.copy_to_host(htj2k_statuses_as_bytes_mut(&mut statuses))?;
+        let status_d2h_us = status_d2h_start.map_or(0, |start| start.elapsed().as_micros());
+        if let Some(status) = statuses.iter().copied().find(|status| !status.is_ok()) {
+            return Err(CudaError::KernelStatus {
+                kernel: decode_kernel_name,
+                code: status.code,
+                detail: status.detail,
+            });
+        }
+
+        Ok((
+            CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 1,
+                hardware_decode: false,
+            },
+            CudaHtj2kDecodeStageTimings {
+                status_d2h_us,
+                ..CudaHtj2kDecodeStageTimings::default()
+            },
+        ))
+    }
+
     fn decode_htj2k_codeblocks_with_resources_impl(
         &self,
         resources: &CudaHtj2kDecodeResources,
@@ -3753,6 +3833,7 @@ impl CudaContext {
     /// uploading all stage job metadata in one device buffer. The returned
     /// value must be kept live until the default stream has been synchronized
     /// by the caller.
+    #[allow(clippy::too_many_lines)]
     pub fn j2k_inverse_dwt_batch_sequence_enqueue_with_pool(
         &self,
         target_batches: &[&[CudaJ2kIdwtTarget<'_>]],
@@ -4431,64 +4512,17 @@ impl CudaContext {
         plane2: &CudaDeviceBuffer,
         job: CudaJ2kStoreRgb8MctJob,
     ) -> Result<CudaKernelOutput, CudaError> {
-        let store = job.store;
-        let channels = if store.rgba == 0 { 3 } else { 4 };
-        let output_bytes = checked_image_words(store.output_width, store.output_height, channels)?;
-        let output = self.allocate(output_bytes)?;
-        let pixels = checked_image_words(store.copy_width, store.copy_height, 1)?;
-        if output_bytes == 0 || pixels == 0 {
-            return Ok(CudaKernelOutput {
-                buffer: output,
-                execution: CudaExecutionStats::default(),
-            });
-        }
-        validate_store_rgb8_plane(
+        let batch = self.j2k_store_rgb8_mct_batch_device(&[CudaJ2kStoreRgb8MctTarget {
             plane0,
-            store.input_width0,
-            store.source_x0,
-            store.source_y0,
-            store.copy_width,
-            store.copy_height,
-        )?;
-        validate_store_rgb8_plane(
             plane1,
-            store.input_width1,
-            store.source_x1,
-            store.source_y1,
-            store.copy_width,
-            store.copy_height,
-        )?;
-        validate_store_rgb8_plane(
             plane2,
-            store.input_width2,
-            store.source_x2,
-            store.source_y2,
-            store.copy_width,
-            store.copy_height,
-        )?;
-        let dst_end = (store.output_y as usize)
-            .checked_add(store.copy_height as usize)
-            .and_then(|end_y| {
-                (store.output_x as usize)
-                    .checked_add(store.copy_width as usize)
-                    .map(|end_x| (end_x, end_y))
-            })
-            .ok_or(CudaError::LengthTooLarge { len: output_bytes })?;
-        if dst_end.0 > store.output_width as usize || dst_end.1 > store.output_height as usize {
-            return Err(CudaError::LengthTooLarge { len: output_bytes });
-        }
-
-        let job_buffer = self.upload(store_rgb8_mct_job_as_bytes(&job))?;
-        self.launch_j2k_store_rgb8_mct(plane0, plane1, plane2, &output, &job_buffer, pixels)?;
-        Ok(CudaKernelOutput {
-            buffer: output,
-            execution: CudaExecutionStats {
-                kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: 1,
-                hardware_decode: false,
-            },
-        })
+            job,
+        }])?;
+        let (mut outputs, execution) = batch.into_parts();
+        let buffer = outputs.pop().ok_or_else(|| CudaError::InvalidArgument {
+            message: "single RGB8 MCT batch store returned no output".to_string(),
+        })?;
+        Ok(CudaKernelOutput { buffer, execution })
     }
 
     /// Apply inverse RCT/ICT and store multiple tightly packed RGB8/RGBA8 images
@@ -6789,33 +6823,6 @@ impl CudaContext {
         self.launch_kernel(function, geometry, &mut params)
     }
 
-    fn launch_j2k_store_rgb8_mct(
-        &self,
-        plane0: &CudaDeviceBuffer,
-        plane1: &CudaDeviceBuffer,
-        plane2: &CudaDeviceBuffer,
-        output: &CudaDeviceBuffer,
-        job: &CudaDeviceBuffer,
-        pixels: usize,
-    ) -> Result<(), CudaError> {
-        let function = self.inner.kernel_function(CudaKernel::J2kStoreRgb8Mct)?;
-        let mut plane0_ptr = plane0.device_ptr();
-        let mut plane1_ptr = plane1.device_ptr();
-        let mut plane2_ptr = plane2.device_ptr();
-        let mut output_ptr = output.device_ptr();
-        let mut job_ptr = job.device_ptr();
-        let mut params = [
-            (&raw mut plane0_ptr).cast::<c_void>(),
-            (&raw mut plane1_ptr).cast::<c_void>(),
-            (&raw mut plane2_ptr).cast::<c_void>(),
-            (&raw mut output_ptr).cast::<c_void>(),
-            (&raw mut job_ptr).cast::<c_void>(),
-        ];
-        let geometry = j2k_forward_rct_launch_geometry(pixels)
-            .ok_or(CudaError::LengthTooLarge { len: pixels })?;
-        self.launch_kernel(function, geometry, &mut params)
-    }
-
     fn launch_j2k_store_rgb8_mct_batch(
         &self,
         jobs: &CudaDeviceBuffer,
@@ -7154,6 +7161,8 @@ pub enum CudaKernelName {
     J2kQuantizeSubbandStrided,
     /// HTJ2K entropy code-block decode kernel.
     Htj2kDecodeCodeblocks,
+    /// HTJ2K cleanup-only decode plus dequantization kernel.
+    Htj2kDecodeCodeblocksMultiCleanupDequantize,
     /// JPEG 2000 HTJ2K coefficient dequantization kernel.
     J2kDequantizeHtj2kCodeblocks,
     /// JPEG 2000 HTJ2K multi-buffer coefficient dequantization kernel.
@@ -7232,6 +7241,9 @@ impl CudaKernelName {
             Self::J2kQuantizeSubband => CudaKernel::J2kQuantizeSubband,
             Self::J2kQuantizeSubbandStrided => CudaKernel::J2kQuantizeSubbandStrided,
             Self::Htj2kDecodeCodeblocks => CudaKernel::Htj2kDecodeCodeblocks,
+            Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
+                CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize
+            }
             Self::J2kDequantizeHtj2kCodeblocks => CudaKernel::J2kDequantizeHtj2kCodeblocks,
             Self::J2kDequantizeHtj2kCodeblocksMulti => {
                 CudaKernel::J2kDequantizeHtj2kCodeblocksMulti
@@ -7291,6 +7303,9 @@ impl CudaKernelName {
             Self::J2kQuantizeSubband => "signinum_j2k_quantize_subband",
             Self::J2kQuantizeSubbandStrided => "signinum_j2k_quantize_subband_strided",
             Self::Htj2kDecodeCodeblocks => "signinum_htj2k_decode_codeblocks",
+            Self::Htj2kDecodeCodeblocksMultiCleanupDequantize => {
+                "signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize"
+            }
             Self::J2kDequantizeHtj2kCodeblocks => "signinum_j2k_dequantize_htj2k_codeblocks",
             Self::J2kDequantizeHtj2kCodeblocksMulti => {
                 "signinum_j2k_dequantize_htj2k_codeblocks_multi"
@@ -8781,6 +8796,18 @@ fn htj2k_decode_multi_kernel_for_jobs(
             "signinum_htj2k_decode_codeblocks_multi",
         )
     }
+}
+
+fn htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(
+    jobs: &[CudaHtj2kCleanupMultiKernelJob],
+) -> Option<(CudaKernel, &'static str)> {
+    let cleanup_only = jobs
+        .iter()
+        .all(|job| job.refinement_length == 0 && job.number_of_coding_passes <= 1);
+    cleanup_only.then_some((
+        CudaKernel::Htj2kDecodeCodeblocksMultiCleanupDequantize,
+        "signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize",
+    ))
 }
 
 fn htj2k_decode_needs_zero_fill(
@@ -11770,16 +11797,6 @@ fn store_rgb16_job_as_bytes(job: &CudaJ2kStoreRgb16Job) -> &[u8] {
     }
 }
 
-fn store_rgb8_mct_job_as_bytes(job: &CudaJ2kStoreRgb8MctJob) -> &[u8] {
-    // SAFETY: CudaJ2kStoreRgb8MctJob is repr(C) POD data copied directly to CUDA.
-    unsafe {
-        std::slice::from_raw_parts(
-            std::ptr::from_ref(job).cast::<u8>(),
-            std::mem::size_of::<CudaJ2kStoreRgb8MctJob>(),
-        )
-    }
-}
-
 fn store_rgb8_mct_batch_jobs_as_bytes(jobs: &[CudaJ2kStoreRgb8MctBatchJob]) -> &[u8] {
     // SAFETY: CudaJ2kStoreRgb8MctBatchJob is repr(C) POD data copied directly to CUDA.
     unsafe { std::slice::from_raw_parts(jobs.as_ptr().cast::<u8>(), std::mem::size_of_val(jobs)) }
@@ -11931,6 +11948,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn runtime_raii_primitives_smoke_when_required() {
         if !cuda_runtime_required() {
             return;
@@ -12089,14 +12107,10 @@ mod tests {
             Some(4094)
         );
         let fallback_pool = (0..4096)
-            .map(|index| {
-                if index < 3000 {
-                    (index, 8usize)
-                } else if index == 3000 {
-                    (index, 32)
-                } else {
-                    (index, 64)
-                }
+            .map(|index| match index.cmp(&3000) {
+                std::cmp::Ordering::Less => (index, 8usize),
+                std::cmp::Ordering::Equal => (index, 32),
+                std::cmp::Ordering::Greater => (index, 64),
             })
             .collect::<Vec<_>>();
 
@@ -12727,11 +12741,16 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn kernel_module_names_cover_htj2k_decode_and_encode_stages() {
         let cases = [
             (
                 CudaKernelName::Htj2kDecodeCodeblocks,
                 "signinum_htj2k_decode_codeblocks",
+            ),
+            (
+                CudaKernelName::Htj2kDecodeCodeblocksMultiCleanupDequantize,
+                "signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize",
             ),
             (
                 CudaKernelName::J2kDequantizeHtj2kCodeblocks,
@@ -13504,6 +13523,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, clippy::similar_names)]
     fn j2k_inverse_dwt_batch_large_reversible_matches_single_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -13599,6 +13619,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, clippy::similar_names)]
     fn j2k_inverse_dwt_batch_large_irreversible_matches_single_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -13702,6 +13723,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, clippy::similar_names)]
     fn j2k_inverse_dwt_batch_512_reversible_matches_single_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -13878,6 +13900,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names, clippy::too_many_lines)]
     fn j2k_inverse_dwt_batch_sequence_enqueue_matches_two_stage_path_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -14169,6 +14192,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names, clippy::too_many_lines)]
     fn j2k_store_rgb8_mct_batch_matches_separate_stores_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -14293,6 +14317,89 @@ mod tests {
             .expect("download batch B");
         assert_eq!(batch_a_bytes, separate_a_bytes);
         assert_eq!(batch_b_bytes, separate_b_bytes);
+    }
+
+    #[test]
+    fn j2k_store_rgb8_mct_single_matches_one_item_batch_when_runtime_required() {
+        if !cuda_runtime_required() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("CUDA context");
+        let plane0 = [16.0f32, 18.0, 21.0, 24.0];
+        let plane1 = [-3.0f32, 4.0, 5.0, -6.0];
+        let plane2 = [2.0f32, -1.0, 7.0, 3.0];
+        let single0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload single plane 0");
+        let single1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload single plane 1");
+        let single2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload single plane 2");
+        let batch0 = context
+            .upload(super::f32_slice_as_bytes(&plane0))
+            .expect("upload batch plane 0");
+        let batch1 = context
+            .upload(super::f32_slice_as_bytes(&plane1))
+            .expect("upload batch plane 1");
+        let batch2 = context
+            .upload(super::f32_slice_as_bytes(&plane2))
+            .expect("upload batch plane 2");
+
+        let store = super::CudaJ2kStoreRgb8Job {
+            input_width0: 2,
+            input_width1: 2,
+            input_width2: 2,
+            source_x0: 0,
+            source_y0: 0,
+            source_x1: 0,
+            source_y1: 0,
+            source_x2: 0,
+            source_y2: 0,
+            copy_width: 2,
+            copy_height: 2,
+            output_width: 2,
+            output_height: 2,
+            output_x: 0,
+            output_y: 0,
+            addend0: 128.0,
+            addend1: 128.0,
+            addend2: 128.0,
+            bit_depth0: 8,
+            bit_depth1: 8,
+            bit_depth2: 8,
+            rgba: 1,
+        };
+        let job = super::CudaJ2kStoreRgb8MctJob {
+            store,
+            irreversible97: 0,
+        };
+        let single = context
+            .j2k_store_rgb8_mct_device(&single0, &single1, &single2, job)
+            .expect("single RGB8 MCT store");
+        let batch = context
+            .j2k_store_rgb8_mct_batch_device(&[super::CudaJ2kStoreRgb8MctTarget {
+                plane0: &batch0,
+                plane1: &batch1,
+                plane2: &batch2,
+                job,
+            }])
+            .expect("one-item batch RGB8 MCT store");
+
+        assert_eq!(single.execution().kernel_dispatches(), 1);
+        assert_eq!(batch.execution().kernel_dispatches(), 1);
+        let mut single_bytes = vec![0u8; 16];
+        single
+            .buffer()
+            .copy_to_host(&mut single_bytes)
+            .expect("download single RGB8 MCT store");
+        let mut batch_bytes = vec![0u8; 16];
+        batch.outputs()[0]
+            .copy_to_host(&mut batch_bytes)
+            .expect("download one-item batch RGB8 MCT store");
+        assert_eq!(single_bytes, batch_bytes);
     }
 
     #[test]
@@ -14479,10 +14586,10 @@ mod tests {
         let context = CudaContext::system_default().expect("CUDA context");
         let pool = context.buffer_pool();
         let first = context
-            .upload(super::i32_slice_as_bytes(&[1, 0x8000_0002u32 as i32, 0, 3]))
+            .upload(super::i32_slice_as_bytes(&[1, i32::MIN + 2, 0, 3]))
             .expect("upload first coefficients");
         let second = context
-            .upload(super::i32_slice_as_bytes(&[4, 0x8000_0005u32 as i32]))
+            .upload(super::i32_slice_as_bytes(&[4, i32::MIN + 5]))
             .expect("upload second coefficients");
         let jobs = [
             CudaHtj2kCleanupMultiKernelJob {
@@ -14581,6 +14688,62 @@ mod tests {
     }
 
     #[test]
+    fn htj2k_decode_multi_cleanup_dequant_kernel_accepts_cleanup_only_jobs() {
+        let cleanup_job = CudaHtj2kCleanupMultiKernelJob {
+            output_ptr: 0,
+            coded_offset: 0,
+            width: 64,
+            height: 64,
+            coded_len: 8,
+            cleanup_length: 8,
+            refinement_length: 0,
+            missing_msbs: 0,
+            num_bitplanes: 8,
+            number_of_coding_passes: 1,
+            output_stride: 64,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: 0,
+        };
+        let (_, cleanup_dequant_kernel_name) =
+            super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[cleanup_job])
+                .expect("cleanup-only jobs use fused cleanup/dequant kernel");
+        assert_eq!(
+            cleanup_dequant_kernel_name,
+            "signinum_htj2k_decode_codeblocks_multi_cleanup_dequantize"
+        );
+    }
+
+    #[test]
+    fn htj2k_decode_multi_cleanup_dequant_kernel_rejects_refinement_jobs() {
+        let mut refinement_job = CudaHtj2kCleanupMultiKernelJob {
+            output_ptr: 0,
+            coded_offset: 0,
+            width: 64,
+            height: 64,
+            coded_len: 12,
+            cleanup_length: 8,
+            refinement_length: 4,
+            missing_msbs: 0,
+            num_bitplanes: 8,
+            number_of_coding_passes: 2,
+            output_stride: 64,
+            output_offset: 0,
+            dequantization_step: 1.0,
+            stripe_causal: 0,
+        };
+        assert!(
+            super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement_job]).is_none()
+        );
+
+        refinement_job.refinement_length = 0;
+        assert!(
+            super::htj2k_decode_multi_cleanup_dequant_kernel_for_jobs(&[refinement_job]).is_none()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
     fn htj2k_cleanup_multi_empty_targets_use_no_dispatch_when_runtime_required() {
         if !cuda_runtime_required() {
             return;
@@ -14617,6 +14780,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn htj2k_cleanup_multi_enqueue_empty_targets_finish_with_no_dispatch_when_runtime_required() {
         if !cuda_runtime_required() {
             return;

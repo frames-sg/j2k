@@ -105,6 +105,7 @@ fn reject_non_cuda_encode_backend(encoded: &signinum_j2k::EncodedJ2k) -> Result<
 
 /// CUDA implementation of selected JPEG 2000 encode stages.
 #[derive(Debug, Default, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CudaEncodeStageAccelerator {
     #[cfg(feature = "cuda-runtime")]
     context: Option<CudaContext>,
