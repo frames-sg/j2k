@@ -1023,6 +1023,7 @@ fn j2k_metal_bench_surface_stays_clean_after_reset() {
     let cargo_toml = fs::read_to_string(root.join("crates/signinum-j2k-metal/Cargo.toml"))
         .expect("read J2K Metal manifest");
     let bench_docs = fs::read_to_string(root.join("docs/bench.md")).expect("read bench docs");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
     let openjpeg = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/openjpeg.rs"))
         .expect("read OpenJPEG comparator");
     let grok = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/grok.rs"))
@@ -1070,6 +1071,10 @@ fn j2k_metal_bench_surface_stays_clean_after_reset() {
     assert!(
         !bench_docs.contains(&removed_j2k_metal_bench_command),
         "bench docs must not publish removed signinum-j2k-metal bench commands"
+    );
+    assert!(
+        !xtask.contains(&removed_j2k_metal_bench_command),
+        "xtask must not run removed signinum-j2k-metal bench commands"
     );
     assert!(
         openjpeg.contains("pub fn version"),
