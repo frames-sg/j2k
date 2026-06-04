@@ -1828,6 +1828,7 @@ impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStat
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn add_resident_prep_duration(
     stats: &mut MetalLosslessEncodeBatchStats,
     duration: Duration,
@@ -1842,6 +1843,7 @@ fn add_resident_prep_duration(
         .saturating_add(duration);
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn add_resident_prep_wall_duration(
     stats: &mut MetalLosslessEncodeBatchStats,
     wall_duration: Duration,
