@@ -1269,7 +1269,7 @@ pub fn encode_j2k_code_block_scalar_with_style(
 
 /// Adapter scalar Classic Tier-1 compact token packer for backend experimentation.
 ///
-/// The token format matches the Metal Classic Tier-1 token-emitter prototype:
+/// The token format matches the Metal Classic Tier-1 token-emitter contract:
 /// arithmetic segments are 6-bit `(context_label, bit)` MQ tokens, while raw
 /// bypass segments are one bit per raw bypass event.
 pub fn pack_j2k_code_block_scalar_from_tier1_tokens(

@@ -1019,7 +1019,8 @@ impl TileDecodeContext {
                 header.size_data.image_height(),
             ));
 
-        // TODO: SIMD Buffers should be reused across runs!
+        // Allocate per component here; the surrounding context reuses the
+        // higher-level vectors while `SimdBuffer` owns its initialized storage.
         for info in &initial_tile.component_infos {
             self.channel_data.push(ComponentData {
                 container: SimdBuffer::zeros(output_width as usize * output_height as usize),

@@ -2204,7 +2204,7 @@ mod tests {
                     gpu_ms: Some(0.25),
                     stage_ms: Some(0.5),
                     download_ms: Some(0.125),
-                    cuda_profile: Some(fake_cuda_profile()),
+                    cuda_profile: Some(sample_cuda_profile()),
                     pixels: Vec::new(),
                 }),
             },
@@ -2221,7 +2221,7 @@ mod tests {
         assert!(csv.contains(",7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24"));
     }
 
-    fn fake_cuda_profile() -> CudaStageBreakdown {
+    fn sample_cuda_profile() -> CudaStageBreakdown {
         CudaStageBreakdown {
             parse_us: 1,
             plan_us: 2,

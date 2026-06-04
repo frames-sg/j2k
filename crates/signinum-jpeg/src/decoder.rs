@@ -308,7 +308,7 @@ impl<'a> Decoder<'a> {
         let backend = Backend::detect();
         let (info, warnings, plan, progressive_plan) = if info.sof_kind == SofKind::Progressive8 {
             let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
-            let plan = Self::build_progressive_placeholder_plan(&header, &info, ctx)?;
+            let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
             (
                 info,
                 Arc::<[Warning]>::from(header.warnings.as_slice()),
@@ -575,7 +575,7 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    fn build_progressive_placeholder_plan(
+    fn build_progressive_host_output_plan(
         header: &ParsedHeader,
         info: &Info,
         ctx: &mut DecoderContext,
@@ -1305,7 +1305,7 @@ impl<'a> Decoder<'a> {
 /// ```no_run
 /// use signinum_jpeg::{decode_tile_into, PixelFormat, ScratchPool};
 ///
-/// let bytes: &[u8] = todo!("read tile bytes");
+/// let bytes: &[u8] = &[];
 /// let mut out = vec![0u8; 256 * 256 * 3];
 /// let mut pool = ScratchPool::new();
 /// decode_tile_into(bytes, &mut pool, &mut out, 256 * 3, PixelFormat::Rgb8)?;

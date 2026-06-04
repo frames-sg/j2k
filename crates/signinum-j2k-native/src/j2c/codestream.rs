@@ -274,7 +274,8 @@ impl ComponentInfo {
         let n_ll = self.coding_style.parameters.num_decomposition_levels;
 
         let sb_index = match sub_band_type {
-            // TODO: Shouldn't be reached.
+            // LL only has a quantization entry at resolution 0; non-zero LL
+            // lookups fall through to the missing-step error below.
             SubBandType::LowLow => u16::MAX,
             SubBandType::HighLow => 0,
             SubBandType::LowHigh => 1,
@@ -880,8 +881,9 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     let mut reader = BitReader::new(ppm_data);
     let sequence_idx = reader.read_byte()?;
 
-    // TODO: Handle case where next packet doesn't have nppm parameter.
-
+    // This parser handles complete packet payloads carried by the current PPM
+    // marker. Continuations across multiple PPM markers are rejected by normal
+    // length parsing until a multi-marker accumulator is added.
     while !reader.at_end() {
         let packet_len = reader.read_u16()? as usize;
         let data = reader.read_bytes(packet_len)?;

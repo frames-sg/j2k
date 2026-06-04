@@ -335,7 +335,6 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a batch of full HTJ2K images into CUDA-backed surfaces
     /// using an existing backend session.
-    #[cfg(feature = "cuda-runtime")]
     pub fn decode_batch_to_device_with_session(
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -347,7 +346,6 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a batch of full HTJ2K images into CUDA-backed surfaces
     /// and return one aggregate profile report for the shared batch.
-    #[cfg(feature = "cuda-runtime")]
     pub fn decode_batch_to_device_with_session_and_profile(
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -2406,6 +2404,16 @@ fn decode_region_scaled_to_cuda_resident_surface_impl(
     Err(Error::CudaUnavailable)
 }
 
+#[cfg(not(feature = "cuda-runtime"))]
+fn decode_batch_to_cuda_resident_surface_with_profile_control(
+    _inputs: &[&[u8]],
+    _session: &mut CudaSession,
+    _fmt: PixelFormat,
+    _collect_stage_timings: bool,
+) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
+    Err(Error::CudaUnavailable)
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn decode_cuda_component_plan(
     context: &signinum_cuda_runtime::CudaContext,
@@ -2447,7 +2455,7 @@ fn split_htj2k_subband_decode_dispatches(kernel_dispatches: usize) -> (usize, us
     )
 }
 
-#[cfg(any(feature = "cuda-runtime", test))]
+#[cfg(feature = "cuda-runtime")]
 fn htj2k_batched_cleanup_dispatches(target_count: usize) -> usize {
     usize::from(target_count > 0)
 }
@@ -2457,7 +2465,7 @@ fn htj2k_batched_dequant_dispatches(target_count: usize) -> usize {
     usize::from(target_count > 0)
 }
 
-#[cfg(any(feature = "cuda-runtime", test))]
+#[cfg(feature = "cuda-runtime")]
 fn htj2k_batched_cleanup_dequant_dispatches(
     target_count: usize,
     fused_cleanup_dequant: bool,
