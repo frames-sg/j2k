@@ -42,6 +42,23 @@ struct J2kHtCleanupBatchJob {
     uint stripe_causal;
 };
 
+struct J2kHtCleanupMultiBatchJob {
+    j2k_ulong output_ptr;
+    uint coded_offset;
+    uint width;
+    uint height;
+    uint coded_len;
+    uint cleanup_length;
+    uint refinement_length;
+    uint missing_msbs;
+    uint num_bitplanes;
+    uint number_of_coding_passes;
+    uint output_stride;
+    uint output_offset;
+    float dequantization_step;
+    uint stripe_causal;
+};
+
 struct J2kHtRepeatedBatchParams {
     uint job_count;
     uint output_plane_len;
@@ -53,6 +70,17 @@ struct J2kHtStatus {
     uint detail;
     uint reserved0;
     uint reserved1;
+};
+
+struct J2kHtDequantizeJob {
+    j2k_ulong output_ptr;
+    uint width;
+    uint height;
+    uint output_stride;
+    uint output_offset;
+    uint num_bitplanes;
+    uint reserved;
+    float dequantization_step;
 };
 
 static constexpr uint J2K_HT_STATUS_OK = 0u;
@@ -340,6 +368,7 @@ __device__ inline void decode_mag_sgn_sample_with_vn(
     value |= (v_n + 2u) << (p - 1u);
 }
 
+template <bool CLEANUP_ONLY>
 __device__ inline void decode_ht_cleanup_impl(
     const uchar *coded_data,
     uint *decoded_data,
@@ -355,6 +384,10 @@ __device__ inline void decode_ht_cleanup_impl(
     uint num_passes = params.number_of_coding_passes;
     if (num_passes > 1u && params.refinement_length == 0u) {
         num_passes = 1u;
+    }
+    if (CLEANUP_ONLY && params.refinement_length != 0u) {
+        set_ht_status(status, J2K_HT_STATUS_UNSUPPORTED, 17u);
+        return;
     }
 
     if (params.width == 0u || params.height == 0u) {
@@ -677,7 +710,7 @@ __device__ inline void decode_ht_cleanup_impl(
         }
     }
 
-    if (num_passes > 1u) {
+    if (!CLEANUP_ONLY && num_passes > 1u) {
         const uint sigma_rows = ((height + 3u) / 4u) + 1u;
         const uint mstr = ((((width + 3u) / 4u) + 2u + 7u) & ~7u);
         const uint prev_row_len = ((width + 3u) / 4u) + 8u;
@@ -988,6 +1021,15 @@ struct CudaJ2kIdwtJob {
     uint irreversible97;
 };
 
+struct CudaJ2kIdwtMultiJob {
+    j2k_ulong ll_ptr;
+    j2k_ulong hl_ptr;
+    j2k_ulong lh_ptr;
+    j2k_ulong hh_ptr;
+    j2k_ulong output_ptr;
+    CudaJ2kIdwtJob job;
+};
+
 struct CudaJ2kStoreGray8Job {
     uint input_width;
     uint source_x;
@@ -1074,6 +1116,24 @@ struct CudaJ2kStoreRgb16Job {
     uint rgba;
 };
 
+struct CudaJ2kStoreRgb8MctJob {
+    CudaJ2kStoreRgb8Job store;
+    uint irreversible97;
+};
+
+struct CudaJ2kStoreRgb8MctBatchJob {
+    j2k_ulong plane0_ptr;
+    j2k_ulong plane1_ptr;
+    j2k_ulong plane2_ptr;
+    j2k_ulong output_ptr;
+    CudaJ2kStoreRgb8MctJob job;
+};
+
+struct CudaJ2kStoreRgb16MctJob {
+    CudaJ2kStoreRgb16Job store;
+    uint irreversible97;
+};
+
 __device__ inline uint rect_width(CudaJ2kRect rect) {
     return rect.x1 - rect.x0;
 }
@@ -1117,6 +1177,13 @@ __device__ inline uint pse_right(uint idx, uint offset, uint length) {
         return length - 2u - overshoot;
     }
     return new_idx;
+}
+
+__device__ inline float lift_53_sample(float sample, float left, float right, bool update_even) {
+    if (update_even) {
+        return sample - floorf(fmaf(left + right, 0.25f, 0.5f));
+    }
+    return sample + floorf((left + right) * 0.5f);
 }
 
 __device__ inline void filter_step_horizontal_53(float *scanline, uint width, uint first, bool update_even) {
@@ -1446,6 +1513,311 @@ extern "C" __global__ void signinum_j2k_idwt_interleave(
     output[local_y * width + local_x] = source_get(source, source_rect, band_x, band_y);
 }
 
+extern "C" __global__ void signinum_j2k_idwt_interleave_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    const uint job_idx = blockIdx.z;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    const float *ll = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.ll_ptr));
+    const float *hl = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hl_ptr));
+    const float *lh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.lh_ptr));
+    const float *hh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hh_ptr));
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    const uint local_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint local_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (local_x >= width || local_y >= height) {
+        return;
+    }
+
+    const uint x = job.rect.x0 + local_x;
+    const uint y = job.rect.y0 + local_y;
+    const bool low_x = (x & 1u) == 0u;
+    const bool low_y = (y & 1u) == 0u;
+    const float *source = ll;
+    CudaJ2kRect source_rect = job.ll_rect;
+    uint band_x;
+    uint band_y;
+    if (low_x && low_y) {
+        source = ll;
+        source_rect = job.ll_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.ll_rect.x0, true);
+        band_y = idwt_band_coord(job.rect.y0, y, job.ll_rect.y0, true);
+    } else if (!low_x && low_y) {
+        source = hl;
+        source_rect = job.hl_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.hl_rect.x0, false);
+        band_y = idwt_band_coord(job.rect.y0, y, job.hl_rect.y0, true);
+    } else if (low_x && !low_y) {
+        source = lh;
+        source_rect = job.lh_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.lh_rect.x0, true);
+        band_y = idwt_band_coord(job.rect.y0, y, job.lh_rect.y0, false);
+    } else {
+        source = hh;
+        source_rect = job.hh_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.hh_rect.x0, false);
+        band_y = idwt_band_coord(job.rect.y0, y, job.hh_rect.y0, false);
+    }
+    output[local_y * width + local_x] = source_get(source, source_rect, band_x, band_y);
+}
+
+__device__ inline float idwt_interleave_sample(
+    const float *ll,
+    const float *hl,
+    const float *lh,
+    const float *hh,
+    CudaJ2kIdwtJob job,
+    uint local_x,
+    uint local_y
+) {
+    const uint x = job.rect.x0 + local_x;
+    const uint y = job.rect.y0 + local_y;
+    const bool low_x = (x & 1u) == 0u;
+    const bool low_y = (y & 1u) == 0u;
+    const float *source = ll;
+    CudaJ2kRect source_rect = job.ll_rect;
+    uint band_x;
+    uint band_y;
+    if (low_x && low_y) {
+        source = ll;
+        source_rect = job.ll_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.ll_rect.x0, true);
+        band_y = idwt_band_coord(job.rect.y0, y, job.ll_rect.y0, true);
+    } else if (!low_x && low_y) {
+        source = hl;
+        source_rect = job.hl_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.hl_rect.x0, false);
+        band_y = idwt_band_coord(job.rect.y0, y, job.hl_rect.y0, true);
+    } else if (low_x && !low_y) {
+        source = lh;
+        source_rect = job.lh_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.lh_rect.x0, true);
+        band_y = idwt_band_coord(job.rect.y0, y, job.lh_rect.y0, false);
+    } else {
+        source = hh;
+        source_rect = job.hh_rect;
+        band_x = idwt_band_coord(job.rect.x0, x, job.hh_rect.x0, false);
+        band_y = idwt_band_coord(job.rect.y0, y, job.hh_rect.y0, false);
+    }
+    return source_get(source, source_rect, band_x, band_y);
+}
+
+extern "C" __global__ void signinum_j2k_idwt_interleave_horizontal_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    const float *ll = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.ll_ptr));
+    const float *hl = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hl_ptr));
+    const float *lh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.lh_ptr));
+    const float *hh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hh_ptr));
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    const uint local_y = blockIdx.x * blockDim.x + threadIdx.x;
+    if (local_y >= height) {
+        return;
+    }
+
+    const uint y = job.rect.y0 + local_y;
+    const bool low_y = (y & 1u) == 0u;
+    float *row_output = output + local_y * width;
+    for (uint local_x = 0u; local_x < width; ++local_x) {
+        const uint x = job.rect.x0 + local_x;
+        const bool low_x = (x & 1u) == 0u;
+        const float *source = ll;
+        CudaJ2kRect source_rect = job.ll_rect;
+        uint band_x;
+        uint band_y;
+        if (low_x && low_y) {
+            source = ll;
+            source_rect = job.ll_rect;
+            band_x = idwt_band_coord(job.rect.x0, x, job.ll_rect.x0, true);
+            band_y = idwt_band_coord(job.rect.y0, y, job.ll_rect.y0, true);
+        } else if (!low_x && low_y) {
+            source = hl;
+            source_rect = job.hl_rect;
+            band_x = idwt_band_coord(job.rect.x0, x, job.hl_rect.x0, false);
+            band_y = idwt_band_coord(job.rect.y0, y, job.hl_rect.y0, true);
+        } else if (low_x && !low_y) {
+            source = lh;
+            source_rect = job.lh_rect;
+            band_x = idwt_band_coord(job.rect.x0, x, job.lh_rect.x0, true);
+            band_y = idwt_band_coord(job.rect.y0, y, job.lh_rect.y0, false);
+        } else {
+            source = hh;
+            source_rect = job.hh_rect;
+            band_x = idwt_band_coord(job.rect.x0, x, job.hh_rect.x0, false);
+            band_y = idwt_band_coord(job.rect.y0, y, job.hh_rect.y0, false);
+        }
+        row_output[local_x] = source_get(source, source_rect, band_x, band_y);
+    }
+    filter_horizontal_scanline(
+        row_output,
+        width,
+        job.rect.x0,
+        job.irreversible97 != 0u
+    );
+}
+
+extern "C" __global__ void signinum_j2k_idwt_interleave_horizontal_53_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    __shared__ float row_samples[512];
+
+    const uint local_x = threadIdx.x;
+    const uint local_y = blockIdx.x;
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    const float *ll = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.ll_ptr));
+    const float *hl = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hl_ptr));
+    const float *lh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.lh_ptr));
+    const float *hh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hh_ptr));
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    if (local_y >= height) {
+        return;
+    }
+
+    if (local_x < width) {
+        row_samples[local_x] = idwt_interleave_sample(ll, hl, lh, hh, job, local_x, local_y);
+    }
+    __syncthreads();
+
+    if (width == 1u) {
+        if (local_x == 0u && (job.rect.x0 & 1u) != 0u) {
+            row_samples[0] *= 0.5f;
+        }
+        __syncthreads();
+        if (local_x == 0u) {
+            output[local_y * width] = row_samples[0];
+        }
+        return;
+    }
+
+    const uint first_even = job.rect.x0 & 1u;
+    const uint first_odd = 1u - first_even;
+    if (local_x < width && ((local_x & 1u) == first_even)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = lift_53_sample(
+            row_samples[local_x],
+            row_samples[left],
+            row_samples[right],
+            true
+        );
+    }
+    __syncthreads();
+
+    if (local_x < width && ((local_x & 1u) == first_odd)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = lift_53_sample(
+            row_samples[local_x],
+            row_samples[left],
+            row_samples[right],
+            false
+        );
+    }
+    __syncthreads();
+
+    if (local_x < width) {
+        output[local_y * width + local_x] = row_samples[local_x];
+    }
+}
+
+extern "C" __global__ void signinum_j2k_idwt_interleave_horizontal_97_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    __shared__ float row_samples[512];
+
+    const uint local_x = threadIdx.x;
+    const uint local_y = blockIdx.x;
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    const float *ll = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.ll_ptr));
+    const float *hl = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hl_ptr));
+    const float *lh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.lh_ptr));
+    const float *hh = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.hh_ptr));
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    if (local_y >= height) {
+        return;
+    }
+
+    if (local_x < width) {
+        row_samples[local_x] = idwt_interleave_sample(ll, hl, lh, hh, job, local_x, local_y);
+    }
+    __syncthreads();
+
+    if (width == 1u) {
+        if (local_x == 0u && (job.rect.x0 & 1u) != 0u) {
+            row_samples[0] *= 0.5f;
+        }
+        __syncthreads();
+        if (local_x == 0u) {
+            output[local_y * width] = row_samples[0];
+        }
+        return;
+    }
+
+    const uint first_even = job.rect.x0 & 1u;
+    const uint first_odd = 1u - first_even;
+    const float neg_alpha = 1.5861343f;
+    const float neg_beta = 0.052980117f;
+    const float neg_gamma = -0.8829111f;
+    const float neg_delta = -0.44350687f;
+    const float kappa = 1.2301741f;
+    const float inv_kappa = 1.0f / kappa;
+    const float k0 = first_even == 0u ? kappa : inv_kappa;
+    const float k1 = first_even == 0u ? inv_kappa : kappa;
+
+    if (local_x < width) {
+        row_samples[local_x] *= ((local_x & 1u) == 0u) ? k0 : k1;
+    }
+    __syncthreads();
+
+    if (local_x < width && ((local_x & 1u) == first_even)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = fmaf(row_samples[left] + row_samples[right], neg_delta, row_samples[local_x]);
+    }
+    __syncthreads();
+
+    if (local_x < width && ((local_x & 1u) == first_odd)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = fmaf(row_samples[left] + row_samples[right], neg_gamma, row_samples[local_x]);
+    }
+    __syncthreads();
+
+    if (local_x < width && ((local_x & 1u) == first_even)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = fmaf(row_samples[left] + row_samples[right], neg_beta, row_samples[local_x]);
+    }
+    __syncthreads();
+
+    if (local_x < width && ((local_x & 1u) == first_odd)) {
+        const uint left = pse_left(local_x, 1u);
+        const uint right = pse_right(local_x, 1u, width);
+        row_samples[local_x] = fmaf(row_samples[left] + row_samples[right], neg_alpha, row_samples[local_x]);
+    }
+    __syncthreads();
+
+    if (local_x < width) {
+        output[local_y * width + local_x] = row_samples[local_x];
+    }
+}
+
 extern "C" __global__ void signinum_j2k_idwt_horizontal(
     float *output,
     const CudaJ2kIdwtJob *job_buffer
@@ -1491,6 +1863,27 @@ extern "C" __global__ void signinum_j2k_idwt_horizontal_97(
         return;
     }
     filter_horizontal_scanline(output + row * width, width, job.rect.x0, true);
+}
+
+extern "C" __global__ void signinum_j2k_idwt_horizontal_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    const uint row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= height) {
+        return;
+    }
+    filter_horizontal_scanline(
+        output + row * width,
+        width,
+        job.rect.x0,
+        job.irreversible97 != 0u
+    );
 }
 
 extern "C" __global__ void signinum_j2k_idwt_vertical(
@@ -1540,6 +1933,291 @@ extern "C" __global__ void signinum_j2k_idwt_vertical_97(
         return;
     }
     filter_vertical_column(output, width, height, job.rect.y0, col, true);
+}
+
+extern "C" __global__ void signinum_j2k_idwt_vertical_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    const uint col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= width) {
+        return;
+    }
+    filter_vertical_column(
+        output,
+        width,
+        height,
+        job.rect.y0,
+        col,
+        job.irreversible97 != 0u
+    );
+}
+
+extern "C" __global__ void signinum_j2k_idwt_vertical_53_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    __shared__ float column_samples[512];
+
+    const uint row = threadIdx.x;
+    const uint col = blockIdx.x;
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    if (col >= width) {
+        return;
+    }
+
+    if (row < height) {
+        column_samples[row] = output[row * width + col];
+    }
+    __syncthreads();
+
+    if (height == 1u) {
+        if (row == 0u && (job.rect.y0 & 1u) != 0u) {
+            column_samples[0] *= 0.5f;
+        }
+        __syncthreads();
+        if (row == 0u) {
+            output[col] = column_samples[0];
+        }
+        return;
+    }
+
+    const uint first_even = job.rect.y0 & 1u;
+    const uint first_odd = 1u - first_even;
+    if (row < height && ((row & 1u) == first_even)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = lift_53_sample(
+            column_samples[row],
+            column_samples[above],
+            column_samples[below],
+            true
+        );
+    }
+    __syncthreads();
+
+    if (row < height && ((row & 1u) == first_odd)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = lift_53_sample(
+            column_samples[row],
+            column_samples[above],
+            column_samples[below],
+            false
+        );
+    }
+    __syncthreads();
+
+    if (row < height) {
+        output[row * width + col] = column_samples[row];
+    }
+}
+
+extern "C" __global__ void signinum_j2k_idwt_vertical_97_multi(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    __shared__ float column_samples[512];
+
+    const uint row = threadIdx.x;
+    const uint col = blockIdx.x;
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    if (col >= width) {
+        return;
+    }
+
+    if (row < height) {
+        column_samples[row] = output[row * width + col];
+    }
+    __syncthreads();
+
+    if (height == 1u) {
+        if (row == 0u && (job.rect.y0 & 1u) != 0u) {
+            column_samples[0] *= 0.5f;
+        }
+        __syncthreads();
+        if (row == 0u) {
+            output[col] = column_samples[0];
+        }
+        return;
+    }
+
+    const uint first_even = job.rect.y0 & 1u;
+    const uint first_odd = 1u - first_even;
+    const float neg_alpha = 1.5861343f;
+    const float neg_beta = 0.052980117f;
+    const float neg_gamma = -0.8829111f;
+    const float neg_delta = -0.44350687f;
+    const float kappa = 1.2301741f;
+    const float inv_kappa = 1.0f / kappa;
+    const float k0 = first_even == 0u ? kappa : inv_kappa;
+    const float k1 = first_even == 0u ? inv_kappa : kappa;
+
+    if (row < height) {
+        column_samples[row] *= ((row & 1u) == 0u) ? k0 : k1;
+    }
+    __syncthreads();
+
+    if (row < height && ((row & 1u) == first_even)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = fmaf(
+            column_samples[above] + column_samples[below],
+            neg_delta,
+            column_samples[row]
+        );
+    }
+    __syncthreads();
+
+    if (row < height && ((row & 1u) == first_odd)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = fmaf(
+            column_samples[above] + column_samples[below],
+            neg_gamma,
+            column_samples[row]
+        );
+    }
+    __syncthreads();
+
+    if (row < height && ((row & 1u) == first_even)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = fmaf(
+            column_samples[above] + column_samples[below],
+            neg_beta,
+            column_samples[row]
+        );
+    }
+    __syncthreads();
+
+    if (row < height && ((row & 1u) == first_odd)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row] = fmaf(
+            column_samples[above] + column_samples[below],
+            neg_alpha,
+            column_samples[row]
+        );
+    }
+    __syncthreads();
+
+    if (row < height) {
+        output[row * width + col] = column_samples[row];
+    }
+}
+
+extern "C" __global__ void signinum_j2k_idwt_vertical_97_multi_cols4(
+    const CudaJ2kIdwtMultiJob *jobs
+) {
+    __shared__ float column_samples[256][4];
+
+    const uint local_col = threadIdx.x;
+    const uint row = threadIdx.y;
+    const uint col = blockIdx.x * 4u + local_col;
+    const uint job_idx = blockIdx.y;
+    const CudaJ2kIdwtMultiJob item = jobs[job_idx];
+    const CudaJ2kIdwtJob job = item.job;
+    float *output = reinterpret_cast<float *>(static_cast<uintptr_t>(item.output_ptr));
+    const uint width = rect_width(job.rect);
+    const uint height = rect_height(job.rect);
+    if (height > 256u) {
+        return;
+    }
+
+    const bool valid = col < width && row < height;
+    if (valid) {
+        column_samples[row][local_col] = output[row * width + col];
+    }
+    __syncthreads();
+
+    if (height == 1u) {
+        if (valid && (job.rect.y0 & 1u) != 0u) {
+            column_samples[0][local_col] *= 0.5f;
+        }
+        __syncthreads();
+        if (valid) {
+            output[col] = column_samples[0][local_col];
+        }
+        return;
+    }
+
+    const uint first_even = job.rect.y0 & 1u;
+    const uint first_odd = 1u - first_even;
+    const float neg_alpha = 1.5861343f;
+    const float neg_beta = 0.052980117f;
+    const float neg_gamma = -0.8829111f;
+    const float neg_delta = -0.44350687f;
+    const float kappa = 1.2301741f;
+    const float inv_kappa = 1.0f / kappa;
+    const float k0 = first_even == 0u ? kappa : inv_kappa;
+    const float k1 = first_even == 0u ? inv_kappa : kappa;
+
+    if (valid) {
+        column_samples[row][local_col] *= ((row & 1u) == 0u) ? k0 : k1;
+    }
+    __syncthreads();
+
+    if (valid && ((row & 1u) == first_even)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row][local_col] = fmaf(
+            column_samples[above][local_col] + column_samples[below][local_col],
+            neg_delta,
+            column_samples[row][local_col]
+        );
+    }
+    __syncthreads();
+
+    if (valid && ((row & 1u) == first_odd)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row][local_col] = fmaf(
+            column_samples[above][local_col] + column_samples[below][local_col],
+            neg_gamma,
+            column_samples[row][local_col]
+        );
+    }
+    __syncthreads();
+
+    if (valid && ((row & 1u) == first_even)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row][local_col] = fmaf(
+            column_samples[above][local_col] + column_samples[below][local_col],
+            neg_beta,
+            column_samples[row][local_col]
+        );
+    }
+    __syncthreads();
+
+    if (valid && ((row & 1u) == first_odd)) {
+        const uint above = pse_left(row, 1u);
+        const uint below = pse_right(row, 1u, height);
+        column_samples[row][local_col] = fmaf(
+            column_samples[above][local_col] + column_samples[below][local_col],
+            neg_alpha,
+            column_samples[row][local_col]
+        );
+    }
+    __syncthreads();
+
+    if (valid) {
+        output[row * width + col] = column_samples[row][local_col];
+    }
 }
 
 __device__ inline uchar sample_as_u8(float sample, uint bit_depth) {
@@ -1599,6 +2277,27 @@ extern "C" __global__ void signinum_j2k_store_gray16(
     output[dst] = sample_as_u16(input[src] + job.addend, job.bit_depth);
 }
 
+__device__ inline void inverse_mct_sample(
+    float src0,
+    float src1,
+    float src2,
+    uint irreversible97,
+    float *out0,
+    float *out1,
+    float *out2
+) {
+    if (irreversible97 != 0u) {
+        *out0 = src0 + 1.402f * src2;
+        *out1 = src0 - 0.34413f * src1 - 0.71414f * src2;
+        *out2 = src0 + 1.772f * src1;
+    } else {
+        const float green = src0 - floorf((src2 + src1) * 0.25f);
+        *out0 = src2 + green;
+        *out1 = green;
+        *out2 = src1 + green;
+    }
+}
+
 extern "C" __global__ void signinum_j2k_inverse_mct(
     float *plane0,
     float *plane1,
@@ -1617,16 +2316,7 @@ extern "C" __global__ void signinum_j2k_inverse_mct(
     float out0;
     float out1;
     float out2;
-    if (job.irreversible97 != 0u) {
-        out0 = src0 + 1.402f * src2;
-        out1 = src0 - 0.34413f * src1 - 0.71414f * src2;
-        out2 = src0 + 1.772f * src1;
-    } else {
-        const float green = src0 - floorf((src2 + src1) * 0.25f);
-        out0 = src2 + green;
-        out1 = green;
-        out2 = src1 + green;
-    }
+    inverse_mct_sample(src0, src1, src2, job.irreversible97, &out0, &out1, &out2);
     plane0[gid] = out0 + job.addend0;
     plane1[gid] = out1 + job.addend1;
     plane2[gid] = out2 + job.addend2;
@@ -1692,6 +2382,136 @@ extern "C" __global__ void signinum_j2k_store_rgb16(
     }
 }
 
+extern "C" __global__ void signinum_j2k_store_rgb8_mct(
+    const float *plane0,
+    const float *plane1,
+    const float *plane2,
+    uchar *output,
+    const CudaJ2kStoreRgb8MctJob *job_buffer
+) {
+    const CudaJ2kStoreRgb8MctJob mct_job = job_buffer[0];
+    const CudaJ2kStoreRgb8Job job = mct_job.store;
+    const uint pixels = job.copy_width * job.copy_height;
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= pixels) {
+        return;
+    }
+
+    const uint row = gid / job.copy_width;
+    const uint col = gid - row * job.copy_width;
+    const uint src0 = (job.source_y0 + row) * job.input_width0 + job.source_x0 + col;
+    const uint src1 = (job.source_y1 + row) * job.input_width1 + job.source_x1 + col;
+    const uint src2 = (job.source_y2 + row) * job.input_width2 + job.source_x2 + col;
+    const uint channels = job.rgba != 0u ? 4u : 3u;
+    const uint dst = ((job.output_y + row) * job.output_width + job.output_x + col) * channels;
+
+    float out0;
+    float out1;
+    float out2;
+    inverse_mct_sample(
+        plane0[src0],
+        plane1[src1],
+        plane2[src2],
+        mct_job.irreversible97,
+        &out0,
+        &out1,
+        &out2
+    );
+    output[dst] = sample_as_u8(out0 + job.addend0, job.bit_depth0);
+    output[dst + 1u] = sample_as_u8(out1 + job.addend1, job.bit_depth1);
+    output[dst + 2u] = sample_as_u8(out2 + job.addend2, job.bit_depth2);
+    if (job.rgba != 0u) {
+        output[dst + 3u] = 255u;
+    }
+}
+
+extern "C" __global__ void signinum_j2k_store_rgb8_mct_batch(
+    const CudaJ2kStoreRgb8MctBatchJob *jobs
+) {
+    const CudaJ2kStoreRgb8MctBatchJob item = jobs[blockIdx.y];
+    const float *plane0 = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.plane0_ptr));
+    const float *plane1 = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.plane1_ptr));
+    const float *plane2 = reinterpret_cast<const float *>(static_cast<uintptr_t>(item.plane2_ptr));
+    uchar *output = reinterpret_cast<uchar *>(static_cast<uintptr_t>(item.output_ptr));
+    const CudaJ2kStoreRgb8MctJob mct_job = item.job;
+    const CudaJ2kStoreRgb8Job job = mct_job.store;
+    const uint pixels = job.copy_width * job.copy_height;
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= pixels) {
+        return;
+    }
+
+    const uint row = gid / job.copy_width;
+    const uint col = gid - row * job.copy_width;
+    const uint src0 = (job.source_y0 + row) * job.input_width0 + job.source_x0 + col;
+    const uint src1 = (job.source_y1 + row) * job.input_width1 + job.source_x1 + col;
+    const uint src2 = (job.source_y2 + row) * job.input_width2 + job.source_x2 + col;
+    const uint channels = job.rgba != 0u ? 4u : 3u;
+    const uint dst = ((job.output_y + row) * job.output_width + job.output_x + col) * channels;
+
+    float out0;
+    float out1;
+    float out2;
+    inverse_mct_sample(
+        plane0[src0],
+        plane1[src1],
+        plane2[src2],
+        mct_job.irreversible97,
+        &out0,
+        &out1,
+        &out2
+    );
+    output[dst] = sample_as_u8(out0 + job.addend0, job.bit_depth0);
+    output[dst + 1u] = sample_as_u8(out1 + job.addend1, job.bit_depth1);
+    output[dst + 2u] = sample_as_u8(out2 + job.addend2, job.bit_depth2);
+    if (job.rgba != 0u) {
+        output[dst + 3u] = 255u;
+    }
+}
+
+extern "C" __global__ void signinum_j2k_store_rgb16_mct(
+    const float *plane0,
+    const float *plane1,
+    const float *plane2,
+    ushort *output,
+    const CudaJ2kStoreRgb16MctJob *job_buffer
+) {
+    const CudaJ2kStoreRgb16MctJob mct_job = job_buffer[0];
+    const CudaJ2kStoreRgb16Job job = mct_job.store;
+    const uint pixels = job.copy_width * job.copy_height;
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= pixels) {
+        return;
+    }
+
+    const uint row = gid / job.copy_width;
+    const uint col = gid - row * job.copy_width;
+    const uint src0 = (job.source_y0 + row) * job.input_width0 + job.source_x0 + col;
+    const uint src1 = (job.source_y1 + row) * job.input_width1 + job.source_x1 + col;
+    const uint src2 = (job.source_y2 + row) * job.input_width2 + job.source_x2 + col;
+    const uint channels = job.rgba != 0u ? 4u : 3u;
+    const uint dst = ((job.output_y + row) * job.output_width + job.output_x + col) * channels;
+
+    float out0;
+    float out1;
+    float out2;
+    inverse_mct_sample(
+        plane0[src0],
+        plane1[src1],
+        plane2[src2],
+        mct_job.irreversible97,
+        &out0,
+        &out1,
+        &out2
+    );
+    output[dst] = sample_as_u16(out0 + job.addend0, job.bit_depth0);
+    output[dst + 1u] = sample_as_u16(out1 + job.addend1, job.bit_depth1);
+    output[dst + 2u] = sample_as_u16(out2 + job.addend2, job.bit_depth2);
+    if (job.rgba != 0u) {
+        output[dst + 3u] = 65535u;
+    }
+}
+
 extern "C" __global__ void signinum_htj2k_decode_codeblocks(
     const uchar *coded_data,
     uint *decoded_data,
@@ -1700,9 +2520,13 @@ extern "C" __global__ void signinum_htj2k_decode_codeblocks(
     const ushort *vlc_table1,
     const ushort *uvlc_table0,
     const ushort *uvlc_table1,
-    J2kHtStatus *status
+    J2kHtStatus *status,
+    uint job_count
 ) {
     const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= job_count) {
+        return;
+    }
     const J2kHtCleanupBatchJob job = jobs[gid];
 
     J2kHtCleanupParams params;
@@ -1719,7 +2543,93 @@ extern "C" __global__ void signinum_htj2k_decode_codeblocks(
     params.dequantization_step = job.dequantization_step;
     params.stripe_causal = job.stripe_causal;
 
-    decode_ht_cleanup_impl(
+    decode_ht_cleanup_impl<false>(
+        coded_data + job.coded_offset,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status + gid
+    );
+}
+
+extern "C" __global__ void signinum_htj2k_decode_codeblocks_multi(
+    const uchar *coded_data,
+    const J2kHtCleanupMultiBatchJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const ushort *uvlc_table0,
+    const ushort *uvlc_table1,
+    J2kHtStatus *status,
+    uint job_count
+) {
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= job_count) {
+        return;
+    }
+    const J2kHtCleanupMultiBatchJob job = jobs[gid];
+    uint *decoded_data = reinterpret_cast<uint *>(static_cast<uintptr_t>(job.output_ptr));
+
+    J2kHtCleanupParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coded_len = job.coded_len;
+    params.cleanup_length = job.cleanup_length;
+    params.refinement_length = job.refinement_length;
+    params.missing_msbs = job.missing_msbs;
+    params.num_bitplanes = job.num_bitplanes;
+    params.number_of_coding_passes = job.number_of_coding_passes;
+    params.output_stride = job.output_stride;
+    params.output_offset = job.output_offset;
+    params.dequantization_step = job.dequantization_step;
+    params.stripe_causal = job.stripe_causal;
+
+    decode_ht_cleanup_impl<false>(
+        coded_data + job.coded_offset,
+        decoded_data,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table0,
+        uvlc_table1,
+        status + gid
+    );
+}
+
+extern "C" __global__ void signinum_htj2k_decode_codeblocks_multi_cleanup_only(
+    const uchar *coded_data,
+    const J2kHtCleanupMultiBatchJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const ushort *uvlc_table0,
+    const ushort *uvlc_table1,
+    J2kHtStatus *status,
+    uint job_count
+) {
+    const uint gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= job_count) {
+        return;
+    }
+    const J2kHtCleanupMultiBatchJob job = jobs[gid];
+    uint *decoded_data = reinterpret_cast<uint *>(static_cast<uintptr_t>(job.output_ptr));
+
+    J2kHtCleanupParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coded_len = job.coded_len;
+    params.cleanup_length = job.cleanup_length;
+    params.refinement_length = job.refinement_length;
+    params.missing_msbs = job.missing_msbs;
+    params.num_bitplanes = job.num_bitplanes;
+    params.number_of_coding_passes = job.number_of_coding_passes;
+    params.output_stride = job.output_stride;
+    params.output_offset = job.output_offset;
+    params.dequantization_step = job.dequantization_step;
+    params.stripe_causal = job.stripe_causal;
+
+    decode_ht_cleanup_impl<true>(
         coded_data + job.coded_offset,
         decoded_data,
         params,
@@ -1737,6 +2647,44 @@ extern "C" __global__ void signinum_j2k_dequantize_htj2k_codeblocks(
 ) {
     const uint job_idx = blockIdx.x;
     const J2kHtCleanupBatchJob job = jobs[job_idx];
+    const uint sample_count = job.width * job.height;
+    for (uint sample = threadIdx.x; sample < sample_count; sample += blockDim.x) {
+        const uint y = sample / job.width;
+        const uint x = sample - y * job.width;
+        const uint idx = job.output_offset + y * job.output_stride + x;
+        decoded_data[idx] = coefficient_to_float_bits(
+            decoded_data[idx],
+            job.num_bitplanes,
+            job.dequantization_step
+        );
+    }
+}
+
+extern "C" __global__ void signinum_j2k_dequantize_htj2k_codeblocks_multi(
+    const J2kHtDequantizeJob *jobs
+) {
+    const uint job_idx = blockIdx.x;
+    const J2kHtDequantizeJob job = jobs[job_idx];
+    uint *decoded_data = reinterpret_cast<uint *>(static_cast<uintptr_t>(job.output_ptr));
+    const uint sample_count = job.width * job.height;
+    for (uint sample = threadIdx.x; sample < sample_count; sample += blockDim.x) {
+        const uint y = sample / job.width;
+        const uint x = sample - y * job.width;
+        const uint idx = job.output_offset + y * job.output_stride + x;
+        decoded_data[idx] = coefficient_to_float_bits(
+            decoded_data[idx],
+            job.num_bitplanes,
+            job.dequantization_step
+        );
+    }
+}
+
+extern "C" __global__ void signinum_j2k_dequantize_htj2k_cleanup_jobs_multi(
+    const J2kHtCleanupMultiBatchJob *jobs
+) {
+    const uint job_idx = blockIdx.x;
+    const J2kHtCleanupMultiBatchJob job = jobs[job_idx];
+    uint *decoded_data = reinterpret_cast<uint *>(static_cast<uintptr_t>(job.output_ptr));
     const uint sample_count = job.width * job.height;
     for (uint sample = threadIdx.x; sample < sample_count; sample += blockDim.x) {
         const uint y = sample / job.width;
