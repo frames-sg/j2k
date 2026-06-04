@@ -547,6 +547,13 @@ fn nvidia_baseline_workflow_exports_direct_decode_artifacts() {
     for required in [
         "run-nvidia-baseline",
         "--bin transcode_compare",
+        "--decomposition-levels 1",
+        "--decomposition-levels 2",
+        "target/transcode_compare_level1.json",
+        "target/transcode_compare_level2.json",
+        "tests/nvidia-baseline/scripts/assert_transcode_perf.py",
+        "SIGNINUM_LEVEL1_CUDA_HT_MIN_MPS",
+        "SIGNINUM_LEVEL2_CUDA_HT_MIN_MPS",
         "--bin decode_compare",
         "--jpeg-dir \"${SIGNINUM_BENCH_JPEG_DIR}\"",
         "--min-inputs 100",
