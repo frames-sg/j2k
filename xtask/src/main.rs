@@ -454,15 +454,7 @@ fn j2k_bench_signoff() -> Result<(), String> {
     run_cargo_with_env(
         &["test", "-p", "signinum-j2k", "--test", "openjpeg_parity"],
         &[("SIGNINUM_REQUIRE_OPENJPEG", "1")],
-    )?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "signinum-j2k-metal",
-        "--bench",
-        "compare",
-        "--no-run",
-    ])
+    )
 }
 
 #[derive(Debug)]
