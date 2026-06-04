@@ -100,6 +100,7 @@ fn should_exit_for_failed_required_report(
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 struct Config {
     inputs: Vec<PathBuf>,
     jpeg_dir: Option<PathBuf>,
@@ -1496,7 +1497,7 @@ fn json_report(report: &DecodeReport, config: &Config) -> String {
 
 fn json_profile(profile: &ProfileMeasurement) -> String {
     let mut json = String::new();
-    json.push_str("{");
+    json.push('{');
     json.push_str(&format!("\"label\": \"{}\"", escape_json(profile.label)));
     json.push_str(&format!(
         ", \"execution_mode\": \"{}\"",
@@ -2101,7 +2102,7 @@ mod tests {
                 timing_scope: "aggregate_batch_correctness",
                 download_policy: "download",
                 input_count: 1,
-                megapixels: 0.065536,
+                megapixels: 0.065_536,
                 codestream_bytes: 100,
                 status: TimedStatus::ok(TimedPixels {
                     wall_ms: 0.5,
