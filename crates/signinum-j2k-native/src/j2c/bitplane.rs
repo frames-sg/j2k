@@ -17,8 +17,84 @@ use super::build::{CodeBlock, SubBandType};
 use super::codestream::CodeBlockStyle;
 use super::decode::{DecompositionStorage, TileDecodeContext};
 use crate::error::{bail, DecodingError, Result};
+use crate::profile;
 use crate::reader::BitReader;
 use crate::J2kCodeBlockSegment;
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct J2kBlockDecodeStats {
+    pub(crate) sigprop_us: u128,
+    pub(crate) magref_us: u128,
+    pub(crate) cleanup_us: u128,
+    pub(crate) bypass_us: u128,
+}
+
+trait J2kDecodeObserver {
+    #[inline(always)]
+    fn phase_start(&self) -> Option<profile::ProfileInstant> {
+        None
+    }
+
+    #[inline(always)]
+    fn add_sigprop_us(&mut self, _start: Option<profile::ProfileInstant>) {}
+
+    #[inline(always)]
+    fn add_magref_us(&mut self, _start: Option<profile::ProfileInstant>) {}
+
+    #[inline(always)]
+    fn add_cleanup_us(&mut self, _start: Option<profile::ProfileInstant>) {}
+
+    #[inline(always)]
+    fn add_bypass_us(&mut self, _start: Option<profile::ProfileInstant>) {}
+}
+
+struct NoJ2kDecodeStats;
+
+impl J2kDecodeObserver for NoJ2kDecodeStats {}
+
+struct RecordingJ2kDecodeStats<'a> {
+    stats: &'a mut J2kBlockDecodeStats,
+    profile_enabled: bool,
+}
+
+impl J2kDecodeObserver for RecordingJ2kDecodeStats<'_> {
+    #[inline(always)]
+    fn phase_start(&self) -> Option<profile::ProfileInstant> {
+        if self.profile_enabled {
+            profile::profile_now(true)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn add_sigprop_us(&mut self, start: Option<profile::ProfileInstant>) {
+        if self.profile_enabled {
+            self.stats.sigprop_us += profile::elapsed_us(start);
+        }
+    }
+
+    #[inline(always)]
+    fn add_magref_us(&mut self, start: Option<profile::ProfileInstant>) {
+        if self.profile_enabled {
+            self.stats.magref_us += profile::elapsed_us(start);
+        }
+    }
+
+    #[inline(always)]
+    fn add_cleanup_us(&mut self, start: Option<profile::ProfileInstant>) {
+        if self.profile_enabled {
+            self.stats.cleanup_us += profile::elapsed_us(start);
+        }
+    }
+
+    #[inline(always)]
+    fn add_bypass_us(&mut self, start: Option<profile::ProfileInstant>) {
+        if self.profile_enabled {
+            self.stats.bypass_us += profile::elapsed_us(start);
+        }
+    }
+}
 
 /// Decode the layers of the given code block into coefficients.
 ///
@@ -66,6 +142,72 @@ pub(crate) fn decode_code_block_segments_validated(
     strict: bool,
     ctx: &mut BitPlaneDecodeContext,
 ) -> Result<()> {
+    let mut observer = NoJ2kDecodeStats;
+    decode_code_block_segments_validated_with_observer(
+        data,
+        segments,
+        width,
+        height,
+        missing_bit_planes,
+        number_of_coding_passes,
+        total_bitplanes,
+        sub_band_type,
+        code_block_style,
+        strict,
+        ctx,
+        &mut observer,
+    )
+}
+
+pub(crate) fn decode_code_block_segments_validated_profiled(
+    data: &[u8],
+    segments: &[J2kCodeBlockSegment],
+    width: u32,
+    height: u32,
+    missing_bit_planes: u8,
+    number_of_coding_passes: u8,
+    total_bitplanes: u8,
+    sub_band_type: SubBandType,
+    code_block_style: &CodeBlockStyle,
+    strict: bool,
+    ctx: &mut BitPlaneDecodeContext,
+    stats: &mut J2kBlockDecodeStats,
+    profile_enabled: bool,
+) -> Result<()> {
+    let mut observer = RecordingJ2kDecodeStats {
+        stats,
+        profile_enabled,
+    };
+    decode_code_block_segments_validated_with_observer(
+        data,
+        segments,
+        width,
+        height,
+        missing_bit_planes,
+        number_of_coding_passes,
+        total_bitplanes,
+        sub_band_type,
+        code_block_style,
+        strict,
+        ctx,
+        &mut observer,
+    )
+}
+
+fn decode_code_block_segments_validated_with_observer<O: J2kDecodeObserver>(
+    data: &[u8],
+    segments: &[J2kCodeBlockSegment],
+    width: u32,
+    height: u32,
+    missing_bit_planes: u8,
+    number_of_coding_passes: u8,
+    total_bitplanes: u8,
+    sub_band_type: SubBandType,
+    code_block_style: &CodeBlockStyle,
+    strict: bool,
+    ctx: &mut BitPlaneDecodeContext,
+    observer: &mut O,
+) -> Result<()> {
     ctx.reset_for_job(
         width,
         height,
@@ -81,7 +223,7 @@ pub(crate) fn decode_code_block_segments_validated(
         return Ok(());
     }
 
-    decode_code_block_segments_inner(data, segments, number_of_coding_passes, ctx)
+    decode_code_block_segments_inner(data, segments, number_of_coding_passes, ctx, observer)
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
 
     Ok(())
@@ -92,6 +234,17 @@ fn decode_inner(
     storage: &DecompositionStorage<'_>,
     ctx: &mut BitPlaneDecodeContext,
     bp_buffers: &mut BitPlaneDecodeBuffers,
+) -> Option<()> {
+    let mut observer = NoJ2kDecodeStats;
+    decode_inner_with_observer(code_block, storage, ctx, bp_buffers, &mut observer)
+}
+
+fn decode_inner_with_observer<O: J2kDecodeObserver>(
+    code_block: &CodeBlock,
+    storage: &DecompositionStorage<'_>,
+    ctx: &mut BitPlaneDecodeContext,
+    bp_buffers: &mut BitPlaneDecodeBuffers,
+    observer: &mut O,
 ) -> Option<()> {
     bp_buffers.reset();
 
@@ -138,9 +291,9 @@ fn decode_inner(
             .number_of_coding_passes
             .min(ctx.max_coding_passes);
         if ctx.uses_normal_arithmetic_neighbor_path() {
-            handle_normal_arithmetic_coding_passes(0, end, ctx, &mut decoder)?;
+            handle_normal_arithmetic_coding_passes(0, end, ctx, &mut decoder, observer)?;
         } else {
-            handle_arithmetic_coding_passes(0, end, ctx, &mut decoder)?;
+            handle_arithmetic_coding_passes(0, end, ctx, &mut decoder, observer)?;
         }
     } else {
         // Otherwise, each segment introduces a termination. For "termination on
@@ -174,10 +327,17 @@ fn decode_inner(
                     end_coding_pass,
                     ctx,
                     &mut decoder,
+                    observer,
                 )?;
             } else {
                 let mut decoder = BypassDecoder::new(data, ctx.strict);
-                handle_bypass_coding_passes(start_coding_pass, end_coding_pass, ctx, &mut decoder)?;
+                handle_bypass_coding_passes(
+                    start_coding_pass,
+                    end_coding_pass,
+                    ctx,
+                    &mut decoder,
+                    observer,
+                )?;
             }
         }
     }
@@ -190,8 +350,9 @@ fn handle_arithmetic_coding_passes(
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
-    handle_arithmetic_coding_passes_with_neighbors::<false>(start, end, ctx, decoder)
+    handle_arithmetic_coding_passes_with_neighbors::<false>(start, end, ctx, decoder, observer)
 }
 
 fn handle_normal_arithmetic_coding_passes(
@@ -199,8 +360,9 @@ fn handle_normal_arithmetic_coding_passes(
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
-    handle_arithmetic_coding_passes_with_neighbors::<true>(start, end, ctx, decoder)
+    handle_arithmetic_coding_passes_with_neighbors::<true>(start, end, ctx, decoder, observer)
 }
 
 fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
@@ -208,6 +370,7 @@ fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
     for coding_pass in start..end {
         let current_bitplane = coding_pass.div_ceil(3);
@@ -217,6 +380,7 @@ fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
         // are in the order SPP -> MRR -> C.
         match coding_pass % 3 {
             0 => {
+                let phase_start = observer.phase_start();
                 cleanup_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(ctx, decoder);
 
                 if ctx.style.segmentation_symbols {
@@ -231,16 +395,21 @@ fn handle_arithmetic_coding_passes_with_neighbors<const NORMAL_NEIGHBORS: bool>(
                 }
 
                 ctx.reset_for_next_bitplane();
+                observer.add_cleanup_us(phase_start);
             }
             1 => {
+                let phase_start = observer.phase_start();
                 significance_propagation_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
                     ctx, decoder,
                 );
+                observer.add_sigprop_us(phase_start);
             }
             2 => {
+                let phase_start = observer.phase_start();
                 magnitude_refinement_pass_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
                     ctx, decoder,
                 );
+                observer.add_magref_us(phase_start);
             }
             _ => unreachable!(),
         }
@@ -258,8 +427,10 @@ fn handle_bypass_coding_passes(
     end: u8,
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut BypassDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
     for coding_pass in start..end {
+        let phase_start = observer.phase_start();
         let current_bitplane = coding_pass.div_ceil(3);
         ctx.current_bit_position = ctx.bitplanes - 1 - current_bitplane;
 
@@ -292,6 +463,7 @@ fn handle_bypass_coding_passes(
         if ctx.style.reset_context_probabilities {
             ctx.reset_contexts();
         }
+        observer.add_bypass_us(phase_start);
     }
 
     Some(())
@@ -300,10 +472,9 @@ fn handle_bypass_coding_passes(
 // We only allow 31 bit planes because we need one bit for the sign.
 pub(crate) const BITPLANE_BIT_SIZE: u32 = size_of::<u32>() as u32 * 8 - 1;
 
-const SIGNIFICANCE_SHIFT: u8 = 7;
 const HAS_MAGNITUDE_REFINEMENT_SHIFT: u8 = 6;
 const HAS_ZERO_CODING_SHIFT: u8 = 5;
-const SIGNIFICANCE_MASK: u8 = 1 << SIGNIFICANCE_SHIFT;
+const SIGNIFICANCE_MASK: u8 = 1 << 7;
 const HAS_MAGNITUDE_REFINEMENT_MASK: u8 = 1 << HAS_MAGNITUDE_REFINEMENT_SHIFT;
 const HAS_ZERO_CODING_MASK: u8 = 1 << HAS_ZERO_CODING_SHIFT;
 
@@ -316,26 +487,13 @@ pub(crate) struct CoefficientState(u8);
 
 impl CoefficientState {
     #[inline(always)]
-    fn set_bit(&mut self, shift: u8, value: u8) {
-        debug_assert!(value < 2);
-
-        self.0 &= !(1_u8 << shift);
-        self.0 |= value << shift;
-    }
-
-    #[inline(always)]
     fn set_significant(&mut self) {
-        self.set_bit(SIGNIFICANCE_SHIFT, 1);
+        self.0 |= SIGNIFICANCE_MASK;
     }
 
     #[inline(always)]
     fn is_significant(&self) -> bool {
-        self.significance() == 1
-    }
-
-    #[inline(always)]
-    fn significance(&self) -> u8 {
-        (self.0 >> SIGNIFICANCE_SHIFT) & 1
+        self.0 & SIGNIFICANCE_MASK != 0
     }
 }
 
@@ -442,6 +600,10 @@ impl BitPlaneDecodeBuffers {
 pub(crate) struct BitPlaneDecodeContext {
     /// A vector of bit-packed fields for each coefficient in the code-block.
     coefficient_states: Vec<CoefficientState>,
+    /// One 4-bit mask per scan stripe column for coefficients that are significant.
+    significant_scan_masks: Vec<u8>,
+    /// One 4-bit mask per scan stripe column for zero-coded coefficients in this bitplane.
+    zero_coding_scan_masks: Vec<u8>,
     /// The neighbor significances for each coefficient.
     neighbor_significances: Vec<NeighborSignificances>,
     /// The magnitude and signs of each coefficient that is successively built
@@ -473,6 +635,8 @@ impl Default for BitPlaneDecodeContext {
     fn default() -> Self {
         Self {
             coefficient_states: vec![],
+            significant_scan_masks: vec![],
+            zero_coding_scan_masks: vec![],
             coefficients: vec![],
             neighbor_significances: vec![],
             width: 0,
@@ -516,6 +680,12 @@ impl BitPlaneDecodeContext {
         self.coefficient_states.clear();
         self.coefficient_states
             .resize(num_coefficients, CoefficientState::default());
+
+        let scan_units = width as usize * height.div_ceil(4) as usize;
+        self.significant_scan_masks.clear();
+        self.significant_scan_masks.resize(scan_units, 0);
+        self.zero_coding_scan_masks.clear();
+        self.zero_coding_scan_masks.resize(scan_units, 0);
 
         self.width = width;
         self.padded_width = padded_width;
@@ -608,6 +778,7 @@ impl BitPlaneDecodeContext {
                 state.0 &= !HAS_ZERO_CODING_MASK;
             }
         }
+        self.zero_coding_scan_masks.fill(0);
     }
 
     #[inline(always)]
@@ -621,6 +792,7 @@ impl BitPlaneDecodeContext {
 
         if !is_significant {
             self.coefficient_states[idx].set_significant();
+            self.set_significant_scan_mask(idx, padded_width);
 
             // Update all neighbors so they know this coefficient is significant
             // now.
@@ -655,6 +827,7 @@ impl BitPlaneDecodeContext {
         }
 
         self.coefficient_states[idx].set_significant();
+        self.set_significant_scan_mask(idx, padded_width);
 
         let top_start = idx - padded_width - 1;
         let top = &mut self.neighbor_significances[top_start..top_start + 3];
@@ -677,6 +850,36 @@ impl BitPlaneDecodeContext {
     #[inline(always)]
     fn push_magnitude_bit_index(&mut self, idx: usize, bit: u32) {
         self.coefficients[idx].push_bit_at(bit, self.current_bit_position);
+    }
+
+    #[inline(always)]
+    fn set_zero_coding_index(&mut self, idx: usize, padded_width: usize) {
+        self.coefficient_states[idx].0 |= HAS_ZERO_CODING_MASK;
+        let (scan_unit, bit) = self.scan_unit_mask_index(idx, padded_width);
+        self.zero_coding_scan_masks[scan_unit] |= bit;
+    }
+
+    #[inline(always)]
+    fn set_significant_scan_mask(&mut self, idx: usize, padded_width: usize) {
+        let (scan_unit, bit) = self.scan_unit_mask_index(idx, padded_width);
+        self.significant_scan_masks[scan_unit] |= bit;
+    }
+
+    #[inline(always)]
+    fn scan_unit_mask_index(&self, idx: usize, padded_width: usize) -> (usize, u8) {
+        let row = idx / padded_width;
+        let col = idx - row * padded_width;
+        let pad = COEFFICIENTS_PADDING as usize;
+        debug_assert!(row >= pad);
+        debug_assert!(col >= pad);
+
+        let y = row - pad;
+        let x = col - pad;
+        debug_assert!(y < self.height as usize);
+        debug_assert!(x < self.width as usize);
+
+        let scan_unit = (y >> 2) * self.width as usize + x;
+        (scan_unit, 1u8 << (y & 3))
     }
 
     #[inline(always)]
@@ -719,6 +922,7 @@ fn decode_code_block_segments_inner(
     segments: &[J2kCodeBlockSegment],
     number_of_coding_passes: u8,
     ctx: &mut BitPlaneDecodeContext,
+    observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
     let mut expected_start = 0u8;
 
@@ -745,6 +949,7 @@ fn decode_code_block_segments_inner(
                     end_coding_pass,
                     ctx,
                     &mut decoder,
+                    observer,
                 )?;
             } else {
                 handle_arithmetic_coding_passes(
@@ -752,11 +957,18 @@ fn decode_code_block_segments_inner(
                     end_coding_pass,
                     ctx,
                     &mut decoder,
+                    observer,
                 )?;
             }
         } else {
             let mut decoder = BypassDecoder::new(segment_data, ctx.strict);
-            handle_bypass_coding_passes(start_coding_pass, end_coding_pass, ctx, &mut decoder)?;
+            handle_bypass_coding_passes(
+                start_coding_pass,
+                end_coding_pass,
+                ctx,
+                &mut decoder,
+                observer,
+            )?;
         }
     }
 
@@ -848,7 +1060,7 @@ impl SafeScalarTier1 {
                             context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
                         let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label))?;
                         ctx.push_magnitude_bit_index(idx, bit);
-                        ctx.coefficient_states[idx].0 |= HAS_ZERO_CODING_MASK;
+                        ctx.set_zero_coding_index(idx, padded_width);
 
                         if bit == 1 {
                             decode_sign_bit_bypass(idx, y, ctx, decoder)?;
@@ -872,26 +1084,41 @@ impl SafeScalarTier1 {
         let height = ctx.height as usize;
         let padded_width = ctx.padded_width as usize;
 
-        for base_y in (0..height).step_by(4) {
-            let y_end = (base_y + 4).min(height);
+        for (stripe, base_y) in (0..height).step_by(4).enumerate() {
+            let stripe_height = (base_y + 4).min(height) - base_y;
+            let scan_unit_row = stripe * width;
+
             for x in 0..width {
-                let mut idx = (base_y + COEFFICIENTS_PADDING as usize) * padded_width
+                let mut mask = ctx.significant_scan_masks[scan_unit_row + x]
+                    & !ctx.zero_coding_scan_masks[scan_unit_row + x];
+                if mask == 0 {
+                    continue;
+                }
+
+                let top_idx = (base_y + COEFFICIENTS_PADDING as usize) * padded_width
                     + x
                     + COEFFICIENTS_PADDING as usize;
 
-                for y in base_y..y_end {
-                    let state = ctx.coefficient_states[idx].0;
-
-                    if state & SIGNIFICANCE_MASK != 0 && state & HAS_ZERO_CODING_MASK == 0 {
-                        let neighbors = ctx.neighborhood_significance_states_index(idx, y);
-                        let ctx_label =
-                            context_label_magnitude_refinement_coding_from_state(state, neighbors);
-                        let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label))?;
-                        ctx.push_magnitude_bit_index(idx, bit);
-                        ctx.coefficient_states[idx].0 |= HAS_MAGNITUDE_REFINEMENT_MASK;
+                while mask != 0 {
+                    let bit_y = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    if bit_y >= stripe_height {
+                        continue;
                     }
 
-                    idx += padded_width;
+                    let y = base_y + bit_y;
+                    let idx = top_idx + bit_y * padded_width;
+                    let state = ctx.coefficient_states[idx].0;
+
+                    debug_assert!(state & SIGNIFICANCE_MASK != 0);
+                    debug_assert!(state & HAS_ZERO_CODING_MASK == 0);
+
+                    let neighbors = ctx.neighborhood_significance_states_index(idx, y);
+                    let ctx_label =
+                        context_label_magnitude_refinement_coding_from_state(state, neighbors);
+                    let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label))?;
+                    ctx.push_magnitude_bit_index(idx, bit);
+                    ctx.coefficient_states[idx].0 |= HAS_MAGNITUDE_REFINEMENT_MASK;
                 }
             }
         }
@@ -908,16 +1135,25 @@ fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
     let height = ctx.height as usize;
     let padded_width = ctx.padded_width as usize;
 
-    for base_y in (0..height).step_by(4) {
+    for (stripe, base_y) in (0..height).step_by(4).enumerate() {
         let y_end = (base_y + 4).min(height);
         let stripe_height = y_end - base_y;
+        let valid_mask = scan_unit_valid_mask(stripe_height);
+        let scan_unit_row = stripe * width;
 
         for x in 0..width {
+            let scan_unit = scan_unit_row + x;
+            let candidate_mask = cleanup_candidate_scan_mask(ctx, scan_unit, stripe_height);
+            if candidate_mask == 0 {
+                continue;
+            }
+
             let top_idx = (base_y + COEFFICIENTS_PADDING as usize) * padded_width
                 + x
                 + COEFFICIENTS_PADDING as usize;
 
-            if stripe_height == 4
+            if candidate_mask == valid_mask
+                && stripe_height == 4
                 && cleanup_run_length_candidate_with_neighbors::<NORMAL_NEIGHBORS>(
                     ctx,
                     top_idx,
@@ -963,8 +1199,12 @@ fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
                 continue;
             }
 
-            let mut idx = top_idx;
-            for y in base_y..y_end {
+            let mut mask = candidate_mask;
+            while mask != 0 {
+                let bit_y = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let y = base_y + bit_y;
+                let idx = top_idx + bit_y * padded_width;
                 cleanup_coefficient_arithmetic_with_neighbors::<NORMAL_NEIGHBORS>(
                     ctx,
                     decoder,
@@ -972,10 +1212,24 @@ fn cleanup_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
                     y,
                     padded_width,
                 );
-                idx += padded_width;
             }
         }
     }
+}
+
+#[inline(always)]
+fn cleanup_candidate_scan_mask(
+    ctx: &BitPlaneDecodeContext,
+    scan_unit: usize,
+    stripe_height: usize,
+) -> u8 {
+    scan_unit_valid_mask(stripe_height)
+        & !(ctx.significant_scan_masks[scan_unit] | ctx.zero_coding_scan_masks[scan_unit])
+}
+
+#[inline(always)]
+fn scan_unit_valid_mask(stripe_height: usize) -> u8 {
+    (1u8 << stripe_height) - 1
 }
 
 fn significance_propagation_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: bool>(
@@ -1006,7 +1260,7 @@ fn significance_propagation_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBOR
                         context_label_zero_coding_from_neighbors(neighbors, ctx.sub_band_type);
                     let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
                     ctx.push_magnitude_bit_index(idx, bit);
-                    ctx.coefficient_states[idx].0 |= HAS_ZERO_CODING_MASK;
+                    ctx.set_zero_coding_index(idx, padded_width);
 
                     // "If the value of this bit is 1 then the significance
                     // state is set to 1 and the immediate next bit to be decoded is
@@ -1034,27 +1288,42 @@ fn magnitude_refinement_pass_arithmetic_with_neighbors<const NORMAL_NEIGHBORS: b
     let height = ctx.height as usize;
     let padded_width = ctx.padded_width as usize;
 
-    for base_y in (0..height).step_by(4) {
-        let y_end = (base_y + 4).min(height);
+    for (stripe, base_y) in (0..height).step_by(4).enumerate() {
+        let stripe_height = (base_y + 4).min(height) - base_y;
+        let scan_unit_row = stripe * width;
+
         for x in 0..width {
-            let mut idx = (base_y + COEFFICIENTS_PADDING as usize) * padded_width
+            let mut mask = ctx.significant_scan_masks[scan_unit_row + x]
+                & !ctx.zero_coding_scan_masks[scan_unit_row + x];
+            if mask == 0 {
+                continue;
+            }
+
+            let top_idx = (base_y + COEFFICIENTS_PADDING as usize) * padded_width
                 + x
                 + COEFFICIENTS_PADDING as usize;
 
-            for y in base_y..y_end {
-                let state = ctx.coefficient_states[idx].0;
-
-                if state & SIGNIFICANCE_MASK != 0 && state & HAS_ZERO_CODING_MASK == 0 {
-                    let neighbors =
-                        neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y);
-                    let ctx_label =
-                        context_label_magnitude_refinement_coding_from_state(state, neighbors);
-                    let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
-                    ctx.push_magnitude_bit_index(idx, bit);
-                    ctx.coefficient_states[idx].0 |= HAS_MAGNITUDE_REFINEMENT_MASK;
+            while mask != 0 {
+                let bit_y = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                if bit_y >= stripe_height {
+                    continue;
                 }
 
-                idx += padded_width;
+                let y = base_y + bit_y;
+                let idx = top_idx + bit_y * padded_width;
+                let state = ctx.coefficient_states[idx].0;
+
+                debug_assert!(state & SIGNIFICANCE_MASK != 0);
+                debug_assert!(state & HAS_ZERO_CODING_MASK == 0);
+
+                let ctx_label =
+                    context_label_magnitude_refinement_coding_from_state_lazy(state, || {
+                        neighborhood_significance_states_for_path::<NORMAL_NEIGHBORS>(ctx, idx, y)
+                    });
+                let bit = decoder.read_bit(ctx.arithmetic_decoder_context(ctx_label));
+                ctx.push_magnitude_bit_index(idx, bit);
+                ctx.coefficient_states[idx].0 |= HAS_MAGNITUDE_REFINEMENT_MASK;
             }
         }
     }
@@ -1332,12 +1601,21 @@ fn context_label_zero_coding_from_neighbors(neighbors: u8, sub_band_type: SubBan
 /// Return the context label for magnitude refinement coding (Table D.4).
 #[inline(always)]
 fn context_label_magnitude_refinement_coding_from_state(state: u8, neighbors: u8) -> u8 {
-    // If magnitude refined, then 16.
-    let m1 = ((state & HAS_MAGNITUDE_REFINEMENT_MASK) >> HAS_MAGNITUDE_REFINEMENT_SHIFT) * 16;
-    // Else: If at least one neighbor is significant then 15, else 14.
-    let m2 = 14 + neighbors.min(1);
+    context_label_magnitude_refinement_coding_from_state_lazy(state, || neighbors)
+}
 
-    u8::max(m1, m2)
+#[inline(always)]
+fn context_label_magnitude_refinement_coding_from_state_lazy(
+    state: u8,
+    neighbors: impl FnOnce() -> u8,
+) -> u8 {
+    // If magnitude refined, then 16.
+    if state & HAS_MAGNITUDE_REFINEMENT_MASK != 0 {
+        16
+    } else {
+        // Else: If at least one neighbor is significant then 15, else 14.
+        14 + neighbors().min(1)
+    }
 }
 
 // Bypass bit reads can fail in strict mode when the raw segment runs short.
@@ -1597,6 +1875,8 @@ mod tests {
             width: 3,
             height: 3,
             padded_width: 5,
+            significant_scan_masks: vec![0; 3],
+            zero_coding_scan_masks: vec![0; 3],
             style: CodeBlockStyle::default(),
             ..BitPlaneDecodeContext::default()
         };
@@ -1613,6 +1893,8 @@ mod tests {
             padded_width: generic.padded_width,
             style: generic.style,
             coefficient_states: generic.coefficient_states.clone(),
+            significant_scan_masks: vec![0; 3],
+            zero_coding_scan_masks: vec![0; 3],
             neighbor_significances: generic.neighbor_significances.clone(),
             ..BitPlaneDecodeContext::default()
         };
@@ -1640,6 +1922,78 @@ mod tests {
                 .map(|neighbors| neighbors.0)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn refined_magnitude_context_does_not_require_neighbor_state() {
+        let state = SIGNIFICANCE_MASK | HAS_MAGNITUDE_REFINEMENT_MASK;
+
+        assert_eq!(
+            context_label_magnitude_refinement_coding_from_state_lazy(state, || {
+                panic!("refined magnitude context should not inspect neighbors")
+            }),
+            16
+        );
+    }
+
+    #[test]
+    fn first_magnitude_context_uses_neighbor_presence() {
+        assert_eq!(
+            context_label_magnitude_refinement_coding_from_state_lazy(SIGNIFICANCE_MASK, || 0),
+            14
+        );
+        assert_eq!(
+            context_label_magnitude_refinement_coding_from_state_lazy(SIGNIFICANCE_MASK, || 1),
+            15
+        );
+    }
+
+    #[test]
+    fn scan_unit_masks_track_significance_and_current_bitplane_zero_coding() {
+        let mut ctx = BitPlaneDecodeContext::default();
+        let style = CodeBlockStyle::default();
+        ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true)
+            .expect("reset context");
+
+        let padded_width = ctx.padded_width as usize;
+        let y = 4usize;
+        let x = 3usize;
+        let idx =
+            (y + COEFFICIENTS_PADDING as usize) * padded_width + x + COEFFICIENTS_PADDING as usize;
+        let scan_unit = (y >> 2) * ctx.width as usize + x;
+        let bit = 1u8 << (y & 3);
+
+        ctx.set_significant_index(idx, padded_width);
+        ctx.set_zero_coding_index(idx, padded_width);
+
+        assert_eq!(ctx.significant_scan_masks[scan_unit], bit);
+        assert_eq!(ctx.zero_coding_scan_masks[scan_unit], bit);
+
+        ctx.reset_for_next_bitplane();
+
+        assert_eq!(ctx.significant_scan_masks[scan_unit], bit);
+        assert_eq!(ctx.zero_coding_scan_masks[scan_unit], 0);
+    }
+
+    #[test]
+    fn cleanup_candidate_mask_excludes_significant_and_zero_coded_coefficients() {
+        let mut ctx = BitPlaneDecodeContext::default();
+        let style = CodeBlockStyle::default();
+        ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true)
+            .expect("reset context");
+
+        let padded_width = ctx.padded_width as usize;
+        let significant_idx =
+            (1 + COEFFICIENTS_PADDING as usize) * padded_width + COEFFICIENTS_PADDING as usize + 2;
+        let zero_coded_idx =
+            (3 + COEFFICIENTS_PADDING as usize) * padded_width + COEFFICIENTS_PADDING as usize + 2;
+        let scan_unit = 2;
+
+        ctx.set_significant_index(significant_idx, padded_width);
+        ctx.set_zero_coding_index(zero_coded_idx, padded_width);
+
+        assert_eq!(cleanup_candidate_scan_mask(&ctx, scan_unit, 4), 0b0101);
+        assert_eq!(cleanup_candidate_scan_mask(&ctx, scan_unit, 2), 0b0001);
     }
 
     #[test]

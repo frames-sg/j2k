@@ -1560,6 +1560,358 @@ fn decode_magnitude_sign_phase(
 }
 
 #[inline(always)]
+fn decode_magnitude_sign_pair_from_cleanup(
+    magsgn: &mut ForwardBitReader<0xFF>,
+    decoded_data: &mut [u32],
+    v_n_scratch: &mut [u32],
+    inf: u32,
+    uq: u32,
+    mmsbp2: u32,
+    p: u32,
+    width: u32,
+    stride: usize,
+    second_row_present: bool,
+    x: &mut u32,
+    dp: &mut usize,
+    vp: &mut usize,
+    prev_v_n: &mut u32,
+) -> Option<()> {
+    if uq > mmsbp2 {
+        return None;
+    }
+
+    let (val0, _) = decode_mag_sgn_sample_with_vn(magsgn, inf, 0, uq, p);
+    decoded_data[*dp] = val0;
+
+    let (val1, v_n1) = decode_mag_sgn_sample_with_vn(magsgn, inf, 1, uq, p);
+    if second_row_present {
+        decoded_data[*dp + stride] = val1;
+    }
+    v_n_scratch[*vp] = *prev_v_n | v_n1;
+    *prev_v_n = 0;
+    *dp += 1;
+    *x += 1;
+
+    if *x >= width {
+        *vp += 1;
+        return Some(());
+    }
+
+    let (val2, _) = decode_mag_sgn_sample_with_vn(magsgn, inf, 2, uq, p);
+    decoded_data[*dp] = val2;
+
+    let (val3, v_n3) = decode_mag_sgn_sample_with_vn(magsgn, inf, 3, uq, p);
+    if second_row_present {
+        decoded_data[*dp + stride] = val3;
+    }
+    *prev_v_n = v_n3;
+    *dp += 1;
+    *x += 1;
+    *vp += 1;
+
+    Some(())
+}
+
+#[inline(always)]
+fn decode_magnitude_sign_first_row_from_cleanup(
+    magsgn: &mut ForwardBitReader<0xFF>,
+    cleanup: &[u16],
+    decoded_data: &mut [u32],
+    v_n_scratch: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+) -> Option<()> {
+    let p = 30 - missing_msbs;
+    let mmsbp2 = missing_msbs + 2;
+    let stride = stride as usize;
+    let second_row_present = height > 1;
+    let mut prev_v_n = 0u32;
+    let mut x = 0u32;
+    let mut sp = 0usize;
+    let mut vp = 0usize;
+    let mut dp = 0usize;
+
+    while x < width {
+        let inf = u32::from(cleanup[sp]);
+        let uq = u32::from(cleanup[sp + 1]);
+        decode_magnitude_sign_pair_from_cleanup(
+            magsgn,
+            decoded_data,
+            v_n_scratch,
+            inf,
+            uq,
+            mmsbp2,
+            p,
+            width,
+            stride,
+            second_row_present,
+            &mut x,
+            &mut dp,
+            &mut vp,
+            &mut prev_v_n,
+        )?;
+        sp += 2;
+    }
+    v_n_scratch[vp] = prev_v_n;
+
+    Some(())
+}
+
+#[inline(always)]
+fn decode_magnitude_sign_row_from_cleanup(
+    magsgn: &mut ForwardBitReader<0xFF>,
+    cleanup: &[u16],
+    decoded_data: &mut [u32],
+    v_n_scratch: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    y: u32,
+    stride: u32,
+    sstr: usize,
+) -> Option<()> {
+    let p = 30 - missing_msbs;
+    let mmsbp2 = missing_msbs + 2;
+    let row_base = (y >> 1) as usize * sstr;
+    let stride = stride as usize;
+    let mut sp = row_base;
+    let mut vp = 0usize;
+    let mut dp = y as usize * stride;
+    let mut prev_v_n = 0u32;
+    let mut x = 0u32;
+    let second_row_present = y + 1 < height;
+
+    while x < width {
+        let inf = u32::from(cleanup[sp]);
+        let u_q = u32::from(cleanup[sp + 1]);
+        let mut gamma = inf & 0xF0;
+        gamma &= gamma.wrapping_sub(0x10);
+        let mut emax = v_n_scratch[vp] | v_n_scratch[vp + 1];
+        emax = 31 - (emax | 2).leading_zeros();
+        let kappa = if gamma != 0 { emax } else { 1 };
+        let uq = u_q + kappa;
+
+        decode_magnitude_sign_pair_from_cleanup(
+            magsgn,
+            decoded_data,
+            v_n_scratch,
+            inf,
+            uq,
+            mmsbp2,
+            p,
+            width,
+            stride,
+            second_row_present,
+            &mut x,
+            &mut dp,
+            &mut vp,
+            &mut prev_v_n,
+        )?;
+        sp += 2;
+    }
+
+    v_n_scratch[vp] = prev_v_n;
+
+    Some(())
+}
+
+#[inline(never)]
+fn decode_cleanup_and_magnitude_sign_phase(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    decoded_data: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+    v_n_scratch: &mut [u32],
+    observer: &mut impl HtDecodeObserver,
+) -> Option<()> {
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let mut mel = MelDecoder::new(coded_data, lcup, scup);
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
+    let mut run = mel.get_run()?;
+    let mut c_q = 0u32;
+    let mut row_offset = 0usize;
+    let mut x = 0u32;
+
+    let phase_start = observer.phase_start();
+    while x < width {
+        let mut vlc_val = vlc.fetch();
+        let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 {
+            run -= 2;
+            t0 = if run == -1 { t0 } else { 0 };
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+        scratch[row_offset] = t0 as u16;
+        x += 2;
+        c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
+        vlc_val = vlc.advance(t0 & 0x7);
+
+        let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 && x < width {
+            run -= 2;
+            t1 = if run == -1 { t1 } else { 0 };
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+        if x >= width {
+            t1 = 0;
+        }
+        scratch[row_offset + 2] = t1 as u16;
+        x += 2;
+        c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
+        vlc_val = vlc.advance(t1 & 0x7);
+
+        let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+        if uvlc_mode == 0xC0 {
+            run -= 2;
+            if run == -1 {
+                uvlc_mode += 0x40;
+            }
+            if run < 0 {
+                run = mel.get_run()?;
+            }
+        }
+
+        let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+        vlc_val = vlc.advance(uvlc_entry & 0x7);
+        uvlc_entry >>= 3;
+        let mut len = uvlc_entry & 0xF;
+        let tmp = vlc_val & ((1_u32 << len) - 1);
+        let _ = vlc.advance(len);
+        uvlc_entry >>= 4;
+        len = uvlc_entry & 0x7;
+        uvlc_entry >>= 3;
+        scratch[row_offset + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+        scratch[row_offset + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+        row_offset += 4;
+    }
+    scratch[row_offset] = 0;
+    scratch[row_offset + 1] = 0;
+    observer.add_cleanup_us(phase_start);
+
+    let phase_start = observer.phase_start();
+    decode_magnitude_sign_first_row_from_cleanup(
+        &mut magsgn,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+    )?;
+    observer.add_mag_sgn_us(phase_start);
+
+    for y in (2..height).step_by(2) {
+        let row_base = (y >> 1) as usize * sstr;
+        let prev_base = row_base - sstr;
+        let mut x = 0u32;
+        let mut c_q = 0u32;
+        let mut row_offset = row_base;
+
+        let phase_start = observer.phase_start();
+        while x < width {
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
+
+            let mut vlc_val = vlc.fetch();
+            let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+            if c_q == 0 {
+                run -= 2;
+                t0 = if run == -1 { t0 } else { 0 };
+                if run < 0 {
+                    run = mel.get_run()?;
+                }
+            }
+            scratch[row_offset] = t0 as u16;
+            x += 2;
+
+            c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+            c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
+            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
+            vlc_val = vlc.advance(t0 & 0x7);
+
+            let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+            if c_q == 0 && x < width {
+                run -= 2;
+                t1 = if run == -1 { t1 } else { 0 };
+                if run < 0 {
+                    run = mel.get_run()?;
+                }
+            }
+            if x >= width {
+                t1 = 0;
+            }
+            scratch[row_offset + 2] = t1 as u16;
+            x += 2;
+
+            c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+            c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
+            vlc_val = vlc.advance(t1 & 0x7);
+
+            let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+            let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+            vlc_val = vlc.advance(uvlc_entry & 0x7);
+            uvlc_entry >>= 3;
+            let mut len = uvlc_entry & 0xF;
+            let tmp = vlc_val & ((1_u32 << len) - 1);
+            let _ = vlc.advance(len);
+            uvlc_entry >>= 4;
+            len = uvlc_entry & 0x7;
+            uvlc_entry >>= 3;
+            scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+            scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+            row_offset += 4;
+        }
+
+        scratch[row_offset] = 0;
+        scratch[row_offset + 1] = 0;
+        observer.add_cleanup_us(phase_start);
+
+        let phase_start = observer.phase_start();
+        decode_magnitude_sign_row_from_cleanup(
+            &mut magsgn,
+            scratch,
+            decoded_data,
+            v_n_scratch,
+            missing_msbs,
+            width,
+            height,
+            y,
+            stride,
+            sstr,
+        )?;
+        observer.add_mag_sgn_us(phase_start);
+    }
+
+    Some(())
+}
+
+#[inline(always)]
 fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
     cleanup_data: &[u8],
     refinement_data: &[u8],
@@ -1602,28 +1954,51 @@ fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
 
     let quad_rows = height.div_ceil(2) as usize;
     let sstr = cleanup_symbol_stride(width);
-    let scratch = zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1));
-    let phase_start = observer.phase_start();
-    decode_cleanup_symbols(cleanup_data, lcup, scup, width, height, sstr, scratch)?;
-    observer.add_cleanup_us(phase_start);
-
     let v_n_width = width.div_ceil(2) as usize + 2;
     let v_n_scratch = resized_u32_scratch(&mut scratch_buffers.v_n, v_n_width);
-    let phase_start = observer.phase_start();
-    decode_magnitude_sign_phase(
-        cleanup_data,
-        lcup,
-        scup,
-        scratch,
-        decoded_data,
-        missing_msbs,
-        width,
-        height,
-        stride,
-        sstr,
-        v_n_scratch,
-    )?;
-    observer.add_mag_sgn_us(phase_start);
+    let cleanup_only = PHASE_LIMIT == PHASE_LIMIT_CLEANUP || num_passes == 1;
+    let scratch = if cleanup_only {
+        resized_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))
+    } else {
+        zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))
+    };
+
+    if cleanup_only {
+        decode_cleanup_and_magnitude_sign_phase(
+            cleanup_data,
+            lcup,
+            scup,
+            decoded_data,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            scratch,
+            v_n_scratch,
+            observer,
+        )?;
+    } else {
+        let phase_start = observer.phase_start();
+        decode_cleanup_symbols(cleanup_data, lcup, scup, width, height, sstr, scratch)?;
+        observer.add_cleanup_us(phase_start);
+
+        let phase_start = observer.phase_start();
+        decode_magnitude_sign_phase(
+            cleanup_data,
+            lcup,
+            scup,
+            scratch,
+            decoded_data,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            v_n_scratch,
+        )?;
+        observer.add_mag_sgn_us(phase_start);
+    }
 
     if PHASE_LIMIT == PHASE_LIMIT_CLEANUP {
         return Some(());

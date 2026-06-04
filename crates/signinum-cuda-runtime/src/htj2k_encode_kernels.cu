@@ -36,6 +36,9 @@ static constexpr uint J2K_HT_VLC_OFFSET = J2K_HT_MS_SIZE + J2K_HT_MEL_SIZE;
 static constexpr uint J2K_HT_SIGPROP_SCRATCH = 513u;
 static constexpr uint J2K_HT_MAX_CODEBLOCK_WIDTH = 1024u;
 static constexpr uint J2K_HT_MAX_CODEBLOCK_SAMPLES = 4096u;
+static constexpr uint J2K_HT_ENCODE_THREADS = 128u;
+static constexpr uint J2K_HT_COMPACT_ASSEMBLE_FLAG = 0x80000000u;
+static constexpr uint J2K_HT_COMPACT_LENGTH_MASK = 0x7FFFu;
 
 struct J2kHtEncodeParams {
     uint width;
@@ -138,6 +141,12 @@ __device__ inline void j2k_set_ht_encode_status_with_segments(
     status->reserved0 = cleanup_len;
     status->reserved1 = refinement_len;
     status->reserved2 = reserved;
+}
+
+__device__ inline uint j2k_ht_pack_compact_assembly_lengths(uint mel_len, uint vlc_len) {
+    return J2K_HT_COMPACT_ASSEMBLE_FLAG
+        | (mel_len & J2K_HT_COMPACT_LENGTH_MASK)
+        | ((vlc_len & J2K_HT_COMPACT_LENGTH_MASK) << 15u);
 }
 
 __device__ inline uint j2k_ht_aligned_sign_magnitude(int coefficient, uint total_bitplanes) {
@@ -527,6 +536,10 @@ __device__ inline void j2k_ht_ms_init(J2kHtMagSgnEncoder &ms) {
     ms.failed = 0u;
 }
 
+__device__ inline uint j2k_ht_cleanup_scratch_entries(uint width) {
+    return min(((width + 1u) >> 1u) + 2u, J2K_HT_SIGPROP_SCRATCH);
+}
+
 __device__ inline void j2k_ht_mel_emit_bit(J2kHtMelEncoder &mel, uchar *out, bool bit) {
     mel.tmp = uchar((uint(mel.tmp) << 1u) | (bit ? 1u : 0u));
     mel.remaining_bits -= 1u;
@@ -848,6 +861,7 @@ __device__ inline void j2k_ht_clear_quad_state(int *rho, int *e_q, int *e_qmax, 
     e_qmax[1] = 0;
 }
 
+template <bool FIXED_64>
 __device__ inline int j2k_ht_encode_first_quad_pair(
     const int *coefficients,
     uint source_stride,
@@ -877,7 +891,9 @@ __device__ inline int j2k_ht_encode_first_quad_pair(
     j2k_ht_process_sample(0u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[0], e_q, e_qmax[0], s);
     j2k_ht_process_sample(
         1u,
-        height > 1u ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes) : 0u,
+        (FIXED_64 || height > 1u)
+            ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes)
+            : 0u,
         p,
         &rho[0],
         e_q,
@@ -886,11 +902,13 @@ __device__ inline int j2k_ht_encode_first_quad_pair(
     );
     sp += 1u;
 
-    if (x + 1u < width) {
+    if (FIXED_64 || x + 1u < width) {
         j2k_ht_process_sample(2u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[0], e_q, e_qmax[0], s);
         j2k_ht_process_sample(
             3u,
-            height > 1u ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes) : 0u,
+            (FIXED_64 || height > 1u)
+                ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes)
+                : 0u,
             p,
             &rho[0],
             e_q,
@@ -904,11 +922,13 @@ __device__ inline int j2k_ht_encode_first_quad_pair(
         0u, c_q0, rho[0], e_qmax[0], e_q, s, lep, lcxp, e_val, cx_val, mel, vlc, ms, out, vlc_table0
     );
 
-    if (x + 2u < width) {
+    if (FIXED_64 || x + 2u < width) {
         j2k_ht_process_sample(4u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[1], e_q, e_qmax[1], s);
         j2k_ht_process_sample(
             5u,
-            height > 1u ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes) : 0u,
+            (FIXED_64 || height > 1u)
+                ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes)
+                : 0u,
             p,
             &rho[1],
             e_q,
@@ -917,11 +937,13 @@ __device__ inline int j2k_ht_encode_first_quad_pair(
         );
         sp += 1u;
 
-        if (x + 3u < width) {
+        if (FIXED_64 || x + 3u < width) {
             j2k_ht_process_sample(6u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[1], e_q, e_qmax[1], s);
             j2k_ht_process_sample(
                 7u,
-                height > 1u ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes) : 0u,
+                (FIXED_64 || height > 1u)
+                    ? j2k_ht_aligned_sign_magnitude(coefficients[sp + source_stride], total_bitplanes)
+                    : 0u,
                 p,
                 &rho[1],
                 e_q,
@@ -950,6 +972,7 @@ __device__ inline int j2k_ht_encode_first_quad_pair(
     return 0;
 }
 
+template <bool FIXED_64>
 __device__ inline int j2k_ht_encode_non_initial_quad_pair(
     const int *coefficients,
     uint stride,
@@ -980,7 +1003,9 @@ __device__ inline int j2k_ht_encode_non_initial_quad_pair(
     j2k_ht_process_sample(0u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[0], e_q, e_qmax[0], s);
     j2k_ht_process_sample(
         1u,
-        y + 1u < height ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes) : 0u,
+        (FIXED_64 || y + 1u < height)
+            ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes)
+            : 0u,
         p,
         &rho[0],
         e_q,
@@ -989,11 +1014,13 @@ __device__ inline int j2k_ht_encode_non_initial_quad_pair(
     );
     sp += 1u;
 
-    if (x + 1u < width) {
+    if (FIXED_64 || x + 1u < width) {
         j2k_ht_process_sample(2u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[0], e_q, e_qmax[0], s);
         j2k_ht_process_sample(
             3u,
-            y + 1u < height ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes) : 0u,
+            (FIXED_64 || y + 1u < height)
+                ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes)
+                : 0u,
             p,
             &rho[0],
             e_q,
@@ -1018,11 +1045,13 @@ __device__ inline int j2k_ht_encode_non_initial_quad_pair(
     cx_val[lcxp] = uchar((rho[0] & 8) >> 3);
 
     int u_q1 = 0;
-    if (x + 2u < width) {
+    if (FIXED_64 || x + 2u < width) {
         j2k_ht_process_sample(4u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[1], e_q, e_qmax[1], s);
         j2k_ht_process_sample(
             5u,
-            y + 1u < height ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes) : 0u,
+            (FIXED_64 || y + 1u < height)
+                ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes)
+                : 0u,
             p,
             &rho[1],
             e_q,
@@ -1031,11 +1060,13 @@ __device__ inline int j2k_ht_encode_non_initial_quad_pair(
         );
         sp += 1u;
 
-        if (x + 3u < width) {
+        if (FIXED_64 || x + 3u < width) {
             j2k_ht_process_sample(6u, j2k_ht_aligned_sign_magnitude(coefficients[sp], total_bitplanes), p, &rho[1], e_q, e_qmax[1], s);
             j2k_ht_process_sample(
                 7u,
-                y + 1u < height ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes) : 0u,
+                (FIXED_64 || y + 1u < height)
+                    ? j2k_ht_aligned_sign_magnitude(coefficients[sp + stride], total_bitplanes)
+                    : 0u,
                 p,
                 &rho[1],
                 e_q,
@@ -1115,7 +1146,8 @@ __device__ inline void j2k_ht_terminate_mel_vlc(
     }
 }
 
-__device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
+template <bool CLEANUP_ONLY, bool ASSEMBLE_FINAL, bool FIXED_64 = false>
+__device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly_t(
     const int *coefficients,
     uchar *out,
     J2kHtEncodeParams params,
@@ -1123,8 +1155,9 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     const ushort *vlc_table1,
     const uchar *uvlc_table,
     J2kHtEncodeStatus *status,
-    uint max_magnitude,
-    bool assemble_final
+    uchar *e_val,
+    uchar *cx_val,
+    uint max_magnitude
 ) {
     j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_FAIL, 0u, 0u, 0u, 0u);
 
@@ -1136,13 +1169,24 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 1u, 0u, 0u, 0u);
         return;
     }
-    if (params.target_coding_passes == 0u || params.target_coding_passes > 164u) {
-        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+    if (FIXED_64 && (params.width != 64u || params.height != 64u || params.coefficient_stride != 64u)) {
+        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 1u, 0u, 0u, 0u);
         return;
     }
-    if (params.target_coding_passes > 3u) {
-        j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
-        return;
+    if (CLEANUP_ONLY) {
+        if (params.target_coding_passes != 1u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+            return;
+        }
+    } else {
+        if (params.target_coding_passes == 0u || params.target_coding_passes > 164u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+            return;
+        }
+        if (params.target_coding_passes > 3u) {
+            j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
+            return;
+        }
     }
 
     if (max_magnitude == 0u) {
@@ -1157,13 +1201,13 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     }
 
     uint significant_count = 0u;
-    if (params.target_coding_passes > 1u) {
+    if (!CLEANUP_ONLY && params.target_coding_passes > 1u) {
         if (params.total_bitplanes < params.target_coding_passes) {
             j2k_set_ht_encode_status(status, J2K_ENCODE_STATUS_UNSUPPORTED, 5u, 0u, 0u, 0u);
             return;
         }
     }
-    if (params.target_coding_passes == 2u) {
+    if (!CLEANUP_ONLY && params.target_coding_passes == 2u) {
         for (uint y = 0u; y < params.height; ++y) {
             for (uint x = 0u; x < params.width; ++x) {
                 const uint magnitude =
@@ -1177,7 +1221,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
                 }
             }
         }
-    } else if (params.target_coding_passes == 3u) {
+    } else if (!CLEANUP_ONLY && params.target_coding_passes == 3u) {
         for (uint y = 0u; y < params.height; ++y) {
             for (uint x = 0u; x < params.width; ++x) {
                 const uint magnitude =
@@ -1194,7 +1238,10 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         }
     }
 
-    const uint pass_span = params.target_coding_passes;
+    const uint width = FIXED_64 ? 64u : params.width;
+    const uint height = FIXED_64 ? 64u : params.height;
+    const uint coefficient_stride = FIXED_64 ? 64u : params.coefficient_stride;
+    const uint pass_span = CLEANUP_ONLY ? 1u : params.target_coding_passes;
     const uint missing_msbs = params.total_bitplanes - pass_span;
     const uint p = 30u - missing_msbs;
 
@@ -1205,9 +1252,8 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     j2k_ht_vlc_init(vlc, out);
     j2k_ht_ms_init(ms);
 
-    uchar e_val[513];
-    uchar cx_val[513];
-    for (uint idx = 0u; idx < 513u; ++idx) {
+    const uint cleanup_scratch_entries = FIXED_64 ? 34u : j2k_ht_cleanup_scratch_entries(width);
+    for (uint idx = 0u; idx < cleanup_scratch_entries; ++idx) {
         e_val[idx] = uchar(0u);
         cx_val[idx] = uchar(0u);
     }
@@ -1221,12 +1267,12 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     uint c_q0 = 0u;
     uint sp = 0u;
     uint x = 0u;
-    while (x < params.width) {
-        j2k_ht_encode_first_quad_pair(
+    while (x < width) {
+        j2k_ht_encode_first_quad_pair<FIXED_64>(
             coefficients,
-            params.coefficient_stride,
-            params.width,
-            params.height,
+            coefficient_stride,
+            width,
+            height,
             params.total_bitplanes,
             p,
             sp,
@@ -1248,13 +1294,13 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         x += 4u;
     }
 
-    const uint e_val_sentinel = (params.width + 1u) / 2u + 1u;
+    const uint e_val_sentinel = FIXED_64 ? 33u : (width + 1u) / 2u + 1u;
     if (e_val_sentinel < 513u) {
         e_val[e_val_sentinel] = uchar(0u);
     }
 
     uint y = 2u;
-    while (y < params.height) {
+    while (y < height) {
         uint lep = 0u;
         int max_e = int(max(e_val[lep], e_val[lep + 1u])) - 1;
         e_val[lep] = uchar(0u);
@@ -1263,14 +1309,14 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         c_q0 = uint(cx_val[lcxp]) + (uint(cx_val[lcxp + 1u]) << 2u);
         cx_val[lcxp] = uchar(0u);
 
-        sp = y * params.coefficient_stride;
+        sp = y * coefficient_stride;
         x = 0u;
-        while (x < params.width) {
-            j2k_ht_encode_non_initial_quad_pair(
+        while (x < width) {
+            j2k_ht_encode_non_initial_quad_pair<FIXED_64>(
                 coefficients,
-                params.coefficient_stride,
-                params.width,
-                params.height,
+                coefficient_stride,
+                width,
+                height,
                 y,
                 params.total_bitplanes,
                 p,
@@ -1314,16 +1360,16 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
     uint sigprop_len = 0u;
     uint magref_len = 0u;
     uint refinement_len = 0u;
-    if (params.target_coding_passes == 2u) {
+    if (!CLEANUP_ONLY && params.target_coding_passes == 2u) {
         refinement_len = 1u;
-    } else if (params.target_coding_passes == 3u) {
-        const uint sample_count = params.width * params.height;
+    } else if (!CLEANUP_ONLY && params.target_coding_passes == 3u) {
+        const uint sample_count = width * height;
         uint actual_sigprop_len = 0u;
         if (j2k_ht_write_sigprop_segment(
                 coefficients,
-                params.coefficient_stride,
-                params.width,
-                params.height,
+                coefficient_stride,
+                width,
+                height,
                 0,
                 0xFFFFFFFFu,
                 &actual_sigprop_len
@@ -1341,7 +1387,7 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         return;
     }
 
-    if (assemble_final) {
+    if (ASSEMBLE_FINAL) {
         for (uint idx = 0u; idx < mel_len; ++idx) {
             out[ms_len + idx] = out[J2K_HT_MEL_OFFSET + idx];
         }
@@ -1355,18 +1401,18 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         const uint cleanup_prev = cleanup_len - 2u;
         out[cleanup_last] = uchar(locator_bytes >> 4u);
         out[cleanup_prev] = uchar((out[cleanup_prev] & uchar(0xF0u)) | uchar(locator_bytes & 0x0Fu));
-        if (refinement_len != 0u) {
+        if (!CLEANUP_ONLY && refinement_len != 0u) {
             for (uint idx = 0u; idx < refinement_len; ++idx) {
                 out[cleanup_len + idx] = uchar(0u);
             }
         }
-        if (params.target_coding_passes == 3u) {
+        if (!CLEANUP_ONLY && params.target_coding_passes == 3u) {
             uint actual_sigprop_len = 0u;
             if (j2k_ht_write_sigprop_segment(
                     coefficients,
-                    params.coefficient_stride,
-                    params.width,
-                    params.height,
+                    coefficient_stride,
+                    width,
+                    height,
                     out + cleanup_len,
                     sigprop_len,
                     &actual_sigprop_len
@@ -1375,12 +1421,13 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
                 return;
             }
         }
-        if (params.target_coding_passes == 3u
+        if (!CLEANUP_ONLY
+            && params.target_coding_passes == 3u
             && j2k_ht_write_magref_segment(
                 coefficients,
-                params.coefficient_stride,
-                params.width,
-                params.height,
+                coefficient_stride,
+                width,
+                height,
                 out + cleanup_len + sigprop_len,
                 magref_len,
                 significant_count
@@ -1395,12 +1442,54 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
         J2K_ENCODE_STATUS_OK,
         0u,
         total_len,
-        params.target_coding_passes,
+        pass_span,
         missing_msbs,
         cleanup_len,
         refinement_len,
-        0u
+        ASSEMBLE_FINAL ? 0u : j2k_ht_pack_compact_assembly_lengths(mel_len, vlc_len)
     );
+}
+
+__device__ inline void j2k_encode_ht_code_block_impl_with_max_and_assembly(
+    const int *coefficients,
+    uchar *out,
+    J2kHtEncodeParams params,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const uchar *uvlc_table,
+    J2kHtEncodeStatus *status,
+    uchar *e_val,
+    uchar *cx_val,
+    uint max_magnitude,
+    bool assemble_final
+) {
+    if (assemble_final) {
+        j2k_encode_ht_code_block_impl_with_max_and_assembly_t<false, true>(
+            coefficients,
+            out,
+            params,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table,
+            status,
+            e_val,
+            cx_val,
+            max_magnitude
+        );
+    } else {
+        j2k_encode_ht_code_block_impl_with_max_and_assembly_t<false, false>(
+            coefficients,
+            out,
+            params,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table,
+            status,
+            e_val,
+            cx_val,
+            max_magnitude
+        );
+    }
 }
 
 __device__ inline void j2k_encode_ht_code_block_impl_with_max(
@@ -1413,6 +1502,8 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max(
     J2kHtEncodeStatus *status,
     uint max_magnitude
 ) {
+    uchar e_val[J2K_HT_SIGPROP_SCRATCH];
+    uchar cx_val[J2K_HT_SIGPROP_SCRATCH];
     j2k_encode_ht_code_block_impl_with_max_and_assembly(
         coefficients,
         out,
@@ -1421,6 +1512,8 @@ __device__ inline void j2k_encode_ht_code_block_impl_with_max(
         vlc_table1,
         uvlc_table,
         status,
+        e_val,
+        cx_val,
         max_magnitude,
         true
     );
@@ -1467,13 +1560,19 @@ __device__ inline uint j2k_ht_reduce_max_magnitude_cooperative(
     const uint tid = threadIdx.x;
     uint local_max = 0u;
     const uint sample_count = width * height;
-    for (uint sample = tid; sample < sample_count; sample += blockDim.x) {
-        const uint y = sample / width;
-        const uint x = sample - y * width;
-        local_max = max(
-            local_max,
-            j2k_classic_magnitude(coefficients[y * coefficient_stride + x])
-        );
+    if (coefficient_stride == width) {
+        for (uint sample = tid; sample < sample_count; sample += blockDim.x) {
+            local_max = max(local_max, j2k_classic_magnitude(coefficients[sample]));
+        }
+    } else {
+        for (uint sample = tid; sample < sample_count; sample += blockDim.x) {
+            const uint y = sample / width;
+            const uint x = sample - y * width;
+            local_max = max(
+                local_max,
+                j2k_classic_magnitude(coefficients[y * coefficient_stride + x])
+            );
+        }
     }
 
     block_max[tid] = local_max;
@@ -1489,7 +1588,6 @@ __device__ inline uint j2k_ht_reduce_max_magnitude_cooperative(
     return block_max[0];
 }
 
-
 extern "C" __global__ void signinum_htj2k_encode_codeblock(
     const int *coefficients,
     uchar *out,
@@ -1502,7 +1600,9 @@ extern "C" __global__ void signinum_htj2k_encode_codeblock(
     if (blockIdx.x != 0u) {
         return;
     }
-    __shared__ uint block_max[256];
+    __shared__ uint block_max[J2K_HT_ENCODE_THREADS];
+    __shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];
+    __shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];
     const J2kHtEncodeParams params_value = params[0];
     const uint max_magnitude = j2k_ht_reduce_max_magnitude_cooperative(
         coefficients,
@@ -1514,7 +1614,7 @@ extern "C" __global__ void signinum_htj2k_encode_codeblock(
     if (threadIdx.x != 0u) {
         return;
     }
-    j2k_encode_ht_code_block_impl_with_max(
+    j2k_encode_ht_code_block_impl_with_max_and_assembly(
         coefficients,
         out,
         params_value,
@@ -1522,7 +1622,10 @@ extern "C" __global__ void signinum_htj2k_encode_codeblock(
         vlc_table1,
         uvlc_table,
         status,
-        max_magnitude
+        cleanup_e_val,
+        cleanup_cx_val,
+        max_magnitude,
+        true
     );
 }
 
@@ -1535,6 +1638,25 @@ struct J2kHtEncodeJob {
     uint output_offset;
     uint output_capacity;
     uint target_coding_passes;
+};
+
+struct J2kHtEncodeMultiInputJob {
+    j2k_ulong coefficient_ptr;
+    uint coefficient_offset;
+    uint coefficient_stride;
+    uint width;
+    uint height;
+    uint total_bitplanes;
+    uint output_offset;
+    uint output_capacity;
+    uint target_coding_passes;
+};
+
+struct J2kHtEncodeCompactJob {
+    uint source_offset;
+    uint compact_offset;
+    uint data_len;
+    uint reserved;
 };
 
 extern "C" __global__ void signinum_htj2k_encode_codeblocks(
@@ -1561,7 +1683,9 @@ extern "C" __global__ void signinum_htj2k_encode_codeblocks(
     params.output_capacity = job.output_capacity;
     params.target_coding_passes = job.target_coding_passes;
 
-    __shared__ uint block_max[256];
+    __shared__ uint block_max[J2K_HT_ENCODE_THREADS];
+    __shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];
+    __shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];
     const int *codeblock_coefficients = coefficients + job.coefficient_offset;
     const uint max_magnitude = j2k_ht_reduce_max_magnitude_cooperative(
         codeblock_coefficients,
@@ -1574,7 +1698,7 @@ extern "C" __global__ void signinum_htj2k_encode_codeblocks(
         return;
     }
 
-    j2k_encode_ht_code_block_impl_with_max(
+    j2k_encode_ht_code_block_impl_with_max_and_assembly(
         codeblock_coefficients,
         out + job.output_offset,
         params,
@@ -1582,8 +1706,239 @@ extern "C" __global__ void signinum_htj2k_encode_codeblocks(
         vlc_table1,
         uvlc_table,
         &statuses[job_idx],
+        cleanup_e_val,
+        cleanup_cx_val,
+        max_magnitude,
+        params.target_coding_passes != 1u
+    );
+}
+
+extern "C" __global__ void __launch_bounds__(J2K_HT_ENCODE_THREADS) signinum_htj2k_encode_codeblocks_multi_input(
+    uchar *out,
+    const J2kHtEncodeMultiInputJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const uchar *uvlc_table,
+    J2kHtEncodeStatus *statuses,
+    unsigned long long job_count
+) {
+    const uint job_idx = blockIdx.x;
+    if (j2k_ulong(job_idx) >= job_count) {
+        return;
+    }
+
+    const J2kHtEncodeMultiInputJob job = jobs[job_idx];
+    J2kHtEncodeParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coefficient_stride = job.coefficient_stride;
+    params.total_bitplanes = job.total_bitplanes;
+    params.output_capacity = job.output_capacity;
+    params.target_coding_passes = job.target_coding_passes;
+
+    __shared__ uint block_max[J2K_HT_ENCODE_THREADS];
+    __shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];
+    __shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];
+    const int *coefficients = reinterpret_cast<const int *>(job.coefficient_ptr);
+    const int *codeblock_coefficients = coefficients + job.coefficient_offset;
+    const uint max_magnitude = j2k_ht_reduce_max_magnitude_cooperative(
+        codeblock_coefficients,
+        params.width,
+        params.height,
+        params.coefficient_stride,
+        block_max
+    );
+    if (threadIdx.x != 0u) {
+        return;
+    }
+
+    j2k_encode_ht_code_block_impl_with_max_and_assembly(
+        codeblock_coefficients,
+        out + job.output_offset,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table,
+        &statuses[job_idx],
+        cleanup_e_val,
+        cleanup_cx_val,
+        max_magnitude,
+        params.target_coding_passes != 1u
+    );
+}
+
+extern "C" __global__ void __launch_bounds__(J2K_HT_ENCODE_THREADS) signinum_htj2k_encode_codeblocks_multi_input_cleanup(
+    uchar *out,
+    const J2kHtEncodeMultiInputJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const uchar *uvlc_table,
+    J2kHtEncodeStatus *statuses,
+    unsigned long long job_count
+) {
+    const uint job_idx = blockIdx.x;
+    if (j2k_ulong(job_idx) >= job_count) {
+        return;
+    }
+
+    const J2kHtEncodeMultiInputJob job = jobs[job_idx];
+    J2kHtEncodeParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coefficient_stride = job.coefficient_stride;
+    params.total_bitplanes = job.total_bitplanes;
+    params.output_capacity = job.output_capacity;
+    params.target_coding_passes = job.target_coding_passes;
+
+    __shared__ uint block_max[J2K_HT_ENCODE_THREADS];
+    __shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];
+    __shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];
+    const int *coefficients = reinterpret_cast<const int *>(job.coefficient_ptr);
+    const int *codeblock_coefficients = coefficients + job.coefficient_offset;
+    const uint max_magnitude = j2k_ht_reduce_max_magnitude_cooperative(
+        codeblock_coefficients,
+        params.width,
+        params.height,
+        params.coefficient_stride,
+        block_max
+    );
+    if (threadIdx.x != 0u) {
+        return;
+    }
+
+    if (params.width == 64u && params.height == 64u && params.coefficient_stride == 64u) {
+        j2k_encode_ht_code_block_impl_with_max_and_assembly_t<true, false, true>(
+            codeblock_coefficients,
+            out + job.output_offset,
+            params,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table,
+            &statuses[job_idx],
+            cleanup_e_val,
+            cleanup_cx_val,
+            max_magnitude
+        );
+    } else {
+        j2k_encode_ht_code_block_impl_with_max_and_assembly_t<true, false>(
+            codeblock_coefficients,
+            out + job.output_offset,
+            params,
+            vlc_table0,
+            vlc_table1,
+            uvlc_table,
+            &statuses[job_idx],
+            cleanup_e_val,
+            cleanup_cx_val,
+            max_magnitude
+        );
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(J2K_HT_ENCODE_THREADS) signinum_htj2k_encode_codeblocks_multi_input_cleanup_64(
+    uchar *out,
+    const J2kHtEncodeMultiInputJob *jobs,
+    const ushort *vlc_table0,
+    const ushort *vlc_table1,
+    const uchar *uvlc_table,
+    J2kHtEncodeStatus *statuses,
+    unsigned long long job_count
+) {
+    const uint job_idx = blockIdx.x;
+    if (j2k_ulong(job_idx) >= job_count) {
+        return;
+    }
+
+    const J2kHtEncodeMultiInputJob job = jobs[job_idx];
+    J2kHtEncodeParams params;
+    params.width = job.width;
+    params.height = job.height;
+    params.coefficient_stride = job.coefficient_stride;
+    params.total_bitplanes = job.total_bitplanes;
+    params.output_capacity = job.output_capacity;
+    params.target_coding_passes = job.target_coding_passes;
+
+    __shared__ uint block_max[J2K_HT_ENCODE_THREADS];
+    __shared__ uchar cleanup_e_val[J2K_HT_SIGPROP_SCRATCH];
+    __shared__ uchar cleanup_cx_val[J2K_HT_SIGPROP_SCRATCH];
+    const int *coefficients = reinterpret_cast<const int *>(job.coefficient_ptr);
+    const int *codeblock_coefficients = coefficients + job.coefficient_offset;
+    const uint max_magnitude = j2k_ht_reduce_max_magnitude_cooperative(
+        codeblock_coefficients,
+        64u,
+        64u,
+        64u,
+        block_max
+    );
+    if (threadIdx.x != 0u) {
+        return;
+    }
+
+    j2k_encode_ht_code_block_impl_with_max_and_assembly_t<true, false, true>(
+        codeblock_coefficients,
+        out + job.output_offset,
+        params,
+        vlc_table0,
+        vlc_table1,
+        uvlc_table,
+        &statuses[job_idx],
+        cleanup_e_val,
+        cleanup_cx_val,
         max_magnitude
     );
+}
+
+extern "C" __global__ void signinum_htj2k_compact_codeblocks(
+    const uchar *scratch,
+    uchar *compact,
+    const J2kHtEncodeCompactJob *jobs,
+    unsigned long long job_count
+) {
+    const uint job_idx = blockIdx.x;
+    if (j2k_ulong(job_idx) >= job_count) {
+        return;
+    }
+
+    const J2kHtEncodeCompactJob job = jobs[job_idx];
+    if ((job.reserved & J2K_HT_COMPACT_ASSEMBLE_FLAG) != 0u) {
+        const uint mel_len = job.reserved & J2K_HT_COMPACT_LENGTH_MASK;
+        const uint vlc_len = (job.reserved >> 15u) & J2K_HT_COMPACT_LENGTH_MASK;
+        const uint locator_bytes = mel_len + vlc_len;
+        if (locator_bytes > job.data_len) {
+            return;
+        }
+        const uint ms_len = job.data_len - locator_bytes;
+        const uint vlc_start = J2K_HT_VLC_SIZE - vlc_len;
+        for (uint idx = threadIdx.x; idx < job.data_len; idx += blockDim.x) {
+            uchar value;
+            if (idx < ms_len) {
+                value = scratch[job.source_offset + idx];
+            } else if (idx < ms_len + mel_len) {
+                value = scratch[job.source_offset + J2K_HT_MEL_OFFSET + idx - ms_len];
+            } else {
+                value = scratch[
+                    job.source_offset
+                    + J2K_HT_VLC_OFFSET
+                    + vlc_start
+                    + idx
+                    - ms_len
+                    - mel_len
+                ];
+            }
+            if (job.data_len >= 2u) {
+                if (idx == job.data_len - 1u) {
+                    value = uchar(locator_bytes >> 4u);
+                } else if (idx == job.data_len - 2u) {
+                    value = uchar((uint(value) & 0xF0u) | (locator_bytes & 0x0Fu));
+                }
+            }
+            compact[job.compact_offset + idx] = value;
+        }
+        return;
+    }
+    for (uint idx = threadIdx.x; idx < job.data_len; idx += blockDim.x) {
+        compact[job.compact_offset + idx] = scratch[job.source_offset + idx];
+    }
 }
 
 struct J2kHtPacketJob {

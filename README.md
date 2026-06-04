@@ -331,13 +331,14 @@ If you are asking an LLM to use this repository, give it this instruction:
 Benchmark methodology and comparator policy live in [docs/bench.md](docs/bench.md).
 Parity expectations live in [docs/parity.md](docs/parity.md).
 
-The repo carries compare benches for:
+The current benchmark surface includes:
 
-- `signinum-jpeg`
-- `signinum-j2k`
-- `signinum-jpeg-metal`
-- `signinum-j2k-metal`
-- `signinum-tilecodec`
+- `signinum-jpeg` comparator, micro, encode, and diagnostic breakdown benches
+- `signinum-j2k` public API benches
+- `signinum-j2k-native` focused CPU engine benches
+- `signinum-jpeg-metal` Apple Metal device-output benches
+- `signinum-jpeg-cuda` and `signinum-j2k-cuda` CUDA device-output benches
+- `signinum`, `signinum-tilecodec`, and transcode stage benches
 
 Benchmark results are hardware-specific. GPU benchmark baselines should be
 collected on self-hosted runners with the target device stack installed.

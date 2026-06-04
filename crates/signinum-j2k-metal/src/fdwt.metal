@@ -11,6 +11,15 @@ struct J2kForwardDwt53Params {
     uint low_height;
 };
 
+struct J2kForwardDwt53BatchedParams {
+    uint full_width;
+    uint current_width;
+    uint current_height;
+    uint low_width;
+    uint low_height;
+    uint component_count;
+};
+
 inline float j2k_fdwt53_predict_row(
     device const float *src,
     uint row_base,
@@ -59,7 +68,8 @@ kernel void j2k_forward_dwt53_horizontal(
         const float right = even + 1u < params.current_width
             ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x)
             : left;
-        dst[row_base + gid.x] = src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
+        dst[row_base + gid.x] =
+            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
         return;
     }
 
@@ -82,6 +92,92 @@ kernel void j2k_forward_dwt53_vertical(
         return;
     }
 
+    if (gid.y < params.low_height) {
+        const uint even = gid.y * 2u;
+        const float top = gid.y > 0u
+            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y - 1u)
+            : j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, 0u);
+        const float bottom = even + 1u < params.current_height
+            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y)
+            : top;
+        dst[gid.y * params.full_width + gid.x] =
+            src[even * params.full_width + gid.x] + floor((top + bottom) * 0.25f + 0.5f);
+        return;
+    }
+
+    const uint high_index = gid.y - params.low_height;
+    dst[gid.y * params.full_width + gid.x] = j2k_fdwt53_predict_col(
+        src,
+        gid.x,
+        params.full_width,
+        params.current_height,
+        high_index
+    );
+}
+
+kernel void j2k_forward_dwt53_horizontal_batched(
+    device const float *src0 [[buffer(0)]],
+    device const float *src1 [[buffer(1)]],
+    device const float *src2 [[buffer(2)]],
+    device float *dst0 [[buffer(3)]],
+    device float *dst1 [[buffer(4)]],
+    device float *dst2 [[buffer(5)]],
+    constant J2kForwardDwt53BatchedParams &params [[buffer(6)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    if (
+        gid.x >= params.current_width ||
+        gid.y >= params.current_height ||
+        gid.z >= params.component_count
+    ) {
+        return;
+    }
+
+    device const float *src = gid.z == 0u ? src0 : (gid.z == 1u ? src1 : src2);
+    device float *dst = gid.z == 0u ? dst0 : (gid.z == 1u ? dst1 : dst2);
+    const uint row_base = gid.y * params.full_width;
+    if (gid.x < params.low_width) {
+        const uint even = gid.x * 2u;
+        const float left = gid.x > 0u
+            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x - 1u)
+            : j2k_fdwt53_predict_row(src, row_base, params.current_width, 0u);
+        const float right = even + 1u < params.current_width
+            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x)
+            : left;
+        dst[row_base + gid.x] =
+            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
+        return;
+    }
+
+    const uint high_index = gid.x - params.low_width;
+    dst[row_base + gid.x] = j2k_fdwt53_predict_row(
+        src,
+        row_base,
+        params.current_width,
+        high_index
+    );
+}
+
+kernel void j2k_forward_dwt53_vertical_batched(
+    device const float *src0 [[buffer(0)]],
+    device const float *src1 [[buffer(1)]],
+    device const float *src2 [[buffer(2)]],
+    device float *dst0 [[buffer(3)]],
+    device float *dst1 [[buffer(4)]],
+    device float *dst2 [[buffer(5)]],
+    constant J2kForwardDwt53BatchedParams &params [[buffer(6)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    if (
+        gid.x >= params.current_width ||
+        gid.y >= params.current_height ||
+        gid.z >= params.component_count
+    ) {
+        return;
+    }
+
+    device const float *src = gid.z == 0u ? src0 : (gid.z == 1u ? src1 : src2);
+    device float *dst = gid.z == 0u ? dst0 : (gid.z == 1u ? dst1 : dst2);
     if (gid.y < params.low_height) {
         const uint even = gid.y * 2u;
         const float top = gid.y > 0u

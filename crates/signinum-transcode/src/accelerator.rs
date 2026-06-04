@@ -11,9 +11,11 @@ use crate::dct97_2d::Dwt97TwoDimensional;
 use rayon::prelude::*;
 pub use signinum_j2k_native::{
     IrreversibleQuantizationSubbandScales, J2kSubBandType, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
-    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
-    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
+    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use signinum_jpeg::transcode::idct_islow_block;
 
@@ -105,6 +107,53 @@ pub struct DctGridToHtj2k97CodeBlockJob<'a> {
     pub y_rsiz: u8,
 }
 
+/// Direct dequantized i16 DCT-grid to one-level 9/7 HTJ2K code-block job.
+///
+/// This is for accelerators that consume the JPEG coefficient extraction
+/// output directly and do not need the generic f64 block representation.
+#[derive(Debug, Clone, Copy)]
+pub struct DctGridI16ToHtj2k97CodeBlockJob<'a> {
+    /// Natural-order, dequantized 8x8 DCT blocks.
+    pub dequantized_blocks: &'a [[i16; 64]],
+    /// Number of DCT block columns in `dequantized_blocks`.
+    pub block_cols: usize,
+    /// Number of DCT block rows in `dequantized_blocks`.
+    pub block_rows: usize,
+    /// Logical component width in samples.
+    pub width: usize,
+    /// Logical component height in samples.
+    pub height: usize,
+    /// Horizontal SIZ sampling factor (`XRsiz`).
+    pub x_rsiz: u8,
+    /// Vertical SIZ sampling factor (`YRsiz`).
+    pub y_rsiz: u8,
+}
+
+/// One same-geometry i16 DCT-grid HTJ2K preencode batch.
+#[derive(Debug, Clone, Copy)]
+pub struct DctGridI16ToHtj2k97CodeBlockBatch<'a, 'j> {
+    /// Jobs in this same-geometry batch.
+    pub jobs: &'j [DctGridI16ToHtj2k97CodeBlockJob<'a>],
+}
+
+/// Compact preencoded HTJ2K components backed by one payload buffer.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactBatch {
+    /// Contiguous encoded code-block payload bytes for every component.
+    pub payload: Vec<u8>,
+    /// Compact components in the same order as the submitted jobs.
+    pub components: Vec<PreencodedHtj2k97CompactComponent>,
+}
+
+/// Compact preencoded HTJ2K grouped-batch output backed by one payload buffer.
+#[derive(Debug, Clone)]
+pub struct PreencodedHtj2k97CompactBatchGroups {
+    /// Contiguous encoded code-block payload bytes for every returned group.
+    pub payload: Vec<u8>,
+    /// Compact components grouped in the same order as submitted batches.
+    pub groups: Vec<Vec<PreencodedHtj2k97CompactComponent>>,
+}
+
 /// Encode parameters needed to quantize 9/7 output directly into HTJ2K
 /// code-block coefficient layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,6 +186,14 @@ pub struct Dwt97BatchStageTimings {
     pub quantize_codeblock_us: u128,
     /// Time spent HT-encoding resident code-block coefficients.
     pub ht_encode_us: u128,
+    /// Resident HT cleanup-pass encode kernel time in microseconds.
+    pub ht_kernel_us: u128,
+    /// Resident HT status-buffer device-to-host readback time in microseconds.
+    pub ht_status_readback_us: u128,
+    /// Resident HT encoded-byte compaction kernel time in microseconds.
+    pub ht_compact_us: u128,
+    /// Resident HT compacted encoded-byte device-to-host readback time in microseconds.
+    pub ht_output_readback_us: u128,
     /// Number of HT code-block encode kernel dispatches in this batch.
     pub ht_codeblock_dispatches: usize,
     /// Time spent reading and unpacking Metal band buffers into host outputs.
@@ -157,6 +214,13 @@ pub trait DctToWaveletStageAccelerator {
     /// Whether this accelerator wants same-geometry 9/7 batches offered as
     /// prequantized HTJ2K code-block jobs before the float-band hook.
     fn supports_htj2k97_codeblock_batch(&self) -> bool {
+        false
+    }
+
+    /// Whether this accelerator wants same-geometry 9/7 preencoded HTJ2K
+    /// batches offered with dequantized i16 DCT blocks before materializing the
+    /// generic f64 block representation.
+    fn supports_htj2k97_i16_preencoded_batch(&self) -> bool {
         false
     }
 
@@ -242,6 +306,62 @@ pub trait DctToWaveletStageAccelerator {
         _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
     ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute same-geometry dequantized i16 DCT-grid 9/7 jobs
+    /// directly into preencoded HTJ2K code-block payloads.
+    ///
+    /// Backends should return one component per input job in the same order as
+    /// `jobs`. Return `Ok(None)` to use the generic f64 preencoded path.
+    fn dct_grid_i16_to_htj2k97_preencoded_batch(
+        &mut self,
+        _jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute same-geometry dequantized i16 DCT-grid 9/7 jobs into
+    /// compact preencoded HTJ2K code-block payloads.
+    ///
+    /// Backends should return one component per input job in the same order as
+    /// `jobs`, with all component ranges pointing into the returned payload.
+    /// Return `Ok(None)` to use the owned preencoded path.
+    fn dct_grid_i16_to_htj2k97_compact_preencoded_batch(
+        &mut self,
+        _jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute multiple same-geometry dequantized i16 DCT-grid
+    /// batches directly into preencoded HTJ2K code-block payloads.
+    ///
+    /// Each input batch is internally same-geometry, but different batches may
+    /// have different component dimensions. Backends should return one output
+    /// vector per input batch, in order. Return `Ok(None)` to use the per-group
+    /// fallback hooks.
+    fn dct_grid_i16_to_htj2k97_preencoded_batch_groups(
+        &mut self,
+        _groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, &'static str> {
+        Ok(None)
+    }
+
+    /// Optionally compute multiple same-geometry dequantized i16 DCT-grid 9/7
+    /// batches into compact preencoded HTJ2K code-block payloads.
+    ///
+    /// Each returned item corresponds to one input batch and contains one
+    /// component per job in that batch. Return `Ok(None)` to use the owned
+    /// preencoded grouped hook.
+    fn dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(
+        &mut self,
+        _groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
+        _options: Htj2k97CodeBlockOptions,
+    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, &'static str> {
         Ok(None)
     }
 

@@ -2182,6 +2182,7 @@ mod tests {
         };
         let scale = Downscale::Quarter;
         let requests = vec![(input.clone(), roi, scale); 4];
+        let _guard = hybrid::region_scaled_color_plan_test_lock_for_test();
         hybrid::reset_region_scaled_color_plan_builds_for_test();
 
         let surfaces =

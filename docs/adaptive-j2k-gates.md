@@ -127,19 +127,10 @@ Evidence:
 - Commands:
   - `samply record --save-only -o target/j2k_cpu_public_api_samply.json.gz -- cargo bench -p signinum-j2k --bench public_api -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_facade_samply.json.gz -- cargo bench -p signinum --bench facade --features metal -- facade_j2k_htj2k_encode_backend_speed_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_htj2k_encode_samply.json.gz -- cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 2>&1 | tee target/metal_htj2k_encode_profile.log`
   - `xcrun xctrace record --template 'Time Profiler' --output target/apple-traces/j2k_cpu_public_api_time_profile.trace --time-limit 45s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k --bench public_api -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `xcrun xctrace record --template 'Time Profiler' --output target/apple-traces/metal_htj2k_encode_time_profile.trace --time-limit 60s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `xcrun xctrace record --template 'Metal System Trace' --output target/apple-traces/metal_htj2k_encode_metal_system.trace --time-limit 60s --no-prompt --target-stdout - --launch -- $(command -v cargo) bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `cargo instruments -t time -p signinum-j2k --bench public_api --profile bench -o target/apple-traces/cargo_instruments_j2k_cpu_public_api_time.trace --time-limit 45000 --no-open -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `cargo instruments -t time -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_time.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `cargo instruments -t 'Metal System Trace' -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo instruments -t time -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_time_after_wait.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo instruments -t 'Metal System Trace' -p signinum-j2k-metal --bench encode_stages --profile bench -o target/apple-traces/cargo_instruments_metal_htj2k_encode_metal_system_after_wait.trace --time-limit 60000 --no-open -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `cargo instruments -t time -p signinum-j2k --bench public_api --profile bench -o target/apple-traces/cargo_instruments_j2k_cpu_public_api_time_after_wait.trace --time-limit 45000 --no-open -- j2k_public_cpu_encode_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2 2>&1 | tee target/metal_htj2k_encode_profile_after_wait.log`
-  - `SIGNINUM_J2K_METAL_PROFILE_STAGES=1 SIGNINUM_GPU_ROUTE_PROFILE=summary samply record --save-only -o target/metal_htj2k_encode_after_wait_samply.json.gz -- cargo bench -p signinum-j2k-metal --bench encode_stages -- j2k_metal_htj2k_rpcl_rgb8_512_batch --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - J2K Metal stage-bench commands from this historical run targeted bench binaries that were removed during the 2026-06 production cleanup; recreate narrow profiling benches before rerunning those rows.
 - Local artifacts:
   - `target/j2k_cpu_public_api_samply.json.gz`
   - `target/metal_facade_samply.json.gz`
@@ -378,8 +369,8 @@ Evidence:
   arm64, Apple M4 Pro 12-core CPU, 16-core GPU, 48 GiB RAM, Metal 4.
 - Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
 - Commands:
-  - `SIGNINUM_REQUIRE_METAL_BENCH=1 SIGNINUM_J2K_METAL_PROFILE_STAGES=1 cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
   - `SIGNINUM_REQUIRE_METAL_BENCH=1 cargo bench -p signinum --bench facade --features metal -- facade_j2k_htj2k_encode_backend_speed_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - J2K Metal stage-bench rows in this historical run used removed bench binaries; recreate narrow profiling benches before rerunning those rows.
 
 End-to-end facade gate:
 
@@ -566,7 +557,7 @@ Evidence:
 - Rust: `rustc 1.88.0 (6b00bc388 2025-06-23)`
 - Commands:
   - `SIGNINUM_REQUIRE_METAL_BENCH=1 cargo bench -p signinum --bench facade --features metal -- facade_j2k_htj2k_encode_backend_speed_matrix --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
-  - `SIGNINUM_REQUIRE_METAL_BENCH=1 cargo bench -p signinum-j2k-metal --bench encode_stages -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2`
+  - J2K Metal stage-bench rows in this historical run used removed bench binaries; recreate narrow profiling benches before rerunning those rows.
 
 End-to-end facade gate, RGB8 512 HTJ2K encode:
 

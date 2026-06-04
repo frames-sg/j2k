@@ -79,7 +79,11 @@ fn dct97_benchmark_emits_transcode_batch_profile_rows() {
     for expected in [
         "SIGNINUM_TRANSCODE_METAL_PROFILE_STAGES",
         "emit_transcode_batch_profile",
-        "signinum_profile codec=transcode op=transcode_batch path=metal",
+        "signinum_profile codec=transcode op=transcode_batch path=metal_cpu_hybrid",
+        "pipeline=jpeg_to_htj2k_hybrid",
+        "extract_processor=cpu",
+        "transform_processor=metal",
+        "encode_processor=cpu",
         "jpeg_dct_extract_us",
         "dct_to_wavelet_total_us",
         "htj2k_encode_us",

@@ -59,6 +59,35 @@ fn exposes_quantized_and_dequantized_natural_order_blocks() {
 }
 
 #[test]
+fn dequantized_only_extraction_omits_quantized_blocks() {
+    let default_image = extract_dct_blocks(
+        &fixtures::baseline_422_16x8_jpeg(),
+        DctExtractOptions::default(),
+    )
+    .expect("extract default DCT blocks");
+    let dequantized_only = extract_dct_blocks(
+        &fixtures::baseline_422_16x8_jpeg(),
+        DctExtractOptions::dequantized_only(),
+    )
+    .expect("extract dequantized-only DCT blocks");
+
+    assert_eq!(
+        dequantized_only.components.len(),
+        default_image.components.len()
+    );
+    for (actual, expected) in dequantized_only
+        .components
+        .iter()
+        .zip(default_image.components.iter())
+    {
+        assert!(actual.quantized_blocks.is_empty());
+        assert_eq!(actual.dequantized_blocks, expected.dequantized_blocks);
+        assert_eq!(actual.block_cols, expected.block_cols);
+        assert_eq!(actual.block_rows, expected.block_rows);
+    }
+}
+
+#[test]
 fn extracts_ycbcr_444_dct_blocks() {
     let image = extract_dct_blocks(
         &fixtures::baseline_444_8x8_jpeg(),

@@ -17,9 +17,34 @@ use crate::info::{ColorSpace, RestartIndex, SofKind};
 use alloc::vec::Vec;
 
 /// Options for experimental DCT block extraction.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct DctExtractOptions {}
+pub struct DctExtractOptions {
+    /// Whether to retain quantized DCT blocks in the extracted image.
+    ///
+    /// This defaults to true because JPEG DCT re-emission needs quantized
+    /// coefficients. Coefficient-domain transcode paths that only need
+    /// dequantized coefficients can disable this to avoid extra block writes.
+    pub retain_quantized_blocks: bool,
+}
+
+impl DctExtractOptions {
+    /// Extract only dequantized DCT blocks.
+    #[must_use]
+    pub const fn dequantized_only() -> Self {
+        Self {
+            retain_quantized_blocks: false,
+        }
+    }
+}
+
+impl Default for DctExtractOptions {
+    fn default() -> Self {
+        Self {
+            retain_quantized_blocks: true,
+        }
+    }
+}
 
 /// JPEG image represented as entropy-decoded DCT blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +106,7 @@ pub struct JpegDctComponent {
 /// RGB conversion, or color transform is performed.
 pub fn extract_dct_blocks(
     bytes: &[u8],
-    _options: DctExtractOptions,
+    options: DctExtractOptions,
 ) -> Result<JpegDctImage, JpegError> {
     let decoder = Decoder::new(bytes)?;
     match decoder.info().color_space {
@@ -92,7 +117,8 @@ pub fn extract_dct_blocks(
     let (coding_mode, components) = match decoder.info().sof_kind {
         SofKind::Baseline8 => {
             let scan_bytes = &decoder.bytes[decoder.plan.scan_offset..];
-            let decoded_blocks = decode_scan_dct_blocks(&decoder.plan, scan_bytes)?;
+            let decoded_blocks =
+                decode_scan_dct_blocks(&decoder.plan, scan_bytes, options.retain_quantized_blocks)?;
             (
                 JpegDctCodingMode::BaselineSequential,
                 build_sequential_components(&decoder, decoded_blocks)?,
@@ -322,7 +348,7 @@ fn encode_dct_entropy(
 
 fn build_sequential_components(
     decoder: &Decoder<'_>,
-    decoded_blocks: DecodedDctBlocks,
+    mut decoded_blocks: DecodedDctBlocks,
 ) -> Result<Vec<JpegDctComponent>, JpegError> {
     let dimensions = decoder.info().dimensions;
     let sampling = decoder.info().sampling;
@@ -345,15 +371,15 @@ fn build_sequential_components(
             })?;
         let quantized_blocks = decoded_blocks
             .quantized
-            .get(component_index)
-            .cloned()
+            .get_mut(component_index)
+            .map(core::mem::take)
             .ok_or(JpegError::MissingMarker {
                 marker: MarkerKind::Sos,
             })?;
         let dequantized_blocks = decoded_blocks
             .dequantized
-            .get(component_index)
-            .cloned()
+            .get_mut(component_index)
+            .map(core::mem::take)
             .ok_or(JpegError::MissingMarker {
                 marker: MarkerKind::Sos,
             })?;

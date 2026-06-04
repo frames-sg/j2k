@@ -62,6 +62,12 @@ struct PacketLengthMetadata {
     next: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PacketLengthExpectation {
+    NotTracked,
+    Length(u32),
+}
+
 impl PacketLengthMetadata {
     fn new(present: bool, lengths: Vec<u32>) -> Self {
         Self {
@@ -75,14 +81,14 @@ impl PacketLengthMetadata {
         self.present
     }
 
-    fn next(&mut self) -> Option<Option<u32>> {
+    fn next(&mut self) -> Option<PacketLengthExpectation> {
         if !self.present {
-            return Some(None);
+            return Some(PacketLengthExpectation::NotTracked);
         }
 
         let packet_length = self.lengths.get(self.next).copied()?;
         self.next += 1;
-        Some(Some(packet_length))
+        Some(PacketLengthExpectation::Length(packet_length))
     }
 
     fn fully_consumed(&self) -> bool {
@@ -127,8 +133,9 @@ impl<'a> TilePart<'a> {
             TilePart::Separated(s) => s.packet_lengths.next()?,
         };
 
-        let Some(expected) = expected else {
-            return Some(());
+        let expected = match expected {
+            PacketLengthExpectation::NotTracked => return Some(()),
+            PacketLengthExpectation::Length(expected) => expected,
         };
 
         let packet_start = packet_start?;

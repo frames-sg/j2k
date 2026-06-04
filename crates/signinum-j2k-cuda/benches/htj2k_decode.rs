@@ -4,7 +4,6 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use signinum_core::{
     BackendKind, BackendRequest, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
-    TileBatchDecodeSubmit,
 };
 use signinum_j2k_cuda::{Codec, CudaSession, J2kDecoder, SurfaceResidency};
 use signinum_j2k_native::{encode_htj2k, EncodeOptions};
@@ -262,32 +261,21 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                     });
                 },
             );
-            if case.cuda_available {
+            if case.cuda_available && cuda_batch_decode_supported(fmt) {
                 let cuda_id = cuda_benchmark_id(case);
                 group.bench_with_input(
                     BenchmarkId::new(cuda_id, batch_size),
                     &inputs,
                     |b, inputs| {
-                        let mut ctx = DecoderContext::<signinum_j2k_cuda::J2kContext>::new();
                         let mut session = CudaSession::default();
-                        let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
                         b.iter(|| {
-                            let surfaces = black_box(inputs)
-                                .iter()
-                                .map(|input| {
-                                    Codec::submit_tile_to_device(
-                                        &mut ctx,
-                                        &mut session,
-                                        &mut pool,
-                                        black_box(*input),
-                                        fmt,
-                                        BackendRequest::Cuda,
-                                    )
-                                    .expect("strict CUDA HTJ2K batch decode submission")
-                                    .wait()
-                                    .expect("strict CUDA HTJ2K batch decode")
-                                })
-                                .collect::<Vec<_>>();
+                            let surfaces = J2kDecoder::decode_batch_to_device_with_session(
+                                black_box(inputs),
+                                fmt,
+                                &mut session,
+                            )
+                            .expect("strict CUDA HTJ2K real batch decode");
+                            assert_eq!(surfaces.len(), inputs.len());
                             surfaces.iter().for_each(assert_cuda_resident_decode);
                             black_box(surfaces)
                         });
@@ -297,6 +285,13 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
         }
     }
     group.finish();
+}
+
+fn cuda_batch_decode_supported(fmt: PixelFormat) -> bool {
+    matches!(
+        fmt,
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16
+    )
 }
 
 fn enabled_decode_cases() -> Vec<&'static str> {

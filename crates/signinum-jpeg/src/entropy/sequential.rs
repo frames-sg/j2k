@@ -10,7 +10,7 @@ use crate::color::upsample::{
     upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
 };
 use crate::entropy::block::{
-    decode_block_for_1x1_idct, decode_block_for_reduced_idct,
+    decode_block_dequantized_into, decode_block_for_1x1_idct, decode_block_for_reduced_idct,
     decode_block_quantized_and_dequantized_with_activity, decode_block_with_activity, skip_block,
     BlockActivity, CoefficientBlock, ReducedIdctCoefficients,
 };
@@ -1007,6 +1007,7 @@ fn skip_mcu(
 pub(crate) fn decode_scan_dct_blocks(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
+    retain_quantized_blocks: bool,
 ) -> Result<DecodedDctBlocks, JpegError> {
     let max_h = u32::from(plan.sampling.max_h);
     let max_v = u32::from(plan.sampling.max_v);
@@ -1026,7 +1027,13 @@ pub(crate) fn decode_scan_dct_blocks(
     let mut quantized_blocks = block_cols_by_component
         .iter()
         .zip(block_rows_by_component.iter())
-        .map(|(&cols, &rows)| vec![[0_i16; 64]; (cols * rows) as usize])
+        .map(|(&cols, &rows)| {
+            if retain_quantized_blocks {
+                vec![[0_i16; 64]; (cols * rows) as usize]
+            } else {
+                Vec::new()
+            }
+        })
         .collect::<Vec<_>>();
     let mut dequantized_blocks = block_cols_by_component
         .iter()
@@ -1071,21 +1078,35 @@ pub(crate) fn decode_scan_dct_blocks(
                 let block_cols = block_cols_by_component[plane_idx];
                 for vy in 0..u32::from(component.v) {
                     for vx in 0..u32::from(component.h) {
-                        decode_block_quantized_and_dequantized_with_activity(
-                            &mut br,
-                            &component.dc_table,
-                            &component.ac_table,
-                            &mut prev_dc[plane_idx],
-                            &component.quant,
-                            &mut quantized_coeff,
-                            &mut dequantized_coeff,
-                        )?;
                         let block_x = mcu_x * u32::from(component.h) + vx;
                         let block_y = mcu_y * u32::from(component.v) + vy;
                         let block_idx = (block_y * block_cols + block_x) as usize;
-                        quantized_blocks[plane_idx][block_idx] = *quantized_coeff.coefficients();
-                        dequantized_blocks[plane_idx][block_idx] =
-                            *dequantized_coeff.coefficients();
+                        if retain_quantized_blocks {
+                            decode_block_quantized_and_dequantized_with_activity(
+                                &mut br,
+                                &component.dc_table,
+                                &component.ac_table,
+                                &mut prev_dc[plane_idx],
+                                &component.quant,
+                                &mut quantized_coeff,
+                                &mut dequantized_coeff,
+                            )?;
+                            quantized_blocks[plane_idx][block_idx] =
+                                *quantized_coeff.coefficients();
+                        } else {
+                            decode_block_dequantized_into(
+                                &mut br,
+                                &component.dc_table,
+                                &component.ac_table,
+                                &mut prev_dc[plane_idx],
+                                &component.quant,
+                                &mut dequantized_blocks[plane_idx][block_idx],
+                            )?;
+                        }
+                        if retain_quantized_blocks {
+                            dequantized_blocks[plane_idx][block_idx] =
+                                *dequantized_coeff.coefficients();
+                        }
                     }
                 }
             }

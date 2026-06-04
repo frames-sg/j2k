@@ -364,21 +364,50 @@ typedef float f32;
 
 // idct8_basis(sample_idx, freq): scale * cos((s+0.5)*f*pi/8), scale = sqrt(1/8)
 // for freq 0 else sqrt(2/8). Matches idct8_basis_uncached in dct97_2d.rs.
+// Precomputed to avoid per-sample sqrtf/cosf in the CUDA hot path.
+__device__ __constant__ f32 DWT97_IDCT8_BASIS[64] = {
+    0.353553391f, 0.49039264f, 0.461939766f, 0.415734806f, 0.353553391f, 0.277785117f, 0.191341716f, 0.097545161f,
+    0.353553391f, 0.415734806f, 0.191341716f, -0.097545161f, -0.353553391f, -0.49039264f, -0.461939766f, -0.277785117f,
+    0.353553391f, 0.277785117f, -0.191341716f, -0.49039264f, -0.353553391f, 0.097545161f, 0.461939766f, 0.415734806f,
+    0.353553391f, 0.097545161f, -0.461939766f, -0.277785117f, 0.353553391f, 0.415734806f, -0.191341716f, -0.49039264f,
+    0.353553391f, -0.097545161f, -0.461939766f, 0.277785117f, 0.353553391f, -0.415734806f, -0.191341716f, 0.49039264f,
+    0.353553391f, -0.277785117f, -0.191341716f, 0.49039264f, -0.353553391f, -0.097545161f, 0.461939766f, -0.415734806f,
+    0.353553391f, -0.415734806f, 0.191341716f, 0.097545161f, -0.353553391f, 0.49039264f, -0.461939766f, 0.277785117f,
+    0.353553391f, -0.49039264f, 0.461939766f, -0.415734806f, 0.353553391f, -0.277785117f, 0.191341716f, -0.097545161f
+};
+
 __device__ __forceinline__ f32 idct8_basis(int sample_idx, int freq) {
-    const f32 scale = (freq == 0) ? sqrtf(1.0f / 8.0f) : sqrtf(2.0f / 8.0f);
-    const f32 angle = (((f32)sample_idx + 0.5f) * (f32)freq * (f32)J2K_PI) / 8.0f;
-    return scale * cosf(angle);
+    return DWT97_IDCT8_BASIS[sample_idx * 8 + freq];
 }
 
 // One IDCT sample, matching idct8x8_sample's accumulation order
 // (freq_y outer, freq_x inner; coeff * y_basis * x_basis).
 __device__ f32 idct8x8_sample(const f32* block, int local_x, int local_y) {
     f32 sample = 0.0f;
+    // transcode_dwt97_idct_unroll_guard: the IDCT loops have fixed 8x8 bounds.
+#pragma unroll
     for (int freq_y = 0; freq_y < 8; ++freq_y) {
         const f32 y_basis = idct8_basis(local_y, freq_y);
         const f32* brow = block + freq_y * 8;
+#pragma unroll
         for (int freq_x = 0; freq_x < 8; ++freq_x) {
             sample += brow[freq_x] * y_basis * idct8_basis(local_x, freq_x);
+        }
+    }
+    return sample;
+}
+
+// Same accumulation order as idct8x8_sample, with exact i16->f32 conversion
+// performed in-kernel to avoid host-side expansion and halve HtoD traffic.
+__device__ f32 idct8x8_sample_i16(const i16* block, int local_x, int local_y) {
+    f32 sample = 0.0f;
+#pragma unroll
+    for (int freq_y = 0; freq_y < 8; ++freq_y) {
+        const f32 y_basis = idct8_basis(local_y, freq_y);
+        const i16* brow = block + freq_y * 8;
+#pragma unroll
+        for (int freq_x = 0; freq_x < 8; ++freq_x) {
+            sample += ((f32)brow[freq_x]) * y_basis * idct8_basis(local_x, freq_x);
         }
     }
     return sample;
@@ -497,6 +526,23 @@ extern "C" __global__ void transcode_dwt97_idct_batch(
     spatial[((size_t)item * height + y) * width + x] = idct8x8_sample(block, x & 7, y & 7);
 }
 
+// Same as transcode_dwt97_idct_batch, but input coefficients stay i16 on the
+// host/device boundary and are widened to f32 inside the IDCT sample loop.
+extern "C" __global__ void transcode_dwt97_idct_i16_batch(
+    const i16* blocks, int block_cols, int width, int height,
+    int blocks_per_item, f32* spatial) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int item = blockIdx.z;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const i16* item_blocks = blocks + (size_t)item * blocks_per_item * 64;
+    const int block_idx = (y >> 3) * block_cols + (x >> 3);
+    const i16* block = item_blocks + (size_t)block_idx * 64;
+    spatial[((size_t)item * height + y) * width + x] = idct8x8_sample_i16(block, x & 7, y & 7);
+}
+
 // Kernel: batched horizontal 9/7 row lift + split. Grid (row, item); thread per row.
 extern "C" __global__ void transcode_dwt97_row_lift_batch(
     f32* spatial, int width, int height, int low_width, int high_width,
@@ -516,6 +562,95 @@ extern "C" __global__ void transcode_dwt97_row_lift_batch(
     }
     for (int i = 0; i < high_width; ++i) {
         item_row_high[(size_t)y * high_width + i] = row[i * 2 + 1];
+    }
+}
+
+#define DWT97_ROW_LIFT_MAX_WIDTH 1024
+#define DWT97_ROW_LIFT_ROWS_PER_BLOCK 4
+
+// Cooperative row lift for common tile widths. Each block handles up to four
+// rows, staging them in shared memory so each lifting phase can run in parallel
+// across row positions while preserving the scalar phase order.
+extern "C" __global__ void transcode_dwt97_row_lift_batch_coop(
+    const f32* spatial, int width, int height, int low_width, int high_width,
+    f32* row_low, f32* row_high) {
+    __shared__ f32 rows[DWT97_ROW_LIFT_ROWS_PER_BLOCK][DWT97_ROW_LIFT_MAX_WIDTH];
+
+    const int row_lane = threadIdx.y;
+    const int tid = threadIdx.x;
+    const int y = blockIdx.x * DWT97_ROW_LIFT_ROWS_PER_BLOCK + row_lane;
+    const int item = blockIdx.y;
+    const bool valid = y < height && width <= DWT97_ROW_LIFT_MAX_WIDTH;
+
+    const f32* item_spatial = spatial + (size_t)item * width * height;
+    f32* item_row_low = row_low + (size_t)item * height * low_width;
+    f32* item_row_high = row_high + (size_t)item * height * high_width;
+    const f32* source = item_spatial + (size_t)y * width;
+    f32* row = rows[row_lane];
+
+    if (valid) {
+        for (int i = tid; i < width; i += blockDim.x) {
+            row[i] = source[i];
+        }
+    }
+    __syncthreads();
+
+    if (width >= 2 && width <= DWT97_ROW_LIFT_MAX_WIDTH) {
+        const int last_even = (width % 2 == 0) ? (width - 2) : (width - 1);
+        if (valid) {
+            for (int i = tid * 2 + 1; i < width; i += blockDim.x * 2) {
+                const f32 left = row[i - 1];
+                const f32 right = (i + 1 < width) ? row[i + 1] : row[last_even];
+                row[i] += DWT97_ALPHA * (left + right);
+            }
+        }
+        __syncthreads();
+
+        if (valid) {
+            for (int i = tid * 2; i < width; i += blockDim.x * 2) {
+                const f32 left = (i > 0) ? row[i - 1] : row[1];
+                const f32 right = (i + 1 < width) ? row[i + 1] : left;
+                row[i] += DWT97_BETA * (left + right);
+            }
+        }
+        __syncthreads();
+
+        if (valid) {
+            for (int i = tid * 2 + 1; i < width; i += blockDim.x * 2) {
+                const f32 left = row[i - 1];
+                const f32 right = (i + 1 < width) ? row[i + 1] : row[last_even];
+                row[i] += DWT97_GAMMA * (left + right);
+            }
+        }
+        __syncthreads();
+
+        if (valid) {
+            for (int i = tid * 2; i < width; i += blockDim.x * 2) {
+                const f32 left = (i > 0) ? row[i - 1] : row[1];
+                const f32 right = (i + 1 < width) ? row[i + 1] : left;
+                row[i] += DWT97_DELTA * (left + right);
+            }
+        }
+        __syncthreads();
+
+        if (valid) {
+            for (int i = tid * 2; i < width; i += blockDim.x * 2) {
+                row[i] *= DWT97_INV_KAPPA;
+            }
+            for (int i = tid * 2 + 1; i < width; i += blockDim.x * 2) {
+                row[i] *= DWT97_KAPPA;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (valid) {
+        for (int i = tid; i < low_width; i += blockDim.x) {
+            item_row_low[(size_t)y * low_width + i] = row[i * 2];
+        }
+        for (int i = tid; i < high_width; i += blockDim.x) {
+            item_row_high[(size_t)y * high_width + i] = row[i * 2 + 1];
+        }
     }
 }
 
@@ -543,10 +678,40 @@ extern "C" __global__ void transcode_dwt97_column_lift_batch(
     }
 }
 
-// Kernel: deadzone-quantize one 9/7 band into code-block-major i32 layout for one
-// batch, mirroring the signinum-transcode shared code-block oracle and Metal's
-// dct97_quantize_codeblocks_batch. Launched once per subband (its own width,
-// height, and inv_delta). Grid (x, y, item); thread per band sample.
+__device__ __forceinline__ i32 quantize_dwt97_deadzone(f32 value, f32 inv_delta) {
+    const int sign = (value < 0.0f) ? -1 : 1;
+    const int magnitude = (int)floorf(fabsf(value) * inv_delta);
+    return sign * magnitude;
+}
+
+__device__ __forceinline__ size_t dwt97_codeblock_major_offset(
+    int x, int y, int width, int height, int cb_width, int cb_height) {
+    if (cb_width == 64 && cb_height == 64) {
+        const int cbx = x >> 6;
+        const int cby = y >> 6;
+        const int local_x = x & 63;
+        const int local_y = y & 63;
+        const int block_width = min(64, width - (cbx << 6));
+        const int block_height = min(64, height - (cby << 6));
+        return (size_t)cby * 64 * width
+            + (size_t)cbx * 64 * block_height
+            + (size_t)local_y * block_width + local_x;
+    }
+    const int cbx = x / cb_width;
+    const int cby = y / cb_height;
+    const int local_x = x - cbx * cb_width;
+    const int local_y = y - cby * cb_height;
+    const int block_width = min(cb_width, width - cbx * cb_width);
+    const int block_height = min(cb_height, height - cby * cb_height);
+    return (size_t)cby * cb_height * width
+        + (size_t)cbx * cb_width * block_height
+        + (size_t)local_y * block_width + local_x;
+}
+
+// Kernel: deadzone-quantize one 9/7 band into code-block-major i32 layout for
+// one batch, mirroring the signinum-transcode shared code-block oracle and
+// Metal's dct97_quantize_codeblocks_batch. Launched once per subband (its own
+// width, height, and inv_delta). Grid (x, y, item); thread per band sample.
 //
 //   q = sign(value) * floor(|value| * inv_delta), sign(0) = +1
 //
@@ -563,17 +728,44 @@ extern "C" __global__ void transcode_dwt97_quantize_codeblocks(
     }
     const size_t item_stride = (size_t)width * height;
     const f32 value = band[(size_t)item * item_stride + (size_t)y * width + x];
-    const int sign = (value < 0.0f) ? -1 : 1;
-    const int magnitude = (int)floorf(fabsf(value) * inv_delta);
+    const size_t offset =
+        dwt97_codeblock_major_offset(x, y, width, height, cb_width, cb_height);
+    output[(size_t)item * item_stride + offset] =
+        quantize_dwt97_deadzone(value, inv_delta);
+}
 
-    const int cbx = x / cb_width;
-    const int cby = y / cb_height;
-    const int local_x = x - cbx * cb_width;
-    const int local_y = y - cby * cb_height;
-    const int block_width = min(cb_width, width - cbx * cb_width);
-    const int block_height = min(cb_height, height - cby * cb_height);
-    const size_t offset = (size_t)cby * cb_height * width
-        + (size_t)cbx * cb_width * block_height
-        + (size_t)local_y * block_width + local_x;
-    output[(size_t)item * item_stride + offset] = sign * magnitude;
+// Fused resident HT path stage: vertical 9/7 column lift, even/odd row split,
+// and deadzone quantization directly into code-block-major i32 output. This
+// keeps the same forward_lift_97 global-memory update order as
+// transcode_dwt97_column_lift_batch, then quantizes the f32 value that would
+// otherwise have been stored in the intermediate LL/LH/HL/HH band buffer.
+extern "C" __global__ void transcode_dwt97_column_lift_quantize_codeblocks_batch(
+    f32* rows, int band_width, int height, int low_height, int high_height,
+    i32* low_out, i32* high_out, int cb_width, int cb_height,
+    f32 inv_delta_low, f32 inv_delta_high) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int item = blockIdx.y;
+    if (x >= band_width) {
+        return;
+    }
+
+    f32* item_rows = rows + (size_t)item * height * band_width;
+    i32* item_low = low_out + (size_t)item * low_height * band_width;
+    i32* item_high = high_out + (size_t)item * high_height * band_width;
+
+    forward_lift_97(item_rows + x, height, band_width);
+    for (int i = 0; i < height; ++i) {
+        const f32 value = item_rows[(size_t)i * band_width + x];
+        if ((i & 1) == 0) {
+            const int y = i / 2;
+            const size_t offset = dwt97_codeblock_major_offset(
+                x, y, band_width, low_height, cb_width, cb_height);
+            item_low[offset] = quantize_dwt97_deadzone(value, inv_delta_low);
+        } else {
+            const int y = i / 2;
+            const size_t offset = dwt97_codeblock_major_offset(
+                x, y, band_width, high_height, cb_width, cb_height);
+            item_high[offset] = quantize_dwt97_deadzone(value, inv_delta_high);
+        }
+    }
 }
