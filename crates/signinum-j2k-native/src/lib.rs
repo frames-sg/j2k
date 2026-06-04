@@ -251,7 +251,7 @@ pub struct J2kCodeBlockStyle {
 }
 
 /// Adapter classic J2K coded segment for backend experimentation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kCodeBlockSegment {
     /// Byte offset of this segment within the combined payload.
     pub data_offset: u32,
@@ -262,6 +262,24 @@ pub struct J2kCodeBlockSegment {
     /// One-past-last coding pass covered by this segment.
     pub end_coding_pass: u8,
     /// Whether this segment is decoded through the arithmetic path.
+    pub use_arithmetic: bool,
+}
+
+/// Adapter Classic Tier-1 compact token segment for backend experimentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kTier1TokenSegment {
+    /// Bit offset of this segment within the compact token buffer.
+    pub token_bit_offset: u32,
+    /// Number of token bits in this segment.
+    ///
+    /// Arithmetic segments contain 6-bit MQ tokens. Raw bypass segments contain
+    /// one bit per raw bypass event.
+    pub token_bit_count: u32,
+    /// First coding pass covered by this segment.
+    pub start_coding_pass: u8,
+    /// One-past-last coding pass covered by this segment.
+    pub end_coding_pass: u8,
+    /// Whether this segment should be packed through the MQ arithmetic path.
     pub use_arithmetic: bool,
 }
 
@@ -1229,6 +1247,53 @@ pub fn encode_j2k_code_block_scalar_with_style(
         total_bitplanes,
         &internal_j2k_code_block_style(style),
     );
+    let segments = encoded
+        .segments
+        .into_iter()
+        .map(|segment| J2kCodeBlockSegment {
+            data_offset: segment.data_offset,
+            data_length: segment.data_length,
+            start_coding_pass: segment.start_coding_pass,
+            end_coding_pass: segment.end_coding_pass,
+            use_arithmetic: segment.use_arithmetic,
+        })
+        .collect();
+
+    Ok(EncodedJ2kCodeBlock {
+        data: encoded.data,
+        segments,
+        number_of_coding_passes: encoded.num_coding_passes,
+        missing_bit_planes: encoded.num_zero_bitplanes,
+    })
+}
+
+/// Adapter scalar Classic Tier-1 compact token packer for backend experimentation.
+///
+/// The token format matches the Metal Classic Tier-1 token-emitter prototype:
+/// arithmetic segments are 6-bit `(context_label, bit)` MQ tokens, while raw
+/// bypass segments are one bit per raw bypass event.
+pub fn pack_j2k_code_block_scalar_from_tier1_tokens(
+    token_bytes: &[u8],
+    token_segments: &[J2kTier1TokenSegment],
+    number_of_coding_passes: u8,
+    missing_bit_planes: u8,
+) -> core::result::Result<EncodedJ2kCodeBlock, &'static str> {
+    let internal_segments = token_segments
+        .iter()
+        .map(|segment| j2c::bitplane_encode::ClassicTier1TokenSegment {
+            token_bit_offset: segment.token_bit_offset,
+            token_bit_count: segment.token_bit_count,
+            start_coding_pass: segment.start_coding_pass,
+            end_coding_pass: segment.end_coding_pass,
+            use_arithmetic: segment.use_arithmetic,
+        })
+        .collect::<Vec<_>>();
+    let encoded = j2c::bitplane_encode::pack_classic_selective_bypass_tier1_tokens(
+        token_bytes,
+        &internal_segments,
+        number_of_coding_passes,
+        missing_bit_planes,
+    )?;
     let segments = encoded
         .segments
         .into_iter()

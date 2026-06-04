@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
-use signinum_cuda_runtime::{CudaContext, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables};
+use signinum_cuda_runtime::{
+    CudaBufferPool, CudaContext, CudaHtj2kDecodeTableResources, CudaHtj2kDecodeTables,
+};
 #[cfg(feature = "cuda-runtime")]
 use signinum_j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
 #[cfg(all(test, feature = "cuda-runtime"))]
@@ -23,6 +25,10 @@ pub struct CudaSession {
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     htj2k_decode_tables: Option<CudaHtj2kDecodeTableResources>,
+    #[cfg(feature = "cuda-runtime")]
+    decode_buffer_pool: Option<CudaBufferPool>,
+    #[cfg(feature = "cuda-runtime")]
+    decode_batch_buffer_pool: Option<CudaBufferPool>,
 }
 
 impl CudaSession {
@@ -72,6 +78,28 @@ impl CudaSession {
         self.htj2k_decode_tables = Some(resources.clone());
         Ok(resources)
     }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn decode_buffer_pool(&mut self) -> Result<CudaBufferPool, Error> {
+        if let Some(pool) = &self.decode_buffer_pool {
+            return Ok(pool.clone());
+        }
+        let context = self.cuda_context()?;
+        let pool = context.buffer_pool();
+        self.decode_buffer_pool = Some(pool.clone());
+        Ok(pool)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn decode_batch_buffer_pool(&mut self) -> Result<CudaBufferPool, Error> {
+        if let Some(pool) = &self.decode_batch_buffer_pool {
+            return Ok(pool.clone());
+        }
+        let context = self.cuda_context()?;
+        let pool = context.best_fit_buffer_pool();
+        self.decode_batch_buffer_pool = Some(pool.clone());
+        Ok(pool)
+    }
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
@@ -94,6 +122,16 @@ impl std::fmt::Debug for CudaSession {
         debug.field(
             "htj2k_decode_tables_cached",
             &self.htj2k_decode_tables.is_some(),
+        );
+        #[cfg(feature = "cuda-runtime")]
+        debug.field(
+            "decode_buffer_pool_cached",
+            &self.decode_buffer_pool.is_some(),
+        );
+        #[cfg(feature = "cuda-runtime")]
+        debug.field(
+            "decode_batch_buffer_pool_cached",
+            &self.decode_batch_buffer_pool.is_some(),
         );
         debug.finish_non_exhaustive()
     }
@@ -127,5 +165,29 @@ mod tests {
             .expect("cached HTJ2K decode tables");
 
         assert_eq!(crate::session::htj2k_decode_table_uploads_for_test(), 1);
+    }
+
+    #[test]
+    fn cuda_session_reuses_one_decode_buffer_pool_when_required() {
+        let mut session = CudaSession::default();
+
+        let first = session.decode_buffer_pool();
+        if matches!(
+            first,
+            Err(Error::CudaUnavailable | Error::CudaRuntime { .. })
+        ) && !cuda_required()
+        {
+            return;
+        }
+        let first = first.expect("first decode buffer pool");
+        let second = session
+            .decode_buffer_pool()
+            .expect("cached decode buffer pool");
+        {
+            let buffer = first.take(16).expect("pooled decode buffer");
+            assert_eq!(buffer.byte_len(), 16);
+        }
+
+        assert!(second.cached_count().expect("shared pool cached count") >= 1);
     }
 }

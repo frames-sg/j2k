@@ -17,7 +17,10 @@
 //! Produces a 64-entry array in row-major (natural) order, suitable for
 //! direct consumption by the IDCT.
 
-use crate::entropy::huffman::{AcDecoded, AcSkipDecoded, HuffmanTable};
+use crate::entropy::huffman::{
+    ac_decoded_run, ac_decoded_value, HuffmanTable, AC_FAST_EOB, AC_FAST_KIND_MASK, AC_FAST_VALUE,
+    AC_FAST_ZRL,
+};
 use crate::entropy::ZIGZAG;
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
@@ -167,14 +170,15 @@ pub(crate) fn decode_block_with_activity(
     let mut k: usize = 1;
     let mut activity = BlockActivity::DcOnly;
     while k < 64 {
-        match ac_table.decode_fast_ac(br)? {
-            AcDecoded::Eob => break,
-            AcDecoded::Zrl => {
+        let ac = ac_table.decode_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 // ZRL — 16 zeros, continue.
                 k += 16;
             }
-            AcDecoded::Value { run, value } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -184,14 +188,64 @@ pub(crate) fn decode_block_with_activity(
                 let natural_idx = ZIGZAG[k] as usize;
                 // Quant table entries are stored in zigzag order per T.81 §B.2.4.1,
                 // so `quant[k]` is the matching coefficient (not `quant[natural_idx]`).
+                let value = ac_decoded_value(ac);
                 let dequant = value.wrapping_mul(quant[k] as i32);
                 block.store(natural_idx, clamp_i16(dequant));
                 activity = extend_activity(activity, natural_idx);
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(activity)
+}
+
+/// Decode one dequantized block directly into a freshly zeroed output block.
+///
+/// The caller must pass an output block that is all zeroes; this function only
+/// writes non-zero decoded coefficients.
+#[inline(always)]
+pub(crate) fn decode_block_dequantized_into(
+    br: &mut BitReader<'_>,
+    dc_table: &HuffmanTable,
+    ac_table: &HuffmanTable,
+    prev_dc: &mut i32,
+    quant: &[u16; 64],
+    out: &mut [i16; 64],
+) -> Result<(), JpegError> {
+    // DC.
+    let diff = dc_table.decode_fast_dc(br)?;
+    *prev_dc = prev_dc.wrapping_add(diff);
+    let dc_dequant = (*prev_dc).wrapping_mul(quant[0] as i32);
+    out[0] = clamp_i16(dc_dequant);
+
+    // AC.
+    let mut k: usize = 1;
+    while k < 64 {
+        let ac = ac_table.decode_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
+                k += 16;
+            }
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
+                if k >= 64 {
+                    return Err(JpegError::HuffmanDecode {
+                        mcu: 0,
+                        reason: HuffmanFailure::InvalidSymbol,
+                    });
+                }
+                let natural_idx = ZIGZAG[k] as usize;
+                let value = ac_decoded_value(ac);
+                let dequant = value.wrapping_mul(quant[k] as i32);
+                out[natural_idx] = clamp_i16(dequant);
+                k += 1;
+            }
+            _ => unreachable!("invalid AC fast-table tag"),
+        }
+    }
+    Ok(())
 }
 
 #[inline(always)]
@@ -218,13 +272,14 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
     let mut k: usize = 1;
     let mut activity = BlockActivity::DcOnly;
     while k < 64 {
-        match ac_table.decode_fast_ac(br)? {
-            AcDecoded::Eob => break,
-            AcDecoded::Zrl => {
+        let ac = ac_table.decode_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 k += 16;
             }
-            AcDecoded::Value { run, value } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -232,12 +287,14 @@ pub(crate) fn decode_block_quantized_and_dequantized_with_activity(
                     });
                 }
                 let natural_idx = ZIGZAG[k] as usize;
+                let value = ac_decoded_value(ac);
                 quantized_block.store(natural_idx, clamp_i16(value));
                 let dequant = value.wrapping_mul(quant[k] as i32);
                 dequantized_block.store(natural_idx, clamp_i16(dequant));
                 activity = extend_activity(activity, natural_idx);
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(activity)
@@ -263,13 +320,14 @@ pub(crate) fn decode_block_with_dc_status(
     let mut k: usize = 1;
     let mut dc_only = true;
     while k < 64 {
-        match ac_table.decode_fast_ac(br)? {
-            AcDecoded::Eob => break,
-            AcDecoded::Zrl => {
+        let ac = ac_table.decode_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 k += 16;
             }
-            AcDecoded::Value { run, value } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -277,11 +335,13 @@ pub(crate) fn decode_block_with_dc_status(
                     });
                 }
                 let natural_idx = ZIGZAG[k] as usize;
+                let value = ac_decoded_value(ac);
                 let dequant = value.wrapping_mul(quant[k] as i32);
                 block.store(natural_idx, clamp_i16(dequant));
                 dc_only = false;
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(dc_only)
@@ -307,13 +367,14 @@ pub(crate) fn decode_block_for_reduced_idct(
     let mut k: usize = 1;
     let mut dc_only_for_reduced_idct = true;
     while k < 64 {
-        match ac_table.decode_fast_ac(br)? {
-            AcDecoded::Eob => break,
-            AcDecoded::Zrl => {
+        let ac = ac_table.decode_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 k += 16;
             }
-            AcDecoded::Value { run, value } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -322,12 +383,14 @@ pub(crate) fn decode_block_for_reduced_idct(
                 }
                 let natural_idx = ZIGZAG[k] as usize;
                 if keep.keeps(natural_idx) {
+                    let value = ac_decoded_value(ac);
                     let dequant = value.wrapping_mul(quant[k] as i32);
                     block.store(natural_idx, clamp_i16(dequant));
                     dc_only_for_reduced_idct = false;
                 }
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(dc_only_for_reduced_idct)
@@ -351,13 +414,14 @@ pub(crate) fn decode_block_for_1x1_idct(
 
     let mut k: usize = 1;
     while k < 64 {
-        match ac_table.skip_fast_ac(br)? {
-            AcSkipDecoded::Eob => break,
-            AcSkipDecoded::Zrl => {
+        let ac = ac_table.skip_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 k += 16;
             }
-            AcSkipDecoded::Value { run } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -366,6 +430,7 @@ pub(crate) fn decode_block_for_1x1_idct(
                 }
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(())
@@ -383,13 +448,14 @@ pub(crate) fn skip_block(
 
     let mut k: usize = 1;
     while k < 64 {
-        match ac_table.skip_fast_ac(br)? {
-            AcSkipDecoded::Eob => break,
-            AcSkipDecoded::Zrl => {
+        let ac = ac_table.skip_fast_ac(br)?;
+        match ac & AC_FAST_KIND_MASK {
+            AC_FAST_EOB => break,
+            AC_FAST_ZRL => {
                 k += 16;
             }
-            AcSkipDecoded::Value { run } => {
-                k += run;
+            AC_FAST_VALUE => {
+                k += ac_decoded_run(ac);
                 if k >= 64 {
                     return Err(JpegError::HuffmanDecode {
                         mcu: 0,
@@ -398,13 +464,20 @@ pub(crate) fn skip_block(
                 }
                 k += 1;
             }
+            _ => unreachable!("invalid AC fast-table tag"),
         }
     }
     Ok(())
 }
 
 fn clamp_i16(v: i32) -> i16 {
-    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    if v > i16::MAX as i32 {
+        i16::MAX
+    } else if v < i16::MIN as i32 {
+        i16::MIN
+    } else {
+        v as i16
+    }
 }
 
 #[cfg(test)]

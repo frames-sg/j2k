@@ -58,7 +58,6 @@ fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
         ".submit_region_to_device(",
         ".submit_scaled_to_device(",
         ".submit_region_scaled_to_device(",
-        "Codec::submit_tile_to_device(",
     ] {
         assert!(
             bench.contains(expected),
@@ -68,7 +67,26 @@ fn cuda_htj2k_decode_bench_reuses_session_in_timed_cuda_rows() {
 }
 
 #[test]
-fn cuda_htj2k_decode_profile_example_reuses_one_session() {
+fn cuda_htj2k_tile_batch_bench_uses_cuda_batch_entrypoint() {
+    let bench = include_str!("../benches/htj2k_decode.rs");
+    let batch_body = extract_function_body(bench, "fn bench_tile_batch");
+    let cuda_branch_start = batch_body
+        .find("if case.cuda_available && cuda_batch_decode_supported(fmt)")
+        .expect("CUDA batch branch exists");
+    let cuda_batch_body = &batch_body[cuda_branch_start..];
+
+    assert!(
+        cuda_batch_body.contains("J2kDecoder::decode_batch_to_device_with_session("),
+        "CUDA HTJ2K tile batch row must use a real batch decode entrypoint"
+    );
+    assert!(
+        !cuda_batch_body.contains("Codec::submit_tile_to_device("),
+        "CUDA HTJ2K tile batch row must not submit one tile at a time"
+    );
+}
+
+#[test]
+fn cuda_htj2k_decode_profile_example_uses_batch_entrypoint() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/examples/htj2k_decode_profile.rs"
@@ -79,13 +97,20 @@ fn cuda_htj2k_decode_profile_example_reuses_one_session() {
         "SIGNINUM_J2K_CUDA_PROFILE_BATCH_SIZE",
         "SIGNINUM_J2K_CUDA_PROFILE_ITERATIONS",
         "let mut session = CudaSession::default();",
-        ".decode_to_device_with_session(PixelFormat::Rgb8, &mut session)",
+        "decode_batch_to_device_with_session(",
+        "mode=batch_no_download",
     ] {
         assert!(
             example.contains(expected),
             "CUDA HTJ2K profile example is missing `{expected}`"
         );
     }
+
+    assert!(
+        !example.contains(".decode_to_device_with_session(PixelFormat::Rgb8, &mut session)")
+            && !example.contains("for fixture in &fixtures"),
+        "CUDA HTJ2K profile example must not report batch_size while looping through single-tile decodes"
+    );
 }
 
 #[test]
@@ -98,8 +123,8 @@ fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
         "decode_to_cuda_resident_surface_with_profile_impl(self, session, fmt)",
         "decode_to_cuda_resident_surface_with_profile_control(decoder, session, fmt, true)",
         "collect_stage_timings",
-        "decode_htj2k_codeblocks_with_resources_untimed",
-        "j2k_inverse_dwt_single_device_untimed",
+        "decode_htj2k_codeblocks_cleanup_multi_enqueue_with_resources_and_pool",
+        "j2k_inverse_dwt_single_device_untimed_with_pool",
         "time_default_stream_named_us_if",
     ] {
         assert!(
@@ -134,4 +159,27 @@ fn cuda_runtime_exposes_untimed_htj2k_decode_helpers() {
             "CUDA runtime is missing steady-state decode helper `{expected}`"
         );
     }
+}
+
+fn extract_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source.find(signature).expect("function signature exists");
+    let function = &source[start..];
+    let mut depth = 0usize;
+    let mut saw_open = false;
+    for (index, ch) in function.char_indices() {
+        match ch {
+            '{' => {
+                saw_open = true;
+                depth = depth.saturating_add(1);
+            }
+            '}' if saw_open => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &function[..=index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("function body for `{signature}` is incomplete");
 }

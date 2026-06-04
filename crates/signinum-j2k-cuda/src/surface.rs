@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_core::{copy_tight_pixels_to_strided_output, BackendKind, DeviceSurface, PixelFormat};
+#[cfg(feature = "cuda-runtime")]
+use std::sync::Arc;
+
+use signinum_core::{
+    copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceSurface, PixelFormat,
+};
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::CudaDeviceBuffer;
 
@@ -13,6 +18,12 @@ pub(crate) enum Storage {
     Host(Vec<u8>),
     #[cfg(feature = "cuda-runtime")]
     Cuda(CudaDeviceBuffer),
+    #[cfg(feature = "cuda-runtime")]
+    CudaRange {
+        buffer: Arc<CudaDeviceBuffer>,
+        offset: usize,
+        len: usize,
+    },
 }
 
 /// CUDA surface execution counters.
@@ -45,6 +56,8 @@ impl CudaSurfaceStats {
 pub struct CudaSurface<'a> {
     #[cfg(feature = "cuda-runtime")]
     buffer: &'a CudaDeviceBuffer,
+    #[cfg(feature = "cuda-runtime")]
+    offset: usize,
     #[cfg(not(feature = "cuda-runtime"))]
     _marker: core::marker::PhantomData<&'a ()>,
     pub(crate) stats: CudaSurfaceStats,
@@ -55,7 +68,7 @@ impl CudaSurface<'_> {
     pub fn device_ptr(&self) -> u64 {
         #[cfg(feature = "cuda-runtime")]
         {
-            self.buffer.device_ptr()
+            self.buffer.device_ptr().saturating_add(self.offset as u64)
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
@@ -115,7 +128,7 @@ impl Surface {
         match &self.storage {
             Storage::Host(bytes) => Some(bytes),
             #[cfg(feature = "cuda-runtime")]
-            Storage::Cuda(_) => None,
+            Storage::Cuda(_) | Storage::CudaRange { .. } => None,
         }
     }
 
@@ -128,8 +141,36 @@ impl Surface {
             }
             #[cfg(feature = "cuda-runtime")]
             Storage::Cuda(buffer) => {
-                let mut tight = vec![0u8; self.byte_len()];
+                let byte_len = self.byte_len();
+                if let Some(len) =
+                    tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
+                {
+                    return buffer.copy_to_host(&mut out[..len]).map_err(cuda_error);
+                }
+                let mut tight = vec![0u8; byte_len];
                 buffer.copy_to_host(&mut tight).map_err(cuda_error)?;
+                copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
+                    .map_err(Error::from)
+            }
+            #[cfg(feature = "cuda-runtime")]
+            Storage::CudaRange {
+                buffer,
+                offset,
+                len,
+            } => {
+                let byte_len = self.byte_len();
+                debug_assert_eq!(*len, byte_len);
+                if let Some(len) =
+                    tight_cuda_download_len(byte_len, self.pitch_bytes, stride, out.len())
+                {
+                    return buffer
+                        .copy_range_to_host(*offset, &mut out[..len])
+                        .map_err(cuda_error);
+                }
+                let mut tight = vec![0u8; byte_len];
+                buffer
+                    .copy_range_to_host(*offset, &mut tight)
+                    .map_err(cuda_error)?;
                 copy_tight_pixels_to_strided_output(&tight, self.dimensions, self.fmt, out, stride)
                     .map_err(Error::from)
             }
@@ -149,6 +190,12 @@ impl Surface {
         match &self.storage {
             Storage::Cuda(buffer) => Some(CudaSurface {
                 buffer,
+                offset: 0,
+                stats: self.stats,
+            }),
+            Storage::CudaRange { buffer, offset, .. } => Some(CudaSurface {
+                buffer,
+                offset: *offset,
                 stats: self.stats,
             }),
             Storage::Host(_) => None,
@@ -158,6 +205,173 @@ impl Surface {
             let _ = self.stats;
             None
         }
+    }
+
+    /// Download a sequence of surfaces into a tightly concatenated output buffer.
+    ///
+    /// CUDA surfaces produced from one contiguous batch allocation are copied
+    /// with one device-to-host transfer. Other layouts fall back to downloading
+    /// each surface tightly in order.
+    pub fn download_batch_tight(surfaces: &[Self]) -> Result<Vec<u8>, Error> {
+        let required = batch_tight_required_len(surfaces)?;
+        if required == 0 {
+            return Ok(Vec::new());
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        if let Some((buffer, offset)) = contiguous_cuda_batch_range(surfaces) {
+            let mut out = Vec::with_capacity(required);
+            buffer
+                .copy_range_to_host_uninit(offset, out.spare_capacity_mut())
+                .map_err(cuda_error)?;
+            // SAFETY: the CUDA copy above initialized exactly `required`
+            // bytes in this Vec's spare capacity and returned success.
+            unsafe {
+                out.set_len(required);
+            }
+            return Ok(out);
+        }
+
+        let mut out = vec![0u8; required];
+        Self::download_batch_tight_into(surfaces, &mut out)?;
+        Ok(out)
+    }
+
+    /// Download a sequence of surfaces into a tightly concatenated output buffer.
+    ///
+    /// CUDA surfaces produced from one contiguous batch allocation are copied
+    /// with one device-to-host transfer. Other layouts fall back to downloading
+    /// each surface tightly in order.
+    pub fn download_batch_tight_into(surfaces: &[Self], out: &mut [u8]) -> Result<(), Error> {
+        let required = batch_tight_required_len(surfaces)?;
+        if out.len() < required {
+            return Err(BufferError::OutputTooSmall {
+                required,
+                have: out.len(),
+            }
+            .into());
+        }
+        if required == 0 {
+            return Ok(());
+        }
+
+        #[cfg(feature = "cuda-runtime")]
+        if let Some((buffer, offset)) = contiguous_cuda_batch_range(surfaces) {
+            return buffer
+                .copy_range_to_host(offset, &mut out[..required])
+                .map_err(cuda_error);
+        }
+
+        let mut cursor = 0usize;
+        for surface in surfaces {
+            let len = surface.byte_len();
+            surface.download_into(&mut out[cursor..cursor + len], surface.pitch_bytes)?;
+            cursor += len;
+        }
+        Ok(())
+    }
+}
+
+fn batch_tight_required_len(surfaces: &[Surface]) -> Result<usize, Error> {
+    surfaces
+        .iter()
+        .try_fold(0usize, |sum, surface| sum.checked_add(surface.byte_len()))
+        .ok_or(BufferError::SizeOverflow {
+            what: "tight batch surface output",
+        })
+        .map_err(Error::from)
+}
+
+#[cfg(feature = "cuda-runtime")]
+pub(crate) fn cuda_range_storage(
+    buffer: Arc<CudaDeviceBuffer>,
+    offset: usize,
+    len: usize,
+) -> Storage {
+    Storage::CudaRange {
+        buffer,
+        offset,
+        len,
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn contiguous_cuda_batch_range(surfaces: &[Surface]) -> Option<(&CudaDeviceBuffer, usize)> {
+    let first = surfaces.first()?;
+    let Storage::CudaRange {
+        buffer,
+        offset,
+        len,
+    } = &first.storage
+    else {
+        return None;
+    };
+    let first_buffer = buffer;
+    let first_offset = *offset;
+    let mut expected_offset = first_offset.checked_add(*len)?;
+    for surface in &surfaces[1..] {
+        let Storage::CudaRange {
+            buffer,
+            offset,
+            len,
+        } = &surface.storage
+        else {
+            return None;
+        };
+        if !Arc::ptr_eq(first_buffer, buffer) || *offset != expected_offset {
+            return None;
+        }
+        expected_offset = expected_offset.checked_add(*len)?;
+    }
+    Some((first_buffer.as_ref(), first_offset))
+}
+
+#[cfg(any(feature = "cuda-runtime", test))]
+fn tight_cuda_download_len(
+    byte_len: usize,
+    pitch_bytes: usize,
+    stride: usize,
+    out_len: usize,
+) -> Option<usize> {
+    (stride == pitch_bytes && out_len >= byte_len).then_some(byte_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tight_cuda_download_len, Storage, Surface, SurfaceResidency};
+    use signinum_core::{BackendKind, PixelFormat};
+
+    #[test]
+    fn tight_cuda_download_len_accepts_exact_tight_output() {
+        assert_eq!(tight_cuda_download_len(32, 8, 8, 32), Some(32));
+    }
+
+    #[test]
+    fn download_batch_tight_returns_tightly_concatenated_host_surfaces() {
+        let surfaces = [
+            Surface {
+                backend: BackendKind::Cpu,
+                residency: SurfaceResidency::Host,
+                dimensions: (2, 1),
+                fmt: PixelFormat::Gray8,
+                pitch_bytes: 2,
+                stats: Default::default(),
+                storage: Storage::Host(vec![1, 2]),
+            },
+            Surface {
+                backend: BackendKind::Cpu,
+                residency: SurfaceResidency::Host,
+                dimensions: (1, 1),
+                fmt: PixelFormat::Rgb8,
+                pitch_bytes: 3,
+                stats: Default::default(),
+                storage: Storage::Host(vec![3, 4, 5]),
+            },
+        ];
+
+        let tight = Surface::download_batch_tight(&surfaces).expect("batch download");
+
+        assert_eq!(tight, vec![1, 2, 3, 4, 5]);
     }
 }
 

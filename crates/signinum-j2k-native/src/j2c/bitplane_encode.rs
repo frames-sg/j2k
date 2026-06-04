@@ -53,6 +53,126 @@ pub(crate) struct EncodedCodeBlockWithSegments {
     pub(crate) num_zero_bitplanes: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClassicTier1TokenSegment {
+    pub(crate) token_bit_offset: u32,
+    pub(crate) token_bit_count: u32,
+    pub(crate) start_coding_pass: u8,
+    pub(crate) end_coding_pass: u8,
+    pub(crate) use_arithmetic: bool,
+}
+
+pub(crate) fn pack_classic_selective_bypass_tier1_tokens(
+    token_bytes: &[u8],
+    token_segments: &[ClassicTier1TokenSegment],
+    number_of_coding_passes: u8,
+    missing_bit_planes: u8,
+) -> Result<EncodedCodeBlockWithSegments, &'static str> {
+    let mut reader = ClassicTier1TokenReader::new(token_bytes);
+    let mut contexts = [ArithmeticEncoderContext::default(); 19];
+    reset_contexts(&mut contexts);
+    let mut data = Vec::new();
+    let mut segments = Vec::with_capacity(token_segments.len());
+
+    for segment in token_segments {
+        if segment.start_coding_pass > segment.end_coding_pass {
+            return Err("classic Tier-1 token segment pass range is invalid");
+        }
+        if segment.end_coding_pass > number_of_coding_passes {
+            return Err("classic Tier-1 token segment exceeds coding passes");
+        }
+        let token_bit_offset = usize::try_from(segment.token_bit_offset)
+            .map_err(|_| "classic Tier-1 token bit offset exceeds usize")?;
+        let token_bit_count = usize::try_from(segment.token_bit_count)
+            .map_err(|_| "classic Tier-1 token bit count exceeds usize")?;
+        reader.seek(token_bit_offset)?;
+        if segment.use_arithmetic {
+            if token_bit_count % 6 != 0 {
+                return Err("classic Tier-1 MQ token segment is not aligned to 6-bit symbols");
+            }
+            let symbol_count = token_bit_count / 6;
+            let mut encoder =
+                ArithmeticEncoder::with_capacity(symbol_count.saturating_div(16) + 32);
+            for _ in 0..symbol_count {
+                let token = reader.read_bits(6)?;
+                let ctx = (token & 0x1F) as usize;
+                if ctx >= contexts.len() {
+                    return Err("classic Tier-1 MQ token context is out of range");
+                }
+                let bit = (token >> 5) & 1;
+                encoder.encode(bit, &mut contexts[ctx]);
+            }
+            push_segment(
+                &mut data,
+                &mut segments,
+                segment.start_coding_pass,
+                segment.end_coding_pass,
+                encoder.finish(),
+                f64::EPSILON,
+                true,
+            );
+        } else {
+            let mut writer = BitWriter::new();
+            for _ in 0..token_bit_count {
+                writer.write_bit(reader.read_bits(1)?);
+            }
+            push_segment(
+                &mut data,
+                &mut segments,
+                segment.start_coding_pass,
+                segment.end_coding_pass,
+                writer.finish(),
+                f64::EPSILON,
+                false,
+            );
+        }
+    }
+
+    Ok(EncodedCodeBlockWithSegments {
+        data,
+        segments,
+        num_coding_passes: number_of_coding_passes,
+        num_zero_bitplanes: missing_bit_planes,
+    })
+}
+
+struct ClassicTier1TokenReader<'a> {
+    bytes: &'a [u8],
+    bit_pos: usize,
+}
+
+impl<'a> ClassicTier1TokenReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, bit_pos: 0 }
+    }
+
+    fn seek(&mut self, bit_pos: usize) -> Result<(), &'static str> {
+        if bit_pos > self.bytes.len().saturating_mul(8) {
+            return Err("classic Tier-1 token offset exceeds token buffer");
+        }
+        self.bit_pos = bit_pos;
+        Ok(())
+    }
+
+    fn read_bits(&mut self, count: u8) -> Result<u32, &'static str> {
+        let end = self
+            .bit_pos
+            .checked_add(usize::from(count))
+            .ok_or("classic Tier-1 token bit range overflows")?;
+        if end > self.bytes.len().saturating_mul(8) {
+            return Err("classic Tier-1 token read exceeds token buffer");
+        }
+        let mut value = 0u32;
+        for _ in 0..count {
+            let byte = self.bytes[self.bit_pos / 8];
+            let shift = 7 - (self.bit_pos % 8);
+            value = (value << 1) | u32::from((byte >> shift) & 1);
+            self.bit_pos += 1;
+        }
+        Ok(value)
+    }
+}
+
 /// Context labels for zero coding (Table D.1).
 /// Index into 256-entry lookup tables by neighbor significance pattern.
 #[rustfmt::skip]
@@ -1308,6 +1428,81 @@ mod tests {
         assert!(result.num_coding_passes > 0);
         assert!(!result.data.is_empty());
         assert_eq!(result.num_zero_bitplanes, 0);
+    }
+
+    #[test]
+    fn pack_classic_selective_bypass_tokens_matches_scalar_single_cleanup_block() {
+        let style = CodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            reset_context_probabilities: false,
+            termination_on_each_pass: false,
+            vertically_causal_context: false,
+            segmentation_symbols: false,
+            high_throughput_block_coding: false,
+        };
+        let coefficients = [1i32];
+        let scalar = encode_code_block_segments_with_style(
+            &coefficients,
+            1,
+            1,
+            SubBandType::LowLow,
+            1,
+            &style,
+        );
+        let token_bytes = pack_mq_test_tokens(&[(0, 1), (9, 0)]);
+        let packed = pack_classic_selective_bypass_tier1_tokens(
+            &token_bytes,
+            &[ClassicTier1TokenSegment {
+                token_bit_offset: 0,
+                token_bit_count: 12,
+                start_coding_pass: 0,
+                end_coding_pass: 1,
+                use_arithmetic: true,
+            }],
+            scalar.num_coding_passes,
+            scalar.num_zero_bitplanes,
+        )
+        .expect("tokens pack");
+
+        assert_eq!(packed.data, scalar.data);
+        assert_eq!(packed.num_coding_passes, scalar.num_coding_passes);
+        assert_eq!(packed.num_zero_bitplanes, scalar.num_zero_bitplanes);
+        assert_eq!(packed.segments.len(), scalar.segments.len());
+        for (packed_segment, scalar_segment) in packed.segments.iter().zip(&scalar.segments) {
+            assert_eq!(packed_segment.data_offset, scalar_segment.data_offset);
+            assert_eq!(packed_segment.data_length, scalar_segment.data_length);
+            assert_eq!(
+                packed_segment.start_coding_pass,
+                scalar_segment.start_coding_pass
+            );
+            assert_eq!(
+                packed_segment.end_coding_pass,
+                scalar_segment.end_coding_pass
+            );
+            assert_eq!(packed_segment.use_arithmetic, scalar_segment.use_arithmetic);
+        }
+    }
+
+    fn pack_mq_test_tokens(tokens: &[(u8, u8)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut current = 0u8;
+        let mut bits = 0u8;
+        for &(ctx, bit) in tokens {
+            let value = (ctx & 0x1F) | ((bit & 1) << 5);
+            for shift in (0..6).rev() {
+                current = (current << 1) | ((value >> shift) & 1);
+                bits += 1;
+                if bits == 8 {
+                    bytes.push(current);
+                    current = 0;
+                    bits = 0;
+                }
+            }
+        }
+        if bits != 0 {
+            bytes.push(current << (8 - bits));
+        }
+        bytes
     }
 
     #[test]

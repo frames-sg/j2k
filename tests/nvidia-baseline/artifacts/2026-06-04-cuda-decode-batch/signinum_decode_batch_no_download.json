@@ -1,0 +1,11 @@
+{
+  "input_count": 64,
+  "megapixels": 4.194304,
+  "warmup": 1,
+  "iterations": 5,
+  "max_inputs": 64,
+  "profile": {"label": "signinum_cuda_decode_real_batch", "execution_mode": "signinum_cuda_batch", "timing_scope": "aggregate_batch", "download_policy": "no_download", "input_count": 64, "megapixels": 4.194304, "codestream_bytes": 3755036, "mp_s": 124.054185, "status": {"status": "ok", "wall_ms": 33.810258, "gpu_ms": 8.126000, "stage_ms": 26.434000, "download_ms": null, "bytes": 0, "cuda_profile": {"parse_us": 863, "plan_us": 14848, "flatten_us": 1510, "h2d_us": 1087, "ht_cleanup_us": 4075, "ht_refine_us": 0, "dequant_us": 655, "idwt_us": 2469, "mct_us": 0, "store_us": 927, "total_us": 26434, "wall_total_us": 33789, "table_upload_us": 0, "payload_upload_us": 461, "status_d2h_us": 58, "output_d2h_us": 0, "block_count": 4800, "payload_bytes": 3729641, "dispatch_count": 13, "ht_dispatch_count": 1, "dequant_dispatch_count": 1, "idwt_dispatch_count": 10, "mct_dispatch_count": 0, "store_dispatch_count": 1}}},
+  "rows": [
+
+  ]
+}

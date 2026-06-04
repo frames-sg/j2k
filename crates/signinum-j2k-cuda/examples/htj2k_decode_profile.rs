@@ -15,17 +15,21 @@ fn main() {
     let iterations = env_usize("SIGNINUM_J2K_CUDA_PROFILE_ITERATIONS", DEFAULT_ITERATIONS);
     let fixture = htj2k_rgb8_fixture(TILE_DIM, TILE_DIM);
     let fixtures = vec![fixture; batch_size];
+    let inputs = fixtures.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let mut session = CudaSession::default();
 
     let start = Instant::now();
     let mut dispatches = 0usize;
     let mut ptr_xor = 0u64;
     for _ in 0..iterations {
-        for fixture in &fixtures {
-            let mut decoder = J2kDecoder::new(fixture).expect("decoder");
-            let surface = decoder
-                .decode_to_device_with_session(PixelFormat::Rgb8, &mut session)
-                .expect("strict CUDA HTJ2K RGB8 decode");
+        let surfaces = J2kDecoder::decode_batch_to_device_with_session(
+            &inputs,
+            PixelFormat::Rgb8,
+            &mut session,
+        )
+        .expect("strict CUDA HTJ2K RGB8 batch decode");
+        assert_eq!(surfaces.len(), batch_size);
+        for surface in surfaces {
             assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
             let cuda = surface.cuda_surface().expect("cuda surface");
             dispatches = dispatches.saturating_add(cuda.stats().decode_kernel_dispatches());
@@ -37,7 +41,7 @@ fn main() {
     let tiles_f64 = f64::from(u32::try_from(tiles).expect("profile tile count fits in u32"));
     let seconds = elapsed.as_secs_f64();
     println!(
-        "tiles={tiles} batch_size={batch_size} iterations={iterations} elapsed_s={seconds:.6} tiles_per_s={:.3} decode_dispatches={dispatches} ptr_xor={ptr_xor}",
+        "mode=batch_no_download tiles={tiles} batch_size={batch_size} iterations={iterations} elapsed_s={seconds:.6} tiles_per_s={:.3} decode_dispatches={dispatches} ptr_xor={ptr_xor}",
         tiles_f64 / seconds
     );
 }
