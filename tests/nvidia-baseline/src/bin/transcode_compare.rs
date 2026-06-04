@@ -84,7 +84,33 @@ fn main() {
         megapixels
     );
 
-    let nvidia = run_nvidia(&jpegs);
+    if config.profile_signinum_cuda_only {
+        let scale = config
+            .quant_scales
+            .first()
+            .copied()
+            .unwrap_or(JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE);
+        let options = lossy_options_for_config(&config, scale);
+        let signinum_cuda_ht = run_signinum(&jpegs, &options, &config);
+        print_signinum_cuda_profile_report(
+            &jpegs,
+            megapixels,
+            corpus_hash(&jpegs),
+            &config,
+            scale,
+            &signinum_cuda_ht,
+        );
+        if let Err(error) =
+            write_signinum_profile_artifacts(&config, &jpegs, megapixels, scale, &signinum_cuda_ht)
+        {
+            eprintln!("failed to write benchmark artifacts: {error}");
+            std::process::exit(2);
+        }
+        enforce_required_signinum_result(&signinum_cuda_ht);
+        return;
+    }
+
+    let nvidia = run_nvidia(&jpegs, &config);
     let rd_points = run_signinum_rd_sweep(&jpegs, &config, &nvidia);
     let selected_index = select_rd_point(&rd_points, &config, &nvidia);
     let signinum_cpu_ht = rd_points
@@ -96,7 +122,7 @@ fn main() {
             point.scale
         });
     let selected_options = lossy_options_for_config(&config, selected_scale);
-    let signinum_cuda_ht = run_signinum(&jpegs, &selected_options);
+    let signinum_cuda_ht = run_signinum(&jpegs, &selected_options, &config);
 
     print_report(
         &jpegs,
@@ -133,8 +159,12 @@ struct BenchmarkConfig {
     input_paths: Vec<PathBuf>,
     quant_scales: Vec<f32>,
     subband_scales: IrreversibleQuantizationSubbandScales,
+    decomposition_levels: u8,
     match_nvidia_bytes: bool,
     match_tolerance: f64,
+    profile_signinum_cuda_only: bool,
+    warmup: usize,
+    iterations: usize,
     min_tiles: Option<usize>,
     json_path: Option<PathBuf>,
     csv_path: Option<PathBuf>,
@@ -146,8 +176,12 @@ impl Default for BenchmarkConfig {
             input_paths: Vec::new(),
             quant_scales: vec![JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE],
             subband_scales: IrreversibleQuantizationSubbandScales::default(),
+            decomposition_levels: 1,
             match_nvidia_bytes: false,
             match_tolerance: 0.02,
+            profile_signinum_cuda_only: false,
+            warmup: WARMUP,
+            iterations: ITERATIONS,
             min_tiles: None,
             json_path: None,
             csv_path: None,
@@ -168,6 +202,7 @@ impl BenchmarkConfig {
             let arg_s = arg.to_string_lossy();
             match arg_s.as_ref() {
                 "--match-nvidia-bytes" => config.match_nvidia_bytes = true,
+                "--profile-signinum-cuda-only" => config.profile_signinum_cuda_only = true,
                 "--quant-scales" => {
                     let value = iter
                         .next()
@@ -183,24 +218,33 @@ impl BenchmarkConfig {
                         .ok_or("--subband-scales requires ll,hl,lh,hh values")?;
                     config.subband_scales = parse_subband_scales(&value.to_string_lossy())?;
                 }
+                "--decomposition-levels" => {
+                    let value = iter
+                        .next()
+                        .ok_or("--decomposition-levels requires a value")?;
+                    config.decomposition_levels =
+                        parse_positive_u8(&value.to_string_lossy(), "--decomposition-levels")?;
+                }
                 "--match-tolerance" => {
                     let value = iter.next().ok_or("--match-tolerance requires a value")?;
                     config.match_tolerance =
                         parse_positive_f64(&value.to_string_lossy(), "--match-tolerance")?;
                 }
+                "--warmup" => {
+                    let value = iter.next().ok_or("--warmup requires a value")?;
+                    config.warmup = parse_positive_usize(&value.to_string_lossy(), "--warmup")?;
+                }
+                "--iterations" => {
+                    let value = iter.next().ok_or("--iterations requires a value")?;
+                    config.iterations =
+                        parse_positive_usize(&value.to_string_lossy(), "--iterations")?;
+                }
                 "--min-tiles" => {
                     let value = iter.next().ok_or("--min-tiles requires a value")?;
-                    config.min_tiles = Some(
-                        value
-                            .to_string_lossy()
-                            .parse::<usize>()
-                            .map_err(|_| "--min-tiles must be a positive integer".to_string())
-                            .and_then(|value| {
-                                (value > 0)
-                                    .then_some(value)
-                                    .ok_or("--min-tiles must be greater than zero".to_string())
-                            })?,
-                    );
+                    config.min_tiles = Some(parse_positive_usize(
+                        &value.to_string_lossy(),
+                        "--min-tiles",
+                    )?);
                 }
                 "--json" => {
                     config.json_path = Some(iter.next().ok_or("--json requires a path")?);
@@ -215,12 +259,18 @@ impl BenchmarkConfig {
                 _ => config.input_paths.push(arg),
             }
         }
+        if config.profile_signinum_cuda_only && config.match_nvidia_bytes {
+            return Err(
+                "--profile-signinum-cuda-only cannot be combined with --match-nvidia-bytes"
+                    .to_string(),
+            );
+        }
         Ok(config)
     }
 }
 
 fn usage() -> String {
-    "usage: transcode_compare [--quant-scales a,b,c] [--subband-scales ll,hl,lh,hh] [--match-nvidia-bytes] [--match-tolerance frac] [--min-tiles n] [--json path] [--csv path] [file.jpg ...]".to_string()
+    "usage: transcode_compare [--profile-signinum-cuda-only] [--quant-scales a,b,c] [--subband-scales ll,hl,lh,hh] [--decomposition-levels n] [--match-nvidia-bytes] [--match-tolerance frac] [--warmup n] [--iterations n] [--min-tiles n] [--json path] [--csv path] [file.jpg ...]".to_string()
 }
 
 fn parse_f32_list(value: &str) -> Result<Vec<f32>, String> {
@@ -251,6 +301,22 @@ fn parse_positive_f64(value: &str, flag: &str) -> Result<f64, String> {
     } else {
         Err(format!("{flag} must be finite and greater than zero"))
     }
+}
+
+fn parse_positive_usize(value: &str, flag: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("{flag} must be a positive integer"))
+        .and_then(|value| {
+            (value > 0)
+                .then_some(value)
+                .ok_or_else(|| format!("{flag} must be greater than zero"))
+        })
+}
+
+fn parse_positive_u8(value: &str, flag: &str) -> Result<u8, String> {
+    let parsed = parse_positive_usize(value, flag)?;
+    u8::try_from(parsed).map_err(|_| format!("{flag} must be <= {}", u8::MAX))
 }
 
 fn parse_subband_scales(value: &str) -> Result<IrreversibleQuantizationSubbandScales, String> {
@@ -365,6 +431,10 @@ struct SigninumResult {
     encode_wall_us: u128,
     transform_gpu_stage_us: u128,
     encode_cuda_stage_us: u128,
+    encode_cuda_ht_kernel_us: u128,
+    encode_cuda_ht_status_readback_us: u128,
+    encode_cuda_ht_compact_us: u128,
+    encode_cuda_ht_output_readback_us: u128,
     pack_upload_us: u128,
     idct_row_lift_us: u128,
     column_lift_us: u128,
@@ -398,6 +468,7 @@ struct EncodeBenchMetrics {
 fn lossy_options_for_config(config: &BenchmarkConfig, scale: f32) -> JpegToHtj2kOptions {
     let mut options = JpegToHtj2kOptions::lossy_97();
     options.encode_options.irreversible_quantization_scale = scale;
+    options.encode_options.num_decomposition_levels = config.decomposition_levels;
     options
         .encode_options
         .irreversible_quantization_subband_scales = config.subband_scales;
@@ -415,7 +486,7 @@ fn run_signinum_rd_sweep(
         .copied()
         .map(|scale| {
             let options = lossy_options_for_config(config, scale);
-            let result = run_signinum_transform_cpu_encode(jpegs, &options);
+            let result = run_signinum_transform_cpu_encode(jpegs, &options, config);
             let quality = quality_summary(jpegs, &result.codestreams);
             if config.match_nvidia_bytes && nvidia.ran {
                 let delta = byte_delta_fraction(result.output_bytes, nvidia.output_bytes);
@@ -505,7 +576,11 @@ fn byte_delta_fraction(candidate: usize, target: usize) -> f64 {
     (candidate as f64 - target as f64) / target as f64
 }
 
-fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumResult {
+fn run_signinum(
+    jpegs: &[JpegInput],
+    options: &JpegToHtj2kOptions,
+    config: &BenchmarkConfig,
+) -> SigninumResult {
     let inputs: Vec<JpegTileBatchInput<'_>> = jpegs
         .iter()
         .map(|j| JpegTileBatchInput { bytes: &j.bytes })
@@ -513,7 +588,7 @@ fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumRe
     // Warm up (and detect whether the GPU path is available).
     let used_gpu = true;
     let mut session = SigninumBenchSession::new(true, true);
-    for iteration in 0..WARMUP.max(1) {
+    for iteration in 0..config.warmup.max(1) {
         match session.transcode_batch(&inputs, options) {
             Ok((batch, encode_metrics)) => validate_signinum_cuda_dispatch(&batch, encode_metrics),
             Err(error) => {
@@ -533,7 +608,7 @@ fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumRe
 
     let mut best_wall_s = f64::INFINITY;
     let mut last = SigninumResult::default();
-    for _ in 0..ITERATIONS {
+    for _ in 0..config.iterations {
         let start = Instant::now();
         let batch = session.transcode_batch(&inputs, options);
         let elapsed = start.elapsed().as_secs_f64();
@@ -559,6 +634,7 @@ fn run_signinum(jpegs: &[JpegInput], options: &JpegToHtj2kOptions) -> SigninumRe
 fn run_signinum_transform_cpu_encode(
     jpegs: &[JpegInput],
     options: &JpegToHtj2kOptions,
+    config: &BenchmarkConfig,
 ) -> SigninumResult {
     let inputs: Vec<JpegTileBatchInput<'_>> = jpegs
         .iter()
@@ -567,7 +643,7 @@ fn run_signinum_transform_cpu_encode(
     let mut used_gpu = true;
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = BenchAccelerator::new_explicit();
-    for iteration in 0..WARMUP.max(1) {
+    for iteration in 0..config.warmup.max(1) {
         match transcoder
             .transcode_batch_with_accelerator(&inputs, options, &mut accelerator)
             .and_then(reject_failed_signinum_tiles)
@@ -591,7 +667,7 @@ fn run_signinum_transform_cpu_encode(
 
     let mut best_wall_s = f64::INFINITY;
     let mut last = SigninumResult::default();
-    for _ in 0..ITERATIONS {
+    for _ in 0..config.iterations {
         let start = Instant::now();
         let batch = if used_gpu {
             transcoder
@@ -657,6 +733,10 @@ fn signinum_result_from_batch(
         encode_cuda_stage_us: encode_metrics
             .cuda_stage_us
             .saturating_add(t.dwt97_batch_ht_encode_us),
+        encode_cuda_ht_kernel_us: t.dwt97_batch_ht_kernel_us,
+        encode_cuda_ht_status_readback_us: t.dwt97_batch_ht_status_readback_us,
+        encode_cuda_ht_compact_us: t.dwt97_batch_ht_compact_us,
+        encode_cuda_ht_output_readback_us: t.dwt97_batch_ht_output_readback_us,
         transform_dispatches: t.accelerator_dispatches,
         transform_dispatched_jobs: t.accelerator_dispatched_jobs,
         transform_cpu_fallback_jobs: t.cpu_fallback_jobs,
@@ -699,6 +779,8 @@ impl SigninumBenchSession {
             #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
             encode_accelerator: use_gpu.then(|| {
                 CudaEncodeStageAccelerator::with_profile_collection(true)
+                    .prefer_cpu_ht_subband(true)
+                    .prefer_cpu_quantize_subband(true)
                     .prefer_cpu_packetization(true)
             }),
         }
@@ -821,8 +903,20 @@ fn signinum_cuda_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
 }
 
+#[cfg(not(target_os = "macos"))]
+fn signinum_cuda_stage_timings_disabled() -> bool {
+    std::env::var_os("SIGNINUM_CUDA_DISABLE_STAGE_TIMINGS").is_some()
+}
+
 fn nvidia_baseline_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some()
+}
+
+fn enforce_required_signinum_result(signinum: &SigninumResult) {
+    if signinum_cuda_required() && !(signinum.ran && signinum.used_gpu) {
+        eprintln!("signinum: required CUDA benchmark did not produce a GPU result");
+        std::process::exit(1);
+    }
 }
 
 fn enforce_required_results(signinum: &SigninumResult, nvidia: &NvidiaResult) {
@@ -890,10 +984,12 @@ fn validate_signinum_transform_dispatch(batch: &EncodedTranscodeBatch) {
             batch.report.transformed_components,
             "signinum: CUDA transform dispatched jobs do not cover all transformed components under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
         );
-        assert!(
-            batch.report.timings.dwt97_batch_quantize_codeblock_us != 0,
-            "signinum: CUDA fused 9/7 code-block quantize stage was not timed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
-        );
+        if !signinum_cuda_stage_timings_disabled() {
+            assert!(
+                batch.report.timings.dwt97_batch_quantize_codeblock_us != 0,
+                "signinum: CUDA fused 9/7 code-block quantize stage was not timed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -911,7 +1007,7 @@ struct NvidiaResult {
     error: Option<NvBaselineError>,
 }
 
-fn run_nvidia(jpegs: &[JpegInput]) -> NvidiaResult {
+fn run_nvidia(jpegs: &[JpegInput], config: &BenchmarkConfig) -> NvidiaResult {
     let mut session = match NvBaselineSession::new() {
         Ok(session) => session,
         Err(error) => {
@@ -923,7 +1019,7 @@ fn run_nvidia(jpegs: &[JpegInput]) -> NvidiaResult {
     };
 
     // Warm up with the same reused session that will be measured.
-    for _ in 0..WARMUP {
+    for _ in 0..config.warmup {
         for jpeg in jpegs {
             let _ = session.transcode_jpeg_to_htj2k(&jpeg.bytes);
         }
@@ -931,7 +1027,7 @@ fn run_nvidia(jpegs: &[JpegInput]) -> NvidiaResult {
 
     let mut best_wall_s = f64::INFINITY;
     let mut best = NvidiaResult::default();
-    for _ in 0..ITERATIONS {
+    for _ in 0..config.iterations {
         let start = Instant::now();
         let mut decode_ms = 0f64;
         let mut encode_ms = 0f64;
@@ -986,7 +1082,18 @@ fn native_decode_rgb(codestream: &[u8]) -> Option<Vec<u8>> {
 struct QualitySummary {
     mean_psnr: Option<f64>,
     aggregate_psnr: Option<f64>,
+    channel_psnr: [Option<f64>; 3],
     per_tile_psnr: Vec<Option<f64>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RgbMseSummary {
+    sum_sq: f64,
+    samples: usize,
+    channel_sum_sq: [f64; 3],
+    channel_samples: [usize; 3],
+    #[cfg(test)]
+    channel_psnr: [Option<f64>; 3],
 }
 
 fn quality_summary(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<QualitySummary> {
@@ -995,52 +1102,79 @@ fn quality_summary(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<Quali
     let mut counted = 0usize;
     let mut total_sum_sq = 0f64;
     let mut total_samples = 0usize;
+    let mut channel_sum_sq = [0f64; 3];
+    let mut channel_samples = [0usize; 3];
     let mut per_tile_psnr = Vec::with_capacity(jpegs.len());
     for (jpeg, codestream) in jpegs.iter().zip(codestreams.iter()) {
         let Ok((source, _, _)) = nvidia_decode_jpeg_rgb(&jpeg.bytes) else {
             return None;
         };
         let recon = native_decode_rgb(codestream)?;
-        let (psnr, sum_sq, samples) = best_psnr_and_mse(&recon, &source)?;
+        let (psnr, mse) = best_psnr_and_mse(&recon, &source)?;
         total += psnr;
         counted += 1;
-        total_sum_sq += sum_sq;
-        total_samples = total_samples.saturating_add(samples);
+        total_sum_sq += mse.sum_sq;
+        total_samples = total_samples.saturating_add(mse.samples);
+        for channel in 0..3 {
+            channel_sum_sq[channel] += mse.channel_sum_sq[channel];
+            channel_samples[channel] =
+                channel_samples[channel].saturating_add(mse.channel_samples[channel]);
+        }
         per_tile_psnr.push(Some(psnr));
     }
     (counted == jpegs.len()).then(|| QualitySummary {
         mean_psnr: Some(total / counted as f64),
         aggregate_psnr: psnr_from_mse(total_sum_sq, total_samples),
+        channel_psnr: [
+            psnr_from_mse(channel_sum_sq[0], channel_samples[0]),
+            psnr_from_mse(channel_sum_sq[1], channel_samples[1]),
+            psnr_from_mse(channel_sum_sq[2], channel_samples[2]),
+        ],
         per_tile_psnr,
     })
 }
 
-fn best_psnr_and_mse(recon: &[u8], source_rgb: &[u8]) -> Option<(f64, f64, usize)> {
+fn best_psnr_and_mse(recon: &[u8], source_rgb: &[u8]) -> Option<(f64, RgbMseSummary)> {
     let direct = psnr_u8(recon, source_rgb);
     let converted_rgb = ycbcr_to_rgb(recon);
     let converted = psnr_u8(&converted_rgb, source_rgb);
     match (direct, converted) {
-        (Some(a), Some(b)) if a >= b => mse_u8(recon, source_rgb).map(|(sum, n)| (a, sum, n)),
-        (Some(_), Some(b)) => mse_u8(&converted_rgb, source_rgb).map(|(sum, n)| (b, sum, n)),
-        (Some(a), None) => mse_u8(recon, source_rgb).map(|(sum, n)| (a, sum, n)),
-        (None, Some(b)) => mse_u8(&converted_rgb, source_rgb).map(|(sum, n)| (b, sum, n)),
+        (Some(a), Some(b)) if a >= b => rgb_mse_summary(recon, source_rgb).map(|mse| (a, mse)),
+        (Some(_), Some(b)) => rgb_mse_summary(&converted_rgb, source_rgb).map(|mse| (b, mse)),
+        (Some(a), None) => rgb_mse_summary(recon, source_rgb).map(|mse| (a, mse)),
+        (None, Some(b)) => rgb_mse_summary(&converted_rgb, source_rgb).map(|mse| (b, mse)),
         (None, None) => None,
     }
 }
 
-fn mse_u8(a: &[u8], b: &[u8]) -> Option<(f64, usize)> {
-    if a.len() != b.len() || a.is_empty() {
+fn rgb_mse_summary(a: &[u8], b: &[u8]) -> Option<RgbMseSummary> {
+    if a.len() != b.len() || a.is_empty() || a.len() % 3 != 0 {
         return None;
     }
-    let sum_sq = a
-        .iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let diff = f64::from(x) - f64::from(y);
-            diff * diff
-        })
-        .sum();
-    Some((sum_sq, a.len()))
+    let mut sum_sq = 0f64;
+    let mut channel_sum_sq = [0f64; 3];
+    let mut channel_samples = [0usize; 3];
+    for (left, right) in a.chunks_exact(3).zip(b.chunks_exact(3)) {
+        for channel in 0..3 {
+            let diff = f64::from(left[channel]) - f64::from(right[channel]);
+            let squared = diff * diff;
+            sum_sq += squared;
+            channel_sum_sq[channel] += squared;
+            channel_samples[channel] += 1;
+        }
+    }
+    Some(RgbMseSummary {
+        sum_sq,
+        samples: a.len(),
+        channel_sum_sq,
+        channel_samples,
+        #[cfg(test)]
+        channel_psnr: [
+            psnr_from_mse(channel_sum_sq[0], channel_samples[0]),
+            psnr_from_mse(channel_sum_sq[1], channel_samples[1]),
+            psnr_from_mse(channel_sum_sq[2], channel_samples[2]),
+        ],
+    })
 }
 
 fn psnr_from_mse(sum_sq: f64, samples: usize) -> Option<f64> {
@@ -1096,17 +1230,21 @@ fn print_report(
     );
     println!("corpus hash: {corpus_hash:016x}");
     println!(
-        "lossy profile: selected scale {:.4}, subband scales LL {:.3} HL {:.3} LH {:.3} HH {:.3}",
+        "lossy profile: selected scale {:.4}, decomposition levels {}, subband scales LL {:.3} HL {:.3} LH {:.3} HH {:.3}",
         rd_points
             .get(selected_index)
             .map_or(JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE, |point| point
                 .scale),
+        config.decomposition_levels,
         config.subband_scales.low_low,
         config.subband_scales.high_low,
         config.subband_scales.low_high,
         config.subband_scales.high_high,
     );
-    println!("iterations: {ITERATIONS} (best wall-clock reported)\n");
+    println!(
+        "iterations: {} (best wall-clock reported)\n",
+        config.iterations
+    );
 
     if rd_points.len() > 1 || config.match_nvidia_bytes {
         println!("Signinum RD sweep (CUDA transform + CPU HT, PSNR not rate matched):");
@@ -1243,6 +1381,64 @@ fn print_report(
         fmt_psnr(sig_cuda_quality.as_ref().and_then(|q| q.aggregate_psnr)),
         fmt_psnr(nv_quality.as_ref().and_then(|q| q.aggregate_psnr)),
     );
+    println!(
+        "  RGB channel PSNR vs source (R/G/B):  sig CPU HT {}   sig CUDA HT {}   NVIDIA {}",
+        fmt_channel_psnr(sig_cpu_quality.as_ref()),
+        fmt_channel_psnr(sig_cuda_quality.as_ref()),
+        fmt_channel_psnr(nv_quality.as_ref()),
+    );
+}
+
+fn print_signinum_cuda_profile_report(
+    jpegs: &[JpegInput],
+    megapixels: f64,
+    corpus_hash: u64,
+    config: &BenchmarkConfig,
+    scale: f32,
+    signinum: &SigninumResult,
+) {
+    let labels: Vec<&str> = jpegs.iter().map(|j| j.label.as_str()).take(4).collect();
+    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
+        megapixels / signinum.best_wall_s
+    } else {
+        0.0
+    };
+    println!(
+        "tiles: {}{}",
+        labels.join(", "),
+        if jpegs.len() > 4 { ", ..." } else { "" }
+    );
+    println!("corpus hash: {corpus_hash:016x}");
+    println!(
+        "profile: signinum CUDA HT only, scale {:.4}, decomposition levels {}, subband scales LL {:.3} HL {:.3} LH {:.3} HH {:.3}",
+        scale,
+        config.decomposition_levels,
+        config.subband_scales.low_low,
+        config.subband_scales.high_low,
+        config.subband_scales.low_high,
+        config.subband_scales.high_high,
+    );
+    println!(
+        "iterations: {} (best wall-clock reported)\n",
+        config.iterations
+    );
+    println!(
+        "PROFILE_RESULT signinum_cuda_ht_only mp_s={:.3} wall_ms={:.3} gpu_ms={:.3} bytes={} transform_dispatches={} transform_jobs={} cpu_fallback_jobs={} encode_dispatches={} ht_codeblock_dispatches={} packetization_dispatches={}",
+        mp_s,
+        signinum.best_wall_s * 1000.0,
+        result_gpu_ms(signinum),
+        signinum.output_bytes,
+        signinum.transform_dispatches,
+        signinum.transform_dispatched_jobs,
+        signinum.transform_cpu_fallback_jobs,
+        signinum.encode_dispatches,
+        signinum.encode_ht_code_block_dispatches,
+        signinum.encode_packetization_dispatches,
+    );
+    print_signinum_stages(
+        "signinum CUDA transform + CUDA HT block encode + CPU packetization",
+        signinum,
+    );
 }
 
 fn print_signinum_stages(label: &str, signinum: &SigninumResult) {
@@ -1275,6 +1471,20 @@ fn print_signinum_stages(label: &str, signinum: &SigninumResult) {
             signinum.encode_ht_code_block_dispatches,
             signinum.encode_packetization_dispatches,
         );
+        if signinum.encode_cuda_ht_kernel_us
+            + signinum.encode_cuda_ht_status_readback_us
+            + signinum.encode_cuda_ht_compact_us
+            + signinum.encode_cuda_ht_output_readback_us
+            > 0
+        {
+            println!(
+                "      resident split: kernel {:.3}  status {:.3}  compact {:.3}  output {:.3}",
+                us_ms(signinum.encode_cuda_ht_kernel_us),
+                us_ms(signinum.encode_cuda_ht_status_readback_us),
+                us_ms(signinum.encode_cuda_ht_compact_us),
+                us_ms(signinum.encode_cuda_ht_output_readback_us),
+            );
+        }
     } else {
         println!("    CUDA HT encode: n/a (CPU encode path)");
     }
@@ -1310,6 +1520,20 @@ fn us_ms(us: u128) -> f64 {
 
 fn fmt_psnr(psnr: Option<f64>) -> String {
     psnr.map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
+}
+
+fn fmt_channel_psnr(quality: Option<&QualitySummary>) -> String {
+    quality.map_or_else(
+        || "n/a".to_string(),
+        |quality| {
+            format!(
+                "{}/{}/{}",
+                fmt_psnr(quality.channel_psnr[0]),
+                fmt_psnr(quality.channel_psnr[1]),
+                fmt_psnr(quality.channel_psnr[2])
+            )
+        },
+    )
 }
 
 fn nv_status(nvidia: &NvidiaResult) -> String {
@@ -1385,6 +1609,152 @@ fn write_artifacts(
     Ok(())
 }
 
+fn write_signinum_profile_artifacts(
+    config: &BenchmarkConfig,
+    jpegs: &[JpegInput],
+    megapixels: f64,
+    scale: f32,
+    signinum: &SigninumResult,
+) -> std::io::Result<()> {
+    if let Some(path) = &config.csv_path {
+        std::fs::write(
+            path,
+            signinum_profile_csv_report(jpegs, megapixels, scale, signinum),
+        )?;
+    }
+    if let Some(path) = &config.json_path {
+        std::fs::write(
+            path,
+            signinum_profile_json_report(config, jpegs, megapixels, scale, signinum),
+        )?;
+    }
+    Ok(())
+}
+
+fn signinum_profile_csv_report(
+    jpegs: &[JpegInput],
+    megapixels: f64,
+    scale: f32,
+    signinum: &SigninumResult,
+) -> String {
+    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
+        megapixels / signinum.best_wall_s
+    } else {
+        0.0
+    };
+    format!(
+        "row,ran,used_gpu,scale,tiles,megapixels,mp_s,bytes,wall_ms,gpu_ms,extract_ms,repack_ms,transform_wall_ms,encode_wall_ms,encode_cuda_ht_kernel_ms,encode_cuda_ht_status_readback_ms,encode_cuda_ht_compact_ms,encode_cuda_ht_output_readback_ms,pack_upload_ms,idct_row_lift_ms,column_lift_ms,quantize_ms,readback_ms,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\nsigninum_cuda_ht_only,{},{},{:.6},{},{:.8},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{}\n",
+        signinum.ran,
+        signinum.used_gpu,
+        scale,
+        jpegs.len(),
+        megapixels,
+        mp_s,
+        signinum.output_bytes,
+        signinum.best_wall_s * 1000.0,
+        result_gpu_ms(signinum),
+        us_ms(signinum.extract_us),
+        us_ms(signinum.repack_us),
+        us_ms(signinum.transform_wall_us),
+        us_ms(signinum.encode_wall_us),
+        us_ms(signinum.encode_cuda_ht_kernel_us),
+        us_ms(signinum.encode_cuda_ht_status_readback_us),
+        us_ms(signinum.encode_cuda_ht_compact_us),
+        us_ms(signinum.encode_cuda_ht_output_readback_us),
+        us_ms(signinum.pack_upload_us),
+        us_ms(signinum.idct_row_lift_us),
+        us_ms(signinum.column_lift_us),
+        us_ms(signinum.quantize_us),
+        us_ms(signinum.readback_us),
+        signinum.transform_dispatches,
+        signinum.transform_dispatched_jobs,
+        signinum.transform_cpu_fallback_jobs,
+        signinum.encode_dispatches,
+        signinum.encode_ht_code_block_dispatches,
+        signinum.encode_packetization_dispatches,
+    )
+}
+
+#[allow(clippy::format_push_string)]
+fn signinum_profile_json_report(
+    config: &BenchmarkConfig,
+    jpegs: &[JpegInput],
+    megapixels: f64,
+    scale: f32,
+    signinum: &SigninumResult,
+) -> String {
+    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
+        megapixels / signinum.best_wall_s
+    } else {
+        0.0
+    };
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str("  \"mode\": \"signinum_cuda_ht_only\",\n");
+    out.push_str(&format!("  \"tile_count\": {},\n", jpegs.len()));
+    out.push_str(&format!("  \"megapixels\": {megapixels:.8},\n"));
+    out.push_str(&format!(
+        "  \"corpus_hash\": \"{:016x}\",\n",
+        corpus_hash(jpegs)
+    ));
+    out.push_str(&format!("  \"scale\": {scale:.6},\n"));
+    out.push_str(&format!(
+        "  \"decomposition_levels\": {},\n",
+        config.decomposition_levels
+    ));
+    out.push_str(&format!(
+        "  \"subband_scales\": {{\"ll\": {:.6}, \"hl\": {:.6}, \"lh\": {:.6}, \"hh\": {:.6}}},\n",
+        config.subband_scales.low_low,
+        config.subband_scales.high_low,
+        config.subband_scales.low_high,
+        config.subband_scales.high_high,
+    ));
+    out.push_str("  \"inputs\": [");
+    for (idx, jpeg) in jpegs.iter().enumerate() {
+        if idx != 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format!(
+            "{{\"label\": \"{}\", \"width\": {}, \"height\": {}, \"bytes\": {}}}",
+            json_escape(&jpeg.label),
+            jpeg.width,
+            jpeg.height,
+            jpeg.bytes.len()
+        ));
+    }
+    out.push_str("],\n");
+    out.push_str(&format!(
+        "  \"result\": {{\"ran\": {}, \"used_gpu\": {}, \"mp_s\": {:.6}, \"bytes\": {}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"extract_ms\": {:.6}, \"repack_ms\": {:.6}, \"transform_wall_ms\": {:.6}, \"encode_wall_ms\": {:.6}, \"encode_cuda_ht_kernel_ms\": {:.6}, \"encode_cuda_ht_status_readback_ms\": {:.6}, \"encode_cuda_ht_compact_ms\": {:.6}, \"encode_cuda_ht_output_readback_ms\": {:.6}, \"pack_upload_ms\": {:.6}, \"idct_row_lift_ms\": {:.6}, \"column_lift_ms\": {:.6}, \"quantize_ms\": {:.6}, \"readback_ms\": {:.6}, \"transform_dispatches\": {}, \"transform_jobs\": {}, \"cpu_fallback_jobs\": {}, \"encode_dispatches\": {}, \"ht_codeblock_dispatches\": {}, \"packetization_dispatches\": {}}}\n",
+        signinum.ran,
+        signinum.used_gpu,
+        mp_s,
+        signinum.output_bytes,
+        signinum.best_wall_s * 1000.0,
+        result_gpu_ms(signinum),
+        us_ms(signinum.extract_us),
+        us_ms(signinum.repack_us),
+        us_ms(signinum.transform_wall_us),
+        us_ms(signinum.encode_wall_us),
+        us_ms(signinum.encode_cuda_ht_kernel_us),
+        us_ms(signinum.encode_cuda_ht_status_readback_us),
+        us_ms(signinum.encode_cuda_ht_compact_us),
+        us_ms(signinum.encode_cuda_ht_output_readback_us),
+        us_ms(signinum.pack_upload_us),
+        us_ms(signinum.idct_row_lift_us),
+        us_ms(signinum.column_lift_us),
+        us_ms(signinum.quantize_us),
+        us_ms(signinum.readback_us),
+        signinum.transform_dispatches,
+        signinum.transform_dispatched_jobs,
+        signinum.transform_cpu_fallback_jobs,
+        signinum.encode_dispatches,
+        signinum.encode_ht_code_block_dispatches,
+        signinum.encode_packetization_dispatches,
+    ));
+    out.push_str("}\n");
+    out
+}
+
 #[allow(clippy::format_push_string)]
 fn csv_report(
     jpegs: &[JpegInput],
@@ -1395,7 +1765,7 @@ fn csv_report(
     nvidia: &NvidiaResult,
 ) -> String {
     let mut out = String::from(
-        "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\n",
+        "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,psnr_r,psnr_g,psnr_b,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\n",
     );
     for (idx, point) in rd_points.iter().enumerate() {
         append_csv_result(
@@ -1424,9 +1794,14 @@ fn csv_report(
     let nvidia_gpu = nvidia
         .ran
         .then(|| format!("{:.6}", nvidia.decode_ms + nvidia.encode_ms));
+    let nvidia_quality = if nvidia.ran {
+        quality_summary(jpegs, &nvidia.codestreams)
+    } else {
+        None
+    };
     let _ = megapixels;
     out.push_str(&format!(
-        "nvidia_reused_session_serial,false,{},{},{},{},,{},{},{},{},,,,,,,,\n",
+        "nvidia_reused_session_serial,false,{},{},{},{},,{},{},{},{},{},{},{},{},{},,,,,,\n",
         nvidia.ran,
         nvidia.ran,
         nvidia.ran,
@@ -1439,6 +1814,31 @@ fn csv_report(
         "",
         nvidia_wall.unwrap_or_default(),
         nvidia_gpu.unwrap_or_default(),
+        csv_optional_f64(
+            nvidia_quality
+                .as_ref()
+                .and_then(|quality| quality.mean_psnr)
+        ),
+        csv_optional_f64(
+            nvidia_quality
+                .as_ref()
+                .and_then(|quality| quality.aggregate_psnr)
+        ),
+        csv_optional_f64(
+            nvidia_quality
+                .as_ref()
+                .and_then(|quality| quality.channel_psnr[0])
+        ),
+        csv_optional_f64(
+            nvidia_quality
+                .as_ref()
+                .and_then(|quality| quality.channel_psnr[1])
+        ),
+        csv_optional_f64(
+            nvidia_quality
+                .as_ref()
+                .and_then(|quality| quality.channel_psnr[2])
+        ),
     ));
     out
 }
@@ -1462,7 +1862,7 @@ fn append_csv_result(
         None
     };
     out.push_str(&format!(
-        "{row},{selected},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{},{}\n",
+        "{row},{selected},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{},{},{},{},{}\n",
         result.ran,
         result.used_gpu,
         nvidia.ran,
@@ -1472,12 +1872,11 @@ fn append_csv_result(
         byte_delta.map_or_else(String::new, |delta| format!("{delta:.8}")),
         result.best_wall_s * 1000.0,
         result_gpu_ms(result),
-        quality
-            .and_then(|quality| quality.mean_psnr)
-            .map_or_else(String::new, |value| format!("{value:.6}")),
-        quality
-            .and_then(|quality| quality.aggregate_psnr)
-            .map_or_else(String::new, |value| format!("{value:.6}")),
+        csv_optional_f64(quality.and_then(|quality| quality.mean_psnr)),
+        csv_optional_f64(quality.and_then(|quality| quality.aggregate_psnr)),
+        csv_optional_f64(quality.and_then(|quality| quality.channel_psnr[0])),
+        csv_optional_f64(quality.and_then(|quality| quality.channel_psnr[1])),
+        csv_optional_f64(quality.and_then(|quality| quality.channel_psnr[2])),
         result.transform_dispatches,
         result.transform_dispatched_jobs,
         result.transform_cpu_fallback_jobs,
@@ -1508,6 +1907,10 @@ fn json_report(
     out.push_str(&format!(
         "  \"match_nvidia_bytes\": {},\n  \"match_tolerance\": {:.8},\n",
         config.match_nvidia_bytes, config.match_tolerance
+    ));
+    out.push_str(&format!(
+        "  \"decomposition_levels\": {},\n",
+        config.decomposition_levels
     ));
     out.push_str(&format!(
         "  \"subband_scales\": {{\"ll\": {:.6}, \"hl\": {:.6}, \"lh\": {:.6}, \"hh\": {:.6}}},\n",
@@ -1560,8 +1963,13 @@ fn json_report(
         nvidia,
     );
     out.push_str(",\n");
+    let nvidia_quality = if nvidia.ran {
+        quality_summary(jpegs, &nvidia.codestreams)
+    } else {
+        None
+    };
     out.push_str(&format!(
-        "  \"nvidia_reused_session_serial\": {{\"ran\": {}, \"status\": \"{}\", \"bytes\": {}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"decode_ms\": {:.6}, \"encode_ms\": {:.6}}}\n",
+        "  \"nvidia_reused_session_serial\": {{\"ran\": {}, \"status\": \"{}\", \"bytes\": {}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"decode_ms\": {:.6}, \"encode_ms\": {:.6}, \"mean_psnr\": {}, \"aggregate_psnr\": {}, \"channel_psnr\": {{\"r\": {}, \"g\": {}, \"b\": {}}}}}\n",
         nvidia.ran,
         json_escape(&nv_status(nvidia)),
         nvidia.output_bytes,
@@ -1569,6 +1977,11 @@ fn json_report(
         if nvidia.ran { nvidia.decode_ms + nvidia.encode_ms } else { 0.0 },
         nvidia.decode_ms,
         nvidia.encode_ms,
+        json_optional_f64(nvidia_quality.as_ref().and_then(|quality| quality.mean_psnr)),
+        json_optional_f64(nvidia_quality.as_ref().and_then(|quality| quality.aggregate_psnr)),
+        json_optional_f64(nvidia_quality.as_ref().and_then(|quality| quality.channel_psnr[0])),
+        json_optional_f64(nvidia_quality.as_ref().and_then(|quality| quality.channel_psnr[1])),
+        json_optional_f64(nvidia_quality.as_ref().and_then(|quality| quality.channel_psnr[2])),
     ));
     out.push_str("}\n");
     out
@@ -1583,7 +1996,7 @@ fn append_json_signinum_result(
     nvidia: &NvidiaResult,
 ) {
     out.push_str(&format!(
-        "{{\"scale\": {:.6}, \"ran\": {}, \"used_gpu\": {}, \"bytes\": {}, \"byte_delta_vs_nvidia\": {:.8}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"mean_psnr\": {}, \"aggregate_psnr\": {}, \"transform_dispatches\": {}, \"transform_jobs\": {}, \"cpu_fallback_jobs\": {}, \"encode_dispatches\": {}, \"ht_codeblock_dispatches\": {}, \"packetization_dispatches\": {}, \"per_tile_psnr\": [",
+        "{{\"scale\": {:.6}, \"ran\": {}, \"used_gpu\": {}, \"bytes\": {}, \"byte_delta_vs_nvidia\": {:.8}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"mean_psnr\": {}, \"aggregate_psnr\": {}, \"channel_psnr\": {{\"r\": {}, \"g\": {}, \"b\": {}}}, \"transform_dispatches\": {}, \"transform_jobs\": {}, \"cpu_fallback_jobs\": {}, \"encode_dispatches\": {}, \"ht_codeblock_dispatches\": {}, \"packetization_dispatches\": {}, \"per_tile_psnr\": [",
         scale,
         result.ran,
         result.used_gpu,
@@ -1593,6 +2006,9 @@ fn append_json_signinum_result(
         result_gpu_ms(result),
         json_optional_f64(quality.and_then(|quality| quality.mean_psnr)),
         json_optional_f64(quality.and_then(|quality| quality.aggregate_psnr)),
+        json_optional_f64(quality.and_then(|quality| quality.channel_psnr[0])),
+        json_optional_f64(quality.and_then(|quality| quality.channel_psnr[1])),
+        json_optional_f64(quality.and_then(|quality| quality.channel_psnr[2])),
         result.transform_dispatches,
         result.transform_dispatched_jobs,
         result.transform_cpu_fallback_jobs,
@@ -1615,6 +2031,12 @@ fn json_optional_f64(value: Option<f64>) -> String {
     value
         .filter(|value| value.is_finite())
         .map_or_else(|| "null".to_string(), |value| format!("{value:.8}"))
+}
+
+fn csv_optional_f64(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map_or_else(String::new, |value| format!("{value:.6}"))
 }
 
 fn json_escape(value: &str) -> String {
@@ -1655,14 +2077,31 @@ mod tests {
 
     #[test]
     fn parse_benchmark_config_accepts_rd_and_artifact_flags() {
-        let config = BenchmarkConfig::parse([
+        let error = BenchmarkConfig::parse([
             path("--quant-scales"),
             path("1.5,1.9,2.3"),
             path("--subband-scales"),
             path("0.9,1.0,1.1,1.3"),
             path("--match-nvidia-bytes"),
+            path("--profile-signinum-cuda-only"),
+        ])
+        .expect_err("profile-only mode rejects NVIDIA byte matching");
+        assert!(error.contains("--profile-signinum-cuda-only"));
+
+        let config = BenchmarkConfig::parse([
+            path("--quant-scales"),
+            path("1.5,1.9,2.3"),
+            path("--subband-scales"),
+            path("0.9,1.0,1.1,1.3"),
+            path("--decomposition-levels"),
+            path("3"),
+            path("--profile-signinum-cuda-only"),
             path("--match-tolerance"),
             path("0.015"),
+            path("--warmup"),
+            path("3"),
+            path("--iterations"),
+            path("75"),
             path("--min-tiles"),
             path("100"),
             path("--json"),
@@ -1676,8 +2115,12 @@ mod tests {
         assert_eq!(config.quant_scales, vec![1.5, 1.9, 2.3]);
         assert_eq!(config.subband_scales.low_low.to_bits(), 0.9f32.to_bits());
         assert_eq!(config.subband_scales.low_high.to_bits(), 1.1f32.to_bits());
-        assert!(config.match_nvidia_bytes);
+        assert_eq!(config.decomposition_levels, 3);
+        assert!(!config.match_nvidia_bytes);
+        assert!(config.profile_signinum_cuda_only);
         assert_eq!(config.match_tolerance, 0.015);
+        assert_eq!(config.warmup, 3);
+        assert_eq!(config.iterations, 75);
         assert_eq!(config.min_tiles, Some(100));
         assert_eq!(config.json_path, Some(path("target/report.json")));
         assert_eq!(config.csv_path, Some(path("target/report.csv")));
@@ -1832,5 +2275,50 @@ mod tests {
         );
 
         assert!(csv.contains("nvidia_reused_session_serial,false,true,true,true,ok,,623,"));
+    }
+
+    #[test]
+    fn rgb_mse_summary_reports_per_channel_error() {
+        let summary = rgb_mse_summary(&[10, 20, 30, 20, 40, 70], &[10, 30, 50, 30, 40, 40])
+            .expect("matching RGB buffers produce channel stats");
+
+        assert_eq!(summary.sum_sq, 1500.0);
+        assert_eq!(summary.samples, 6);
+        assert_eq!(summary.channel_sum_sq, [100.0, 100.0, 1300.0]);
+        assert_eq!(summary.channel_samples, [2, 2, 2]);
+        assert_eq!(summary.channel_psnr[0], psnr_from_mse(100.0, 2));
+        assert_eq!(summary.channel_psnr[1], psnr_from_mse(100.0, 2));
+        assert_eq!(summary.channel_psnr[2], psnr_from_mse(1300.0, 2));
+    }
+
+    #[test]
+    fn csv_report_includes_rgb_channel_psnr_columns() {
+        let csv = csv_report(
+            &[],
+            0.0,
+            &[],
+            0,
+            &SigninumResult::default(),
+            &NvidiaResult::default(),
+        );
+
+        assert!(csv.starts_with(
+            "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia,wall_ms,gpu_ms,mean_psnr,aggregate_psnr,psnr_r,psnr_g,psnr_b,"
+        ));
+    }
+
+    #[test]
+    fn json_report_includes_rgb_channel_psnr_fields() {
+        let json = json_report(
+            &BenchmarkConfig::default(),
+            &[],
+            0.0,
+            &[],
+            0,
+            &SigninumResult::default(),
+            &NvidiaResult::default(),
+        );
+
+        assert!(json.contains("\"channel_psnr\": {\"r\": null, \"g\": null, \"b\": null}"));
     }
 }
