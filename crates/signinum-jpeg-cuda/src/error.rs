@@ -18,6 +18,12 @@ pub enum Error {
         /// Backend requested by the caller.
         request: BackendRequest,
     },
+    /// CUDA request is unsupported by the strict CUDA adapter contract.
+    #[error("unsupported CUDA request: {reason}")]
+    UnsupportedCudaRequest {
+        /// Human-readable rejection reason.
+        reason: &'static str,
+    },
     /// CUDA is not available on the current host.
     #[error("CUDA is unavailable on this host")]
     CudaUnavailable,
@@ -42,7 +48,9 @@ impl CodecError for Error {
     fn is_unsupported(&self) -> bool {
         matches!(
             self,
-            Self::UnsupportedBackend { .. } | Self::CudaUnavailable
+            Self::UnsupportedBackend { .. }
+                | Self::UnsupportedCudaRequest { .. }
+                | Self::CudaUnavailable
         ) || matches!(self, Self::Decode(inner) if inner.is_unsupported())
     }
 

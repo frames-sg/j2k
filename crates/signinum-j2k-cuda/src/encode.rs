@@ -2,13 +2,15 @@
 
 use signinum_core::BackendKind;
 #[cfg(feature = "cuda-runtime")]
+use signinum_core::{DeviceSubmission, PixelFormat, ReadySubmission};
+#[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::{
     CudaContext, CudaDeviceBuffer, CudaDwt53LevelShape, CudaDwt53Output, CudaDwt97Output,
     CudaError, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
     CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
     CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState, CudaJ2kQuantizeJob,
-    CudaJ2kQuantizeSubbandRegionJob,
+    CudaJ2kQuantizeSubbandRegionJob, CudaJ2kResidentComponents, CudaJ2kStridedInterleavedPixels,
 };
 use signinum_j2k_native::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
@@ -23,9 +25,14 @@ use signinum_j2k_native::{
     J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
 };
 #[cfg(feature = "cuda-runtime")]
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 
 use crate::profile;
+#[cfg(feature = "cuda-runtime")]
+use crate::{runtime::cuda_error, session::CudaSession};
 
 /// Encode lossless JPEG 2000/HTJ2K samples through the CUDA encode-stage adapter.
 ///
@@ -100,6 +107,402 @@ fn reject_non_cuda_encode_backend(encoded: &signinum_j2k::EncodedJ2k) -> Result<
         Err(crate::Error::UnsupportedCudaRequest {
             reason: "strict CUDA HTJ2K encode did not dispatch all required stages",
         })
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// CUDA-resident lossless J2K/HTJ2K encode input tile.
+#[derive(Debug, Clone, Copy)]
+pub struct CudaLosslessEncodeTile<'a> {
+    /// Source CUDA buffer containing interleaved Gray/RGB/RGBA pixels.
+    pub buffer: &'a CudaDeviceBuffer,
+    /// Byte offset of the first source pixel in `buffer`.
+    pub byte_offset: usize,
+    /// Width of the valid input region in pixels.
+    pub width: u32,
+    /// Height of the valid input region in pixels.
+    pub height: u32,
+    /// Number of bytes between consecutive input rows.
+    pub pitch_bytes: usize,
+    /// Encoded image width in pixels.
+    pub output_width: u32,
+    /// Encoded image height in pixels.
+    pub output_height: u32,
+    /// Pixel format of the source buffer.
+    pub format: PixelFormat,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Residency decisions used by a lossless CUDA device-buffer encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaLosslessEncodeResidency {
+    /// Whether coefficient preparation ran on CUDA.
+    pub coefficient_prep_used: bool,
+    /// Whether packetization ran on CUDA.
+    pub packetization_used: bool,
+    /// Whether final codestream assembly stayed resident on CUDA.
+    pub codestream_assembly_used: bool,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Lossless CUDA device-buffer encode output with host codestream bytes and timings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLosslessEncodeOutcome {
+    /// Encoded J2K codestream.
+    pub encoded: signinum_j2k::EncodedJ2k,
+    /// Whether the input buffer had to be copied or padded.
+    pub input_copy_used: bool,
+    /// Residency decisions for encode stages.
+    pub resident: CudaLosslessEncodeResidency,
+    /// Time spent copying or padding input.
+    pub input_copy_duration: Duration,
+    /// End-to-end encode duration for this tile.
+    pub encode_duration: Duration,
+    /// GPU-only duration when timestamp data is available.
+    pub gpu_duration: Option<Duration>,
+    /// Time spent validating encoded output.
+    pub validation_duration: Duration,
+    /// Time spent materializing CUDA output into host codestream bytes.
+    pub host_readback_duration: Duration,
+    /// CUDA encode stage timing buckets collected for this tile.
+    pub stage_timings: CudaEncodeStageTimings,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submitted single-tile CUDA lossless encode.
+#[derive(Debug)]
+pub struct SubmittedJ2kLosslessCudaEncode {
+    inner: ReadySubmission<signinum_j2k::EncodedJ2k, crate::Error>,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submitted multi-tile CUDA lossless encode.
+#[derive(Debug)]
+pub struct SubmittedJ2kLosslessCudaEncodeBatch {
+    inner: ReadySubmission<Vec<signinum_j2k::EncodedJ2k>, crate::Error>,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl DeviceSubmission for SubmittedJ2kLosslessCudaEncode {
+    type Output = signinum_j2k::EncodedJ2k;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        self.inner.wait()
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl DeviceSubmission for SubmittedJ2kLosslessCudaEncodeBatch {
+    type Output = Vec<signinum_j2k::EncodedJ2k>;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        self.inner.wait()
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode one CUDA-resident tile into host codestream bytes.
+pub fn encode_lossless_from_cuda_buffer(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<signinum_j2k::EncodedJ2k, crate::Error> {
+    submit_lossless_from_cuda_buffer(tile, options, session)?.wait()
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submit one CUDA-resident tile encode for later host-byte collection.
+pub fn submit_lossless_from_cuda_buffer(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<SubmittedJ2kLosslessCudaEncode, crate::Error> {
+    let result = encode_lossless_from_cuda_buffer_with_report(tile, options, session)
+        .map(|outcome| outcome.encoded);
+    Ok(SubmittedJ2kLosslessCudaEncode {
+        inner: ReadySubmission::from_result(result),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode one CUDA-resident tile and return a host-byte timing report.
+pub fn encode_lossless_from_cuda_buffer_with_report(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<CudaLosslessEncodeOutcome, crate::Error> {
+    validate_cuda_encode_options(*options)?;
+    validate_cuda_encode_tile(tile)?;
+    session.record_submit();
+    encode_lossless_cuda_tile_with_report(tile, *options)
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode multiple CUDA-resident tiles into host codestream bytes.
+pub fn encode_lossless_from_cuda_buffers(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<Vec<signinum_j2k::EncodedJ2k>, crate::Error> {
+    submit_lossless_from_cuda_buffers(tiles, options, session)?.wait()
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submit multiple CUDA-resident tile encodes for later host-byte collection.
+pub fn submit_lossless_from_cuda_buffers(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<SubmittedJ2kLosslessCudaEncodeBatch, crate::Error> {
+    let result =
+        encode_lossless_from_cuda_buffers_with_report(tiles, options, session).map(|outcomes| {
+            outcomes
+                .into_iter()
+                .map(|outcome| outcome.encoded)
+                .collect()
+        });
+    Ok(SubmittedJ2kLosslessCudaEncodeBatch {
+        inner: ReadySubmission::from_result(result),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode multiple CUDA-resident tiles and return host-byte timing reports.
+pub fn encode_lossless_from_cuda_buffers_with_report(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<Vec<CudaLosslessEncodeOutcome>, crate::Error> {
+    if tiles.is_empty() {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode received an empty tile batch",
+        });
+    }
+    validate_cuda_encode_options(*options)?;
+    tiles
+        .iter()
+        .copied()
+        .map(|tile| {
+            validate_cuda_encode_tile(tile)?;
+            session.record_submit();
+            encode_lossless_cuda_tile_with_report(tile, *options)
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_encode_options(
+    options: signinum_j2k::J2kLosslessEncodeOptions,
+) -> Result<(), crate::Error> {
+    if options.block_coding_mode != signinum_j2k::J2kBlockCodingMode::HighThroughput {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode currently requires HTJ2K block coding",
+        });
+    }
+    if options.validation != signinum_j2k::J2kEncodeValidation::External {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode requires external validation to avoid host input readback",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_encode_tile(tile: CudaLosslessEncodeTile<'_>) -> Result<(), crate::Error> {
+    if tile.width == 0 || tile.height == 0 || tile.output_width == 0 || tile.output_height == 0 {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode tile dimensions must be nonzero",
+        });
+    }
+    if tile.width != tile.output_width || tile.height != tile.output_height {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode does not yet support input padding",
+        });
+    }
+    let format = cuda_encode_format(tile.format)?;
+    let row_bytes = (tile.width as usize)
+        .checked_mul(format.bytes_per_pixel)
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode row byte count overflow",
+        })?;
+    if tile.pitch_bytes < row_bytes {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode tile pitch is shorter than one row",
+        });
+    }
+    let required_end = tile
+        .byte_offset
+        .checked_add(
+            tile.pitch_bytes
+                .checked_mul(tile.height.saturating_sub(1) as usize)
+                .and_then(|prefix| prefix.checked_add(row_bytes))
+                .ok_or(crate::Error::UnsupportedCudaRequest {
+                    reason: "J2K CUDA encode input byte range overflow",
+                })?,
+        )
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode input byte range overflow",
+        })?;
+    if required_end > tile.buffer.byte_len() {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode input byte range exceeds buffer length",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[derive(Debug, Clone, Copy)]
+struct CudaEncodeFormat {
+    components: u8,
+    bit_depth: u8,
+    bytes_per_pixel: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_format(format: PixelFormat) -> Result<CudaEncodeFormat, crate::Error> {
+    let components =
+        u8::try_from(format.channels()).map_err(|_| crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode received a pixel format with too many components",
+        })?;
+    let bit_depth = match format.bytes_per_sample() {
+        1 => 8,
+        2 => 16,
+        _ => {
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "J2K CUDA encode received an unsupported sample width",
+            });
+        }
+    };
+    Ok(CudaEncodeFormat {
+        components,
+        bit_depth,
+        bytes_per_pixel: format.bytes_per_pixel(),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn encode_lossless_cuda_tile_with_report(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: signinum_j2k::J2kLosslessEncodeOptions,
+) -> Result<CudaLosslessEncodeOutcome, crate::Error> {
+    let encode_started = Instant::now();
+    let format = cuda_encode_format(tile.format)?;
+    let dummy_len = (tile.output_width as usize)
+        .checked_mul(tile.output_height as usize)
+        .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel))
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode sample descriptor length overflow",
+        })?;
+    let dummy = vec![0u8; dummy_len];
+    let samples = signinum_j2k::J2kLosslessSamples::new(
+        &dummy,
+        tile.output_width,
+        tile.output_height,
+        format.components,
+        format.bit_depth,
+        false,
+    )?;
+    let context = tile.buffer.context();
+    let resources = context
+        .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
+        .map_err(cuda_error)?;
+    let mut accelerator = CudaDeviceBufferEncodeAccelerator {
+        tile,
+        context,
+        resources,
+        dispatch: J2kEncodeDispatchReport::default(),
+        stage_timings: CudaEncodeStageTimings::default(),
+    };
+    let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
+        samples,
+        &strict_cuda_encode_options(options),
+        BackendKind::Cuda,
+        &mut accelerator,
+    )?;
+    reject_non_cuda_encode_backend(&encoded)?;
+    Ok(CudaLosslessEncodeOutcome {
+        encoded,
+        input_copy_used: false,
+        resident: CudaLosslessEncodeResidency {
+            coefficient_prep_used: accelerator.dispatch.deinterleave > 0,
+            packetization_used: accelerator.dispatch.packetization > 0,
+            codestream_assembly_used: false,
+        },
+        input_copy_duration: Duration::ZERO,
+        encode_duration: encode_started.elapsed(),
+        gpu_duration: None,
+        validation_duration: Duration::ZERO,
+        host_readback_duration: Duration::ZERO,
+        stage_timings: accelerator.stage_timings,
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+struct CudaDeviceBufferEncodeAccelerator<'a> {
+    tile: CudaLosslessEncodeTile<'a>,
+    context: CudaContext,
+    resources: CudaHtj2kEncodeResources,
+    dispatch: J2kEncodeDispatchReport,
+    stage_timings: CudaEncodeStageTimings,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl J2kEncodeStageAccelerator for CudaDeviceBufferEncodeAccelerator<'_> {
+    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        self.dispatch
+    }
+
+    fn encode_htj2k_tile(
+        &mut self,
+        job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        let Some(encoded) = cuda_encode_htj2k_device_tile_body(
+            &self.context,
+            &self.resources,
+            self.tile,
+            job,
+            true,
+        )?
+        else {
+            return Ok(None);
+        };
+        self.dispatch.deinterleave = self
+            .dispatch
+            .deinterleave
+            .saturating_add(encoded.deinterleave_dispatches);
+        self.dispatch.forward_rct = self
+            .dispatch
+            .forward_rct
+            .saturating_add(encoded.forward_rct_dispatches);
+        self.dispatch.forward_ict = self
+            .dispatch
+            .forward_ict
+            .saturating_add(encoded.forward_ict_dispatches);
+        self.dispatch.forward_dwt53 = self
+            .dispatch
+            .forward_dwt53
+            .saturating_add(encoded.forward_dwt53_dispatches);
+        self.dispatch.forward_dwt97 = self
+            .dispatch
+            .forward_dwt97
+            .saturating_add(encoded.forward_dwt97_dispatches);
+        self.dispatch.quantize_subband = self
+            .dispatch
+            .quantize_subband
+            .saturating_add(encoded.quantize_dispatches);
+        self.dispatch.ht_code_block = self
+            .dispatch
+            .ht_code_block
+            .saturating_add(encoded.ht_code_block_dispatches);
+        self.dispatch.packetization = self
+            .dispatch
+            .packetization
+            .saturating_add(encoded.packetization_dispatches);
+        self.stage_timings = self.stage_timings.saturating_add(encoded.timings);
+        Ok(Some(encoded.tile_data))
     }
 }
 
@@ -432,6 +835,19 @@ pub struct CudaEncodeStageTimings {
 }
 
 impl CudaEncodeStageTimings {
+    /// Return field-wise saturating timing sums.
+    #[must_use]
+    pub const fn saturating_add(self, other: Self) -> Self {
+        Self {
+            deinterleave_us: self.deinterleave_us.saturating_add(other.deinterleave_us),
+            mct_us: self.mct_us.saturating_add(other.mct_us),
+            dwt_us: self.dwt_us.saturating_add(other.dwt_us),
+            quantize_us: self.quantize_us.saturating_add(other.quantize_us),
+            ht_encode_us: self.ht_encode_us.saturating_add(other.ht_encode_us),
+            packetize_us: self.packetize_us.saturating_add(other.packetize_us),
+        }
+    }
+
     /// Total collected CUDA encode-stage time.
     #[must_use]
     pub const fn total_us(self) -> u128 {
@@ -2307,6 +2723,39 @@ fn cuda_encode_htj2k_tile_body(
     job: J2kHtj2kTileEncodeJob<'_>,
     collect_profile: bool,
 ) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
+    validate_cuda_htj2k_tile_job(job)?;
+    let num_pixels = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or("CUDA HTJ2K tile dimensions are too large")?;
+    let (components, deinterleave_us) = time_cuda_stage(
+        "signinum.htj2k.encode.tile.deinterleave",
+        context,
+        collect_profile,
+        || {
+            context.j2k_deinterleave_to_f32_resident(
+                job.pixels,
+                num_pixels,
+                job.num_components,
+                job.bit_depth,
+                job.signed,
+            )
+        },
+    )
+    .map_err(|_| "CUDA HTJ2K tile deinterleave failed")?;
+    cuda_encode_htj2k_resident_components_body(
+        context,
+        encode_resources,
+        job,
+        components,
+        deinterleave_us,
+        collect_profile,
+    )
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_htj2k_tile_job(
+    job: J2kHtj2kTileEncodeJob<'_>,
+) -> core::result::Result<(), &'static str> {
     if job
         .component_sampling
         .iter()
@@ -2339,25 +2788,65 @@ fn cuda_encode_htj2k_tile_body(
     if job.quantization_steps.len() != expected_quantization_steps {
         return Err("CUDA HTJ2K tile quantization step count mismatch");
     }
+    Ok(())
+}
 
-    let num_pixels = (job.width as usize)
-        .checked_mul(job.height as usize)
-        .ok_or("CUDA HTJ2K tile dimensions are too large")?;
-    let (mut components, deinterleave_us) = time_cuda_stage(
-        "signinum.htj2k.encode.tile.deinterleave",
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_htj2k_device_tile_body(
+    context: &CudaContext,
+    encode_resources: &CudaHtj2kEncodeResources,
+    tile: CudaLosslessEncodeTile<'_>,
+    job: J2kHtj2kTileEncodeJob<'_>,
+    collect_profile: bool,
+) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
+    validate_cuda_htj2k_tile_job(job)?;
+    let format = cuda_encode_format(tile.format).map_err(|_| "CUDA HTJ2K tile format failed")?;
+    if job.width != tile.output_width || job.height != tile.output_height {
+        return Err("CUDA HTJ2K tile encode job dimensions do not match CUDA tile");
+    }
+    if tile.width != tile.output_width || tile.height != tile.output_height {
+        return Err("CUDA HTJ2K tile encode does not support input padding");
+    }
+    if job.num_components != format.components || job.bit_depth != format.bit_depth || job.signed {
+        return Err("CUDA HTJ2K tile encode job sample format does not match CUDA tile");
+    }
+    let (components, deinterleave_us) = time_cuda_stage(
+        "signinum.htj2k.encode.tile.device_deinterleave",
         context,
         collect_profile,
         || {
-            context.j2k_deinterleave_to_f32_resident(
-                job.pixels,
-                num_pixels,
-                job.num_components,
-                job.bit_depth,
-                job.signed,
-            )
+            context.j2k_deinterleave_strided_to_f32_resident(CudaJ2kStridedInterleavedPixels {
+                buffer: tile.buffer,
+                byte_offset: tile.byte_offset,
+                width: tile.width,
+                height: tile.height,
+                pitch_bytes: tile.pitch_bytes,
+                num_components: job.num_components,
+                bit_depth: job.bit_depth,
+                signed: job.signed,
+            })
         },
     )
-    .map_err(|_| "CUDA HTJ2K tile deinterleave failed")?;
+    .map_err(|_| "CUDA HTJ2K tile device deinterleave failed")?;
+    cuda_encode_htj2k_resident_components_body(
+        context,
+        encode_resources,
+        job,
+        components,
+        deinterleave_us,
+        collect_profile,
+    )
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_htj2k_resident_components_body(
+    context: &CudaContext,
+    encode_resources: &CudaHtj2kEncodeResources,
+    job: J2kHtj2kTileEncodeJob<'_>,
+    mut components: CudaJ2kResidentComponents,
+    deinterleave_us: u128,
+    collect_profile: bool,
+) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
     let mut stats = CudaHtj2kTileEncodeStats {
         collect_profile,
         deinterleave_dispatches: components.execution().kernel_dispatches(),

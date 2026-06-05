@@ -17,6 +17,8 @@ use std::{
     time::Instant,
 };
 
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+use kernels::CudaLaunchGeometry;
 use kernels::{
     copy_u8_launch_geometry, htj2k_codeblock_launch_geometry,
     htj2k_codeblock_sample_launch_geometry, htj2k_encode_codeblock_launch_geometry,
@@ -201,6 +203,236 @@ pub enum CudaError {
         /// Human-readable validation failure.
         message: String,
     },
+}
+
+/// Prepared baseline JPEG Huffman table for CUDA JPEG decode kernels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaJpegHuffmanTable {
+    /// Largest Huffman code for each bit length; negative means no codes of that length.
+    pub max_code: [i32; 17],
+    /// Value-index offset for each bit length.
+    pub val_offset: [i32; 17],
+    /// Huffman values in canonical order.
+    pub values: [u8; 256],
+    /// Number of valid entries in `values`.
+    pub values_len: u32,
+}
+
+impl CudaJpegHuffmanTable {
+    /// Prepare a CUDA Huffman table from JPEG BITS and HUFFVAL payloads.
+    pub fn from_jpeg_bits_values(
+        bits: [u8; 16],
+        values_len: u16,
+        values: [u8; 256],
+    ) -> Result<Self, CudaError> {
+        let values_len_usize = usize::from(values_len);
+        let mut huffsize = [0u8; 256];
+        let mut huffsize_len = 0usize;
+        for (len_minus_1, &count) in bits.iter().enumerate() {
+            let len = u8::try_from(len_minus_1 + 1).map_err(|_| CudaError::InvalidArgument {
+                message: "JPEG Huffman code length exceeds u8".to_string(),
+            })?;
+            for _ in 0..count {
+                if huffsize_len >= values_len_usize || huffsize_len >= huffsize.len() {
+                    return Err(CudaError::InvalidArgument {
+                        message: "JPEG Huffman BITS exceed values length".to_string(),
+                    });
+                }
+                huffsize[huffsize_len] = len;
+                huffsize_len += 1;
+            }
+        }
+        if huffsize_len != values_len_usize {
+            return Err(CudaError::InvalidArgument {
+                message: "JPEG Huffman BITS do not match values length".to_string(),
+            });
+        }
+
+        let mut huffcode = [0u16; 256];
+        let mut code = 0u32;
+        let mut si = huffsize.first().copied().unwrap_or(0);
+        for (idx, &size) in huffsize[..huffsize_len].iter().enumerate() {
+            while size != si {
+                code <<= 1;
+                si = si.saturating_add(1);
+            }
+            if si > 16 || code >= (1u32 << si) {
+                return Err(CudaError::InvalidArgument {
+                    message: "JPEG Huffman code overflow".to_string(),
+                });
+            }
+            huffcode[idx] = u16::try_from(code).map_err(|_| CudaError::InvalidArgument {
+                message: "JPEG Huffman code exceeds u16".to_string(),
+            })?;
+            code = code
+                .checked_add(1)
+                .ok_or_else(|| CudaError::InvalidArgument {
+                    message: "JPEG Huffman code overflow".to_string(),
+                })?;
+        }
+
+        let mut max_code = [-1i32; 17];
+        let mut val_offset = [0i32; 17];
+        let mut cursor = 0usize;
+        for (len_minus_1, &count) in bits.iter().enumerate() {
+            let len = len_minus_1 + 1;
+            let count = usize::from(count);
+            if count == 0 {
+                continue;
+            }
+            let min_code = i32::from(huffcode[cursor]);
+            max_code[len] = i32::from(huffcode[cursor + count - 1]);
+            val_offset[len] = i32::try_from(cursor).map_err(|_| CudaError::InvalidArgument {
+                message: "JPEG Huffman values length exceeds i32".to_string(),
+            })? - min_code;
+            cursor += count;
+        }
+
+        Ok(Self {
+            max_code,
+            val_offset,
+            values,
+            values_len: u32::from(values_len),
+        })
+    }
+}
+
+/// Entropy resume point for CUDA baseline JPEG decode.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CudaJpegEntropyCheckpoint {
+    /// MCU index for this checkpoint.
+    pub mcu_index: u32,
+    /// Byte offset into the entropy payload.
+    pub entropy_pos: u32,
+    /// Left-aligned buffered entropy bits.
+    pub bit_acc: u64,
+    /// Number of valid buffered bits.
+    pub bit_count: u32,
+    /// Previous Y DC predictor.
+    pub y_prev_dc: i32,
+    /// Previous Cb DC predictor.
+    pub cb_prev_dc: i32,
+    /// Previous Cr DC predictor.
+    pub cr_prev_dc: i32,
+    /// Reserved for ABI-compatible expansion.
+    pub reserved: u32,
+}
+
+/// Signinum-owned CUDA baseline JPEG 4:2:0 decode plan.
+#[derive(Debug)]
+pub struct CudaJpeg420Rgb8DecodePlan<'a> {
+    /// Image dimensions as `(width, height)`.
+    pub dimensions: (u32, u32),
+    /// Number of MCUs per row.
+    pub mcus_per_row: u32,
+    /// Number of MCU rows.
+    pub mcu_rows: u32,
+    /// Entropy-coded scan payload with byte stuffing/restart markers removed.
+    pub entropy_bytes: &'a [u8],
+    /// Entropy resume checkpoints.
+    pub entropy_checkpoints: &'a [CudaJpegEntropyCheckpoint],
+    /// Luma quantization table in JPEG zigzag order.
+    pub y_quant: [u16; 64],
+    /// Cb quantization table in JPEG zigzag order.
+    pub cb_quant: [u16; 64],
+    /// Cr quantization table in JPEG zigzag order.
+    pub cr_quant: [u16; 64],
+    /// Y DC Huffman table.
+    pub y_dc_table: CudaJpegHuffmanTable,
+    /// Y AC Huffman table.
+    pub y_ac_table: CudaJpegHuffmanTable,
+    /// Cb DC Huffman table.
+    pub cb_dc_table: CudaJpegHuffmanTable,
+    /// Cb AC Huffman table.
+    pub cb_ac_table: CudaJpegHuffmanTable,
+    /// Cr DC Huffman table.
+    pub cr_dc_table: CudaJpegHuffmanTable,
+    /// Cr AC Huffman table.
+    pub cr_ac_table: CudaJpegHuffmanTable,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+struct CudaJpeg420Params {
+    width: u32,
+    height: u32,
+    mcus_per_row: u32,
+    mcu_rows: u32,
+    entropy_len: u32,
+    checkpoint_count: u32,
+    out_stride: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+struct CudaJpegDecodeStatus {
+    code: u32,
+    detail: u32,
+    position: u32,
+    reserved: u32,
+}
+
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+struct CudaJpeg420ValidatedPlan {
+    params: CudaJpeg420Params,
+    output_len: usize,
+}
+
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+fn validate_jpeg_420_rgb8_plan(
+    plan: &CudaJpeg420Rgb8DecodePlan<'_>,
+) -> Result<CudaJpeg420ValidatedPlan, CudaError> {
+    let (width, height) = plan.dimensions;
+    if width == 0 || height == 0 {
+        return Err(CudaError::InvalidArgument {
+            message: "JPEG CUDA decode dimensions must be nonzero".to_string(),
+        });
+    }
+    if plan.entropy_checkpoints.is_empty() {
+        return Err(CudaError::InvalidArgument {
+            message: "JPEG CUDA decode requires at least one entropy checkpoint".to_string(),
+        });
+    }
+    let entropy_len =
+        u32::try_from(plan.entropy_bytes.len()).map_err(|_| CudaError::LengthTooLarge {
+            len: plan.entropy_bytes.len(),
+        })?;
+    let checkpoint_count =
+        u32::try_from(plan.entropy_checkpoints.len()).map_err(|_| CudaError::LengthTooLarge {
+            len: plan.entropy_checkpoints.len(),
+        })?;
+    let out_stride = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
+        width,
+        height,
+        channels: 3,
+    })?;
+    let output_len =
+        (out_stride as usize)
+            .checked_mul(height as usize)
+            .ok_or(CudaError::ImageTooLarge {
+                width,
+                height,
+                channels: 3,
+            })?;
+
+    Ok(CudaJpeg420ValidatedPlan {
+        params: CudaJpeg420Params {
+            width,
+            height,
+            mcus_per_row: plan.mcus_per_row,
+            mcu_rows: plan.mcu_rows,
+            entropy_len,
+            checkpoint_count,
+            out_stride,
+            reserved: 0,
+        },
+        output_len,
+    })
 }
 
 struct Driver {
@@ -1927,6 +2159,138 @@ impl CudaContext {
                 hardware_decode: false,
             },
         })
+    }
+
+    /// Decode one baseline JPEG 4:2:0 image to device-resident RGB8 using Signinum CUDA kernels.
+    pub fn decode_jpeg_420_rgb8_owned(
+        &self,
+        plan: &CudaJpeg420Rgb8DecodePlan<'_>,
+    ) -> Result<CudaKernelOutput, CudaError> {
+        #[cfg(not(signinum_cuda_jpeg_decode_ptx_built))]
+        {
+            let _ = plan;
+            Err(CudaError::InvalidArgument {
+                message: "Signinum CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
+                    .to_string(),
+            })
+        }
+
+        #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+        {
+            let validated = validate_jpeg_420_rgb8_plan(plan)?;
+            self.inner.set_current()?;
+            let entropy = self.upload(plan.entropy_bytes)?;
+            let output = self.allocate(validated.output_len)?;
+            let y_quant = self.upload(u16_slice_as_bytes(&plan.y_quant))?;
+            let cb_quant = self.upload(u16_slice_as_bytes(&plan.cb_quant))?;
+            let cr_quant = self.upload(u16_slice_as_bytes(&plan.cr_quant))?;
+            let y_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_dc_table))?;
+            let y_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_ac_table))?;
+            let cb_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_dc_table))?;
+            let cb_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_ac_table))?;
+            let cr_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_dc_table))?;
+            let cr_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_ac_table))?;
+            let checkpoints = self.upload(cuda_jpeg_entropy_checkpoints_as_bytes(
+                plan.entropy_checkpoints,
+            ))?;
+            let mut statuses =
+                vec![CudaJpegDecodeStatus::default(); plan.entropy_checkpoints.len()];
+            let status_buffer = self.upload(cuda_jpeg_decode_statuses_as_bytes(&statuses))?;
+            self.launch_jpeg_decode_fast420_rgb8(
+                &entropy,
+                &output,
+                validated.params,
+                &y_quant,
+                &cb_quant,
+                &cr_quant,
+                &y_dc,
+                &y_ac,
+                &cb_dc,
+                &cb_ac,
+                &cr_dc,
+                &cr_ac,
+                &checkpoints,
+                &status_buffer,
+            )?;
+            status_buffer.copy_to_host(cuda_jpeg_decode_statuses_as_bytes_mut(&mut statuses))?;
+            for status in statuses {
+                if status.code != 0 {
+                    return Err(CudaError::KernelStatus {
+                        kernel: "signinum_jpeg_decode_fast420_rgb8",
+                        code: status.code,
+                        detail: status.detail,
+                    });
+                }
+            }
+            Ok(CudaKernelOutput {
+                buffer: output,
+                execution: CudaExecutionStats {
+                    kernel_dispatches: 1,
+                    copy_kernel_dispatches: 0,
+                    decode_kernel_dispatches: 1,
+                    hardware_decode: false,
+                },
+            })
+        }
+    }
+
+    #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    #[allow(clippy::too_many_arguments)]
+    fn launch_jpeg_decode_fast420_rgb8(
+        &self,
+        entropy: &CudaDeviceBuffer,
+        output: &CudaDeviceBuffer,
+        mut params: CudaJpeg420Params,
+        y_quant: &CudaDeviceBuffer,
+        cb_quant: &CudaDeviceBuffer,
+        cr_quant: &CudaDeviceBuffer,
+        y_dc: &CudaDeviceBuffer,
+        y_ac: &CudaDeviceBuffer,
+        cb_dc: &CudaDeviceBuffer,
+        cb_ac: &CudaDeviceBuffer,
+        cr_dc: &CudaDeviceBuffer,
+        cr_ac: &CudaDeviceBuffer,
+        checkpoints: &CudaDeviceBuffer,
+        status: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::JpegDecodeFast420Rgb8)?;
+        let mut entropy_ptr = entropy.device_ptr();
+        let mut output_ptr = output.device_ptr();
+        let mut y_quant_ptr = y_quant.device_ptr();
+        let mut cb_quant_ptr = cb_quant.device_ptr();
+        let mut cr_quant_ptr = cr_quant.device_ptr();
+        let mut y_dc_ptr = y_dc.device_ptr();
+        let mut y_ac_ptr = y_ac.device_ptr();
+        let mut cb_dc_ptr = cb_dc.device_ptr();
+        let mut cb_ac_ptr = cb_ac.device_ptr();
+        let mut cr_dc_ptr = cr_dc.device_ptr();
+        let mut cr_ac_ptr = cr_ac.device_ptr();
+        let mut checkpoints_ptr = checkpoints.device_ptr();
+        let mut status_ptr = status.device_ptr();
+        let mut kernel_params = [
+            (&raw mut entropy_ptr).cast::<c_void>(),
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut params).cast::<c_void>(),
+            (&raw mut y_quant_ptr).cast::<c_void>(),
+            (&raw mut cb_quant_ptr).cast::<c_void>(),
+            (&raw mut cr_quant_ptr).cast::<c_void>(),
+            (&raw mut y_dc_ptr).cast::<c_void>(),
+            (&raw mut y_ac_ptr).cast::<c_void>(),
+            (&raw mut cb_dc_ptr).cast::<c_void>(),
+            (&raw mut cb_ac_ptr).cast::<c_void>(),
+            (&raw mut cr_dc_ptr).cast::<c_void>(),
+            (&raw mut cr_ac_ptr).cast::<c_void>(),
+            (&raw mut checkpoints_ptr).cast::<c_void>(),
+            (&raw mut status_ptr).cast::<c_void>(),
+        ];
+        let geometry = CudaLaunchGeometry {
+            grid: (params.checkpoint_count, 1, 1),
+            block: (1, 1, 1),
+        };
+
+        self.launch_kernel(function, geometry, &mut kernel_params)
     }
 
     /// Decode one JPEG image to device-resident RGB8 using nvJPEG.
@@ -4893,6 +5257,111 @@ impl CudaContext {
         })
     }
 
+    /// Deinterleave strided device-resident pixel bytes into resident f32 component planes.
+    pub fn j2k_deinterleave_strided_to_f32_resident(
+        &self,
+        image: CudaJ2kStridedInterleavedPixels<'_>,
+    ) -> Result<CudaJ2kResidentComponents, CudaError> {
+        let CudaJ2kStridedInterleavedPixels {
+            buffer: pixels,
+            byte_offset,
+            width,
+            height,
+            pitch_bytes,
+            num_components,
+            bit_depth,
+            signed,
+        } = image;
+        if width == 0 || height == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "image dimensions must be nonzero".to_string(),
+            });
+        }
+        if num_components == 0 || num_components > 4 {
+            return Err(CudaError::InvalidArgument {
+                message: "component count must be between 1 and 4".to_string(),
+            });
+        }
+        if bit_depth == 0 || bit_depth > 16 {
+            return Err(CudaError::InvalidArgument {
+                message: "bit depth must be between 1 and 16".to_string(),
+            });
+        }
+        let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+        let bytes_per_pixel = usize::from(num_components)
+            .checked_mul(bytes_per_sample)
+            .ok_or(CudaError::LengthTooLarge {
+                len: usize::from(num_components),
+            })?;
+        let row_bytes =
+            (width as usize)
+                .checked_mul(bytes_per_pixel)
+                .ok_or(CudaError::ImageTooLarge {
+                    width,
+                    height,
+                    channels: usize::from(num_components),
+                })?;
+        if pitch_bytes < row_bytes {
+            return Err(CudaError::InvalidArgument {
+                message: "pitch is shorter than one row".to_string(),
+            });
+        }
+        let required_end = byte_offset
+            .checked_add(
+                pitch_bytes
+                    .checked_mul(height.saturating_sub(1) as usize)
+                    .and_then(|prefix| prefix.checked_add(row_bytes))
+                    .ok_or(CudaError::LengthTooLarge { len: pitch_bytes })?,
+            )
+            .ok_or(CudaError::LengthTooLarge { len: byte_offset })?;
+        if required_end > pixels.byte_len() {
+            return Err(CudaError::OutputTooSmall {
+                required: required_end,
+                have: pixels.byte_len(),
+            });
+        }
+
+        self.inner.set_current()?;
+        let num_pixels =
+            (width as usize)
+                .checked_mul(height as usize)
+                .ok_or(CudaError::ImageTooLarge {
+                    width,
+                    height,
+                    channels: usize::from(num_components),
+                })?;
+        let sample_count = num_pixels
+            .checked_mul(usize::from(num_components))
+            .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
+        let output_bytes = sample_count
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(CudaError::LengthTooLarge { len: sample_count })?;
+        let output = self.allocate(output_bytes)?;
+        self.launch_j2k_deinterleave_strided_to_f32(
+            pixels,
+            &output,
+            width,
+            height,
+            byte_offset,
+            pitch_bytes,
+            num_components,
+            bit_depth,
+            signed,
+        )?;
+
+        Ok(CudaJ2kResidentComponents {
+            buffer: output,
+            num_pixels,
+            num_components,
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 0,
+                hardware_decode: false,
+            },
+        })
+    }
+
     /// Run the reversible color transform in place on resident component planes.
     ///
     /// The transform is applied to the first three planes (R, G, B → Y, Cb, Cr).
@@ -5646,6 +6115,58 @@ impl CudaContext {
             (&raw mut bit_depth_u32).cast::<c_void>(),
             (&raw mut signed_u32).cast::<c_void>(),
         ];
+        let geometry = j2k_forward_rct_launch_geometry(num_pixels)
+            .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
+
+        self.launch_kernel(function, geometry, &mut params)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_j2k_deinterleave_strided_to_f32(
+        &self,
+        pixels: &CudaDeviceBuffer,
+        output: &CudaDeviceBuffer,
+        width: u32,
+        height: u32,
+        byte_offset: usize,
+        pitch_bytes: usize,
+        num_components: u8,
+        bit_depth: u8,
+        signed: bool,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::J2kDeinterleaveStridedToF32)?;
+        let mut pixels_ptr = pixels.device_ptr();
+        let mut output_ptr = output.device_ptr();
+        let mut width_u64 = u64::from(width);
+        let mut height_u64 = u64::from(height);
+        let mut byte_offset_u64 = u64::try_from(byte_offset)
+            .map_err(|_| CudaError::LengthTooLarge { len: byte_offset })?;
+        let mut pitch_bytes_u64 = u64::try_from(pitch_bytes)
+            .map_err(|_| CudaError::LengthTooLarge { len: pitch_bytes })?;
+        let mut num_components_u32 = u32::from(num_components);
+        let mut bit_depth_u32 = u32::from(bit_depth);
+        let mut signed_u32 = u32::from(signed);
+        let mut params = [
+            (&raw mut pixels_ptr).cast::<c_void>(),
+            (&raw mut output_ptr).cast::<c_void>(),
+            (&raw mut width_u64).cast::<c_void>(),
+            (&raw mut height_u64).cast::<c_void>(),
+            (&raw mut byte_offset_u64).cast::<c_void>(),
+            (&raw mut pitch_bytes_u64).cast::<c_void>(),
+            (&raw mut num_components_u32).cast::<c_void>(),
+            (&raw mut bit_depth_u32).cast::<c_void>(),
+            (&raw mut signed_u32).cast::<c_void>(),
+        ];
+        let num_pixels =
+            (width as usize)
+                .checked_mul(height as usize)
+                .ok_or(CudaError::ImageTooLarge {
+                    width,
+                    height,
+                    channels: usize::from(num_components),
+                })?;
         let geometry = j2k_forward_rct_launch_geometry(num_pixels)
             .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
 
@@ -8055,6 +8576,27 @@ impl CudaQueuedHtj2kCleanup {
 
         Ok(self.execution)
     }
+}
+
+/// Device-resident interleaved JPEG 2000 input pixels with row stride metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct CudaJ2kStridedInterleavedPixels<'a> {
+    /// Backing CUDA device byte buffer.
+    pub buffer: &'a CudaDeviceBuffer,
+    /// Byte offset to the first pixel in `buffer`.
+    pub byte_offset: usize,
+    /// Active input width in pixels.
+    pub width: u32,
+    /// Active input height in pixels.
+    pub height: u32,
+    /// Bytes between the start of consecutive rows.
+    pub pitch_bytes: usize,
+    /// Number of interleaved components per pixel.
+    pub num_components: u8,
+    /// Integer sample precision.
+    pub bit_depth: u8,
+    /// Whether integer samples are signed.
+    pub signed: bool,
 }
 
 /// Resident f32 component planes produced by CUDA JPEG 2000 encode preparation.
@@ -11181,6 +11723,11 @@ impl CompiledKernel {
 unsafe impl Send for CompiledKernel {}
 
 impl CudaDeviceBuffer {
+    /// CUDA context that owns this allocation.
+    pub fn context(&self) -> CudaContext {
+        self.context.clone()
+    }
+
     /// Raw CUDA device pointer value.
     pub fn device_ptr(&self) -> u64 {
         self.ptr
@@ -11556,6 +12103,53 @@ fn u16_slice_as_bytes(samples: &[u16]) -> &[u8] {
         std::slice::from_raw_parts(
             samples.as_ptr().cast::<u8>(),
             std::mem::size_of_val(samples),
+        )
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_huffman_table_as_bytes(table: &CudaJpegHuffmanTable) -> &[u8] {
+    // SAFETY: CudaJpegHuffmanTable is repr(C), plain integer data copied to
+    // CUDA and interpreted by the matching jpeg_decode_kernels.cu struct.
+    unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(table).cast::<u8>(),
+            std::mem::size_of::<CudaJpegHuffmanTable>(),
+        )
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_entropy_checkpoints_as_bytes(checkpoints: &[CudaJpegEntropyCheckpoint]) -> &[u8] {
+    // SAFETY: CudaJpegEntropyCheckpoint is repr(C), plain integer data copied to
+    // CUDA and interpreted by the matching jpeg_decode_kernels.cu struct.
+    unsafe {
+        std::slice::from_raw_parts(
+            checkpoints.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(checkpoints),
+        )
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_decode_statuses_as_bytes(statuses: &[CudaJpegDecodeStatus]) -> &[u8] {
+    // SAFETY: CudaJpegDecodeStatus is repr(C), plain integer data copied to CUDA.
+    unsafe {
+        std::slice::from_raw_parts(
+            statuses.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(statuses),
+        )
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_decode_statuses_as_bytes_mut(statuses: &mut [CudaJpegDecodeStatus]) -> &mut [u8] {
+    // SAFETY: CudaJpegDecodeStatus is repr(C), plain integer data copied back
+    // from CUDA into an identically-sized mutable slice.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            statuses.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(statuses),
         )
     }
 }

@@ -4,6 +4,7 @@ use std::os::raw::c_uint;
 pub(crate) enum CudaKernel {
     CopyU8,
     J2kDeinterleaveToF32,
+    J2kDeinterleaveStridedToF32,
     J2kForwardRct,
     J2kForwardIct,
     J2kForwardDwt53Horizontal,
@@ -40,6 +41,8 @@ pub(crate) enum CudaKernel {
     Htj2kEncodeCodeblocksMultiInputCleanup64,
     Htj2kCompactCodeblocks,
     Htj2kPacketizeCleanup,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegDecodeFast420Rgb8,
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
@@ -78,6 +81,7 @@ impl CudaKernel {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
             Self::J2kDeinterleaveToF32
+            | Self::J2kDeinterleaveStridedToF32
             | Self::J2kForwardRct
             | Self::J2kForwardIct
             | Self::J2kForwardDwt53Horizontal
@@ -123,6 +127,7 @@ impl CudaKernel {
             | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
             | Self::Htj2kCompactCodeblocks
             | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
+            Self::JpegDecodeFast420Rgb8 => JPEG_DECODE_PTX,
             Self::TranscodeReversible53Idct
             | Self::TranscodeReversible53VerticalLow
             | Self::TranscodeReversible53VerticalHigh
@@ -145,6 +150,7 @@ impl CudaKernel {
         match self {
             Self::CopyU8 => b"signinum_copy_u8\0",
             Self::J2kDeinterleaveToF32 => b"signinum_j2k_deinterleave_to_f32\0",
+            Self::J2kDeinterleaveStridedToF32 => b"signinum_j2k_deinterleave_strided_to_f32\0",
             Self::J2kForwardRct => b"signinum_j2k_forward_rct\0",
             Self::J2kForwardIct => b"signinum_j2k_forward_ict\0",
             Self::J2kForwardDwt53Horizontal => b"signinum_j2k_forward_dwt53_horizontal\0",
@@ -201,6 +207,7 @@ impl CudaKernel {
             }
             Self::Htj2kCompactCodeblocks => b"signinum_htj2k_compact_codeblocks\0",
             Self::Htj2kPacketizeCleanup => b"signinum_htj2k_packetize_cleanup\0",
+            Self::JpegDecodeFast420Rgb8 => b"signinum_jpeg_decode_fast420_rgb8\0",
             Self::J2kInverseDwtSingle => b"signinum_j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"signinum_j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"signinum_j2k_store_gray16\0",
@@ -252,6 +259,7 @@ const HTJ2K_DECODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_decode_kernels.ptx"));
 const HTJ2K_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_encode_kernels.ptx"));
+const JPEG_DECODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jpeg_decode_kernels.ptx"));
 // Always resolves: build.rs writes a placeholder empty module when nvcc is
 // absent (the dispatch checks `signinum_cuda_transcode_ptx_built` before load).
 const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));

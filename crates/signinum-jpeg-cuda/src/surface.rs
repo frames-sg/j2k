@@ -16,12 +16,25 @@ pub(crate) enum Storage {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// CUDA JPEG decode path used to produce a surface.
+pub enum CudaJpegDecodePath {
+    /// Surface did not use a CUDA JPEG decode kernel or library path.
+    #[default]
+    None,
+    /// Surface was produced by Signinum-owned CUDA JPEG kernels.
+    OwnedCuda,
+    /// Surface was produced by nvJPEG hardware/library decode.
+    NvjpegHardware,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Dispatch counters and residency metadata for a CUDA JPEG surface.
 pub struct CudaSurfaceStats {
     pub(crate) kernel_dispatches: usize,
     pub(crate) copy_kernel_dispatches: usize,
     pub(crate) decode_kernel_dispatches: usize,
     pub(crate) hardware_decode: bool,
+    pub(crate) decode_path: CudaJpegDecodePath,
 }
 
 impl CudaSurfaceStats {
@@ -35,9 +48,24 @@ impl CudaSurfaceStats {
         self.copy_kernel_dispatches
     }
 
-    /// Number of nvJPEG decode dispatches used for the surface.
+    /// Number of decode kernel or library dispatches used for the surface.
     pub fn decode_kernel_dispatches(self) -> usize {
         self.decode_kernel_dispatches
+    }
+
+    /// CUDA JPEG decode path used for the surface.
+    pub fn decode_path(self) -> CudaJpegDecodePath {
+        self.decode_path
+    }
+
+    /// Whether the Signinum-owned CUDA JPEG decode path was used.
+    pub fn used_owned_cuda_decode(self) -> bool {
+        self.decode_path == CudaJpegDecodePath::OwnedCuda
+    }
+
+    /// Whether nvJPEG was used.
+    pub fn used_nvjpeg_decode(self) -> bool {
+        self.decode_path == CudaJpegDecodePath::NvjpegHardware
     }
 
     /// Whether hardware JPEG decode was used.

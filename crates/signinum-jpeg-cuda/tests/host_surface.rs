@@ -6,6 +6,7 @@ use signinum_core::{
 use signinum_jpeg_cuda::{Codec, CudaSession, Decoder, Error};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+const OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA: u8 = 2;
 const NVJPEG_RGB8_MAX_CHANNEL_DELTA: u8 = 16;
 
 #[test]
@@ -47,6 +48,17 @@ fn explicit_cuda_request_validates_decode_before_upload() {
 }
 
 #[test]
+fn explicit_cuda_gray8_request_fails_without_cpu_upload() {
+    let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
+
+    let error = decoder
+        .decode_to_device(PixelFormat::Gray8, BackendRequest::Cuda)
+        .expect_err("strict CUDA Gray8 decode should be unsupported");
+    assert!(error.is_unsupported());
+    assert!(!matches!(error, Error::CudaUnavailable));
+}
+
+#[test]
 fn explicit_cuda_request_returns_cuda_surface_when_runtime_required() {
     if !runtime_required() {
         return;
@@ -74,11 +86,7 @@ fn explicit_cuda_request_returns_cuda_surface_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required() {
-    if !runtime_required() {
-        return;
-    }
-
+fn explicit_cuda_region_scaled_surface_fails_without_owned_cuda_path() {
     let roi = Rect {
         x: 4,
         y: 4,
@@ -86,36 +94,12 @@ fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required() {
         h: 10,
     };
     let scale = Downscale::Quarter;
-    let scaled = roi.scaled_covering(scale);
 
     let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
-    let surface = decoder
+    let error = decoder
         .decode_region_scaled_to_device(PixelFormat::Rgb8, roi, scale, BackendRequest::Cuda)
-        .expect("cuda region+scaled surface");
-    assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cuda);
-    assert_eq!(surface.as_host_bytes(), None);
-    assert_cuda_surface(&surface);
-    assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-
-    let mut downloaded = vec![0u8; surface.byte_len()];
-    surface
-        .download_into(&mut downloaded, surface.pitch_bytes())
-        .expect("download cuda surface");
-
-    let (expected, _) = signinum_jpeg::Decoder::new(BASELINE_420)
-        .expect("host decoder")
-        .decode_region_scaled(
-            PixelFormat::Rgb8,
-            signinum_jpeg::Rect {
-                x: roi.x,
-                y: roi.y,
-                w: roi.w,
-                h: roi.h,
-            },
-            scale,
-        )
-        .expect("host decode");
-    assert_eq!(downloaded, expected);
+        .expect_err("strict CUDA region+scaled decode should be unsupported");
+    assert!(error.is_unsupported());
 }
 
 #[test]
@@ -152,8 +136,8 @@ fn explicit_cuda_download_respects_padded_stride_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_full_frame_uses_hardware_decode_when_required() {
-    if !hardware_decode_required() {
+fn explicit_cuda_full_frame_uses_owned_decode_when_required() {
+    if !strict_cuda_jpeg_decode_required() {
         return;
     }
 
@@ -164,17 +148,25 @@ fn explicit_cuda_full_frame_uses_hardware_decode_when_required() {
     let cuda = surface.cuda_surface().expect("cuda surface");
     let stats = cuda.stats();
     assert!(
-        stats.used_hardware_decode(),
-        "explicit full-frame RGB8 CUDA decode must use a CUDA JPEG decode path when required"
+        stats.used_owned_cuda_decode(),
+        "explicit full-frame RGB8 CUDA decode must use the Signinum-owned CUDA JPEG path when required"
+    );
+    assert!(
+        !stats.used_nvjpeg_decode(),
+        "strict CUDA JPEG decode must not count nvJPEG as device success"
+    );
+    assert!(
+        !stats.used_hardware_decode(),
+        "strict Signinum-owned CUDA JPEG decode must not report nvJPEG hardware decode"
     );
     assert!(
         stats.decode_kernel_dispatches() > 0,
-        "hardware decode path must report decode kernel dispatches"
+        "owned CUDA decode path must report decode kernel dispatches"
     );
     assert_eq!(
         stats.copy_kernel_dispatches(),
         0,
-        "hardware decode path should not be reported as the CPU decode plus copy fallback"
+        "owned CUDA decode path should not be reported as the CPU decode plus copy fallback"
     );
 }
 
@@ -182,7 +174,7 @@ fn runtime_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
 }
 
-fn hardware_decode_required() -> bool {
+fn strict_cuda_jpeg_decode_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE").is_some()
 }
 
@@ -199,7 +191,20 @@ fn assert_surface_bytes_match_or_are_close(
 ) {
     assert_eq!(actual.len(), expected.len());
     let stats = surface.cuda_surface().expect("cuda surface").stats();
-    if !stats.used_hardware_decode() {
+    if stats.used_owned_cuda_decode() {
+        let max_delta = actual
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| actual.abs_diff(*expected))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
+            "Signinum-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
+        );
+        return;
+    }
+    if !stats.used_nvjpeg_decode() {
         assert_eq!(actual, expected);
         return;
     }
@@ -374,11 +379,7 @@ fn tile_batch_region_scaled_auto_surface_matches_host_decode() {
 }
 
 #[test]
-fn tile_batch_region_scaled_cuda_surface_matches_host_when_runtime_required() {
-    if !runtime_required() {
-        return;
-    }
-
+fn tile_batch_region_scaled_cuda_surface_fails_without_owned_cuda_path() {
     let roi = Rect {
         x: 4,
         y: 4,
@@ -386,10 +387,9 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_runtime_required() {
         h: 10,
     };
     let scale = Downscale::Quarter;
-    let scaled = roi.scaled_covering(scale);
     let mut ctx = DecoderContext::<signinum_jpeg::DecoderContext>::new();
     let mut pool = signinum_jpeg::ScratchPool::new();
-    let surface = Codec::decode_tile_region_scaled_to_device(
+    let error = Codec::decode_tile_region_scaled_to_device(
         &mut ctx,
         &mut pool,
         BASELINE_420,
@@ -398,31 +398,8 @@ fn tile_batch_region_scaled_cuda_surface_matches_host_when_runtime_required() {
         scale,
         BackendRequest::Cuda,
     )
-    .expect("cuda tile batch surface");
-    assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cuda);
-    assert_eq!(surface.as_host_bytes(), None);
-    assert_cuda_surface(&surface);
-    assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
-
-    let mut downloaded = vec![0u8; surface.byte_len()];
-    surface
-        .download_into(&mut downloaded, surface.pitch_bytes())
-        .expect("download cuda surface");
-
-    let (expected, _) = signinum_jpeg::Decoder::new(BASELINE_420)
-        .expect("host decoder")
-        .decode_region_scaled(
-            PixelFormat::Rgb8,
-            signinum_jpeg::Rect {
-                x: roi.x,
-                y: roi.y,
-                w: roi.w,
-                h: roi.h,
-            },
-            scale,
-        )
-        .expect("host decode");
-    assert_eq!(downloaded, expected);
+    .expect_err("strict CUDA tile-batch region+scaled decode should be unsupported");
+    assert!(error.is_unsupported());
 }
 
 #[test]
@@ -489,8 +466,26 @@ fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailab
 }
 
 #[test]
-fn decode_tiles_to_device_explicit_cuda_uses_hardware_decode_when_required() {
-    if !hardware_decode_required() {
+fn decode_tiles_to_device_explicit_cuda_gray8_fails_without_cpu_upload() {
+    let mut ctx = DecoderContext::<signinum_jpeg::DecoderContext>::new();
+    let mut pool = signinum_jpeg::ScratchPool::new();
+    let inputs = [BASELINE_420, BASELINE_420];
+
+    let error = Codec::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Gray8,
+        BackendRequest::Cuda,
+    )
+    .expect_err("strict CUDA Gray8 batch decode should be unsupported");
+    assert!(error.is_unsupported());
+    assert!(!matches!(error, Error::CudaUnavailable));
+}
+
+#[test]
+fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
+    if !strict_cuda_jpeg_decode_required() {
         return;
     }
 
@@ -511,17 +506,21 @@ fn decode_tiles_to_device_explicit_cuda_uses_hardware_decode_when_required() {
     for surface in surfaces {
         let stats = surface.cuda_surface().expect("cuda surface").stats();
         assert!(
-            stats.used_hardware_decode(),
-            "explicit full-tile RGB8 CUDA batch decode must use nvJPEG when required"
+            stats.used_owned_cuda_decode(),
+            "explicit full-tile RGB8 CUDA batch decode must use the Signinum-owned CUDA path when required"
+        );
+        assert!(
+            !stats.used_nvjpeg_decode(),
+            "strict CUDA JPEG batch decode must not count nvJPEG as device success"
         );
         assert!(
             stats.decode_kernel_dispatches() > 0,
-            "hardware batch decode path must report decode dispatches"
+            "owned CUDA batch decode path must report decode dispatches"
         );
         assert_eq!(
             stats.copy_kernel_dispatches(),
             0,
-            "hardware batch decode path should not be reported as CPU decode plus copy"
+            "owned CUDA batch decode path should not be reported as CPU decode plus copy"
         );
     }
 }

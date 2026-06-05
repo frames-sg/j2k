@@ -15,6 +15,7 @@ use signinum_jpeg::{
     Warning as CpuWarning,
 };
 
+use crate::owned_decode::{decode_owned_cuda_rgb8, unsupported_owned_cuda_output_format};
 #[cfg(feature = "cuda-runtime")]
 use crate::runtime::cuda_error;
 use crate::runtime::{validate_surface_request, wrap_surface};
@@ -43,6 +44,12 @@ impl Codec {
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
         let dims = CpuDecoder::inspect(input)?.dimensions;
+        if backend == BackendRequest::Cuda {
+            if fmt == PixelFormat::Rgb8 {
+                return decode_owned_cuda_rgb8(input, dims, session);
+            }
+            return Err(unsupported_owned_cuda_output_format());
+        }
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
         decode_tile_into_in_context(input, ctx.codec_mut(), pool, &mut out, stride, fmt)?;
@@ -59,6 +66,11 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support region output",
+            });
+        }
         let dims = (roi.w, roi.h);
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
@@ -84,6 +96,11 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled output",
+            });
+        }
         let dims = (
             CpuDecoder::inspect(input)?
                 .dimensions
@@ -120,6 +137,11 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled region output",
+            });
+        }
         let dims = {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
@@ -237,6 +259,18 @@ impl TileBatchDecodeManyDevice for Codec {
         }
 
         let mut session = CudaSession::default();
+        if backend == BackendRequest::Cuda {
+            if fmt == PixelFormat::Rgb8 {
+                return inputs
+                    .iter()
+                    .map(|input| {
+                        let dims = CpuDecoder::inspect(input)?.dimensions;
+                        decode_owned_cuda_rgb8(input, dims, &mut session)
+                    })
+                    .collect();
+            }
+            return Err(unsupported_owned_cuda_output_format());
+        }
         if let Some(surfaces) = try_decode_tiles_nvjpeg_batch(inputs, fmt, backend, &mut session)? {
             return Ok(surfaces);
         }
@@ -257,7 +291,7 @@ fn try_decode_tiles_nvjpeg_batch(
     backend: BackendRequest,
     session: &mut CudaSession,
 ) -> Result<Option<Vec<Surface>>, Error> {
-    if fmt != PixelFormat::Rgb8 || !matches!(backend, BackendRequest::Auto | BackendRequest::Cuda) {
+    if fmt != PixelFormat::Rgb8 || backend != BackendRequest::Auto {
         if profile::gpu_route_profile_enabled() {
             let request_s = format!("{backend:?}");
             let fmt_s = format!("{fmt:?}");
@@ -339,6 +373,7 @@ fn try_decode_tiles_nvjpeg_batch(
                         copy_kernel_dispatches: stats.copy_kernel_dispatches(),
                         decode_kernel_dispatches: stats.decode_kernel_dispatches(),
                         hardware_decode: stats.used_hardware_decode(),
+                        decode_path: crate::surface::CudaJpegDecodePath::NvjpegHardware,
                     },
                     storage: Storage::Cuda(buffer),
                 });

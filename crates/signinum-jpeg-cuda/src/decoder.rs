@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(feature = "cuda-runtime")]
-use signinum_core::BackendKind;
 use signinum_core::{
     BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode, ImageDecodeDevice,
     ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
 };
-#[cfg(feature = "cuda-runtime")]
-use signinum_cuda_runtime::CudaError;
 #[cfg(feature = "cuda-runtime")]
 use signinum_jpeg::adapter::decoder_bytes;
 use signinum_jpeg::{
@@ -15,10 +11,9 @@ use signinum_jpeg::{
 };
 
 #[cfg(feature = "cuda-runtime")]
-use crate::runtime::cuda_error;
+use crate::owned_decode::decode_owned_cuda_rgb8;
+use crate::owned_decode::unsupported_owned_cuda_output_format;
 use crate::runtime::{validate_surface_request, wrap_surface};
-#[cfg(feature = "cuda-runtime")]
-use crate::surface::{CudaSurfaceStats, Storage};
 use crate::{profile, CudaSession, Error, Surface};
 
 /// JPEG decoder that can return host or CUDA-resident surfaces.
@@ -60,10 +55,13 @@ impl<'a> Decoder<'a> {
                 ],
             );
         }
-        if backend == BackendRequest::Cuda && fmt == PixelFormat::Rgb8 {
-            if let Some(surface) = self.try_decode_cuda_rgb8(session)? {
-                return Ok(surface);
+        if backend == BackendRequest::Cuda {
+            if fmt == PixelFormat::Rgb8 {
+                if let Some(surface) = self.try_decode_cuda_rgb8(session)? {
+                    return Ok(surface);
+                }
             }
+            return Err(unsupported_owned_cuda_output_format());
         }
         let (bytes, _outcome) = self.inner.decode(fmt)?;
         if profile::gpu_route_profile_enabled() {
@@ -90,72 +88,25 @@ impl<'a> Decoder<'a> {
         session: &mut CudaSession,
     ) -> Result<Option<Surface>, Error> {
         let dimensions = self.inner.info().dimensions;
-        let bytes = decoder_bytes(&self.inner);
-        let context = session.cuda_context()?;
-        match context.decode_jpeg_rgb8_with_nvjpeg(bytes, dimensions) {
-            Ok(output) => {
-                let pitch_bytes = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-                let (buffer, stats) = output.into_parts();
-                if profile::gpu_route_profile_enabled() {
-                    let width_s = dimensions.0.to_string();
-                    let height_s = dimensions.1.to_string();
-                    let kernel_dispatches_s = stats.kernel_dispatches().to_string();
-                    let decode_dispatches_s = stats.decode_kernel_dispatches().to_string();
-                    let hardware_decode_s = stats.used_hardware_decode().to_string();
-                    profile::emit_gpu_route_profile(
-                        "jpeg",
-                        "gpu_route",
-                        "cuda",
-                        &[
-                            ("op", "full"),
-                            ("request", "Cuda"),
-                            ("fmt", "Rgb8"),
-                            ("width", width_s.as_str()),
-                            ("height", height_s.as_str()),
-                            ("decision", "nvjpeg"),
-                            ("kernel_dispatches", kernel_dispatches_s.as_str()),
-                            ("decode_kernel_dispatches", decode_dispatches_s.as_str()),
-                            ("hardware_decode", hardware_decode_s.as_str()),
-                        ],
-                    );
-                }
-                Ok(Some(Surface {
-                    backend: BackendKind::Cuda,
-                    dimensions,
-                    fmt: PixelFormat::Rgb8,
-                    pitch_bytes,
-                    stats: CudaSurfaceStats {
-                        kernel_dispatches: stats.kernel_dispatches(),
-                        copy_kernel_dispatches: stats.copy_kernel_dispatches(),
-                        decode_kernel_dispatches: stats.decode_kernel_dispatches(),
-                        hardware_decode: stats.used_hardware_decode(),
-                    },
-                    storage: Storage::Cuda(buffer),
-                }))
-            }
-            Err(
-                CudaError::NvjpegUnavailable { .. }
-                | CudaError::Nvjpeg { .. }
-                | CudaError::NvjpegDimensions { .. },
-            ) => {
-                if profile::gpu_route_profile_enabled() {
-                    profile::emit_gpu_route_profile(
-                        "jpeg",
-                        "gpu_route",
-                        "cuda",
-                        &[
-                            ("op", "full"),
-                            ("request", "Cuda"),
-                            ("fmt", "Rgb8"),
-                            ("decision", "nvjpeg_fallback"),
-                            ("reason", "nvjpeg_unavailable_or_rejected"),
-                        ],
-                    );
-                }
-                Ok(None)
-            }
-            Err(error) => Err(cuda_error(error)),
+        let surface = decode_owned_cuda_rgb8(decoder_bytes(&self.inner), dimensions, session)?;
+        if profile::gpu_route_profile_enabled() {
+            let width_s = dimensions.0.to_string();
+            let height_s = dimensions.1.to_string();
+            profile::emit_gpu_route_profile(
+                "jpeg",
+                "gpu_route",
+                "cuda",
+                &[
+                    ("op", "full"),
+                    ("request", "Cuda"),
+                    ("fmt", "Rgb8"),
+                    ("width", width_s.as_str()),
+                    ("height", height_s.as_str()),
+                    ("decision", "owned_cuda"),
+                ],
+            );
         }
+        Ok(Some(surface))
     }
 
     #[cfg(not(feature = "cuda-runtime"))]
@@ -173,12 +124,12 @@ impl<'a> Decoder<'a> {
                     ("op", "full"),
                     ("request", "Cuda"),
                     ("fmt", "Rgb8"),
-                    ("decision", "nvjpeg_fallback"),
+                    ("decision", "owned_cuda_unavailable"),
                     ("reason", "cuda_runtime_feature_disabled"),
                 ],
             );
         }
-        Ok(None)
+        Err(Error::CudaUnavailable)
     }
 
     fn decode_region_to_surface_impl(
@@ -189,6 +140,11 @@ impl<'a> Decoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support region output",
+            });
+        }
         let (bytes, outcome) = self.inner.decode_region(fmt, roi.into())?;
         wrap_surface(
             bytes,
@@ -207,6 +163,11 @@ impl<'a> Decoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled output",
+            });
+        }
         let (bytes, outcome) = self.inner.decode_scaled(fmt, scale)?;
         wrap_surface(
             bytes,
@@ -226,6 +187,11 @@ impl<'a> Decoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled region output",
+            });
+        }
         let (bytes, outcome) = self.inner.decode_region_scaled(fmt, roi.into(), scale)?;
         wrap_surface(
             bytes,

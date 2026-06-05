@@ -101,6 +101,7 @@ fn wrap_cuda_surface(
             copy_kernel_dispatches: stats.copy_kernel_dispatches(),
             decode_kernel_dispatches: stats.decode_kernel_dispatches(),
             hardware_decode: stats.used_hardware_decode(),
+            decode_path: crate::surface::CudaJpegDecodePath::None,
         },
         storage: Storage::Cuda(buffer),
     })

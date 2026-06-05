@@ -10,12 +10,14 @@ fn main() {
     println!("cargo:rerun-if-changed=src/htj2k_decode_kernels.ptx");
     println!("cargo:rerun-if-changed=src/htj2k_encode_kernels.cu");
     println!("cargo:rerun-if-changed=src/htj2k_encode_kernels.ptx");
+    println!("cargo:rerun-if-changed=src/jpeg_decode_kernels.cu");
     println!("cargo:rerun-if-changed=src/transcode_kernels.cu");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT");
     println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_CUDA_KERNEL_BUILD");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_j2k_encode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_htj2k_encode_ptx_built)");
+    println!("cargo:rustc-check-cfg=cfg(signinum_cuda_jpeg_decode_ptx_built)");
     println!("cargo:rustc-check-cfg=cfg(signinum_cuda_transcode_ptx_built)");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
@@ -52,6 +54,17 @@ fn main() {
     );
     if htj2k_encode_compiled {
         println!("cargo:rustc-cfg=signinum_cuda_htj2k_encode_ptx_built");
+    }
+
+    let jpeg_decode_ptx = out_dir.join("jpeg_decode_kernels.ptx");
+    let jpeg_decode_compiled = compile_optional_ptx(
+        &nvcc,
+        Path::new("src/jpeg_decode_kernels.cu"),
+        &jpeg_decode_ptx,
+        require_kernel_build,
+    );
+    if jpeg_decode_compiled {
+        println!("cargo:rustc-cfg=signinum_cuda_jpeg_decode_ptx_built");
     }
 
     // Transcode (DCT->wavelet) kernels are new: there is no checked-in PTX
