@@ -1771,6 +1771,117 @@ fn decode_into_rgba8_converts_cmyk_and_ycck_with_alpha() {
 }
 
 #[test]
+fn decode_region_into_rgb8_crops_cmyk_and_ycck() {
+    let roi = Rect {
+        x: 2,
+        y: 1,
+        w: 5,
+        h: 4,
+    };
+    let expected = crop_rgb(&four_component_8x8_rgb(), 8, roi);
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0u8; roi.w as usize * roi.h as usize * 3];
+
+        let outcome = dec
+            .decode_region_into(&mut buf, roi.w as usize * 3, PixelFormat::Rgb8, roi)
+            .expect("CMYK/YCCK RGB8 ROI decode should succeed");
+
+        assert_eq!(outcome.decoded, roi);
+        assert_eq!(buf, expected);
+    }
+}
+
+#[test]
+fn decode_scaled_into_rgb8_projects_cmyk_and_ycck() {
+    let expected = project_scaled_rgb(
+        &four_component_8x8_rgb(),
+        8,
+        8,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 4,
+        },
+        2,
+    );
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0u8; expected.len()];
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, 4 * 3, PixelFormat::Rgb8, Downscale::Half)
+            .expect("CMYK/YCCK RGB8 scaled decode should succeed");
+
+        assert_eq!(outcome.decoded, Rect::full((8, 8)));
+        assert_eq!(buf, expected);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgb8_projects_cmyk_and_ycck_with_padding() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let expected = project_scaled_rgb(&four_component_8x8_rgb(), 8, 8, scaled_roi, 2);
+    let row_bytes = scaled_roi.w as usize * 3;
+    let stride = row_bytes + 5;
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb8, roi, Downscale::Half)
+            .expect("CMYK/YCCK RGB8 region-scaled decode should succeed");
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row);
+            assert_eq!(&row[row_bytes..], &[0xaa; 5]);
+        }
+    }
+}
+
+#[test]
+fn decode_region_into_rgba8_crops_cmyk_and_ycck_with_alpha() {
+    let roi = Rect {
+        x: 3,
+        y: 2,
+        w: 3,
+        h: 4,
+    };
+    let stride = roi.w as usize * 4 + 4;
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+        let outcome = dec
+            .decode_region_into(&mut buf, stride, PixelFormat::Rgba8, roi)
+            .expect("CMYK/YCCK RGBA8 ROI decode should succeed");
+
+        assert_eq!(outcome.decoded, roi);
+        for row in buf.chunks_exact(stride) {
+            for pixel in row[..roi.w as usize * 4].chunks_exact(4) {
+                assert_eq!(pixel, &[64, 64, 64, 255]);
+            }
+            assert_eq!(&row[roi.w as usize * 4..], &[0xaa; 4]);
+        }
+    }
+}
+
+#[test]
 fn decoder_new_rejects_invalid_sequential_scan_parameters() {
     let mut bytes = minimal_baseline_420_jpeg();
     let sos = bytes

@@ -101,18 +101,21 @@ Implementation requirements:
 - Keep parser APP14 handling as the source of truth for CMYK vs YCCK.
   Status: initial APP14 CMYK/YCCK fixtures use parser-owned color metadata.
 - Add CPU output conversion to `Rgb8` and `Rgba8` for 8-bit CMYK/YCCK inputs.
-  Status: initial full-image and batch-session RGB/RGBA coverage has landed
-  for 8-bit sequential APP14 CMYK/YCCK fixtures.
+  Status: `Rgb8` full-image, ROI, scaled, region-scaled, and batch-session
+  coverage has landed for 8-bit sequential APP14 CMYK/YCCK fixtures. `Rgba8`
+  full-image and ROI coverage has landed; scaled `Rgba8` remains unsupported by
+  the public output-format policy.
 - Preserve clear behavior for unsupported direct CMYK output unless
   `signinum-core` gains a public CMYK pixel format.
 - Add row, full-image, ROI, scaled, region-scaled, and batch tests where the
   existing API shape supports them.
-  Status: row, ROI, scaled, region-scaled, subsampled four-component, and
-  malformed coverage remain open.
+  Status: full-image, ROI, scaled, region-scaled, and batch-session coverage
+  has landed for the supported RGB/RGBA output shapes. Row output, subsampled
+  four-component fixtures, and malformed coverage remain open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
-  Status: capability reports now mark initial CMYK/YCCK CPU RGB8 support while
-  keeping Metal/CUDA rejected.
+  Status: capability reports now mark supported CMYK/YCCK CPU RGB8/RGBA8
+  shapes while keeping Metal/CUDA rejected.
 
 Metal follow-up candidate:
 

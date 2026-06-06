@@ -99,25 +99,70 @@ fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_eligible() {
         (cmyk_8x8_jpeg(), ColorSpace::Cmyk),
         (ycck_8x8_jpeg(), ColorSpace::Ycck),
     ] {
-        let report = JpegCapabilityReport::inspect(
-            &input,
-            JpegCapabilityRequest {
-                op: JpegDecodeOp::Full,
-                fmt: PixelFormat::Rgb8,
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 2,
+                y: 1,
+                w: 5,
+                h: 4,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 6,
+                    h: 6,
+                },
+                scale: Downscale::Half,
             },
-        )
-        .expect("capability report should parse unsupported color metadata");
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgb8,
+                },
+            )
+            .expect("capability report should parse four-component color metadata");
 
-        assert_eq!(report.info.sof_kind, SofKind::Baseline8);
-        assert_eq!(report.info.color_space, expected_color);
-        assert!(report.cpu.eligible);
-        assert!(!report.owned_cuda.eligible);
-        assert!(!report.metal_fast.eligible);
-        assert!(report
-            .metal_fast
-            .reason
-            .expect("Metal rejection reason")
-            .contains("YCbCr"));
+            assert_eq!(report.info.sof_kind, SofKind::Baseline8);
+            assert_eq!(report.info.color_space, expected_color);
+            assert!(report.cpu.eligible, "{expected_color:?} {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+            assert!(report
+                .metal_fast
+                .reason
+                .expect("Metal rejection reason")
+                .contains("YCbCr"));
+        }
+
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 3,
+                y: 2,
+                w: 3,
+                h: 4,
+            }),
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba8,
+                },
+            )
+            .expect("capability report should parse four-component color metadata");
+
+            assert_eq!(report.info.sof_kind, SofKind::Baseline8);
+            assert_eq!(report.info.color_space, expected_color);
+            assert!(report.cpu.eligible, "{expected_color:?} {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
     }
 }
 

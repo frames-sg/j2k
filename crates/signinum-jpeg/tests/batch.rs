@@ -537,6 +537,105 @@ fn session_batch_decode_converts_cmyk_and_ycck() {
 }
 
 #[test]
+fn session_batch_scaled_and_region_scaled_cmyk_ycck_match_free_batch() {
+    let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = (4, 4);
+    let scaled_roi = Rect {
+        x: roi.x / 2,
+        y: roi.y / 2,
+        w: (roi.x + roi.w).div_ceil(2) - roi.x / 2,
+        h: (roi.y + roi.h).div_ceil(2) - roi.y / 2,
+    };
+    let scaled_stride = scaled_full.0 * PixelFormat::Rgb8.bytes_per_pixel();
+    let region_stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut scaled_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; scaled_stride * scaled_full.1])
+        .collect::<Vec<_>>();
+    let mut scaled_expected = scaled_outputs.clone();
+    let mut region_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; region_stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut region_expected = region_outputs.clone();
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    };
+    let mut session = JpegBatchSession::new(options);
+
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_expected.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free CMYK/YCCK scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_outputs.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session CMYK/YCCK scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_expected.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free CMYK/YCCK region-scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_outputs.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session CMYK/YCCK region-scaled batch decode");
+    }
+
+    assert_eq!(scaled_outputs, scaled_expected);
+    assert_eq!(region_outputs, region_expected);
+}
+
+#[test]
 fn production_batch_decode_parallel_preserves_order_and_output() {
     const JOBS: usize = 32;
     let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
