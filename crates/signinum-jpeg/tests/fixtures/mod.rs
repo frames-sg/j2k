@@ -73,6 +73,40 @@ pub(crate) fn extended_12bit_rgb_8x8_rgb16() -> Vec<u8> {
     out
 }
 
+/// An 8x8 12-bit extended sequential YCbCr 4:4:4 JPEG.
+pub(crate) fn extended_12bit_ycbcr_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 8, 0, 8, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(dc_category4_rgb_entropy());
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_ycbcr_8x8_jpeg`].
+pub(crate) fn extended_12bit_ycbcr_8x8_rgb16() -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 * 8 * 6);
+    for _ in 0..64 {
+        for sample in [2042u16, 2067, 2107] {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+    }
+    out
+}
+
 /// An 8x8 12-bit progressive grayscale JPEG with one DC-only scan.
 pub(crate) fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -97,6 +131,26 @@ pub(crate) fn progressive_12bit_rgb_8x8_jpeg() -> Vec<u8> {
         0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
         0x00,
     ]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc2, 0x00, 17, 12, 0, 8, 0, 8, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 0, 0,
+    ]);
+    bytes.extend(dc_category4_rgb_progressive_entropy());
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+/// An 8x8 12-bit progressive YCbCr 4:4:4 JPEG with one DC-only scan.
+pub(crate) fn progressive_12bit_ycbcr_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
     bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
     bytes.extend(std::iter::repeat_n(16u8, 64));
     bytes.extend_from_slice(&[

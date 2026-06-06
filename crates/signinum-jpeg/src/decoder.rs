@@ -394,7 +394,10 @@ impl<'a> Decoder<'a> {
             other => return Err(JpegError::NotImplemented { sof: other }),
         }
         if info.sof_kind == SofKind::Extended12
-            && !matches!(info.color_space, ColorSpace::Grayscale | ColorSpace::Rgb)
+            && !matches!(
+                info.color_space,
+                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb
+            )
         {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
@@ -563,10 +566,9 @@ impl<'a> Decoder<'a> {
         }
         match (info.sof_kind, info.color_space) {
             (
-                SofKind::Progressive8,
+                SofKind::Progressive8 | SofKind::Progressive12,
                 ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
-            )
-            | (SofKind::Progressive12, ColorSpace::Grayscale | ColorSpace::Rgb) => {}
+            ) => {}
             (SofKind::Progressive12, _) => {
                 return Err(JpegError::NotImplemented { sof: info.sof_kind });
             }
@@ -2248,7 +2250,7 @@ impl Decoder<'_> {
         if self.info.sof_kind != SofKind::Progressive12
             || !matches!(
                 self.info.color_space,
-                ColorSpace::Grayscale | ColorSpace::Rgb
+                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb
             )
         {
             return Err(JpegError::NotImplemented {
@@ -2262,8 +2264,28 @@ impl Decoder<'_> {
                 height: self.info.dimensions.1,
             });
         }
-        if self.info.color_space == ColorSpace::Rgb && matches!(output, Extended12Output::Rgb16) {
-            return self.decode_progressive12_rgb444_region_into(out, stride, roi, downscale);
+        if matches!(output, Extended12Output::Rgb16) {
+            match self.info.color_space {
+                ColorSpace::Rgb => {
+                    return self.decode_progressive12_color444_region_into(
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        Extended12RgbProjection::Identity,
+                    );
+                }
+                ColorSpace::YCbCr => {
+                    return self.decode_progressive12_color444_region_into(
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        Extended12RgbProjection::YCbCr,
+                    );
+                }
+                _ => {}
+            }
         }
         if self.info.color_space != ColorSpace::Grayscale || plan.components.len() != 1 {
             return Err(JpegError::NotImplemented {
@@ -2314,12 +2336,13 @@ impl Decoder<'_> {
         })
     }
 
-    fn decode_progressive12_rgb444_region_into(
+    fn decode_progressive12_color444_region_into(
         &self,
         out: &mut [u8],
         stride: usize,
         roi: Rect,
         downscale: DownscaleFactor,
+        projection: Extended12RgbProjection,
     ) -> Result<DecodeOutcome, JpegError> {
         let plan = self
             .progressive_plan
@@ -2343,7 +2366,7 @@ impl Decoder<'_> {
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
         let (width, height) = self.info.dimensions;
-        let component_indices = progressive_rgb_component_indices(plan)?;
+        let component_indices = progressive_color_component_indices(plan)?;
         let block_cols = plan.components[component_indices[0]].block_cols as usize;
         let block_rows = plan.components[component_indices[0]].block_rows as usize;
         let mut dequant = [[0i16; 64]; 3];
@@ -2382,10 +2405,9 @@ impl Decoder<'_> {
                     out,
                     stride,
                     write_region,
+                    projection,
                     ((block_x as u32) * 8, (block_y as u32) * 8),
-                    &pixels[0],
-                    &pixels[1],
-                    &pixels[2],
+                    &pixels,
                 );
             }
         }
@@ -2494,8 +2516,28 @@ impl Decoder<'_> {
                 height: self.info.dimensions.1,
             });
         }
-        if self.info.color_space == ColorSpace::Rgb && matches!(output, Extended12Output::Rgb16) {
-            return self.decode_extended12_rgb444_region_into(out, stride, roi, downscale);
+        if matches!(output, Extended12Output::Rgb16) {
+            match self.info.color_space {
+                ColorSpace::Rgb => {
+                    return self.decode_extended12_color444_region_into(
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        Extended12RgbProjection::Identity,
+                    );
+                }
+                ColorSpace::YCbCr => {
+                    return self.decode_extended12_color444_region_into(
+                        out,
+                        stride,
+                        roi,
+                        downscale,
+                        Extended12RgbProjection::YCbCr,
+                    );
+                }
+                _ => {}
+            }
         }
         if self.info.color_space != ColorSpace::Grayscale || self.plan.components.len() != 1 {
             return Err(JpegError::NotImplemented {
@@ -2546,14 +2588,15 @@ impl Decoder<'_> {
         })
     }
 
-    fn decode_extended12_rgb444_region_into(
+    fn decode_extended12_color444_region_into(
         &self,
         out: &mut [u8],
         stride: usize,
         roi: Rect,
         downscale: DownscaleFactor,
+        projection: Extended12RgbProjection,
     ) -> Result<DecodeOutcome, JpegError> {
-        validate_extended12_rgb444_plan(&self.plan, self.info.sof_kind)?;
+        validate_extended12_color444_plan(&self.plan, self.info.sof_kind)?;
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
@@ -2588,10 +2631,9 @@ impl Decoder<'_> {
                     out,
                     stride,
                     write_region,
+                    projection,
                     (mcu_x * 8, mcu_y * 8),
-                    &pixels[0],
-                    &pixels[1],
-                    &pixels[2],
+                    &pixels,
                 );
             }
         }
@@ -2608,6 +2650,12 @@ impl Decoder<'_> {
 enum Extended12Output {
     Gray16,
     Rgb16,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Extended12RgbProjection {
+    Identity,
+    YCbCr,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2646,7 +2694,7 @@ fn decode_extended12_block_pixels(
     Ok(())
 }
 
-fn validate_extended12_rgb444_plan(
+fn validate_extended12_color444_plan(
     plan: &PreparedDecodePlan,
     sof: SofKind,
 ) -> Result<(), JpegError> {
@@ -2669,7 +2717,7 @@ fn validate_extended12_rgb444_plan(
     Ok(())
 }
 
-fn progressive_rgb_component_indices(
+fn progressive_color_component_indices(
     plan: &PreparedProgressivePlan,
 ) -> Result<[usize; 3], JpegError> {
     let mut indices = [usize::MAX; 3];
@@ -2704,10 +2752,9 @@ fn write_extended12_rgb_block_region(
     out: &mut [u8],
     stride: usize,
     region: Extended12WriteRegion,
+    projection: Extended12RgbProjection,
     block_origin: (u32, u32),
-    r_pixels: &[u16; 64],
-    g_pixels: &[u16; 64],
-    b_pixels: &[u16; 64],
+    pixels: &[[u16; 64]; 3],
 ) {
     let (width, height) = region.dimensions;
     let (x0, y0) = block_origin;
@@ -2732,9 +2779,21 @@ fn write_extended12_rgb_block_region(
             let dst_col = (output_x - output_rect.x) as usize;
             let dst_start = dst_row * stride + dst_col * 6;
             let dst = &mut out[dst_start..dst_start + 6];
-            dst[0..2].copy_from_slice(&r_pixels[src_index].to_le_bytes());
-            dst[2..4].copy_from_slice(&g_pixels[src_index].to_le_bytes());
-            dst[4..6].copy_from_slice(&b_pixels[src_index].to_le_bytes());
+            let (r, g, b) = match projection {
+                Extended12RgbProjection::Identity => (
+                    pixels[0][src_index],
+                    pixels[1][src_index],
+                    pixels[2][src_index],
+                ),
+                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(
+                    pixels[0][src_index],
+                    pixels[1][src_index],
+                    pixels[2][src_index],
+                ),
+            };
+            dst[0..2].copy_from_slice(&r.to_le_bytes());
+            dst[2..4].copy_from_slice(&g.to_le_bytes());
+            dst[4..6].copy_from_slice(&b.to_le_bytes());
         }
     }
 }
@@ -4090,12 +4149,19 @@ mod tests {
     }
 
     #[test]
-    fn decoder_new_rejects_extended12_with_not_implemented() {
+    fn decode_into_rejects_subsampled_extended12_ycbcr_with_not_implemented() {
         let mut bytes = minimal_baseline_jpeg();
         let p = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
         bytes[p + 1] = 0xC1;
         bytes[p + 4] = 12;
-        let err = Decoder::new(&bytes).unwrap_err();
+        let dec = Decoder::new(&bytes).expect("subsampled Extended12 YCbCr metadata should parse");
+        let stride = dec.info().dimensions.0 as usize * PixelFormat::Rgb16.bytes_per_pixel();
+        let mut out = vec![0u8; stride * dec.info().dimensions.1 as usize];
+
+        let err = dec
+            .decode_into(&mut out, stride, PixelFormat::Rgb16)
+            .unwrap_err();
+
         assert!(err.is_not_implemented());
     }
 

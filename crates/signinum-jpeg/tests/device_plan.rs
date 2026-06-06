@@ -7,9 +7,10 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
-    lossless_predictor_grayscale_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg,
+    cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
+    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -337,6 +338,46 @@ fn capability_report_marks_extended12_app14_rgb_rgb16_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_extended12_ycbcr444_rgb16_cpu_eligible() {
+    let input = extended_12bit_ycbcr_8x8_jpeg();
+    for op in [
+        JpegDecodeOp::Full,
+        JpegDecodeOp::Region(Rect {
+            x: 2,
+            y: 1,
+            w: 3,
+            h: 4,
+        }),
+        JpegDecodeOp::Scaled(Downscale::Half),
+        JpegDecodeOp::RegionScaled {
+            roi: Rect {
+                x: 1,
+                y: 1,
+                w: 6,
+                h: 6,
+            },
+            scale: Downscale::Half,
+        },
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op,
+                fmt: PixelFormat::Rgb16,
+            },
+        )
+        .expect("capability report should parse 12-bit SOF1 YCbCr metadata");
+
+        assert_eq!(report.info.sof_kind, SofKind::Extended12);
+        assert_eq!(report.info.bit_depth, 12);
+        assert_eq!(report.info.color_space, ColorSpace::YCbCr);
+        assert!(report.cpu.eligible, "op {op:?}");
+        assert!(!report.owned_cuda.eligible);
+        assert!(!report.metal_fast.eligible);
+    }
+}
+
+#[test]
 fn capability_report_marks_progressive12_gray16_and_rgb16_cpu_eligible() {
     let input = progressive_12bit_grayscale_8x8_jpeg();
     for fmt in [PixelFormat::Gray16, PixelFormat::Rgb16] {
@@ -406,6 +447,46 @@ fn capability_report_marks_progressive12_app14_rgb_rgb16_cpu_eligible() {
         assert_eq!(report.info.sof_kind, SofKind::Progressive12);
         assert_eq!(report.info.bit_depth, 12);
         assert_eq!(report.info.color_space, ColorSpace::Rgb);
+        assert!(report.cpu.eligible, "op {op:?}");
+        assert!(!report.owned_cuda.eligible);
+        assert!(!report.metal_fast.eligible);
+    }
+}
+
+#[test]
+fn capability_report_marks_progressive12_ycbcr444_rgb16_cpu_eligible() {
+    let input = progressive_12bit_ycbcr_8x8_jpeg();
+    for op in [
+        JpegDecodeOp::Full,
+        JpegDecodeOp::Region(Rect {
+            x: 2,
+            y: 1,
+            w: 3,
+            h: 4,
+        }),
+        JpegDecodeOp::Scaled(Downscale::Half),
+        JpegDecodeOp::RegionScaled {
+            roi: Rect {
+                x: 1,
+                y: 1,
+                w: 6,
+                h: 6,
+            },
+            scale: Downscale::Half,
+        },
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op,
+                fmt: PixelFormat::Rgb16,
+            },
+        )
+        .expect("capability report should parse 12-bit SOF2 YCbCr metadata");
+
+        assert_eq!(report.info.sof_kind, SofKind::Progressive12);
+        assert_eq!(report.info.bit_depth, 12);
+        assert_eq!(report.info.color_space, ColorSpace::YCbCr);
         assert!(report.cpu.eligible, "op {op:?}");
         assert!(!report.owned_cuda.eligible);
         assert!(!report.metal_fast.eligible);
