@@ -21,11 +21,11 @@ on a single visual smoke test.
   12-bit progressive grayscale `Gray16`/`Rgb16` coverage, and initial 12-bit
   APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` coverage, including
   restart-coded color streams, have landed. Initial lossless SOF3 16-bit
-  grayscale row streaming and 16-bit APP14 RGB `Rgb16` output have also
-  landed, but expanded four-component subsampled/malformed fixtures, other
-  12-bit subsampled color output, stronger non-constant 12-bit oracle fixtures,
-  and broader lossless SOF3 YCbCr plus other 16-bit color support must land CPU
-  parity fixtures and reference
+  grayscale row streaming, 16-bit APP14 RGB `Rgb16` output, and 8-bit YCbCr
+  4:4:4 `Rgb8` output have also landed, but expanded four-component
+  subsampled/malformed fixtures, other 12-bit subsampled color output, stronger
+  non-constant 12-bit oracle fixtures, and broader lossless SOF3 16-bit YCbCr
+  plus other 16-bit color support must land CPU parity fixtures and reference
   outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a

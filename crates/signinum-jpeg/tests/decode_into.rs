@@ -9,12 +9,14 @@ use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
     four_component_8x8_rgb, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
     lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
-    lossless_restart_predictor_rgb_3x3_jpeg, minimal_baseline_420_jpeg,
-    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
-    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
-    LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
+    lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_3x3_jpeg,
+    lossless_ycbcr_3x3_rgb8, minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
+    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
+    LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
     extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
@@ -1129,6 +1131,55 @@ fn decode_into_rgb8_accepts_restart_coded_lossless_app14_rgb() {
 }
 
 #[test]
+fn decode_into_rgb8_converts_lossless_ycbcr_common_predictors() {
+    let expected = lossless_ycbcr_3x3_rgb8();
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_ycbcr_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless predictor-{predictor} YCbCr JPEG must construct: {err}")
+        });
+        let (w, h) = dec.info().dimensions;
+        let stride = w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * h as usize];
+
+        let outcome = dec
+            .decode_into(&mut buf, stride, PixelFormat::Rgb8)
+            .unwrap_or_else(|err| {
+                panic!("lossless predictor-{predictor} YCbCr decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((w, h)));
+        assert_eq!(buf, expected, "predictor {predictor}");
+    }
+}
+
+#[test]
+fn decode_into_rgb8_converts_restart_coded_lossless_ycbcr() {
+    let expected = lossless_ycbcr_3x3_rgb8();
+    for predictor in 1..=7 {
+        let bytes = lossless_restart_predictor_ycbcr_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("restart-coded lossless predictor-{predictor} YCbCr JPEG must construct: {err}")
+        });
+        assert_eq!(dec.info().restart_interval, Some(3));
+        let (w, h) = dec.info().dimensions;
+        let stride = w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * h as usize];
+
+        let outcome = dec
+            .decode_into(&mut buf, stride, PixelFormat::Rgb8)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded lossless predictor-{predictor} YCbCr decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((w, h)));
+        assert_eq!(buf, expected, "predictor {predictor}");
+    }
+}
+
+#[test]
 fn decode_into_rgb16_accepts_lossless_app14_rgb16_common_predictors() {
     let expected = rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS);
     for predictor in 1..=7 {
@@ -1368,6 +1419,36 @@ fn decode_region_scaled_into_rgb8_projects_restart_coded_lossless_app14_rgb() {
     let outcome = dec
         .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb8, roi, Downscale::Half)
         .expect("restart-coded lossless APP14 RGB region-scaled decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    for (row, expected_row) in buf
+        .chunks_exact(stride)
+        .zip(expected.chunks_exact(scaled_roi.w as usize * 3))
+    {
+        assert_eq!(&row[..scaled_roi.w as usize * 3], expected_row);
+        assert_eq!(&row[scaled_roi.w as usize * 3..], &[0xaa; 3]);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgb8_projects_lossless_ycbcr() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let full = lossless_ycbcr_3x3_rgb8();
+    let expected = project_scaled_rgb(&full, 3, 3, scaled_roi, 2);
+    let bytes = lossless_predictor_ycbcr_3x3_jpeg(1);
+    let dec = Decoder::new(&bytes).expect("lossless YCbCr JPEG must construct");
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel() + 3;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb8, roi, Downscale::Half)
+        .expect("lossless YCbCr region-scaled decode must succeed");
 
     assert_eq!(outcome.decoded, roi);
     for (row, expected_row) in buf

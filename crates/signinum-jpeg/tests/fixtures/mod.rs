@@ -647,6 +647,11 @@ pub(crate) const LOSSLESS_RGB_16BIT_3X3_PIXELS: [u16; 27] = [
     49950,
 ];
 
+pub(crate) const LOSSLESS_YCBCR_3X3_PIXELS: [u8; 27] = [
+    100, 150, 200, 104, 145, 196, 110, 140, 190, 96, 155, 202, 102, 150, 198, 108, 144, 193, 92,
+    160, 205, 101, 153, 199, 116, 148, 194,
+];
+
 /// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
 pub(crate) fn lossless_predictor_grayscale_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_grayscale_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_3X3_PIXELS)
@@ -685,6 +690,20 @@ pub(crate) fn lossless_predictor_rgb_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
 /// A 3x3 16-bit SOF3 lossless APP14 RGB JPEG with row-boundary restart markers.
 pub(crate) fn lossless_restart_predictor_rgb_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_rgb_16bit_restart_jpeg(3, 3, predictor, 3, &LOSSLESS_RGB_16BIT_3X3_PIXELS)
+}
+
+/// A 3x3 8-bit SOF3 lossless YCbCr JPEG using predictor 1..=7.
+pub(crate) fn lossless_predictor_ycbcr_3x3_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_ycbcr_jpeg(3, 3, predictor, &LOSSLESS_YCBCR_3X3_PIXELS)
+}
+
+/// A 3x3 8-bit SOF3 lossless YCbCr JPEG with row-boundary restart markers.
+pub(crate) fn lossless_restart_predictor_ycbcr_3x3_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_ycbcr_restart_jpeg(3, 3, predictor, 3, &LOSSLESS_YCBCR_3X3_PIXELS)
+}
+
+pub(crate) fn lossless_ycbcr_3x3_rgb8() -> Vec<u8> {
+    ycbcr8_pixels_to_rgb8(&LOSSLESS_YCBCR_3X3_PIXELS)
 }
 
 fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
@@ -749,6 +768,65 @@ fn lossless_rgb_restart_jpeg(
         0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
         0x00,
     ]);
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+    bytes.extend_from_slice(&restart_interval.to_be_bytes());
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+    ]);
+    bytes.extend(lossless_rgb_entropy_with_restarts(
+        width,
+        predictor,
+        samples,
+        restart_interval,
+    ));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn lossless_ycbcr_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
+    assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+    ]);
+    bytes.extend(lossless_rgb_entropy(width, predictor, samples));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn lossless_ycbcr_restart_jpeg(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    restart_interval: u16,
+    samples: &[u8],
+) -> Vec<u8> {
+    assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
     bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1306,6 +1384,36 @@ fn lossless_predicted_rgb_value(
         7 => (ra + rb) >> 1,
         _ => 128,
     }
+}
+
+fn ycbcr8_pixels_to_rgb8(samples: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(samples.len());
+    for pixel in samples.chunks_exact(3) {
+        let (r, g, b) = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
+        out.extend_from_slice(&[r, g, b]);
+    }
+    out
+}
+
+fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+    const FIX_1_40200: i32 = 91_881;
+    const FIX_0_34414: i32 = 22_554;
+    const FIX_0_71414: i32 = 46_802;
+    const FIX_1_77200: i32 = 116_130;
+    const ROUND: i32 = 1 << 15;
+
+    let y = i32::from(y);
+    let cb_centered = i32::from(cb) - 128;
+    let cr_centered = i32::from(cr) - 128;
+    let r = y + ((FIX_1_40200 * cr_centered + ROUND) >> 16);
+    let g = y - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> 16);
+    let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
+
+    (
+        r.clamp(0, 255) as u8,
+        g.clamp(0, 255) as u8,
+        b.clamp(0, 255) as u8,
+    )
 }
 
 fn lossless_diff_category(diff: i32) -> u8 {

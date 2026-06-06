@@ -493,6 +493,7 @@ impl<'a> Decoder<'a> {
         let expected_components = match (info.color_space, info.bit_depth) {
             (ColorSpace::Grayscale, 8 | 16) => 1,
             (ColorSpace::Rgb, 8 | 16) => 3,
+            (ColorSpace::YCbCr, 8) => 3,
             _ => return Err(JpegError::NotImplemented { sof: info.sof_kind }),
         };
         if scan.components.len() != expected_components {
@@ -520,7 +521,8 @@ impl<'a> Decoder<'a> {
                     .ok_or(JpegError::MissingMarker {
                         marker: MarkerKind::Sof,
                     })?;
-            if info.color_space == ColorSpace::Rgb && (h != 1 || v != 1) {
+            if matches!(info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr) && (h != 1 || v != 1)
+            {
                 return Err(JpegError::NotImplemented { sof: info.sof_kind });
             }
             let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
@@ -924,12 +926,20 @@ impl<'a> Decoder<'a> {
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgb8_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self.decode_lossless_ycbcr8_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                        _ => self.decode_lossless_rgb8_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                    };
                 }
                 let mut writer = Rgb8Writer::new(out, stride, w);
                 self.decode_rgb_with_writer(
@@ -1363,8 +1373,12 @@ impl<'a> Decoder<'a> {
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_rgb8_region_scaled_into(out, stride, roi, downscale);
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self
+                            .decode_lossless_ycbcr8_region_scaled_into(out, stride, roi, downscale),
+                        _ => self
+                            .decode_lossless_rgb8_region_scaled_into(out, stride, roi, downscale),
+                    };
                 }
                 if fmt == OutputFormat::Rgb8
                     && downscale == DownscaleFactor::Full
@@ -2360,6 +2374,15 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_lossless_color8_components_into(out, stride, ColorSpace::Rgb)
+    }
+
+    fn decode_lossless_color8_components_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError> {
         let plan = self
             .lossless_plan
             .as_ref()
@@ -2371,7 +2394,7 @@ impl Decoder<'_> {
                 depth: plan.bit_depth,
             });
         }
-        if self.info.color_space != ColorSpace::Rgb {
+        if self.info.color_space != color_space {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -2446,6 +2469,17 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_lossless_ycbcr8_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let outcome =
+            self.decode_lossless_color8_components_into(out, stride, ColorSpace::YCbCr)?;
+        convert_ycbcr8_to_rgb8_in_place(out, stride, self.info.dimensions);
+        Ok(outcome)
+    }
+
     fn decode_lossless_rgb8_region_scaled_into(
         &self,
         out: &mut [u8],
@@ -2461,6 +2495,36 @@ impl Decoder<'_> {
         let full_stride = width as usize * 3;
         let mut full = allocate_output_buffer(full_stride * height as usize);
         let mut outcome = self.decode_lossless_rgb8_into(&mut full, full_stride)?;
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        copy_rgb8_scaled_rect(
+            &full,
+            (width, height),
+            output_rect,
+            downscale.denominator(),
+            out,
+            stride,
+        );
+        outcome.decoded = roi;
+        Ok(outcome)
+    }
+
+    fn decode_lossless_ycbcr8_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
+            return self.decode_lossless_ycbcr8_into(out, stride);
+        }
+
+        let (width, height) = self.info.dimensions;
+        let full_stride = width as usize * 3;
+        let mut full = allocate_output_buffer(full_stride * height as usize);
+        let mut outcome =
+            self.decode_lossless_color8_components_into(&mut full, full_stride, ColorSpace::YCbCr)?;
+        convert_ycbcr8_to_rgb8_in_place(&mut full, full_stride, self.info.dimensions);
         let output_rect = scaled_rect_covering(roi, downscale)?;
         copy_rgb8_scaled_rect(
             &full,
@@ -4613,6 +4677,18 @@ fn copy_rgb8_scaled_rect(
             let src = (source_y as usize * width as usize + source_x as usize) * 3;
             let dst = dst_row * stride + (output_x - output_rect.x) as usize * 3;
             out[dst..dst + 3].copy_from_slice(&full[src..src + 3]);
+        }
+    }
+}
+
+fn convert_ycbcr8_to_rgb8_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
+    let (width, height) = dimensions;
+    let row_bytes = width as usize * 3;
+    for y in 0..height as usize {
+        let row = &mut out[y * stride..y * stride + row_bytes];
+        for pixel in row.chunks_exact_mut(3) {
+            let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]);
+            pixel.copy_from_slice(&[r, g, b]);
         }
     }
 }
