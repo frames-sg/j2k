@@ -217,6 +217,29 @@ fn capability_report_marks_extended12_gray16_full_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_extended12_gray16_region_cpu_eligible() {
+    let input = grayscale_sof_jpeg(0xc1, 12);
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Region(Rect {
+                x: 2,
+                y: 1,
+                w: 3,
+                h: 4,
+            }),
+            fmt: PixelFormat::Gray16,
+        },
+    )
+    .expect("capability report should parse 12-bit SOF1 metadata");
+
+    assert_eq!(report.info.sof_kind, SofKind::Extended12);
+    assert!(report.cpu.eligible);
+    assert!(!report.owned_cuda.eligible);
+    assert!(!report.metal_fast.eligible);
+}
+
+#[test]
 fn capability_report_marks_lossless_common_predictor_gray8_full_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_predictor_grayscale_3x3_jpeg(predictor);

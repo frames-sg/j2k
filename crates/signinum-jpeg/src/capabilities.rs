@@ -147,7 +147,8 @@ impl JpegCapabilityReport {
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
         SofKind::Extended12
-            if request.op == JpegDecodeOp::Full && request.fmt == PixelFormat::Gray16 =>
+            if matches!(request.op, JpegDecodeOp::Full | JpegDecodeOp::Region(_))
+                && request.fmt == PixelFormat::Gray16 =>
         {
             if info.color_space == ColorSpace::Grayscale {
                 return JpegBackendEligibility::eligible();

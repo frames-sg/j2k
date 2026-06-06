@@ -176,6 +176,32 @@ fn decode_into_gray16_accepts_extended12_grayscale_samples() {
 }
 
 #[test]
+fn decode_region_into_gray16_crops_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let roi = Rect {
+        x: 2,
+        y: 1,
+        w: 3,
+        h: 4,
+    };
+    let stride = roi.w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
+    let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+    let outcome = dec
+        .decode_region_into(&mut buf, stride, PixelFormat::Gray16, roi)
+        .expect("12-bit grayscale ROI decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    for row in buf.chunks_exact(stride) {
+        for sample in row[..roi.w as usize * 2].chunks_exact(2) {
+            assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
+        }
+        assert_eq!(&row[roi.w as usize * 2..], &[0xaa; 4]);
+    }
+}
+
+#[test]
 fn decode_into_gray8_accepts_lossless_grayscale_common_predictors() {
     for predictor in 1..=7 {
         let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);

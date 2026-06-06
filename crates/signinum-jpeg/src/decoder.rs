@@ -1256,9 +1256,7 @@ impl<'a> Decoder<'a> {
                 let mut writer = CroppedWriter::new(base, scaled_roi, source_x0, source_width);
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
-            OutputFormat::Gray16 => Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            }),
+            OutputFormat::Gray16 => self.decode_extended12_gray16_region_into(out, stride, roi),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1985,6 +1983,15 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_gray16_region_into(out, stride, Rect::full(self.info.dimensions))
+    }
+
+    fn decode_extended12_gray16_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
         if self.info.sof_kind != SofKind::Extended12
             || self.info.color_space != ColorSpace::Grayscale
             || self.plan.components.len() != 1
@@ -1992,6 +1999,13 @@ impl Decoder<'_> {
         {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
+            });
+        }
+        if !roi.is_within(self.info.dimensions) {
+            return Err(JpegError::RectOutOfBounds {
+                rect: roi,
+                width: self.info.dimensions.0,
+                height: self.info.dimensions.1,
             });
         }
 
@@ -2025,33 +2039,56 @@ impl Decoder<'_> {
                         crate::idct::idct_islow_12bit(coeff.coefficients(), &mut pixels);
                     }
                 }
-                write_gray16_block(out, stride, width, height, mcu_x * 8, mcu_y * 8, &pixels);
+                write_gray16_block_region(
+                    out,
+                    stride,
+                    roi,
+                    (width, height),
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels,
+                );
             }
         }
 
         let scan_warnings = finish_scan(&mut br, true)?;
         Ok(DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
+            decoded: roi,
             warnings: merged_warnings(&self.warnings, scan_warnings),
         })
     }
 }
 
-fn write_gray16_block(
+fn write_gray16_block_region(
     out: &mut [u8],
     stride: usize,
-    width: u32,
-    height: u32,
-    x0: u32,
-    y0: u32,
+    roi: Rect,
+    dimensions: (u32, u32),
+    block_origin: (u32, u32),
     pixels: &[u16; 64],
 ) {
-    let copy_w = (width - x0).min(8) as usize;
-    let copy_h = (height - y0).min(8) as usize;
-    for row in 0..copy_h {
-        let dst_start = (y0 as usize + row) * stride + x0 as usize * 2;
+    let (width, height) = dimensions;
+    let (x0, y0) = block_origin;
+    let block_x1 = (x0 + 8).min(width);
+    let block_y1 = (y0 + 8).min(height);
+    let roi_x1 = roi.x + roi.w;
+    let roi_y1 = roi.y + roi.h;
+    let copy_x0 = x0.max(roi.x);
+    let copy_y0 = y0.max(roi.y);
+    let copy_x1 = block_x1.min(roi_x1);
+    let copy_y1 = block_y1.min(roi_y1);
+    if copy_x0 >= copy_x1 || copy_y0 >= copy_y1 {
+        return;
+    }
+
+    let copy_w = (copy_x1 - copy_x0) as usize;
+    for source_y in copy_y0..copy_y1 {
+        let src_row = (source_y - y0) as usize;
+        let src_col = (copy_x0 - x0) as usize;
+        let dst_row = (source_y - roi.y) as usize;
+        let dst_col = (copy_x0 - roi.x) as usize;
+        let dst_start = dst_row * stride + dst_col * 2;
         let dst = &mut out[dst_start..dst_start + copy_w * 2];
-        let src = &pixels[row * 8..row * 8 + copy_w];
+        let src = &pixels[src_row * 8 + src_col..src_row * 8 + src_col + copy_w];
         for (dst_sample, sample) in dst.chunks_exact_mut(2).zip(src.iter().copied()) {
             dst_sample.copy_from_slice(&sample.to_le_bytes());
         }
