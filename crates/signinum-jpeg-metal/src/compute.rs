@@ -2688,7 +2688,7 @@ fn auto_batch_work_is_large_enough(request: &batch::QueuedRequest, dimensions: (
 fn batched_fast_packets(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<BatchedFastPacket<'_>>>, Error> {
-    if requests.len() < 2 {
+    if requests.is_empty() {
         return Ok(None);
     }
 

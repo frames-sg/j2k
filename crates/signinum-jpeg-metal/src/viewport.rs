@@ -8,6 +8,8 @@ use signinum_jpeg::adapter::{
 use signinum_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
 use crate::{batch, routing, Error, Surface};
+#[cfg(target_os = "macos")]
+use crate::{Codec, MetalBackendSession, MetalBatchOutputBuffer};
 
 const VIEWPORT_TILE_EDGE: u32 = 96;
 const VIEWPORT_TILE_COLS: u32 = 6;
@@ -527,6 +529,44 @@ pub fn decode_viewport_region_hybrid(
     _workload: &ViewportWorkload,
 ) -> Result<Surface, Error> {
     Err(Error::MetalUnavailable)
+}
+
+#[cfg(target_os = "macos")]
+/// Decode a contiguous viewport workload into a reusable caller-owned Metal buffer.
+///
+/// This is the resident-output counterpart to `decode_viewport_region_hybrid`:
+/// it rejects non-contiguous workloads instead of compositing, resizes `output`
+/// to one RGB8 viewport slot, and returns a `MetalResidentDecode` surface
+/// backed by that caller-owned allocation.
+pub fn decode_viewport_region_to_resizable_metal_buffer_with_session(
+    input: &[u8],
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchOutputBuffer,
+    session: &MetalBackendSession,
+) -> Result<Surface, Error> {
+    let decoder = CpuDecoder::new(input)?;
+    validate_explicit_metal_viewport_request(&decoder, workload)?;
+    if !is_contiguous_viewport_workload(workload) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport output currently requires a contiguous viewport workload",
+        });
+    }
+
+    let mut surfaces =
+        Codec::decode_rgb8_region_scaled_batch_into_resizable_metal_buffer_with_session(
+            &[input],
+            viewport_source_bounds(workload),
+            workload.scale,
+            output,
+            session,
+        )?;
+    let Some(surface) = surfaces.pop() else {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport output did not produce a surface",
+        });
+    };
+    debug_assert!(surfaces.is_empty());
+    surface
 }
 
 #[cfg(not(target_os = "macos"))]

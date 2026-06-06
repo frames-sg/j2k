@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
+use signinum_core::{BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
 use signinum_jpeg::{Decoder, ScratchPool};
 use signinum_jpeg_metal::viewport::{
     choose_viewport_surface_strategy, compose_viewport_cpu, decode_viewport_region_cpu,
@@ -8,7 +8,12 @@ use signinum_jpeg_metal::viewport::{
     viewport_source_bounds, ViewportSurfaceStrategy, ViewportTile,
 };
 #[cfg(target_os = "macos")]
-use signinum_jpeg_metal::viewport::{compose_viewport_hybrid, decode_viewport_region_hybrid};
+use signinum_jpeg_metal::viewport::{
+    compose_viewport_hybrid, decode_viewport_region_hybrid,
+    decode_viewport_region_to_resizable_metal_buffer_with_session,
+};
+#[cfg(target_os = "macos")]
+use signinum_jpeg_metal::{MetalBackendSession, MetalBatchOutputBuffer, SurfaceResidency};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
@@ -354,6 +359,57 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
         .expect("hybrid viewport region");
 
     assert_eq!(actual.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    let expected =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+
+    let surface = decode_viewport_region_to_resizable_metal_buffer_with_session(
+        BASELINE_420,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport region");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
 }
 
 #[cfg(target_os = "macos")]
