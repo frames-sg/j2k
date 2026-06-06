@@ -167,9 +167,9 @@ the output shape from the full dimensions or source ROI. The
 helpers combine request parsing, output resize, and resident batch decode for
 viewport loops that reuse one caller-owned output across changing tile counts
 or output shapes. For contiguous viewport workloads,
-`decode_viewport_region_to_resizable_metal_buffer_with_session` exposes the
-same reusable-buffer behavior at the viewport layer and rejects non-contiguous
-composition shapes instead of materializing a CPU viewport.
+`decode_viewport_region_to_resizable_metal_{buffer,textures}_with_session`
+exposes the same reusable-output behavior at the viewport layer and rejects
+non-contiguous composition shapes instead of materializing a CPU viewport.
 
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.

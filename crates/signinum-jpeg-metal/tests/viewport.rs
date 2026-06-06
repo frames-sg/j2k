@@ -11,9 +11,12 @@ use signinum_jpeg_metal::viewport::{
 use signinum_jpeg_metal::viewport::{
     compose_viewport_hybrid, decode_viewport_region_hybrid,
     decode_viewport_region_to_resizable_metal_buffer_with_session,
+    decode_viewport_region_to_resizable_metal_textures_with_session,
 };
 #[cfg(target_os = "macos")]
-use signinum_jpeg_metal::{MetalBackendSession, MetalBatchOutputBuffer, SurfaceResidency};
+use signinum_jpeg_metal::{
+    MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput, SurfaceResidency,
+};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
@@ -77,6 +80,50 @@ fn quadrant_tiles() -> [ViewportTile; 4] {
             },
         },
     ]
+}
+
+#[cfg(target_os = "macos")]
+fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    for pixel in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(pixel);
+        rgba.push(u8::MAX);
+    }
+    rgba
+}
+
+#[cfg(target_os = "macos")]
+fn download_rgba8_texture(
+    session: &MetalBackendSession,
+    texture: &metal::TextureRef,
+    dimensions: (u32, u32),
+) -> Vec<u8> {
+    let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let byte_len = row_bytes * dimensions.1 as usize;
+    let buffer = session.device().new_buffer(
+        byte_len as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let queue = session.device().new_command_queue();
+    let command_buffer = queue.new_command_buffer();
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_texture_to_buffer(
+        texture,
+        0,
+        0,
+        metal::MTLOrigin { x: 0, y: 0, z: 0 },
+        metal::MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
+        &buffer,
+        0,
+        row_bytes as u64,
+        byte_len as u64,
+        metal::MTLBlitOption::None,
+    );
+    blit.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }
 }
 
 #[test]
@@ -410,6 +457,61 @@ fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
     assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
     assert_eq!(offset, 0);
     assert_eq!(surface.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn contiguous_viewport_region_resizes_reusable_metal_textures() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    let expected_rgb =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+    let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+    let tile = decode_viewport_region_to_resizable_metal_textures_with_session(
+        BASELINE_420,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport texture");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(tile.dimensions(), workload.viewport_dims);
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+    assert!(std::ptr::eq(
+        tile.texture(),
+        output.texture(0).expect("output texture")
+    ));
+    assert_eq!(
+        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        expected_rgba
+    );
 }
 
 #[cfg(target_os = "macos")]

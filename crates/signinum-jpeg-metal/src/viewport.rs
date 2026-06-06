@@ -9,7 +9,9 @@ use signinum_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
 use crate::{batch, routing, Error, Surface};
 #[cfg(target_os = "macos")]
-use crate::{Codec, MetalBackendSession, MetalBatchOutputBuffer};
+use crate::{
+    Codec, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput, MetalTextureTile,
+};
 
 const VIEWPORT_TILE_EDGE: u32 = 96;
 const VIEWPORT_TILE_COLS: u32 = 6;
@@ -567,6 +569,44 @@ pub fn decode_viewport_region_to_resizable_metal_buffer_with_session(
     };
     debug_assert!(surfaces.is_empty());
     surface
+}
+
+#[cfg(target_os = "macos")]
+/// Decode a contiguous viewport workload into reusable caller-owned Metal textures.
+///
+/// This is the texture-output counterpart to
+/// `decode_viewport_region_to_resizable_metal_buffer_with_session`: it rejects
+/// non-contiguous workloads, resizes `output` to one RGBA8 viewport slot, and
+/// returns a tile backed by that caller-owned texture.
+pub fn decode_viewport_region_to_resizable_metal_textures_with_session(
+    input: &[u8],
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchTextureOutput,
+    session: &MetalBackendSession,
+) -> Result<MetalTextureTile, Error> {
+    let decoder = CpuDecoder::new(input)?;
+    validate_explicit_metal_viewport_request(&decoder, workload)?;
+    if !is_contiguous_viewport_workload(workload) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport texture output currently requires a contiguous viewport workload",
+        });
+    }
+
+    let mut tiles =
+        Codec::decode_rgb8_region_scaled_batch_into_resizable_metal_textures_with_session(
+            &[input],
+            viewport_source_bounds(workload),
+            workload.scale,
+            output,
+            session,
+        )?;
+    let Some(tile) = tiles.pop() else {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport texture output did not produce a tile",
+        });
+    };
+    debug_assert!(tiles.is_empty());
+    tile
 }
 
 #[cfg(not(target_os = "macos"))]
