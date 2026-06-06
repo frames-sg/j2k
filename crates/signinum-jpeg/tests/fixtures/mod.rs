@@ -82,11 +82,51 @@ pub(crate) fn extended_12bit_rgb_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 16x8 12-bit extended sequential APP14 RGB JPEG with DRI=1 and RST0.
+pub(crate) fn extended_12bit_rgb_restart_16x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[
+        0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 8, 0, 16, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(restart_segmented_entropy(
+        2,
+        dc_category4_rgb_mcu_bits(false),
+    ));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// Reference Rgb16 pixels for [`extended_12bit_rgb_8x8_jpeg`].
 pub(crate) fn extended_12bit_rgb_8x8_rgb16() -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 * 8 * 6);
-    for _ in 0..64 {
-        for sample in [2064u16, 2072, 2032] {
+    repeat_rgb16_pixels(8, 8, [2064, 2072, 2032])
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_rgb_restart_16x8_jpeg`].
+pub(crate) fn extended_12bit_rgb_restart_16x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(16, 8, [2064, 2072, 2032])
+}
+
+fn repeat_rgb16_pixels(width: usize, height: usize, rgb: [u16; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(width * height * 6);
+    for _ in 0..width * height {
+        for sample in rgb {
             out.extend_from_slice(&sample.to_le_bytes());
         }
     }
@@ -116,15 +156,41 @@ pub(crate) fn extended_12bit_ycbcr_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 16x8 12-bit extended sequential YCbCr 4:4:4 JPEG with DRI=1 and RST0.
+pub(crate) fn extended_12bit_ycbcr_restart_16x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 8, 0, 16, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(restart_segmented_entropy(
+        2,
+        dc_category4_rgb_mcu_bits(false),
+    ));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// Reference Rgb16 pixels for [`extended_12bit_ycbcr_8x8_jpeg`].
 pub(crate) fn extended_12bit_ycbcr_8x8_rgb16() -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 * 8 * 6);
-    for _ in 0..64 {
-        for sample in [2042u16, 2067, 2107] {
-            out.extend_from_slice(&sample.to_le_bytes());
-        }
-    }
-    out
+    repeat_rgb16_pixels(8, 8, [2042, 2067, 2107])
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_ycbcr_restart_16x8_jpeg`].
+pub(crate) fn extended_12bit_ycbcr_restart_16x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(16, 8, [2042, 2067, 2107])
 }
 
 /// A 32x8 12-bit extended sequential YCbCr 4:2:2 JPEG.
@@ -150,6 +216,33 @@ pub(crate) fn extended_12bit_ycbcr_422_32x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 32x8 12-bit extended sequential YCbCr 4:2:2 JPEG with DRI=1.
+pub(crate) fn extended_12bit_ycbcr_422_restart_32x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 8, 0, 32, 3, 1, 0x21, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 21, 0x00, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(restart_segmented_entropy(
+        2,
+        dc_ycbcr422_uniform_mcu_bits(false),
+    ));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// Reference Rgb16 pixels for [`extended_12bit_ycbcr_422_32x8_jpeg`].
 pub(crate) fn extended_12bit_ycbcr_422_32x8_rgb16() -> Vec<u8> {
     let mut out = Vec::with_capacity(32 * 8 * 6);
@@ -160,6 +253,11 @@ pub(crate) fn extended_12bit_ycbcr_422_32x8_rgb16() -> Vec<u8> {
         append_rgb16_run(&mut out, 15, [2064, 2061, 2078]);
     }
     out
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_ycbcr_422_restart_32x8_jpeg`].
+pub(crate) fn extended_12bit_ycbcr_422_restart_32x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(32, 8, [2042, 2067, 2107])
 }
 
 /// A 32x32 12-bit extended sequential YCbCr 4:2:0 JPEG.
@@ -185,6 +283,33 @@ pub(crate) fn extended_12bit_ycbcr_420_32x32_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 32x32 12-bit extended sequential YCbCr 4:2:0 JPEG with DRI=1.
+pub(crate) fn extended_12bit_ycbcr_420_restart_32x32_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 32, 0, 32, 3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 21, 0x00, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(restart_segmented_entropy(
+        4,
+        dc_ycbcr420_uniform_mcu_bits(false),
+    ));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// Reference Rgb16 pixels for [`extended_12bit_ycbcr_420_32x32_jpeg`].
 pub(crate) fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
     let mut out = Vec::with_capacity(32 * 32 * 6);
@@ -199,6 +324,11 @@ pub(crate) fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
         }
     }
     out
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_ycbcr_420_restart_32x32_jpeg`].
+pub(crate) fn extended_12bit_ycbcr_420_restart_32x32_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(32, 32, [2042, 2067, 2107])
 }
 
 /// An 8x8 12-bit progressive grayscale JPEG with one DC-only scan.
@@ -302,22 +432,23 @@ pub(crate) fn progressive_12bit_ycbcr_420_32x32_jpeg() -> Vec<u8> {
 }
 
 fn dc_category4_rgb_entropy() -> Vec<u8> {
+    pack_entropy_bits(dc_category4_rgb_mcu_bits(false))
+}
+
+fn dc_category4_rgb_mcu_bits(progressive: bool) -> Vec<bool> {
     let mut bits = Vec::new();
     for magnitude in [0b1000, 0b1100, 0b0111] {
         push_bits(&mut bits, 0, 1);
         push_bits(&mut bits, magnitude, 4);
-        push_bits(&mut bits, 0, 1);
+        if !progressive {
+            push_bits(&mut bits, 0, 1);
+        }
     }
-    pack_entropy_bits(bits)
+    bits
 }
 
 fn dc_category4_rgb_progressive_entropy() -> Vec<u8> {
-    let mut bits = Vec::new();
-    for magnitude in [0b1000, 0b1100, 0b0111] {
-        push_bits(&mut bits, 0, 1);
-        push_bits(&mut bits, magnitude, 4);
-    }
-    pack_entropy_bits(bits)
+    pack_entropy_bits(dc_category4_rgb_mcu_bits(true))
 }
 
 fn dc_ycbcr422_entropy(progressive: bool) -> Vec<u8> {
@@ -346,6 +477,23 @@ fn dc_ycbcr422_entropy(progressive: bool) -> Vec<u8> {
     pack_entropy_bits(bits)
 }
 
+fn dc_ycbcr422_uniform_mcu_bits(progressive: bool) -> Vec<bool> {
+    let mut bits = Vec::new();
+    for magnitude in [Some(0b1000), None, Some(0b1100), Some(0b0111)] {
+        match magnitude {
+            Some(value) => {
+                push_bits(&mut bits, 1, 1);
+                push_bits(&mut bits, value, 4);
+            }
+            None => push_bits(&mut bits, 0, 1),
+        }
+        if !progressive {
+            push_bits(&mut bits, 0, 1);
+        }
+    }
+    bits
+}
+
 fn dc_ycbcr420_entropy(progressive: bool) -> Vec<u8> {
     let mut bits = Vec::new();
     let mcu_blocks = [
@@ -369,6 +517,34 @@ fn dc_ycbcr420_entropy(progressive: bool) -> Vec<u8> {
         }
     }
     pack_entropy_bits(bits)
+}
+
+fn dc_ycbcr420_uniform_mcu_bits(progressive: bool) -> Vec<bool> {
+    let mut bits = Vec::new();
+    for magnitude in [Some(0b1000), None, None, None, Some(0b1100), Some(0b0111)] {
+        match magnitude {
+            Some(value) => {
+                push_bits(&mut bits, 1, 1);
+                push_bits(&mut bits, value, 4);
+            }
+            None => push_bits(&mut bits, 0, 1),
+        }
+        if !progressive {
+            push_bits(&mut bits, 0, 1);
+        }
+    }
+    bits
+}
+
+fn restart_segmented_entropy(mcus: usize, mcu_bits: Vec<bool>) -> Vec<u8> {
+    let mut entropy = Vec::new();
+    for mcu in 0..mcus {
+        entropy.extend(pack_entropy_bits(mcu_bits.clone()));
+        if mcu + 1 != mcus {
+            entropy.extend_from_slice(&[0xff, 0xd0 | ((mcu as u8) & 0x07)]);
+        }
+    }
+    entropy
 }
 
 fn append_rgb16_run(out: &mut Vec<u8>, len: usize, rgb: [u16; 3]) {

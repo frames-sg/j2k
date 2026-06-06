@@ -28,11 +28,10 @@ unsupported errors until a separate entropy and conformance plan exists.
   region-scaled CPU decode to `Gray16` or expanded `Rgb16`, including
   restart-coded grayscale streams; initial 12-bit progressive grayscale
   full-image/ROI/scaled/region-scaled CPU decode to `Gray16` or expanded
-  `Rgb16`; plus
-  initial 12-bit APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/
-  ROI/scaled/region-scaled CPU decode to `Rgb16`; other 12-bit subsampled
-  color support, 12-bit color restart intervals, and stronger non-constant
-  12-bit oracle fixtures remain open
+  `Rgb16`; plus initial 12-bit extended sequential APP14 RGB 4:4:4 and YCbCr
+  4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled CPU decode to
+  `Rgb16`, including restart-coded color streams; other 12-bit subsampled color
+  support and stronger non-constant 12-bit oracle fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
@@ -238,25 +237,27 @@ Implementation requirements:
   Status: initial scalar full-image/ROI/scaled/region-scaled grayscale
   `Gray16`/`Rgb16`, including restart-coded grayscale streams, plus APP14 RGB
   4:4:4 `Rgb16` and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` paths have landed for
-  SOF1 12-bit streams. Color restart intervals remain open.
+  SOF1 12-bit streams, including restart-coded streams.
 - Prefer `Gray16` and `Rgb16` output for native precision.
   Status: `Gray16` and expanded grayscale `Rgb16` are available for the initial
-  grayscale path, including restart-coded streams, and direct APP14 RGB 4:4:4 plus YCbCr
-  4:4:4/4:2:2/4:2:0 `Rgb16` is available for the initial color path; other
-  12-bit subsampled color and 12-bit color restart intervals remain open.
+  grayscale path, including restart-coded streams, and direct APP14 RGB 4:4:4
+  plus YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` is available for the initial color
+  path, including restart-coded color streams; other 12-bit subsampled color
+  remains open.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
   Status: 12-bit-to-8-bit output stays unsupported.
 - Add ROI, scaled, region-scaled, and batch coverage after full-image parity.
   Status: ROI, scaled, and region-scaled output have landed for the initial
   grayscale path, including restart-coded grayscale streams, and for APP14 RGB
-  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 paths; session-batch coverage has landed
-  for the initial color paths.
+  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 paths, including restart-coded color
+  streams; session-batch coverage has landed for the initial color paths.
 - Update `JpegOutputBuffer` and capability reporting for 16-bit output formats.
   Status: capability reporting marks full-image/ROI/scaled/region-scaled
   `Extended12` grayscale `Gray16`/`Rgb16`, including restart-coded grayscale
-  streams, APP14 RGB 4:4:4 `Rgb16`, and
-  YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` CPU-eligible.
+  streams, APP14 RGB 4:4:4 `Rgb16`, including restart-coded APP14 RGB streams,
+  and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`, including restart-coded YCbCr streams,
+  CPU-eligible.
 
 Metal follow-up candidate:
 
@@ -269,9 +270,10 @@ Exit criteria:
 - 12-bit extended sequential CPU decode matches the reference oracle for
   full-image and API-shaped outputs.
   Status: partially met for the committed all-zero grayscale fixture, the
-  restart-coded all-zero grayscale fixture, and channel-distinct APP14 RGB 4:4:4
-  and YCbCr 4:4:4/4:2:2/4:2:0 fixtures covering full-image/ROI/scaled/
-  region-scaled `Gray16`/`Rgb16` output as applicable.
+  restart-coded all-zero grayscale fixture, channel-distinct APP14 RGB 4:4:4
+  and YCbCr 4:4:4/4:2:2/4:2:0 fixtures, and restart-coded APP14 RGB/YCbCr
+  color fixtures covering full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16`
+  output as applicable.
 - 8-bit paths do not share precision state that can corrupt current behavior.
 
 ## Phase B2: 12-Bit Progressive CPU Decode

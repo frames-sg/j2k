@@ -15,6 +15,7 @@ mod fixtures;
 use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
     extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
+    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_420_restart_32x32_rgb16,
     extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_422_32x8_rgb16,
     extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16, four_component_8x8_rgb,
     progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
@@ -467,6 +468,36 @@ fn session_batch_decode_extended12_ycbcr420_matches_single_tile_decode() {
         session
             .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
             .expect("12-bit YCbCr 4:2:0 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_extended12_restart_ycbcr420_matches_single_tile_decode() {
+    let bytes = extended_12bit_ycbcr_420_restart_32x32_jpeg();
+    let expected = extended_12bit_ycbcr_420_restart_32x32_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit restart YCbCr 4:2:0 session batch decode")
     };
 
     assert_eq!(outcomes.len(), 2);

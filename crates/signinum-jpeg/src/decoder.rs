@@ -3022,13 +3022,6 @@ impl Decoder<'_> {
             });
         }
         if matches!(output, Extended12Output::Rgb16) {
-            if self.plan.restart_interval.is_some()
-                && self.info.color_space != ColorSpace::Grayscale
-            {
-                return Err(JpegError::NotImplemented {
-                    sof: self.info.sof_kind,
-                });
-            }
             match self.info.color_space {
                 ColorSpace::Rgb => {
                     return self.decode_extended12_color444_region_into(
@@ -3146,6 +3139,10 @@ impl Decoder<'_> {
         let mut coeffs: [CoefficientBlock; 3] =
             core::array::from_fn(|_| CoefficientBlock::default());
         let mut pixels = [[0u16; 64]; 3];
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let mut mcus_since_restart = 0u32;
+        let mut expected_rst = 0u8;
+        let total_mcus = mcu_cols * mcu_rows;
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -3155,6 +3152,17 @@ impl Decoder<'_> {
 
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart > 0 && mcus_since_restart == restart {
+                    consume_extended12_restart(
+                        &mut br,
+                        current_mcu,
+                        total_mcus,
+                        &mut expected_rst,
+                    )?;
+                    prev_dc.fill(0);
+                    mcus_since_restart = 0;
+                }
                 for component in &self.plan.components {
                     let output_index = component.output_index;
                     decode_extended12_block_pixels(
@@ -3173,6 +3181,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
+                mcus_since_restart += 1;
             }
         }
 
@@ -3312,7 +3321,7 @@ fn decode_extended12_color_planes(
     scan_bytes: &[u8],
     sof: SofKind,
 ) -> Result<([Extended12Plane; 3], Vec<Warning>), JpegError> {
-    if plan.components.len() != 3 || plan.restart_interval.is_some() {
+    if plan.components.len() != 3 {
         return Err(JpegError::NotImplemented { sof });
     }
     let mut planes = extended12_planes_for_sequential_plan(plan, sof)?;
@@ -3328,9 +3337,19 @@ fn decode_extended12_color_planes(
         .dimensions
         .1
         .div_ceil(u32::from(plan.sampling.max_v) * 8);
+    let restart = u32::from(plan.restart_interval.unwrap_or(0));
+    let mut mcus_since_restart = 0u32;
+    let mut expected_rst = 0u8;
+    let total_mcus = mcu_cols * mcu_rows;
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcu_cols {
+            let current_mcu = mcu_y * mcu_cols + mcu_x;
+            if restart > 0 && mcus_since_restart == restart {
+                consume_extended12_restart(&mut br, current_mcu, total_mcus, &mut expected_rst)?;
+                prev_dc.fill(0);
+                mcus_since_restart = 0;
+            }
             for component in &plan.components {
                 let output_index = component.output_index;
                 if output_index > 2 {
@@ -3354,6 +3373,7 @@ fn decode_extended12_color_planes(
                     }
                 }
             }
+            mcus_since_restart += 1;
         }
     }
 

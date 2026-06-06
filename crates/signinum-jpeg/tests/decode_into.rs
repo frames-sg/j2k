@@ -17,11 +17,16 @@ use fixtures::{
     LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
-    extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
-    extended_12bit_ycbcr_420_32x32_rgb16, extended_12bit_ycbcr_422_32x8_jpeg,
-    extended_12bit_ycbcr_422_32x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
-    extended_12bit_ycbcr_8x8_rgb16, progressive_12bit_ycbcr_420_32x32_jpeg,
-    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg,
+    extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
+    extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_rgb_restart_16x8_rgb16,
+    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
+    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_420_restart_32x32_rgb16,
+    extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_422_32x8_rgb16,
+    extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_422_restart_32x8_rgb16,
+    extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16,
+    extended_12bit_ycbcr_restart_16x8_jpeg, extended_12bit_ycbcr_restart_16x8_rgb16,
+    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg,
 };
 
 #[test]
@@ -742,6 +747,23 @@ fn decode_into_rgb16_accepts_extended12_app14_rgb_samples() {
 }
 
 #[test]
+fn decode_into_rgb16_accepts_extended12_restart_app14_rgb_samples() {
+    let bytes = extended_12bit_rgb_restart_16x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended restart APP14 RGB JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit restart APP14 RGB decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(buf, extended_12bit_rgb_restart_16x8_rgb16());
+}
+
+#[test]
 fn decode_region_scaled_into_rgb16_projects_extended12_app14_rgb_samples() {
     let bytes = extended_12bit_rgb_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended APP14 RGB JPEG must construct");
@@ -773,6 +795,31 @@ fn decode_region_scaled_into_rgb16_projects_extended12_app14_rgb_samples() {
 }
 
 #[test]
+fn decode_region_scaled_into_rgb16_projects_extended12_restart_app14_rgb_samples() {
+    let bytes = extended_12bit_rgb_restart_16x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended restart APP14 RGB JPEG must construct");
+    let roi = Rect {
+        x: 2,
+        y: 1,
+        w: 12,
+        h: 6,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+    let full = extended_12bit_rgb_restart_16x8_rgb16();
+    let expected_pixels = expected_scaled_rgb16_pixels(&full, 16, roi, 2);
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
+        .expect("12-bit restart APP14 RGB region-scaled decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
+    assert_eq!(outcome.decoded, roi);
+    assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
+}
+
+#[test]
 fn decode_into_rgb16_converts_extended12_ycbcr444_samples() {
     let bytes = extended_12bit_ycbcr_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended YCbCr JPEG must construct");
@@ -786,6 +833,23 @@ fn decode_into_rgb16_converts_extended12_ycbcr444_samples() {
 
     assert_eq!(outcome.decoded, Rect::full((w, h)));
     assert_eq!(buf, extended_12bit_ycbcr_8x8_rgb16());
+}
+
+#[test]
+fn decode_into_rgb16_converts_extended12_restart_ycbcr444_samples() {
+    let bytes = extended_12bit_ycbcr_restart_16x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended restart YCbCr JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit restart YCbCr Rgb16 decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(buf, extended_12bit_ycbcr_restart_16x8_rgb16());
 }
 
 #[test]
@@ -836,6 +900,24 @@ fn decode_into_rgb16_converts_extended12_ycbcr422_samples() {
 }
 
 #[test]
+fn decode_into_rgb16_converts_extended12_restart_ycbcr422_samples() {
+    let bytes = extended_12bit_ycbcr_422_restart_32x8_jpeg();
+    let dec =
+        Decoder::new(&bytes).expect("12-bit extended restart YCbCr 4:2:2 JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit restart YCbCr 4:2:2 Rgb16 decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(buf, extended_12bit_ycbcr_422_restart_32x8_rgb16());
+}
+
+#[test]
 fn decode_region_scaled_into_rgb16_converts_extended12_ycbcr422_samples() {
     let bytes = extended_12bit_ycbcr_422_32x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended YCbCr 4:2:2 JPEG must construct");
@@ -876,6 +958,28 @@ fn decode_into_rgb16_converts_extended12_ycbcr420_samples() {
 }
 
 #[test]
+fn decode_into_rgb16_converts_extended12_restart_ycbcr420_samples() {
+    let bytes = extended_12bit_ycbcr_420_restart_32x32_jpeg();
+    let dec =
+        Decoder::new(&bytes).expect("12-bit extended restart YCbCr 4:2:0 JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit restart YCbCr 4:2:0 Rgb16 decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_rgb16_image_eq(
+        &buf,
+        &extended_12bit_ycbcr_420_restart_32x32_rgb16(),
+        w as usize,
+    );
+}
+
+#[test]
 fn decode_region_scaled_into_rgb16_converts_extended12_ycbcr420_samples() {
     let bytes = extended_12bit_ycbcr_420_32x32_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended YCbCr 4:2:0 JPEG must construct");
@@ -895,6 +999,32 @@ fn decode_region_scaled_into_rgb16_converts_extended12_ycbcr420_samples() {
         .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
         .expect("12-bit YCbCr 4:2:0 region-scaled Rgb16 decode must succeed");
 
+    assert_eq!(outcome.decoded, roi);
+    assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
+}
+
+#[test]
+fn decode_region_scaled_into_rgb16_converts_extended12_restart_ycbcr420_samples() {
+    let bytes = extended_12bit_ycbcr_420_restart_32x32_jpeg();
+    let dec =
+        Decoder::new(&bytes).expect("12-bit extended restart YCbCr 4:2:0 JPEG must construct");
+    let roi = Rect {
+        x: 13,
+        y: 14,
+        w: 10,
+        h: 10,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+    let full = extended_12bit_ycbcr_420_restart_32x32_rgb16();
+    let expected_pixels = expected_scaled_rgb16_pixels(&full, 32, roi, 2);
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
+        .expect("12-bit restart YCbCr 4:2:0 region-scaled Rgb16 decode must succeed");
+
+    assert_eq!(dec.info().restart_interval, Some(1));
     assert_eq!(outcome.decoded, roi);
     assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
 }

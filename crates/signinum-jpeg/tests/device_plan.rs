@@ -8,8 +8,10 @@ use signinum_jpeg::{
 mod fixtures;
 use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
-    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_422_32x8_jpeg,
-    extended_12bit_ycbcr_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
+    extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
+    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_422_32x8_jpeg,
+    extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
+    extended_12bit_ycbcr_restart_16x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
     lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
     lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_3x3_jpeg,
@@ -510,6 +512,81 @@ fn capability_report_marks_extended12_ycbcr420_rgb16_cpu_eligible() {
         assert!(report.cpu.eligible, "op {op:?}");
         assert!(!report.owned_cuda.eligible);
         assert!(!report.metal_fast.eligible);
+    }
+}
+
+#[test]
+fn capability_report_marks_extended12_color_restart_rgb16_cpu_eligible() {
+    for (name, input, expected_color, expected_dimensions, expected_sampling) in [
+        (
+            "APP14 RGB 4:4:4",
+            extended_12bit_rgb_restart_16x8_jpeg(),
+            ColorSpace::Rgb,
+            (16, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:4:4",
+            extended_12bit_ycbcr_restart_16x8_jpeg(),
+            ColorSpace::YCbCr,
+            (16, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:2:2",
+            extended_12bit_ycbcr_422_restart_32x8_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 8),
+            (2, 1),
+        ),
+        (
+            "YCbCr 4:2:0",
+            extended_12bit_ycbcr_420_restart_32x32_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 32),
+            (2, 2),
+        ),
+    ] {
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: expected_dimensions.0 / 2,
+                h: expected_dimensions.1 / 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: expected_dimensions.0 / 2,
+                    h: expected_dimensions.1 / 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgb16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!("capability report should parse 12-bit restart {name} metadata: {err}")
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Extended12, "{name}");
+            assert_eq!(report.info.restart_interval, Some(1), "{name}");
+            assert_eq!(report.info.dimensions, expected_dimensions, "{name}");
+            assert_eq!(report.info.color_space, expected_color, "{name}");
+            assert_eq!(report.info.sampling.max_h, expected_sampling.0, "{name}");
+            assert_eq!(report.info.sampling.max_v, expected_sampling.1, "{name}");
+            assert!(report.cpu.eligible, "{name} op {op:?}");
+            assert!(!report.owned_cuda.eligible, "{name}");
+            assert!(!report.metal_fast.eligible, "{name}");
+        }
     }
 }
 

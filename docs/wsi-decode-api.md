@@ -44,10 +44,10 @@ full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded `Rgb16` is
 available, including restart-coded grayscale streams. Initial 12-bit
 progressive grayscale full-image/ROI/scaled/region-scaled decode to `Gray16` or
 expanded `Rgb16` is available, and initial 12-bit APP14 RGB 4:4:4 plus YCbCr
-4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available. Other 12-bit subsampled
-color, 12-bit color restart intervals, stronger non-constant 12-bit oracle
-fixtures, expanded four-component subsampled/malformed fixture coverage, and
-lossless SOF3 YCbCr/16-bit color plus 16-bit row output remain structured
+4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available, including restart-coded
+color streams. Other 12-bit subsampled color, stronger non-constant 12-bit
+oracle fixtures, expanded four-component subsampled/malformed fixture coverage,
+and lossless SOF3 YCbCr/16-bit color plus 16-bit row output remain structured
 unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
@@ -180,10 +180,9 @@ backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
 CMYK/YCCK subsampled/malformed coverage, other 12-bit subsampled color support,
-12-bit color restart intervals, stronger non-constant 12-bit oracle fixtures,
-and broader SOF3 YCbCr/16-bit color plus
-16-bit row CPU parity must land before any Metal acceleration for those classes
-is promoted.
+stronger non-constant 12-bit oracle fixtures, and broader SOF3 YCbCr/16-bit
+color plus 16-bit row CPU parity must land before any Metal acceleration for
+those classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable
