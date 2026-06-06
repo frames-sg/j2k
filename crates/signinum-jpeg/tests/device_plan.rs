@@ -10,9 +10,11 @@ use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
     extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
     lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
-    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
-    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
-    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_restart_predictor_grayscale_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
+    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
+    ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -800,6 +802,54 @@ fn capability_report_marks_lossless_16bit_gray16_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_restart_coded_lossless_grayscale_cpu_eligible() {
+    for predictor in 1..=7 {
+        let cases = [
+            (
+                lossless_restart_predictor_grayscale_3x3_jpeg(predictor),
+                PixelFormat::Gray8,
+                8,
+            ),
+            (
+                lossless_restart_predictor_grayscale_16bit_3x3_jpeg(predictor),
+                PixelFormat::Gray16,
+                16,
+            ),
+        ];
+
+        for (input, fmt, bit_depth) in cases {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op: JpegDecodeOp::RegionScaled {
+                        roi: Rect {
+                            x: 1,
+                            y: 1,
+                            w: 2,
+                            h: 2,
+                        },
+                        scale: Downscale::Half,
+                    },
+                    fmt,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse restart-coded SOF3 predictor-{predictor} grayscale metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, bit_depth);
+            assert_eq!(report.info.restart_interval, Some(3));
+            assert!(report.cpu.eligible, "predictor {predictor}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
 fn capability_report_rejects_unsupported_lossless_predictor_explicitly() {
     let input = lossless_predictor_grayscale_3x3_jpeg(8);
     let err = JpegCapabilityReport::inspect(
@@ -819,7 +869,6 @@ fn capability_report_rejects_unsupported_lossless_predictor_explicitly() {
 
 #[test]
 fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallback() {
-    let restart_coded = insert_restart_interval(lossless_predictor_grayscale_3x3_jpeg(1), 1);
     let mut invalid_scan_params = lossless_predictor_grayscale_3x3_jpeg(1);
     let sos = invalid_scan_params
         .windows(2)
@@ -827,23 +876,21 @@ fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallb
         .expect("fixture has SOS");
     invalid_scan_params[sos + 8] = 1;
 
-    for input in [restart_coded, invalid_scan_params] {
-        let err = JpegCapabilityReport::inspect(
-            &input,
-            JpegCapabilityRequest {
-                op: JpegDecodeOp::Full,
-                fmt: PixelFormat::Gray8,
-            },
-        )
-        .expect_err("unsupported SOF3 scan shape should not infer eligibility from parsed info");
+    let err = JpegCapabilityReport::inspect(
+        &invalid_scan_params,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Gray8,
+        },
+    )
+    .expect_err("unsupported SOF3 scan shape should not infer eligibility from parsed info");
 
-        assert!(matches!(
-            err,
-            JpegError::NotImplemented {
-                sof: SofKind::Lossless
-            }
-        ));
-    }
+    assert!(matches!(
+        err,
+        JpegError::NotImplemented {
+            sof: SofKind::Lossless
+        }
+    ));
 }
 
 #[test]

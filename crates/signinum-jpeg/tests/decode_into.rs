@@ -8,9 +8,11 @@ mod fixtures;
 use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg,
     lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
-    minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
-    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_restart_predictor_grayscale_3x3_jpeg, minimal_baseline_420_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
+    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+    LOSSLESS_GRAYSCALE_3X3_PIXELS,
 };
 use fixtures::{
     extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
@@ -840,6 +842,32 @@ fn decode_into_gray8_accepts_lossless_grayscale_common_predictors() {
 }
 
 #[test]
+fn decode_into_gray8_accepts_restart_coded_lossless_grayscale() {
+    for predictor in 1..=7 {
+        let bytes = lossless_restart_predictor_grayscale_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!(
+                "restart-coded lossless predictor-{predictor} grayscale JPEG must construct: {err}"
+            )
+        });
+        assert_eq!(dec.info().restart_interval, Some(3));
+        let (w, h) = dec.info().dimensions;
+        let mut buf = vec![0u8; (w * h) as usize];
+
+        let outcome = dec
+            .decode_into(&mut buf, w as usize, PixelFormat::Gray8)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded lossless predictor-{predictor} grayscale decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((w, h)));
+        assert_eq!(buf, LOSSLESS_GRAYSCALE_3X3_PIXELS, "predictor {predictor}");
+    }
+}
+
+#[test]
 fn decode_region_into_gray8_crops_lossless_grayscale_common_predictors() {
     let roi = Rect {
         x: 1,
@@ -953,6 +981,35 @@ fn decode_region_scaled_into_gray8_projects_lossless_grayscale_common_predictors
 }
 
 #[test]
+fn decode_region_scaled_into_gray8_projects_restart_coded_lossless_grayscale() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let expected = project_scaled_gray(&LOSSLESS_GRAYSCALE_3X3_PIXELS, 3, 3, scaled_roi, 2);
+    let bytes = lossless_restart_predictor_grayscale_3x3_jpeg(1);
+    let dec = Decoder::new(&bytes).expect("restart-coded lossless grayscale JPEG must construct");
+    let stride = scaled_roi.w as usize + 2;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Gray8, roi, Downscale::Half)
+        .expect("restart-coded lossless grayscale region-scaled decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    for (row, expected_row) in buf
+        .chunks_exact(stride)
+        .zip(expected.chunks_exact(scaled_roi.w as usize))
+    {
+        assert_eq!(&row[..scaled_roi.w as usize], expected_row);
+        assert_eq!(&row[scaled_roi.w as usize..], &[0xaa; 2]);
+    }
+}
+
+#[test]
 fn decode_into_gray16_accepts_lossless_16bit_grayscale_common_predictors() {
     for predictor in 1..=7 {
         let bytes = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
@@ -967,6 +1024,39 @@ fn decode_into_gray16_accepts_lossless_16bit_grayscale_common_predictors() {
             .decode_into(&mut buf, stride, PixelFormat::Gray16)
             .unwrap_or_else(|err| {
                 panic!("lossless 16-bit predictor-{predictor} Gray16 decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((w, h)));
+        assert_gray16_samples(
+            &buf,
+            stride,
+            w,
+            &LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+            predictor,
+        );
+    }
+}
+
+#[test]
+fn decode_into_gray16_accepts_restart_coded_lossless_grayscale() {
+    for predictor in 1..=7 {
+        let bytes = lossless_restart_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!(
+                "restart-coded 16-bit lossless predictor-{predictor} grayscale JPEG must construct: {err}"
+            )
+        });
+        assert_eq!(dec.info().restart_interval, Some(3));
+        let (w, h) = dec.info().dimensions;
+        let stride = w as usize * PixelFormat::Gray16.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * h as usize];
+
+        let outcome = dec
+            .decode_into(&mut buf, stride, PixelFormat::Gray16)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded 16-bit lossless predictor-{predictor} Gray16 decode must succeed: {err}"
+                )
             });
 
         assert_eq!(outcome.decoded, Rect::full((w, h)));

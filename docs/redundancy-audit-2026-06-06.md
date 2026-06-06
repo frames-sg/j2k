@@ -67,14 +67,16 @@ Subsystem: CPU/native JPEG, current dirty worktree.
 
 Status: addressed in the current SOF3 follow-up by removing lossless planning
 failures from parsed-`Info` fallback reporting and adding capability tests for
-predictors 1-7 plus explicit predictor-8, restart, and scan-parameter rejection.
+predictors 1-7 plus explicit predictor-8 and scan-parameter rejection. The
+restart-coded grayscale follow-up now adds positive SOF3 restart capability
+coverage for predictors 1-7.
 
 Evidence:
 
 - `JpegCapabilityReport::inspect` falls back to reporting from parsed `Info` for `UnsupportedPredictor` in `crates/signinum-jpeg/src/capabilities.rs:97` and `crates/signinum-jpeg/src/capabilities.rs:295`.
 - `cpu_eligibility` marks full `Gray8` SOF3 as eligible from `Info` only in `crates/signinum-jpeg/src/capabilities.rs:147`.
-- `build_lossless_plan` rejects unsupported predictor, restart interval, scan count, component count, and scan params in `crates/signinum-jpeg/src/decoder.rs:464`.
-- Existing positive capability test only covers predictor 1 in `crates/signinum-jpeg/tests/device_plan.rs:215`.
+- `build_lossless_plan` rejects unsupported predictor, scan count, component count, and invalid scan params in `crates/signinum-jpeg/src/decoder.rs:464`; restart-coded grayscale SOF3 now reaches decode.
+- Positive capability tests cover grayscale predictors 1-7, including restart-coded grayscale SOF3.
 
 Confidence: High.
 
@@ -85,7 +87,7 @@ Proposed consolidation: Introduce one shared lossless-support predicate or carry
 Validation if refactored:
 
 - Add capability tests for SOF3 predictor other than 1.
-- Add capability tests for SOF3 with restart interval.
+- Add capability tests for SOF3 with restart interval. Done for grayscale predictors 1-7.
 - Add capability tests for invalid SOF3 scan params such as `Se`, `Ah`, and `Al`.
 - Run focused JPEG capability/decode tests before merging the current JPEG work.
 

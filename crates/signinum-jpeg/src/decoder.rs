@@ -481,7 +481,7 @@ impl<'a> Decoder<'a> {
         if !matches!(info.bit_depth, 8 | 16) || info.color_space != ColorSpace::Grayscale {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        if header.scan_count != 1 || header.restart_interval.is_some() {
+        if header.scan_count != 1 {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
@@ -2087,9 +2087,27 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let total_samples = width.saturating_mul(height);
+        let mut samples_since_restart = 0u32;
+        let mut expected_rst = 0u8;
         for y in 0..height as usize {
             for x in 0..width as usize {
-                let predictor = lossless_predictor_value(plan.predictor, out, stride, x, y);
+                let sample_index = y as u32 * width + x as u32;
+                if restart > 0 && samples_since_restart == restart {
+                    consume_lossless_restart(
+                        &mut br,
+                        sample_index,
+                        total_samples,
+                        &mut expected_rst,
+                    )?;
+                    samples_since_restart = 0;
+                }
+                let predictor = if restart > 0 && samples_since_restart == 0 {
+                    128
+                } else {
+                    lossless_predictor_value(plan.predictor, out, stride, x, y)
+                };
                 let diff = plan.dc_table.decode_fast_dc(&mut br)?;
                 let sample = predictor + diff;
                 if !(0..=255).contains(&sample) {
@@ -2099,6 +2117,7 @@ impl Decoder<'_> {
                     });
                 }
                 out[y * stride + x] = sample as u8;
+                samples_since_restart += 1;
             }
         }
 
@@ -2162,9 +2181,27 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let total_samples = width.saturating_mul(height);
+        let mut samples_since_restart = 0u32;
+        let mut expected_rst = 0u8;
         for y in 0..height as usize {
             for x in 0..width as usize {
-                let predictor = lossless_predictor_value_u16(plan.predictor, out, stride, x, y);
+                let sample_index = y as u32 * width + x as u32;
+                if restart > 0 && samples_since_restart == restart {
+                    consume_lossless_restart(
+                        &mut br,
+                        sample_index,
+                        total_samples,
+                        &mut expected_rst,
+                    )?;
+                    samples_since_restart = 0;
+                }
+                let predictor = if restart > 0 && samples_since_restart == 0 {
+                    32768
+                } else {
+                    lossless_predictor_value_u16(plan.predictor, out, stride, x, y)
+                };
                 let diff = plan.dc_table.decode_fast_dc(&mut br)?;
                 let sample = predictor + diff;
                 if !(0..=u16::MAX as i32).contains(&sample) {
@@ -2175,6 +2212,7 @@ impl Decoder<'_> {
                 }
                 let offset = y * stride + x * 2;
                 out[offset..offset + 2].copy_from_slice(&(sample as u16).to_le_bytes());
+                samples_since_restart += 1;
             }
         }
 
@@ -3568,6 +3606,30 @@ fn emit_decode_scan_profile(
             ("scan_us", scan_us.as_str()),
         ],
     );
+}
+
+fn consume_lossless_restart(
+    br: &mut BitReader<'_>,
+    sample_index: u32,
+    total_samples: u32,
+    expected_rst: &mut u8,
+) -> Result<(), JpegError> {
+    let _ = br.ensure_bits(1);
+    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
+        mcu_at: sample_index,
+        mcu_total: total_samples,
+    })?;
+    let expected = 0xD0 | *expected_rst;
+    if marker != expected {
+        return Err(JpegError::RestartMismatch {
+            offset: br.position(),
+            expected: *expected_rst,
+            found: marker,
+        });
+    }
+    *expected_rst = (*expected_rst + 1) & 0x07;
+    br.reset_at_restart();
+    Ok(())
 }
 
 fn lossless_predictor_value(predictor: u8, out: &[u8], stride: usize, x: usize, y: usize) -> i32 {

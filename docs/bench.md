@@ -717,7 +717,7 @@ Current v1 scope is explicit:
   full-image/ROI/scaled/region-scaled output for predictors 1-7 is
   CPU-backed. Expanded four-component coverage, other 12-bit subsampled color
   support, stronger non-constant 12-bit oracle fixtures, and broader SOF3
-  color/restart/row support stay structured
+  color/row support plus non-grayscale restart coverage stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
   The coalesced benchmark

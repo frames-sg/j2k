@@ -31,7 +31,8 @@ unsupported errors until a separate entropy and conformance plan exists.
   color support and stronger non-constant 12-bit oracle fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
-  1-7; color layouts, row output, and restart-coded SOF3 remain open
+  1-7, including restart-coded grayscale streams; color layouts, row output,
+  and non-grayscale restart coverage remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
