@@ -7,7 +7,6 @@
 #![warn(unreachable_pub)]
 
 mod kernels;
-mod nvjpeg;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -105,7 +104,7 @@ type NvtxRangePushA = unsafe extern "C" fn(*const c_char) -> c_int;
 #[cfg(feature = "cuda-profiling")]
 type NvtxRangePop = unsafe extern "C" fn() -> c_int;
 
-/// Error returned by CUDA driver, nvJPEG, and Signinum CUDA kernel helpers.
+/// Error returned by CUDA driver and Signinum CUDA kernel helpers.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CudaError {
@@ -156,30 +155,6 @@ pub enum CudaError {
         height: u32,
         /// Channel count.
         channels: usize,
-    },
-    /// nvJPEG library or required entry point is unavailable.
-    #[error("nvJPEG is unavailable: {message}")]
-    NvjpegUnavailable {
-        /// Human-readable availability failure.
-        message: String,
-    },
-    /// nvJPEG API call failed.
-    #[error("nvJPEG call {operation} failed with nvjpegStatus_t {code}{name}")]
-    Nvjpeg {
-        /// nvJPEG operation name.
-        operation: &'static str,
-        /// Raw nvJPEG status code.
-        code: i32,
-        /// nvJPEG status name, when available.
-        name: String,
-    },
-    /// nvJPEG decoded dimensions differed from caller metadata.
-    #[error("nvJPEG decoded dimensions mismatch: expected {expected:?}, got {actual:?}")]
-    NvjpegDimensions {
-        /// Expected dimensions.
-        expected: (u32, u32),
-        /// Decoded dimensions.
-        actual: (u32, u32),
     },
     /// Internal runtime state lock was poisoned.
     #[error("CUDA runtime state lock is poisoned: {message}")]
@@ -320,6 +295,52 @@ pub struct CudaJpegEntropyCheckpoint {
     pub reserved: u32,
 }
 
+/// Signinum-owned CUDA baseline JPEG RGB8 kernel shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CudaJpegRgb8Sampling {
+    /// Fast 4:2:0 YCbCr shape: four Y blocks, then Cb and Cr per MCU.
+    Fast420,
+    /// Fast 4:2:2 YCbCr shape: two Y blocks, then Cb and Cr per MCU.
+    Fast422,
+    /// Fast 4:4:4 YCbCr shape: one Y block, then Cb and Cr per MCU.
+    Fast444,
+}
+
+/// Signinum-owned CUDA baseline JPEG RGB8 decode plan.
+#[derive(Debug)]
+pub struct CudaJpegRgb8DecodePlan<'a> {
+    /// MCU sampling/kernel shape.
+    pub sampling: CudaJpegRgb8Sampling,
+    /// Image dimensions as `(width, height)`.
+    pub dimensions: (u32, u32),
+    /// Number of MCUs per row.
+    pub mcus_per_row: u32,
+    /// Number of MCU rows.
+    pub mcu_rows: u32,
+    /// Entropy-coded scan payload with byte stuffing/restart markers removed.
+    pub entropy_bytes: &'a [u8],
+    /// Entropy resume checkpoints.
+    pub entropy_checkpoints: &'a [CudaJpegEntropyCheckpoint],
+    /// Luma quantization table in JPEG zigzag order.
+    pub y_quant: [u16; 64],
+    /// Cb quantization table in JPEG zigzag order.
+    pub cb_quant: [u16; 64],
+    /// Cr quantization table in JPEG zigzag order.
+    pub cr_quant: [u16; 64],
+    /// Y DC Huffman table.
+    pub y_dc_table: CudaJpegHuffmanTable,
+    /// Y AC Huffman table.
+    pub y_ac_table: CudaJpegHuffmanTable,
+    /// Cb DC Huffman table.
+    pub cb_dc_table: CudaJpegHuffmanTable,
+    /// Cb AC Huffman table.
+    pub cb_ac_table: CudaJpegHuffmanTable,
+    /// Cr DC Huffman table.
+    pub cr_dc_table: CudaJpegHuffmanTable,
+    /// Cr AC Huffman table.
+    pub cr_ac_table: CudaJpegHuffmanTable,
+}
+
 /// Signinum-owned CUDA baseline JPEG 4:2:0 decode plan.
 #[derive(Debug)]
 pub struct CudaJpeg420Rgb8DecodePlan<'a> {
@@ -378,15 +399,29 @@ struct CudaJpegDecodeStatus {
 }
 
 #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
-struct CudaJpeg420ValidatedPlan {
+struct CudaJpegRgb8ValidatedPlan {
     params: CudaJpeg420Params,
     output_len: usize,
 }
 
 #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
-fn validate_jpeg_420_rgb8_plan(
-    plan: &CudaJpeg420Rgb8DecodePlan<'_>,
-) -> Result<CudaJpeg420ValidatedPlan, CudaError> {
+fn validate_jpeg_rgb8_plan(
+    plan: &CudaJpegRgb8DecodePlan<'_>,
+) -> Result<CudaJpegRgb8ValidatedPlan, CudaError> {
+    let (width, _) = plan.dimensions;
+    let out_stride = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
+        width,
+        height: plan.dimensions.1,
+        channels: 3,
+    })?;
+    validate_jpeg_rgb8_plan_with_pitch(plan, out_stride as usize)
+}
+
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+fn validate_jpeg_rgb8_plan_with_pitch(
+    plan: &CudaJpegRgb8DecodePlan<'_>,
+    pitch_bytes: usize,
+) -> Result<CudaJpegRgb8ValidatedPlan, CudaError> {
     let (width, height) = plan.dimensions;
     if width == 0 || height == 0 {
         return Err(CudaError::InvalidArgument {
@@ -406,21 +441,30 @@ fn validate_jpeg_420_rgb8_plan(
         u32::try_from(plan.entropy_checkpoints.len()).map_err(|_| CudaError::LengthTooLarge {
             len: plan.entropy_checkpoints.len(),
         })?;
-    let out_stride = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
+    let row_bytes = width.checked_mul(3).ok_or(CudaError::ImageTooLarge {
         width,
         height,
         channels: 3,
     })?;
-    let output_len =
-        (out_stride as usize)
-            .checked_mul(height as usize)
-            .ok_or(CudaError::ImageTooLarge {
-                width,
-                height,
-                channels: 3,
-            })?;
+    if pitch_bytes < row_bytes as usize {
+        return Err(CudaError::InvalidArgument {
+            message: format!(
+                "JPEG CUDA decode pitch {pitch_bytes} is smaller than row byte count {row_bytes}"
+            ),
+        });
+    }
+    let out_stride =
+        u32::try_from(pitch_bytes).map_err(|_| CudaError::LengthTooLarge { len: pitch_bytes })?;
+    let output_len = pitch_bytes
+        .checked_mul(height as usize - 1)
+        .and_then(|prefix| prefix.checked_add(row_bytes as usize))
+        .ok_or(CudaError::ImageTooLarge {
+            width,
+            height,
+            channels: 3,
+        })?;
 
-    Ok(CudaJpeg420ValidatedPlan {
+    Ok(CudaJpegRgb8ValidatedPlan {
         params: CudaJpeg420Params {
             width,
             height,
@@ -433,6 +477,46 @@ fn validate_jpeg_420_rgb8_plan(
         },
         output_len,
     })
+}
+
+fn cuda_jpeg_rgb8_plan_from_420<'a>(
+    plan: &CudaJpeg420Rgb8DecodePlan<'a>,
+) -> CudaJpegRgb8DecodePlan<'a> {
+    CudaJpegRgb8DecodePlan {
+        sampling: CudaJpegRgb8Sampling::Fast420,
+        dimensions: plan.dimensions,
+        mcus_per_row: plan.mcus_per_row,
+        mcu_rows: plan.mcu_rows,
+        entropy_bytes: plan.entropy_bytes,
+        entropy_checkpoints: plan.entropy_checkpoints,
+        y_quant: plan.y_quant,
+        cb_quant: plan.cb_quant,
+        cr_quant: plan.cr_quant,
+        y_dc_table: plan.y_dc_table,
+        y_ac_table: plan.y_ac_table,
+        cb_dc_table: plan.cb_dc_table,
+        cb_ac_table: plan.cb_ac_table,
+        cr_dc_table: plan.cr_dc_table,
+        cr_ac_table: plan.cr_ac_table,
+    }
+}
+
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+fn jpeg_rgb8_kernel(sampling: CudaJpegRgb8Sampling) -> (CudaKernel, &'static str) {
+    match sampling {
+        CudaJpegRgb8Sampling::Fast420 => (
+            CudaKernel::JpegDecodeFast420Rgb8,
+            "signinum_jpeg_decode_fast420_rgb8",
+        ),
+        CudaJpegRgb8Sampling::Fast422 => (
+            CudaKernel::JpegDecodeFast422Rgb8,
+            "signinum_jpeg_decode_fast422_rgb8",
+        ),
+        CudaJpegRgb8Sampling::Fast444 => (
+            CudaKernel::JpegDecodeFast444Rgb8,
+            "signinum_jpeg_decode_fast444_rgb8",
+        ),
+    }
 }
 
 struct Driver {
@@ -663,7 +747,6 @@ struct ContextInner {
     driver: Driver,
     context: CuContext,
     modules: Mutex<HashMap<CudaKernel, CompiledKernel>>,
-    nvjpeg: Mutex<Option<nvjpeg::NvjpegState>>,
     pinned_upload_staging: Mutex<Vec<PinnedUploadStaging>>,
 }
 
@@ -788,11 +871,6 @@ impl Drop for ContextInner {
     fn drop(&mut self) {
         if !self.context.is_null() {
             let _ = self.set_current();
-            let nvjpeg = match self.nvjpeg.get_mut() {
-                Ok(nvjpeg) => nvjpeg,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            drop(nvjpeg.take());
             let pinned_upload_staging = match self.pinned_upload_staging.get_mut() {
                 Ok(pinned_upload_staging) => pinned_upload_staging,
                 Err(poisoned) => poisoned.into_inner(),
@@ -2027,7 +2105,6 @@ impl CudaContext {
                 driver,
                 context,
                 modules: Mutex::new(HashMap::new()),
-                nvjpeg: Mutex::new(None),
                 pinned_upload_staging: Mutex::new(Vec::new()),
             }),
         })
@@ -2166,6 +2243,15 @@ impl CudaContext {
         &self,
         plan: &CudaJpeg420Rgb8DecodePlan<'_>,
     ) -> Result<CudaKernelOutput, CudaError> {
+        let plan = cuda_jpeg_rgb8_plan_from_420(plan);
+        self.decode_jpeg_rgb8_owned(&plan)
+    }
+
+    /// Decode one baseline JPEG RGB8 image to device-resident RGB8 using Signinum CUDA kernels.
+    pub fn decode_jpeg_rgb8_owned(
+        &self,
+        plan: &CudaJpegRgb8DecodePlan<'_>,
+    ) -> Result<CudaKernelOutput, CudaError> {
         #[cfg(not(signinum_cuda_jpeg_decode_ptx_built))]
         {
             let _ = plan;
@@ -2177,67 +2263,121 @@ impl CudaContext {
 
         #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
         {
-            let validated = validate_jpeg_420_rgb8_plan(plan)?;
+            let validated = validate_jpeg_rgb8_plan(plan)?;
             self.inner.set_current()?;
-            let entropy = self.upload(plan.entropy_bytes)?;
             let output = self.allocate(validated.output_len)?;
-            let y_quant = self.upload(u16_slice_as_bytes(&plan.y_quant))?;
-            let cb_quant = self.upload(u16_slice_as_bytes(&plan.cb_quant))?;
-            let cr_quant = self.upload(u16_slice_as_bytes(&plan.cr_quant))?;
-            let y_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_dc_table))?;
-            let y_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_ac_table))?;
-            let cb_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_dc_table))?;
-            let cb_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_ac_table))?;
-            let cr_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_dc_table))?;
-            let cr_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_ac_table))?;
-            let checkpoints = self.upload(cuda_jpeg_entropy_checkpoints_as_bytes(
-                plan.entropy_checkpoints,
-            ))?;
-            let mut statuses =
-                vec![CudaJpegDecodeStatus::default(); plan.entropy_checkpoints.len()];
-            let status_buffer = self.upload(cuda_jpeg_decode_statuses_as_bytes(&statuses))?;
-            self.launch_jpeg_decode_fast420_rgb8(
-                &entropy,
-                &output,
-                validated.params,
-                &y_quant,
-                &cb_quant,
-                &cr_quant,
-                &y_dc,
-                &y_ac,
-                &cb_dc,
-                &cb_ac,
-                &cr_dc,
-                &cr_ac,
-                &checkpoints,
-                &status_buffer,
-            )?;
-            status_buffer.copy_to_host(cuda_jpeg_decode_statuses_as_bytes_mut(&mut statuses))?;
-            for status in statuses {
-                if status.code != 0 {
-                    return Err(CudaError::KernelStatus {
-                        kernel: "signinum_jpeg_decode_fast420_rgb8",
-                        code: status.code,
-                        detail: status.detail,
-                    });
-                }
-            }
+            let execution = self.decode_jpeg_rgb8_owned_validated(plan, &output, validated)?;
             Ok(CudaKernelOutput {
                 buffer: output,
-                execution: CudaExecutionStats {
-                    kernel_dispatches: 1,
-                    copy_kernel_dispatches: 0,
-                    decode_kernel_dispatches: 1,
-                    hardware_decode: false,
-                },
+                execution,
             })
         }
     }
 
+    /// Decode one baseline JPEG 4:2:0 image into caller-owned CUDA RGB8 memory.
+    pub fn decode_jpeg_420_rgb8_owned_into(
+        &self,
+        plan: &CudaJpeg420Rgb8DecodePlan<'_>,
+        output: &CudaDeviceBuffer,
+        pitch_bytes: usize,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        let plan = cuda_jpeg_rgb8_plan_from_420(plan);
+        self.decode_jpeg_rgb8_owned_into(&plan, output, pitch_bytes)
+    }
+
+    /// Decode one baseline JPEG RGB8 image into caller-owned CUDA RGB8 memory.
+    pub fn decode_jpeg_rgb8_owned_into(
+        &self,
+        plan: &CudaJpegRgb8DecodePlan<'_>,
+        output: &CudaDeviceBuffer,
+        pitch_bytes: usize,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        #[cfg(not(signinum_cuda_jpeg_decode_ptx_built))]
+        {
+            let _ = (plan, output, pitch_bytes);
+            Err(CudaError::InvalidArgument {
+                message: "Signinum CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
+                    .to_string(),
+            })
+        }
+
+        #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+        {
+            let validated = validate_jpeg_rgb8_plan_with_pitch(plan, pitch_bytes)?;
+            if output.byte_len() < validated.output_len {
+                return Err(CudaError::OutputTooSmall {
+                    required: validated.output_len,
+                    have: output.byte_len(),
+                });
+            }
+            self.inner.set_current()?;
+            self.decode_jpeg_rgb8_owned_validated(plan, output, validated)
+        }
+    }
+
+    #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    fn decode_jpeg_rgb8_owned_validated(
+        &self,
+        plan: &CudaJpegRgb8DecodePlan<'_>,
+        output: &CudaDeviceBuffer,
+        validated: CudaJpegRgb8ValidatedPlan,
+    ) -> Result<CudaExecutionStats, CudaError> {
+        let (kernel, kernel_name) = jpeg_rgb8_kernel(plan.sampling);
+        let entropy = self.upload(plan.entropy_bytes)?;
+        let y_quant = self.upload(u16_slice_as_bytes(&plan.y_quant))?;
+        let cb_quant = self.upload(u16_slice_as_bytes(&plan.cb_quant))?;
+        let cr_quant = self.upload(u16_slice_as_bytes(&plan.cr_quant))?;
+        let y_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_dc_table))?;
+        let y_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_ac_table))?;
+        let cb_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_dc_table))?;
+        let cb_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_ac_table))?;
+        let cr_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_dc_table))?;
+        let cr_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_ac_table))?;
+        let checkpoints = self.upload(cuda_jpeg_entropy_checkpoints_as_bytes(
+            plan.entropy_checkpoints,
+        ))?;
+        let mut statuses = vec![CudaJpegDecodeStatus::default(); plan.entropy_checkpoints.len()];
+        let status_buffer = self.upload(cuda_jpeg_decode_statuses_as_bytes(&statuses))?;
+        self.launch_jpeg_decode_rgb8(
+            kernel,
+            &entropy,
+            output,
+            validated.params,
+            &y_quant,
+            &cb_quant,
+            &cr_quant,
+            &y_dc,
+            &y_ac,
+            &cb_dc,
+            &cb_ac,
+            &cr_dc,
+            &cr_ac,
+            &checkpoints,
+            &status_buffer,
+        )?;
+        status_buffer.copy_to_host(cuda_jpeg_decode_statuses_as_bytes_mut(&mut statuses))?;
+        for status in statuses {
+            if status.code != 0 {
+                return Err(CudaError::KernelStatus {
+                    kernel: kernel_name,
+                    code: status.code,
+                    detail: status.detail,
+                });
+            }
+        }
+        Ok(CudaExecutionStats {
+            kernel_dispatches: 1,
+            copy_kernel_dispatches: 0,
+            decode_kernel_dispatches: 1,
+            hardware_decode: false,
+        })
+    }
+
     #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
     #[allow(clippy::too_many_arguments)]
-    fn launch_jpeg_decode_fast420_rgb8(
+    fn launch_jpeg_decode_rgb8(
         &self,
+        kernel: CudaKernel,
         entropy: &CudaDeviceBuffer,
         output: &CudaDeviceBuffer,
         mut params: CudaJpeg420Params,
@@ -2253,9 +2393,7 @@ impl CudaContext {
         checkpoints: &CudaDeviceBuffer,
         status: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::JpegDecodeFast420Rgb8)?;
+        let function = self.inner.kernel_function(kernel)?;
         let mut entropy_ptr = entropy.device_ptr();
         let mut output_ptr = output.device_ptr();
         let mut y_quant_ptr = y_quant.device_ptr();
@@ -2291,94 +2429,6 @@ impl CudaContext {
         };
 
         self.launch_kernel(function, geometry, &mut kernel_params)
-    }
-
-    /// Decode one JPEG image to device-resident RGB8 using nvJPEG.
-    pub fn decode_jpeg_rgb8_with_nvjpeg(
-        &self,
-        bytes: &[u8],
-        dimensions: (u32, u32),
-    ) -> Result<CudaKernelOutput, CudaError> {
-        self.inner.set_current()?;
-        let (pitch_bytes, byte_len) = rgb8_layout(dimensions)?;
-        let output = self.allocate(byte_len)?;
-        if byte_len == 0 {
-            return Ok(CudaKernelOutput {
-                buffer: output,
-                execution: CudaExecutionStats::default(),
-            });
-        }
-
-        let mut state = self
-            .inner
-            .nvjpeg
-            .lock()
-            .map_err(|error| CudaError::StatePoisoned {
-                message: error.to_string(),
-            })?;
-        if state.is_none() {
-            *state = Some(nvjpeg::NvjpegState::new()?);
-        }
-        let state = state.as_mut().ok_or_else(|| CudaError::NvjpegUnavailable {
-            message: "nvJPEG state did not initialize".to_string(),
-        })?;
-        state.decode_rgb8(bytes, dimensions, output.device_ptr(), pitch_bytes)?;
-
-        // SAFETY: A CUDA context is current for this ContextInner before nvJPEG
-        // decode work is submitted; synchronize waits for that context's work.
-        let status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
-        self.inner.driver.check("cuCtxSynchronize", status)?;
-
-        Ok(CudaKernelOutput {
-            buffer: output,
-            execution: CudaExecutionStats {
-                kernel_dispatches: 1,
-                copy_kernel_dispatches: 0,
-                decode_kernel_dispatches: 1,
-                hardware_decode: true,
-            },
-        })
-    }
-
-    /// Decode a batch of JPEG images to device-resident RGB8 using nvJPEG.
-    pub fn decode_jpeg_rgb8_batch_with_nvjpeg(
-        &self,
-        inputs: &[(&[u8], (u32, u32))],
-    ) -> Result<Vec<CudaKernelOutput>, CudaError> {
-        self.inner.set_current()?;
-        if inputs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut buffers = Vec::with_capacity(inputs.len());
-        let mut pointers = Vec::with_capacity(inputs.len());
-        let mut pitches = Vec::with_capacity(inputs.len());
-        for (_, dimensions) in inputs {
-            let (pitch_bytes, byte_len) = rgb8_layout(*dimensions)?;
-            let buffer = self.allocate(byte_len)?;
-            pointers.push(buffer.device_ptr());
-            pitches.push(pitch_bytes);
-            buffers.push(buffer);
-        }
-
-        let mut state = nvjpeg::NvjpegState::new_batched()?;
-        state.decode_rgb8_batch(inputs, &pointers, &pitches)?;
-
-        // SAFETY: nvJPEG batched decode submits work to the current CUDA
-        // context; synchronize waits for completion before buffers are exposed.
-        let status = unsafe { (self.inner.driver.cu_ctx_synchronize)() };
-        self.inner.driver.check("cuCtxSynchronize", status)?;
-
-        let execution = CudaExecutionStats {
-            kernel_dispatches: 1,
-            copy_kernel_dispatches: 0,
-            decode_kernel_dispatches: 1,
-            hardware_decode: true,
-        };
-        Ok(buffers
-            .into_iter()
-            .map(|buffer| CudaKernelOutput { buffer, execution })
-            .collect())
     }
 
     /// Decode HTJ2K code blocks into a device-resident f32 coefficient plane.
@@ -9764,7 +9814,7 @@ impl CudaExecutionStats {
         self.decode_kernel_dispatches
     }
 
-    /// True when nvJPEG hardware decode was used.
+    /// True when a hardware decode path was used.
     pub fn used_hardware_decode(self) -> bool {
         self.hardware_decode
     }
@@ -12445,28 +12495,6 @@ fn validate_quantize_region(
         });
     }
     Ok(())
-}
-
-fn rgb8_layout(dimensions: (u32, u32)) -> Result<(usize, usize), CudaError> {
-    let row_bytes = dimensions
-        .0
-        .try_into()
-        .ok()
-        .and_then(|width: usize| width.checked_mul(3))
-        .ok_or(CudaError::ImageTooLarge {
-            width: dimensions.0,
-            height: dimensions.1,
-            channels: 3,
-        })?;
-    let byte_len =
-        row_bytes
-            .checked_mul(dimensions.1 as usize)
-            .ok_or(CudaError::ImageTooLarge {
-                width: dimensions.0,
-                height: dimensions.1,
-                channels: 3,
-            })?;
-    Ok((row_bytes, byte_len))
 }
 
 fn validate_store_rgb8_plane(

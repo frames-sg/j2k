@@ -11,7 +11,6 @@ moved, or removed.
 | --- | --- |
 | `crates/signinum-core/src/backend.rs` | CPU feature detection and backend probing. |
 | `crates/signinum-cuda-runtime/src/lib.rs` | CUDA driver/runtime FFI, module loading, kernel launch, and device memory handling. |
-| `crates/signinum-cuda-runtime/src/nvjpeg.rs` | nvJPEG FFI handle, stream, and device buffer integration. |
 | `crates/signinum-j2k-compare/src/grok.rs` | Grok FFI comparison harness. |
 | `crates/signinum-j2k-compare/src/openjpeg.rs` | OpenJPEG FFI comparison harness. |
 | `crates/signinum-j2k-cuda/src/surface.rs` | CUDA surface batch downloads into preallocated host output buffers. |

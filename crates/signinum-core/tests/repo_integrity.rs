@@ -74,6 +74,30 @@ fn adapter_crates_do_not_import_codec_private_modules() {
 }
 
 #[test]
+fn production_signinum_cuda_code_does_not_reference_nvjpeg() {
+    let root = repo_root();
+    let checked_dirs = [
+        "crates/signinum-cuda-runtime/src",
+        "crates/signinum-jpeg-cuda/src",
+        "crates/signinum-jpeg-cuda/benches",
+    ];
+
+    for dir in checked_dirs {
+        for path in rust_sources(&root.join(dir)) {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            assert!(
+                !["nvjpeg", "nvJPEG", "Nvjpeg", "NVJPEG"]
+                    .iter()
+                    .any(|token| source.contains(token)),
+                "production Signinum CUDA source {} still references nvJPEG; JPEG CUDA decode must use Signinum-owned paths only",
+                path.strip_prefix(root).unwrap_or(&path).display()
+            );
+        }
+    }
+}
+
+#[test]
 fn cuda_adapter_crates_keep_public_libs_as_module_shells() {
     let root = repo_root();
     let expected_modules = [
@@ -603,7 +627,6 @@ fn cuda_gpu_validation_job_stays_cuda_focused() {
         "rustc -Vv",
         "cargo -V",
         "nvidia-smi",
-        "ldconfig -p | grep -i nvjpeg",
         "CUDA runtime validation requires a working CUDA driver",
         "cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime",
         "cargo test -p signinum-j2k-cuda --all-targets --features cuda-runtime",
@@ -931,9 +954,9 @@ fn public_docs_describe_facade_auto_and_cuda_runtime_surface_scope() {
         assert!(
             docs.contains("cuda-runtime")
                 && docs.contains("CUDA device memory")
-                && docs.contains("nvJPEG")
+                && docs.contains("Signinum-owned CUDA")
                 && docs.contains("NVIDIA performance"),
-            "{name} must describe CUDA device-memory output and nvJPEG scope without overclaiming NVIDIA performance"
+            "{name} must describe CUDA device-memory output and owned CUDA scope without overclaiming NVIDIA performance"
         );
         assert!(
             !docs.contains("compatibility-only with no runtime CUDA decode"),

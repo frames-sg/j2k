@@ -26,8 +26,9 @@ for DICOM VL Whole Slide Microscopy export.
 CPU decode is always available and is the default facade build. Metal and CUDA
 adapters are opt-in features used only for supported workloads. CUDA adapters
 expose CUDA device memory through `cuda-runtime` when a CUDA driver is
-available. JPEG full-frame RGB8 CUDA requests can use nvJPEG; NVIDIA performance
-claims require self-hosted GPU benchmark evidence.
+available. JPEG full-frame RGB8 strict CUDA requests use Signinum-owned CUDA
+kernels for supported shapes; NVIDIA performance claims require self-hosted GPU
+benchmark evidence.
 
 The current public-source target is the `signinum` facade release. Runtime backend selection defaults to `Auto` / `ACCELERATED`: CPU remains the portable fallback, and device stages become defaults only for benchmark-approved workload shapes.
 
@@ -77,8 +78,8 @@ The facade exposes:
 The default facade build includes portable CPU codecs only. Use
 `--features metal` for Apple Metal adapters, `--features cuda` for CUDA
 adapters, or `--features gpu` for both. CUDA runtime allocation, copies,
-kernels, and nvJPEG loading are enabled on the adapter crates with their
-`cuda-runtime` feature.
+kernels, and device-memory surfaces are enabled on the adapter crates with
+their `cuda-runtime` feature.
 
 ## Quick start
 
@@ -268,13 +269,14 @@ If a caller wants CPU-decoded bytes uploaded to Metal, use the adapter's
 explicit CPU-staged upload APIs instead of `BackendRequest::Metal`.
 
 CUDA adapters expose CUDA device-memory output for explicit CUDA requests when
-they are built with `cuda-runtime`. `signinum-jpeg-cuda` can use NVIDIA nvJPEG
-for full-frame RGB8 JPEG requests when `cuda-runtime`, a CUDA driver, and
-`libnvjpeg` are available; unsupported JPEG shapes use CPU decode plus CUDA
-upload. `signinum-j2k-cuda` reserves explicit CUDA requests for strict
-CUDA-resident HTJ2K codestream decode, including HT entropy, IDWT, inverse MCT,
-and store kernels; classic JPEG 2000 and unsupported HTJ2K shapes return
-unsupported errors instead of silently CPU-decoding and uploading pixels. Use
+they are built with `cuda-runtime`. `signinum-jpeg-cuda` uses Signinum-owned
+CUDA kernels for supported full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 JPEG
+requests; unsupported JPEG shapes return unsupported errors instead of silently
+CPU-decoding and uploading pixels. `signinum-j2k-cuda` reserves explicit CUDA
+requests for strict CUDA-resident HTJ2K codestream decode, including HT entropy,
+IDWT, inverse MCT, and store kernels; classic JPEG 2000 and unsupported HTJ2K
+shapes return unsupported errors instead of silently CPU-decoding and uploading
+pixels. Use
 the explicitly named CPU-staged CUDA upload APIs when that fallback is desired.
 
 ## Architecture at a glance
@@ -293,7 +295,7 @@ foundation -> codecs / codec engines -> device adapters -> facade / CLI
 | Codecs | `signinum-jpeg`, `signinum-j2k`, `signinum-tilecodec` | Format-specific inspect, decode, encode, row, ROI, scaled, batch, and decompression APIs |
 | Engine | `signinum-j2k-native` | Published implementation dependency for the public J2K crate |
 | Adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-jpeg-cuda`, `signinum-j2k-cuda` | Device-output surfaces for downstream GPU pipelines |
-| Runtime helper | `signinum-cuda-runtime` | CUDA Driver API allocation, copy, kernel, and nvJPEG loading used by CUDA adapters |
+| Runtime helper | `signinum-cuda-runtime` | CUDA Driver API allocation, copy, and bundled kernel launch support used by CUDA adapters |
 | Facade and CLI | `signinum`, `signinum-cli` | One import surface for application code and `signinum inspect <file>` |
 | Reference tooling | `signinum-j2k-compare` | OpenJPEG/Grok comparison helpers for tests and benches; not a runtime dependency |
 | Non-API tooling | `signinum-test-support`, `xtask` | Unpublished generators and repository automation |

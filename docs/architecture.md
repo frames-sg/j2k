@@ -40,7 +40,7 @@ promotion gates are satisfied.
 |-------|-------|------|
 | `signinum-core` | foundation | Shared traits, pixel/sample types, backend capability metadata, device-surface contracts, scratch/context contracts. No image-format logic. |
 | `signinum-profile` | instrumentation helper | Shared profiling helpers used by implementation crates at runtime. Published only because public crates depend on it; not a user-facing API. |
-| `signinum-cuda-runtime` | runtime helper | CUDA Driver API, CUDA memory, kernel launch, and nvJPEG runtime helpers used by CUDA adapters. Published support crate, not the primary user-facing API. |
+| `signinum-cuda-runtime` | runtime helper | CUDA Driver API, CUDA memory, and bundled kernel launch helpers used by CUDA adapters. Published support crate, not the primary user-facing API. |
 | `signinum-tilecodec` | codec | Tile decompression primitives: Deflate, Zstd, LZW, Uncompressed. Implements `TileDecompress` from `core`. |
 | `signinum-jpeg` | codec | Native pure-Rust JPEG inspect/decode for WSI tiles. CPU-first. Owns SIMD backends and fused entropy/IDCT/upsample paths. Its baseline JPEG encoder is a compatibility/fallback utility, not the diagnostic WSI/DICOM encode path. |
 | `signinum-j2k-native` | codec engine | Published implementation dependency for `signinum-j2k`; not the stable user-facing API. Lives under `#![forbid(unsafe_code)]` and uses `fearless_simd`. |
@@ -48,7 +48,7 @@ promotion gates are satisfied.
 | `signinum-j2k-compare` | dev-only | OpenJPEG FFI bindings used as a reference decoder for conformance and parity testing. Unpublished. |
 | `signinum-jpeg-metal` | adapter | Apple Metal device-output adapter for `signinum-jpeg`. Hosts compute kernels for color conversion, interleave/pack, and `MTLBuffer` production. |
 | `signinum-j2k-metal` | adapter | Apple Metal device-output adapter for `signinum-j2k`. Same shape as the JPEG adapter. |
-| `signinum-jpeg-cuda` | adapter | CUDA-facing API adapter for JPEG. `Auto`/`Cpu` stay host-backed; explicit full-frame RGB8 CUDA requests use nvJPEG when `cuda-runtime`, a CUDA driver, and `libnvjpeg` are available, with CPU decode plus CUDA upload fallback for unsupported shapes. |
+| `signinum-jpeg-cuda` | adapter | CUDA-facing API adapter for JPEG. `Auto`/`Cpu` stay host-backed; explicit supported full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 CUDA requests use Signinum-owned kernels, and unsupported strict CUDA shapes return clear errors. |
 | `signinum-j2k-cuda` | adapter | CUDA-facing API adapter for J2K. Explicit CUDA requests are strict CUDA-resident HTJ2K codestream decode requests when `cuda-runtime` and a CUDA driver are available; CPU-decode-then-upload is exposed only through explicitly named CPU-staged APIs. |
 | `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Owns the coupling between JPEG DCT extraction and native HTJ2K coefficient encode so codec crates stay independent. APIs in this crate are not stable until validation coverage and codestream integration land. |
 | `signinum-transcode-cuda` | experimental adapter | CUDA accelerator for selected `signinum-transcode` stages. Uses `signinum-cuda-runtime` kernels for coefficient-domain DCT-grid to wavelet and fused 9/7 code-block paths. |
@@ -105,8 +105,9 @@ matures, mirroring harness-engineering structural tests):
    public API but reports unavailability.
 5. CUDA sources expose the same device-output surface. Explicit CUDA requests
    produce CUDA device memory when `cuda-runtime` and a CUDA driver are
-   available. JPEG full-frame RGB8 requests may use nvJPEG; unsupported JPEG
-   shapes use explicit CPU-staged upload APIs where exposed. J2K CUDA explicit
+   available. JPEG full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 requests use
+   Signinum-owned CUDA kernels where supported; unsupported JPEG shapes use
+   explicit CPU-staged upload APIs where exposed. J2K CUDA explicit
    requests are strict CUDA-resident HTJ2K codestream decode requests and must
    not silently CPU-decode and upload pixels.
 6. `signinum-jpeg` keeps its NEON and x86 intrinsics scoped per-backend
@@ -310,10 +311,10 @@ There are three target backends. Selection is explicit in the public API.
 - **CUDA** — explicit device-memory output. `Auto` and `Cpu` return CPU-backed
   host surfaces. `BackendRequest::Cuda` returns CUDA device memory when the
   `cuda-runtime` feature and a CUDA driver are available, and otherwise reports
-  CUDA as unavailable. JPEG full-frame RGB8 can decode through nvJPEG when
-  `libnvjpeg` is available; unsupported JPEG shapes use explicit CPU-staged
-  upload APIs where exposed. J2K CUDA reserves explicit CUDA requests for
-  CUDA-resident HTJ2K codestream decode and lossless encode (see
+  CUDA as unavailable. JPEG full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 can decode
+  through Signinum-owned CUDA kernels; unsupported JPEG shapes use explicit
+  CPU-staged upload APIs where exposed. J2K CUDA reserves explicit CUDA
+  requests for CUDA-resident HTJ2K codestream decode and lossless encode (see
   [CUDA HTJ2K lossless encode](#cuda-htj2k-lossless-encode) below).
 
 `BackendRequest::Auto` stays conservative: small or low-yield decodes are
@@ -434,7 +435,8 @@ between codec crates.
 - CUDA adapter crates expose runtime device-memory output for explicit CUDA
   requests when built with `cuda-runtime` on hosts with a CUDA driver. Hosts
   without CUDA return the documented unavailable error. JPEG full-frame RGB8
-  CUDA decode additionally uses `libnvjpeg` when available.
+  strict CUDA decode uses Signinum-owned kernels for supported 4:2:0, 4:2:2,
+  and 4:4:4 inputs.
 - Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`,
   `opt-level = 3`. `release-bench` inherits `release` but keeps debug info.
 - Notable feature flags:
@@ -442,8 +444,7 @@ between codec crates.
     `std`), `logging`.
   - `signinum-jpeg`: `scalar-only` retained for fuzzing and reference.
   - `signinum-jpeg-cuda`, `signinum-j2k-cuda`: `cuda-runtime` enables CUDA Driver
-    API device allocation and explicit CUDA requests. `signinum-jpeg-cuda`
-    also loads nvJPEG at runtime for full-frame RGB8 JPEG decode when present.
+    API device allocation and explicit CUDA requests.
 
 ## Active areas
 

@@ -32,13 +32,11 @@ use crate::JpegCodec;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::num::NonZeroUsize;
 pub use signinum_core::TileBatchOptions;
 use signinum_core::{
-    collect_indexed_batch_results, tile_batch_worker_count, CompressedPayloadKind,
-    CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError,
-    DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
-    IndexedBatchResult, PassthroughCandidate, PixelFormat, RowSink, TileBatchDecode,
+    CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome,
+    DecodeRowsError, DecoderContext as CoreDecoderContext, Downscale, ImageCodec, ImageDecode,
+    ImageDecodeRows, PassthroughCandidate, PixelFormat, RowSink, TileBatchDecode,
 };
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -1397,36 +1395,7 @@ pub fn decode_tiles_into_with_options(
     decode_options: DecodeOptions,
     options: TileBatchOptions,
 ) -> Result<Vec<DecodeOutcome>, TileBatchError> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    let chunk_size = job_count.div_ceil(worker_count);
-    let results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
-            let start_index = chunk_index * chunk_size;
-            handles.push(
-                scope.spawn(move || decode_tile_job_chunk(start_index, chunk, fmt, decode_options)),
-            );
-        }
-
-        let mut results = Vec::with_capacity(job_count);
-        for handle in handles {
-            match handle.join() {
-                Ok(chunk_results) => results.extend(chunk_results),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        }
-        results
-    });
-
-    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
-        index,
-        source,
-    })
+    crate::JpegBatchSession::new(options).decode_tiles_into_with_options(jobs, fmt, decode_options)
 }
 
 /// Decode independent JPEG tiles at reduced resolution into caller-owned
@@ -1459,36 +1428,11 @@ pub fn decode_tiles_scaled_into_with_options(
     decode_options: DecodeOptions,
     options: TileBatchOptions,
 ) -> Result<Vec<DecodeOutcome>, TileBatchError> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    let chunk_size = job_count.div_ceil(worker_count);
-    let results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
-            let start_index = chunk_index * chunk_size;
-            handles.push(scope.spawn(move || {
-                decode_tile_scaled_job_chunk(start_index, chunk, fmt, decode_options)
-            }));
-        }
-
-        let mut results = Vec::with_capacity(job_count);
-        for handle in handles {
-            match handle.join() {
-                Ok(chunk_results) => results.extend(chunk_results),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        }
-        results
-    });
-
-    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
-        index,
-        source,
-    })
+    crate::JpegBatchSession::new(options).decode_tiles_scaled_into_with_options(
+        jobs,
+        fmt,
+        decode_options,
+    )
 }
 
 /// Decode independent JPEG tile regions at reduced resolution into
@@ -1521,94 +1465,11 @@ pub fn decode_tiles_region_scaled_into_with_options(
     decode_options: DecodeOptions,
     options: TileBatchOptions,
 ) -> Result<Vec<DecodeOutcome>, TileBatchError> {
-    if jobs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let job_count = jobs.len();
-    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
-    let chunk_size = job_count.div_ceil(worker_count);
-    let results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
-            let start_index = chunk_index * chunk_size;
-            handles.push(scope.spawn(move || {
-                decode_tile_region_scaled_job_chunk(start_index, chunk, fmt, decode_options)
-            }));
-        }
-
-        let mut results = Vec::with_capacity(job_count);
-        for handle in handles {
-            match handle.join() {
-                Ok(chunk_results) => results.extend(chunk_results),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        }
-        results
-    });
-
-    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
-        index,
-        source,
-    })
-}
-
-fn available_tile_batch_workers() -> usize {
-    std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
-}
-
-fn decode_tile_job_chunk(
-    start_index: usize,
-    jobs: &mut [TileDecodeJob<'_, '_>],
-    fmt: PixelFormat,
-    options: DecodeOptions,
-) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    let mut results = Vec::with_capacity(jobs.len());
-    for (local_index, job) in jobs.iter_mut().enumerate() {
-        let outcome = decode_tile_into_in_context_with_options(
-            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, options,
-        );
-        results.push((start_index + local_index, outcome));
-    }
-    results
-}
-
-fn decode_tile_scaled_job_chunk(
-    start_index: usize,
-    jobs: &mut [TileScaledDecodeJob<'_, '_>],
-    fmt: PixelFormat,
-    options: DecodeOptions,
-) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    let mut results = Vec::with_capacity(jobs.len());
-    for (local_index, job) in jobs.iter_mut().enumerate() {
-        let outcome = decode_tile_scaled_into_in_context_with_options(
-            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.scale, options,
-        );
-        results.push((start_index + local_index, outcome));
-    }
-    results
-}
-
-fn decode_tile_region_scaled_job_chunk(
-    start_index: usize,
-    jobs: &mut [TileRegionScaledDecodeJob<'_, '_>],
-    fmt: PixelFormat,
-    options: DecodeOptions,
-) -> Vec<IndexedBatchResult<DecodeOutcome, JpegError>> {
-    let mut ctx = DecoderContext::new();
-    let mut pool = ScratchPool::new();
-    let mut results = Vec::with_capacity(jobs.len());
-    for (local_index, job) in jobs.iter_mut().enumerate() {
-        let outcome = decode_tile_region_scaled_into_in_context_with_options(
-            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.roi, job.scale, options,
-        );
-        results.push((start_index + local_index, outcome));
-    }
-    results
+    crate::JpegBatchSession::new(options).decode_tiles_region_scaled_into_with_options(
+        jobs,
+        fmt,
+        decode_options,
+    )
 }
 
 /// One-shot parse-plus-region-decode of an independent JPEG tile into the

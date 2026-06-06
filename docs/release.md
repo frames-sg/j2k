@@ -13,13 +13,14 @@ APIs changed for the facade boundary.
 Runtime backend selection defaults to `Auto`; supported compiled device paths
 may run before CPU fallback.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
-`cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` can use
-NVIDIA nvJPEG for full-frame RGB8 JPEG decode when `libnvjpeg` is installed;
-unsupported JPEG shapes use explicit CPU-staged upload APIs where exposed. The
-J2K CUDA adapter reserves explicit CUDA requests for CUDA-resident HTJ2K
-codestream decode and reports unsupported inputs instead of CPU-decoding and
-uploading pixels. NVIDIA performance claims require self-hosted GPU benchmark
-evidence.
+`cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` uses
+Signinum-owned CUDA kernels for supported full-frame RGB8 4:2:0, 4:2:2, and
+4:4:4 JPEG decode; unsupported JPEG shapes are explicit unsupported requests
+rather than silent CPU uploads. The J2K CUDA adapter reserves explicit CUDA
+requests for
+CUDA-resident HTJ2K codestream decode and reports unsupported inputs instead of
+CPU-decoding and uploading pixels. NVIDIA performance claims require
+self-hosted GPU benchmark evidence.
 
 ## Verification Gates
 
@@ -46,7 +47,7 @@ on self-hosted runners before claiming Metal runtime validation:
    busy Metal runner does not keep a completed CUDA validation queued
 
 Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output
-and the opt-in nvJPEG JPEG decode path on a CUDA runner. The CUDA diagnostics
+and the owned CUDA JPEG decode path on a CUDA runner. The CUDA diagnostics
 require `nvcc` and print `nvcc --version` before the tests run. Timed NVIDIA
 performance claims require the `run-timed-benchmarks` workflow input and
 recorded benchmark output.

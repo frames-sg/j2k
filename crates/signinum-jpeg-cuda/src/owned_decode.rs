@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(feature = "cuda-runtime")]
+use std::sync::Arc;
+
+#[cfg(feature = "cuda-runtime")]
 use signinum_core::{BackendKind, PixelFormat};
 
 use crate::{CudaSession, Error, Surface};
 
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::{
-    CudaError, CudaJpeg420Rgb8DecodePlan, CudaJpegEntropyCheckpoint, CudaJpegHuffmanTable,
+    CudaDeviceBuffer, CudaError, CudaJpegEntropyCheckpoint, CudaJpegHuffmanTable,
+    CudaJpegRgb8DecodePlan, CudaJpegRgb8Sampling,
 };
 #[cfg(feature = "cuda-runtime")]
 use signinum_jpeg::adapter::{
-    build_metal_fast420_packet, JpegMetalEntropyCheckpointV1, MetalHuffmanTable,
+    JpegMetalEntropyCheckpointV1, JpegMetalFast420PacketV1, JpegMetalFast422PacketV1,
+    JpegMetalFast444PacketV1, MetalHuffmanTable,
 };
+#[cfg(feature = "cuda-runtime")]
+use signinum_jpeg::{JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp};
 
 #[cfg(feature = "cuda-runtime")]
 use crate::surface::{CudaJpegDecodePath, CudaSurfaceStats, Storage};
@@ -29,41 +36,37 @@ pub(crate) fn decode_owned_cuda_rgb8(
     dimensions: (u32, u32),
     session: &mut CudaSession,
 ) -> Result<Surface, Error> {
-    let packet = build_metal_fast420_packet(bytes).map_err(|_| Error::UnsupportedCudaRequest {
-        reason:
-            "Signinum CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0 RGB8 output",
-    })?;
-    if packet.dimensions != dimensions {
+    let packet = resolve_owned_rgb8_packet(bytes, session)?;
+    if packet.dimensions() != dimensions {
         return Err(Error::UnsupportedCudaRequest {
             reason: "Signinum CUDA JPEG packet dimensions do not match decoder metadata",
         });
     }
 
-    let checkpoints: Vec<CudaJpegEntropyCheckpoint> = packet
-        .entropy_checkpoints
-        .iter()
-        .copied()
-        .map(cuda_entropy_checkpoint)
-        .collect();
-    let plan = CudaJpeg420Rgb8DecodePlan {
-        dimensions,
-        mcus_per_row: packet.mcus_per_row,
-        mcu_rows: packet.mcu_rows,
-        entropy_bytes: &packet.entropy_bytes,
-        entropy_checkpoints: &checkpoints,
-        y_quant: packet.y_quant,
-        cb_quant: packet.cb_quant,
-        cr_quant: packet.cr_quant,
-        y_dc_table: cuda_huffman_table(&packet.y_dc_table)?,
-        y_ac_table: cuda_huffman_table(&packet.y_ac_table)?,
-        cb_dc_table: cuda_huffman_table(&packet.cb_dc_table)?,
-        cb_ac_table: cuda_huffman_table(&packet.cb_ac_table)?,
-        cr_dc_table: cuda_huffman_table(&packet.cr_dc_table)?,
-        cr_ac_table: cuda_huffman_table(&packet.cr_ac_table)?,
+    let checkpoints = cuda_entropy_checkpoints(packet.entropy_checkpoints());
+    let plan = match &packet {
+        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast420,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
+        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast422,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
+        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast444,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
     };
     let context = session.cuda_context()?;
     let output = context
-        .decode_jpeg_420_rgb8_owned(&plan)
+        .decode_jpeg_rgb8_owned(&plan)
         .map_err(cuda_owned_decode_error)?;
     let (buffer, stats) = output.into_parts();
     Ok(Surface {
@@ -82,6 +85,54 @@ pub(crate) fn decode_owned_cuda_rgb8(
     })
 }
 
+#[cfg(feature = "cuda-runtime")]
+pub(crate) fn decode_owned_cuda_rgb8_into(
+    bytes: &[u8],
+    dimensions: (u32, u32),
+    session: &mut CudaSession,
+    output: &CudaDeviceBuffer,
+    pitch_bytes: usize,
+) -> Result<CudaSurfaceStats, Error> {
+    let packet = resolve_owned_rgb8_packet(bytes, session)?;
+    if packet.dimensions() != dimensions {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: "Signinum CUDA JPEG packet dimensions do not match decoder metadata",
+        });
+    }
+    let checkpoints = cuda_entropy_checkpoints(packet.entropy_checkpoints());
+    let plan = match &packet {
+        OwnedFastRgb8Packet::Fast420(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast420,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
+        OwnedFastRgb8Packet::Fast422(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast422,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
+        OwnedFastRgb8Packet::Fast444(packet) => cuda_decode_plan(
+            CudaJpegRgb8Sampling::Fast444,
+            packet.as_ref(),
+            dimensions,
+            &checkpoints,
+        )?,
+    };
+    let context = session.cuda_context()?;
+    let stats = context
+        .decode_jpeg_rgb8_owned_into(&plan, output, pitch_bytes)
+        .map_err(cuda_owned_decode_error)?;
+    Ok(CudaSurfaceStats {
+        kernel_dispatches: stats.kernel_dispatches(),
+        copy_kernel_dispatches: stats.copy_kernel_dispatches(),
+        decode_kernel_dispatches: stats.decode_kernel_dispatches(),
+        hardware_decode: false,
+        decode_path: CudaJpegDecodePath::OwnedCuda,
+    })
+}
+
 #[cfg(not(feature = "cuda-runtime"))]
 pub(crate) fn decode_owned_cuda_rgb8(
     _bytes: &[u8],
@@ -89,6 +140,186 @@ pub(crate) fn decode_owned_cuda_rgb8(
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
     Err(Error::CudaUnavailable)
+}
+
+#[cfg(feature = "cuda-runtime")]
+enum OwnedFastRgb8Packet {
+    Fast420(Arc<JpegMetalFast420PacketV1>),
+    Fast422(Arc<JpegMetalFast422PacketV1>),
+    Fast444(Arc<JpegMetalFast444PacketV1>),
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl OwnedFastRgb8Packet {
+    fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Fast420(packet) => packet.dimensions,
+            Self::Fast422(packet) => packet.dimensions,
+            Self::Fast444(packet) => packet.dimensions,
+        }
+    }
+
+    fn entropy_checkpoints(&self) -> &[JpegMetalEntropyCheckpointV1] {
+        match self {
+            Self::Fast420(packet) => &packet.entropy_checkpoints,
+            Self::Fast422(packet) => &packet.entropy_checkpoints,
+            Self::Fast444(packet) => &packet.entropy_checkpoints,
+        }
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+trait FastRgb8Packet {
+    fn mcus_per_row(&self) -> u32;
+    fn mcu_rows(&self) -> u32;
+    fn entropy_bytes(&self) -> &[u8];
+    fn y_quant(&self) -> [u16; 64];
+    fn cb_quant(&self) -> [u16; 64];
+    fn cr_quant(&self) -> [u16; 64];
+    fn y_dc_table(&self) -> &MetalHuffmanTable;
+    fn y_ac_table(&self) -> &MetalHuffmanTable;
+    fn cb_dc_table(&self) -> &MetalHuffmanTable;
+    fn cb_ac_table(&self) -> &MetalHuffmanTable;
+    fn cr_dc_table(&self) -> &MetalHuffmanTable;
+    fn cr_ac_table(&self) -> &MetalHuffmanTable;
+}
+
+#[cfg(feature = "cuda-runtime")]
+macro_rules! impl_fast_rgb8_packet {
+    ($packet:ty) => {
+        impl FastRgb8Packet for $packet {
+            fn mcus_per_row(&self) -> u32 {
+                self.mcus_per_row
+            }
+
+            fn mcu_rows(&self) -> u32 {
+                self.mcu_rows
+            }
+
+            fn entropy_bytes(&self) -> &[u8] {
+                &self.entropy_bytes
+            }
+
+            fn y_quant(&self) -> [u16; 64] {
+                self.y_quant
+            }
+
+            fn cb_quant(&self) -> [u16; 64] {
+                self.cb_quant
+            }
+
+            fn cr_quant(&self) -> [u16; 64] {
+                self.cr_quant
+            }
+
+            fn y_dc_table(&self) -> &MetalHuffmanTable {
+                &self.y_dc_table
+            }
+
+            fn y_ac_table(&self) -> &MetalHuffmanTable {
+                &self.y_ac_table
+            }
+
+            fn cb_dc_table(&self) -> &MetalHuffmanTable {
+                &self.cb_dc_table
+            }
+
+            fn cb_ac_table(&self) -> &MetalHuffmanTable {
+                &self.cb_ac_table
+            }
+
+            fn cr_dc_table(&self) -> &MetalHuffmanTable {
+                &self.cr_dc_table
+            }
+
+            fn cr_ac_table(&self) -> &MetalHuffmanTable {
+                &self.cr_ac_table
+            }
+        }
+    };
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl_fast_rgb8_packet!(JpegMetalFast420PacketV1);
+#[cfg(feature = "cuda-runtime")]
+impl_fast_rgb8_packet!(JpegMetalFast422PacketV1);
+#[cfg(feature = "cuda-runtime")]
+impl_fast_rgb8_packet!(JpegMetalFast444PacketV1);
+
+#[cfg(feature = "cuda-runtime")]
+fn resolve_owned_rgb8_packet(
+    bytes: &[u8],
+    session: &mut CudaSession,
+) -> Result<OwnedFastRgb8Packet, Error> {
+    let report = JpegCapabilityReport::inspect(
+        bytes,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )?;
+    if !report.owned_cuda.eligible {
+        return Err(Error::UnsupportedCudaRequest {
+            reason: report.owned_cuda.reason.unwrap_or(
+                "Signinum CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
+            ),
+        });
+    }
+    if report.device.matches_fast_420 {
+        return session
+            .resolve_owned_fast420_packet(bytes)
+            .map(OwnedFastRgb8Packet::Fast420);
+    }
+    if report.device.matches_fast_422 {
+        return session
+            .resolve_owned_fast422_packet(bytes)
+            .map(OwnedFastRgb8Packet::Fast422);
+    }
+    if report.device.matches_fast_444 {
+        return session
+            .resolve_owned_fast444_packet(bytes)
+            .map(OwnedFastRgb8Packet::Fast444);
+    }
+    Err(Error::UnsupportedCudaRequest {
+        reason: "Signinum CUDA JPEG decode currently supports baseline 8-bit YCbCr 4:2:0, 4:2:2, or 4:4:4 RGB8 output",
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_decode_plan<'a>(
+    sampling: CudaJpegRgb8Sampling,
+    packet: &'a impl FastRgb8Packet,
+    dimensions: (u32, u32),
+    checkpoints: &'a [CudaJpegEntropyCheckpoint],
+) -> Result<CudaJpegRgb8DecodePlan<'a>, Error> {
+    Ok(CudaJpegRgb8DecodePlan {
+        sampling,
+        dimensions,
+        mcus_per_row: packet.mcus_per_row(),
+        mcu_rows: packet.mcu_rows(),
+        entropy_bytes: packet.entropy_bytes(),
+        entropy_checkpoints: checkpoints,
+        y_quant: packet.y_quant(),
+        cb_quant: packet.cb_quant(),
+        cr_quant: packet.cr_quant(),
+        y_dc_table: cuda_huffman_table(packet.y_dc_table())?,
+        y_ac_table: cuda_huffman_table(packet.y_ac_table())?,
+        cb_dc_table: cuda_huffman_table(packet.cb_dc_table())?,
+        cb_ac_table: cuda_huffman_table(packet.cb_ac_table())?,
+        cr_dc_table: cuda_huffman_table(packet.cr_dc_table())?,
+        cr_ac_table: cuda_huffman_table(packet.cr_ac_table())?,
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_entropy_checkpoints(
+    checkpoints: &[JpegMetalEntropyCheckpointV1],
+) -> Vec<CudaJpegEntropyCheckpoint> {
+    checkpoints
+        .iter()
+        .copied()
+        .map(cuda_entropy_checkpoint)
+        .collect()
 }
 
 #[cfg(feature = "cuda-runtime")]

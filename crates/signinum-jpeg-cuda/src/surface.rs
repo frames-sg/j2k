@@ -23,8 +23,6 @@ pub enum CudaJpegDecodePath {
     None,
     /// Surface was produced by Signinum-owned CUDA JPEG kernels.
     OwnedCuda,
-    /// Surface was produced by nvJPEG hardware/library decode.
-    NvjpegHardware,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -61,11 +59,6 @@ impl CudaSurfaceStats {
     /// Whether the Signinum-owned CUDA JPEG decode path was used.
     pub fn used_owned_cuda_decode(self) -> bool {
         self.decode_path == CudaJpegDecodePath::OwnedCuda
-    }
-
-    /// Whether nvJPEG was used.
-    pub fn used_nvjpeg_decode(self) -> bool {
-        self.decode_path == CudaJpegDecodePath::NvjpegHardware
     }
 
     /// Whether hardware JPEG decode was used.

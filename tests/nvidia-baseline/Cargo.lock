@@ -295,6 +295,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "signinum-jpeg-cuda"
+version = "0.5.0"
+dependencies = [
+ "signinum-core",
+ "signinum-cuda-runtime",
+ "signinum-jpeg",
+ "signinum-profile",
+ "thiserror",
+]
+
+[[package]]
 name = "signinum-nvidia-baseline"
 version = "0.5.0"
 dependencies = [
@@ -302,6 +313,7 @@ dependencies = [
  "signinum-j2k-cuda",
  "signinum-j2k-native",
  "signinum-jpeg",
+ "signinum-jpeg-cuda",
  "signinum-transcode",
  "signinum-transcode-cuda",
  "signinum-transcode-metal",
@@ -316,6 +328,7 @@ name = "signinum-transcode"
 version = "0.5.0"
 dependencies = [
  "rayon",
+ "signinum-j2k",
  "signinum-j2k-native",
  "signinum-jpeg",
 ]

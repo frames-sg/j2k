@@ -65,6 +65,14 @@ mod ffi {
             height: *mut c_int,
         ) -> c_int;
 
+        pub fn nvb_session_decode_jpeg_rgb_interleaved_timed(
+            session: *mut NvbSession,
+            jpeg: *const c_uchar,
+            jpeg_len: usize,
+            decode_ms: *mut f64,
+            width: *mut c_int,
+            height: *mut c_int,
+        ) -> c_int;
     }
 }
 
@@ -131,6 +139,17 @@ pub struct NvTranscodeResult {
     pub num_components: u32,
 }
 
+/// One reused-session NVIDIA JPEG decode timing.
+#[derive(Debug, Clone, Copy)]
+pub struct NvJpegDecodeTiming {
+    /// nvJPEG device-resident RGBI decode time, milliseconds.
+    pub decode_ms: f64,
+    /// Decoded image width.
+    pub width: u32,
+    /// Decoded image height.
+    pub height: u32,
+}
+
 /// Reusable NVIDIA baseline session.
 ///
 /// This keeps nvJPEG/nvJPEG2000 handles, CUDA stream/events, encode state, and
@@ -174,6 +193,44 @@ impl NvBaselineSession {
         #[cfg(nvbaseline_built)]
         {
             nvidia_transcode_with_session(self.raw.as_ptr(), jpeg)
+        }
+    }
+
+    /// Decode one JPEG to device-resident interleaved RGB and return the nvJPEG event time.
+    pub fn decode_jpeg_rgb_interleaved_timed(
+        &mut self,
+        jpeg: &[u8],
+    ) -> Result<NvJpegDecodeTiming, NvBaselineError> {
+        #[cfg(not(nvbaseline_built))]
+        {
+            let _ = jpeg;
+            Err(NvBaselineError::NotBuilt)
+        }
+        #[cfg(nvbaseline_built)]
+        {
+            let mut decode_ms = 0f64;
+            let mut width = 0i32;
+            let mut height = 0i32;
+            // SAFETY: `self.raw` owns a live NVIDIA baseline session and
+            // output pointers refer to initialized stack locals.
+            let rc = unsafe {
+                ffi::nvb_session_decode_jpeg_rgb_interleaved_timed(
+                    self.raw.as_ptr(),
+                    jpeg.as_ptr(),
+                    jpeg.len(),
+                    std::ptr::addr_of_mut!(decode_ms),
+                    std::ptr::addr_of_mut!(width),
+                    std::ptr::addr_of_mut!(height),
+                )
+            };
+            if rc != 0 {
+                return Err(NvBaselineError::Stage(rc));
+            }
+            Ok(NvJpegDecodeTiming {
+                decode_ms,
+                width: width as u32,
+                height: height as u32,
+            })
         }
     }
 

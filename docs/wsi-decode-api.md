@@ -131,9 +131,11 @@ Backend selection uses `BackendRequest`:
 - `BackendRequest::Cuda` / `BackendRequest::STRICT_CUDA` requires CUDA device memory
   output. When an adapter is built with `cuda-runtime` and a CUDA driver is
   available, explicit CUDA requests return CUDA-backed surfaces.
-  `signinum-jpeg-cuda` uses nvJPEG for full-frame RGB8 JPEG decode when
-  `libnvjpeg` is available; unsupported JPEG shapes use explicit CPU-staged
-  upload APIs where exposed. `signinum-j2k-cuda` reserves this request for
+  `signinum-jpeg-cuda` uses Signinum-owned CUDA kernels for supported
+  full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 strict CUDA JPEG decode. Region,
+  scaled, and non-RGB8 strict CUDA JPEG requests fail as unsupported rather
+  than silently
+  CPU-decoding and uploading pixels. `signinum-j2k-cuda` reserves this request for
   CUDA-resident HTJ2K codestream decode and lossless encode; it rejects
   unsupported classic JPEG 2000 or unsupported HTJ2K shapes instead of
   CPU-decoding and uploading pixels. Hosts without CUDA return unavailable.
@@ -215,7 +217,7 @@ benchmark compilation. Runtime GPU validation is available through the manual
 - Apple Silicon runners labeled `self-hosted`, `macOS`, `ARM64`, `metal`
   validate Metal tests and optionally timed Metal benchmarks.
 - x86_64 CUDA runners labeled `self-hosted`, `Linux`, `X64`, `cuda` validate
-  CUDA device-memory output with `cuda-runtime`, the nvJPEG full-frame RGB8
-  JPEG path when `libnvjpeg` is installed, and the `htj2k_encode_parity` suite
-  for the CUDA HTJ2K lossless encode path. Timed NVIDIA performance claims
-  require the workflow's timed benchmark mode and recorded output.
+  CUDA device-memory output with `cuda-runtime`, the owned full-frame RGB8
+  JPEG CUDA path, and the `htj2k_encode_parity` suite for the CUDA HTJ2K
+  lossless encode path. Timed NVIDIA performance claims require the workflow's
+  timed benchmark mode and recorded output.

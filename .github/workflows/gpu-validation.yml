@@ -120,9 +120,6 @@ jobs:
           fi
           command -v nvcc
           nvcc --version
-          if command -v ldconfig >/dev/null 2>&1; then
-            ldconfig -p | grep -i nvjpeg || true
-          fi
       - run: cargo test -p signinum-cuda-runtime --all-targets
       - run: cargo test -p signinum-cuda-runtime --all-targets --features cuda-profiling
       - run: cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime

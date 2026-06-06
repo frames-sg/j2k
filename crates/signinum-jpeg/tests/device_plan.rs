@@ -1,9 +1,13 @@
 use std::borrow::Cow;
 
-use signinum_jpeg::{ColorSpace, Decoder, Warning};
+use signinum_jpeg::{
+    ColorSpace, Decoder, Downscale, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
+    PixelFormat, Rect, Warning,
+};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
+const BASELINE_444: &[u8] = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
 
 #[test]
 fn adapter_device_plan_exposes_scan_metadata() {
@@ -43,6 +47,126 @@ fn adapter_device_plan_keeps_fast_422_shape_information() {
     assert!(!plan.matches_fast_420);
     assert!(plan.matches_fast_422);
     assert!(!plan.matches_fast_444);
+}
+
+#[test]
+fn adapter_device_plan_keeps_fast_444_shape_information() {
+    let decoder = Decoder::new(BASELINE_444).expect("decoder");
+    let plan = signinum_jpeg::adapter::build_device_plan(&decoder, 4).expect("device plan");
+
+    assert!(!plan.matches_fast_420);
+    assert!(!plan.matches_fast_422);
+    assert!(plan.matches_fast_444);
+}
+
+#[test]
+fn capability_report_exposes_metadata_and_fast_backend_eligibility() {
+    let report = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("capability report");
+
+    assert_eq!(report.info.dimensions, (16, 16));
+    assert_eq!(report.info.color_space, ColorSpace::YCbCr);
+    assert_eq!(report.info.sof_kind, signinum_jpeg::SofKind::Baseline8);
+    assert!(report.cpu.eligible);
+    assert!(report.owned_cuda.eligible);
+    assert!(report.metal_fast.eligible);
+    assert!(report.device.matches_fast_420);
+    assert!(!report.device.matches_fast_422);
+    assert!(!report.device.matches_fast_444);
+}
+
+#[test]
+fn capability_report_marks_owned_cuda_eligible_for_fast_422_and_444_rgb8() {
+    for (input, expected_dimensions, expected_shape) in [
+        (BASELINE_422, (16, 8), "4:2:2"),
+        (BASELINE_444, (8, 8), "4:4:4"),
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            input,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb8,
+            },
+        )
+        .expect("capability report");
+
+        assert_eq!(report.info.dimensions, expected_dimensions);
+        assert!(
+            report.owned_cuda.eligible,
+            "owned CUDA must be eligible for full-tile RGB8 fast {expected_shape}"
+        );
+        assert!(report.metal_fast.eligible);
+    }
+}
+
+#[test]
+fn capability_report_rejects_owned_cuda_for_scaled_or_non_rgb8_requests() {
+    let scaled = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Scaled(Downscale::Quarter),
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("scaled capability report");
+    let gray = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Gray8,
+        },
+    )
+    .expect("gray capability report");
+
+    assert!(!scaled.owned_cuda.eligible);
+    assert!(scaled
+        .owned_cuda
+        .reason
+        .expect("scaled cuda rejection")
+        .contains("full-tile RGB8"));
+    assert!(!gray.owned_cuda.eligible);
+    assert!(gray
+        .owned_cuda
+        .reason
+        .expect("gray cuda rejection")
+        .contains("full-tile RGB8"));
+}
+
+#[test]
+fn capability_report_keeps_roi_shape_visible_for_statumen_routing() {
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    let report = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::RegionScaled {
+                roi,
+                scale: Downscale::Quarter,
+            },
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("roi capability report");
+
+    assert_eq!(
+        report.request.op,
+        JpegDecodeOp::RegionScaled {
+            roi,
+            scale: Downscale::Quarter,
+        }
+    );
+    assert!(report.cpu.eligible);
+    assert!(!report.owned_cuda.eligible);
 }
 
 #[test]

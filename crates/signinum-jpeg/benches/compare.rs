@@ -17,7 +17,9 @@ use common::{
     signinum_decode_tile_batch_scaled, signinum_decode_with_scratch, signinum_inspect, zune_decode,
     zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
     zune_decode_region_scaled, zune_decode_scaled, zune_inspect, DecodeMode,
-    SigninumTileBatchRgbScratch, TurboJpegDecoder,
+    SigninumTileBatchRegionScaledRgbSession, SigninumTileBatchRgbOutputBuffers,
+    SigninumTileBatchRgbScratch, SigninumTileBatchRgbSession, SigninumTileBatchScaledRgbSession,
+    TurboJpegDecoder,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_jpeg::{Decoder, Downscale, ScratchPool};
@@ -175,6 +177,81 @@ fn bench_compare(c: &mut Criterion) {
         }
     }
     wsi_tile_batch_rgb.finish();
+
+    let mut wsi_tile_batch_session_rgb = c.benchmark_group("wsi_tile_batch_session_rgb");
+    for batch_size in [16usize, 64, 256] {
+        for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb) {
+            let bytes = &input.bytes;
+            let mut current_batch = SigninumTileBatchRgbScratch::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_free_batch/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| current_batch.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            let mut session_batch = SigninumTileBatchRgbSession::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| session_batch.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            let mut output_session = SigninumTileBatchRgbOutputBuffers::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session_output_buffers/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| output_session.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| {
+                    b.iter(|| {
+                        signinum_decode_tile_batch_scaled(bytes, batch_size, Downscale::Quarter);
+                    });
+                },
+            );
+
+            let bytes = &input.bytes;
+            let mut scaled_session =
+                SigninumTileBatchScaledRgbSession::new(bytes, batch_size, Downscale::Quarter);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| scaled_session.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_region_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| {
+                    b.iter(|| {
+                        signinum_decode_tile_batch_region_scaled(
+                            bytes,
+                            batch_size,
+                            256,
+                            Downscale::Quarter,
+                        );
+                    });
+                },
+            );
+
+            let bytes = &input.bytes;
+            let mut region_scaled_session = SigninumTileBatchRegionScaledRgbSession::new(
+                bytes,
+                batch_size,
+                256,
+                Downscale::Quarter,
+            );
+            wsi_tile_batch_session_rgb.bench_function(
+                format!(
+                    "warm_session_region_scaled_q4/{}/{}",
+                    batch_size, input.name
+                ),
+                move |b| b.iter(|| region_scaled_session.run(bytes)),
+            );
+        }
+    }
+    wsi_tile_batch_session_rgb.finish();
 
     let mut wsi_region_rgb = c.benchmark_group("wsi_region_rgb");
     for input in inputs.iter().filter(|input| {

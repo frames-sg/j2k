@@ -28,7 +28,7 @@ pub enum Error {
     #[error("CUDA is unavailable on this host")]
     CudaUnavailable,
     #[cfg(feature = "cuda-runtime")]
-    /// CUDA runtime or nvJPEG operation failed.
+    /// CUDA runtime operation failed.
     #[error("CUDA runtime error: {message}")]
     CudaRuntime {
         /// Runtime error message.

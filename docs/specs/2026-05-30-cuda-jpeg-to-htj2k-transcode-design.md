@@ -10,9 +10,10 @@
 
 ## 1. Why
 
-CUDA today has only the two *separate* endpoints — nvJPEG full decode (`signinum-jpeg-cuda`)
-and HTJ2K *pixel* encode (`signinum-j2k-cuda`) — which force a pixel round-trip. Metal already
-has the coefficient-domain shortcut (`signinum-transcode-metal`). This brings CUDA to parity.
+CUDA today has only the two *separate* endpoints — owned full-frame JPEG CUDA decode
+(`signinum-jpeg-cuda`) and HTJ2K *pixel* encode (`signinum-j2k-cuda`) — which force a
+pixel round-trip. Metal already has the coefficient-domain shortcut
+(`signinum-transcode-metal`). This brings CUDA to parity.
 
 ## 2. Architecture (follows the repo's CUDA split)
 

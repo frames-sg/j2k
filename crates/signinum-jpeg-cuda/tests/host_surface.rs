@@ -6,8 +6,11 @@ use signinum_core::{
 use signinum_jpeg_cuda::{Codec, CudaSession, Decoder, Error};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
+const BASELINE_422: &[u8] =
+    include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg");
+const BASELINE_444: &[u8] =
+    include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg");
 const OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA: u8 = 2;
-const NVJPEG_RGB8_MAX_CHANNEL_DELTA: u8 = 16;
 
 #[test]
 fn auto_falls_back_to_cpu_surface() {
@@ -152,12 +155,8 @@ fn explicit_cuda_full_frame_uses_owned_decode_when_required() {
         "explicit full-frame RGB8 CUDA decode must use the Signinum-owned CUDA JPEG path when required"
     );
     assert!(
-        !stats.used_nvjpeg_decode(),
-        "strict CUDA JPEG decode must not count nvJPEG as device success"
-    );
-    assert!(
         !stats.used_hardware_decode(),
-        "strict Signinum-owned CUDA JPEG decode must not report nvJPEG hardware decode"
+        "strict Signinum-owned CUDA JPEG decode must not report external hardware decode"
     );
     assert!(
         stats.decode_kernel_dispatches() > 0,
@@ -168,6 +167,23 @@ fn explicit_cuda_full_frame_uses_owned_decode_when_required() {
         0,
         "owned CUDA decode path should not be reported as the CPU decode plus copy fallback"
     );
+}
+
+#[test]
+fn explicit_cuda_full_frame_422_uses_owned_decode_when_required() {
+    assert_full_frame_owned_cuda_decode_when_required(BASELINE_422, (16, 8));
+}
+
+#[test]
+fn explicit_cuda_full_frame_444_uses_owned_decode_when_required() {
+    assert_full_frame_owned_cuda_decode_when_required(BASELINE_444, (8, 8));
+}
+
+#[test]
+fn cuda_session_owned_decode_cache_starts_empty() {
+    let session = CudaSession::default();
+
+    assert_eq!(session.owned_cuda_packet_cache_len(), 0);
 }
 
 fn runtime_required() -> bool {
@@ -204,21 +220,36 @@ fn assert_surface_bytes_match_or_are_close(
         );
         return;
     }
-    if !stats.used_nvjpeg_decode() {
-        assert_eq!(actual, expected);
+    assert_eq!(actual, expected);
+}
+
+fn assert_full_frame_owned_cuda_decode_when_required(input: &[u8], dimensions: (u32, u32)) {
+    if !strict_cuda_jpeg_decode_required() {
         return;
     }
 
-    let max_delta = actual
-        .iter()
-        .zip(expected)
-        .map(|(actual, expected)| actual.abs_diff(*expected))
-        .max()
-        .unwrap_or(0);
-    assert!(
-        max_delta <= NVJPEG_RGB8_MAX_CHANNEL_DELTA,
-        "nvJPEG decode differed from the CPU reference by max channel delta {max_delta}"
-    );
+    let mut decoder = Decoder::new(input).expect("decoder");
+    let surface = decoder
+        .decode_to_device(PixelFormat::Rgb8, BackendRequest::Cuda)
+        .expect("cuda surface");
+    assert_eq!(surface.backend_kind(), signinum_core::BackendKind::Cuda);
+    assert_eq!(surface.dimensions(), dimensions);
+    assert_eq!(surface.as_host_bytes(), None);
+    assert_cuda_surface(&surface);
+    let stats = surface.cuda_surface().expect("cuda surface").stats();
+    assert!(stats.used_owned_cuda_decode());
+    assert!(!stats.used_hardware_decode());
+    assert_eq!(stats.copy_kernel_dispatches(), 0);
+
+    let mut downloaded = vec![0u8; surface.byte_len()];
+    surface
+        .download_into(&mut downloaded, surface.pitch_bytes())
+        .expect("download cuda surface");
+    let (expected, _) = signinum_jpeg::Decoder::new(input)
+        .expect("host decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("host decode");
+    assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
 }
 
 #[test]
@@ -441,6 +472,42 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
 }
 
 #[test]
+fn decode_tiles_to_device_with_session_auto_preserves_order_and_matches_host_bytes() {
+    let inputs = [BASELINE_420, BASELINE_420];
+    let mut session = CudaSession::default();
+
+    let surfaces = Codec::decode_tiles_to_device_with_session(
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Auto,
+        &mut session,
+    )
+    .expect("session-backed batch surfaces");
+
+    assert_eq!(surfaces.len(), inputs.len());
+    let (expected, _) = signinum_jpeg::Decoder::new(BASELINE_420)
+        .expect("host decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("host decode");
+    for surface in surfaces {
+        assert_eq!(surface.dimensions(), (16, 16));
+        match surface.backend_kind() {
+            signinum_core::BackendKind::Cpu => {
+                assert_eq!(surface.as_host_bytes(), Some(expected.as_slice()));
+            }
+            signinum_core::BackendKind::Cuda => {
+                let mut downloaded = vec![0u8; surface.byte_len()];
+                surface
+                    .download_into(&mut downloaded, surface.pitch_bytes())
+                    .expect("download cuda surface");
+                assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
+            }
+            signinum_core::BackendKind::Metal => panic!("JPEG CUDA batch returned Metal surface"),
+        }
+    }
+}
+
+#[test]
 fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailable_error() {
     let mut ctx = DecoderContext::<signinum_jpeg::DecoderContext>::new();
     let mut pool = signinum_jpeg::ScratchPool::new();
@@ -510,10 +577,6 @@ fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
             "explicit full-tile RGB8 CUDA batch decode must use the Signinum-owned CUDA path when required"
         );
         assert!(
-            !stats.used_nvjpeg_decode(),
-            "strict CUDA JPEG batch decode must not count nvJPEG as device success"
-        );
-        assert!(
             stats.decode_kernel_dispatches() > 0,
             "owned CUDA batch decode path must report decode dispatches"
         );
@@ -521,6 +584,126 @@ fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
             stats.copy_kernel_dispatches(),
             0,
             "owned CUDA batch decode path should not be reported as CPU decode plus copy"
+        );
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_session_batch_records_owned_packet_cache_when_required() {
+    if !strict_cuda_jpeg_decode_required() {
+        return;
+    }
+
+    let inputs = [BASELINE_420, BASELINE_420];
+    let mut session = CudaSession::default();
+    let surfaces = Codec::decode_tiles_to_device_with_session(
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+        &mut session,
+    )
+    .expect("cuda session batch surfaces");
+
+    assert_eq!(surfaces.len(), inputs.len());
+    assert_eq!(session.owned_cuda_packet_cache_len(), 1);
+    for surface in surfaces {
+        let stats = surface.cuda_surface().expect("cuda surface").stats();
+        assert!(stats.used_owned_cuda_decode());
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_decodes_into_caller_owned_buffer_when_required() {
+    if !strict_cuda_jpeg_decode_required() {
+        return;
+    }
+
+    let mut session = CudaSession::default();
+    let pitch = 16 * PixelFormat::Rgb8.bytes_per_pixel();
+    let byte_len = pitch * 16;
+    let buffer = session
+        .take_owned_cuda_output_buffer(byte_len)
+        .expect("device output buffer");
+
+    let stats = Codec::decode_tile_rgb8_into_cuda_buffer_with_session(
+        BASELINE_420,
+        &buffer,
+        pitch,
+        &mut session,
+    )
+    .expect("direct owned CUDA decode");
+
+    assert!(stats.used_owned_cuda_decode());
+    assert_eq!(session.owned_cuda_packet_cache_len(), 1);
+
+    let mut downloaded = vec![0u8; byte_len];
+    buffer
+        .copy_to_host(&mut downloaded)
+        .expect("download buffer");
+    let (expected, _) = signinum_jpeg::Decoder::new(BASELINE_420)
+        .expect("host decoder")
+        .decode(PixelFormat::Rgb8)
+        .expect("host decode");
+    let max_delta = downloaded
+        .iter()
+        .zip(expected)
+        .map(|(actual, expected)| actual.abs_diff(expected))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
+        "direct Signinum-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
+    );
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
+    if !strict_cuda_jpeg_decode_required() {
+        return;
+    }
+
+    for (input, dimensions) in [
+        (BASELINE_422, (16_u32, 8_u32)),
+        (BASELINE_444, (8_u32, 8_u32)),
+    ] {
+        let mut session = CudaSession::default();
+        let pitch = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let byte_len = pitch * dimensions.1 as usize;
+        let buffer = session
+            .take_owned_cuda_output_buffer(byte_len)
+            .expect("device output buffer");
+
+        let stats = Codec::decode_tile_rgb8_into_cuda_buffer_with_session(
+            input,
+            &buffer,
+            pitch,
+            &mut session,
+        )
+        .expect("direct owned CUDA decode");
+
+        assert!(stats.used_owned_cuda_decode());
+        assert_eq!(session.owned_cuda_packet_cache_len(), 1);
+
+        let mut downloaded = vec![0u8; byte_len];
+        buffer
+            .copy_to_host(&mut downloaded)
+            .expect("download buffer");
+        let (expected, _) = signinum_jpeg::Decoder::new(input)
+            .expect("host decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("host decode");
+        let max_delta = downloaded
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| actual.abs_diff(expected))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
+            "direct Signinum-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
         );
     }
 }

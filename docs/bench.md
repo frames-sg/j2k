@@ -589,7 +589,7 @@ SIGNINUM_GPU_ROUTE_PROFILE=summary \
 
 The helper tests only prove formatting. The adapter tests and benches report
 selected backend, fallback reason, batch eligibility, and CUDA/Metal upload or
-nvJPEG decisions. They do not replace wall-clock bench numbers because route
+owned-kernel decisions. They do not replace wall-clock bench numbers because route
 logging itself is diagnostic output.
 
 Existing GPU timing env vars remain more specific:
@@ -672,7 +672,7 @@ self-hosted runners for GPU signoff:
   `signinum-j2k-metal` bench surface is reset pending new narrow hybrid
   profiling benches.
 - x86_64 CUDA runners validate CUDA device-memory output with `cuda-runtime`
-  and can run the `signinum-jpeg-cuda` nvJPEG and `signinum-j2k-cuda` HTJ2K
+  and can run the `signinum-jpeg-cuda` owned CUDA JPEG and `signinum-j2k-cuda` HTJ2K
   Criterion benches. NVIDIA performance claims require recorded
   timed-benchmark output from those hosts.
 
@@ -763,15 +763,17 @@ CUDA driver and the `cuda-runtime` feature:
 
 - `BackendRequest::Cpu` returns a host-backed surface
 - `BackendRequest::Auto` falls back to the CPU surface
-- `signinum-jpeg-cuda` may use nvJPEG or an explicit CPU-upload fallback
+- `signinum-jpeg-cuda` uses Signinum-owned CUDA kernels for supported strict
+  full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 JPEG requests
 - `signinum-j2k-cuda` reserves `BackendRequest::Cuda` for CUDA-resident HTJ2K
   codestream decode; CPU-staged J2K upload uses the explicit
   `decode_*_cpu_staged_cuda_surface_with_session` APIs
 
-`signinum-jpeg-cuda` has a full-frame RGB8 nvJPEG path when `libnvjpeg` is
-available. Region, scaled, non-RGB8, and nvJPEG-unsupported JPEG requests use
-CPU decode plus CUDA device-memory upload. J2K CUDA requests must not silently
-take that fallback path.
+`signinum-jpeg-cuda` has full-frame RGB8 4:2:0, 4:2:2, and 4:4:4 owned CUDA
+paths. Region, scaled, non-RGB8, and unsupported JPEG requests return strict
+unsupported errors. CPU decode plus CUDA device-memory upload is available only
+through explicit CPU-staged APIs where an adapter exposes them. J2K CUDA
+requests must not silently take that fallback path.
 
 Compile the CUDA benches:
 
@@ -791,13 +793,15 @@ SIGNINUM_GPU_BENCH_BATCH_DIM=1024 \
 ```
 
 The CUDA surface and download benchmark cases reuse one `CudaSession`, so they
-measure steady-state nvJPEG decode after CUDA context and nvJPEG state
-initialization. The CUDA batch case uses nvJPEG batched RGB8 decode and is the
+measure steady-state owned CUDA decode after CUDA context and packet-cache
+initialization. The CUDA batch case uses the public adapter path and is the
 throughput-oriented comparison for many same-sized WSI-style JPEG tiles.
 
 Set `SIGNINUM_GPU_BENCH_JPEG=/path/to/wsi_tile.jpg` or
 `SIGNINUM_CUDA_BENCH_JPEG=/path/to/wsi_tile.jpg` to use a real tile instead of
-the generated RGB benchmark JPEG.
+the generated RGB benchmark JPEG. Generated JPEGs default to 4:2:0; use
+`SIGNINUM_CUDA_BENCH_SUBSAMPLING=422` or `444` to time the 4:2:2 and 4:4:4
+owned CUDA kernels.
 Set `SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE=1` when the run must fail
 instead of benchmarking the CPU-upload fallback. Small committed fixtures are
 useful for compile smoke tests, but realistic GPU comparisons need larger

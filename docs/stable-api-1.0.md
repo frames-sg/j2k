@@ -353,8 +353,9 @@ Stable functions and methods: `Decoder::new`, `Surface::pitch_bytes`,
 and `CudaSurfaceStats::{kernel_dispatches,copy_kernel_dispatches,decode_kernel_dispatches,used_hardware_decode}`.
 
 Stable behavior: explicit CUDA returns a CUDA-backed surface or a typed
-unavailable/unsupported error. Auto mode may use nvJPEG for supported batch
-decode and otherwise return observable host-backed output.
+unavailable/unsupported error. Auto mode returns observable host-backed output
+for JPEG CUDA requests unless a documented owned CUDA route is explicitly
+selected.
 
 ### `signinum-j2k-cuda`
 
@@ -468,8 +469,6 @@ Stable functions and methods: `CudaContext::system_default`,
 `CudaContext::upload`, `CudaContext::allocate`,
 `CudaContext::copy_with_kernel`,
 `CudaContext::copy_device_to_device_with_kernel`,
-`CudaContext::decode_jpeg_rgb8_with_nvjpeg`,
-`CudaContext::decode_jpeg_rgb8_batch_with_nvjpeg`,
 `CudaContext::j2k_forward_rct`, `CudaContext::j2k_forward_dwt53`,
 `CudaDeviceBuffer::device_ptr`, `CudaDeviceBuffer::byte_len`,
 `CudaDeviceBuffer::copy_to_host`, `CudaKernelOutput::into_parts`,

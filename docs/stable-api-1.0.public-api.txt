@@ -1127,6 +1127,47 @@ pub fn signinum_jpeg::adapter::jpeg_baseline_sampling_for(signinum_jpeg::encoder
 pub fn signinum_jpeg::adapter::summarize_device_batch(&signinum_jpeg::decoder::Decoder<'_>, u32) -> signinum_jpeg::adapter::DeviceBatchSummary
 pub fn signinum_jpeg::adapter::validate_jpeg_baseline_dimensions(u32, u32) -> core::result::Result<(), signinum_jpeg::encoder::JpegEncodeError>
 pub fn signinum_jpeg::adapter::validate_jpeg_baseline_restart_interval(core::option::Option<u16>) -> core::result::Result<(), signinum_jpeg::encoder::JpegEncodeError>
+pub mod signinum_jpeg::batch_session
+pub struct signinum_jpeg::batch_session::JpegBatchSession
+impl signinum_jpeg::batch_session::JpegBatchSession
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_into(&mut self, &mut [signinum_jpeg::decoder::TileDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_region_scaled_into(&mut self, &mut [signinum_jpeg::decoder::TileRegionScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_region_scaled_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileRegionScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_scaled_into(&mut self, &mut [signinum_jpeg::decoder::TileScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_scaled_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::new(signinum_core::batch::TileBatchOptions) -> Self
+pub fn signinum_jpeg::batch_session::JpegBatchSession::options(&self) -> signinum_core::batch::TileBatchOptions
+pub fn signinum_jpeg::batch_session::JpegBatchSession::reset(&mut self)
+pub fn signinum_jpeg::batch_session::JpegBatchSession::retained_worker_slots(&self) -> usize
+pub fn signinum_jpeg::batch_session::JpegBatchSession::set_options(&mut self, signinum_core::batch::TileBatchOptions)
+pub fn signinum_jpeg::batch_session::JpegBatchSession::worker_count(&self) -> usize
+impl core::default::Default for signinum_jpeg::batch_session::JpegBatchSession
+pub fn signinum_jpeg::batch_session::JpegBatchSession::default() -> Self
+pub mod signinum_jpeg::capabilities
+pub enum signinum_jpeg::capabilities::JpegDecodeOp
+pub signinum_jpeg::capabilities::JpegDecodeOp::Full
+pub signinum_jpeg::capabilities::JpegDecodeOp::Region(signinum_jpeg::info::Rect)
+pub signinum_jpeg::capabilities::JpegDecodeOp::RegionScaled
+pub signinum_jpeg::capabilities::JpegDecodeOp::RegionScaled::roi: signinum_jpeg::info::Rect
+pub signinum_jpeg::capabilities::JpegDecodeOp::RegionScaled::scale: signinum_core::scale::Downscale
+pub signinum_jpeg::capabilities::JpegDecodeOp::Scaled(signinum_core::scale::Downscale)
+pub struct signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::capabilities::JpegBackendEligibility::eligible: bool
+pub signinum_jpeg::capabilities::JpegBackendEligibility::reason: core::option::Option<&'static str>
+pub struct signinum_jpeg::capabilities::JpegCapabilityReport
+pub signinum_jpeg::capabilities::JpegCapabilityReport::cpu: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::capabilities::JpegCapabilityReport::device: signinum_jpeg::adapter::DeviceBatchSummary
+pub signinum_jpeg::capabilities::JpegCapabilityReport::info: signinum_jpeg::info::Info
+pub signinum_jpeg::capabilities::JpegCapabilityReport::metal_fast: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::capabilities::JpegCapabilityReport::owned_cuda: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::capabilities::JpegCapabilityReport::request: signinum_jpeg::capabilities::JpegCapabilityRequest
+impl signinum_jpeg::capabilities::JpegCapabilityReport
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::for_decoder(&signinum_jpeg::decoder::Decoder<'_>, signinum_jpeg::capabilities::JpegCapabilityRequest) -> Self
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::inspect(&[u8], signinum_jpeg::capabilities::JpegCapabilityRequest) -> core::result::Result<Self, signinum_jpeg::error::JpegError>
+pub struct signinum_jpeg::capabilities::JpegCapabilityRequest
+pub signinum_jpeg::capabilities::JpegCapabilityRequest::fmt: signinum_core::pixel::PixelFormat
+pub signinum_jpeg::capabilities::JpegCapabilityRequest::op: signinum_jpeg::capabilities::JpegDecodeOp
 pub mod signinum_jpeg::context
 pub struct signinum_jpeg::context::DecoderContext
 impl signinum_jpeg::context::DecoderContext
@@ -1531,6 +1572,21 @@ pub fn signinum_jpeg::info::SamplingFactors::components(&self) -> &[(u8, u8)]
 pub fn signinum_jpeg::info::SamplingFactors::from_components(&[(u8, u8)]) -> Self
 pub fn signinum_jpeg::info::SamplingFactors::is_empty(&self) -> bool
 pub fn signinum_jpeg::info::SamplingFactors::len(&self) -> usize
+pub mod signinum_jpeg::output_buffer
+pub struct signinum_jpeg::output_buffer::JpegOutputBuffer
+impl signinum_jpeg::output_buffer::JpegOutputBuffer
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::as_mut_slice(&mut self) -> &mut [u8]
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::as_slice(&self) -> &[u8]
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::capacity(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::is_empty(&self) -> bool
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::len(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::new((u32, u32), signinum_core::pixel::PixelFormat) -> core::result::Result<Self, signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::pixel_format(&self) -> signinum_core::pixel::PixelFormat
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::resize(&mut self, (u32, u32), signinum_core::pixel::PixelFormat) -> core::result::Result<(), signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::resize_with_stride(&mut self, (u32, u32), usize, signinum_core::pixel::PixelFormat) -> core::result::Result<(), signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::stride(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::with_stride((u32, u32), usize, signinum_core::pixel::PixelFormat) -> core::result::Result<Self, signinum_core::error::BufferError>
 pub mod signinum_jpeg::transcode
 pub enum signinum_jpeg::transcode::JpegDctCodingMode
 pub signinum_jpeg::transcode::JpegDctCodingMode::BaselineSequential
@@ -1585,6 +1641,13 @@ pub enum signinum_jpeg::JpegBackend
 pub signinum_jpeg::JpegBackend::Auto
 pub signinum_jpeg::JpegBackend::Cpu
 pub signinum_jpeg::JpegBackend::Metal
+pub enum signinum_jpeg::JpegDecodeOp
+pub signinum_jpeg::JpegDecodeOp::Full
+pub signinum_jpeg::JpegDecodeOp::Region(signinum_jpeg::info::Rect)
+pub signinum_jpeg::JpegDecodeOp::RegionScaled
+pub signinum_jpeg::JpegDecodeOp::RegionScaled::roi: signinum_jpeg::info::Rect
+pub signinum_jpeg::JpegDecodeOp::RegionScaled::scale: signinum_core::scale::Downscale
+pub signinum_jpeg::JpegDecodeOp::Scaled(signinum_core::scale::Downscale)
 pub enum signinum_jpeg::JpegEncodeError
 pub signinum_jpeg::JpegEncodeError::DimensionsTooLarge
 pub signinum_jpeg::JpegEncodeError::DimensionsTooLarge::height: u32
@@ -1868,6 +1931,38 @@ pub signinum_jpeg::Info::scan_count: u16
 pub signinum_jpeg::Info::sof_kind: signinum_jpeg::info::SofKind
 impl signinum_jpeg::info::Info
 pub fn signinum_jpeg::info::Info::to_core_info(&self) -> signinum_core::types::Info
+pub struct signinum_jpeg::JpegBackendEligibility
+pub signinum_jpeg::JpegBackendEligibility::eligible: bool
+pub signinum_jpeg::JpegBackendEligibility::reason: core::option::Option<&'static str>
+pub struct signinum_jpeg::JpegBatchSession
+impl signinum_jpeg::batch_session::JpegBatchSession
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_into(&mut self, &mut [signinum_jpeg::decoder::TileDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_region_scaled_into(&mut self, &mut [signinum_jpeg::decoder::TileRegionScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_region_scaled_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileRegionScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_scaled_into(&mut self, &mut [signinum_jpeg::decoder::TileScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::decode_tiles_scaled_into_with_options(&mut self, &mut [signinum_jpeg::decoder::TileScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_jpeg::info::DecodeOptions) -> core::result::Result<alloc::vec::Vec<signinum_jpeg::decoder::DecodeOutcome>, signinum_jpeg::decoder::TileBatchError>
+pub fn signinum_jpeg::batch_session::JpegBatchSession::new(signinum_core::batch::TileBatchOptions) -> Self
+pub fn signinum_jpeg::batch_session::JpegBatchSession::options(&self) -> signinum_core::batch::TileBatchOptions
+pub fn signinum_jpeg::batch_session::JpegBatchSession::reset(&mut self)
+pub fn signinum_jpeg::batch_session::JpegBatchSession::retained_worker_slots(&self) -> usize
+pub fn signinum_jpeg::batch_session::JpegBatchSession::set_options(&mut self, signinum_core::batch::TileBatchOptions)
+pub fn signinum_jpeg::batch_session::JpegBatchSession::worker_count(&self) -> usize
+impl core::default::Default for signinum_jpeg::batch_session::JpegBatchSession
+pub fn signinum_jpeg::batch_session::JpegBatchSession::default() -> Self
+pub struct signinum_jpeg::JpegCapabilityReport
+pub signinum_jpeg::JpegCapabilityReport::cpu: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::JpegCapabilityReport::device: signinum_jpeg::adapter::DeviceBatchSummary
+pub signinum_jpeg::JpegCapabilityReport::info: signinum_jpeg::info::Info
+pub signinum_jpeg::JpegCapabilityReport::metal_fast: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::JpegCapabilityReport::owned_cuda: signinum_jpeg::capabilities::JpegBackendEligibility
+pub signinum_jpeg::JpegCapabilityReport::request: signinum_jpeg::capabilities::JpegCapabilityRequest
+impl signinum_jpeg::capabilities::JpegCapabilityReport
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::for_decoder(&signinum_jpeg::decoder::Decoder<'_>, signinum_jpeg::capabilities::JpegCapabilityRequest) -> Self
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::inspect(&[u8], signinum_jpeg::capabilities::JpegCapabilityRequest) -> core::result::Result<Self, signinum_jpeg::error::JpegError>
+pub struct signinum_jpeg::JpegCapabilityRequest
+pub signinum_jpeg::JpegCapabilityRequest::fmt: signinum_core::pixel::PixelFormat
+pub signinum_jpeg::JpegCapabilityRequest::op: signinum_jpeg::capabilities::JpegDecodeOp
 pub struct signinum_jpeg::JpegCodec
 impl signinum_core::traits::ImageCodec for signinum_jpeg::JpegCodec
 pub type signinum_jpeg::JpegCodec::Error = signinum_jpeg::error::JpegError
@@ -1886,6 +1981,20 @@ pub signinum_jpeg::JpegEncodeOptions::restart_interval: core::option::Option<u16
 pub signinum_jpeg::JpegEncodeOptions::subsampling: signinum_jpeg::encoder::JpegSubsampling
 impl core::default::Default for signinum_jpeg::encoder::JpegEncodeOptions
 pub fn signinum_jpeg::encoder::JpegEncodeOptions::default() -> Self
+pub struct signinum_jpeg::JpegOutputBuffer
+impl signinum_jpeg::output_buffer::JpegOutputBuffer
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::as_mut_slice(&mut self) -> &mut [u8]
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::as_slice(&self) -> &[u8]
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::capacity(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::is_empty(&self) -> bool
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::len(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::new((u32, u32), signinum_core::pixel::PixelFormat) -> core::result::Result<Self, signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::pixel_format(&self) -> signinum_core::pixel::PixelFormat
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::resize(&mut self, (u32, u32), signinum_core::pixel::PixelFormat) -> core::result::Result<(), signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::resize_with_stride(&mut self, (u32, u32), usize, signinum_core::pixel::PixelFormat) -> core::result::Result<(), signinum_core::error::BufferError>
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::stride(&self) -> usize
+pub fn signinum_jpeg::output_buffer::JpegOutputBuffer::with_stride((u32, u32), usize, signinum_core::pixel::PixelFormat) -> core::result::Result<Self, signinum_core::error::BufferError>
 pub struct signinum_jpeg::JpegView<'a>
 impl<'a> signinum_jpeg::decoder::JpegView<'a>
 pub fn signinum_jpeg::decoder::JpegView<'a>::bytes(&self) -> &'a [u8]
@@ -3987,7 +4096,6 @@ pub use signinum_jpeg_cuda::DecoderContext
 pub use signinum_jpeg_cuda::ScratchPool
 pub enum signinum_jpeg_cuda::CudaJpegDecodePath
 pub signinum_jpeg_cuda::CudaJpegDecodePath::None
-pub signinum_jpeg_cuda::CudaJpegDecodePath::NvjpegHardware
 pub signinum_jpeg_cuda::CudaJpegDecodePath::OwnedCuda
 pub enum signinum_jpeg_cuda::Error
 pub signinum_jpeg_cuda::Error::Buffer(signinum_core::error::BufferError)
@@ -4006,6 +4114,7 @@ pub fn signinum_jpeg_cuda::Error::is_truncated(&self) -> bool
 pub fn signinum_jpeg_cuda::Error::is_unsupported(&self) -> bool
 pub struct signinum_jpeg_cuda::Codec
 impl signinum_jpeg_cuda::Codec
+pub fn signinum_jpeg_cuda::Codec::decode_tile_rgb8_into_cuda_buffer_with_session(&[u8], &signinum_cuda_runtime::CudaDeviceBuffer, usize, &mut signinum_jpeg_cuda::CudaSession) -> core::result::Result<signinum_jpeg_cuda::CudaSurfaceStats, signinum_jpeg_cuda::Error>
 pub fn signinum_jpeg_cuda::Codec::decode_tiles_to_device_with_session(&[&[u8]], signinum_core::pixel::PixelFormat, signinum_core::backend::BackendRequest, &mut signinum_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<signinum_jpeg_cuda::Surface>, signinum_jpeg_cuda::Error>
 impl signinum_core::traits::ImageCodec for signinum_jpeg_cuda::Codec
 pub type signinum_jpeg_cuda::Codec::Error = signinum_jpeg_cuda::Error
@@ -4030,7 +4139,11 @@ pub fn signinum_jpeg_cuda::Codec::submit_tile_to_device(&mut signinum_core::cont
 pub struct signinum_jpeg_cuda::CudaSession
 impl signinum_jpeg_cuda::CudaSession
 pub fn signinum_jpeg_cuda::CudaSession::is_runtime_initialized(&self) -> bool
+pub fn signinum_jpeg_cuda::CudaSession::owned_cuda_packet_cache_len(&self) -> usize
+pub fn signinum_jpeg_cuda::CudaSession::recycle_owned_cuda_output_buffer(&mut self, signinum_cuda_runtime::CudaDeviceBuffer) -> core::result::Result<(), signinum_jpeg_cuda::Error>
+pub fn signinum_jpeg_cuda::CudaSession::retained_owned_cuda_output_buffers(&self) -> core::result::Result<usize, signinum_jpeg_cuda::Error>
 pub fn signinum_jpeg_cuda::CudaSession::submissions(&self) -> u64
+pub fn signinum_jpeg_cuda::CudaSession::take_owned_cuda_output_buffer(&mut self, usize) -> core::result::Result<signinum_cuda_runtime::CudaDeviceBuffer, signinum_jpeg_cuda::Error>
 impl core::fmt::Debug for signinum_jpeg_cuda::CudaSession
 pub fn signinum_jpeg_cuda::CudaSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct signinum_jpeg_cuda::CudaSurface<'a>
@@ -4044,7 +4157,6 @@ pub fn signinum_jpeg_cuda::CudaSurfaceStats::decode_kernel_dispatches(self) -> u
 pub fn signinum_jpeg_cuda::CudaSurfaceStats::decode_path(self) -> signinum_jpeg_cuda::CudaJpegDecodePath
 pub fn signinum_jpeg_cuda::CudaSurfaceStats::kernel_dispatches(self) -> usize
 pub fn signinum_jpeg_cuda::CudaSurfaceStats::used_hardware_decode(self) -> bool
-pub fn signinum_jpeg_cuda::CudaSurfaceStats::used_nvjpeg_decode(self) -> bool
 pub fn signinum_jpeg_cuda::CudaSurfaceStats::used_owned_cuda_decode(self) -> bool
 pub struct signinum_jpeg_cuda::Decoder<'a>
 impl<'a> signinum_jpeg_cuda::Decoder<'a>
@@ -6043,15 +6155,6 @@ pub signinum_cuda_runtime::CudaError::LengthNotElementAligned::bytes: usize
 pub signinum_cuda_runtime::CudaError::LengthNotElementAligned::element_size: usize
 pub signinum_cuda_runtime::CudaError::LengthTooLarge
 pub signinum_cuda_runtime::CudaError::LengthTooLarge::len: usize
-pub signinum_cuda_runtime::CudaError::Nvjpeg
-pub signinum_cuda_runtime::CudaError::Nvjpeg::code: i32
-pub signinum_cuda_runtime::CudaError::Nvjpeg::name: alloc::string::String
-pub signinum_cuda_runtime::CudaError::Nvjpeg::operation: &'static str
-pub signinum_cuda_runtime::CudaError::NvjpegDimensions
-pub signinum_cuda_runtime::CudaError::NvjpegDimensions::actual: (u32, u32)
-pub signinum_cuda_runtime::CudaError::NvjpegDimensions::expected: (u32, u32)
-pub signinum_cuda_runtime::CudaError::NvjpegUnavailable
-pub signinum_cuda_runtime::CudaError::NvjpegUnavailable::message: alloc::string::String
 pub signinum_cuda_runtime::CudaError::OutputTooSmall
 pub signinum_cuda_runtime::CudaError::OutputTooSmall::have: usize
 pub signinum_cuda_runtime::CudaError::OutputTooSmall::required: usize
@@ -6059,6 +6162,10 @@ pub signinum_cuda_runtime::CudaError::StatePoisoned
 pub signinum_cuda_runtime::CudaError::StatePoisoned::message: alloc::string::String
 pub signinum_cuda_runtime::CudaError::Unavailable
 pub signinum_cuda_runtime::CudaError::Unavailable::message: alloc::string::String
+pub enum signinum_cuda_runtime::CudaJpegRgb8Sampling
+pub signinum_cuda_runtime::CudaJpegRgb8Sampling::Fast420
+pub signinum_cuda_runtime::CudaJpegRgb8Sampling::Fast422
+pub signinum_cuda_runtime::CudaJpegRgb8Sampling::Fast444
 #[non_exhaustive] pub enum signinum_cuda_runtime::CudaKernelName
 pub signinum_cuda_runtime::CudaKernelName::CopyU8
 pub signinum_cuda_runtime::CudaKernelName::Htj2kCompactCodeblocks
@@ -6144,8 +6251,9 @@ pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resource
 pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources_untimed(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_htj2k_codeblocks_with_resources_untimed_and_pool(&self, &signinum_cuda_runtime::CudaHtj2kDecodeResources, &[signinum_cuda_runtime::CudaHtj2kCodeBlockJob], usize, &signinum_cuda_runtime::CudaBufferPool) -> core::result::Result<signinum_cuda_runtime::CudaPooledHtj2kDecodeOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_420_rgb8_owned(&self, &signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan<'_>) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
-pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_batch_with_nvjpeg(&self, &[(&[u8], (u32, u32))]) -> core::result::Result<alloc::vec::Vec<signinum_cuda_runtime::CudaKernelOutput>, signinum_cuda_runtime::CudaError>
-pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_with_nvjpeg(&self, &[u8], (u32, u32)) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_420_rgb8_owned_into(&self, &signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan<'_>, &signinum_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned(&self, &signinum_cuda_runtime::CudaJpegRgb8DecodePlan<'_>) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_into(&self, &signinum_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, &signinum_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock(&self, &[i32], u32, u32, u8, signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident_with_resources(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
@@ -6667,6 +6775,22 @@ pub signinum_cuda_runtime::CudaJpegHuffmanTable::values: [u8; 256]
 pub signinum_cuda_runtime::CudaJpegHuffmanTable::values_len: u32
 impl signinum_cuda_runtime::CudaJpegHuffmanTable
 pub fn signinum_cuda_runtime::CudaJpegHuffmanTable::from_jpeg_bits_values([u8; 16], u16, [u8; 256]) -> core::result::Result<Self, signinum_cuda_runtime::CudaError>
+pub struct signinum_cuda_runtime::CudaJpegRgb8DecodePlan<'a>
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cb_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cb_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cb_quant: [u16; 64]
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cr_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cr_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::cr_quant: [u16; 64]
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::dimensions: (u32, u32)
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::entropy_bytes: &'a [u8]
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::entropy_checkpoints: &'a [signinum_cuda_runtime::CudaJpegEntropyCheckpoint]
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::mcu_rows: u32
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::mcus_per_row: u32
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::sampling: signinum_cuda_runtime::CudaJpegRgb8Sampling
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::y_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::y_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegRgb8DecodePlan::y_quant: [u16; 64]
 pub struct signinum_cuda_runtime::CudaKernelBatchOutput
 impl signinum_cuda_runtime::CudaKernelBatchOutput
 pub fn signinum_cuda_runtime::CudaKernelBatchOutput::execution(&self) -> signinum_cuda_runtime::CudaExecutionStats

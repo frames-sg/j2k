@@ -29,6 +29,17 @@ pub use signinum_core::{
 pub mod context;
 pub use context::DecoderContext;
 
+pub mod batch_session;
+pub use batch_session::JpegBatchSession;
+
+pub mod capabilities;
+pub use capabilities::{
+    JpegBackendEligibility, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
+};
+
+pub mod output_buffer;
+pub use output_buffer::JpegOutputBuffer;
+
 pub mod adapter;
 
 pub mod error;

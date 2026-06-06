@@ -8,8 +8,8 @@ use signinum_jpeg::{
     decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
     decode_tiles_into_with_options, decode_tiles_region_scaled_into, decode_tiles_scaled_into,
     decode_tiles_scaled_into_with_options, ColorTransform, DecodeOptions, Decoder, DecoderContext,
-    Downscale, PixelFormat, Rect, RowSink, ScratchPool, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    Downscale, JpegBatchSession, JpegOutputBuffer, PixelFormat, Rect, RowSink, ScratchPool,
+    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 mod fixtures;
 use fixtures::progressive_8x8_jpeg;
@@ -134,6 +134,187 @@ fn production_batch_decode_parallel_preserves_order_and_output() {
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");
     }
+}
+
+#[test]
+fn session_batch_decode_reuses_worker_state_across_calls_and_matches_free_batch() {
+    const JOBS: usize = 32;
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(4),
+    };
+    let mut session = JpegBatchSession::new(options);
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+
+    for pass in 0..3 {
+        for output in &mut outputs {
+            output.fill(pass as u8);
+        }
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: BASELINE_420,
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), JOBS);
+        assert_eq!(session.worker_count(), 4);
+        for (index, out) in outputs.iter().enumerate() {
+            assert_eq!(out, &expected, "pass {pass} tile {index} output diverged");
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_reports_first_failing_tile_index() {
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let mut outputs = (0..3)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let err = {
+        let inputs: [&[u8]; 3] = [BASELINE_420, b"not a jpeg", BASELINE_420];
+        let mut jobs = inputs
+            .into_iter()
+            .zip(outputs.iter_mut())
+            .map(|(input, out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect_err("bad tile fails")
+    };
+
+    assert_eq!(err.index, 1);
+}
+
+#[test]
+fn session_batch_scaled_and_region_scaled_decode_match_existing_batch_api() {
+    const JOBS: usize = 16;
+    let dec = Decoder::new(BASELINE_420).expect("fixture decoder");
+    let scale = Downscale::Quarter;
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    let scaled_full = (
+        dec.info().dimensions.0.div_ceil(4),
+        dec.info().dimensions.1.div_ceil(4),
+    );
+    let scaled_roi = Rect {
+        x: roi.x / 4,
+        y: roi.y / 4,
+        w: (roi.x + roi.w).div_ceil(4) - roi.x / 4,
+        h: (roi.y + roi.h).div_ceil(4) - roi.y / 4,
+    };
+    let scaled_stride = scaled_full.0 as usize * 3;
+    let region_stride = scaled_roi.w as usize * 3;
+    let mut scaled_outputs = (0..JOBS)
+        .map(|_| vec![0u8; scaled_stride * scaled_full.1 as usize])
+        .collect::<Vec<_>>();
+    let mut scaled_expected = scaled_outputs.clone();
+    let mut region_outputs = (0..JOBS)
+        .map(|_| vec![0u8; region_stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut region_expected = region_outputs.clone();
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(4),
+    };
+    let mut session = JpegBatchSession::new(options);
+
+    {
+        let mut jobs = scaled_expected
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free scaled batch decode");
+    }
+    {
+        let mut jobs = scaled_outputs
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session scaled batch decode");
+    }
+    {
+        let mut jobs = region_expected
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free region-scaled batch decode");
+    }
+    {
+        let mut jobs = region_outputs
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session region-scaled batch decode");
+    }
+
+    assert_eq!(scaled_outputs, scaled_expected);
+    assert_eq!(region_outputs, region_expected);
+}
+
+#[test]
+fn jpeg_output_buffer_resizes_without_reallocating_for_same_or_smaller_shape() {
+    let mut buffer = JpegOutputBuffer::new((16, 16), PixelFormat::Rgb8).expect("output buffer");
+    let initial_capacity = buffer.capacity();
+    assert_eq!(buffer.dimensions(), (16, 16));
+    assert_eq!(buffer.stride(), 16 * 3);
+    assert_eq!(buffer.as_mut_slice().len(), 16 * 16 * 3);
+
+    buffer
+        .resize((8, 8), PixelFormat::Rgb8)
+        .expect("smaller resize");
+
+    assert_eq!(buffer.capacity(), initial_capacity);
+    assert_eq!(buffer.dimensions(), (8, 8));
+    assert_eq!(buffer.as_mut_slice().len(), 8 * 8 * 3);
 }
 
 #[test]

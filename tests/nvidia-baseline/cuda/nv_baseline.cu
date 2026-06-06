@@ -301,6 +301,48 @@ cleanup:
     return rc;
 }
 
+// Reused-session decode timing: JPEG -> interleaved RGB in device memory.
+// Returns only a CUDA event duration for the decode submission; no host download.
+int nvb_session_decode_jpeg_rgb_interleaved_timed(
+    NvbSession* session,
+    const unsigned char* jpeg, size_t jpeg_len,
+    double* decode_ms,
+    int* width, int* height) {
+    int comps = 0;
+    nvjpegChromaSubsampling_t subsampling;
+    int widths[NVJPEG_MAX_COMPONENT] = {0};
+    int heights[NVJPEG_MAX_COMPONENT] = {0};
+    int w = 0;
+    int h = 0;
+    size_t rgb_bytes = 0;
+    nvjpegImage_t dest;
+    float decode_elapsed = 0.0f;
+
+    if (!session || !jpeg || jpeg_len == 0 || !decode_ms || !width || !height) { return 920; }
+    if (nvjpegGetImageInfo(session->jpeg_handle, jpeg, jpeg_len, &comps, &subsampling, widths, heights)
+        != NVJPEG_STATUS_SUCCESS) { return 103; }
+
+    w = widths[0];
+    h = heights[0];
+    *width = w;
+    *height = h;
+    rgb_bytes = (size_t)w * (size_t)h * 3;
+    if (nvb_session_ensure_decode_interleaved(session, rgb_bytes) != 0) { return 902; }
+
+    memset(&dest, 0, sizeof(dest));
+    dest.channel[0] = session->decode_interleaved;
+    dest.pitch[0] = (size_t)w * 3;
+
+    cudaEventRecord(session->start, session->stream);
+    if (nvjpegDecode(session->jpeg_handle, session->jpeg_state, jpeg, jpeg_len, NVJPEG_OUTPUT_RGBI, &dest, session->stream)
+        != NVJPEG_STATUS_SUCCESS) { return 110; }
+    cudaEventRecord(session->stop, session->stream);
+    if (cudaEventSynchronize(session->stop) != cudaSuccess) { return 906; }
+    if (cudaEventElapsedTime(&decode_elapsed, session->start, session->stop) != cudaSuccess) { return 907; }
+    *decode_ms = (double)decode_elapsed;
+    return 0;
+}
+
 // Reused-session GPU transcode: JPEG bytes -> HTJ2K bytes. Returns 0 on success,
 // or a non-zero stage code (1xx nvJPEG decode, 2xx nvJPEG2000 encode, 9xx CUDA).
 // `decode_ms` / `encode_ms` are GPU stage times (cudaEvent). `out` must have

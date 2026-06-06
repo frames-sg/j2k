@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use jpeg_encoder::{ColorType, Encoder};
 use signinum_core::{
     BackendRequest, DeviceSubmission, DeviceSurface, ImageDecodeDevice, ImageDecodeSubmit,
     PixelFormat,
 };
 #[cfg(feature = "cuda-runtime")]
 use signinum_core::{DecoderContext, TileBatchDecodeManyDevice};
-#[cfg(feature = "cuda-runtime")]
-use signinum_cuda_runtime::CudaContext;
-use signinum_jpeg::Decoder as CpuDecoder;
+use signinum_jpeg::{
+    encode_jpeg_baseline, Decoder as CpuDecoder, JpegBackend, JpegEncodeOptions, JpegSamples,
+    JpegSubsampling,
+};
 #[cfg(feature = "cuda-runtime")]
 use signinum_jpeg_cuda::Codec as CudaCodec;
 use signinum_jpeg_cuda::{CudaSession, Decoder as CudaDecoder};
@@ -35,8 +35,8 @@ fn bench_device_decode(c: &mut Criterion) {
 
     match cuda_probe(&input) {
         Some(probe) => {
-            let label = if probe.used_hardware_decode {
-                "cuda_nvjpeg_rgb8_surface"
+            let label = if probe.used_owned_cuda_decode {
+                "cuda_owned_rgb8_surface"
             } else {
                 "cuda_upload_fallback_rgb8_surface"
             };
@@ -56,8 +56,8 @@ fn bench_device_decode(c: &mut Criterion) {
                 });
             });
 
-            let label = if probe.used_hardware_decode {
-                "cuda_nvjpeg_rgb8_download"
+            let label = if probe.used_owned_cuda_decode {
+                "cuda_owned_rgb8_download"
             } else {
                 "cuda_upload_fallback_rgb8_download"
             };
@@ -117,12 +117,21 @@ fn bench_input() -> Vec<u8> {
 
 fn generated_jpeg(width: u16, height: u16) -> Vec<u8> {
     let rgb = signinum_test_support::gpu_bench_rgb8(u32::from(width), u32::from(height));
-
-    let mut jpeg = Vec::new();
-    Encoder::new(&mut jpeg, 90)
-        .encode(&rgb, width, height, ColorType::Rgb)
-        .expect("encode generated benchmark JPEG");
-    jpeg
+    encode_jpeg_baseline(
+        JpegSamples::Rgb8 {
+            data: &rgb,
+            width: u32::from(width),
+            height: u32::from(height),
+        },
+        JpegEncodeOptions {
+            quality: 90,
+            subsampling: bench_subsampling(),
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .expect("encode generated benchmark JPEG")
+    .data
 }
 
 fn generated_dimensions() -> (u16, u16) {
@@ -166,13 +175,27 @@ fn assert_in_bench_bounds(value: u16) {
     );
 }
 
+fn bench_subsampling() -> JpegSubsampling {
+    let value = std::env::var("SIGNINUM_CUDA_BENCH_SUBSAMPLING")
+        .or_else(|_| std::env::var("SIGNINUM_GPU_BENCH_SUBSAMPLING"))
+        .unwrap_or_else(|_| "420".to_string());
+    parse_subsampling(&value)
+}
+
+fn parse_subsampling(value: &str) -> JpegSubsampling {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "420" | "4:2:0" | "ybr420" => JpegSubsampling::Ybr420,
+        "422" | "4:2:2" | "ybr422" => JpegSubsampling::Ybr422,
+        "444" | "4:4:4" | "ybr444" => JpegSubsampling::Ybr444,
+        other => panic!("unsupported JPEG bench subsampling {other}; expected 420, 422, or 444"),
+    }
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn bench_batch_decode(c: &mut Criterion) {
     let dim = batch_dim();
     let input = generated_jpeg(dim, dim);
-    let dimensions = (u32::from(dim), u32::from(dim));
     let batch_size = batch_size();
-    let batch_inputs = vec![(input.as_slice(), dimensions); batch_size];
     let batch_refs = vec![input.as_slice(); batch_size];
 
     let mut group = c.benchmark_group("jpeg_cuda_batch_decode");
@@ -191,40 +214,23 @@ fn bench_batch_decode(c: &mut Criterion) {
         });
     });
 
-    let context = match CudaContext::system_default() {
-        Ok(context) => context,
-        Err(error) if std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_some() => {
-            panic!(
-                "SIGNINUM_REQUIRE_CUDA_BENCH is set but CUDA batch decode is unavailable: {error}"
-            )
-        }
-        Err(error) => {
-            eprintln!("skipping CUDA batch decode bench: {error}");
-            group.finish();
-            return;
-        }
-    };
-    if let Err(error) = context.decode_jpeg_rgb8_batch_with_nvjpeg(&batch_inputs) {
+    let mut probe_ctx = DecoderContext::<signinum_jpeg::DecoderContext>::new();
+    let mut probe_pool = signinum_jpeg::ScratchPool::new();
+    if let Err(error) = CudaCodec::decode_tiles_to_device(
+        &mut probe_ctx,
+        &mut probe_pool,
+        &batch_refs[..1],
+        PixelFormat::Rgb8,
+        BackendRequest::Cuda,
+    ) {
         assert!(
             std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_none(),
-            "SIGNINUM_REQUIRE_CUDA_BENCH is set but nvJPEG batch decode is unavailable: {error}"
+            "SIGNINUM_REQUIRE_CUDA_BENCH is set but owned CUDA JPEG batch decode is unavailable: {error}"
         );
-        eprintln!("skipping CUDA batch decode bench: {error}");
+        eprintln!("skipping CUDA adapter batch decode bench: {error}");
         group.finish();
         return;
     }
-
-    group.bench_function(
-        format!("cuda_nvjpeg_runtime_rgb8_batch{batch_size}_surfaces"),
-        |b| {
-            b.iter(|| {
-                let outputs = context
-                    .decode_jpeg_rgb8_batch_with_nvjpeg(&batch_inputs)
-                    .expect("cuda batch decode");
-                std::hint::black_box(outputs)
-            });
-        },
-    );
 
     group.bench_function(
         format!("cuda_adapter_rgb8_batch{batch_size}_surfaces"),
@@ -284,7 +290,7 @@ fn batch_dim() -> u16 {
 }
 
 struct CudaProbe {
-    used_hardware_decode: bool,
+    used_owned_cuda_decode: bool,
 }
 
 fn cuda_probe(input: &[u8]) -> Option<CudaProbe> {
@@ -298,12 +304,14 @@ fn cuda_probe(input: &[u8]) -> Option<CudaProbe> {
     };
     let stats = surface.cuda_surface().expect("cuda surface").stats();
     if std::env::var_os("SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE").is_some()
-        && !stats.used_hardware_decode()
+        && !stats.used_owned_cuda_decode()
     {
-        panic!("SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE is set but nvJPEG was not used");
+        panic!(
+            "SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE is set but owned CUDA JPEG decode was not used"
+        );
     }
     Some(CudaProbe {
-        used_hardware_decode: stats.used_hardware_decode(),
+        used_owned_cuda_decode: stats.used_owned_cuda_decode(),
     })
 }
 

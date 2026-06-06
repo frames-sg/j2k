@@ -1000,7 +1000,6 @@ name = "signinum-jpeg-cuda"
 version = "0.5.0"
 dependencies = [
  "criterion",
- "jpeg-encoder",
  "signinum-core",
  "signinum-cuda-runtime",
  "signinum-jpeg",

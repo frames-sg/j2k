@@ -471,6 +471,34 @@ __device__ unsigned char signinum_jpeg_h2v2_sample(
     return static_cast<unsigned char>((this_sum * 3u + next_sum + 7u) >> 4u);
 }
 
+__device__ unsigned char signinum_jpeg_h2v1_sample(
+    const unsigned char block[64],
+    unsigned int chroma_cols,
+    unsigned int output_x,
+    unsigned int chroma_y
+) {
+    const unsigned int n = chroma_cols == 0u ? 1u : chroma_cols;
+    const unsigned int row = min(chroma_y, 7u);
+    const unsigned int base = row * 8u;
+    if (n == 1u) {
+        return block[base];
+    }
+    const unsigned int sample = min(output_x / 2u, n - 1u);
+    if (output_x == 0u) {
+        return block[base];
+    }
+    if (output_x == n * 2u - 1u) {
+        return block[base + n - 1u];
+    }
+    const unsigned int curr = static_cast<unsigned int>(block[base + sample]);
+    if ((output_x & 1u) == 0u) {
+        const unsigned int prev = static_cast<unsigned int>(block[base + sample - 1u]);
+        return static_cast<unsigned char>((3u * curr + prev + 2u) >> 2u);
+    }
+    const unsigned int next = static_cast<unsigned int>(block[base + sample + 1u]);
+    return static_cast<unsigned char>((3u * curr + next + 2u) >> 2u);
+}
+
 __device__ void signinum_jpeg_ycbcr_to_rgb(
     unsigned char y,
     unsigned char cb,
@@ -530,6 +558,83 @@ __device__ void signinum_jpeg_store_rgb420_mcu(
             unsigned char g = 0u;
             unsigned char b = 0u;
             signinum_jpeg_ycbcr_to_rgb(yb[y_idx], cbv, crv, r, g, b);
+            out[dst] = r;
+            out[dst + 1u] = g;
+            out[dst + 2u] = b;
+        }
+    }
+}
+
+__device__ void signinum_jpeg_store_rgb422_mcu(
+    unsigned char *out,
+    const SigninumJpeg420Params &params,
+    unsigned int mx,
+    unsigned int my,
+    const unsigned char y0[64],
+    const unsigned char y1[64],
+    const unsigned char cb[64],
+    const unsigned char cr[64]
+) {
+    const unsigned int base_x = mx * 16u;
+    const unsigned int base_y = my * 8u;
+    const unsigned int remaining_x = params.width > base_x ? params.width - base_x : 0u;
+    const unsigned int remaining_y = params.height > base_y ? params.height - base_y : 0u;
+    const unsigned int chroma_cols = min(8u, (remaining_x + 1u) / 2u);
+    const unsigned int chroma_rows = min(8u, remaining_y);
+    for (unsigned int yy = 0u; yy < 8u; ++yy) {
+        const unsigned int py = base_y + yy;
+        if (py >= params.height) {
+            continue;
+        }
+        const unsigned int chroma_y = min(yy, chroma_rows - 1u);
+        for (unsigned int xx = 0u; xx < 16u; ++xx) {
+            const unsigned int px = base_x + xx;
+            if (px >= params.width) {
+                continue;
+            }
+            const unsigned char *yb = xx < 8u ? y0 : y1;
+            const unsigned int y_idx = yy * 8u + (xx & 7u);
+            const unsigned char cbv = signinum_jpeg_h2v1_sample(cb, chroma_cols, xx, chroma_y);
+            const unsigned char crv = signinum_jpeg_h2v1_sample(cr, chroma_cols, xx, chroma_y);
+            const unsigned int dst = py * params.out_stride + px * 3u;
+            unsigned char r = 0u;
+            unsigned char g = 0u;
+            unsigned char b = 0u;
+            signinum_jpeg_ycbcr_to_rgb(yb[y_idx], cbv, crv, r, g, b);
+            out[dst] = r;
+            out[dst + 1u] = g;
+            out[dst + 2u] = b;
+        }
+    }
+}
+
+__device__ void signinum_jpeg_store_rgb444_mcu(
+    unsigned char *out,
+    const SigninumJpeg420Params &params,
+    unsigned int mx,
+    unsigned int my,
+    const unsigned char y[64],
+    const unsigned char cb[64],
+    const unsigned char cr[64]
+) {
+    const unsigned int base_x = mx * 8u;
+    const unsigned int base_y = my * 8u;
+    for (unsigned int yy = 0u; yy < 8u; ++yy) {
+        const unsigned int py = base_y + yy;
+        if (py >= params.height) {
+            continue;
+        }
+        for (unsigned int xx = 0u; xx < 8u; ++xx) {
+            const unsigned int px = base_x + xx;
+            if (px >= params.width) {
+                continue;
+            }
+            const unsigned int idx = yy * 8u + xx;
+            const unsigned int dst = py * params.out_stride + px * 3u;
+            unsigned char r = 0u;
+            unsigned char g = 0u;
+            unsigned char b = 0u;
+            signinum_jpeg_ycbcr_to_rgb(y[idx], cb[idx], cr[idx], r, g, b);
             out[dst] = r;
             out[dst + 1u] = g;
             out[dst + 2u] = b;
@@ -624,5 +729,160 @@ extern "C" __global__ void signinum_jpeg_decode_fast420_rgb8(
         const unsigned int mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
         const unsigned int my = mcu / params.mcus_per_row;
         signinum_jpeg_store_rgb420_mcu(out, params, mx, my, y0, y1, y2, y3, cb, cr);
+    }
+}
+
+extern "C" __global__ void signinum_jpeg_decode_fast422_rgb8(
+    const unsigned char *entropy,
+    unsigned char *out,
+    SigninumJpeg420Params params,
+    const unsigned short *y_quant,
+    const unsigned short *cb_quant,
+    const unsigned short *cr_quant,
+    const SigninumJpegHuffmanTable *y_dc,
+    const SigninumJpegHuffmanTable *y_ac,
+    const SigninumJpegHuffmanTable *cb_dc,
+    const SigninumJpegHuffmanTable *cb_ac,
+    const SigninumJpegHuffmanTable *cr_dc,
+    const SigninumJpegHuffmanTable *cr_ac,
+    const SigninumJpegEntropyCheckpoint *checkpoints,
+    SigninumJpegDecodeStatus *status
+) {
+    const unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= params.checkpoint_count) {
+        return;
+    }
+    SigninumJpegDecodeStatus *thread_status = status + gid;
+    thread_status->code = JPEG_STATUS_OK;
+    thread_status->detail = 0u;
+    thread_status->position = 0u;
+    thread_status->reserved = 0u;
+
+    const unsigned int total_mcus = params.mcus_per_row * params.mcu_rows;
+    const SigninumJpegEntropyCheckpoint checkpoint = checkpoints[gid];
+    unsigned int start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    unsigned int end_mcu = total_mcus;
+    if (gid + 1u < params.checkpoint_count) {
+        end_mcu = checkpoints[gid + 1u].mcu_index;
+        if (end_mcu > total_mcus) {
+            end_mcu = total_mcus;
+        }
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    SigninumJpegBitReader reader;
+    reader.pos = checkpoint.entropy_pos;
+    reader.acc = checkpoint.bit_acc;
+    reader.bits = checkpoint.bit_count;
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    int coeffs[64];
+    unsigned char y0[64];
+    unsigned char y1[64];
+    unsigned char cb[64];
+    unsigned char cr[64];
+
+    for (unsigned int mcu = start_mcu; mcu < end_mcu; ++mcu) {
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, y0);
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, y1);
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, cb);
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, cr);
+        const unsigned int mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
+        const unsigned int my = mcu / params.mcus_per_row;
+        signinum_jpeg_store_rgb422_mcu(out, params, mx, my, y0, y1, cb, cr);
+    }
+}
+
+extern "C" __global__ void signinum_jpeg_decode_fast444_rgb8(
+    const unsigned char *entropy,
+    unsigned char *out,
+    SigninumJpeg420Params params,
+    const unsigned short *y_quant,
+    const unsigned short *cb_quant,
+    const unsigned short *cr_quant,
+    const SigninumJpegHuffmanTable *y_dc,
+    const SigninumJpegHuffmanTable *y_ac,
+    const SigninumJpegHuffmanTable *cb_dc,
+    const SigninumJpegHuffmanTable *cb_ac,
+    const SigninumJpegHuffmanTable *cr_dc,
+    const SigninumJpegHuffmanTable *cr_ac,
+    const SigninumJpegEntropyCheckpoint *checkpoints,
+    SigninumJpegDecodeStatus *status
+) {
+    const unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= params.checkpoint_count) {
+        return;
+    }
+    SigninumJpegDecodeStatus *thread_status = status + gid;
+    thread_status->code = JPEG_STATUS_OK;
+    thread_status->detail = 0u;
+    thread_status->position = 0u;
+    thread_status->reserved = 0u;
+
+    const unsigned int total_mcus = params.mcus_per_row * params.mcu_rows;
+    const SigninumJpegEntropyCheckpoint checkpoint = checkpoints[gid];
+    unsigned int start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    unsigned int end_mcu = total_mcus;
+    if (gid + 1u < params.checkpoint_count) {
+        end_mcu = checkpoints[gid + 1u].mcu_index;
+        if (end_mcu > total_mcus) {
+            end_mcu = total_mcus;
+        }
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    SigninumJpegBitReader reader;
+    reader.pos = checkpoint.entropy_pos;
+    reader.acc = checkpoint.bit_acc;
+    reader.bits = checkpoint.bit_count;
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    int coeffs[64];
+    unsigned char y[64];
+    unsigned char cb[64];
+    unsigned char cr[64];
+
+    for (unsigned int mcu = start_mcu; mcu < end_mcu; ++mcu) {
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, y);
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, cb);
+        if (!signinum_jpeg_decode_block(reader, entropy, params.entropy_len, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs)) {
+            return;
+        }
+        signinum_jpeg_idct_islow(coeffs, cr);
+        const unsigned int mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
+        const unsigned int my = mcu / params.mcus_per_row;
+        signinum_jpeg_store_rgb444_mcu(out, params, mx, my, y, cb, cr);
     }
 }
