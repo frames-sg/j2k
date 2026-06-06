@@ -1188,6 +1188,24 @@ impl ImageCodec for Codec {
 
 impl Codec {
     #[cfg(target_os = "macos")]
+    fn observe_rgb8_batch_output_dimensions(
+        first_output_dimensions: &mut Option<(u32, u32)>,
+        output_dimensions: (u32, u32),
+    ) -> Result<(), Error> {
+        if let Some(first) = *first_output_dimensions {
+            if first != output_dimensions {
+                return Err(Error::UnsupportedMetalRequest {
+                    reason:
+                        "JPEG Metal reusable RGB8 batch output requires matching output dimensions",
+                });
+            }
+        } else {
+            *first_output_dimensions = Some(output_dimensions);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
     fn rgb8_metal_batch_requests(
         inputs: &[&[u8]],
         mut op_for_decoder: impl FnMut(&CpuDecoder<'_>) -> batch::BatchOp,
@@ -1209,7 +1227,10 @@ impl Codec {
         for input in inputs {
             let decoder = CpuDecoder::new(input)?;
             let (op, output_dimensions) = op_and_dimensions_for_decoder(&decoder);
-            first_output_dimensions.get_or_insert(output_dimensions);
+            Self::observe_rgb8_batch_output_dimensions(
+                &mut first_output_dimensions,
+                output_dimensions,
+            )?;
             let input = state.intern_input_slice(input);
             let (fast444_packet, fast422_packet, fast420_packet) =
                 state.resolve_fast_packets(&input, BackendRequest::Metal);
@@ -1233,18 +1254,21 @@ impl Codec {
     fn rgb8_metal_decoder_batch_requests_with_output_dimensions(
         decoders: &[&Decoder<'_>],
         mut op_and_dimensions_for_decoder: impl FnMut(&Decoder<'_>) -> (batch::BatchOp, (u32, u32)),
-    ) -> Rgb8MetalBatchRequests {
+    ) -> Result<Rgb8MetalBatchRequests, Error> {
         let mut requests = Vec::with_capacity(decoders.len());
         let mut first_output_dimensions = None;
         for decoder in decoders {
             let (op, output_dimensions) = op_and_dimensions_for_decoder(decoder);
-            first_output_dimensions.get_or_insert(output_dimensions);
+            Self::observe_rgb8_batch_output_dimensions(
+                &mut first_output_dimensions,
+                output_dimensions,
+            )?;
             requests.push(decoder.rgb8_metal_request(op));
         }
-        Rgb8MetalBatchRequests {
+        Ok(Rgb8MetalBatchRequests {
             requests,
             output_dimensions: first_output_dimensions,
-        }
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -1313,7 +1337,7 @@ impl Codec {
             output_dimensions: Some(output_dimensions),
         } = Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |decoder| {
             (batch::BatchOp::Full, decoder.inner().info().dimensions)
-        })
+        })?
         else {
             return Ok(Vec::new());
         };
@@ -1391,7 +1415,7 @@ impl Codec {
             output_dimensions: Some(output_dimensions),
         } = Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |decoder| {
             (batch::BatchOp::Full, decoder.inner().info().dimensions)
-        })
+        })?
         else {
             return Ok(Vec::new());
         };
@@ -1496,7 +1520,7 @@ impl Codec {
                 },
                 scaled_dims((w, h), scale),
             )
-        })
+        })?
         else {
             return Ok(Vec::new());
         };
@@ -1603,7 +1627,7 @@ impl Codec {
                 },
                 scaled_dims((w, h), scale),
             )
-        })
+        })?
         else {
             return Ok(Vec::new());
         };
@@ -1698,12 +1722,13 @@ impl Codec {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
         };
-        let plan = Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |_| {
-            (
-                batch::BatchOp::RegionScaled { roi, scale },
-                output_dimensions,
-            )
-        });
+        let plan =
+            Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |_| {
+                (
+                    batch::BatchOp::RegionScaled { roi, scale },
+                    output_dimensions,
+                )
+            })?;
         output.ensure_rgb8_tiles(session, output_dimensions, decoders.len())?;
 
         compute::decode_region_scaled_rgb8_batch_into_output_with_session(
@@ -1797,12 +1822,13 @@ impl Codec {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
         };
-        let plan = Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |_| {
-            (
-                batch::BatchOp::RegionScaled { roi, scale },
-                output_dimensions,
-            )
-        });
+        let plan =
+            Self::rgb8_metal_decoder_batch_requests_with_output_dimensions(decoders, |_| {
+                (
+                    batch::BatchOp::RegionScaled { roi, scale },
+                    output_dimensions,
+                )
+            })?;
         output.ensure_rgba8_tiles(session, output_dimensions, decoders.len())?;
 
         compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
@@ -3055,6 +3081,30 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_444).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let err = match Codec::decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
+            &decoders,
+            &mut output,
+            &session,
+        ) {
+            Ok(_) => panic!("mixed output dimensions should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, Error::UnsupportedMetalRequest { .. }));
+        assert_eq!(output.dimensions(), (1, 1));
+        assert_eq!(output.tile_capacity(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let output =
@@ -4189,6 +4239,30 @@ mod tests {
                 expected_rgba
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_rejects_mixed_output_dimensions_without_resizing_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_444).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let err = match Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
+            &decoders,
+            &mut output,
+            &session,
+        ) {
+            Ok(_) => panic!("mixed output dimensions should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, Error::UnsupportedMetalRequest { .. }));
+        assert_eq!(output.dimensions(), (1, 1));
+        assert_eq!(output.tile_capacity(), 1);
     }
 
     #[cfg(target_os = "macos")]
