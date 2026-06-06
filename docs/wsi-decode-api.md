@@ -48,7 +48,7 @@ expanded `Rgb16`/`Rgba16` is available, and initial 12-bit APP14 RGB 4:4:4
 plus YCbCr 4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available,
 including restart-coded color streams. Other 12-bit subsampled color,
 stronger non-constant 12-bit oracle fixtures, 12-bit CMYK/YCCK implementation,
-malformed or broader four-component fixture coverage, and other lossless SOF3
+broader four-component malformed fixture coverage, and other lossless SOF3
 16-bit color layouts remain structured unsupported
 or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
@@ -187,10 +187,10 @@ For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
-CMYK/YCCK malformed or broader four-component coverage, 12-bit CMYK/YCCK
-implementation, other 12-bit subsampled color support, stronger non-constant
-12-bit oracle fixtures, and other SOF3 16-bit color CPU parity must land before
-any Metal acceleration for those classes is promoted.
+CMYK/YCCK malformed coverage beyond the current non-leading-max fixture,
+12-bit CMYK/YCCK implementation, other 12-bit subsampled color support,
+stronger non-constant 12-bit oracle fixtures, and other SOF3 16-bit color CPU
+parity must land before any Metal acceleration for those classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable

@@ -100,7 +100,7 @@ impl JpegCapabilityReport {
         match Decoder::from_view(view) {
             Ok(decoder) => Ok(Self::for_decoder(&decoder, request)),
             Err(err) if can_report_from_parsed_info(&err) => {
-                Ok(Self::for_parsed_info(info, request))
+                Ok(Self::for_planner_rejected_info(info, request, &err))
             }
             Err(err) => Err(err),
         }
@@ -131,6 +131,20 @@ impl JpegCapabilityReport {
             owned_cuda: owned_cuda_eligibility(&info, device, request),
             metal_fast: metal_fast_eligibility(&info, device, request),
         }
+    }
+
+    fn for_planner_rejected_info(
+        info: Info,
+        request: JpegCapabilityRequest,
+        err: &JpegError,
+    ) -> Self {
+        let mut report = Self::for_parsed_info(info, request);
+        if report.cpu.eligible && matches!(err, JpegError::NotImplemented { .. }) {
+            report.cpu = JpegBackendEligibility::rejected(
+                "JPEG CPU decode planner rejected this stream shape before decode",
+            );
+        }
+        report
     }
 
     /// Eligibility for explicit reusable RGB8 Metal batch outputs.

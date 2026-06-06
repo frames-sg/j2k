@@ -16,7 +16,8 @@ use fixtures::{
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
-    lossless_ycbcr_3x3_rgb8, minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    lossless_ycbcr_3x3_rgb8, malformed_cmyk_nonleading_max_sampling_jpeg,
+    minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
     progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
     ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
     LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
@@ -3055,6 +3056,25 @@ fn decoder_new_rejects_12bit_cmyk_ycck_as_not_implemented() {
             "{label}: {err}"
         );
     }
+}
+
+#[test]
+fn decoder_new_rejects_malformed_four_component_sampling_shape() {
+    let input = malformed_cmyk_nonleading_max_sampling_jpeg();
+    let err = match Decoder::new(&input) {
+        Ok(_) => panic!("malformed four-component sampling should reject construction"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(
+            err,
+            JpegError::NotImplemented {
+                sof: SofKind::Baseline8
+            }
+        ),
+        "{err}"
+    );
 }
 
 #[test]

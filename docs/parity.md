@@ -27,7 +27,8 @@ on a single visual smoke test.
   full/ROI/scaled/region-scaled `Rgba16`, and 8-bit plus 16-bit YCbCr 4:4:4
   `Rgb8`/`Rgb16`
   output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
-  4:2:2/4:2:0 fixture coverage. Malformed or broader four-component fixtures,
+  4:2:2/4:2:0 fixture coverage and structured rejection for one malformed
+  non-leading-max sampling fixture. Broader malformed four-component fixtures,
   other 12-bit subsampled color output, stronger non-constant 12-bit oracle
   fixtures, 12-bit CMYK/YCCK implementation, and other lossless
   SOF3 16-bit color layouts must land CPU parity fixtures and reference

@@ -184,8 +184,9 @@ Implementation requirements:
   Status: full-image, ROI, scaled, region-scaled, and batch-session coverage
   has landed for the supported RGB/RGBA output shapes. Row output has landed
   for the supported RGB row surfaces. Initial 4:2:2/4:2:0 four-component
-  fixtures have landed; malformed and broader four-component coverage remain
-  open.
+  fixtures have landed; malformed non-leading-max sampling now has structured
+  decode and capability rejection coverage. Broader four-component malformed
+  coverage remains open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
   Status: capability reports now mark supported CMYK/YCCK CPU RGB8/RGBA8

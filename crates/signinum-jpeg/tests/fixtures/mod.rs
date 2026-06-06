@@ -1586,6 +1586,11 @@ pub(crate) fn cmyk_16x16_420_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(0), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A malformed CMYK JPEG where component 0 is not the maximally sampled plane.
+pub(crate) fn malformed_cmyk_nonleading_max_sampling_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(0), 16, 8, [(1, 1), (2, 1), (1, 1), (1, 1)])
+}
+
 /// An 8x8 Adobe APP14 YCCK JPEG whose four decoded channels are all 128.
 pub(crate) fn ycck_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(2))

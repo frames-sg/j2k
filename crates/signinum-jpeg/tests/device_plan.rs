@@ -19,10 +19,11 @@ use fixtures::{
     lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
-    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
-    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, malformed_cmyk_nonleading_max_sampling_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
+    ycck_16x8_422_jpeg, ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -335,6 +336,33 @@ fn capability_report_rejects_12bit_four_component_cpu_paths_explicitly() {
             }
         }
     }
+}
+
+#[test]
+fn capability_report_rejects_malformed_four_component_sampling_shape() {
+    let input = malformed_cmyk_nonleading_max_sampling_jpeg();
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("capability report should parse malformed four-component metadata");
+
+    assert_eq!(report.info.sof_kind, SofKind::Baseline8);
+    assert_eq!(report.info.color_space, ColorSpace::Cmyk);
+    assert_eq!(report.info.sampling.max_h, 2);
+    assert_eq!(report.info.sampling.max_v, 1);
+    assert_eq!(report.info.sampling.component(0), Some((1, 1)));
+    assert!(!report.cpu.eligible);
+    assert!(report
+        .cpu
+        .reason
+        .expect("CPU rejection reason")
+        .contains("planner rejected"));
+    assert!(!report.owned_cuda.eligible);
+    assert!(!report.metal_fast.eligible);
 }
 
 #[test]
