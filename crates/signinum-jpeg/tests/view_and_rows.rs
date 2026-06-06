@@ -9,10 +9,12 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, grayscale_8x8_jpeg, lossless_predictor_grayscale_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_restart_predictor_grayscale_3x3_jpeg,
-    lossless_restart_predictor_rgb_3x3_jpeg, minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg,
-    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
+    cmyk_8x8_jpeg, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_3x3_jpeg,
+    minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg, ycck_8x8_jpeg,
+    LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 
 #[derive(Default)]
@@ -228,6 +230,28 @@ fn decode_rows_expands_lossless_gray8_common_predictors() {
 }
 
 #[test]
+fn decode_rows_streams_lossless_gray16_common_predictors() {
+    let expected = gray16_samples_to_le_bytes(&LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS);
+    for predictor in 1..=7 {
+        for bytes in [
+            lossless_predictor_grayscale_16bit_3x3_jpeg(predictor),
+            lossless_restart_predictor_grayscale_16bit_3x3_jpeg(predictor),
+        ] {
+            let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+                panic!("SOF3 Gray16 predictor-{predictor} decoder must construct: {err}")
+            });
+            let mut sink = CollectRows::default();
+
+            dec.decode_rows(&mut sink).unwrap_or_else(|err| {
+                panic!("SOF3 Gray16 predictor-{predictor} decode_rows must succeed: {err}")
+            });
+
+            assert_eq!(flatten_rows(&sink.rows, 3 * 2), expected);
+        }
+    }
+}
+
+#[test]
 fn decode_rows_matches_lossless_app14_rgb_common_predictors() {
     for predictor in 1..=7 {
         for bytes in [
@@ -288,6 +312,14 @@ fn expand_gray_to_rgb(gray: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(gray.len() * 3);
     for &sample in gray {
         out.extend_from_slice(&[sample, sample, sample]);
+    }
+    out
+}
+
+fn gray16_samples_to_le_bytes(samples: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        out.extend_from_slice(&sample.to_le_bytes());
     }
     out
 }

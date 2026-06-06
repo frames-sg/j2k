@@ -36,8 +36,8 @@ unsupported errors until a separate entropy and conformance plan exists.
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
   to `Rgb8`, including restart-coded APP14 RGB streams; 8-bit grayscale/RGB
-  row streaming has landed, while YCbCr/16-bit color layouts and 16-bit row
-  output remain open
+  row streaming and 16-bit grayscale `Gray16` row streaming have landed, while
+  YCbCr/16-bit color layouts remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -335,8 +335,8 @@ Implementation requirements:
   Status: predictor-specific positive coverage has landed for predictors 1-7,
   including ROI/scaled/region-scaled output; restart-coded grayscale coverage
   and APP14 RGB color/restart coverage have landed. 8-bit grayscale/RGB row
-  streaming has landed. Malformed streams, 16-bit row output, YCbCr/16-bit
-  color, and broader precision coverage remain open.
+  streaming and 16-bit grayscale `Gray16` row streaming have landed. Malformed
+  streams, YCbCr/16-bit color, and broader precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
@@ -353,7 +353,8 @@ Exit criteria:
 - SOF3 CPU decode matches oracle output for committed predictor fixtures.
   Status: partially met for the committed predictors 1-7 8-bit and 16-bit
   grayscale fixtures across full-image/ROI/scaled/region-scaled output, plus
-  8-bit grayscale/RGB row streaming.
+  8-bit grayscale/RGB row streaming and 16-bit grayscale `Gray16` row
+  streaming.
 - DCT decode code remains isolated from lossless predictor logic.
   Status: met for the initial predictors 1-7 path.
 
