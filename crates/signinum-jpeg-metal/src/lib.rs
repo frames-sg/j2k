@@ -923,6 +923,38 @@ impl<'a> Decoder<'a> {
         &self.inner
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn fast444_packet(&self) -> Option<&JpegMetalFast444PacketV1> {
+        self.fast444_packet.as_deref()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn fast422_packet(&self) -> Option<&JpegMetalFast422PacketV1> {
+        self.fast422_packet.as_deref()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn fast420_packet(&self) -> Option<&JpegMetalFast420PacketV1> {
+        self.fast420_packet.as_deref()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn rgb8_region_scaled_metal_request(
+        &self,
+        roi: Rect,
+        scale: Downscale,
+    ) -> batch::QueuedRequest {
+        batch::QueuedRequest::new_shared(
+            Arc::clone(&self.source),
+            PixelFormat::Rgb8,
+            BackendRequest::Metal,
+            batch::BatchOp::RegionScaled { roi, scale },
+            self.fast444_packet.clone(),
+            self.fast422_packet.clone(),
+            self.fast420_packet.clone(),
+        )
+    }
+
     /// Consume this wrapper and return the underlying CPU JPEG decoder.
     pub fn into_inner(self) -> CpuDecoder<'a> {
         self.inner

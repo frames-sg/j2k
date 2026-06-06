@@ -169,8 +169,12 @@ viewport loops that reuse one caller-owned output across changing tile counts
 or output shapes. At the viewport layer,
 `decode_viewport_to_resizable_metal_{buffer,textures}_with_session` accepts any
 viewport workload and selects direct contiguous resident decode when eligible,
-otherwise it uses resident component-row composition. For callers that need
-to route or annotate work before dispatch,
+otherwise it uses resident component-row composition. Callers that already keep
+a `signinum_jpeg_metal::Decoder` alive can use the
+`decode_viewport_to_resizable_metal_{buffer,textures}_with_decoder_session`
+forms to reuse the wrapper's cached fast-packet state on the direct resident
+path instead of reparsing or rebuilding packet state per viewport. For callers
+that need to route or annotate work before dispatch,
 `choose_resizable_metal_viewport_strategy` reports the same direct-vs-composite
 decision. For callers that need explicit separation, contiguous viewport
 workloads can use

@@ -3,7 +3,8 @@
 use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use signinum_jpeg::adapter::{
     build_metal_fast420_packet_for_decoder, build_metal_fast422_packet_for_decoder,
-    build_metal_fast444_packet_for_decoder, decoder_bytes,
+    build_metal_fast444_packet_for_decoder, decoder_bytes, JpegMetalFast420PacketV1,
+    JpegMetalFast422PacketV1, JpegMetalFast444PacketV1,
 };
 use signinum_jpeg::{
     ColorSpace as JpegColorSpace, Decoder as CpuDecoder, Rect as JpegRect, ScratchPool,
@@ -227,10 +228,26 @@ fn validate_explicit_metal_viewport_request(
     decoder: &CpuDecoder<'_>,
     workload: &ViewportWorkload,
 ) -> Result<(), Error> {
-    let source = viewport_source_bounds(workload);
     let fast444_packet = build_metal_fast444_packet_for_decoder(decoder).ok();
     let fast422_packet = build_metal_fast422_packet_for_decoder(decoder).ok();
     let fast420_packet = build_metal_fast420_packet_for_decoder(decoder).ok();
+    validate_explicit_metal_viewport_request_with_packets(
+        decoder,
+        workload,
+        fast444_packet.as_ref(),
+        fast422_packet.as_ref(),
+        fast420_packet.as_ref(),
+    )
+}
+
+fn validate_explicit_metal_viewport_request_with_packets(
+    decoder: &CpuDecoder<'_>,
+    workload: &ViewportWorkload,
+    fast444_packet: Option<&JpegMetalFast444PacketV1>,
+    fast422_packet: Option<&JpegMetalFast422PacketV1>,
+    fast420_packet: Option<&JpegMetalFast420PacketV1>,
+) -> Result<(), Error> {
+    let source = viewport_source_bounds(workload);
     let capabilities = routing::JpegMetalCapabilities::for_request(
         decoder,
         PixelFormat::Rgb8,
@@ -238,9 +255,9 @@ fn validate_explicit_metal_viewport_request(
             roi: source,
             scale: workload.scale,
         },
-        fast444_packet.as_ref(),
-        fast422_packet.as_ref(),
-        fast420_packet.as_ref(),
+        fast444_packet,
+        fast422_packet,
+        fast420_packet,
     );
     let decision = routing::decide_route(BackendRequest::Metal, capabilities);
     if let Some(err) = routing::decision_error(decision) {
@@ -303,6 +320,28 @@ pub fn choose_resizable_metal_viewport_strategy(
     }
 
     validate_resident_viewport_composition_request(decoder, workload)?;
+    Ok(ViewportResidentOutputStrategy::Composite)
+}
+
+#[cfg(target_os = "macos")]
+fn choose_resizable_metal_viewport_strategy_for_decoder(
+    decoder: &crate::Decoder<'_>,
+    workload: &ViewportWorkload,
+) -> Result<ViewportResidentOutputStrategy, Error> {
+    if is_contiguous_viewport_workload(workload)
+        && validate_explicit_metal_viewport_request_with_packets(
+            decoder.inner(),
+            workload,
+            decoder.fast444_packet(),
+            decoder.fast422_packet(),
+            decoder.fast420_packet(),
+        )
+        .is_ok()
+    {
+        return Ok(ViewportResidentOutputStrategy::DirectContiguous);
+    }
+
+    validate_resident_viewport_composition_request(decoder.inner(), workload)?;
     Ok(ViewportResidentOutputStrategy::Composite)
 }
 
@@ -673,6 +712,154 @@ pub fn decode_viewport_to_resizable_metal_textures_with_session(
             )
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+/// Decode any viewport workload into a reusable caller-owned Metal buffer using
+/// an already parsed Metal decoder wrapper.
+///
+/// Contiguous workloads use the wrapper's cached fast-packet state for direct
+/// resident region-scaled decode. Sparse or unsupported direct shapes use
+/// resident component-row composition through the wrapper's CPU decoder.
+pub fn decode_viewport_to_resizable_metal_buffer_with_decoder_session(
+    decoder: &crate::Decoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchOutputBuffer,
+    session: &MetalBackendSession,
+) -> Result<Surface, Error> {
+    match choose_resizable_metal_viewport_strategy_for_decoder(decoder, workload)? {
+        ViewportResidentOutputStrategy::DirectContiguous => {
+            decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
+                decoder, workload, output, session,
+            )
+        }
+        ViewportResidentOutputStrategy::Composite => {
+            compose_viewport_to_resizable_metal_buffer_with_session(
+                decoder.inner(),
+                pool,
+                workload,
+                output,
+                session,
+            )
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+/// Decode any viewport workload into reusable caller-owned Metal textures using
+/// an already parsed Metal decoder wrapper.
+///
+/// Contiguous workloads use the wrapper's cached fast-packet state for direct
+/// resident region-scaled decode. Sparse or unsupported direct shapes use
+/// resident component-row composition through the wrapper's CPU decoder.
+pub fn decode_viewport_to_resizable_metal_textures_with_decoder_session(
+    decoder: &crate::Decoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchTextureOutput,
+    session: &MetalBackendSession,
+) -> Result<MetalTextureTile, Error> {
+    match choose_resizable_metal_viewport_strategy_for_decoder(decoder, workload)? {
+        ViewportResidentOutputStrategy::DirectContiguous => {
+            decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
+                decoder, workload, output, session,
+            )
+        }
+        ViewportResidentOutputStrategy::Composite => {
+            compose_viewport_to_resizable_metal_textures_with_session(
+                decoder.inner(),
+                pool,
+                workload,
+                output,
+                session,
+            )
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decode_viewport_region_to_resizable_metal_buffer_with_decoder_session(
+    decoder: &crate::Decoder<'_>,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchOutputBuffer,
+    session: &MetalBackendSession,
+) -> Result<Surface, Error> {
+    validate_explicit_metal_viewport_request_with_packets(
+        decoder.inner(),
+        workload,
+        decoder.fast444_packet(),
+        decoder.fast422_packet(),
+        decoder.fast420_packet(),
+    )?;
+    if !is_contiguous_viewport_workload(workload) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport output currently requires a contiguous viewport workload",
+        });
+    }
+
+    let source = viewport_source_bounds(workload);
+    let scaled = source.scaled_covering(workload.scale);
+    output.ensure_rgb8_tiles(session, (scaled.w, scaled.h), 1)?;
+    let request = decoder
+        .rgb8_region_scaled_metal_request(source, workload.scale)
+        .with_output_slot(0);
+    let requests = [request];
+    let mut surfaces = crate::compute::decode_region_scaled_rgb8_batch_into_output_with_session(
+        &requests, output, session,
+    )?
+    .ok_or(Error::UnsupportedMetalRequest {
+        reason: "JPEG Metal reusable viewport output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
+    })?;
+    let Some(surface) = surfaces.pop() else {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport output did not produce a surface",
+        });
+    };
+    debug_assert!(surfaces.is_empty());
+    surface
+}
+
+#[cfg(target_os = "macos")]
+fn decode_viewport_region_to_resizable_metal_textures_with_decoder_session(
+    decoder: &crate::Decoder<'_>,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchTextureOutput,
+    session: &MetalBackendSession,
+) -> Result<MetalTextureTile, Error> {
+    validate_explicit_metal_viewport_request_with_packets(
+        decoder.inner(),
+        workload,
+        decoder.fast444_packet(),
+        decoder.fast422_packet(),
+        decoder.fast420_packet(),
+    )?;
+    if !is_contiguous_viewport_workload(workload) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport texture output currently requires a contiguous viewport workload",
+        });
+    }
+
+    let source = viewport_source_bounds(workload);
+    let scaled = source.scaled_covering(workload.scale);
+    output.ensure_rgba8_tiles(session, (scaled.w, scaled.h), 1)?;
+    let request = decoder
+        .rgb8_region_scaled_metal_request(source, workload.scale)
+        .with_output_slot(0);
+    let requests = [request];
+    let mut tiles = crate::compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
+        &requests, output, session,
+    )?
+    .ok_or(Error::UnsupportedMetalRequest {
+        reason: "JPEG Metal reusable viewport texture output currently supports RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
+    })?;
+    let Some(tile) = tiles.pop() else {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable viewport texture output did not produce a tile",
+        });
+    };
+    debug_assert!(tiles.is_empty());
+    tile
 }
 
 #[cfg(target_os = "macos")]
