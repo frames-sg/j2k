@@ -89,6 +89,10 @@ This includes Phase A1/A2, B1/B2, C1, and D below:
 Phase 1 is not complete until unsupported arithmetic, hierarchical, differential,
 and remaining color/precision shapes have explicit structured rejection tests or
 their own accepted implementation plan.
+Status: arithmetic, differential sequential, hierarchical/differential
+progressive/lossless, and differential arithmetic SOF markers now have typed
+`UnsupportedSof` inspection and capability-routing tests. Remaining
+color/precision shapes still need either support or explicit rejection coverage.
 
 ### Phase 2: Resident Metal Acceleration
 
@@ -132,6 +136,9 @@ Required work:
   initial CMYK/YCCK CPU support, `Extended12`, `Progressive12`, `Lossless`,
   progressive ROI/scaled CPU support, arithmetic SOFs, hierarchical SOFs, and
   differential SOFs.
+  Status: typed rejection coverage has landed for arithmetic, differential
+  sequential, hierarchical/differential progressive/lossless, and differential
+  arithmetic SOF markers.
 - Build or import small conformance fixtures for A/B/C:
   - CMYK baseline and YCCK baseline
   - progressive 8-bit with ROI/scaled reference output

@@ -60,8 +60,15 @@ pub(crate) fn parse_sof(
         (0xC2, 8) => SofKind::Progressive8,
         (0xC2, 12) => SofKind::Progressive12,
         (0xC3, 2..=16) => SofKind::Lossless,
-        // Differential / hierarchical
-        (0xC5 | 0xC6 | 0xC7, _) => {
+        // Differential sequential, currently unsupported.
+        (0xC5, _) => {
+            return Err(JpegError::UnsupportedSof {
+                marker: marker_code,
+                reason: UnsupportedReason::DifferentialBaseline,
+            });
+        }
+        // Hierarchical/differential progressive/lossless, currently unsupported.
+        (0xC6 | 0xC7, _) => {
             return Err(JpegError::UnsupportedSof {
                 marker: marker_code,
                 reason: UnsupportedReason::Hierarchical,
@@ -209,8 +216,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_sof5_hierarchical() {
+    fn rejects_sof5_differential_baseline() {
         let err = parse_sof(0xC5, &sof0_420_payload(), 0).unwrap_err();
+        assert!(matches!(
+            err,
+            JpegError::UnsupportedSof {
+                reason: UnsupportedReason::DifferentialBaseline,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_sof6_hierarchical() {
+        let err = parse_sof(0xC6, &sof0_420_payload(), 0).unwrap_err();
         assert!(matches!(
             err,
             JpegError::UnsupportedSof {

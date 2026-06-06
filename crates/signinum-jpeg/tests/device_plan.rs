@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use signinum_jpeg::{
     ColorSpace, Decoder, Downscale, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
-    JpegError, PixelFormat, Rect, SofKind, Warning,
+    JpegError, PixelFormat, Rect, SofKind, UnsupportedReason, Warning,
 };
 
 mod fixtures;
@@ -26,6 +26,16 @@ use fixtures::{
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
 const BASELINE_444: &[u8] = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
+
+fn baseline_420_with_sof_marker(marker: u8) -> Vec<u8> {
+    let mut bytes = BASELINE_420.to_vec();
+    let pos = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("baseline fixture has SOF0 marker");
+    bytes[pos + 1] = marker;
+    bytes
+}
 
 #[test]
 fn adapter_device_plan_exposes_scan_metadata() {
@@ -252,6 +262,35 @@ fn capability_report_inspects_12_bit_and_lossless_sof_without_building_decoder()
             .contains(expected_reason));
         assert!(!report.owned_cuda.eligible);
         assert!(!report.metal_fast.eligible);
+    }
+}
+
+#[test]
+fn capability_report_rejects_future_sof_classes_with_typed_errors() {
+    for (marker, expected_reason) in [
+        (0xc9, UnsupportedReason::ArithmeticCoding),
+        (0xc5, UnsupportedReason::DifferentialBaseline),
+        (0xc6, UnsupportedReason::Hierarchical),
+        (0xcd, UnsupportedReason::ArithmeticAndHierarchical),
+    ] {
+        let input = baseline_420_with_sof_marker(marker);
+        let err = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb8,
+            },
+        )
+        .expect_err("future SOF classes should stay explicit unsupported errors");
+
+        assert!(matches!(
+            err,
+            JpegError::UnsupportedSof {
+                marker: got_marker,
+                reason,
+            } if got_marker == marker && reason == expected_reason
+        ));
+        assert!(err.is_unsupported());
     }
 }
 

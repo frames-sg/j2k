@@ -4,7 +4,7 @@
 
 use signinum_jpeg::{
     ColorSpace, ColorTransform, DecodeOptions, Decoder, JpegError, JpegView, McuGeometry,
-    RestartSegment, SofKind,
+    RestartSegment, SofKind, UnsupportedReason,
 };
 use signinum_jpeg::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughDecision, PassthroughRequirements,
@@ -70,6 +70,16 @@ fn minimal_baseline_jpeg_with_restart_interval(interval: u16) -> Vec<u8> {
             interval as u8,
         ],
     );
+    bytes
+}
+
+fn minimal_jpeg_with_sof_marker(marker: u8) -> Vec<u8> {
+    let mut bytes = minimal_baseline_jpeg();
+    let pos = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("minimal fixture has SOF0 marker");
+    bytes[pos + 1] = marker;
     bytes
 }
 
@@ -202,13 +212,22 @@ fn inspect_returns_typed_error_for_missing_sof() {
 }
 
 #[test]
-fn inspect_returns_typed_error_for_arithmetic_coding() {
-    // Swap SOF0 → SOF9 in the minimal JPEG
-    let mut bytes = minimal_baseline_jpeg();
-    let pos = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
-    bytes[pos + 1] = 0xC9;
-    let err = Decoder::inspect(&bytes).unwrap_err();
-    assert!(err.is_unsupported());
+fn inspect_returns_typed_error_for_future_sof_classes() {
+    for (marker, expected_reason) in [
+        (0xc9, UnsupportedReason::ArithmeticCoding),
+        (0xc5, UnsupportedReason::DifferentialBaseline),
+        (0xc6, UnsupportedReason::Hierarchical),
+        (0xcd, UnsupportedReason::ArithmeticAndHierarchical),
+    ] {
+        let bytes = minimal_jpeg_with_sof_marker(marker);
+        let err = Decoder::inspect(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            JpegError::UnsupportedSof { marker: got_marker, reason }
+                if got_marker == marker && reason == expected_reason
+        ));
+        assert!(err.is_unsupported());
+    }
 }
 
 #[test]
