@@ -171,6 +171,19 @@ struct JpegWindowedPackBatchParams {
     uint out_format;
 };
 
+struct JpegWindowedTexturePackBatchParams {
+    uint src_width;
+    uint src_height;
+    uint chroma_width;
+    uint chroma_height;
+    uint src_x;
+    uint src_y;
+    uint width;
+    uint height;
+    uint tile_index;
+    uint alpha;
+};
+
 struct JpegTexturePackBatchParams {
     uint width;
     uint height;
@@ -6022,6 +6035,40 @@ kernel void jpeg_pack_422_windowed_rgb_batch(
     out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
 }
 
+kernel void jpeg_pack_422_windowed_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegWindowedTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint src_x = gid.x + params.src_x;
+    const uint src_y = gid.y + params.src_y;
+    if (src_x >= params.src_width || src_y >= params.src_height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.src_width * params.src_height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = src_y * params.src_width + src_x;
+    const uint chroma_y = min(src_y, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+
+    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, src_x);
+    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, src_x);
+    out.write(rgba_float_ycbcr(tile_y_plane[y_idx], cb, cr, params.alpha), gid);
+}
+
 kernel void jpeg_pack_422_windowed_rgba(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -6191,6 +6238,45 @@ kernel void jpeg_pack_420_windowed_rgb_batch(
     out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
     out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
     out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+}
+
+kernel void jpeg_pack_420_windowed_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegWindowedTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint src_x = gid.x + params.src_x;
+    const uint src_y = gid.y + params.src_y;
+    if (src_x >= params.src_width || src_y >= params.src_height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.src_width * params.src_height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = src_y * params.src_width + src_x;
+    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
+    const uint near_y = (src_y & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cb = tile_cb_plane + near_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cr = tile_cr_plane + near_y * params.chroma_width;
+
+    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
+    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
+    out.write(rgba_float_ycbcr(tile_y_plane[y_idx], cb, cr, params.alpha), gid);
 }
 
 kernel void jpeg_pack_420_windowed_rgba(

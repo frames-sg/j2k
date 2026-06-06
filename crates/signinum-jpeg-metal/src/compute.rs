@@ -510,6 +510,22 @@ struct JpegWindowedPackBatchParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct JpegWindowedTexturePackBatchParams {
+    src_width: u32,
+    src_height: u32,
+    chroma_width: u32,
+    chroma_height: u32,
+    src_x: u32,
+    src_y: u32,
+    width: u32,
+    height: u32,
+    tile_index: u32,
+    alpha: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct JpegTexturePackBatchParams {
     width: u32,
     height: u32,
@@ -668,11 +684,13 @@ pub(crate) struct MetalRuntime {
     pack_420_rgb_batch_pipeline: ComputePipelineState,
     pack_420_rgba_texture_pipeline: ComputePipelineState,
     pack_420_windowed_rgb_batch_pipeline: ComputePipelineState,
+    pack_420_windowed_rgba_texture_pipeline: ComputePipelineState,
     pack_422_rgb_pipeline: ComputePipelineState,
     pack_422_rgba_pipeline: ComputePipelineState,
     pack_422_rgb_batch_pipeline: ComputePipelineState,
     pack_422_rgba_texture_pipeline: ComputePipelineState,
     pack_422_windowed_rgb_batch_pipeline: ComputePipelineState,
+    pack_422_windowed_rgba_texture_pipeline: ComputePipelineState,
     pack_444_rgb_batch_pipeline: ComputePipelineState,
     pack_444_rgba_texture_pipeline: ComputePipelineState,
     pack_422_windowed_pipeline: ComputePipelineState,
@@ -744,6 +762,10 @@ impl MetalRuntime {
             library.get_function("jpeg_pack_420_windowed_rgb_batch", None)?;
         let pack_420_windowed_rgb_batch_pipeline = device
             .new_compute_pipeline_state_with_function(&pack_420_windowed_rgb_batch_function)?;
+        let pack_420_windowed_rgba_texture_function =
+            library.get_function("jpeg_pack_420_windowed_rgba_texture", None)?;
+        let pack_420_windowed_rgba_texture_pipeline = device
+            .new_compute_pipeline_state_with_function(&pack_420_windowed_rgba_texture_function)?;
         let pack_422_rgb_function = library.get_function("jpeg_pack_422_rgb", None)?;
         let pack_422_rgb_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_422_rgb_function)?;
@@ -761,6 +783,10 @@ impl MetalRuntime {
             library.get_function("jpeg_pack_422_windowed_rgb_batch", None)?;
         let pack_422_windowed_rgb_batch_pipeline = device
             .new_compute_pipeline_state_with_function(&pack_422_windowed_rgb_batch_function)?;
+        let pack_422_windowed_rgba_texture_function =
+            library.get_function("jpeg_pack_422_windowed_rgba_texture", None)?;
+        let pack_422_windowed_rgba_texture_pipeline = device
+            .new_compute_pipeline_state_with_function(&pack_422_windowed_rgba_texture_function)?;
         let pack_444_rgb_batch_function = library.get_function("jpeg_pack_444_rgb_batch", None)?;
         let pack_444_rgb_batch_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_444_rgb_batch_function)?;
@@ -882,11 +908,13 @@ impl MetalRuntime {
             pack_420_rgb_batch_pipeline,
             pack_420_rgba_texture_pipeline,
             pack_420_windowed_rgb_batch_pipeline,
+            pack_420_windowed_rgba_texture_pipeline,
             pack_422_rgb_pipeline,
             pack_422_rgba_pipeline,
             pack_422_rgb_batch_pipeline,
             pack_422_rgba_texture_pipeline,
             pack_422_windowed_rgb_batch_pipeline,
+            pack_422_windowed_rgba_texture_pipeline,
             pack_444_rgb_batch_pipeline,
             pack_444_rgba_texture_pipeline,
             pack_422_windowed_pipeline,
@@ -4918,6 +4946,22 @@ struct RegionScaledBatchPlan {
 }
 
 #[cfg(target_os = "macos")]
+fn windowed_texture_pack_params(plan: RegionScaledBatchPlan) -> JpegWindowedTexturePackBatchParams {
+    JpegWindowedTexturePackBatchParams {
+        src_width: plan.pack_params.src_width,
+        src_height: plan.pack_params.src_height,
+        chroma_width: plan.pack_params.chroma_width,
+        chroma_height: plan.pack_params.chroma_height,
+        src_x: plan.pack_params.src_x,
+        src_y: plan.pack_params.src_y,
+        width: plan.pack_params.width,
+        height: plan.pack_params.height,
+        tile_index: 0,
+        alpha: u32::from(u8::MAX),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn fast420_region_scaled_batch_plan(
     packet: &JpegMetalFast420PacketV1,
     roi: Rect,
@@ -5202,6 +5246,39 @@ fn dispatch_rgba_texture_pack(
         pack_encoder.set_bytes(
             3,
             size_of::<JpegTexturePackBatchParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(pack_encoder, pipeline, dispatch_dims);
+    }
+    pack_encoder.end_encoding();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_windowed_rgba_texture_pack(
+    command_buffer: &CommandBufferRef,
+    pipeline: &ComputePipelineState,
+    planes: (&Buffer, &Buffer, &Buffer),
+    output: &crate::MetalBatchTextureOutput,
+    params: JpegWindowedTexturePackBatchParams,
+    tile_count: usize,
+    dispatch_dims: (u32, u32),
+) -> Result<(), Error> {
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(pipeline);
+    pack_encoder.set_buffer(0, Some(planes.0), 0);
+    pack_encoder.set_buffer(1, Some(planes.1), 0);
+    pack_encoder.set_buffer(2, Some(planes.2), 0);
+    for index in 0..tile_count {
+        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        let mut params = params;
+        params.tile_index = checked_u32(index, "windowed texture batch tile index")?;
+        pack_encoder.set_texture(0, Some(texture));
+        pack_encoder.set_bytes(
+            3,
+            size_of::<JpegWindowedTexturePackBatchParams>() as u64,
             (&raw const params).cast(),
         );
         dispatch_2d_pipeline(pack_encoder, pipeline, dispatch_dims);
@@ -8005,6 +8082,242 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchTextureOutput,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    if requests.len() < 2
+        || requests
+            .iter()
+            .any(|request| request.fmt != PixelFormat::Rgb8)
+    {
+        return Ok(None);
+    }
+
+    let mut fast420_packets = Vec::with_capacity(packets.len());
+    for packet in packets {
+        let BatchedFastPacket::Fast420(packet) = packet else {
+            return Ok(None);
+        };
+        fast420_packets.push(*packet);
+    }
+
+    let Some(first) = fast420_packets.first().copied() else {
+        return Ok(None);
+    };
+    let batch::BatchOp::RegionScaled {
+        roi: first_roi,
+        scale: first_scale,
+    } = requests[0].op
+    else {
+        return Ok(None);
+    };
+    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+        return Ok(None);
+    }
+
+    let segment_count = first.entropy_checkpoints.len();
+    let tile_count = fast420_packets.len();
+    let tile_count_u32 = checked_u32(tile_count, "region scaled texture batch tile count")?;
+    let segment_count_u32 =
+        checked_u32(segment_count, "region scaled texture batch segment count")?;
+    let Some(first_plan) = fast420_region_scaled_batch_plan(
+        first,
+        first_roi,
+        first_scale,
+        tile_count_u32,
+        segment_count_u32,
+    ) else {
+        return Ok(None);
+    };
+
+    let total_decode_threads = checked_u32(
+        tile_count
+            .checked_mul(segment_count)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal fast420 region scaled texture decode thread count overflowed"
+                    .to_string(),
+            })?,
+        "fast420 region scaled texture decode thread count",
+    )?;
+
+    for (request, packet) in requests.iter().zip(fast420_packets.iter().copied()) {
+        let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+            return Ok(None);
+        };
+        if scale != first_scale
+            || !fast420_packets_share_full_rgb_batch_shape(first, packet, segment_count)
+            || fast420_region_scaled_batch_plan(
+                packet,
+                roi,
+                scale,
+                tile_count_u32,
+                segment_count_u32,
+            ) != Some(first_plan)
+        {
+            return Ok(None);
+        }
+    }
+
+    let out_tile_len = first_plan.out_dims.0 as usize
+        * first_plan.out_dims.1 as usize
+        * PixelFormat::Rgba8.bytes_per_pixel();
+    validate_rgba_texture_batch_output(output, first_plan.out_dims, tile_count, out_tile_len)?;
+
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let Some(entropy_buffers) = batch_entropy_buffers(
+        runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast420_region_scaled_texture_entropy",
+            offsets: "fast420_region_scaled_texture_entropy_offsets",
+            lens: "fast420_region_scaled_texture_entropy_lens",
+            checkpoints: "fast420_region_scaled_texture_entropy_checkpoints",
+        },
+        fast420_packets
+            .iter()
+            .map(|packet| packet.entropy_bytes.as_slice()),
+        fast420_packets
+            .iter()
+            .map(|packet| packet.entropy_checkpoints.as_slice()),
+        tile_count,
+        segment_count,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let y_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_texture_y",
+        first_plan.y_len * tile_count,
+    );
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_texture_cb",
+        first_plan.chroma_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_texture_cr",
+        first_plan.chroma_len * tile_count,
+    );
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast420_region_scaled_texture_status",
+        &statuses,
+    );
+    let dc_tables = [
+        PreparedHuffmanHost::from(&first.y_dc_table),
+        PreparedHuffmanHost::from(&first.cb_dc_table),
+        PreparedHuffmanHost::from(&first.cr_dc_table),
+    ];
+    let ac_tables = [
+        PreparedHuffmanHost::from(&first.y_ac_table),
+        PreparedHuffmanHost::from(&first.cb_ac_table),
+        PreparedHuffmanHost::from(&first.cr_ac_table),
+    ];
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder
+        .set_compute_pipeline_state(&runtime.fast420_scaled_region_batch_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&cb_plane), 0);
+    decoder_encoder.set_buffer(3, Some(&cr_plane), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFastRegionScaledBatchParams>() as u64,
+        (&raw const first_plan.decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        first.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        first.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        first.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
+    decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
+    decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
+    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    dispatch_1d_pipeline(
+        decoder_encoder,
+        &runtime.fast420_scaled_region_batch_decode_pipeline,
+        total_decode_threads,
+    );
+    decoder_encoder.end_encoding();
+
+    dispatch_windowed_rgba_texture_pack(
+        command_buffer,
+        &runtime.pack_420_windowed_rgba_texture_pipeline,
+        (&y_plane, &cb_plane, &cr_plane),
+        output,
+        windowed_texture_pack_params(first_plan),
+        tile_count,
+        first_plan.out_dims,
+    )?;
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    drop(batch_scratch);
+
+    if let Some(results) =
+        texture_batch_error_results(requests, &status_buffer, total_decode_threads)?
+    {
+        return Ok(Some(results));
+    }
+
+    Ok(Some(texture_batch_success_results(
+        output,
+        first_plan.out_dims,
+        requests.len(),
+    )?))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -8279,6 +8592,242 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
         )));
     }
     Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast422_region_scaled_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchTextureOutput,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    if requests.len() < 2
+        || requests
+            .iter()
+            .any(|request| request.fmt != PixelFormat::Rgb8)
+    {
+        return Ok(None);
+    }
+
+    let mut fast422_packets = Vec::with_capacity(packets.len());
+    for packet in packets {
+        let BatchedFastPacket::Fast422(packet) = packet else {
+            return Ok(None);
+        };
+        fast422_packets.push(*packet);
+    }
+
+    let Some(first) = fast422_packets.first().copied() else {
+        return Ok(None);
+    };
+    let batch::BatchOp::RegionScaled {
+        roi: first_roi,
+        scale: first_scale,
+    } = requests[0].op
+    else {
+        return Ok(None);
+    };
+    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+        return Ok(None);
+    }
+
+    let segment_count = first.entropy_checkpoints.len();
+    let tile_count = fast422_packets.len();
+    let tile_count_u32 = checked_u32(tile_count, "region scaled texture batch tile count")?;
+    let segment_count_u32 =
+        checked_u32(segment_count, "region scaled texture batch segment count")?;
+    let Some(first_plan) = fast422_region_scaled_batch_plan(
+        first,
+        first_roi,
+        first_scale,
+        tile_count_u32,
+        segment_count_u32,
+    ) else {
+        return Ok(None);
+    };
+
+    let total_decode_threads = checked_u32(
+        tile_count
+            .checked_mul(segment_count)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal fast422 region scaled texture decode thread count overflowed"
+                    .to_string(),
+            })?,
+        "fast422 region scaled texture decode thread count",
+    )?;
+
+    for (request, packet) in requests.iter().zip(fast422_packets.iter().copied()) {
+        let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+            return Ok(None);
+        };
+        if scale != first_scale
+            || !fast422_packets_share_full_rgb_batch_shape(first, packet, segment_count)
+            || fast422_region_scaled_batch_plan(
+                packet,
+                roi,
+                scale,
+                tile_count_u32,
+                segment_count_u32,
+            ) != Some(first_plan)
+        {
+            return Ok(None);
+        }
+    }
+
+    let out_tile_len = first_plan.out_dims.0 as usize
+        * first_plan.out_dims.1 as usize
+        * PixelFormat::Rgba8.bytes_per_pixel();
+    validate_rgba_texture_batch_output(output, first_plan.out_dims, tile_count, out_tile_len)?;
+
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let Some(entropy_buffers) = batch_entropy_buffers(
+        runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast422_region_scaled_texture_entropy",
+            offsets: "fast422_region_scaled_texture_entropy_offsets",
+            lens: "fast422_region_scaled_texture_entropy_lens",
+            checkpoints: "fast422_region_scaled_texture_entropy_checkpoints",
+        },
+        fast422_packets
+            .iter()
+            .map(|packet| packet.entropy_bytes.as_slice()),
+        fast422_packets
+            .iter()
+            .map(|packet| packet.entropy_checkpoints.as_slice()),
+        tile_count,
+        segment_count,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let y_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_texture_y",
+        first_plan.y_len * tile_count,
+    );
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_texture_cb",
+        first_plan.chroma_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_texture_cr",
+        first_plan.chroma_len * tile_count,
+    );
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast422_region_scaled_texture_status",
+        &statuses,
+    );
+    let dc_tables = [
+        PreparedHuffmanHost::from(&first.y_dc_table),
+        PreparedHuffmanHost::from(&first.cb_dc_table),
+        PreparedHuffmanHost::from(&first.cr_dc_table),
+    ];
+    let ac_tables = [
+        PreparedHuffmanHost::from(&first.y_ac_table),
+        PreparedHuffmanHost::from(&first.cb_ac_table),
+        PreparedHuffmanHost::from(&first.cr_ac_table),
+    ];
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder
+        .set_compute_pipeline_state(&runtime.fast422_scaled_region_batch_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&cb_plane), 0);
+    decoder_encoder.set_buffer(3, Some(&cr_plane), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFastRegionScaledBatchParams>() as u64,
+        (&raw const first_plan.decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        first.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        first.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        first.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
+    decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
+    decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
+    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    dispatch_1d_pipeline(
+        decoder_encoder,
+        &runtime.fast422_scaled_region_batch_decode_pipeline,
+        total_decode_threads,
+    );
+    decoder_encoder.end_encoding();
+
+    dispatch_windowed_rgba_texture_pack(
+        command_buffer,
+        &runtime.pack_422_windowed_rgba_texture_pipeline,
+        (&y_plane, &cb_plane, &cr_plane),
+        output,
+        windowed_texture_pack_params(first_plan),
+        tile_count,
+        first_plan.out_dims,
+    )?;
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    drop(batch_scratch);
+
+    if let Some(results) =
+        texture_batch_error_results(requests, &status_buffer, total_decode_threads)?
+    {
+        return Ok(Some(results));
+    }
+
+    Ok(Some(texture_batch_success_results(
+        output,
+        first_plan.out_dims,
+        requests.len(),
+    )?))
 }
 
 #[cfg(target_os = "macos")]
@@ -8583,7 +9132,23 @@ fn decode_region_scaled_rgb8_batch_into_textures_with_runtime(
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    try_decode_fast444_region_scaled_rgba_batch_to_textures(runtime, requests, packets, output)
+    if let Some(results) =
+        try_decode_fast444_region_scaled_rgba_batch_to_textures(runtime, requests, packets, output)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast420_region_scaled_rgba_batch_to_textures(runtime, requests, packets, output)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast422_region_scaled_rgba_batch_to_textures(runtime, requests, packets, output)?
+    {
+        return Ok(Some(results));
+    }
+
+    Ok(None)
 }
 
 #[cfg(target_os = "macos")]

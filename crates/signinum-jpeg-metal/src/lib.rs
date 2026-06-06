@@ -1175,7 +1175,7 @@ impl Codec {
             &requests, output, session,
         )?
         .ok_or(Error::UnsupportedMetalRequest {
-            reason: "JPEG Metal texture region-scaled batch output currently supports batchable RGB8 fast 4:4:4 inputs with matching output shapes",
+            reason: "JPEG Metal texture region-scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with matching output shapes",
         })
     }
 
@@ -2636,6 +2636,114 @@ mod tests {
         for (index, tile) in tiles.into_iter().enumerate() {
             let tile = tile.expect("texture tile");
             assert_eq!(tile.dimensions(), (8, 8));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast422_region_scaled_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 1,
+            y: 1,
+            w: 9,
+            h: 6,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("texture output");
+        let inputs = [BASELINE_422, BASELINE_422];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode region scaled into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (scaled.w, scaled.h));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast420_region_scaled_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 1,
+            y: 2,
+            w: 10,
+            h: 9,
+        };
+        let scale = Downscale::Quarter;
+        let scaled = roi.scaled_covering(scale);
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("texture output");
+        let inputs = [BASELINE_420, BASELINE_420];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode region scaled into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (scaled.w, scaled.h));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
             assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
             assert!(std::ptr::eq(
                 tile.texture(),
