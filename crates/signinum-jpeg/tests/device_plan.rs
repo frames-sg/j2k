@@ -2,8 +2,11 @@ use std::borrow::Cow;
 
 use signinum_jpeg::{
     ColorSpace, Decoder, Downscale, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
-    PixelFormat, Rect, Warning,
+    PixelFormat, Rect, SofKind, Warning,
 };
+
+mod fixtures;
+use fixtures::progressive_8x8_jpeg;
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
@@ -79,6 +82,124 @@ fn capability_report_exposes_metadata_and_fast_backend_eligibility() {
     assert!(report.device.matches_fast_420);
     assert!(!report.device.matches_fast_422);
     assert!(!report.device.matches_fast_444);
+}
+
+#[test]
+fn capability_report_inspects_cmyk_and_ycck_without_building_decoder() {
+    for (input, expected_color) in [
+        (minimal_cmyk_baseline_jpeg(), ColorSpace::Cmyk),
+        (minimal_ycck_baseline_jpeg(), ColorSpace::Ycck),
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb8,
+            },
+        )
+        .expect("capability report should parse unsupported color metadata");
+
+        assert_eq!(report.info.sof_kind, SofKind::Baseline8);
+        assert_eq!(report.info.color_space, expected_color);
+        assert!(!report.cpu.eligible);
+        assert!(report
+            .cpu
+            .reason
+            .expect("CPU rejection reason")
+            .contains("CMYK/YCCK"));
+        assert!(!report.owned_cuda.eligible);
+        assert!(!report.metal_fast.eligible);
+        assert!(report
+            .metal_fast
+            .reason
+            .expect("Metal rejection reason")
+            .contains("YCbCr"));
+    }
+}
+
+#[test]
+fn capability_report_rejects_progressive_roi_and_scaled_cpu_until_parity_lands() {
+    let input = progressive_8x8_jpeg();
+    let full = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("progressive full capability report");
+    let roi_scaled = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 4,
+                    h: 4,
+                },
+                scale: Downscale::Half,
+            },
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("progressive region-scaled capability report");
+
+    assert_eq!(full.info.sof_kind, SofKind::Progressive8);
+    assert!(full.cpu.eligible);
+    assert!(!roi_scaled.cpu.eligible);
+    assert!(roi_scaled
+        .cpu
+        .reason
+        .expect("progressive ROI/scaled rejection")
+        .contains("full-image unscaled"));
+    assert!(!roi_scaled.owned_cuda.eligible);
+    assert!(!roi_scaled.metal_fast.eligible);
+}
+
+#[test]
+fn capability_report_inspects_12_bit_and_lossless_sof_without_building_decoder() {
+    for (input, expected_sof, expected_bits, expected_reason) in [
+        (
+            grayscale_sof_jpeg(0xc1, 12),
+            SofKind::Extended12,
+            12,
+            "12-bit",
+        ),
+        (
+            progressive_12_bit_jpeg(),
+            SofKind::Progressive12,
+            12,
+            "12-bit",
+        ),
+        (
+            grayscale_sof_jpeg(0xc3, 8),
+            SofKind::Lossless,
+            8,
+            "lossless SOF3",
+        ),
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb16,
+            },
+        )
+        .expect("capability report should parse unsupported SOF metadata");
+
+        assert_eq!(report.info.sof_kind, expected_sof);
+        assert_eq!(report.info.bit_depth, expected_bits);
+        assert_eq!(report.info.dimensions, (8, 8));
+        assert!(!report.cpu.eligible);
+        assert!(report
+            .cpu
+            .reason
+            .expect("CPU rejection reason")
+            .contains(expected_reason));
+        assert!(!report.owned_cuda.eligible);
+        assert!(!report.metal_fast.eligible);
+    }
 }
 
 #[test]
@@ -531,6 +652,59 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
     ]);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
     bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
+    bytes
+}
+
+fn minimal_cmyk_baseline_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(1u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc0, 0x00, 20, 8, 0, 8, 0, 8, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0, 0x00, 0xff, 0xd9,
+    ]);
+    bytes
+}
+
+fn minimal_ycck_baseline_jpeg() -> Vec<u8> {
+    let mut bytes = minimal_cmyk_baseline_jpeg();
+    bytes.splice(
+        2..2,
+        [
+            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, 0x02,
+        ],
+    );
+    bytes
+}
+
+fn grayscale_sof_jpeg(marker: u8, precision: u8) -> Vec<u8> {
+    let mut bytes = grayscale_jpeg(8, 8);
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("SOF0 marker");
+    bytes[sof + 1] = marker;
+    bytes[sof + 4] = precision;
+    bytes
+}
+
+fn progressive_12_bit_jpeg() -> Vec<u8> {
+    let mut bytes = progressive_8x8_jpeg();
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc2])
+        .expect("SOF2 marker");
+    bytes[sof + 4] = 12;
     bytes
 }
 

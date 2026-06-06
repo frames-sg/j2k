@@ -3,7 +3,7 @@
 //! Public JPEG capability introspection for backend routing.
 
 use crate::adapter::{summarize_device_batch, DeviceBatchSummary};
-use crate::decoder::Decoder;
+use crate::decoder::{Decoder, JpegView};
 use crate::error::JpegError;
 use crate::info::{ColorSpace, Info, Rect, SofKind};
 use signinum_core::{Downscale, PixelFormat};
@@ -90,10 +90,20 @@ impl JpegCapabilityReport {
     /// Inspect JPEG bytes and report decode-route eligibility.
     ///
     /// # Errors
-    /// Returns [`JpegError`] when JPEG header parsing fails.
+    /// Returns [`JpegError`] when JPEG header parsing fails or planner
+    /// validation finds malformed decode-table state. Parseable JPEG classes
+    /// that Signinum has not implemented yet still return a report with
+    /// rejected backend eligibility.
     pub fn inspect(input: &[u8], request: JpegCapabilityRequest) -> Result<Self, JpegError> {
-        let decoder = Decoder::new(input)?;
-        Ok(Self::for_decoder(&decoder, request))
+        let view = JpegView::parse(input)?;
+        let info = view.info().clone();
+        match Decoder::from_view(view) {
+            Ok(decoder) => Ok(Self::for_decoder(&decoder, request)),
+            Err(err) if can_report_from_parsed_info(&err) => {
+                Ok(Self::for_parsed_info(info, request))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Build a capability report from an already parsed decoder.
@@ -107,7 +117,19 @@ impl JpegCapabilityReport {
             device,
             cpu: cpu_eligibility(&info, request),
             owned_cuda: owned_cuda_eligibility(&info, device, request),
-            metal_fast: metal_fast_eligibility(device, request),
+            metal_fast: metal_fast_eligibility(&info, device, request),
+        }
+    }
+
+    fn for_parsed_info(info: Info, request: JpegCapabilityRequest) -> Self {
+        let device = unavailable_device_summary(&info);
+        Self {
+            request,
+            info: info.clone(),
+            device,
+            cpu: cpu_eligibility(&info, request),
+            owned_cuda: owned_cuda_eligibility(&info, device, request),
+            metal_fast: metal_fast_eligibility(&info, device, request),
         }
     }
 
@@ -123,7 +145,31 @@ impl JpegCapabilityReport {
 }
 
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
-    let _ = info;
+    match info.sof_kind {
+        SofKind::Extended12 | SofKind::Progressive12 => {
+            return JpegBackendEligibility::rejected(
+                "JPEG CPU decode does not yet support 12-bit JPEG output",
+            )
+        }
+        SofKind::Lossless => {
+            return JpegBackendEligibility::rejected(
+                "JPEG CPU decode does not yet support lossless SOF3 JPEG",
+            )
+        }
+        SofKind::Progressive8 if !is_full_image_unscaled_op(info, request.op) => {
+            return JpegBackendEligibility::rejected(
+                "JPEG CPU progressive decode currently supports full-image unscaled output only",
+            )
+        }
+        SofKind::Baseline8 | SofKind::Extended8 | SofKind::Progressive8 => {}
+    }
+
+    if matches!(info.color_space, ColorSpace::Cmyk | ColorSpace::Ycck) {
+        return JpegBackendEligibility::rejected(
+            "JPEG CPU decode does not yet support CMYK/YCCK color conversion",
+        );
+    }
+
     match (request.fmt, request.op.scale()) {
         (PixelFormat::Rgb8 | PixelFormat::Gray8, _) => JpegBackendEligibility::eligible(),
         (PixelFormat::Rgba8, Downscale::None) => JpegBackendEligibility::eligible(),
@@ -163,6 +209,7 @@ fn owned_cuda_eligibility(
 }
 
 fn metal_fast_eligibility(
+    info: &Info,
     device: DeviceBatchSummary,
     request: JpegCapabilityRequest,
 ) -> JpegBackendEligibility {
@@ -172,6 +219,19 @@ fn metal_fast_eligibility(
     ) {
         return JpegBackendEligibility::rejected(
             "JPEG Metal fast path supports Gray8, Rgb8, or Rgba8 output formats",
+        );
+    }
+    if !matches!(info.sof_kind, SofKind::Baseline8 | SofKind::Extended8) {
+        return JpegBackendEligibility::rejected(
+            "JPEG Metal fast path currently supports baseline/extended 8-bit sequential JPEG only",
+        );
+    }
+    if !matches!(
+        info.color_space,
+        ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb
+    ) {
+        return JpegBackendEligibility::rejected(
+            "JPEG Metal fast path requires grayscale, YCbCr, or RGB input color",
         );
     }
     if device.matches_fast_420 || device.matches_fast_422 || device.matches_fast_444 {
@@ -221,4 +281,34 @@ fn supports_metal_resident_batch_scale(scale: Downscale) -> bool {
         scale,
         Downscale::Half | Downscale::Quarter | Downscale::Eighth
     )
+}
+
+fn can_report_from_parsed_info(err: &JpegError) -> bool {
+    matches!(
+        err,
+        JpegError::NotImplemented { .. } | JpegError::UnsupportedColorSpace { .. }
+    )
+}
+
+fn unavailable_device_summary(info: &Info) -> DeviceBatchSummary {
+    DeviceBatchSummary {
+        restart_interval: info.restart_interval,
+        checkpoint_count: 0,
+        matches_fast_420: false,
+        matches_fast_422: false,
+        matches_fast_444: false,
+    }
+}
+
+fn is_full_image_unscaled_op(info: &Info, op: JpegDecodeOp) -> bool {
+    match op {
+        JpegDecodeOp::Full => true,
+        JpegDecodeOp::Scaled(Downscale::None) => true,
+        JpegDecodeOp::Region(rect) => rect == Rect::full(info.dimensions),
+        JpegDecodeOp::RegionScaled {
+            roi,
+            scale: Downscale::None,
+        } => roi == Rect::full(info.dimensions),
+        JpegDecodeOp::Scaled(_) | JpegDecodeOp::RegionScaled { .. } => false,
+    }
 }
