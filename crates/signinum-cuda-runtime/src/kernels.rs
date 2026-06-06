@@ -49,7 +49,7 @@ pub(crate) enum CudaKernel {
     JpegDecodeFast444Rgb8,
     #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
     JpegEntropySync420,
-    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    #[allow(dead_code)]
     JpegEntropyOverflow420,
     J2kInverseDwtSingle,
     J2kInverseMct,
@@ -469,6 +469,24 @@ mod tests {
         let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
         assert!(source.contains(".visible .entry signinum_copy_u8("));
         assert_eq!(CudaKernel::CopyU8.entrypoint(), b"signinum_copy_u8\0");
+    }
+
+    #[test]
+    fn jpeg_decode_kernel_metadata_matches_source_entrypoints() {
+        assert_eq!(
+            CudaKernel::JpegEntropySync420.entrypoint(),
+            b"signinum_jpeg_entropy_sync420\0"
+        );
+        assert_eq!(
+            CudaKernel::JpegEntropyOverflow420.entrypoint(),
+            b"signinum_jpeg_entropy_overflow420\0"
+        );
+
+        let cuda_source = include_str!("jpeg_decode_kernels.cu");
+        assert!(cuda_source.contains("extern \"C\" __global__ void signinum_jpeg_entropy_sync420("));
+        assert!(
+            cuda_source.contains("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+        );
     }
 
     #[test]

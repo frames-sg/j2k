@@ -450,6 +450,27 @@ impl CudaJpegChunkedEntropyReport {
     }
 }
 
+/// Experimental Signinum-owned CUDA JPEG entropy self-sync diagnostic plan.
+#[derive(Debug)]
+pub struct CudaJpegChunkedEntropyPlan<'a> {
+    /// Chunking configuration.
+    pub config: CudaJpegChunkedEntropyConfig,
+    /// Entropy-coded scan payload with byte stuffing/restart markers removed.
+    pub entropy_bytes: &'a [u8],
+    /// Y DC Huffman table.
+    pub y_dc_table: CudaJpegHuffmanTable,
+    /// Y AC Huffman table.
+    pub y_ac_table: CudaJpegHuffmanTable,
+    /// Cb DC Huffman table.
+    pub cb_dc_table: CudaJpegHuffmanTable,
+    /// Cb AC Huffman table.
+    pub cb_ac_table: CudaJpegHuffmanTable,
+    /// Cr DC Huffman table.
+    pub cr_dc_table: CudaJpegHuffmanTable,
+    /// Cr AC Huffman table.
+    pub cr_ac_table: CudaJpegHuffmanTable,
+}
+
 /// Signinum-owned CUDA baseline JPEG RGB8 decode plan.
 #[derive(Debug)]
 pub struct CudaJpegRgb8DecodePlan<'a> {
@@ -535,6 +556,20 @@ struct CudaJpeg420Params {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+struct CudaJpegEntropyChunkParams {
+    entropy_len: u32,
+    entropy_bits: u32,
+    subsequence_bits: u32,
+    subsequence_count: u32,
+    sequence_len: u32,
+    max_overflow_subsequences: u32,
+    reserved0: u32,
+    reserved1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
 struct CudaJpegDecodeStatus {
     code: u32,
     detail: u32,
@@ -543,6 +578,7 @@ struct CudaJpegDecodeStatus {
 }
 
 #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CudaJpegRgb8ValidatedPlan {
     params: CudaJpeg420Params,
     output_len: usize,
@@ -620,6 +656,35 @@ fn validate_jpeg_rgb8_plan_with_pitch(
             reserved: 0,
         },
         output_len,
+    })
+}
+
+#[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+fn validate_jpeg_entropy_chunk_plan(
+    plan: &CudaJpegChunkedEntropyPlan<'_>,
+    subsequences: usize,
+) -> Result<CudaJpegEntropyChunkParams, CudaError> {
+    let entropy_len =
+        u32::try_from(plan.entropy_bytes.len()).map_err(|_| CudaError::LengthTooLarge {
+            len: plan.entropy_bytes.len(),
+        })?;
+    let entropy_bits = entropy_len
+        .checked_mul(8)
+        .ok_or(CudaError::LengthTooLarge {
+            len: plan.entropy_bytes.len(),
+        })?;
+    let subsequence_count =
+        u32::try_from(subsequences).map_err(|_| CudaError::LengthTooLarge { len: subsequences })?;
+
+    Ok(CudaJpegEntropyChunkParams {
+        entropy_len,
+        entropy_bits,
+        subsequence_bits: plan.config.subsequence_bits(),
+        subsequence_count,
+        sequence_len: plan.config.sequence_len,
+        max_overflow_subsequences: plan.config.max_overflow_subsequences,
+        reserved0: 0,
+        reserved1: 0,
     })
 }
 
@@ -2382,6 +2447,45 @@ impl CudaContext {
         })
     }
 
+    /// Run experimental 4:2:0 JPEG entropy self-sync diagnostics.
+    pub fn diagnose_jpeg_420_entropy_self_sync(
+        &self,
+        plan: &CudaJpegChunkedEntropyPlan<'_>,
+    ) -> Result<CudaJpegChunkedEntropyReport, CudaError> {
+        plan.config.validate()?;
+        let subsequences = plan
+            .config
+            .subsequence_count_for_entropy_bytes(plan.entropy_bytes.len())?;
+        if subsequences == 0 {
+            return Ok(CudaJpegChunkedEntropyReport {
+                config: plan.config,
+                entropy_bytes: plan.entropy_bytes.len(),
+                states: Vec::new(),
+                overflows: Vec::new(),
+                execution: CudaExecutionStats {
+                    kernel_dispatches: 0,
+                    copy_kernel_dispatches: 0,
+                    decode_kernel_dispatches: 0,
+                    hardware_decode: false,
+                },
+            });
+        }
+
+        #[cfg(not(signinum_cuda_jpeg_decode_ptx_built))]
+        {
+            let _ = subsequences;
+            Err(CudaError::InvalidArgument {
+                message: "Signinum CUDA JPEG decode PTX was not built from jpeg_decode_kernels.cu"
+                    .to_string(),
+            })
+        }
+
+        #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+        {
+            self.diagnose_jpeg_420_entropy_self_sync_nonempty(plan, subsequences)
+        }
+    }
+
     /// Decode one baseline JPEG 4:2:0 image to device-resident RGB8 using Signinum CUDA kernels.
     pub fn decode_jpeg_420_rgb8_owned(
         &self,
@@ -2460,6 +2564,7 @@ impl CudaContext {
     }
 
     #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    #[allow(clippy::similar_names)]
     fn decode_jpeg_rgb8_owned_validated(
         &self,
         plan: &CudaJpegRgb8DecodePlan<'_>,
@@ -2518,7 +2623,53 @@ impl CudaContext {
     }
 
     #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::similar_names)]
+    fn diagnose_jpeg_420_entropy_self_sync_nonempty(
+        &self,
+        plan: &CudaJpegChunkedEntropyPlan<'_>,
+        subsequences: usize,
+    ) -> Result<CudaJpegChunkedEntropyReport, CudaError> {
+        let params = validate_jpeg_entropy_chunk_plan(plan, subsequences)?;
+        self.inner.set_current()?;
+        let entropy = self.upload_pinned(plan.entropy_bytes)?;
+        let y_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_dc_table))?;
+        let y_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.y_ac_table))?;
+        let cb_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_dc_table))?;
+        let cb_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cb_ac_table))?;
+        let cr_dc = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_dc_table))?;
+        let cr_ac = self.upload(cuda_jpeg_huffman_table_as_bytes(&plan.cr_ac_table))?;
+
+        let mut states = vec![CudaJpegEntropySyncState::default(); subsequences];
+        let states_buffer = self.upload(cuda_jpeg_entropy_sync_states_as_bytes(&states))?;
+        self.launch_jpeg_entropy_sync420(
+            &entropy,
+            params,
+            &y_dc,
+            &y_ac,
+            &cb_dc,
+            &cb_ac,
+            &cr_dc,
+            &cr_ac,
+            &states_buffer,
+        )?;
+        states_buffer.copy_to_host(cuda_jpeg_entropy_sync_states_as_bytes_mut(&mut states))?;
+
+        Ok(CudaJpegChunkedEntropyReport {
+            config: plan.config,
+            entropy_bytes: plan.entropy_bytes.len(),
+            states,
+            overflows: Vec::new(),
+            execution: CudaExecutionStats {
+                kernel_dispatches: 1,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 0,
+                hardware_decode: false,
+            },
+        })
+    }
+
+    #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
     fn launch_jpeg_decode_rgb8(
         &self,
         kernel: CudaKernel,
@@ -2570,6 +2721,48 @@ impl CudaContext {
         let geometry = CudaLaunchGeometry {
             grid: (params.checkpoint_count, 1, 1),
             block: (1, 1, 1),
+        };
+
+        self.launch_kernel(function, geometry, &mut kernel_params)
+    }
+
+    #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    fn launch_jpeg_entropy_sync420(
+        &self,
+        entropy: &CudaDeviceBuffer,
+        mut params: CudaJpegEntropyChunkParams,
+        y_dc: &CudaDeviceBuffer,
+        y_ac: &CudaDeviceBuffer,
+        cb_dc: &CudaDeviceBuffer,
+        cb_ac: &CudaDeviceBuffer,
+        cr_dc: &CudaDeviceBuffer,
+        cr_ac: &CudaDeviceBuffer,
+        states: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self.inner.kernel_function(CudaKernel::JpegEntropySync420)?;
+        let mut entropy_ptr = entropy.device_ptr();
+        let mut y_dc_ptr = y_dc.device_ptr();
+        let mut y_ac_ptr = y_ac.device_ptr();
+        let mut cb_dc_ptr = cb_dc.device_ptr();
+        let mut cb_ac_ptr = cb_ac.device_ptr();
+        let mut cr_dc_ptr = cr_dc.device_ptr();
+        let mut cr_ac_ptr = cr_ac.device_ptr();
+        let mut states_ptr = states.device_ptr();
+        let mut kernel_params = [
+            (&raw mut entropy_ptr).cast::<c_void>(),
+            (&raw mut params).cast::<c_void>(),
+            (&raw mut y_dc_ptr).cast::<c_void>(),
+            (&raw mut y_ac_ptr).cast::<c_void>(),
+            (&raw mut cb_dc_ptr).cast::<c_void>(),
+            (&raw mut cb_ac_ptr).cast::<c_void>(),
+            (&raw mut cr_dc_ptr).cast::<c_void>(),
+            (&raw mut cr_ac_ptr).cast::<c_void>(),
+            (&raw mut states_ptr).cast::<c_void>(),
+        ];
+        let geometry = CudaLaunchGeometry {
+            grid: (params.subsequence_count.div_ceil(128), 1, 1),
+            block: (128, 1, 1),
         };
 
         self.launch_kernel(function, geometry, &mut kernel_params)
@@ -12348,6 +12541,27 @@ fn cuda_jpeg_decode_statuses_as_bytes_mut(statuses: &mut [CudaJpegDecodeStatus])
     }
 }
 
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_entropy_sync_states_as_bytes(states: &[CudaJpegEntropySyncState]) -> &[u8] {
+    // SAFETY: CudaJpegEntropySyncState is repr(C), plain integer data copied to CUDA.
+    unsafe {
+        std::slice::from_raw_parts(states.as_ptr().cast::<u8>(), std::mem::size_of_val(states))
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_entropy_sync_states_as_bytes_mut(
+    states: &mut [CudaJpegEntropySyncState],
+) -> &mut [u8] {
+    // SAFETY: the returned byte slice covers exactly the same initialized state storage.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            states.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(states),
+        )
+    }
+}
+
 fn htj2k_encode_params_as_bytes(params: &CudaHtj2kEncodeParams) -> &[u8] {
     // SAFETY: CudaHtj2kEncodeParams is repr(C) POD data copied directly to CUDA.
     unsafe {
@@ -12707,8 +12921,8 @@ mod tests {
         CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
         CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
         CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig,
-        CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState, CudaJpegEntropySyncState,
-        CudaKernelName, CudaQueuedHtj2kCleanup,
+        CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState,
+        CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaKernelName, CudaQueuedHtj2kCleanup,
     };
 
     fn cuda_runtime_required() -> bool {
@@ -12807,6 +13021,37 @@ mod tests {
         assert_eq!(report.synchronized_overflow_count(), 1);
         assert_eq!(report.max_overflow_bits(), Some(96));
         assert_eq!(report.failed_state_count(), 0);
+    }
+
+    #[test]
+    fn jpeg_entropy_self_sync_returns_empty_report_for_empty_entropy_when_runtime_required() {
+        if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_none() {
+            return;
+        }
+
+        let context = CudaContext::system_default().expect("cuda context");
+        let plan = CudaJpegChunkedEntropyPlan {
+            config: CudaJpegChunkedEntropyConfig::default(),
+            entropy_bytes: &[],
+            y_dc_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+            y_ac_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+            cb_dc_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+            cb_ac_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+            cr_dc_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+            cr_ac_table: CudaJpegHuffmanTable::from_jpeg_bits_values([0; 16], 0, [0; 256])
+                .expect("empty huffman table"),
+        };
+
+        let report = context
+            .diagnose_jpeg_420_entropy_self_sync(&plan)
+            .expect("empty diagnostic report");
+        assert_eq!(report.subsequence_count(), 0);
+        assert_eq!(report.overflows.len(), 0);
     }
 
     #[test]
