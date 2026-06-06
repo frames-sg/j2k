@@ -162,7 +162,11 @@ region-scaled batch shape supported by those reusable-output APIs.
 `MetalBatchTextureOutput::ensure_rgba8_tiles` retain existing Metal allocations
 when the requested tile shape already fits and replace them only when the
 layout or capacity must change. Their scaled and region-scaled variants compute
-the output shape from the full dimensions or source ROI.
+the output shape from the full dimensions or source ROI. The
+`Codec::decode_rgb8_*_into_resizable_metal_{buffer,textures}_with_session`
+helpers combine request parsing, output resize, and resident batch decode for
+viewport loops that reuse one caller-owned output across changing tile counts
+or output shapes.
 
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.

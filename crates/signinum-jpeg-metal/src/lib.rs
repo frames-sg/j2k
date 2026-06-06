@@ -1137,6 +1137,12 @@ impl<'a> ImageDecodeDevice<'a> for Decoder<'a> {
 /// JPEG codec marker used by Signinum's generic decode traits.
 pub struct Codec;
 
+#[cfg(target_os = "macos")]
+struct Rgb8MetalBatchRequests {
+    requests: Vec<batch::QueuedRequest>,
+    output_dimensions: Option<(u32, u32)>,
+}
+
 impl ImageCodec for Codec {
     type Error = Error;
     type Warning = CpuWarning;
@@ -1149,11 +1155,24 @@ impl Codec {
         inputs: &[&[u8]],
         mut op_for_decoder: impl FnMut(&CpuDecoder<'_>) -> batch::BatchOp,
     ) -> Result<Vec<batch::QueuedRequest>, Error> {
+        let plan = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |decoder| {
+            (op_for_decoder(decoder), decoder.info().dimensions)
+        })?;
+        Ok(plan.requests)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rgb8_metal_batch_requests_with_output_dimensions(
+        inputs: &[&[u8]],
+        mut op_and_dimensions_for_decoder: impl FnMut(&CpuDecoder<'_>) -> (batch::BatchOp, (u32, u32)),
+    ) -> Result<Rgb8MetalBatchRequests, Error> {
         let mut state = session::SessionState::default();
         let mut requests = Vec::with_capacity(inputs.len());
+        let mut first_output_dimensions = None;
         for input in inputs {
             let decoder = CpuDecoder::new(input)?;
-            let op = op_for_decoder(&decoder);
+            let (op, output_dimensions) = op_and_dimensions_for_decoder(&decoder);
+            first_output_dimensions.get_or_insert(output_dimensions);
             let input = state.intern_input_slice(input);
             let (fast444_packet, fast422_packet, fast420_packet) =
                 state.resolve_fast_packets(&input, BackendRequest::Metal);
@@ -1167,7 +1186,10 @@ impl Codec {
                 fast420_packet,
             ));
         }
-        Ok(requests)
+        Ok(Rgb8MetalBatchRequests {
+            requests,
+            output_dimensions: first_output_dimensions,
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -1182,6 +1204,34 @@ impl Codec {
         }
 
         let requests = Self::rgb8_metal_batch_requests(inputs, |_| batch::BatchOp::Full)?;
+
+        compute::decode_full_rgb8_batch_into_output_with_session(&requests, output, session)?
+            .ok_or(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal reusable batch output currently supports batchable full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
+            })
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Decode a full-tile RGB8 JPEG batch into a resizable caller-owned Metal buffer.
+    pub fn decode_rgb8_batch_into_resizable_metal_buffer_with_session(
+        inputs: &[&[u8]],
+        output: &mut MetalBatchOutputBuffer,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Rgb8MetalBatchRequests {
+            requests,
+            output_dimensions: Some(output_dimensions),
+        } = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |decoder| {
+            (batch::BatchOp::Full, decoder.info().dimensions)
+        })?
+        else {
+            return Ok(Vec::new());
+        };
+        output.ensure_rgb8_tiles(session, output_dimensions, inputs.len())?;
 
         compute::decode_full_rgb8_batch_into_output_with_session(&requests, output, session)?
             .ok_or(Error::UnsupportedMetalRequest {
@@ -1209,6 +1259,34 @@ impl Codec {
     }
 
     #[cfg(target_os = "macos")]
+    /// Decode a full-tile RGB8 JPEG batch into resizable caller-owned Metal RGBA8 textures.
+    pub fn decode_rgb8_batch_into_resizable_metal_textures_with_session(
+        inputs: &[&[u8]],
+        output: &mut MetalBatchTextureOutput,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Rgb8MetalBatchRequests {
+            requests,
+            output_dimensions: Some(output_dimensions),
+        } = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |decoder| {
+            (batch::BatchOp::Full, decoder.info().dimensions)
+        })?
+        else {
+            return Ok(Vec::new());
+        };
+        output.ensure_rgba8_tiles(session, output_dimensions, inputs.len())?;
+
+        compute::decode_full_rgb8_batch_into_textures_with_session(&requests, output, session)?
+            .ok_or(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal texture batch output currently supports batchable full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
+            })
+    }
+
+    #[cfg(target_os = "macos")]
     /// Decode a scaled RGB8 JPEG batch into a reusable caller-owned Metal buffer.
     pub fn decode_rgb8_scaled_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
@@ -1227,6 +1305,44 @@ impl Codec {
                 scale,
             }
         })?;
+
+        compute::decode_region_scaled_rgb8_batch_into_output_with_session(
+            &requests, output, session,
+        )?
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with half, quarter, or eighth scaling",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Decode a scaled RGB8 JPEG batch into a resizable caller-owned Metal buffer.
+    pub fn decode_rgb8_scaled_batch_into_resizable_metal_buffer_with_session(
+        inputs: &[&[u8]],
+        scale: Downscale,
+        output: &mut MetalBatchOutputBuffer,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Rgb8MetalBatchRequests {
+            requests,
+            output_dimensions: Some(output_dimensions),
+        } = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |decoder| {
+            let (w, h) = decoder.info().dimensions;
+            (
+                batch::BatchOp::RegionScaled {
+                    roi: Rect { x: 0, y: 0, w, h },
+                    scale,
+                },
+                scaled_dims((w, h), scale),
+            )
+        })?
+        else {
+            return Ok(Vec::new());
+        };
+        output.ensure_rgb8_tiles(session, output_dimensions, inputs.len())?;
 
         compute::decode_region_scaled_rgb8_batch_into_output_with_session(
             &requests, output, session,
@@ -1265,6 +1381,44 @@ impl Codec {
     }
 
     #[cfg(target_os = "macos")]
+    /// Decode a scaled RGB8 JPEG batch into resizable caller-owned Metal RGBA8 textures.
+    pub fn decode_rgb8_scaled_batch_into_resizable_metal_textures_with_session(
+        inputs: &[&[u8]],
+        scale: Downscale,
+        output: &mut MetalBatchTextureOutput,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let Rgb8MetalBatchRequests {
+            requests,
+            output_dimensions: Some(output_dimensions),
+        } = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |decoder| {
+            let (w, h) = decoder.info().dimensions;
+            (
+                batch::BatchOp::RegionScaled {
+                    roi: Rect { x: 0, y: 0, w, h },
+                    scale,
+                },
+                scaled_dims((w, h), scale),
+            )
+        })?
+        else {
+            return Ok(Vec::new());
+        };
+        output.ensure_rgba8_tiles(session, output_dimensions, inputs.len())?;
+
+        compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
+            &requests, output, session,
+        )?
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal texture scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with half, quarter, or eighth scaling",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     /// Decode a region-scaled RGB8 JPEG batch into a reusable caller-owned Metal buffer.
     pub fn decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
@@ -1291,6 +1445,41 @@ impl Codec {
     }
 
     #[cfg(target_os = "macos")]
+    /// Decode a region-scaled RGB8 JPEG batch into a resizable caller-owned Metal buffer.
+    pub fn decode_rgb8_region_scaled_batch_into_resizable_metal_buffer_with_session(
+        inputs: &[&[u8]],
+        roi: Rect,
+        scale: Downscale,
+        output: &mut MetalBatchOutputBuffer,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let output_dimensions = {
+            let scaled = roi.scaled_covering(scale);
+            (scaled.w, scaled.h)
+        };
+        let plan = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |_| {
+            (
+                batch::BatchOp::RegionScaled { roi, scale },
+                output_dimensions,
+            )
+        })?;
+        output.ensure_rgb8_tiles(session, output_dimensions, inputs.len())?;
+
+        compute::decode_region_scaled_rgb8_batch_into_output_with_session(
+            &plan.requests,
+            output,
+            session,
+        )?
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal reusable region-scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with matching output shapes",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     /// Decode a region-scaled RGB8 JPEG batch into reusable caller-owned Metal RGBA8 textures.
     pub fn decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
         inputs: &[&[u8]],
@@ -1310,6 +1499,41 @@ impl Codec {
 
         compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
             &requests, output, session,
+        )?
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal texture region-scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with matching output shapes",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Decode a region-scaled RGB8 JPEG batch into resizable caller-owned Metal RGBA8 textures.
+    pub fn decode_rgb8_region_scaled_batch_into_resizable_metal_textures_with_session(
+        inputs: &[&[u8]],
+        roi: Rect,
+        scale: Downscale,
+        output: &mut MetalBatchTextureOutput,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let output_dimensions = {
+            let scaled = roi.scaled_covering(scale);
+            (scaled.w, scaled.h)
+        };
+        let plan = Self::rgb8_metal_batch_requests_with_output_dimensions(inputs, |_| {
+            (
+                batch::BatchOp::RegionScaled { roi, scale },
+                output_dimensions,
+            )
+        })?;
+        output.ensure_rgba8_tiles(session, output_dimensions, inputs.len())?;
+
+        compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
+            &plan.requests,
+            output,
+            session,
         )?
         .ok_or(Error::UnsupportedMetalRequest {
             reason: "JPEG Metal texture region-scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with matching output shapes",
@@ -2794,6 +3018,60 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn rgb8_region_scaled_batch_decode_resizes_reusable_metal_output_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 1,
+            y: 2,
+            w: 5,
+            h: 4,
+        };
+        let scale = Downscale::Quarter;
+        let scaled = roi.scaled_covering(scale);
+        let mut output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+        let inputs = [BASELINE_444, BASELINE_444];
+        let (expected, _) = CpuDecoder::new(BASELINE_444)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region scaled decode");
+
+        let surfaces =
+            Codec::decode_rgb8_region_scaled_batch_into_resizable_metal_buffer_with_session(
+                &inputs,
+                roi,
+                scale,
+                &mut output,
+                &session,
+            )
+            .expect("decode region scaled into resizable reusable output");
+
+        assert_eq!(output.dimensions(), (scaled.w, scaled.h));
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(surfaces.len(), 2);
+        for (index, result) in surfaces.into_iter().enumerate() {
+            let surface = result.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected.as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_buffer() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let dimensions = (128, 128);
@@ -3490,6 +3768,46 @@ mod tests {
         assert_eq!(output.tile_capacity(), 2);
         assert_eq!(output.dimensions(), (4, 4));
         assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (4, 4));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_scaled_batch_decode_resizes_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let scale = Downscale::Quarter;
+        let mut output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+        let inputs = [BASELINE_420, BASELINE_420];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
+            .expect("cpu decoder")
+            .decode_scaled(PixelFormat::Rgb8, scale)
+            .expect("cpu scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_scaled_batch_into_resizable_metal_textures_with_session(
+            &inputs,
+            scale,
+            &mut output,
+            &session,
+        )
+        .expect("decode scaled into resizable reusable textures");
+
+        assert_eq!(output.dimensions(), (4, 4));
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(tiles.len(), 2);
         for (index, tile) in tiles.into_iter().enumerate() {
             let tile = tile.expect("texture tile");
             assert_eq!(tile.dimensions(), (4, 4));
