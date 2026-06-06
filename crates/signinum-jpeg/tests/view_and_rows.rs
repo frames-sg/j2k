@@ -8,7 +8,9 @@ use signinum_jpeg::{
 };
 
 mod fixtures;
-use fixtures::{grayscale_8x8_jpeg, minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg};
+use fixtures::{
+    cmyk_8x8_jpeg, grayscale_8x8_jpeg, minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg, ycck_8x8_jpeg,
+};
 
 #[derive(Default)]
 struct CollectRows {
@@ -53,6 +55,42 @@ impl ComponentRowWriter for CollectGrayComponentRows {
         _b_row: &[u8],
     ) -> Result<(), JpegError> {
         unreachable!("grayscale test writer should not receive rgb rows");
+    }
+}
+
+#[derive(Default)]
+struct CollectRgbComponentRows {
+    rows: Vec<(u32, Vec<u8>)>,
+}
+
+impl ComponentRowWriter for CollectRgbComponentRows {
+    fn write_gray_row(&mut self, _y: u32, _gray_row: &[u8]) -> Result<(), JpegError> {
+        unreachable!("RGB component-row test writer should not receive gray rows");
+    }
+
+    fn write_ycbcr_row(
+        &mut self,
+        _y: u32,
+        _y_row: &[u8],
+        _cb_row: &[u8],
+        _cr_row: &[u8],
+    ) -> Result<(), JpegError> {
+        unreachable!("RGB component-row test writer should not receive ycbcr rows");
+    }
+
+    fn write_rgb_row(
+        &mut self,
+        y: u32,
+        r_row: &[u8],
+        g_row: &[u8],
+        b_row: &[u8],
+    ) -> Result<(), JpegError> {
+        let mut row = Vec::with_capacity(r_row.len() * 3);
+        for ((r, g), b) in r_row.iter().zip(g_row).zip(b_row) {
+            row.extend_from_slice(&[*r, *g, *b]);
+        }
+        self.rows.push((y, row));
+        Ok(())
     }
 }
 
@@ -138,6 +176,33 @@ fn decode_rows_matches_decode_into_rgb8_for_grayscale_input() {
 }
 
 #[test]
+fn decode_rows_matches_decode_into_rgb8_for_cmyk_and_ycck() {
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("CMYK/YCCK decoder must construct");
+        let (w, h) = dec.info().dimensions;
+        let stride = (w * 3) as usize;
+
+        let mut expected = vec![0u8; stride * h as usize];
+        dec.decode_scaled_into(&mut expected, stride, PixelFormat::Rgb8, Downscale::None)
+            .expect("full CMYK/YCCK RGB8 decode must succeed");
+
+        let mut sink = CollectRows::default();
+        dec.decode_rows(&mut sink)
+            .expect("CMYK/YCCK decode_rows must succeed");
+
+        assert_eq!(sink.rows.len(), h as usize);
+        for (row_idx, (y, row)) in sink.rows.iter().enumerate() {
+            assert_eq!(*y as usize, row_idx);
+            assert_eq!(row.len(), stride);
+            assert_eq!(
+                row.as_slice(),
+                &expected[row_idx * stride..(row_idx + 1) * stride]
+            );
+        }
+    }
+}
+
+#[test]
 fn decode_rows_matches_decode_into_rgb8_for_restart_coded_grayscale_wsi_shape() {
     let bytes = restart_coded_grayscale_jpeg(24, 24);
     let dec = Decoder::new(&bytes).expect("restart-coded grayscale fixture must parse");
@@ -191,6 +256,37 @@ fn region_component_rows_scaled_matches_gray_region_decode_for_restart_fixture()
     }
 
     assert_eq!(collected, expected);
+}
+
+#[test]
+fn region_component_rows_scaled_match_cmyk_ycck_region_decode() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("CMYK/YCCK decoder must construct");
+        let mut pool = ScratchPool::new();
+        let mut sink = CollectRgbComponentRows::default();
+        dec.decode_region_component_rows_with_scratch(&mut pool, &mut sink, roi, Downscale::Half)
+            .expect("CMYK/YCCK scaled region component rows must decode");
+
+        let expected = dec
+            .decode_region_scaled(PixelFormat::Rgb8, roi, Downscale::Half)
+            .expect("CMYK/YCCK scaled region decode must succeed")
+            .0;
+
+        let mut collected = Vec::new();
+        for (row_idx, (y, row)) in sink.rows.iter().enumerate() {
+            assert_eq!(*y as usize, row_idx);
+            collected.extend_from_slice(row);
+        }
+
+        assert_eq!(collected, expected);
+    }
 }
 
 fn restart_coded_grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {

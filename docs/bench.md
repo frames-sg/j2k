@@ -708,7 +708,7 @@ Current v1 scope is explicit:
   kernel paths for full, region, scaled, region+scaled, and batched
   device-output decode; compatible queued region+scaled requests use a real
   `BatchOp::RegionScaled` path. Initial CMYK/YCCK `Rgb8`
-  full/ROI/scaled/region-scaled and `Rgba8` full/ROI support is CPU-backed, and
+  full/ROI/scaled/region-scaled, RGB row streaming, and `Rgba8` full/ROI support is CPU-backed, and
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
   assembly plus output projection. Initial 12-bit extended sequential
   and progressive grayscale `Gray16`/`Rgb16` full-image/ROI/scaled/
@@ -717,7 +717,7 @@ Current v1 scope is explicit:
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled output and 8-bit APP14 RGB `Rgb8`
   output for predictors 1-7 are CPU-backed, including restart-coded grayscale
-  and APP14 RGB streams. Expanded four-component row/subsampled/malformed
+  and APP14 RGB streams. Expanded four-component subsampled/malformed
   coverage, other 12-bit
   subsampled color support, stronger non-constant 12-bit oracle fixtures, and
   broader SOF3 YCbCr/16-bit color and row support stay structured

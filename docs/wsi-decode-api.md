@@ -38,12 +38,13 @@ ROI/scaled/tile-batch support covers supported 8-bit baseline or extended
 sequential inputs, plus progressive 8-bit full/ROI/scaled/region-scaled output
 from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
 CPU conversion is available for `Rgb8` full/ROI/scaled/region-scaled output
-and `Rgba8` full/ROI output. Initial 12-bit extended sequential
+and `Rgba8` full/ROI output, with RGB row streaming for the supported
+four-component fixtures. Initial 12-bit extended sequential
 and progressive grayscale full-image/ROI/scaled/region-scaled decode to
 `Gray16` or expanded `Rgb16` is available, and initial 12-bit APP14 RGB 4:4:4
 plus YCbCr 4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available. Other 12-bit
 subsampled color, stronger non-constant 12-bit oracle fixtures, expanded
-four-component fixture coverage, and lossless SOF3 YCbCr/16-bit color and row
+four-component subsampled/malformed fixture coverage, and lossless SOF3 YCbCr/16-bit color and row
 output remain structured unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
@@ -175,7 +176,7 @@ For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
-CMYK/YCCK row/subsampled/malformed coverage, other 12-bit subsampled color support, stronger
+CMYK/YCCK subsampled/malformed coverage, other 12-bit subsampled color support, stronger
 non-constant 12-bit oracle fixtures, and broader SOF3 YCbCr/16-bit color and row CPU parity must land
 before any Metal acceleration for those classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,

@@ -103,15 +103,17 @@ Implementation requirements:
 - Add CPU output conversion to `Rgb8` and `Rgba8` for 8-bit CMYK/YCCK inputs.
   Status: `Rgb8` full-image, ROI, scaled, region-scaled, and batch-session
   coverage has landed for 8-bit sequential APP14 CMYK/YCCK fixtures. `Rgba8`
-  full-image and ROI coverage has landed; scaled `Rgba8` remains unsupported by
-  the public output-format policy.
+  full-image and ROI coverage has landed; `decode_rows` and region component
+  row output are covered for the supported RGB output shape. Scaled `Rgba8`
+  remains unsupported by the public output-format policy.
 - Preserve clear behavior for unsupported direct CMYK output unless
   `signinum-core` gains a public CMYK pixel format.
 - Add row, full-image, ROI, scaled, region-scaled, and batch tests where the
   existing API shape supports them.
   Status: full-image, ROI, scaled, region-scaled, and batch-session coverage
-  has landed for the supported RGB/RGBA output shapes. Row output, subsampled
-  four-component fixtures, and malformed coverage remain open.
+  has landed for the supported RGB/RGBA output shapes. Row output has landed
+  for the supported RGB row surfaces. Subsampled four-component fixtures and
+  malformed coverage remain open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
   Status: capability reports now mark supported CMYK/YCCK CPU RGB8/RGBA8
