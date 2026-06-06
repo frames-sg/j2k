@@ -2225,6 +2225,33 @@ inline uchar h2v2_sample_device_local(
     return uchar((this_sum * 3u + next_sum + 7u) >> 4);
 }
 
+inline uchar h2v2_boundary_left_from_sums(uint left_sum, uint right_sum) {
+    return uchar((left_sum * 3u + right_sum + 7u) >> 4);
+}
+
+inline uchar h2v2_boundary_right_from_sums(uint left_sum, uint right_sum) {
+    return uchar((right_sum * 3u + left_sum + 8u) >> 4);
+}
+
+inline uchar h2v2_corner_sample(
+    uchar top_left,
+    uchar top_right,
+    uchar bottom_left,
+    uchar bottom_right,
+    bool bottom_row,
+    bool right_column
+) {
+    const uint left_sum = bottom_row
+        ? 3u * uint(bottom_left) + uint(top_left)
+        : 3u * uint(top_left) + uint(bottom_left);
+    const uint right_sum = bottom_row
+        ? 3u * uint(bottom_right) + uint(top_right)
+        : 3u * uint(top_right) + uint(bottom_right);
+    return right_column
+        ? h2v2_boundary_right_from_sums(left_sum, right_sum)
+        : h2v2_boundary_left_from_sums(left_sum, right_sum);
+}
+
 inline uchar h2v1_sample(
     device const uchar *row,
     uint n,
@@ -3105,6 +3132,12 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
             const uint left_x = y_x - 1u;
             for (uint by = 0u; by < copy_height; ++by) {
                 const uint out_y = y_y + by;
+                if (params.mcu_rows > 1u && has_top_mcu && by == 0u) {
+                    continue;
+                }
+                if (params.mcu_rows > 1u && has_bottom_mcu && by + 1u == copy_height) {
+                    continue;
+                }
                 const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
                 const uint near_y = (out_y & 1u) == 0u
                     ? (chroma_y == 0u ? 0u : chroma_y - 1u)
@@ -3128,8 +3161,8 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                 out.write(
                     rgba_float_ycbcr(
                         left_y,
-                        uchar((left_cb_sum * 3u + right_cb_sum + 7u) >> 4),
-                        uchar((left_cr_sum * 3u + right_cr_sum + 7u) >> 4),
+                        h2v2_boundary_left_from_sums(left_cb_sum, right_cb_sum),
+                        h2v2_boundary_left_from_sums(left_cr_sum, right_cr_sum),
                         params.alpha
                     ),
                     uint2(left_x, out_y)
@@ -3137,8 +3170,8 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                 out.write(
                     rgba_float_ycbcr(
                         right_y,
-                        uchar((right_cb_sum * 3u + left_cb_sum + 8u) >> 4),
-                        uchar((right_cr_sum * 3u + left_cr_sum + 8u) >> 4),
+                        h2v2_boundary_right_from_sums(left_cb_sum, right_cb_sum),
+                        h2v2_boundary_right_from_sums(left_cr_sum, right_cr_sum),
                         params.alpha
                     ),
                     uint2(y_x, out_y)
@@ -3266,8 +3299,16 @@ kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
     const uint previous_sample_base = fast420_boundary_sample_base(previous_record_index);
     const uint copy_height = min(16u, params.height - y);
     const uint chroma_y_base = y / 2u;
+    const bool has_top_row = y > 0u;
+    const bool has_bottom_row = y + copy_height < params.height;
     for (uint by = 0u; by < copy_height; ++by) {
         const uint out_y = y + by;
+        if (params.mcu_rows > 1u && has_top_row && by == 0u) {
+            continue;
+        }
+        if (params.mcu_rows > 1u && has_bottom_row && by + 1u == copy_height) {
+            continue;
+        }
         const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
         const uint near_y = (out_y & 1u) == 0u
             ? (chroma_y == 0u ? 0u : chroma_y - 1u)
@@ -3287,8 +3328,8 @@ kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
         out.write(
             rgba_float_ycbcr(
                 left_y,
-                uchar((left_cb_sum * 3u + right_cb_sum + 7u) >> 4),
-                uchar((left_cr_sum * 3u + right_cr_sum + 7u) >> 4),
+                h2v2_boundary_left_from_sums(left_cb_sum, right_cb_sum),
+                h2v2_boundary_left_from_sums(left_cr_sum, right_cr_sum),
                 params.alpha
             ),
             uint2(x - 1u, out_y)
@@ -3296,8 +3337,8 @@ kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
         out.write(
             rgba_float_ycbcr(
                 right_y,
-                uchar((right_cb_sum * 3u + left_cb_sum + 8u) >> 4),
-                uchar((right_cr_sum * 3u + left_cr_sum + 8u) >> 4),
+                h2v2_boundary_right_from_sums(left_cb_sum, right_cb_sum),
+                h2v2_boundary_right_from_sums(left_cr_sum, right_cr_sum),
                 params.alpha
             ),
             uint2(x, out_y)
@@ -3315,9 +3356,16 @@ kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
     if (gid == 0u || gid >= params.segment_count) {
         return;
     }
+    if (params.mcus_per_row > 1u) {
+        if (params.segment_count != params.mcus_per_row * params.mcu_rows || gid < params.mcus_per_row) {
+            return;
+        }
+    }
 
     const uint record_index = params.tile_index * params.segment_count + gid;
-    const uint previous_record_index = record_index - 1u;
+    const uint previous_record_index = params.mcus_per_row == 1u
+        ? record_index - 1u
+        : record_index - params.mcus_per_row;
     const uint meta_base = fast420_vertical_meta_base(record_index);
     const uint previous_meta_base = fast420_vertical_meta_base(previous_record_index);
     if (vertical_meta[meta_base + 2u] == 0u || vertical_meta[previous_meta_base + 3u] == 0u) {
@@ -3338,8 +3386,16 @@ kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
     device const uchar *top_cr = vertical_samples + sample_base + 24u;
     device const uchar *bottom_cb = vertical_samples + previous_sample_base + 48u;
     device const uchar *bottom_cr = vertical_samples + previous_sample_base + 56u;
+    const bool has_left_column = params.mcus_per_row > 1u && x > 0u;
+    const bool has_right_column = params.mcus_per_row > 1u && x + copy_width < params.width;
     for (uint bx = 0u; bx < copy_width; ++bx) {
         const uint out_x = x + bx;
+        if (has_left_column && bx == 0u) {
+            continue;
+        }
+        if (has_right_column && bx + 1u == copy_width) {
+            continue;
+        }
         const uchar bottom_y = vertical_samples[previous_sample_base + 32u + bx];
         const uchar top_y = vertical_samples[sample_base + bx];
         out.write(
@@ -3361,6 +3417,114 @@ kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
             uint2(out_x, y)
         );
     }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_corners(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uint *vertical_meta [[buffer(1)]],
+    device const uchar *vertical_samples [[buffer(2)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.mcus_per_row <= 1u || params.mcu_rows <= 1u) {
+        return;
+    }
+    if (params.segment_count != params.mcus_per_row * params.mcu_rows || gid >= params.segment_count) {
+        return;
+    }
+    const uint mx = gid % params.mcus_per_row;
+    const uint my = gid / params.mcus_per_row;
+    if (mx == 0u || my == 0u) {
+        return;
+    }
+
+    const uint br_record = params.tile_index * params.segment_count + gid;
+    const uint bl_record = br_record - 1u;
+    const uint tr_record = br_record - params.mcus_per_row;
+    const uint tl_record = tr_record - 1u;
+    const uint br_boundary_meta_base = fast420_boundary_meta_base(br_record);
+    const uint bl_boundary_meta_base = fast420_boundary_meta_base(bl_record);
+    const uint tr_boundary_meta_base = fast420_boundary_meta_base(tr_record);
+    const uint tl_boundary_meta_base = fast420_boundary_meta_base(tl_record);
+    const uint br_vertical_meta_base = fast420_vertical_meta_base(br_record);
+    const uint bl_vertical_meta_base = fast420_vertical_meta_base(bl_record);
+    const uint tr_vertical_meta_base = fast420_vertical_meta_base(tr_record);
+    const uint tl_vertical_meta_base = fast420_vertical_meta_base(tl_record);
+    if (
+        boundary_meta[br_boundary_meta_base + 2u] == 0u ||
+        boundary_meta[bl_boundary_meta_base + 3u] == 0u ||
+        boundary_meta[tr_boundary_meta_base + 2u] == 0u ||
+        boundary_meta[tl_boundary_meta_base + 3u] == 0u ||
+        vertical_meta[br_vertical_meta_base + 2u] == 0u ||
+        vertical_meta[bl_vertical_meta_base + 2u] == 0u ||
+        vertical_meta[tr_vertical_meta_base + 3u] == 0u ||
+        vertical_meta[tl_vertical_meta_base + 3u] == 0u
+    ) {
+        return;
+    }
+
+    const uint x = vertical_meta[br_vertical_meta_base];
+    const uint y = vertical_meta[br_vertical_meta_base + 1u];
+    if (x == 0u || y == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint br_sample_base = fast420_vertical_sample_base(br_record);
+    const uint bl_sample_base = fast420_vertical_sample_base(bl_record);
+    const uint tr_sample_base = fast420_vertical_sample_base(tr_record);
+    const uint tl_sample_base = fast420_vertical_sample_base(tl_record);
+
+    const uchar tl_y = vertical_samples[tl_sample_base + 32u + 15u];
+    const uchar tr_y = vertical_samples[tr_sample_base + 32u];
+    const uchar bl_y = vertical_samples[bl_sample_base + 15u];
+    const uchar br_y = vertical_samples[br_sample_base];
+
+    const uchar tl_cb = vertical_samples[tl_sample_base + 48u + 7u];
+    const uchar tr_cb = vertical_samples[tr_sample_base + 48u];
+    const uchar bl_cb = vertical_samples[bl_sample_base + 16u + 7u];
+    const uchar br_cb = vertical_samples[br_sample_base + 16u];
+    const uchar tl_cr = vertical_samples[tl_sample_base + 56u + 7u];
+    const uchar tr_cr = vertical_samples[tr_sample_base + 56u];
+    const uchar bl_cr = vertical_samples[bl_sample_base + 24u + 7u];
+    const uchar br_cr = vertical_samples[br_sample_base + 24u];
+
+    out.write(
+        rgba_float_ycbcr(
+            tl_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, false, false),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, false, false),
+            params.alpha
+        ),
+        uint2(x - 1u, y - 1u)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            tr_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, false, true),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, false, true),
+            params.alpha
+        ),
+        uint2(x, y - 1u)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            bl_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, true, false),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, true, false),
+            params.alpha
+        ),
+        uint2(x - 1u, y)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            br_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, true, true),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, true, true),
+            params.alpha
+        ),
+        uint2(x, y)
+    );
 }
 
 inline uint fast420_total_mcus(constant JpegFast420BatchParams &params) {

@@ -764,6 +764,7 @@ pub(crate) struct MetalRuntime {
     fast420_rgba_texture_batch_decode_pipeline: ComputePipelineState,
     fast420_rgba_texture_boundary_pipeline: ComputePipelineState,
     fast420_rgba_texture_vertical_boundary_pipeline: ComputePipelineState,
+    fast420_rgba_texture_corner_pipeline: ComputePipelineState,
     fast422_decode_pipeline: ComputePipelineState,
     fast422_batch_decode_pipeline: ComputePipelineState,
     fast422_scaled_region_batch_decode_pipeline: ComputePipelineState,
@@ -918,6 +919,10 @@ impl MetalRuntime {
             .new_compute_pipeline_state_with_function(
                 &fast420_rgba_texture_vertical_boundary_function,
             )?;
+        let fast420_rgba_texture_corner_function =
+            library.get_function("jpeg_resolve_fast420_rgba_texture_corners", None)?;
+        let fast420_rgba_texture_corner_pipeline = device
+            .new_compute_pipeline_state_with_function(&fast420_rgba_texture_corner_function)?;
         let fast422_decode_function = library.get_function("jpeg_decode_fast422", None)?;
         let fast422_decode_pipeline =
             device.new_compute_pipeline_state_with_function(&fast422_decode_function)?;
@@ -1028,6 +1033,7 @@ impl MetalRuntime {
             fast420_rgba_texture_batch_decode_pipeline,
             fast420_rgba_texture_boundary_pipeline,
             fast420_rgba_texture_vertical_boundary_pipeline,
+            fast420_rgba_texture_corner_pipeline,
             fast422_decode_pipeline,
             fast422_batch_decode_pipeline,
             fast422_scaled_region_batch_decode_pipeline,
@@ -5987,10 +5993,12 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
     };
 
     // H2V2 reconstruction needs neighboring chroma samples at horizontal and vertical MCU
-    // boundaries. The fused path currently handles one axis at a time: wide single-row tiles use
-    // horizontal repair, tall single-column tiles use vertical repair, and multi-axis 4:2:0 tiles
-    // keep using the staged pack path until corner repair is explicit.
-    if first.mcu_rows == 1 || first.mcus_per_row == 1 {
+    // boundaries. Multi-axis direct texture fusion is enabled when every MCU has its own entropy
+    // segment; that gives the repair kernels one edge record per MCU and a stable row-major lookup
+    // for corner samples.
+    let multi_axis_per_mcu_segments =
+        first.mcu_rows > 1 && first.mcus_per_row > 1 && segment_count == total_mcus;
+    if first.mcu_rows == 1 || first.mcus_per_row == 1 || multi_axis_per_mcu_segments {
         let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
         let status_buffer = batch_scratch.shared_buffer_with_slice(
             &runtime.device,
@@ -6122,7 +6130,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
             );
             decoder_encoder.end_encoding();
         }
-        if segment_count > 1 && first.mcu_rows == 1 {
+        if segment_count > 1 && (first.mcu_rows == 1 || multi_axis_per_mcu_segments) {
             for index in 0..tile_count {
                 let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
                     message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -6157,7 +6165,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
                 boundary_encoder.end_encoding();
             }
         }
-        if segment_count > 1 && first.mcus_per_row == 1 {
+        if segment_count > 1 && (first.mcus_per_row == 1 || multi_axis_per_mcu_segments) {
             for index in 0..tile_count {
                 let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
                     message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -6191,6 +6199,42 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
                     segment_count_u32,
                 );
                 boundary_encoder.end_encoding();
+            }
+        }
+        if multi_axis_per_mcu_segments {
+            for index in 0..tile_count {
+                let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+                    message: "JPEG Metal batch texture output slot was missing".to_string(),
+                })?;
+                let decode_params = JpegFast420TextureBatchParams {
+                    width,
+                    height,
+                    chroma_width,
+                    chroma_height,
+                    mcus_per_row: first.mcus_per_row,
+                    mcu_rows: first.mcu_rows,
+                    segment_count: segment_count_u32,
+                    tile_index: checked_u32(index, "fast420 texture batch tile index")?,
+                    alpha: u32::from(u8::MAX),
+                };
+                let corner_encoder = command_buffer.new_compute_command_encoder();
+                corner_encoder
+                    .set_compute_pipeline_state(&runtime.fast420_rgba_texture_corner_pipeline);
+                corner_encoder.set_buffer(0, Some(&boundary_meta_buffer), 0);
+                corner_encoder.set_buffer(1, Some(&vertical_meta_buffer), 0);
+                corner_encoder.set_buffer(2, Some(&vertical_samples_buffer), 0);
+                corner_encoder.set_bytes(
+                    3,
+                    size_of::<JpegFast420TextureBatchParams>() as u64,
+                    (&raw const decode_params).cast(),
+                );
+                corner_encoder.set_texture(0, Some(texture));
+                dispatch_1d_pipeline(
+                    corner_encoder,
+                    &runtime.fast420_rgba_texture_corner_pipeline,
+                    segment_count_u32,
+                );
+                corner_encoder.end_encoding();
             }
         }
 
