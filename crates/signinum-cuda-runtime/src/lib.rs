@@ -306,6 +306,62 @@ pub enum CudaJpegRgb8Sampling {
     Fast444,
 }
 
+/// Experimental JPEG entropy chunking parameters for CUDA self-sync diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaJpegChunkedEntropyConfig {
+    /// Subsequence size in 32-bit words.
+    pub subsequence_words: u32,
+    /// Number of adjacent subsequences handled as one synchronization sequence.
+    pub sequence_len: u32,
+    /// Maximum adjacent subsequences an overflow decoder may scan.
+    pub max_overflow_subsequences: u32,
+}
+
+impl Default for CudaJpegChunkedEntropyConfig {
+    fn default() -> Self {
+        Self {
+            subsequence_words: 1024,
+            sequence_len: 128,
+            max_overflow_subsequences: 4,
+        }
+    }
+}
+
+impl CudaJpegChunkedEntropyConfig {
+    /// Return one subsequence size in bits.
+    pub fn subsequence_bits(self) -> u32 {
+        self.subsequence_words.saturating_mul(32)
+    }
+
+    /// Validate parameters before launching diagnostic kernels.
+    pub fn validate(self) -> Result<(), CudaError> {
+        if self.subsequence_words == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "JPEG entropy subsequence_words must be nonzero".to_string(),
+            });
+        }
+        if self.sequence_len == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "JPEG entropy sequence_len must be nonzero".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Count fixed-size bit subsequences needed for an entropy payload.
+    pub fn subsequence_count_for_entropy_bytes(
+        self,
+        entropy_len: usize,
+    ) -> Result<usize, CudaError> {
+        self.validate()?;
+        let entropy_bits = entropy_len
+            .checked_mul(8)
+            .ok_or(CudaError::LengthTooLarge { len: entropy_len })?;
+        let bits = self.subsequence_bits() as usize;
+        Ok(entropy_bits.div_ceil(bits))
+    }
+}
+
 /// Signinum-owned CUDA baseline JPEG RGB8 decode plan.
 #[derive(Debug)]
 pub struct CudaJpegRgb8DecodePlan<'a> {
@@ -12562,11 +12618,42 @@ mod tests {
         CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
         CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
         CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
-        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaKernelName, CudaQueuedHtj2kCleanup,
+        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig, CudaKernelName,
+        CudaQueuedHtj2kCleanup,
     };
 
     fn cuda_runtime_required() -> bool {
         std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
+    }
+
+    #[test]
+    fn jpeg_chunked_entropy_config_counts_bit_subsequences() {
+        let config = CudaJpegChunkedEntropyConfig {
+            subsequence_words: 4,
+            sequence_len: 8,
+            max_overflow_subsequences: 2,
+        };
+
+        assert_eq!(config.subsequence_bits(), 128);
+        assert_eq!(config.subsequence_count_for_entropy_bytes(0).unwrap(), 0);
+        assert_eq!(config.subsequence_count_for_entropy_bytes(1).unwrap(), 1);
+        assert_eq!(config.subsequence_count_for_entropy_bytes(16).unwrap(), 1);
+        assert_eq!(config.subsequence_count_for_entropy_bytes(17).unwrap(), 2);
+    }
+
+    #[test]
+    fn jpeg_chunked_entropy_config_rejects_zero_subsequence_or_sequence() {
+        let zero_words = CudaJpegChunkedEntropyConfig {
+            subsequence_words: 0,
+            ..CudaJpegChunkedEntropyConfig::default()
+        };
+        let zero_sequence = CudaJpegChunkedEntropyConfig {
+            sequence_len: 0,
+            ..CudaJpegChunkedEntropyConfig::default()
+        };
+
+        assert!(zero_words.validate().is_err());
+        assert!(zero_sequence.validate().is_err());
     }
 
     #[test]
