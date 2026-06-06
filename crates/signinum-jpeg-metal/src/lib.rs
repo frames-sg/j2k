@@ -1278,6 +1278,32 @@ fn rgb8_metal_output_dimensions_for_op(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn decoder_resident_sampling_family(decoder: &Decoder<'_>) -> batch::SamplingFamily {
+    if decoder.fast420_packet().is_some() {
+        batch::SamplingFamily::Fast420
+    } else if decoder.fast422_packet().is_some() {
+        batch::SamplingFamily::Fast422
+    } else if decoder.fast444_packet().is_some() {
+        batch::SamplingFamily::Fast444
+    } else {
+        batch::SamplingFamily::Other
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decoder_resident_restart_interval_mcus(decoder: &Decoder<'_>) -> u32 {
+    if let Some(packet) = decoder.fast420_packet() {
+        packet.restart_interval_mcus
+    } else if let Some(packet) = decoder.fast422_packet() {
+        packet.restart_interval_mcus
+    } else if let Some(packet) = decoder.fast444_packet() {
+        packet.restart_interval_mcus
+    } else {
+        0
+    }
+}
+
 impl ImageCodec for Codec {
     type Error = Error;
     type Warning = CpuWarning;
@@ -1308,6 +1334,7 @@ impl Codec {
         }
 
         let mut output_dimensions = None;
+        let mut sampling_family = None;
         for decoder in decoders {
             let request = signinum_jpeg::JpegCapabilityRequest {
                 op,
@@ -1367,6 +1394,45 @@ impl Codec {
                 }
             } else {
                 output_dimensions = Some(dimensions);
+            }
+
+            let decoder_sampling_family = decoder_resident_sampling_family(decoder);
+            if let Some(first) = sampling_family {
+                if first != decoder_sampling_family {
+                    return JpegMetalResidentBatchReport {
+                        op,
+                        tile_count: decoders.len(),
+                        output_dimensions: None,
+                        eligibility: signinum_jpeg::JpegBackendEligibility {
+                            eligible: false,
+                            reason: Some(
+                                "JPEG Metal reusable resident batch output requires one batch to use the same fast-packet sampling family",
+                            ),
+                        },
+                    };
+                }
+            } else {
+                sampling_family = Some(decoder_sampling_family);
+            }
+
+            if op == signinum_jpeg::JpegDecodeOp::Full
+                && matches!(
+                    decoder_sampling_family,
+                    batch::SamplingFamily::Fast422 | batch::SamplingFamily::Fast444
+                )
+                && decoder_resident_restart_interval_mcus(decoder) != 0
+            {
+                return JpegMetalResidentBatchReport {
+                    op,
+                    tile_count: decoders.len(),
+                    output_dimensions: None,
+                    eligibility: signinum_jpeg::JpegBackendEligibility {
+                        eligible: false,
+                        reason: Some(
+                            "JPEG Metal reusable resident batch output does not support restart-coded full-tile 4:2:2 or 4:4:4 batches",
+                        ),
+                    },
+                };
             }
         }
 
@@ -3620,6 +3686,101 @@ mod tests {
             .reason
             .expect("region rejection")
             .contains("full, scaled, or region-scaled"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_metal_report_rejects_mixed_sampling_family() {
+        let rgb = signinum_test_support::patterned_rgb8(16, 16);
+        let fast420 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast420 jpeg");
+        let fast444 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr444,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast444 jpeg");
+        let first = Decoder::new(&fast420.data).expect("first decoder");
+        let second = Decoder::new(&fast444.data).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let report = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+
+        assert!(!report.eligibility.eligible);
+        assert_eq!(report.output_dimensions, None);
+        assert!(report
+            .eligibility
+            .reason
+            .expect("mixed sampling rejection")
+            .contains("same fast-packet sampling family"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_metal_report_rejects_restart_fast422_full_tiles() {
+        let rgb = signinum_test_support::patterned_rgb8(64, 32);
+        let jpeg = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 64,
+                height: 32,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr422,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode restart fast422 jpeg");
+        let packet = build_metal_fast422_packet(&jpeg.data).expect("restart fast422 packet");
+        assert_ne!(packet.restart_interval_mcus, 0);
+        let first = Decoder::new(&jpeg.data).expect("first decoder");
+        let second = Decoder::new(&jpeg.data).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let full = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        let scaled = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Scaled(Downscale::Half),
+        );
+
+        assert!(!full.eligibility.eligible);
+        assert_eq!(full.output_dimensions, None);
+        assert!(full
+            .eligibility
+            .reason
+            .expect("restart fast422 full rejection")
+            .contains("restart-coded full-tile 4:2:2 or 4:4:4"));
+
+        assert!(scaled.eligibility.eligible);
+        assert_eq!(scaled.output_dimensions, Some((32, 16)));
     }
 
     #[cfg(target_os = "macos")]

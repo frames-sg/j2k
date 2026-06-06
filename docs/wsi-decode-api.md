@@ -170,7 +170,10 @@ or output shapes. For warm WSI batches that already keep parsed
 `signinum_jpeg_metal::Decoder` wrappers alive,
 `Codec::inspect_rgb8_decoder_batch_metal_output` reports reusable resident
 batch eligibility, required output dimensions, and required tile capacity
-without reparsing, allocating, or launching Metal work.
+without reparsing, allocating, or launching Metal work. The batch report is
+stricter than per-image Metal-fast eligibility: one resident batch must use a
+single fast-packet sampling family, and full-tile 4:2:2/4:4:4 batches are
+rejected when restart-coded.
 `MetalBatchOutputBuffer::ensure_rgb8_batch_report` and
 `MetalBatchTextureOutput::ensure_rgba8_batch_report` apply that report directly
 to caller-owned output and reject ineligible reports without resizing.
