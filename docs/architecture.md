@@ -272,11 +272,12 @@ RGB/YCbCr full/ROI/scaled/region-scaled `Rgba16`,
 and 16-bit APP14 RGB plus YCbCr 4:4:4
 `Rgb16` output/row streaming have landed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
 fixture coverage and initial 12-bit extended/progressive CMYK/YCCK
-4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage have landed, along with structured
+4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage have landed, including
+restart-coded extended/progressive four-component streams, along with structured
 rejection for one malformed non-leading-max sampling fixture; broader
-four-component malformed coverage, restart-coded 12-bit CMYK/YCCK implementation, other 12-bit
-subsampled color support, stronger non-constant 12-bit oracle fixtures, and
-other lossless SOF3 16-bit color layouts remain separate CPU parity work.
+four-component malformed coverage, other 12-bit subsampled color support,
+stronger non-constant 12-bit oracle fixtures, and other lossless SOF3 16-bit
+color layouts remain separate CPU parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
 full-image/ROI/scaled/region-scaled decode for predictors 1-7, including
 restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8`/`Rgba8` and
@@ -500,10 +501,11 @@ provisional and check the most recent commits before relying on it.
   full-image/ROI/scaled/region-scaled decode, and initial 12-bit APP14 RGB
   4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` decode have landed, including restart-coded extended
-  three-component color streams, while broader four-component malformed
-  coverage, restart-coded 12-bit CMYK/YCCK implementation, other 12-bit
-  subsampled color support, stronger non-constant 12-bit oracle fixtures, and
-  other lossless SOF3 16-bit color layouts remain active parity work.
+  three-component color streams and restart-coded extended/progressive
+  CMYK/YCCK streams, while broader four-component malformed coverage, other
+  12-bit subsampled color support, stronger non-constant 12-bit oracle
+  fixtures, and other lossless SOF3 16-bit color layouts remain active parity
+  work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled decode for predictors 1-7, including

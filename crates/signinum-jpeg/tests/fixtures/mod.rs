@@ -1598,9 +1598,19 @@ pub(crate) fn extended_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(0))
 }
 
+/// A 16x8 12-bit extended sequential Adobe APP14 CMYK JPEG with restart coding.
+pub(crate) fn extended_12bit_cmyk_restart_16x8_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(0), 16, 8, [(1, 1), (1, 1), (1, 1), (1, 1)], 1)
+}
+
 /// A 16x8 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:2 sampling.
 pub(crate) fn extended_12bit_cmyk_16x8_422_jpeg() -> Vec<u8> {
     four_component_12bit_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 32x8 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:2 sampling and restart coding.
+pub(crate) fn extended_12bit_cmyk_422_restart_32x8_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(0), 32, 8, [(2, 1), (1, 1), (1, 1), (1, 1)], 1)
 }
 
 /// A 16x16 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:0 sampling.
@@ -1608,14 +1618,41 @@ pub(crate) fn extended_12bit_cmyk_16x16_420_jpeg() -> Vec<u8> {
     four_component_12bit_constant_jpeg(Some(0), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A 32x16 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:0 sampling and restart coding.
+pub(crate) fn extended_12bit_cmyk_420_restart_32x16_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(0), 32, 16, [(2, 2), (1, 1), (1, 1), (1, 1)], 1)
+}
+
 /// An 8x8 12-bit progressive Adobe APP14 CMYK JPEG with 4:4:4 sampling.
 pub(crate) fn progressive_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(0), 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A 16x8 12-bit progressive Adobe APP14 CMYK JPEG with restart coding.
+pub(crate) fn progressive_12bit_cmyk_restart_16x8_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(0),
+        16,
+        8,
+        [(1, 1), (1, 1), (1, 1), (1, 1)],
+        1,
+    )
+}
+
 /// A 16x8 12-bit progressive Adobe APP14 CMYK JPEG with 4:2:2 sampling.
 pub(crate) fn progressive_12bit_cmyk_16x8_422_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 32x8 12-bit progressive Adobe APP14 CMYK JPEG with 4:2:2 sampling and restart coding.
+pub(crate) fn progressive_12bit_cmyk_422_restart_32x8_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(0),
+        32,
+        8,
+        [(2, 1), (1, 1), (1, 1), (1, 1)],
+        1,
+    )
 }
 
 /// A 16x16 12-bit progressive Adobe APP14 CMYK JPEG with 4:2:0 sampling.
@@ -1625,6 +1662,17 @@ pub(crate) fn progressive_12bit_cmyk_16x16_420_jpeg() -> Vec<u8> {
         16,
         16,
         [(2, 2), (1, 1), (1, 1), (1, 1)],
+    )
+}
+
+/// A 32x16 12-bit progressive Adobe APP14 CMYK JPEG with 4:2:0 sampling and restart coding.
+pub(crate) fn progressive_12bit_cmyk_420_restart_32x16_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(0),
+        32,
+        16,
+        [(2, 2), (1, 1), (1, 1), (1, 1)],
+        1,
     )
 }
 
@@ -1653,9 +1701,19 @@ pub(crate) fn extended_12bit_ycck_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(2))
 }
 
+/// A 16x8 12-bit extended sequential Adobe APP14 YCCK JPEG with restart coding.
+pub(crate) fn extended_12bit_ycck_restart_16x8_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(2), 16, 8, [(1, 1), (1, 1), (1, 1), (1, 1)], 1)
+}
+
 /// A 16x8 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:2 sampling.
 pub(crate) fn extended_12bit_ycck_16x8_422_jpeg() -> Vec<u8> {
     four_component_12bit_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 32x8 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:2 sampling and restart coding.
+pub(crate) fn extended_12bit_ycck_422_restart_32x8_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(2), 32, 8, [(2, 1), (1, 1), (1, 1), (1, 1)], 1)
 }
 
 /// A 16x16 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:0 sampling.
@@ -1663,14 +1721,41 @@ pub(crate) fn extended_12bit_ycck_16x16_420_jpeg() -> Vec<u8> {
     four_component_12bit_constant_jpeg(Some(2), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A 32x16 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:0 sampling and restart coding.
+pub(crate) fn extended_12bit_ycck_420_restart_32x16_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_restart_jpeg(Some(2), 32, 16, [(2, 2), (1, 1), (1, 1), (1, 1)], 1)
+}
+
 /// An 8x8 12-bit progressive Adobe APP14 YCCK JPEG with 4:4:4 sampling.
 pub(crate) fn progressive_12bit_ycck_8x8_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(2), 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A 16x8 12-bit progressive Adobe APP14 YCCK JPEG with restart coding.
+pub(crate) fn progressive_12bit_ycck_restart_16x8_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(2),
+        16,
+        8,
+        [(1, 1), (1, 1), (1, 1), (1, 1)],
+        1,
+    )
+}
+
 /// A 16x8 12-bit progressive Adobe APP14 YCCK JPEG with 4:2:2 sampling.
 pub(crate) fn progressive_12bit_ycck_16x8_422_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 32x8 12-bit progressive Adobe APP14 YCCK JPEG with 4:2:2 sampling and restart coding.
+pub(crate) fn progressive_12bit_ycck_422_restart_32x8_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(2),
+        32,
+        8,
+        [(2, 1), (1, 1), (1, 1), (1, 1)],
+        1,
+    )
 }
 
 /// A 16x16 12-bit progressive Adobe APP14 YCCK JPEG with 4:2:0 sampling.
@@ -1680,6 +1765,17 @@ pub(crate) fn progressive_12bit_ycck_16x16_420_jpeg() -> Vec<u8> {
         16,
         16,
         [(2, 2), (1, 1), (1, 1), (1, 1)],
+    )
+}
+
+/// A 32x16 12-bit progressive Adobe APP14 YCCK JPEG with 4:2:0 sampling and restart coding.
+pub(crate) fn progressive_12bit_ycck_420_restart_32x16_jpeg() -> Vec<u8> {
+    progressive_12bit_four_component_constant_restart_jpeg(
+        Some(2),
+        32,
+        16,
+        [(2, 2), (1, 1), (1, 1), (1, 1)],
+        1,
     )
 }
 
@@ -1708,9 +1804,19 @@ pub(crate) fn four_component_12bit_16x8_rgb16() -> Vec<u8> {
     repeat_rgb16_pixels(16, 8, [1024, 1024, 1024])
 }
 
+/// Reference native-range RGB16 pixels for 32x8 12-bit CMYK/YCCK fixtures.
+pub(crate) fn four_component_12bit_32x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(32, 8, [1024, 1024, 1024])
+}
+
 /// Reference native-range RGB16 pixels for 16x16 12-bit CMYK/YCCK fixtures.
 pub(crate) fn four_component_12bit_16x16_rgb16() -> Vec<u8> {
     repeat_rgb16_pixels(16, 16, [1024, 1024, 1024])
+}
+
+/// Reference native-range RGB16 pixels for 32x16 12-bit CMYK/YCCK fixtures.
+pub(crate) fn four_component_12bit_32x16_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(32, 16, [1024, 1024, 1024])
 }
 
 /// Reference RGB pixels for 16x8 constant CMYK/YCCK fixtures.
@@ -1847,7 +1953,39 @@ fn four_component_12bit_constant_jpeg(
     height: u16,
     sampling: [(u8, u8); 4],
 ) -> Vec<u8> {
-    let mut bytes = four_component_constant_jpeg(app14_transform, width, height, sampling);
+    four_component_12bit_constant_jpeg_with_restart(app14_transform, width, height, sampling, None)
+}
+
+fn four_component_12bit_constant_restart_jpeg(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+    restart_interval: u16,
+) -> Vec<u8> {
+    four_component_12bit_constant_jpeg_with_restart(
+        app14_transform,
+        width,
+        height,
+        sampling,
+        Some(restart_interval),
+    )
+}
+
+fn four_component_12bit_constant_jpeg_with_restart(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+    restart_interval: Option<u16>,
+) -> Vec<u8> {
+    let mut bytes = four_component_constant_jpeg_with_restart(
+        app14_transform,
+        width,
+        height,
+        sampling,
+        restart_interval,
+    );
     let sof = bytes
         .windows(2)
         .position(|window| window == [0xff, 0xc0])
@@ -1862,6 +2000,38 @@ fn progressive_12bit_four_component_constant_jpeg(
     width: u16,
     height: u16,
     sampling: [(u8, u8); 4],
+) -> Vec<u8> {
+    progressive_12bit_four_component_constant_jpeg_with_restart(
+        app14_transform,
+        width,
+        height,
+        sampling,
+        None,
+    )
+}
+
+fn progressive_12bit_four_component_constant_restart_jpeg(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+    restart_interval: u16,
+) -> Vec<u8> {
+    progressive_12bit_four_component_constant_jpeg_with_restart(
+        app14_transform,
+        width,
+        height,
+        sampling,
+        Some(restart_interval),
+    )
+}
+
+fn progressive_12bit_four_component_constant_jpeg_with_restart(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+    restart_interval: Option<u16>,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
@@ -1885,6 +2055,10 @@ fn progressive_12bit_four_component_constant_jpeg(
     bytes.extend_from_slice(&[
         0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
     ]);
+    if let Some(interval) = restart_interval {
+        bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+        bytes.extend_from_slice(&interval.to_be_bytes());
+    }
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 0, 0,
     ]);
@@ -1896,8 +2070,15 @@ fn progressive_12bit_four_component_constant_jpeg(
         .iter()
         .map(|&(h, v)| u32::from(h) * u32::from(v))
         .sum::<u32>();
-    let bits = vec![false; (mcu_cols * mcu_rows * blocks_per_mcu) as usize];
-    bytes.extend(pack_entropy_bits(bits));
+    let mcu_count = (mcu_cols * mcu_rows) as usize;
+    if let Some(interval) = restart_interval {
+        assert_eq!(interval, 1, "fixture helper restart segments every MCU");
+        let mcu_bits = vec![false; blocks_per_mcu as usize];
+        bytes.extend(restart_segmented_entropy(mcu_count, mcu_bits));
+    } else {
+        let bits = vec![false; mcu_count * blocks_per_mcu as usize];
+        bytes.extend(pack_entropy_bits(bits));
+    }
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }
@@ -1907,6 +2088,16 @@ fn four_component_constant_jpeg(
     width: u16,
     height: u16,
     sampling: [(u8, u8); 4],
+) -> Vec<u8> {
+    four_component_constant_jpeg_with_restart(app14_transform, width, height, sampling, None)
+}
+
+fn four_component_constant_jpeg_with_restart(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+    restart_interval: Option<u16>,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
@@ -1933,6 +2124,10 @@ fn four_component_constant_jpeg(
     bytes.extend_from_slice(&[
         0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
     ]);
+    if let Some(interval) = restart_interval {
+        bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+        bytes.extend_from_slice(&interval.to_be_bytes());
+    }
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0,
     ]);
@@ -1944,12 +2139,23 @@ fn four_component_constant_jpeg(
         .iter()
         .map(|&(h, v)| u32::from(h) * u32::from(v))
         .sum::<u32>();
-    let mut bits = Vec::new();
-    for _ in 0..(mcu_cols * mcu_rows * blocks_per_mcu) {
-        bits.push(false);
-        bits.push(false);
+    let mcu_count = (mcu_cols * mcu_rows) as usize;
+    if let Some(interval) = restart_interval {
+        assert_eq!(interval, 1, "fixture helper restart segments every MCU");
+        let mut mcu_bits = Vec::with_capacity(blocks_per_mcu as usize * 2);
+        for _ in 0..blocks_per_mcu {
+            mcu_bits.push(false);
+            mcu_bits.push(false);
+        }
+        bytes.extend(restart_segmented_entropy(mcu_count, mcu_bits));
+    } else {
+        let mut bits = Vec::new();
+        for _ in 0..(mcu_cols * mcu_rows * blocks_per_mcu) {
+            bits.push(false);
+            bits.push(false);
+        }
+        bytes.extend(pack_entropy_bits(bits));
     }
-    bytes.extend(pack_entropy_bits(bits));
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }
