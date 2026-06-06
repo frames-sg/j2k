@@ -31,6 +31,18 @@ impl ImageCodec for Codec {
 
 impl Codec {
     #[cfg(feature = "cuda-runtime")]
+    /// Run experimental chunked JPEG entropy self-sync diagnostics for a 4:2:0 RGB8 tile.
+    ///
+    /// This does not decode pixels and does not affect production CUDA routing.
+    pub fn diagnose_tile_rgb8_chunked_entropy_with_session(
+        input: &[u8],
+        config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig,
+        session: &mut CudaSession,
+    ) -> Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
+        crate::owned_decode::diagnose_owned_cuda_420_entropy(input, config, session)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
     /// Decode one full JPEG tile to caller-owned CUDA RGB8 memory using a session.
     ///
     /// This is a strict Signinum-owned CUDA-kernel path and currently supports

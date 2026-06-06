@@ -194,6 +194,30 @@ fn strict_cuda_jpeg_decode_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE").is_some()
 }
 
+#[cfg(feature = "cuda-runtime")]
+fn generated_rgb_jpeg(
+    subsampling: signinum_jpeg::JpegSubsampling,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let rgb = signinum_test_support::gpu_bench_rgb8(width, height);
+    signinum_jpeg::encode_jpeg_baseline(
+        signinum_jpeg::JpegSamples::Rgb8 {
+            data: &rgb,
+            width,
+            height,
+        },
+        signinum_jpeg::JpegEncodeOptions {
+            quality: 90,
+            subsampling,
+            restart_interval: None,
+            backend: signinum_jpeg::JpegBackend::Cpu,
+        },
+    )
+    .expect("generated JPEG")
+    .data
+}
+
 fn assert_cuda_surface(surface: &signinum_jpeg_cuda::Surface) {
     let cuda = surface.cuda_surface().expect("cuda surface");
     assert_ne!(cuda.device_ptr(), 0);
@@ -586,6 +610,30 @@ fn decode_tiles_to_device_explicit_cuda_uses_owned_decode_when_required() {
             "owned CUDA batch decode path should not be reported as CPU decode plus copy"
         );
     }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn generated_420_chunked_entropy_diagnostic_runs_when_runtime_required() {
+    if !runtime_required() {
+        return;
+    }
+
+    let input = generated_rgb_jpeg(signinum_jpeg::JpegSubsampling::Ybr420, 256, 256);
+    let mut session = CudaSession::default();
+    let report = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
+        &input,
+        signinum_cuda_runtime::CudaJpegChunkedEntropyConfig {
+            subsequence_words: 64,
+            sequence_len: 32,
+            max_overflow_subsequences: 4,
+        },
+        &mut session,
+    )
+    .expect("chunked entropy diagnostic");
+
+    assert!(report.subsequence_count() > 0);
+    assert_eq!(report.failed_state_count(), 0);
 }
 
 #[cfg(feature = "cuda-runtime")]

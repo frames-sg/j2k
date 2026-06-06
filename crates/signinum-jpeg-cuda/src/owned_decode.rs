@@ -133,6 +133,29 @@ pub(crate) fn decode_owned_cuda_rgb8_into(
     })
 }
 
+#[cfg(feature = "cuda-runtime")]
+pub(crate) fn diagnose_owned_cuda_420_entropy(
+    bytes: &[u8],
+    config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig,
+    session: &mut CudaSession,
+) -> Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
+    let packet = session.resolve_owned_fast420_packet(bytes)?;
+    let plan = signinum_cuda_runtime::CudaJpegChunkedEntropyPlan {
+        config,
+        entropy_bytes: &packet.entropy_bytes,
+        y_dc_table: cuda_huffman_table(&packet.y_dc_table)?,
+        y_ac_table: cuda_huffman_table(&packet.y_ac_table)?,
+        cb_dc_table: cuda_huffman_table(&packet.cb_dc_table)?,
+        cb_ac_table: cuda_huffman_table(&packet.cb_ac_table)?,
+        cr_dc_table: cuda_huffman_table(&packet.cr_dc_table)?,
+        cr_ac_table: cuda_huffman_table(&packet.cr_ac_table)?,
+    };
+    session
+        .cuda_context()?
+        .diagnose_jpeg_420_entropy_self_sync(&plan)
+        .map_err(cuda_owned_decode_error)
+}
+
 #[cfg(not(feature = "cuda-runtime"))]
 pub(crate) fn decode_owned_cuda_rgb8(
     _bytes: &[u8],
