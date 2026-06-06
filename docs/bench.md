@@ -802,6 +802,22 @@ Set `SIGNINUM_GPU_BENCH_JPEG=/path/to/wsi_tile.jpg` or
 the generated RGB benchmark JPEG. Generated JPEGs default to 4:2:0; use
 `SIGNINUM_CUDA_BENCH_SUBSAMPLING=422` or `444` to time the 4:2:2 and 4:4:4
 owned CUDA kernels.
+
+The experimental `jpeg_cuda_chunked_entropy` group measures the parallel
+Huffman self-synchronization spike. It compares current CPU fast-packet planning
+against GPU subsequence synchronization diagnostics. It does not decode pixels
+and should not be reported as user-visible JPEG decode speed. This diagnostic
+benchmark generates 4:2:0 input only; it fails before timing if
+`SIGNINUM_CUDA_BENCH_SUBSAMPLING` or `SIGNINUM_GPU_BENCH_SUBSAMPLING` is set to
+`422` or `444`.
+
+Decision gate note: the 2026-06-06 remote CUDA gate on `jcwal@cuda-wsl` did not
+pass. The required `generated_420_chunked_entropy_diagnostic_runs_when_runtime_required`
+test reported `failed_state_count() == 62` instead of `0`, so this path must not
+be wired into production decode or WSI realism work yet. Remote Criterion rows
+for `jpeg_cuda_chunked_entropy` were not run because the first gate condition
+failed.
+
 Set `SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE=1` when the run must fail
 instead of benchmarking the CPU-upload fallback. Small committed fixtures are
 useful for compile smoke tests, but realistic GPU comparisons need larger

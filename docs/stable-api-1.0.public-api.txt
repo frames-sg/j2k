@@ -4116,6 +4116,7 @@ pub struct signinum_jpeg_cuda::Codec
 impl signinum_jpeg_cuda::Codec
 pub fn signinum_jpeg_cuda::Codec::decode_tile_rgb8_into_cuda_buffer_with_session(&[u8], &signinum_cuda_runtime::CudaDeviceBuffer, usize, &mut signinum_jpeg_cuda::CudaSession) -> core::result::Result<signinum_jpeg_cuda::CudaSurfaceStats, signinum_jpeg_cuda::Error>
 pub fn signinum_jpeg_cuda::Codec::decode_tiles_to_device_with_session(&[&[u8]], signinum_core::pixel::PixelFormat, signinum_core::backend::BackendRequest, &mut signinum_jpeg_cuda::CudaSession) -> core::result::Result<alloc::vec::Vec<signinum_jpeg_cuda::Surface>, signinum_jpeg_cuda::Error>
+pub fn signinum_jpeg_cuda::Codec::diagnose_tile_rgb8_chunked_entropy_with_session(&[u8], signinum_cuda_runtime::CudaJpegChunkedEntropyConfig, &mut signinum_jpeg_cuda::CudaSession) -> core::result::Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, signinum_jpeg_cuda::Error>
 impl signinum_core::traits::ImageCodec for signinum_jpeg_cuda::Codec
 pub type signinum_jpeg_cuda::Codec::Error = signinum_jpeg_cuda::Error
 pub type signinum_jpeg_cuda::Codec::Pool = signinum_jpeg::internal::scratch::ScratchPool
@@ -6254,6 +6255,7 @@ pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_420_rgb8_owned(&self, &si
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_420_rgb8_owned_into(&self, &signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan<'_>, &signinum_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned(&self, &signinum_cuda_runtime::CudaJpegRgb8DecodePlan<'_>) -> core::result::Result<signinum_cuda_runtime::CudaKernelOutput, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::decode_jpeg_rgb8_owned_into(&self, &signinum_cuda_runtime::CudaJpegRgb8DecodePlan<'_>, &signinum_cuda_runtime::CudaDeviceBuffer, usize) -> core::result::Result<signinum_cuda_runtime::CudaExecutionStats, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaContext::diagnose_jpeg_420_entropy_self_sync(&self, &signinum_cuda_runtime::CudaJpegChunkedEntropyPlan<'_>) -> core::result::Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock(&self, &[i32], u32, u32, u8, signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlock, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], signinum_cuda_runtime::CudaHtj2kEncodeTables<'_>) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
 pub fn signinum_cuda_runtime::CudaContext::encode_htj2k_codeblock_regions_resident_with_resources(&self, &signinum_cuda_runtime::CudaDeviceBuffer, usize, &[signinum_cuda_runtime::CudaHtj2kEncodeCodeBlockRegionJob], &signinum_cuda_runtime::CudaHtj2kEncodeResources) -> core::result::Result<signinum_cuda_runtime::CudaHtj2kEncodedCodeBlocks, signinum_cuda_runtime::CudaError>
@@ -6759,6 +6761,36 @@ pub signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan::mcus_per_row: u32
 pub signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
 pub signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
 pub signinum_cuda_runtime::CudaJpeg420Rgb8DecodePlan::y_quant: [u16; 64]
+pub struct signinum_cuda_runtime::CudaJpegChunkedEntropyConfig
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::max_overflow_subsequences: u32
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::sequence_len: u32
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::subsequence_words: u32
+impl signinum_cuda_runtime::CudaJpegChunkedEntropyConfig
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::subsequence_bits(self) -> u32
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::subsequence_count_for_entropy_bytes(self, usize) -> core::result::Result<usize, signinum_cuda_runtime::CudaError>
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::validate(self) -> core::result::Result<(), signinum_cuda_runtime::CudaError>
+impl core::default::Default for signinum_cuda_runtime::CudaJpegChunkedEntropyConfig
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::default() -> Self
+pub struct signinum_cuda_runtime::CudaJpegChunkedEntropyPlan<'a>
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::cb_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::cb_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::cr_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::cr_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::entropy_bytes: &'a [u8]
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::y_ac_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyPlan::y_dc_table: signinum_cuda_runtime::CudaJpegHuffmanTable
+pub struct signinum_cuda_runtime::CudaJpegChunkedEntropyReport
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyReport::config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyReport::entropy_bytes: usize
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyReport::execution: signinum_cuda_runtime::CudaExecutionStats
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyReport::overflows: alloc::vec::Vec<signinum_cuda_runtime::CudaJpegEntropyOverflowState>
+pub signinum_cuda_runtime::CudaJpegChunkedEntropyReport::states: alloc::vec::Vec<signinum_cuda_runtime::CudaJpegEntropySyncState>
+impl signinum_cuda_runtime::CudaJpegChunkedEntropyReport
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyReport::failed_state_count(&self) -> usize
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyReport::max_overflow_bits(&self) -> core::option::Option<u32>
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyReport::subsequence_count(&self) -> usize
+pub fn signinum_cuda_runtime::CudaJpegChunkedEntropyReport::synchronized_overflow_count(&self) -> usize
 #[repr(C)] pub struct signinum_cuda_runtime::CudaJpegEntropyCheckpoint
 pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::bit_acc: u64
 pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::bit_count: u32
@@ -6768,6 +6800,22 @@ pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::entropy_pos: u32
 pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::mcu_index: u32
 pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::reserved: u32
 pub signinum_cuda_runtime::CudaJpegEntropyCheckpoint::y_prev_dc: i32
+#[repr(C)] pub struct signinum_cuda_runtime::CudaJpegEntropyOverflowState
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::code: u32
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::from_subsequence: u32
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::overflow_bits: u32
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::reserved: [u32; 3]
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::synchronized: u32
+pub signinum_cuda_runtime::CudaJpegEntropyOverflowState::to_subsequence: u32
+#[repr(C)] pub struct signinum_cuda_runtime::CudaJpegEntropySyncState
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::bit_pos: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::block_phase: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::code: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::end_bit: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::reserved: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::start_bit: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::symbol_count: u32
+pub signinum_cuda_runtime::CudaJpegEntropySyncState::zigzag_index: u32
 #[repr(C)] pub struct signinum_cuda_runtime::CudaJpegHuffmanTable
 pub signinum_cuda_runtime::CudaJpegHuffmanTable::max_code: [i32; 17]
 pub signinum_cuda_runtime::CudaJpegHuffmanTable::val_offset: [i32; 17]

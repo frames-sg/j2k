@@ -93,6 +93,7 @@ fn bench_device_decode(c: &mut Criterion) {
     group.finish();
 
     bench_batch_decode(c);
+    bench_chunked_entropy_diagnostic(c);
 }
 
 fn bench_input() -> Vec<u8> {
@@ -189,6 +190,50 @@ fn parse_subsampling(value: &str) -> JpegSubsampling {
         "444" | "4:4:4" | "ybr444" => JpegSubsampling::Ybr444,
         other => panic!("unsupported JPEG bench subsampling {other}; expected 420, 422, or 444"),
     }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn bench_chunked_entropy_diagnostic(c: &mut Criterion) {
+    let (width, height) = generated_dimensions();
+    let input = generated_chunked_entropy_jpeg(width, height);
+    let mut group = c.benchmark_group("jpeg_cuda_chunked_entropy");
+    group.sample_size(10);
+
+    group.bench_function("cpu_fast_packet_planning", |b| {
+        b.iter(|| {
+            let packet =
+                signinum_jpeg::adapter::build_metal_fast420_packet(&input).expect("fast420 packet");
+            std::hint::black_box(packet.entropy_checkpoints.len())
+        });
+    });
+
+    group.bench_function("cuda_chunked_entropy_sync", |b| {
+        let mut session = CudaSession::default();
+        b.iter(|| {
+            let report = CudaCodec::diagnose_tile_rgb8_chunked_entropy_with_session(
+                &input,
+                signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+                &mut session,
+            )
+            .expect("chunked entropy diagnostic");
+            std::hint::black_box(report.synchronized_overflow_count())
+        });
+    });
+
+    group.finish();
+}
+
+#[cfg(not(feature = "cuda-runtime"))]
+fn bench_chunked_entropy_diagnostic(_c: &mut Criterion) {}
+
+#[cfg(feature = "cuda-runtime")]
+fn generated_chunked_entropy_jpeg(width: u16, height: u16) -> Vec<u8> {
+    assert_eq!(
+        bench_subsampling(),
+        JpegSubsampling::Ybr420,
+        "jpeg_cuda_chunked_entropy requires generated 4:2:0 JPEG input; unset SIGNINUM_CUDA_BENCH_SUBSAMPLING/SIGNINUM_GPU_BENCH_SUBSAMPLING or set it to 420"
+    );
+    generated_jpeg(width, height)
 }
 
 #[cfg(feature = "cuda-runtime")]
