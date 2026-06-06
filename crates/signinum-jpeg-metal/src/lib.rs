@@ -2732,6 +2732,104 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
+        subsampling: JpegSubsampling,
+        dimensions: (u32, u32),
+    ) {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 0,
+            y: 0,
+            w: dimensions.0,
+            h: dimensions.1,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let rgb = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let jpeg = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling,
+                restart_interval: Some(256),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode restart-coded region-scaled jpeg");
+        match subsampling {
+            JpegSubsampling::Ybr422 => {
+                let packet =
+                    build_metal_fast422_packet(&jpeg.data).expect("restart fast422 packet");
+                assert_ne!(packet.restart_interval_mcus, 0);
+                assert!(!packet.restart_offsets.is_empty());
+            }
+            JpegSubsampling::Ybr444 => {
+                let packet =
+                    build_metal_fast444_packet(&jpeg.data).expect("restart fast444 packet");
+                assert_ne!(packet.restart_interval_mcus, 0);
+                assert!(!packet.restart_offsets.is_empty());
+            }
+            _ => panic!("restart region-scaled buffer helper expects fast422 or fast444"),
+        }
+
+        let output = MetalBatchOutputBuffer::new_rgb8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("output buffer");
+        let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
+        let (expected, _) = CpuDecoder::new(&jpeg.data)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region-scaled decode");
+
+        let surfaces = Codec::decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode restart-coded region-scaled tiles into reusable output buffer");
+
+        assert_eq!(surfaces.len(), 2);
+        for (index, surface) in surfaces.into_iter().enumerate() {
+            let surface = surface.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected.as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast422_region_scaled_batch_decode_writes_reusable_metal_output_buffer() {
+        assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
+            JpegSubsampling::Ybr422,
+            (128, 96),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast444_region_scaled_batch_decode_writes_reusable_metal_output_buffer() {
+        assert_restart_region_scaled_buffer_batch_writes_reusable_metal_output(
+            JpegSubsampling::Ybr444,
+            (96, 96),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     fn assert_table_mixed_region_scaled_buffer_groups_resident(
         subsampling: JpegSubsampling,
         dimensions: (u32, u32),
@@ -3677,6 +3775,108 @@ mod tests {
                 expected_rgba
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
+        subsampling: JpegSubsampling,
+        dimensions: (u32, u32),
+    ) {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 0,
+            y: 0,
+            w: dimensions.0,
+            h: dimensions.1,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let rgb = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let jpeg = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling,
+                restart_interval: Some(256),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode restart-coded region-scaled texture jpeg");
+        match subsampling {
+            JpegSubsampling::Ybr422 => {
+                let packet =
+                    build_metal_fast422_packet(&jpeg.data).expect("restart fast422 packet");
+                assert_ne!(packet.restart_interval_mcus, 0);
+                assert!(!packet.restart_offsets.is_empty());
+            }
+            JpegSubsampling::Ybr444 => {
+                let packet =
+                    build_metal_fast444_packet(&jpeg.data).expect("restart fast444 packet");
+                assert_ne!(packet.restart_interval_mcus, 0);
+                assert!(!packet.restart_offsets.is_empty());
+            }
+            _ => panic!("restart region-scaled texture helper expects fast422 or fast444"),
+        }
+
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("texture output");
+        let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
+        let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region-scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode restart-coded region-scaled tiles into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast422_region_scaled_batch_decode_writes_reusable_metal_textures() {
+        assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
+            JpegSubsampling::Ybr422,
+            (128, 96),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast444_region_scaled_batch_decode_writes_reusable_metal_textures() {
+        assert_restart_region_scaled_texture_batch_writes_reusable_metal_output(
+            JpegSubsampling::Ybr444,
+            (96, 96),
+        );
     }
 
     #[cfg(target_os = "macos")]
