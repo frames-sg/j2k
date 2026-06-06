@@ -506,6 +506,27 @@ mod tests {
             )
             .expect("amplitude bit read");
         assert!(ac_overflow_guard < amplitude_read);
+        assert!(cuda_source.contains("__device__ bool signinum_jpeg_decode_symbol_real("));
+        assert!(cuda_source.contains("__device__ bool signinum_jpeg_real_bits_consumed("));
+        assert!(sync_source.contains(
+            "signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)"
+        ));
+        let no_progress_guard = sync_source
+            .find(
+                "if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed))",
+            )
+            .expect("real-bit progress guard");
+        let bit_pos_advance = sync_source
+            .find("state.bit_pos += consumed;")
+            .expect("bit position advance");
+        assert!(no_progress_guard < bit_pos_advance);
+        let zrl_overflow_guard = sync_source
+            .find("if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {")
+            .expect("ZRL overflow guard");
+        let coefficient_advance = sync_source
+            .find("state.zigzag_index += run + 1u;")
+            .expect("AC coefficient advance");
+        assert!(zrl_overflow_guard < coefficient_advance);
     }
 
     #[test]

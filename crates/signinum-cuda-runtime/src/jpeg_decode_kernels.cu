@@ -177,6 +177,21 @@ __device__ SigninumJpegBitReader signinum_jpeg_bit_reader_at_bit(
     return reader;
 }
 
+__device__ bool signinum_jpeg_real_bits_consumed(
+    const SigninumJpegBitReader &reader,
+    unsigned int before_pos,
+    unsigned int before_bits,
+    unsigned int &consumed
+) {
+    const unsigned int loaded_bits = (reader.pos - before_pos) * 8u + before_bits;
+    if (reader.bits >= loaded_bits) {
+        consumed = 0u;
+        return false;
+    }
+    consumed = loaded_bits - reader.bits;
+    return true;
+}
+
 __device__ bool signinum_jpeg_receive_extend(
     SigninumJpegBitReader &reader,
     const unsigned char *entropy,
@@ -215,6 +230,38 @@ __device__ bool signinum_jpeg_decode_symbol(
             continue;
         }
         const int code = code16 >> (16u - len);
+        if (code <= table->max_code[len]) {
+            const int idx = code + table->val_offset[len];
+            if (idx < 0 || static_cast<unsigned int>(idx) >= table->values_len) {
+                signinum_jpeg_set_error(status, JPEG_STATUS_HUFFMAN, len, reader.pos);
+                return false;
+            }
+            signinum_jpeg_consume_bits(reader, len);
+            symbol = table->values[idx];
+            return true;
+        }
+    }
+    signinum_jpeg_set_error(status, JPEG_STATUS_HUFFMAN, 16u, reader.pos);
+    return false;
+}
+
+__device__ bool signinum_jpeg_decode_symbol_real(
+    SigninumJpegBitReader &reader,
+    const unsigned char *entropy,
+    unsigned int entropy_len,
+    const SigninumJpegHuffmanTable *table,
+    SigninumJpegDecodeStatus *status,
+    unsigned char &symbol
+) {
+    for (unsigned int len = 1u; len <= 16u; ++len) {
+        if (!signinum_jpeg_ensure_bits(reader, entropy, entropy_len, len)) {
+            signinum_jpeg_set_error(status, JPEG_STATUS_TRUNCATED, len, reader.pos);
+            return false;
+        }
+        if (table->max_code[len] < 0) {
+            continue;
+        }
+        const int code = static_cast<int>(signinum_jpeg_peek_bits(reader, len));
         if (code <= table->max_code[len]) {
             const int idx = code + table->val_offset[len];
             if (idx < 0 || static_cast<unsigned int>(idx) >= table->values_len) {
@@ -338,11 +385,15 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
         unsigned char symbol = 0u;
         const unsigned int before_pos = reader.pos;
         const unsigned int before_bits = reader.bits;
-        if (!signinum_jpeg_decode_symbol(reader, entropy, params.entropy_len, table, &status, symbol)) {
+        if (!signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)) {
             break;
         }
         const unsigned int run = symbol >> 4u;
         const unsigned int ssss = symbol & 0x0Fu;
+        if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {
+            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + 16u, reader.pos);
+            break;
+        }
         if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {
             signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
             break;
@@ -357,7 +408,11 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
             break;
         }
         signinum_jpeg_consume_bits(reader, coeff_bits);
-        const unsigned int consumed = (reader.pos - before_pos) * 8u + before_bits - reader.bits;
+        unsigned int consumed = 0u;
+        if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed)) {
+            signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, 0u, reader.pos);
+            break;
+        }
         state.bit_pos += consumed;
         if (dc) {
             state.zigzag_index = 1u;
