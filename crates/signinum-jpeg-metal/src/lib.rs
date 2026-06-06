@@ -2665,6 +2665,73 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_output_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let dimensions = (128, 128);
+        let roi = Rect {
+            x: 9,
+            y: 11,
+            w: 73,
+            h: 67,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let rgb = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let jpeg = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode restart-coded fast420 region-scaled jpeg");
+        let packet = build_metal_fast420_packet(&jpeg.data).expect("restart fast420 packet");
+        assert_ne!(packet.restart_interval_mcus, 0);
+        assert!(!packet.restart_offsets.is_empty());
+
+        let output = MetalBatchOutputBuffer::new_rgb8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("output buffer");
+        let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
+        let (expected, _) = CpuDecoder::new(&jpeg.data)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region-scaled decode");
+
+        let surfaces = Codec::decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode restart-coded region-scaled tiles into reusable output buffer");
+
+        assert_eq!(surfaces.len(), 2);
+        for (index, surface) in surfaces.into_iter().enumerate() {
+            let surface = surface.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected.as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     fn assert_table_mixed_region_scaled_buffer_groups_resident(
         subsampling: JpegSubsampling,
         dimensions: (u32, u32),
@@ -3526,6 +3593,77 @@ mod tests {
         assert_eq!(output.tile_capacity(), 2);
         assert_eq!(output.dimensions(), (scaled.w, scaled.h));
         assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_restart_fast420_region_scaled_batch_decode_writes_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let dimensions = (128, 128);
+        let roi = Rect {
+            x: 9,
+            y: 11,
+            w: 73,
+            h: 67,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let rgb = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let jpeg = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode restart-coded fast420 region-scaled texture jpeg");
+        let packet = build_metal_fast420_packet(&jpeg.data).expect("restart fast420 packet");
+        assert_ne!(packet.restart_interval_mcus, 0);
+        assert!(!packet.restart_offsets.is_empty());
+
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 2)
+            .expect("texture output");
+        let inputs = [jpeg.data.as_slice(), jpeg.data.as_slice()];
+        let (expected_rgb, _) = CpuDecoder::new(&jpeg.data)
+            .expect("cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("cpu region-scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode restart-coded region-scaled tiles into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
         for (index, tile) in tiles.into_iter().enumerate() {
             let tile = tile.expect("texture tile");
             assert_eq!(tile.dimensions(), (scaled.w, scaled.h));

@@ -229,6 +229,13 @@ struct JpegTexturePackBatchParams {
     uint mode;
 };
 
+struct JpegRgb8ToRgbaTextureParams {
+    uint width;
+    uint height;
+    uint in_stride;
+    uint alpha;
+};
+
 struct JpegDecodeStatus {
     uint code;
     uint detail;
@@ -7577,6 +7584,25 @@ kernel void jpeg_pack_420_windowed_rgba_texture(
     const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
     const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
     out.write(rgba_float_ycbcr(tile_y_plane[y_idx], cb, cr, params.alpha), gid);
+}
+
+kernel void jpeg_copy_rgb8_to_rgba_texture(
+    device const uchar *rgb [[buffer(0)]],
+    constant JpegRgb8ToRgbaTextureParams &params [[buffer(1)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint idx = gid.y * params.in_stride + gid.x * 3u;
+    out.write(float4(
+        float(rgb[idx]) / 255.0f,
+        float(rgb[idx + 1u]) / 255.0f,
+        float(rgb[idx + 2u]) / 255.0f,
+        float(params.alpha) / 255.0f
+    ), gid);
 }
 
 kernel void jpeg_pack_420_windowed_rgba(
