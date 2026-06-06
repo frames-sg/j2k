@@ -315,6 +315,29 @@ impl MetalBatchOutputBuffer {
         Ok(())
     }
 
+    /// Ensure this output buffer fits a full-image scaled RGB8 batch.
+    pub fn ensure_rgb8_scaled_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        full_dimensions: (u32, u32),
+        scale: Downscale,
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        self.ensure_rgb8_tiles(session, scaled_dims(full_dimensions, scale), tile_capacity)
+    }
+
+    /// Ensure this output buffer fits a region-scaled RGB8 batch.
+    pub fn ensure_rgb8_region_scaled_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        roi: Rect,
+        scale: Downscale,
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        let scaled = roi.scaled_covering(scale);
+        self.ensure_rgb8_tiles(session, (scaled.w, scaled.h), tile_capacity)
+    }
+
     fn new_tiles(
         session: &MetalBackendSession,
         dimensions: (u32, u32),
@@ -474,6 +497,29 @@ impl MetalBatchTextureOutput {
 
         *self = Self::new_rgba8_tiles(session, dimensions, tile_capacity)?;
         Ok(())
+    }
+
+    /// Ensure this output set fits a full-image scaled RGBA8 texture batch.
+    pub fn ensure_rgba8_scaled_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        full_dimensions: (u32, u32),
+        scale: Downscale,
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        self.ensure_rgba8_tiles(session, scaled_dims(full_dimensions, scale), tile_capacity)
+    }
+
+    /// Ensure this output set fits a region-scaled RGBA8 texture batch.
+    pub fn ensure_rgba8_region_scaled_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        roi: Rect,
+        scale: Downscale,
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        let scaled = roi.scaled_covering(scale);
+        self.ensure_rgba8_tiles(session, (scaled.w, scaled.h), tile_capacity)
     }
 
     /// Tile dimensions for this output allocation.
@@ -3223,6 +3269,48 @@ mod tests {
         );
         assert_eq!(output.dimensions(), (16, 16));
         assert_eq!(output.tile_capacity(), 3);
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_output_buffer_ensure_region_scaled_tiles_uses_scaled_roi_shape() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let roi = Rect {
+            x: 4,
+            y: 4,
+            w: 10,
+            h: 10,
+        };
+        let scaled = roi.scaled_covering(Downscale::Quarter);
+        let mut output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+
+        output
+            .ensure_rgb8_region_scaled_tiles(&session, roi, Downscale::Quarter, 2)
+            .expect("ensure region-scaled output");
+
+        assert_eq!(output.dimensions(), (scaled.w, scaled.h));
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(
+            output.tile_stride_bytes(),
+            scaled.w as usize * scaled.h as usize * PixelFormat::Rgb8.bytes_per_pixel()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_texture_output_ensure_scaled_tiles_uses_scaled_full_shape() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+
+        output
+            .ensure_rgba8_scaled_tiles(&session, (16, 16), Downscale::Quarter, 2)
+            .expect("ensure scaled texture output");
+
+        assert_eq!(output.dimensions(), (4, 4));
+        assert_eq!(output.tile_capacity(), 2);
         assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
     }
 

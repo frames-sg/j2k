@@ -299,7 +299,11 @@ Stable functions and methods: `Surface::pitch_bytes`, `Surface::residency`,
 `Decoder::new`, `Codec` trait implementations, `MetalSession` constructors and
 decode/submit methods, `TileBatchDecodeManyDevice::decode_tiles_to_device` for
 full-tile JPEG Metal batches, `MetalBatchOutputBuffer::ensure_rgb8_tiles`,
+`MetalBatchOutputBuffer::ensure_rgb8_scaled_tiles`,
+`MetalBatchOutputBuffer::ensure_rgb8_region_scaled_tiles`,
 `MetalBatchTextureOutput::ensure_rgba8_tiles`,
+`MetalBatchTextureOutput::ensure_rgba8_scaled_tiles`,
+`MetalBatchTextureOutput::ensure_rgba8_region_scaled_tiles`,
 `encode_jpeg_baseline_from_metal_buffer`,
 `encode_jpeg_baseline_batch_from_metal_buffers`, and viewport helpers
 `viewport_source_bounds`, `is_contiguous_viewport_workload`,
