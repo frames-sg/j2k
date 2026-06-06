@@ -5164,6 +5164,63 @@ fn fast420_region_scaled_batch_plan(
 }
 
 #[cfg(target_os = "macos")]
+struct Fast420RegionScaledTextureGroup {
+    indices: Vec<usize>,
+    scale: signinum_core::Downscale,
+    plan: RegionScaledBatchPlan,
+}
+
+#[cfg(target_os = "macos")]
+fn fast420_region_scaled_texture_batch_groups(
+    requests: &[batch::QueuedRequest],
+    packets: &[&JpegMetalFast420PacketV1],
+) -> Result<Option<Vec<Vec<usize>>>, Error> {
+    let mut groups = Vec::<Fast420RegionScaledTextureGroup>::new();
+    'packet: for (index, (request, packet)) in
+        requests.iter().zip(packets.iter().copied()).enumerate()
+    {
+        if packet.restart_interval_mcus != 0
+            || packet.entropy_bytes.is_empty()
+            || packet.entropy_checkpoints.is_empty()
+        {
+            return Ok(None);
+        }
+        let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+            return Ok(None);
+        };
+        let segment_count = packet.entropy_checkpoints.len();
+        let segment_count_u32 = checked_u32(
+            segment_count,
+            "fast420 region scaled texture batch segment count",
+        )?;
+        let Some(plan) = fast420_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+        else {
+            return Ok(None);
+        };
+
+        for group in &mut groups {
+            let first = packets[group.indices[0]];
+            let first_segment_count = first.entropy_checkpoints.len();
+            if scale == group.scale
+                && plan == group.plan
+                && fast420_packets_share_full_rgb_batch_shape(first, packet, first_segment_count)
+            {
+                group.indices.push(index);
+                continue 'packet;
+            }
+        }
+        groups.push(Fast420RegionScaledTextureGroup {
+            indices: vec![index],
+            scale,
+            plan,
+        });
+    }
+    Ok(Some(
+        groups.into_iter().map(|group| group.indices).collect(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn fast422_region_scaled_batch_plan(
     packet: &JpegMetalFast422PacketV1,
     roi: Rect,
@@ -8893,7 +8950,7 @@ fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
@@ -8921,6 +8978,20 @@ fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
     };
     if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
         return Ok(None);
+    }
+
+    let Some(groups) = fast420_region_scaled_texture_batch_groups(requests, &fast420_packets)?
+    else {
+        return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast420_region_scaled_rgba_batch_to_textures(
+            runtime,
+            requests,
+            &fast420_packets,
+            output,
+            groups,
+        );
     }
 
     let segment_count = first.entropy_checkpoints.len();
@@ -9120,6 +9191,76 @@ fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
         first_plan.out_dims,
         requests.len(),
     )?))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_grouped_fast420_region_scaled_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast420_packets: &[&JpegMetalFast420PacketV1],
+    output: &crate::MetalBatchTextureOutput,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    for (request, packet) in requests.iter().zip(fast420_packets.iter().copied()) {
+        let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+            return Ok(None);
+        };
+        let segment_count_u32 = checked_u32(
+            packet.entropy_checkpoints.len(),
+            "fast420 grouped region scaled texture batch segment count",
+        )?;
+        let Some(plan) = fast420_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+        else {
+            return Ok(None);
+        };
+        let out_tile_len = plan.out_dims.0 as usize
+            * plan.out_dims.1 as usize
+            * PixelFormat::Rgba8.bytes_per_pixel();
+        validate_rgba_texture_batch_output(output, plan.out_dims, requests.len(), out_tile_len)?;
+    }
+
+    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_output = output.clone_slots(&group_indices)?;
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| BatchedFastPacket::Fast420(fast420_packets[index]))
+            .collect::<Vec<_>>();
+
+        let Some(group_results) = try_decode_fast420_region_scaled_rgba_batch_to_textures(
+            runtime,
+            &group_requests,
+            &group_packets,
+            &group_output,
+        )?
+        else {
+            return Ok(None);
+        };
+        if group_results.len() != group_indices.len() {
+            return Err(Error::MetalKernel {
+                message: "JPEG Metal grouped fast420 region scaled texture result count mismatch"
+                    .to_string(),
+            });
+        }
+        for (original_index, result) in group_indices.into_iter().zip(group_results) {
+            merged_results[original_index] = Some(result);
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast420 region scaled texture result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
 }
 
 #[cfg(target_os = "macos")]

@@ -2850,6 +2850,169 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn rgb8_table_mixed_fast420_region_scaled_texture_batch_groups_resident_dispatches() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let dimensions = (128, 128);
+        let roi = Rect {
+            x: 9,
+            y: 11,
+            w: 77,
+            h: 65,
+        };
+        let scale = Downscale::Half;
+        let scaled = roi.scaled_covering(scale);
+        let rgb_a = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_b = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_c = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(43)
+                .wrapping_add(19);
+            pixel[0] = pixel[0].wrapping_add(delta.rotate_left(1));
+            pixel[1] = pixel[1].wrapping_sub(delta);
+            pixel[2] ^= delta.rotate_right(2);
+        }
+        for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(47)
+                .wrapping_add(23);
+            pixel[0] ^= delta.rotate_left(2);
+            pixel[1] = pixel[1].wrapping_add(delta.rotate_right(1));
+            pixel[2] = pixel[2].wrapping_sub(delta);
+        }
+
+        let jpeg_a = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_a,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode first fast420 region-scaled table group jpeg");
+        let jpeg_b = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_b,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 72,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode second fast420 region-scaled table group jpeg");
+        let jpeg_c = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_c,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode third fast420 region-scaled table group jpeg");
+        let packet_a = build_metal_fast420_packet(&jpeg_a.data).expect("first fast420 packet");
+        let packet_b = build_metal_fast420_packet(&jpeg_b.data).expect("second fast420 packet");
+        let packet_c = build_metal_fast420_packet(&jpeg_c.data).expect("third fast420 packet");
+        assert_eq!(packet_a.y_quant, packet_c.y_quant);
+        assert_eq!(packet_a.cb_quant, packet_c.cb_quant);
+        assert_eq!(packet_a.cr_quant, packet_c.cr_quant);
+        assert_eq!(packet_a.y_dc_table, packet_c.y_dc_table);
+        assert_eq!(packet_a.y_ac_table, packet_c.y_ac_table);
+        assert_eq!(
+            packet_a.entropy_checkpoints.len(),
+            packet_c.entropy_checkpoints.len()
+        );
+        assert_ne!(packet_a.y_quant, packet_b.y_quant);
+
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (scaled.w, scaled.h), 3)
+            .expect("texture output");
+        let inputs = [
+            jpeg_a.data.as_slice(),
+            jpeg_b.data.as_slice(),
+            jpeg_c.data.as_slice(),
+        ];
+        let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
+            .expect("first cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("first cpu region scaled decode");
+        let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
+            .expect("second cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("second cpu region scaled decode");
+        let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
+            .expect("third cpu decoder")
+            .decode_region_scaled(
+                PixelFormat::Rgb8,
+                signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale,
+            )
+            .expect("third cpu region scaled decode");
+        let expected_tiles = [
+            rgb_to_rgba_opaque(&expected_rgb_a),
+            rgb_to_rgba_opaque(&expected_rgb_b),
+            rgb_to_rgba_opaque(&expected_rgb_c),
+        ];
+        assert_ne!(expected_tiles[0], expected_tiles[1]);
+        assert_ne!(expected_tiles[0], expected_tiles[2]);
+        assert_ne!(expected_tiles[1], expected_tiles[2]);
+
+        let tiles = Codec::decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
+            &inputs, roi, scale, &output, &session,
+        )
+        .expect("decode table-mixed fast420 region-scaled tiles into reusable textures");
+
+        assert_eq!(tiles.len(), 3);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (scaled.w, scaled.h));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+            assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2)
