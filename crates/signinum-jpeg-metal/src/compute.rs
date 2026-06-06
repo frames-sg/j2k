@@ -4873,6 +4873,30 @@ fn fast420_packets_share_full_rgb_batch_shape(
 }
 
 #[cfg(target_os = "macos")]
+fn fast420_full_rgb_batch_groups(packets: &[&JpegMetalFast420PacketV1]) -> Option<Vec<Vec<usize>>> {
+    let mut groups = Vec::<Vec<usize>>::new();
+    'packet: for (index, packet) in packets.iter().copied().enumerate() {
+        if packet.entropy_bytes.is_empty() || packet.entropy_checkpoints.is_empty() {
+            return None;
+        }
+
+        for group in &mut groups {
+            let first = packets[group[0]];
+            if fast420_packets_share_full_rgb_batch_shape(
+                first,
+                packet,
+                first.entropy_checkpoints.len(),
+            ) {
+                group.push(index);
+                continue 'packet;
+            }
+        }
+        groups.push(vec![index]);
+    }
+    Some(groups)
+}
+
+#[cfg(target_os = "macos")]
 fn checked_u32(value: usize, label: &str) -> Result<u32, Error> {
     u32::try_from(value).map_err(|_| Error::MetalKernel {
         message: format!("JPEG Metal {label} does not fit in u32"),
@@ -5887,7 +5911,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
     output: &crate::MetalBatchTextureOutput,
     decode_mode: Fast420BatchDecodeMode,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8)
@@ -5910,14 +5934,21 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let segment_count = first.entropy_checkpoints.len();
-    if !fast420_packets
-        .iter()
-        .all(|packet| fast420_packets_share_full_rgb_batch_shape(first, packet, segment_count))
-    {
+    let Some(groups) = fast420_full_rgb_batch_groups(&fast420_packets) else {
         return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast420_full_rgba_batch_to_textures(
+            runtime,
+            requests,
+            &fast420_packets,
+            output,
+            decode_mode,
+            groups,
+        );
     }
 
+    let segment_count = first.entropy_checkpoints.len();
     let tile_count = fast420_packets.len();
     let tile_count_u32 = checked_u32(tile_count, "fast420 texture batch tile count")?;
     let segment_count_u32 = checked_u32(segment_count, "fast420 texture batch segment count")?;
@@ -6503,6 +6534,70 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
         first.dimensions,
         requests.len(),
     )?))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_grouped_fast420_full_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast420_packets: &[&JpegMetalFast420PacketV1],
+    output: &crate::MetalBatchTextureOutput,
+    decode_mode: Fast420BatchDecodeMode,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    for packet in fast420_packets {
+        let out_stride = packet.dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let out_tile_len = out_stride * packet.dimensions.1 as usize;
+        validate_rgba_texture_batch_output(
+            output,
+            packet.dimensions,
+            requests.len(),
+            out_tile_len,
+        )?;
+    }
+
+    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_output = output.clone_slots(&group_indices)?;
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| BatchedFastPacket::Fast420(fast420_packets[index]))
+            .collect::<Vec<_>>();
+
+        let Some(group_results) = try_decode_fast420_full_rgba_batch_to_textures(
+            runtime,
+            &group_requests,
+            &group_packets,
+            &group_output,
+            decode_mode,
+        )?
+        else {
+            return Ok(None);
+        };
+        if group_results.len() != group_indices.len() {
+            return Err(Error::MetalKernel {
+                message: "JPEG Metal grouped fast420 texture result count mismatch".to_string(),
+            });
+        }
+        for (original_index, result) in group_indices.into_iter().zip(group_results) {
+            merged_results[original_index] = Some(result);
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast420 texture result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
 }
 
 #[cfg(target_os = "macos")]

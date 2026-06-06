@@ -459,6 +459,24 @@ impl MetalBatchTextureOutput {
     pub(crate) fn clone_texture(&self, index: usize) -> Option<Texture> {
         self.textures.get(index).cloned()
     }
+
+    pub(crate) fn clone_slots(&self, indices: &[usize]) -> Result<Self, Error> {
+        let mut textures = Vec::with_capacity(indices.len());
+        for &index in indices {
+            textures.push(
+                self.clone_texture(index)
+                    .ok_or_else(|| Error::MetalKernel {
+                        message: "JPEG Metal batch texture output slot was missing".to_string(),
+                    })?,
+            );
+        }
+        Ok(Self {
+            textures,
+            dimensions: self.dimensions,
+            fmt: self.fmt,
+            metal_fmt: self.metal_fmt,
+        })
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2600,6 +2618,11 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn patterned_index_byte(index: usize) -> u8 {
+        u8::try_from(index % 256).expect("modulo 256 fits in u8")
+    }
+
+    #[cfg(target_os = "macos")]
     fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
         let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
         for pixel in rgb.chunks_exact(3) {
@@ -3380,6 +3403,226 @@ mod tests {
             compute::jpeg_private_buffer_allocations_for_test(),
             0,
             "restart fused 4:2:0 texture batch decode should not allocate private Y/Cb/Cr staging planes"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_distinct_restart_fast420_texture_batch_decode_fuses_directly_into_reusable_metal_textures(
+    ) {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let dimensions = (128, 128);
+        let rgb_a = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_b = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(17)
+                .wrapping_add(31);
+            pixel[0] = pixel[0].wrapping_add(delta);
+            pixel[1] = pixel[1].wrapping_sub(delta.rotate_left(1));
+            pixel[2] ^= delta.rotate_right(1);
+        }
+        assert_ne!(rgb_a, rgb_b);
+
+        let jpeg_a = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_a,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode first restart 4:2:0 source jpeg");
+        let jpeg_b = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_b,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode second restart 4:2:0 source jpeg");
+        assert_ne!(jpeg_a.data, jpeg_b.data);
+
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, dimensions, 2)
+            .expect("texture output");
+        let inputs = [jpeg_a.data.as_slice(), jpeg_b.data.as_slice()];
+        let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
+            .expect("first cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("first cpu decode");
+        let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
+            .expect("second cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("second cpu decode");
+        let expected_tiles = [
+            rgb_to_rgba_opaque(&expected_rgb_a),
+            rgb_to_rgba_opaque(&expected_rgb_b),
+        ];
+        assert_ne!(expected_tiles[0], expected_tiles[1]);
+
+        compute::reset_jpeg_private_buffer_allocations_for_test();
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode distinct restart tiles into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), dimensions);
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+            assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
+        }
+        assert_eq!(
+            compute::jpeg_private_buffer_allocations_for_test(),
+            0,
+            "distinct restart fused 4:2:0 texture batch decode should not allocate private Y/Cb/Cr staging planes"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_table_mixed_restart_fast420_texture_batch_groups_resident_dispatches() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let dimensions = (128, 128);
+        let rgb_a = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_b = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_c = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index).wrapping_mul(29).wrapping_add(7);
+            pixel[0] ^= delta;
+            pixel[1] = pixel[1].wrapping_add(delta.rotate_left(2));
+            pixel[2] = pixel[2].wrapping_sub(delta.rotate_right(2));
+        }
+        for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(13)
+                .wrapping_add(41);
+            pixel[0] = pixel[0].wrapping_sub(delta.rotate_left(1));
+            pixel[1] ^= delta.rotate_right(3);
+            pixel[2] = pixel[2].wrapping_add(delta);
+        }
+
+        let jpeg_a = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_a,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode first table group jpeg");
+        let jpeg_b = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_b,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 74,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode second table group jpeg");
+        let jpeg_c = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_c,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: Some(4),
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode third table group jpeg");
+        let packet_a = build_metal_fast420_packet(&jpeg_a.data).expect("first fast420 packet");
+        let packet_b = build_metal_fast420_packet(&jpeg_b.data).expect("second fast420 packet");
+        let packet_c = build_metal_fast420_packet(&jpeg_c.data).expect("third fast420 packet");
+        assert_eq!(packet_a.y_quant, packet_c.y_quant);
+        assert_eq!(packet_a.cb_quant, packet_c.cb_quant);
+        assert_eq!(packet_a.cr_quant, packet_c.cr_quant);
+        assert_eq!(packet_a.y_dc_table, packet_c.y_dc_table);
+        assert_eq!(packet_a.y_ac_table, packet_c.y_ac_table);
+        assert_eq!(
+            packet_a.entropy_checkpoints.len(),
+            packet_c.entropy_checkpoints.len()
+        );
+        assert_ne!(packet_a.y_quant, packet_b.y_quant);
+
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, dimensions, 3)
+            .expect("texture output");
+        let inputs = [
+            jpeg_a.data.as_slice(),
+            jpeg_b.data.as_slice(),
+            jpeg_c.data.as_slice(),
+        ];
+        let (expected_rgb_a, _) = CpuDecoder::new(&jpeg_a.data)
+            .expect("first cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("first cpu decode");
+        let (expected_rgb_b, _) = CpuDecoder::new(&jpeg_b.data)
+            .expect("second cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("second cpu decode");
+        let (expected_rgb_c, _) = CpuDecoder::new(&jpeg_c.data)
+            .expect("third cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("third cpu decode");
+        let expected_tiles = [
+            rgb_to_rgba_opaque(&expected_rgb_a),
+            rgb_to_rgba_opaque(&expected_rgb_b),
+            rgb_to_rgba_opaque(&expected_rgb_c),
+        ];
+        assert_ne!(expected_tiles[0], expected_tiles[1]);
+        assert_ne!(expected_tiles[0], expected_tiles[2]);
+        assert_ne!(expected_tiles[1], expected_tiles[2]);
+
+        compute::reset_jpeg_private_buffer_allocations_for_test();
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode table-mixed restart tiles into reusable textures");
+
+        assert_eq!(tiles.len(), 3);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), dimensions);
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            let actual_rgba = download_rgba8_texture(&session, tile.texture(), tile.dimensions());
+            assert_eq!(actual_rgba.as_slice(), expected_tiles[index].as_slice());
+        }
+        assert_eq!(
+            compute::jpeg_private_buffer_allocations_for_test(),
+            0,
+            "table-mixed resident 4:2:0 texture dispatches should not allocate private Y/Cb/Cr staging planes"
         );
     }
 
