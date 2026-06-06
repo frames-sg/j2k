@@ -17,7 +17,7 @@ use metal::{
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState,
     Device, MTLResourceOptions, MTLSize,
 };
-use signinum_core::{BackendRequest, PixelFormat, Rect};
+use signinum_core::{BackendRequest, BufferError, PixelFormat, Rect};
 use signinum_jpeg::{
     adapter::{
         JpegMetalEntropyCheckpointV1, JpegMetalFast420PacketV1, JpegMetalFast422PacketV1,
@@ -4865,6 +4865,53 @@ fn fast422_region_scaled_batch_plan(
 }
 
 #[cfg(target_os = "macos")]
+fn batch_output_buffer_or_new(
+    runtime: &MetalRuntime,
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    dimensions: (u32, u32),
+    tile_count: usize,
+    out_stride: usize,
+    out_tile_len: usize,
+) -> Result<Buffer, Error> {
+    let Some(output) = output else {
+        let byte_len = out_tile_len
+            .checked_mul(tile_count)
+            .ok_or(BufferError::SizeOverflow {
+                what: "JPEG Metal batch output bytes",
+            })?;
+        let byte_len_u64 = u64::try_from(byte_len).map_err(|_| BufferError::SizeOverflow {
+            what: "JPEG Metal batch output bytes",
+        })?;
+        return Ok(runtime
+            .device
+            .new_buffer(byte_len_u64, MTLResourceOptions::StorageModeShared));
+    };
+
+    if output.dimensions() != dimensions
+        || output.pixel_format() != PixelFormat::Rgb8
+        || output.pitch_bytes() != out_stride
+        || output.tile_stride_bytes() < out_tile_len
+    {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal batch output buffer shape does not match requested RGB8 tiles",
+        });
+    }
+    if output.tile_capacity() < tile_count {
+        return Err(BufferError::OutputTooSmall {
+            required: output.tile_stride_bytes().checked_mul(tile_count).ok_or(
+                BufferError::SizeOverflow {
+                    what: "JPEG Metal batch output bytes",
+                },
+            )?,
+            have: output.byte_len(),
+        }
+        .into());
+    }
+
+    Ok(output.clone_buffer())
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast420_full_rgb_batch_to_surfaces(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -4884,6 +4931,39 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
     decode_mode: Fast420BatchDecodeMode,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
+        runtime,
+        requests,
+        packets,
+        decode_mode,
+        None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_full_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
+        runtime,
+        requests,
+        packets,
+        fast420_batch_decode_mode(),
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    decode_mode: Fast420BatchDecodeMode,
+    output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     let timing_enabled =
         decode_mode == Fast420BatchDecodeMode::Fused && fast420_batch_timing_enabled();
@@ -5008,10 +5088,14 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode(
     let y_plane = new_private_buffer(&runtime.device, y_len * tile_count);
     let cb_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
     let cr_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
-    let out_buffer = runtime.device.new_buffer(
-        (out_tile_len * tile_count) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        first.dimensions,
+        tile_count,
+        out_stride,
+        out_tile_len,
+    )?;
     let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
     let entropy_buffer = runtime.device.new_buffer_with_data(
         entropy_bytes.as_ptr().cast(),
@@ -5341,6 +5425,31 @@ fn try_decode_fast422_full_rgb_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast422_full_rgb_batch_to_surfaces_with_output(runtime, requests, packets, None)
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast422_full_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast422_full_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast422_full_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     if requests.len() < 2
         || requests
             .iter()
@@ -5434,10 +5543,14 @@ fn try_decode_fast422_full_rgb_batch_to_surfaces(
     let y_plane = new_private_buffer(&runtime.device, y_len * tile_count);
     let cb_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
     let cr_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
-    let out_buffer = runtime.device.new_buffer(
-        (out_tile_len * tile_count) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        first.dimensions,
+        tile_count,
+        out_stride,
+        out_tile_len,
+    )?;
     let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
     let entropy_buffer = runtime.device.new_buffer_with_data(
         entropy_bytes.as_ptr().cast(),
@@ -6449,6 +6562,42 @@ pub(crate) fn decode_full_batch_to_surfaces_with_session_state(
     with_runtime_for_session(backend_session, |runtime| {
         decode_full_batch_to_surfaces_with_runtime(runtime, requests, &packets)
     })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_full_rgb8_batch_into_output_with_session(
+    requests: &[batch::QueuedRequest],
+    output: &crate::MetalBatchOutputBuffer,
+    session: &crate::MetalBackendSession,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    let Some(packets) = batched_fast_packets(requests)? else {
+        return Ok(None);
+    };
+
+    with_runtime_for_session(session, |runtime| {
+        decode_full_rgb8_batch_into_output_with_runtime(runtime, requests, &packets, output)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_full_rgb8_batch_into_output_with_runtime(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(results) = try_decode_fast420_full_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
+    if let Some(results) = try_decode_fast422_full_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
+
+    Ok(None)
 }
 
 #[cfg(target_os = "macos")]

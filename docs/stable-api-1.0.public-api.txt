@@ -3578,6 +3578,7 @@ pub signinum_jpeg_metal::SurfaceResidency::Host
 pub signinum_jpeg_metal::SurfaceResidency::MetalResidentDecode
 pub struct signinum_jpeg_metal::Codec
 impl signinum_jpeg_metal::Codec
+pub fn signinum_jpeg_metal::Codec::decode_rgb8_batch_into_metal_buffer_with_session(&[&[u8]], &signinum_jpeg_metal::MetalBatchOutputBuffer, &signinum_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<core::result::Result<signinum_jpeg_metal::Surface, signinum_jpeg_metal::Error>>, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::Codec::submit_tile_region_scaled_to_device(&mut signinum_core::context::DecoderContext<signinum_jpeg::context::DecoderContext>, &mut signinum_jpeg_metal::MetalSession, &mut signinum_jpeg::internal::scratch::ScratchPool, &[u8], signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale, signinum_core::backend::BackendRequest) -> core::result::Result<<Self as signinum_core::traits::TileBatchDecodeSubmit>::SubmittedSurface, signinum_jpeg_metal::Error>
 impl signinum_core::traits::ImageCodec for signinum_jpeg_metal::Codec
 pub type signinum_jpeg_metal::Codec::Error = signinum_jpeg_metal::Error
@@ -3659,6 +3660,16 @@ pub fn signinum_jpeg_metal::MetalBackendSession::new(metal::device::Device) -> S
 pub fn signinum_jpeg_metal::MetalBackendSession::system_default() -> core::result::Result<Self, signinum_jpeg_metal::Error>
 impl core::fmt::Debug for signinum_jpeg_metal::MetalBackendSession
 pub fn signinum_jpeg_metal::MetalBackendSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct signinum_jpeg_metal::MetalBatchOutputBuffer
+impl signinum_jpeg_metal::MetalBatchOutputBuffer
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &metal::buffer::BufferRef
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::byte_len(&self) -> usize
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::new_rgb8_tiles(&signinum_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<Self, signinum_jpeg_metal::Error>
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::pitch_bytes(&self) -> usize
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::pixel_format(&self) -> signinum_core::pixel::PixelFormat
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::tile_capacity(&self) -> usize
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::tile_stride_bytes(&self) -> usize
 pub struct signinum_jpeg_metal::MetalSession
 impl signinum_jpeg_metal::MetalSession
 pub fn signinum_jpeg_metal::MetalSession::submissions(&self) -> u64

@@ -49,7 +49,7 @@ pub use encode::{
 };
 
 #[cfg(target_os = "macos")]
-use metal::{Buffer, CommandBuffer, Device, MTLResourceOptions};
+use metal::{Buffer, BufferRef, CommandBuffer, Device, MTLResourceOptions};
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the Metal JPEG backend.
@@ -265,6 +265,118 @@ pub struct ResidentPrivateJpegTile {
     pub pitch_bytes: usize,
     pub status_buffer: Buffer,
     pub command_buffer: CommandBuffer,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+/// Reusable caller-owned Metal buffer for full-tile JPEG batch output.
+pub struct MetalBatchOutputBuffer {
+    buffer: Buffer,
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+    pitch_bytes: usize,
+    tile_stride_bytes: usize,
+    tile_capacity: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl MetalBatchOutputBuffer {
+    /// Allocate a reusable RGB8 output buffer for `tile_capacity` full-size tiles.
+    pub fn new_rgb8_tiles(
+        session: &MetalBackendSession,
+        dimensions: (u32, u32),
+        tile_capacity: usize,
+    ) -> Result<Self, Error> {
+        Self::new_tiles(session, dimensions, PixelFormat::Rgb8, tile_capacity)
+    }
+
+    fn new_tiles(
+        session: &MetalBackendSession,
+        dimensions: (u32, u32),
+        fmt: PixelFormat,
+        tile_capacity: usize,
+    ) -> Result<Self, Error> {
+        if dimensions.0 == 0 || dimensions.1 == 0 || tile_capacity == 0 {
+            return Err(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal batch output requires nonzero dimensions and tile capacity",
+            });
+        }
+        let row_bytes = dimensions
+            .0
+            .checked_mul(u32::try_from(fmt.bytes_per_pixel()).map_err(|_| {
+                BufferError::SizeOverflow {
+                    what: "JPEG Metal output row bytes",
+                }
+            })?)
+            .ok_or(BufferError::SizeOverflow {
+                what: "JPEG Metal output row bytes",
+            })? as usize;
+        let tile_stride_bytes =
+            row_bytes
+                .checked_mul(dimensions.1 as usize)
+                .ok_or(BufferError::SizeOverflow {
+                    what: "JPEG Metal output tile bytes",
+                })?;
+        let byte_len =
+            tile_stride_bytes
+                .checked_mul(tile_capacity)
+                .ok_or(BufferError::SizeOverflow {
+                    what: "JPEG Metal batch output bytes",
+                })?;
+        let byte_len_u64 = u64::try_from(byte_len).map_err(|_| BufferError::SizeOverflow {
+            what: "JPEG Metal batch output bytes",
+        })?;
+        let buffer = session
+            .device()
+            .new_buffer(byte_len_u64, MTLResourceOptions::StorageModeShared);
+        Ok(Self {
+            buffer,
+            dimensions,
+            fmt,
+            pitch_bytes: row_bytes,
+            tile_stride_bytes,
+            tile_capacity,
+        })
+    }
+
+    /// Backing Metal buffer.
+    pub fn buffer(&self) -> &BufferRef {
+        self.buffer.as_ref()
+    }
+
+    /// Tile dimensions for this output allocation.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Pixel format for this output allocation.
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.fmt
+    }
+
+    /// Number of reusable tile slots in the buffer.
+    pub fn tile_capacity(&self) -> usize {
+        self.tile_capacity
+    }
+
+    /// Number of bytes between rows in one tile.
+    pub fn pitch_bytes(&self) -> usize {
+        self.pitch_bytes
+    }
+
+    /// Number of bytes reserved for each tile slot.
+    pub fn tile_stride_bytes(&self) -> usize {
+        self.tile_stride_bytes
+    }
+
+    /// Total byte length of the backing allocation.
+    pub fn byte_len(&self) -> usize {
+        self.tile_stride_bytes * self.tile_capacity
+    }
+
+    pub(crate) fn clone_buffer(&self) -> Buffer {
+        self.buffer.clone()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -806,6 +918,40 @@ impl ImageCodec for Codec {
 }
 
 impl Codec {
+    #[cfg(target_os = "macos")]
+    /// Decode a full-tile RGB8 JPEG batch into a reusable caller-owned Metal buffer.
+    pub fn decode_rgb8_batch_into_metal_buffer_with_session(
+        inputs: &[&[u8]],
+        output: &MetalBatchOutputBuffer,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<Surface, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut state = session::SessionState::default();
+        let mut requests = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let input = state.intern_input_slice(input);
+            let (fast444_packet, fast422_packet, fast420_packet) =
+                state.resolve_fast_packets(&input, BackendRequest::Metal);
+            requests.push(batch::QueuedRequest::new_shared(
+                input,
+                PixelFormat::Rgb8,
+                BackendRequest::Metal,
+                batch::BatchOp::Full,
+                fast444_packet,
+                fast422_packet,
+                fast420_packet,
+            ));
+        }
+
+        compute::decode_full_rgb8_batch_into_output_with_session(&requests, output, session)?
+            .ok_or(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal reusable batch output currently supports batchable full-tile RGB8 fast 4:2:0 or 4:2:2 inputs",
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Submit a scaled region tile decode into a reusable Metal session.
     pub fn submit_tile_region_scaled_to_device(
@@ -1929,6 +2075,40 @@ mod tests {
             .and_then(|backend| backend.runtime.get())
             .is_some();
         assert!(runtime_initialized);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_batch_decode_can_write_into_reusable_metal_output_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
+        let inputs = [BASELINE_420, BASELINE_420];
+        let (expected, _) = CpuDecoder::new(BASELINE_420)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+
+        let surfaces =
+            Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+                .expect("decode into reusable output");
+
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(
+            output.tile_stride_bytes(),
+            16 * 16 * PixelFormat::Rgb8.bytes_per_pixel()
+        );
+        for (index, result) in surfaces.into_iter().enumerate() {
+            let surface = result.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (16, 16));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected.as_slice());
+        }
     }
 
     #[cfg(target_os = "macos")]
