@@ -928,6 +928,7 @@ impl<'a> Decoder<'a> {
                 )
             }
             OutputFormat::Gray16 => self.decode_extended12_gray16_into(out, stride),
+            OutputFormat::Rgb16 => self.decode_extended12_rgb16_into(out, stride),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1257,6 +1258,7 @@ impl<'a> Decoder<'a> {
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
             OutputFormat::Gray16 => self.decode_extended12_gray16_region_into(out, stride, roi),
+            OutputFormat::Rgb16 => self.decode_extended12_rgb16_region_into(out, stride, roi),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1983,7 +1985,12 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_extended12_gray16_region_into(out, stride, Rect::full(self.info.dimensions))
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            Rect::full(self.info.dimensions),
+            Extended12Output::Gray16,
+        )
     }
 
     fn decode_extended12_gray16_region_into(
@@ -1991,6 +1998,38 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
         roi: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, Extended12Output::Gray16)
+    }
+
+    fn decode_extended12_rgb16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            Rect::full(self.info.dimensions),
+            Extended12Output::Rgb16,
+        )
+    }
+
+    fn decode_extended12_rgb16_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, Extended12Output::Rgb16)
+    }
+
+    fn decode_extended12_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        output: Extended12Output,
     ) -> Result<DecodeOutcome, JpegError> {
         if self.info.sof_kind != SofKind::Extended12
             || self.info.color_space != ColorSpace::Grayscale
@@ -2039,13 +2078,14 @@ impl Decoder<'_> {
                         crate::idct::idct_islow_12bit(coeff.coefficients(), &mut pixels);
                     }
                 }
-                write_gray16_block_region(
+                write_extended12_block_region(
                     out,
                     stride,
                     roi,
                     (width, height),
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
+                    output,
                 );
             }
         }
@@ -2058,13 +2098,20 @@ impl Decoder<'_> {
     }
 }
 
-fn write_gray16_block_region(
+#[derive(Debug, Clone, Copy)]
+enum Extended12Output {
+    Gray16,
+    Rgb16,
+}
+
+fn write_extended12_block_region(
     out: &mut [u8],
     stride: usize,
     roi: Rect,
     dimensions: (u32, u32),
     block_origin: (u32, u32),
     pixels: &[u16; 64],
+    output: Extended12Output,
 ) {
     let (width, height) = dimensions;
     let (x0, y0) = block_origin;
@@ -2081,16 +2128,32 @@ fn write_gray16_block_region(
     }
 
     let copy_w = (copy_x1 - copy_x0) as usize;
+    let bytes_per_pixel = match output {
+        Extended12Output::Gray16 => 2,
+        Extended12Output::Rgb16 => 6,
+    };
     for source_y in copy_y0..copy_y1 {
         let src_row = (source_y - y0) as usize;
         let src_col = (copy_x0 - x0) as usize;
         let dst_row = (source_y - roi.y) as usize;
         let dst_col = (copy_x0 - roi.x) as usize;
-        let dst_start = dst_row * stride + dst_col * 2;
-        let dst = &mut out[dst_start..dst_start + copy_w * 2];
+        let dst_start = dst_row * stride + dst_col * bytes_per_pixel;
+        let dst = &mut out[dst_start..dst_start + copy_w * bytes_per_pixel];
         let src = &pixels[src_row * 8 + src_col..src_row * 8 + src_col + copy_w];
-        for (dst_sample, sample) in dst.chunks_exact_mut(2).zip(src.iter().copied()) {
-            dst_sample.copy_from_slice(&sample.to_le_bytes());
+        match output {
+            Extended12Output::Gray16 => {
+                for (dst_sample, sample) in dst.chunks_exact_mut(2).zip(src.iter().copied()) {
+                    dst_sample.copy_from_slice(&sample.to_le_bytes());
+                }
+            }
+            Extended12Output::Rgb16 => {
+                for (dst_pixel, sample) in dst.chunks_exact_mut(6).zip(src.iter().copied()) {
+                    let sample = sample.to_le_bytes();
+                    dst_pixel[0..2].copy_from_slice(&sample);
+                    dst_pixel[2..4].copy_from_slice(&sample);
+                    dst_pixel[4..6].copy_from_slice(&sample);
+                }
+            }
         }
     }
 }
@@ -2212,6 +2275,7 @@ fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
         OutputFormat::Rgba8 { .. } => "Rgba8",
         OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
         OutputFormat::Gray16 => "Gray16",
+        OutputFormat::Rgb16 => "Rgb16",
     }
 }
 
@@ -2330,7 +2394,8 @@ fn output_format_from_parts(
     if matches!(sof_kind, SofKind::Extended12 | SofKind::Progressive12) {
         return match (sof_kind, fmt, scale) {
             (SofKind::Extended12, PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
-            (SofKind::Extended12, PixelFormat::Gray16, _) => {
+            (SofKind::Extended12, PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
+            (SofKind::Extended12, PixelFormat::Gray16 | PixelFormat::Rgb16, _) => {
                 Err(JpegError::DownscaleUnsupported { sof: sof_kind })
             }
             (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {

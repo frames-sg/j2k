@@ -148,13 +148,13 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
     match info.sof_kind {
         SofKind::Extended12
             if matches!(request.op, JpegDecodeOp::Full | JpegDecodeOp::Region(_))
-                && request.fmt == PixelFormat::Gray16 =>
+                && matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) =>
         {
             if info.color_space == ColorSpace::Grayscale {
                 return JpegBackendEligibility::eligible();
             }
             return JpegBackendEligibility::rejected(
-                "JPEG CPU 12-bit extended decode currently supports grayscale Gray16 only",
+                "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16 only",
             );
         }
         SofKind::Extended12 | SofKind::Progressive12 => {

@@ -62,6 +62,8 @@ pub(crate) fn validate_buffer(
         2 => PixelFormat::Gray16,
         3 => PixelFormat::Rgb8,
         4 => PixelFormat::Rgba8,
+        6 => PixelFormat::Rgb16,
+        8 => PixelFormat::Rgba16,
         _ => {
             return Err(JpegError::OutputBufferTooSmall {
                 required: usize::MAX,

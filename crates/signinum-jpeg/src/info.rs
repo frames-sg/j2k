@@ -219,6 +219,7 @@ pub(crate) enum OutputFormat {
     Gray8,
     Gray8Scaled { factor: DownscaleFactor },
     Gray16,
+    Rgb16,
 }
 
 impl OutputFormat {
@@ -228,12 +229,15 @@ impl OutputFormat {
             Self::Rgba8 { .. } => 4,
             Self::Gray8 | Self::Gray8Scaled { .. } => 1,
             Self::Gray16 => 2,
+            Self::Rgb16 => 6,
         }
     }
 
     pub(crate) fn downscale(self) -> DownscaleFactor {
         match self {
-            Self::Rgb8 | Self::Rgba8 { .. } | Self::Gray8 | Self::Gray16 => DownscaleFactor::Full,
+            Self::Rgb8 | Self::Rgba8 { .. } | Self::Gray8 | Self::Gray16 | Self::Rgb16 => {
+                DownscaleFactor::Full
+            }
             Self::Rgb8Scaled { factor } | Self::Gray8Scaled { factor } => factor,
         }
     }
@@ -451,6 +455,7 @@ mod tests {
             1
         );
         assert_eq!(OutputFormat::Gray16.bytes_per_pixel(), 2);
+        assert_eq!(OutputFormat::Rgb16.bytes_per_pixel(), 6);
     }
 
     #[test]

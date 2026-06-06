@@ -202,6 +202,60 @@ fn decode_region_into_gray16_crops_extended12_grayscale_samples() {
 }
 
 #[test]
+fn decode_into_rgb16_expands_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit grayscale Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    for pixel in buf.chunks_exact(6) {
+        let channels = [
+            u16::from_le_bytes([pixel[0], pixel[1]]),
+            u16::from_le_bytes([pixel[2], pixel[3]]),
+            u16::from_le_bytes([pixel[4], pixel[5]]),
+        ];
+        assert_eq!(channels, [2048; 3]);
+    }
+}
+
+#[test]
+fn decode_region_into_rgb16_crops_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 4,
+        h: 3,
+    };
+    let stride = roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+    let outcome = dec
+        .decode_region_into(&mut buf, stride, PixelFormat::Rgb16, roi)
+        .expect("12-bit grayscale Rgb16 ROI decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    for row in buf.chunks_exact(stride) {
+        for pixel in row[..roi.w as usize * 6].chunks_exact(6) {
+            let channels = [
+                u16::from_le_bytes([pixel[0], pixel[1]]),
+                u16::from_le_bytes([pixel[2], pixel[3]]),
+                u16::from_le_bytes([pixel[4], pixel[5]]),
+            ];
+            assert_eq!(channels, [2048; 3]);
+        }
+        assert_eq!(&row[roi.w as usize * 6..], &[0xaa; 6]);
+    }
+}
+
+#[test]
 fn decode_into_gray8_accepts_lossless_grayscale_common_predictors() {
     for predictor in 1..=7 {
         let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);

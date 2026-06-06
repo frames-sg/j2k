@@ -25,8 +25,9 @@ unsupported errors until a separate entropy and conformance plan exists.
   full progressive coefficient assembly and output projection
 - parser metadata for 12-bit extended/progressive and lossless SOF3
 - initial 12-bit extended sequential grayscale full-image and non-scaled ROI CPU
-  decode to `Gray16`; broader 12-bit RGB/progressive/scaled support still
-  returns structured unsupported or `NotImplemented`
+  decode to `Gray16` or expanded `Rgb16`; broader 12-bit multi-component RGB,
+  progressive, and scaled support still returns structured unsupported or
+  `NotImplemented`
 - initial lossless SOF3 8-bit grayscale full-image CPU decode to `Gray8` for
   predictors 1-7; other precisions, color layouts, row/ROI/scaled output, and
   restart-coded SOF3 remain open
@@ -168,11 +169,12 @@ Implementation requirements:
 
 - Add 12-bit quantized coefficient and IDCT output handling without truncating
   internal precision.
-  Status: initial scalar full-image and non-scaled ROI grayscale `Gray16` paths
-  have landed for SOF1 12-bit streams without restart markers.
+  Status: initial scalar full-image and non-scaled ROI grayscale `Gray16` and
+  expanded `Rgb16` paths have landed for SOF1 12-bit streams without restart
+  markers.
 - Prefer `Gray16` and `Rgb16` output for native precision.
-  Status: `Gray16` is available for the initial grayscale path; `Rgb16` remains
-  open.
+  Status: `Gray16` and expanded grayscale `Rgb16` are available for the initial
+  grayscale path; multi-component `Rgb16` remains open.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
   Status: 12-bit-to-8-bit output stays unsupported.
@@ -181,7 +183,7 @@ Implementation requirements:
   region-scaled, and broader batch coverage remain open.
 - Update `JpegOutputBuffer` and capability reporting for 16-bit output formats.
   Status: capability reporting marks full-image and non-scaled ROI `Extended12`
-  grayscale `Gray16` CPU-eligible.
+  grayscale `Gray16`/`Rgb16` CPU-eligible.
 
 Metal follow-up candidate:
 
@@ -193,8 +195,8 @@ Exit criteria:
 
 - 12-bit extended sequential CPU decode matches the reference oracle for
   full-image and API-shaped outputs.
-  Status: partially met for the committed all-zero grayscale `Gray16` fixture
-  covering full-image and non-scaled ROI output.
+  Status: partially met for the committed all-zero grayscale fixture covering
+  full-image and non-scaled ROI `Gray16`/`Rgb16` output.
 - 8-bit paths do not share precision state that can corrupt current behavior.
 
 ## Phase B2: 12-Bit Progressive CPU Decode

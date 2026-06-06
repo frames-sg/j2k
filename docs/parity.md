@@ -15,11 +15,11 @@ on a single visual smoke test.
   [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). Initial
   sequential CMYK/YCCK RGB/RGBA CPU coverage and progressive 8-bit
   ROI/scaled/region-scaled CPU coverage have landed. Initial full-image and
-  non-scaled ROI 12-bit extended sequential grayscale `Gray16` coverage has
-  landed, but expanded four-component fixtures, 12-bit RGB/progressive/scaled
-  output, and broader lossless SOF3 precision/color/restart/ROI/scaled support
-  must land CPU parity fixtures and reference outputs before any Metal route is
-  promoted.
+  non-scaled ROI 12-bit extended sequential grayscale `Gray16`/`Rgb16`
+  coverage has landed, but expanded four-component fixtures, 12-bit
+  multi-component RGB/progressive/scaled output, and broader lossless SOF3
+  precision/color/restart/ROI/scaled support must land CPU parity fixtures and
+  reference outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.
