@@ -172,8 +172,9 @@ Stable direct-codec types: `SofKind`, `ColorSpace`, `SamplingFactors`,
 `DctExtractOptions`, `JpegDctImage`, `JpegDctCodingMode`,
 `JpegDctComponent`, `ComponentRowWriter`, `DecodeOutcome`, `Decoder`,
 `JpegView`, `TileBatchError`, `TileBatchOptions`, `TileDecodeJob`,
-`TileScaledDecodeJob`, `TileRegionScaledDecodeJob`, `ScratchPool`, and
-`JpegCodec`.
+`TileScaledDecodeJob`, `TileRegionScaledDecodeJob`, `ScratchPool`,
+`JpegDecodeOp`, `JpegCapabilityRequest`, `JpegBackendEligibility`,
+`JpegCapabilityReport`, and `JpegCodec`.
 
 Stable direct-codec functions and methods: `Decoder::inspect`,
 `Decoder::new`, `Decoder::from_view`, `Decoder::info`, `Decoder::bytes`,
@@ -192,7 +193,9 @@ Stable direct-codec functions and methods: `Decoder::inspect`,
 `decode_tiles_scaled_into`, `decode_tiles_scaled_into_with_options`,
 `decode_tiles_region_scaled_into`,
 `decode_tiles_region_scaled_into_with_options`, `encode_jpeg_baseline`,
-`extract_dct_blocks`, `encode_baseline_dct_image`, and `idct_islow_block`.
+`extract_dct_blocks`, `encode_baseline_dct_image`, `idct_islow_block`,
+`JpegCapabilityReport::inspect`, `JpegCapabilityReport::for_decoder`, and
+`JpegCapabilityReport::metal_resident_rgb8_batch_output`.
 
 Stable Adapter Integration API: `adapter::DeviceComponentPlan`,
 `adapter::DeviceDecodePlan`, `adapter::DeviceBatchSummary`,

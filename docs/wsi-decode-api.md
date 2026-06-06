@@ -150,6 +150,14 @@ Adapters that expose `SurfaceResidency` mark true resident decode separately
 from CPU-staged Metal upload so WSI pipelines do not count upload buffers as GPU
 decode.
 
+For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
+backend eligibility without duplicating marker/table logic in higher layers.
+Use `metal_fast` for broad Metal fast-packet shape support and
+`metal_resident_rgb8_batch_output()` when routing to the current reusable
+caller-owned RGB8 Metal buffer/texture batch APIs. The resident-output query is
+narrower than `metal_fast`: it requires RGB8 output and a full, scaled, or
+region-scaled batch shape supported by those reusable-output APIs.
+
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.
 

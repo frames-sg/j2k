@@ -170,6 +170,71 @@ fn capability_report_keeps_roi_shape_visible_for_statumen_routing() {
 }
 
 #[test]
+fn capability_report_exposes_resident_metal_rgb8_batch_output_eligibility() {
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    let report = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::RegionScaled {
+                roi,
+                scale: Downscale::Quarter,
+            },
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("region-scaled capability report");
+
+    assert!(report.metal_fast.eligible);
+    assert!(report.metal_resident_rgb8_batch_output().eligible);
+}
+
+#[test]
+fn capability_report_distinguishes_metal_fast_shape_from_reusable_rgb8_output() {
+    let gray = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Gray8,
+        },
+    )
+    .expect("gray capability report");
+    let region = JpegCapabilityReport::inspect(
+        BASELINE_420,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Region(Rect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+            }),
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("region capability report");
+
+    assert!(gray.metal_fast.eligible);
+    assert!(!gray.metal_resident_rgb8_batch_output().eligible);
+    assert!(gray
+        .metal_resident_rgb8_batch_output()
+        .reason
+        .expect("gray rejection")
+        .contains("RGB8"));
+
+    assert!(region.metal_fast.eligible);
+    assert!(!region.metal_resident_rgb8_batch_output().eligible);
+    assert!(region
+        .metal_resident_rgb8_batch_output()
+        .reason
+        .expect("region rejection")
+        .contains("full, scaled, or region-scaled"));
+}
+
+#[test]
 fn adapter_device_plan_scan_bytes_keep_terminal_eoi() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let plan = signinum_jpeg::adapter::build_device_plan(&decoder, 4).expect("device plan");

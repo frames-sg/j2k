@@ -110,6 +110,16 @@ impl JpegCapabilityReport {
             metal_fast: metal_fast_eligibility(device, request),
         }
     }
+
+    /// Eligibility for explicit reusable RGB8 Metal batch outputs.
+    ///
+    /// This is narrower than [`Self::metal_fast`]: it describes the current
+    /// caller-owned Metal buffer/texture batch APIs, not every Metal-capable
+    /// surface decode shape.
+    #[must_use]
+    pub fn metal_resident_rgb8_batch_output(&self) -> JpegBackendEligibility {
+        metal_resident_rgb8_batch_output_eligibility(self.device, self.request)
+    }
 }
 
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
@@ -171,4 +181,44 @@ fn metal_fast_eligibility(
             "JPEG Metal fast path requires a fast 4:2:0, 4:2:2, or 4:4:4 packet shape",
         )
     }
+}
+
+fn metal_resident_rgb8_batch_output_eligibility(
+    device: DeviceBatchSummary,
+    request: JpegCapabilityRequest,
+) -> JpegBackendEligibility {
+    if request.fmt != PixelFormat::Rgb8 {
+        return JpegBackendEligibility::rejected(
+            "JPEG Metal reusable resident batch output currently supports RGB8 output only",
+        );
+    }
+    if !(device.matches_fast_420 || device.matches_fast_422 || device.matches_fast_444) {
+        return JpegBackendEligibility::rejected(
+            "JPEG Metal reusable resident batch output requires a fast 4:2:0, 4:2:2, or 4:4:4 packet shape",
+        );
+    }
+
+    match request.op {
+        JpegDecodeOp::Full => JpegBackendEligibility::eligible(),
+        JpegDecodeOp::Scaled(scale) | JpegDecodeOp::RegionScaled { scale, .. }
+            if supports_metal_resident_batch_scale(scale) =>
+        {
+            JpegBackendEligibility::eligible()
+        }
+        JpegDecodeOp::Scaled(_) | JpegDecodeOp::RegionScaled { .. } => {
+            JpegBackendEligibility::rejected(
+                "JPEG Metal reusable resident batch output currently supports half, quarter, or eighth scaling",
+            )
+        }
+        JpegDecodeOp::Region(_) => JpegBackendEligibility::rejected(
+            "JPEG Metal reusable resident batch output currently supports full, scaled, or region-scaled decode shapes",
+        ),
+    }
+}
+
+fn supports_metal_resident_batch_scale(scale: Downscale) -> bool {
+    matches!(
+        scale,
+        Downscale::Half | Downscale::Quarter | Downscale::Eighth
+    )
 }

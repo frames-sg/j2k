@@ -1165,6 +1165,7 @@ pub signinum_jpeg::capabilities::JpegCapabilityReport::request: signinum_jpeg::c
 impl signinum_jpeg::capabilities::JpegCapabilityReport
 pub fn signinum_jpeg::capabilities::JpegCapabilityReport::for_decoder(&signinum_jpeg::decoder::Decoder<'_>, signinum_jpeg::capabilities::JpegCapabilityRequest) -> Self
 pub fn signinum_jpeg::capabilities::JpegCapabilityReport::inspect(&[u8], signinum_jpeg::capabilities::JpegCapabilityRequest) -> core::result::Result<Self, signinum_jpeg::error::JpegError>
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::metal_resident_rgb8_batch_output(&self) -> signinum_jpeg::capabilities::JpegBackendEligibility
 pub struct signinum_jpeg::capabilities::JpegCapabilityRequest
 pub signinum_jpeg::capabilities::JpegCapabilityRequest::fmt: signinum_core::pixel::PixelFormat
 pub signinum_jpeg::capabilities::JpegCapabilityRequest::op: signinum_jpeg::capabilities::JpegDecodeOp
@@ -1960,6 +1961,7 @@ pub signinum_jpeg::JpegCapabilityReport::request: signinum_jpeg::capabilities::J
 impl signinum_jpeg::capabilities::JpegCapabilityReport
 pub fn signinum_jpeg::capabilities::JpegCapabilityReport::for_decoder(&signinum_jpeg::decoder::Decoder<'_>, signinum_jpeg::capabilities::JpegCapabilityRequest) -> Self
 pub fn signinum_jpeg::capabilities::JpegCapabilityReport::inspect(&[u8], signinum_jpeg::capabilities::JpegCapabilityRequest) -> core::result::Result<Self, signinum_jpeg::error::JpegError>
+pub fn signinum_jpeg::capabilities::JpegCapabilityReport::metal_resident_rgb8_batch_output(&self) -> signinum_jpeg::capabilities::JpegBackendEligibility
 pub struct signinum_jpeg::JpegCapabilityRequest
 pub signinum_jpeg::JpegCapabilityRequest::fmt: signinum_core::pixel::PixelFormat
 pub signinum_jpeg::JpegCapabilityRequest::op: signinum_jpeg::capabilities::JpegDecodeOp
