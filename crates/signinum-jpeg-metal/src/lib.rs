@@ -2326,6 +2326,33 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn warm_session_reuses_shared_upload_buffers_for_reusable_output_batches() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
+        let inputs = [BASELINE_420, BASELINE_420];
+
+        compute::reset_jpeg_shared_buffer_allocations_for_test();
+        Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+            .expect("first decode");
+        let allocations_after_first = compute::jpeg_shared_buffer_allocations_for_test();
+
+        Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+            .expect("second decode");
+
+        assert!(
+            allocations_after_first > 0,
+            "first batch should allocate shared upload/status buffers"
+        );
+        assert_eq!(
+            compute::jpeg_shared_buffer_allocations_for_test(),
+            allocations_after_first,
+            "warm session batch should reuse shared upload/status buffers"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn jpeg_device_decode_uses_private_internal_planes() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let mut decoder = Decoder::new(BASELINE_420).expect("decoder");

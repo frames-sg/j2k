@@ -80,6 +80,7 @@ const FAST420_BATCH_TIMING_ENV: &str = "SIGNINUM_JPEG_METAL_FAST420_BATCH_TIMING
 #[cfg(all(target_os = "macos", test))]
 std::thread_local! {
     static JPEG_PRIVATE_BUFFER_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static JPEG_SHARED_BUFFER_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -88,13 +89,39 @@ pub(crate) fn reset_jpeg_private_buffer_allocations_for_test() {
 }
 
 #[cfg(all(target_os = "macos", test))]
+pub(crate) fn reset_jpeg_shared_buffer_allocations_for_test() {
+    JPEG_SHARED_BUFFER_ALLOCATIONS.with(|allocations| allocations.set(0));
+}
+
+#[cfg(all(target_os = "macos", test))]
 pub(crate) fn jpeg_private_buffer_allocations_for_test() -> usize {
     JPEG_PRIVATE_BUFFER_ALLOCATIONS.with(Cell::get)
 }
 
+#[cfg(all(target_os = "macos", test))]
+pub(crate) fn jpeg_shared_buffer_allocations_for_test() -> usize {
+    JPEG_SHARED_BUFFER_ALLOCATIONS.with(Cell::get)
+}
+
 #[cfg(target_os = "macos")]
 fn new_shared_buffer(device: &Device, bytes: usize) -> Buffer {
+    #[cfg(test)]
+    JPEG_SHARED_BUFFER_ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
     device.new_buffer(bytes.max(1) as u64, MTLResourceOptions::StorageModeShared)
+}
+
+#[cfg(target_os = "macos")]
+fn new_shared_buffer_with_data(device: &Device, bytes: &[u8]) -> Buffer {
+    #[cfg(test)]
+    JPEG_SHARED_BUFFER_ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
+    if bytes.is_empty() {
+        return device.new_buffer(1, MTLResourceOptions::StorageModeShared);
+    }
+    device.new_buffer_with_data(
+        bytes.as_ptr().cast(),
+        bytes.len() as u64,
+        MTLResourceOptions::StorageModeShared,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -121,9 +148,17 @@ struct ReusablePrivateBuffer {
 }
 
 #[cfg(target_os = "macos")]
+struct ReusableSharedBuffer {
+    key: &'static str,
+    capacity: usize,
+    buffer: Buffer,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct MetalBatchScratch {
     private_buffers: Vec<ReusablePrivateBuffer>,
+    shared_buffers: Vec<ReusableSharedBuffer>,
 }
 
 #[cfg(target_os = "macos")]
@@ -154,6 +189,62 @@ impl MetalBatchScratch {
             });
         }
         buffer
+    }
+
+    fn shared_buffer_with_bytes(
+        &mut self,
+        device: &Device,
+        key: &'static str,
+        bytes: &[u8],
+    ) -> Buffer {
+        let capacity = bytes.len().max(1);
+        let buffer = if let Some(entry) = self
+            .shared_buffers
+            .iter()
+            .find(|entry| entry.key == key && entry.capacity >= capacity)
+        {
+            entry.buffer.clone()
+        } else {
+            let buffer = new_shared_buffer(device, capacity);
+            if let Some(entry) = self
+                .shared_buffers
+                .iter_mut()
+                .find(|entry| entry.key == key)
+            {
+                entry.capacity = capacity;
+                entry.buffer = buffer.clone();
+            } else {
+                self.shared_buffers.push(ReusableSharedBuffer {
+                    key,
+                    capacity,
+                    buffer: buffer.clone(),
+                });
+            }
+            buffer
+        };
+
+        if !bytes.is_empty() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    buffer.contents().cast::<u8>(),
+                    bytes.len(),
+                );
+            }
+        }
+        buffer
+    }
+
+    fn shared_buffer_with_slice<T>(
+        &mut self,
+        device: &Device,
+        key: &'static str,
+        values: &[T],
+    ) -> Buffer {
+        let bytes = unsafe {
+            core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values))
+        };
+        self.shared_buffer_with_bytes(device, key, bytes)
     }
 }
 
@@ -2154,11 +2245,13 @@ fn restart_offsets_buffer(device: &Device, restart_offsets: &[u32]) -> Result<Bu
             message: "JPEG Metal restart offsets must contain at least one entry".to_string(),
         });
     }
-    Ok(device.new_buffer_with_data(
-        restart_offsets.as_ptr().cast(),
-        size_of_val(restart_offsets) as u64,
-        MTLResourceOptions::StorageModeShared,
-    ))
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            restart_offsets.as_ptr().cast::<u8>(),
+            size_of_val(restart_offsets),
+        )
+    };
+    Ok(new_shared_buffer_with_data(device, bytes))
 }
 
 #[cfg(target_os = "macos")]
@@ -2171,30 +2264,30 @@ fn entropy_checkpoints_buffer(
             message: "JPEG Metal entropy checkpoints must contain at least one entry".to_string(),
         });
     }
-    let checkpoints = entropy_checkpoints
-        .iter()
-        .copied()
-        .map(JpegEntropyCheckpointHost::from)
-        .collect::<Vec<_>>();
-    Ok(device.new_buffer_with_data(
-        checkpoints.as_ptr().cast(),
-        size_of_val(checkpoints.as_slice()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    ))
+    let checkpoints = entropy_checkpoint_hosts(entropy_checkpoints)?;
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            checkpoints.as_ptr().cast::<u8>(),
+            size_of_val(checkpoints.as_slice()),
+        )
+    };
+    Ok(new_shared_buffer_with_data(device, bytes))
 }
 
 #[cfg(target_os = "macos")]
-fn u32_buffer(device: &Device, values: &[u32], label: &str) -> Result<Buffer, Error> {
-    if values.is_empty() {
+fn entropy_checkpoint_hosts(
+    entropy_checkpoints: &[JpegMetalEntropyCheckpointV1],
+) -> Result<Vec<JpegEntropyCheckpointHost>, Error> {
+    if entropy_checkpoints.is_empty() {
         return Err(Error::MetalKernel {
-            message: format!("JPEG Metal {label} buffer must contain at least one entry"),
+            message: "JPEG Metal entropy checkpoints must contain at least one entry".to_string(),
         });
     }
-    Ok(device.new_buffer_with_data(
-        values.as_ptr().cast(),
-        size_of_val(values) as u64,
-        MTLResourceOptions::StorageModeShared,
-    ))
+    Ok(entropy_checkpoints
+        .iter()
+        .copied()
+        .map(JpegEntropyCheckpointHost::from)
+        .collect::<Vec<_>>())
 }
 
 #[cfg(target_os = "macos")]
@@ -2281,11 +2374,13 @@ fn entropy_decode_thread_count(
 #[cfg(target_os = "macos")]
 fn decode_status_buffer(device: &Device, count: u32) -> Buffer {
     let statuses = vec![JpegDecodeStatus::default(); count as usize];
-    device.new_buffer_with_data(
-        statuses.as_ptr().cast(),
-        size_of_val(statuses.as_slice()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    )
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            statuses.as_ptr().cast::<u8>(),
+            size_of_val(statuses.as_slice()),
+        )
+    };
+    new_shared_buffer_with_data(device, bytes)
 }
 
 #[cfg(target_os = "macos")]
@@ -4687,8 +4782,19 @@ struct BatchEntropyBuffers {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct BatchEntropyBufferKeys {
+    payload: &'static str,
+    offsets: &'static str,
+    lens: &'static str,
+    checkpoints: &'static str,
+}
+
+#[cfg(target_os = "macos")]
 fn batch_entropy_buffers<'a>(
     runtime: &MetalRuntime,
+    scratch: &mut MetalBatchScratch,
+    keys: BatchEntropyBufferKeys,
     entropy_bytes_iter: impl Iterator<Item = &'a [u8]> + Clone,
     entropy_checkpoints_iter: impl Iterator<Item = &'a [JpegMetalEntropyCheckpointV1]> + Clone,
     tile_count: usize,
@@ -4722,24 +4828,16 @@ fn batch_entropy_buffers<'a>(
         entropy_checkpoints.extend(checkpoints.iter().copied());
     }
 
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        entropy_bytes.as_ptr().cast(),
-        entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let checkpoints = entropy_checkpoint_hosts(&entropy_checkpoints)?;
     Ok(Some(BatchEntropyBuffers {
-        payload: entropy_buffer,
-        offsets: u32_buffer(
+        payload: scratch.shared_buffer_with_bytes(&runtime.device, keys.payload, &entropy_bytes),
+        offsets: scratch.shared_buffer_with_slice(&runtime.device, keys.offsets, &entropy_offsets),
+        lens: scratch.shared_buffer_with_slice(&runtime.device, keys.lens, &entropy_lens),
+        checkpoints: scratch.shared_buffer_with_slice(
             &runtime.device,
-            &entropy_offsets,
-            "region scaled batch entropy offsets",
-        )?,
-        lens: u32_buffer(
-            &runtime.device,
-            &entropy_lens,
-            "region scaled batch entropy lengths",
-        )?,
-        checkpoints: entropy_checkpoints_buffer(&runtime.device, &entropy_checkpoints)?,
+            keys.checkpoints,
+            &checkpoints,
+        ),
     }))
 }
 
@@ -5147,17 +5245,30 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
         out_stride,
         out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        entropy_bytes.as_ptr().cast(),
-        entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let checkpoint_hosts = entropy_checkpoint_hosts(&entropy_checkpoints)?;
+    let status_buffer =
+        batch_scratch.shared_buffer_with_slice(&runtime.device, "fast420_full_status", &statuses);
+    let entropy_buffer = batch_scratch.shared_buffer_with_bytes(
+        &runtime.device,
+        "fast420_full_entropy",
+        &entropy_bytes,
     );
-    let entropy_offsets_buffer =
-        u32_buffer(&runtime.device, &entropy_offsets, "batch entropy offsets")?;
-    let entropy_lens_buffer = u32_buffer(&runtime.device, &entropy_lens, "batch entropy lengths")?;
-    let entropy_checkpoints_buffer =
-        entropy_checkpoints_buffer(&runtime.device, &entropy_checkpoints)?;
+    let entropy_offsets_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast420_full_entropy_offsets",
+        &entropy_offsets,
+    );
+    let entropy_lens_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast420_full_entropy_lens",
+        &entropy_lens,
+    );
+    let entropy_checkpoints_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast420_full_entropy_checkpoints",
+        &checkpoint_hosts,
+    );
     if timing_enabled {
         timing.buffer_alloc = timing_buffer_start
             .expect("timing start is set when timing is enabled")
@@ -5607,17 +5718,30 @@ fn try_decode_fast422_full_rgb_batch_to_surfaces_with_output(
         out_stride,
         out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
-    let entropy_buffer = runtime.device.new_buffer_with_data(
-        entropy_bytes.as_ptr().cast(),
-        entropy_bytes.len() as u64,
-        MTLResourceOptions::StorageModeShared,
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let checkpoint_hosts = entropy_checkpoint_hosts(&entropy_checkpoints)?;
+    let status_buffer =
+        batch_scratch.shared_buffer_with_slice(&runtime.device, "fast422_full_status", &statuses);
+    let entropy_buffer = batch_scratch.shared_buffer_with_bytes(
+        &runtime.device,
+        "fast422_full_entropy",
+        &entropy_bytes,
     );
-    let entropy_offsets_buffer =
-        u32_buffer(&runtime.device, &entropy_offsets, "batch entropy offsets")?;
-    let entropy_lens_buffer = u32_buffer(&runtime.device, &entropy_lens, "batch entropy lengths")?;
-    let entropy_checkpoints_buffer =
-        entropy_checkpoints_buffer(&runtime.device, &entropy_checkpoints)?;
+    let entropy_offsets_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast422_full_entropy_offsets",
+        &entropy_offsets,
+    );
+    let entropy_lens_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast422_full_entropy_lens",
+        &entropy_lens,
+    );
+    let entropy_checkpoints_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast422_full_entropy_checkpoints",
+        &checkpoint_hosts,
+    );
 
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
@@ -5871,8 +5995,16 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
         out_format: OUT_RGB,
     };
 
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast444_full_entropy",
+            offsets: "fast444_full_entropy_offsets",
+            lens: "fast444_full_entropy_lens",
+            checkpoints: "fast444_full_entropy_checkpoints",
+        },
         fast444_packets
             .iter()
             .map(|(packet, _)| packet.entropy_bytes.as_slice()),
@@ -5886,7 +6018,6 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let y_plane =
         batch_scratch.private_buffer(&runtime.device, "fast444_full_y", plane_len * tile_count);
     let cb_plane =
@@ -5901,7 +6032,9 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
         out_stride,
         out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer =
+        batch_scratch.shared_buffer_with_slice(&runtime.device, "fast444_full_status", &statuses);
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
         PreparedHuffmanHost::from(&first.cb_dc_table),
@@ -6169,8 +6302,16 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
         out_format: OUT_RGB,
     };
 
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast444_region_scaled_entropy",
+            offsets: "fast444_region_scaled_entropy_offsets",
+            lens: "fast444_region_scaled_entropy_lens",
+            checkpoints: "fast444_region_scaled_entropy_checkpoints",
+        },
         fast444_packets
             .iter()
             .map(|(packet, _)| packet.entropy_bytes.as_slice()),
@@ -6184,7 +6325,6 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let y_plane = batch_scratch.private_buffer(
         &runtime.device,
         "fast444_region_scaled_y",
@@ -6211,7 +6351,12 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
         out_stride,
         out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast444_region_scaled_status",
+        &statuses,
+    );
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
         PreparedHuffmanHost::from(&first.cb_dc_table),
@@ -6444,8 +6589,16 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
         }
     }
 
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast420_region_scaled_entropy",
+            offsets: "fast420_region_scaled_entropy_offsets",
+            lens: "fast420_region_scaled_entropy_lens",
+            checkpoints: "fast420_region_scaled_entropy_checkpoints",
+        },
         fast420_packets
             .iter()
             .map(|packet| packet.entropy_bytes.as_slice()),
@@ -6459,7 +6612,6 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let y_plane = batch_scratch.private_buffer(
         &runtime.device,
         "fast420_region_scaled_y",
@@ -6483,7 +6635,12 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
         first_plan.pack_params.out_stride as usize,
         first_plan.out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast420_region_scaled_status",
+        &statuses,
+    );
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
         PreparedHuffmanHost::from(&first.cb_dc_table),
@@ -6709,8 +6866,16 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
         }
     }
 
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast422_region_scaled_entropy",
+            offsets: "fast422_region_scaled_entropy_offsets",
+            lens: "fast422_region_scaled_entropy_lens",
+            checkpoints: "fast422_region_scaled_entropy_checkpoints",
+        },
         fast422_packets
             .iter()
             .map(|packet| packet.entropy_bytes.as_slice()),
@@ -6724,7 +6889,6 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let y_plane = batch_scratch.private_buffer(
         &runtime.device,
         "fast422_region_scaled_y",
@@ -6748,7 +6912,12 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
         first_plan.pack_params.out_stride as usize,
         first_plan.out_tile_len,
     )?;
-    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast422_region_scaled_status",
+        &statuses,
+    );
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
         PreparedHuffmanHost::from(&first.cb_dc_table),
