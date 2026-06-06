@@ -367,6 +367,89 @@ impl CudaJpegChunkedEntropyConfig {
     }
 }
 
+/// Device-written state for one entropy subsequence self-sync diagnostic.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CudaJpegEntropySyncState {
+    /// Zero means success; nonzero maps to diagnostic kernel status.
+    pub code: u32,
+    /// Subsequence start bit offset.
+    pub start_bit: u32,
+    /// Subsequence exclusive end bit offset.
+    pub end_bit: u32,
+    /// Decoder bit position after scanning this subsequence.
+    pub bit_pos: u32,
+    /// Decoded coefficient-slot count.
+    pub symbol_count: u32,
+    /// 4:2:0 block phase: 0..=3 for Y blocks, 4 Cb, 5 Cr.
+    pub block_phase: u32,
+    /// Zig-zag coefficient index inside the current block.
+    pub zigzag_index: u32,
+    /// Reserved for ABI-compatible expansion.
+    pub reserved: u32,
+}
+
+/// Device-written overflow result for adjacent subsequence synchronization.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CudaJpegEntropyOverflowState {
+    /// Zero means success; nonzero maps to diagnostic kernel status.
+    pub code: u32,
+    /// Source subsequence index.
+    pub from_subsequence: u32,
+    /// Target subsequence index.
+    pub to_subsequence: u32,
+    /// Bits scanned after the target subsequence start before synchronization.
+    pub overflow_bits: u32,
+    /// One when synchronization was detected.
+    pub synchronized: u32,
+    /// Reserved for ABI-compatible expansion.
+    pub reserved: [u32; 3],
+}
+
+/// Host-side report returned by experimental JPEG entropy self-sync diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CudaJpegChunkedEntropyReport {
+    /// Diagnostic chunk configuration.
+    pub config: CudaJpegChunkedEntropyConfig,
+    /// Entropy payload length in bytes.
+    pub entropy_bytes: usize,
+    /// Per-subsequence first-pass states.
+    pub states: Vec<CudaJpegEntropySyncState>,
+    /// Per-adjacent-subsequence overflow states.
+    pub overflows: Vec<CudaJpegEntropyOverflowState>,
+    /// Runtime dispatch stats for diagnostic kernels.
+    pub execution: CudaExecutionStats,
+}
+
+impl CudaJpegChunkedEntropyReport {
+    /// Number of subsequences examined.
+    pub fn subsequence_count(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Number of overflow records that synchronized.
+    pub fn synchronized_overflow_count(&self) -> usize {
+        self.overflows
+            .iter()
+            .filter(|overflow| overflow.synchronized != 0)
+            .count()
+    }
+
+    /// Maximum overflow scan length in bits.
+    pub fn max_overflow_bits(&self) -> Option<u32> {
+        self.overflows
+            .iter()
+            .map(|overflow| overflow.overflow_bits)
+            .max()
+    }
+
+    /// Number of first-pass states with nonzero status.
+    pub fn failed_state_count(&self) -> usize {
+        self.states.iter().filter(|state| state.code != 0).count()
+    }
+}
+
 /// Signinum-owned CUDA baseline JPEG RGB8 decode plan.
 #[derive(Debug)]
 pub struct CudaJpegRgb8DecodePlan<'a> {
@@ -12623,8 +12706,9 @@ mod tests {
         CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
         CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
         CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
-        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig, CudaKernelName,
-        CudaQueuedHtj2kCleanup,
+        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig,
+        CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState, CudaJpegEntropySyncState,
+        CudaKernelName, CudaQueuedHtj2kCleanup,
     };
 
     fn cuda_runtime_required() -> bool {
@@ -12670,6 +12754,59 @@ mod tests {
 
         assert!(config.validate().is_err());
         assert!(config.subsequence_count_for_entropy_bytes(1).is_err());
+    }
+
+    #[test]
+    fn jpeg_chunked_entropy_report_summarizes_sync_quality() {
+        let report = CudaJpegChunkedEntropyReport {
+            config: CudaJpegChunkedEntropyConfig {
+                subsequence_words: 4,
+                sequence_len: 8,
+                max_overflow_subsequences: 2,
+            },
+            entropy_bytes: 4096,
+            states: vec![
+                CudaJpegEntropySyncState {
+                    code: 0,
+                    start_bit: 0,
+                    end_bit: 128,
+                    bit_pos: 128,
+                    symbol_count: 10,
+                    block_phase: 0,
+                    zigzag_index: 0,
+                    reserved: 0,
+                },
+                CudaJpegEntropySyncState {
+                    code: 0,
+                    start_bit: 128,
+                    end_bit: 256,
+                    bit_pos: 256,
+                    symbol_count: 9,
+                    block_phase: 3,
+                    zigzag_index: 12,
+                    reserved: 0,
+                },
+            ],
+            overflows: vec![CudaJpegEntropyOverflowState {
+                code: 0,
+                from_subsequence: 0,
+                to_subsequence: 1,
+                overflow_bits: 96,
+                synchronized: 1,
+                reserved: [0; 3],
+            }],
+            execution: CudaExecutionStats {
+                kernel_dispatches: 2,
+                copy_kernel_dispatches: 0,
+                decode_kernel_dispatches: 0,
+                hardware_decode: false,
+            },
+        };
+
+        assert_eq!(report.subsequence_count(), 2);
+        assert_eq!(report.synchronized_overflow_count(), 1);
+        assert_eq!(report.max_overflow_bits(), Some(96));
+        assert_eq!(report.failed_state_count(), 0);
     }
 
     #[test]

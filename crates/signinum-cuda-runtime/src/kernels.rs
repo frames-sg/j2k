@@ -47,6 +47,10 @@ pub(crate) enum CudaKernel {
     JpegDecodeFast422Rgb8,
     #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
     JpegDecodeFast444Rgb8,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegEntropySync420,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegEntropyOverflow420,
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
@@ -133,7 +137,9 @@ impl CudaKernel {
             | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
             Self::JpegDecodeFast420Rgb8
             | Self::JpegDecodeFast422Rgb8
-            | Self::JpegDecodeFast444Rgb8 => JPEG_DECODE_PTX,
+            | Self::JpegDecodeFast444Rgb8
+            | Self::JpegEntropySync420
+            | Self::JpegEntropyOverflow420 => JPEG_DECODE_PTX,
             Self::TranscodeReversible53Idct
             | Self::TranscodeReversible53VerticalLow
             | Self::TranscodeReversible53VerticalHigh
@@ -216,6 +222,8 @@ impl CudaKernel {
             Self::JpegDecodeFast420Rgb8 => b"signinum_jpeg_decode_fast420_rgb8\0",
             Self::JpegDecodeFast422Rgb8 => b"signinum_jpeg_decode_fast422_rgb8\0",
             Self::JpegDecodeFast444Rgb8 => b"signinum_jpeg_decode_fast444_rgb8\0",
+            Self::JpegEntropySync420 => b"signinum_jpeg_entropy_sync420\0",
+            Self::JpegEntropyOverflow420 => b"signinum_jpeg_entropy_overflow420\0",
             Self::J2kInverseDwtSingle => b"signinum_j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"signinum_j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"signinum_j2k_store_gray16\0",
