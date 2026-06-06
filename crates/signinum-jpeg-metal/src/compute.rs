@@ -5966,6 +5966,33 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime, requests, packets, None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     if requests.len() < 2
         || requests
             .iter()
@@ -6098,10 +6125,17 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces(
     let y_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
     let cb_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
     let cr_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
-    let out_buffer = runtime.device.new_buffer(
-        (out_tile_len * tile_count) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        (
+            first_decode_params.scaled_width,
+            first_decode_params.scaled_height,
+        ),
+        tile_count,
+        out_stride,
+        out_tile_len,
+    )?;
     let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
@@ -6235,6 +6269,33 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime, requests, packets, None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     if requests.len() < 2
         || requests
             .iter()
@@ -6325,10 +6386,14 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces(
     let y_plane = new_private_buffer(&runtime.device, first_plan.y_len * tile_count);
     let cb_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
     let cr_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
-    let out_buffer = runtime.device.new_buffer(
-        (first_plan.out_tile_len * tile_count) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        first_plan.out_dims,
+        tile_count,
+        first_plan.pack_params.out_stride as usize,
+        first_plan.out_tile_len,
+    )?;
     let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
@@ -6455,6 +6520,33 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
     packets: &[BatchedFastPacket<'_>],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime, requests, packets, None,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     if requests.len() < 2
         || requests
             .iter()
@@ -6545,10 +6637,14 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces(
     let y_plane = new_private_buffer(&runtime.device, first_plan.y_len * tile_count);
     let cb_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
     let cr_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
-    let out_buffer = runtime.device.new_buffer(
-        (first_plan.out_tile_len * tile_count) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        first_plan.out_dims,
+        tile_count,
+        first_plan.pack_params.out_stride as usize,
+        first_plan.out_tile_len,
+    )?;
     let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
     let dc_tables = [
         PreparedHuffmanHost::from(&first.y_dc_table),
@@ -6851,6 +6947,49 @@ fn decode_full_rgb8_batch_into_output_with_runtime(
         return Ok(Some(results));
     }
     if let Some(results) = try_decode_fast444_full_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
+
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_region_scaled_rgb8_batch_into_output_with_session(
+    requests: &[batch::QueuedRequest],
+    output: &crate::MetalBatchOutputBuffer,
+    session: &crate::MetalBackendSession,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    let Some(packets) = batched_fast_packets(requests)? else {
+        return Ok(None);
+    };
+
+    with_runtime_for_session(session, |runtime| {
+        decode_region_scaled_rgb8_batch_into_output_with_runtime(
+            runtime, requests, &packets, output,
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_region_scaled_rgb8_batch_into_output_with_runtime(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(results) = try_decode_fast444_region_scaled_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
+    if let Some(results) = try_decode_fast420_region_scaled_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
+    if let Some(results) = try_decode_fast422_region_scaled_rgb_batch_to_surfaces_into_output(
         runtime, requests, packets, output,
     )? {
         return Ok(Some(results));
