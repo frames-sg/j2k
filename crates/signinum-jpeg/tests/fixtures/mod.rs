@@ -35,6 +35,124 @@ pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+pub(crate) const LOSSLESS_GRAYSCALE_3X3_PIXELS: [u8; 9] =
+    [130, 132, 136, 128, 135, 142, 125, 137, 150];
+
+/// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
+pub(crate) fn lossless_predictor_grayscale_3x3_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_grayscale_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_3X3_PIXELS)
+}
+
+fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
+    assert_eq!(samples.len(), usize::from(width) * usize::from(height));
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 11, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[1, 1, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, predictor, 0, 0]);
+    bytes.extend(lossless_entropy(width, predictor, samples));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn lossless_entropy(width: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
+    let width = usize::from(width);
+    let mut bits = Vec::new();
+    for (idx, &sample) in samples.iter().enumerate() {
+        let x = idx % width;
+        let y = idx / width;
+        let predicted = lossless_predicted_value(samples, width, x, y, predictor);
+        let diff = i32::from(sample) - predicted;
+        let category = lossless_diff_category(diff);
+        push_bits(&mut bits, u32::from(category), 4);
+        if category != 0 {
+            push_bits(&mut bits, lossless_magnitude_bits(diff, category), category);
+        }
+    }
+    pack_entropy_bits(bits)
+}
+
+fn lossless_predicted_value(
+    samples: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    predictor: u8,
+) -> i32 {
+    let idx = y * width + x;
+    if x == 0 && y == 0 {
+        return 128;
+    }
+    if y == 0 {
+        return i32::from(samples[idx - 1]);
+    }
+    if x == 0 {
+        return i32::from(samples[idx - width]);
+    }
+
+    let ra = i32::from(samples[idx - 1]);
+    let rb = i32::from(samples[idx - width]);
+    let rc = i32::from(samples[idx - width - 1]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 128,
+    }
+}
+
+fn lossless_diff_category(diff: i32) -> u8 {
+    if diff == 0 {
+        return 0;
+    }
+    let magnitude = diff.unsigned_abs();
+    (32 - magnitude.leading_zeros()) as u8
+}
+
+fn lossless_magnitude_bits(diff: i32, category: u8) -> u32 {
+    if diff >= 0 {
+        return diff as u32;
+    }
+    (diff + ((1i32 << category) - 1)) as u32
+}
+
+fn push_bits(bits: &mut Vec<bool>, value: u32, count: u8) {
+    for bit in (0..count).rev() {
+        bits.push(((value >> bit) & 1) != 0);
+    }
+}
+
+fn pack_entropy_bits(mut bits: Vec<bool>) -> Vec<u8> {
+    while bits.len() % 8 != 0 {
+        bits.push(true);
+    }
+    let mut out = Vec::new();
+    for chunk in bits.chunks_exact(8) {
+        let mut byte = 0u8;
+        for &bit in chunk {
+            byte = (byte << 1) | u8::from(bit);
+        }
+        out.push(byte);
+        if byte == 0xff {
+            out.push(0x00);
+        }
+    }
+    out
+}
+
 /// An 8x8 Adobe APP14 CMYK JPEG whose four decoded channels are all 128.
 pub(crate) fn cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(0))

@@ -161,6 +161,16 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 "JPEG CPU decode does not yet support this 12-bit JPEG output",
             )
         }
+        SofKind::Lossless
+            if request.op == JpegDecodeOp::Full && request.fmt == PixelFormat::Gray8 =>
+        {
+            if info.color_space == ColorSpace::Grayscale && info.bit_depth == 8 {
+                return JpegBackendEligibility::eligible();
+            }
+            return JpegBackendEligibility::rejected(
+                "JPEG CPU lossless SOF3 decode currently supports 8-bit grayscale Gray8 only",
+            );
+        }
         SofKind::Lossless => {
             return JpegBackendEligibility::rejected(
                 "JPEG CPU decode does not yet support lossless SOF3 JPEG",
@@ -283,10 +293,8 @@ fn supports_metal_resident_batch_scale(scale: Downscale) -> bool {
 }
 
 fn can_report_from_parsed_info(err: &JpegError) -> bool {
-    matches!(
-        err,
-        JpegError::NotImplemented { .. } | JpegError::UnsupportedColorSpace { .. }
-    )
+    matches!(err, JpegError::NotImplemented { sof } if *sof != SofKind::Lossless)
+        || matches!(err, JpegError::UnsupportedColorSpace { .. })
 }
 
 fn unavailable_device_summary(info: &Info) -> DeviceBatchSummary {

@@ -257,7 +257,9 @@ full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
 assembly followed by output projection. Initial 12-bit extended sequential
 grayscale full-image decode writes native `Gray16` samples. Expanded
 four-component coverage, broader 12-bit RGB/progressive/ROI/scaled support,
-and lossless SOF3 remain separate CPU parity work. Splitting the module is
+and broader lossless SOF3 precision/color/restart/ROI/scaled support remain
+separate CPU parity work. Initial SOF3 8-bit grayscale full-image decode for
+predictors 1-7 is implemented as a non-DCT predictor path. Splitting the module is
 planned but gated on stable benchmark and parity coverage.
 
 J2K parses boxes (COD, QCD, QCC, etc.) and codestream structure on CPU, then
@@ -469,9 +471,10 @@ provisional and check the most recent commits before relying on it.
   conversion and progressive 8-bit ROI/scaled CPU output projection have
   landed. Initial 12-bit extended sequential grayscale `Gray16` full-image
   decode has landed, while expanded four-component coverage, broader 12-bit
-  extended/progressive support, and lossless SOF3 remain active parity work.
-  Metal acceleration for those classes is gated on parity and measured
-  resident wins.
+  extended/progressive support, and broader lossless SOF3 precision/color/
+  restart/ROI/scaled support remain active parity work. Initial SOF3 8-bit
+  grayscale full-image decode for predictors 1-7 has landed. Metal acceleration
+  for those classes is gated on parity and measured resident wins.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.
 - Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode` and
   stage accelerators in `signinum-transcode-metal`. These crates remain

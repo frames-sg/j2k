@@ -16,7 +16,7 @@ use crate::entropy::sequential::{
     decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
     stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
 };
-use crate::error::{JpegError, MarkerKind, Warning};
+use crate::error::{HuffmanFailure, JpegError, MarkerKind, Warning};
 use crate::info::{
     ColorSpace, DecodeOptions, DownscaleFactor, Info, OutputFormat, Rect, RestartIndex,
     RestartSegment, SofKind,
@@ -240,7 +240,16 @@ pub struct Decoder<'a> {
     pub(crate) backend: Backend,
     pub(crate) plan: PreparedDecodePlan,
     pub(crate) progressive_plan: Option<PreparedProgressivePlan>,
+    lossless_plan: Option<PreparedLosslessPlan>,
     pub(crate) cpu_entropy_checkpoints: Mutex<CpuCheckpointCache>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedLosslessPlan {
+    predictor: u8,
+    dc_table: Arc<HuffmanTable>,
+    dimensions: (u32, u32),
+    scan_offset: usize,
 }
 
 impl<'a> Decoder<'a> {
@@ -281,7 +290,8 @@ impl<'a> Decoder<'a> {
     /// # Errors
     /// - Any parse error encountered before SOS (see [`Self::inspect`]).
     /// - [`JpegError::NotImplemented`] for SOFs that parse but are not yet
-    ///   decodable (Extended12, Progressive12, Lossless).
+    ///   decodable for the requested shape (for example Progressive12 or
+    ///   unsupported Lossless predictors).
     /// - [`JpegError::MissingHuffmanTable`] if the scan references a DC/AC
     ///   table slot that was never defined by a DHT segment.
     pub fn new(input: &'a [u8]) -> Result<Self, JpegError> {
@@ -306,27 +316,48 @@ impl<'a> Decoder<'a> {
             options,
         } = view;
         let backend = Backend::detect();
-        let (info, warnings, plan, progressive_plan) = if info.sof_kind == SofKind::Progressive8 {
-            let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
-            let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
-            (
-                info,
-                Arc::<[Warning]>::from(header.warnings.as_slice()),
-                plan,
-                Some(progressive_plan),
-            )
-        } else if options == DecodeOptions::default() {
-            if let Some(scan_offset) = header.sos_offset {
-                let header_prefix = &bytes[..scan_offset];
-                let (info, warnings, plan) = ctx.resolve_decode_plan(header_prefix, |ctx| {
+        let (info, warnings, plan, progressive_plan, lossless_plan) =
+            if info.sof_kind == SofKind::Progressive8 {
+                let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
+                let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
+                (
+                    info,
+                    Arc::<[Warning]>::from(header.warnings.as_slice()),
+                    plan,
+                    Some(progressive_plan),
+                    None,
+                )
+            } else if info.sof_kind == SofKind::Lossless {
+                let (plan, lossless_plan) = Self::build_lossless_plan(&header, &info, ctx)?;
+                (
+                    info,
+                    Arc::<[Warning]>::from(header.warnings.as_slice()),
+                    plan,
+                    None,
+                    Some(lossless_plan),
+                )
+            } else if options == DecodeOptions::default() {
+                if let Some(scan_offset) = header.sos_offset {
+                    let header_prefix = &bytes[..scan_offset];
+                    let (info, warnings, plan) = ctx.resolve_decode_plan(header_prefix, |ctx| {
+                        let plan = Self::build_prepared_plan(&header, &info, ctx)?;
+                        Ok((
+                            info.clone(),
+                            Arc::<[Warning]>::from(header.warnings.as_slice()),
+                            plan,
+                        ))
+                    })?;
+                    (info, warnings, plan, None, None)
+                } else {
                     let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-                    Ok((
-                        info.clone(),
+                    (
+                        info,
                         Arc::<[Warning]>::from(header.warnings.as_slice()),
                         plan,
-                    ))
-                })?;
-                (info, warnings, plan, None)
+                        None,
+                        None,
+                    )
+                }
             } else {
                 let plan = Self::build_prepared_plan(&header, &info, ctx)?;
                 (
@@ -334,17 +365,9 @@ impl<'a> Decoder<'a> {
                     Arc::<[Warning]>::from(header.warnings.as_slice()),
                     plan,
                     None,
+                    None,
                 )
-            }
-        } else {
-            let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-            (
-                info,
-                Arc::<[Warning]>::from(header.warnings.as_slice()),
-                plan,
-                None,
-            )
-        };
+            };
         Ok(Self {
             bytes,
             info,
@@ -352,6 +375,7 @@ impl<'a> Decoder<'a> {
             backend,
             plan,
             progressive_plan,
+            lossless_plan,
             cpu_entropy_checkpoints: Mutex::new(CpuCheckpointCache::default()),
         })
     }
@@ -435,6 +459,88 @@ impl<'a> Decoder<'a> {
         }
 
         build_decode_plan(header, info, &dc_tables, &ac_tables, ctx)
+    }
+
+    fn build_lossless_plan(
+        header: &ParsedHeader,
+        info: &Info,
+        ctx: &mut DecoderContext,
+    ) -> Result<(PreparedDecodePlan, PreparedLosslessPlan), JpegError> {
+        if info.sof_kind != SofKind::Lossless {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
+        }
+        if info.bit_depth != 8 || info.color_space != ColorSpace::Grayscale {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
+        }
+        if header.scan_count != 1 || header.restart_interval.is_some() {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
+        }
+        let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
+            marker: MarkerKind::Sos,
+        })?;
+        if scan.components.len() != 1 {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: scan.components.len() as u8,
+            });
+        }
+        if !(1..=7).contains(&scan.ss) {
+            return Err(JpegError::UnsupportedPredictor { predictor: scan.ss });
+        }
+        if scan.se != 0 || scan.ah != 0 || scan.al != 0 {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
+        }
+        let scan_component = scan.components[0];
+        let component_index = find_component_index(&header.component_ids, scan_component.id)
+            .ok_or(JpegError::UnknownScanComponent {
+                offset: header.sos_offset.unwrap_or_default(),
+                component: scan_component.id,
+            })?;
+        let (h, v) =
+            header
+                .sampling
+                .component(component_index)
+                .ok_or(JpegError::MissingMarker {
+                    marker: MarkerKind::Sof,
+                })?;
+        let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
+            .as_ref()
+            .ok_or(JpegError::MissingHuffmanTable {
+                component: scan_component.id,
+                class: 0,
+                id: scan_component.dc_table,
+            })?;
+        let dc_table = ctx.resolve_huffman_table(raw_dc)?;
+        let empty_raw = RawHuffmanTable {
+            bits: [0; 16],
+            values: HuffmanValues::default(),
+        };
+        let empty_huffman = ctx.resolve_huffman_table(&empty_raw)?;
+        let component = PreparedComponentPlan {
+            h,
+            v,
+            output_index: component_index,
+            quant: ctx.resolve_quant_table([1; 64]),
+            dc_table: Arc::clone(&dc_table),
+            ac_table: empty_huffman,
+        };
+        let plan = PreparedDecodePlan {
+            components: vec![component],
+            sampling: info.sampling,
+            color_space: info.color_space,
+            restart_interval: header.restart_interval,
+            dimensions: info.dimensions,
+            scan_offset: header.sos_offset.ok_or(JpegError::MissingMarker {
+                marker: MarkerKind::Sos,
+            })?,
+            scratch_bytes: 0,
+        };
+        let lossless = PreparedLosslessPlan {
+            predictor: scan.ss,
+            dc_table,
+            dimensions: info.dimensions,
+            scan_offset: plan.scan_offset,
+        };
+        Ok((plan, lossless))
     }
 
     fn build_progressive_plan(
@@ -805,6 +911,14 @@ impl<'a> Decoder<'a> {
                 )
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    if fmt == OutputFormat::Gray8 {
+                        return self.decode_lossless_gray8_into(out, stride);
+                    }
+                    return Err(JpegError::NotImplemented {
+                        sof: self.info.sof_kind,
+                    });
+                }
                 let mut writer = Gray8Writer::new(out, stride, w);
                 self.decode_with_writer(
                     pool,
@@ -1131,6 +1245,11 @@ impl<'a> Decoder<'a> {
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    return Err(JpegError::NotImplemented {
+                        sof: self.info.sof_kind,
+                    });
+                }
                 let base = Gray8Writer::new(out, stride, scaled_roi.w);
                 let (source_x0, source_width) =
                     self.source_window_for_output_rect(downscale, scaled_roi);
@@ -1819,6 +1938,48 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_lossless_gray8_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if !(1..=7).contains(&plan.predictor) {
+            return Err(JpegError::UnsupportedPredictor {
+                predictor: plan.predictor,
+            });
+        }
+
+        let (width, height) = plan.dimensions;
+        let scan_bytes = &self.bytes[plan.scan_offset..];
+        let mut br = BitReader::new(scan_bytes);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let predictor = lossless_predictor_value(plan.predictor, out, stride, x, y);
+                let diff = plan.dc_table.decode_fast_dc(&mut br)?;
+                let sample = predictor + diff;
+                if !(0..=255).contains(&sample) {
+                    return Err(JpegError::HuffmanDecode {
+                        mcu: 0,
+                        reason: HuffmanFailure::InvalidSymbol,
+                    });
+                }
+                out[y * stride + x] = sample as u8;
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
     fn decode_extended12_gray16_into(
         &self,
         out: &mut [u8],
@@ -2057,6 +2218,34 @@ fn emit_decode_scan_profile(
     );
 }
 
+fn lossless_predictor_value(predictor: u8, out: &[u8], stride: usize, x: usize, y: usize) -> i32 {
+    if x == 0 && y == 0 {
+        return 128;
+    }
+    if y == 0 {
+        return i32::from(out[x - 1]);
+    }
+    if x == 0 {
+        return i32::from(out[(y - 1) * stride]);
+    }
+
+    let row = y * stride;
+    let prev_row = (y - 1) * stride;
+    let ra = i32::from(out[row + x - 1]);
+    let rb = i32::from(out[prev_row + x]);
+    let rc = i32::from(out[prev_row + x - 1]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 128,
+    }
+}
+
 fn merged_warnings(header_warnings: &[Warning], scan_warnings: Vec<Warning>) -> Vec<Warning> {
     if header_warnings.is_empty() {
         return scan_warnings;
@@ -2111,6 +2300,13 @@ fn output_format_from_parts(
                 Err(JpegError::NotImplemented { sof: sof_kind })
             }
             _ => Err(JpegError::UnsupportedBitDepth { depth: 12 }),
+        };
+    }
+    if sof_kind == SofKind::Lossless {
+        return match (fmt, scale) {
+            (PixelFormat::Gray8, Downscale::None) => Ok(OutputFormat::Gray8),
+            (PixelFormat::Gray8, _) => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
+            _ => Err(JpegError::NotImplemented { sof: sof_kind }),
         };
     }
 

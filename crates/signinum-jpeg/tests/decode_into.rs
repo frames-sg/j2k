@@ -7,8 +7,8 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
 mod fixtures;
 use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg,
-    minimal_baseline_420_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
-    ycck_8x8_jpeg,
+    lossless_predictor_grayscale_3x3_jpeg, minimal_baseline_420_jpeg, progressive_8x8_jpeg,
+    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_3X3_PIXELS,
 };
 
 #[test]
@@ -172,6 +172,30 @@ fn decode_into_gray16_accepts_extended12_grayscale_samples() {
     assert_eq!(outcome.decoded, Rect::full((w, h)));
     for sample in buf.chunks_exact(2) {
         assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
+    }
+}
+
+#[test]
+fn decode_into_gray8_accepts_lossless_grayscale_common_predictors() {
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let (w, h) = dec.info().dimensions;
+        let mut buf = vec![0u8; (w * h) as usize];
+
+        let outcome = dec.decode_into(&mut buf, w as usize, PixelFormat::Gray8);
+
+        assert_eq!(
+            outcome
+                .unwrap_or_else(|err| {
+                    panic!("lossless predictor-{predictor} grayscale decode must succeed: {err}")
+                })
+                .decoded,
+            Rect::full((w, h))
+        );
+        assert_eq!(buf, LOSSLESS_GRAYSCALE_3X3_PIXELS, "predictor {predictor}");
     }
 }
 
