@@ -29,9 +29,10 @@ on a single visual smoke test.
   output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
   4:2:2/4:2:0 fixture coverage. Malformed or broader four-component fixtures,
   other 12-bit subsampled color output, stronger non-constant 12-bit oracle
-  fixtures, and other lossless
+  fixtures, 12-bit CMYK/YCCK implementation, and other lossless
   SOF3 16-bit color layouts must land CPU parity fixtures and reference
-  outputs before any Metal route is promoted.
+  outputs before any Metal route is promoted. 12-bit extended CMYK/YCCK is
+  currently covered by structured not-implemented/capability rejection tests.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.

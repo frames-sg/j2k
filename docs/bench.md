@@ -727,8 +727,9 @@ Current v1 scope is explicit:
   streaming and 16-bit SOF3 grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16`
   row streaming are also CPU-backed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
   fixture coverage is CPU-backed; malformed or broader four-component
-  coverage, other 12-bit subsampled color support, stronger non-constant
-  12-bit oracle fixtures, and other SOF3 16-bit color layouts stay structured
+  coverage, 12-bit CMYK/YCCK implementation, other 12-bit subsampled color
+  support, stronger non-constant 12-bit oracle fixtures, and other SOF3
+  16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
   The coalesced benchmark

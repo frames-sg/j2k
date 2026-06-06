@@ -193,6 +193,9 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 (ColorSpace::Rgb, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4 sampling only",
                 ),
+                (ColorSpace::Cmyk | ColorSpace::Ycck, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit four-component CMYK/YCCK decode is not implemented yet",
+                ),
                 _ => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
                 ),
@@ -244,6 +247,9 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 ),
                 (ColorSpace::Rgb, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit progressive RGB decode currently supports 4:4:4 sampling only",
+                ),
+                (ColorSpace::Cmyk | ColorSpace::Ycck, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit four-component CMYK/YCCK decode is not implemented yet",
                 ),
                 _ => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",

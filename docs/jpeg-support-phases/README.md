@@ -33,7 +33,8 @@ unsupported errors until a separate entropy and conformance plan exists.
   and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled CPU
   decode to `Rgb16`/`Rgba16`, including restart-coded color streams; other
   12-bit subsampled color support and stronger non-constant 12-bit oracle
-  fixtures remain open
+  fixtures remain open, with 12-bit extended CMYK/YCCK now covered by
+  structured not-implemented/capability rejection tests
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
@@ -258,7 +259,8 @@ Implementation requirements:
   the initial grayscale path, including restart-coded streams, and direct
   APP14 RGB 4:4:4 plus YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` is available
   for the initial color path, including restart-coded color streams; other
-  12-bit subsampled color remains open.
+  12-bit subsampled color remains open. 12-bit extended CMYK/YCCK is parsed
+  but explicitly reported as an unimplemented four-component precision shape.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
   Status: 12-bit-to-8-bit output stays unsupported.

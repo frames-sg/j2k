@@ -2,12 +2,13 @@
 
 //! Integration tests for `Decoder::decode_into`.
 
-use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
+use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect, SofKind};
 
 mod fixtures;
 use fixtures::{
-    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg,
-    extended_12bit_grayscale_restart_16x8_jpeg, four_component_16x16_rgb, four_component_16x8_rgb,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
+    extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
+    extended_12bit_ycck_8x8_jpeg, four_component_16x16_rgb, four_component_16x8_rgb,
     four_component_8x8_rgb, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
     lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
     lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
@@ -3030,6 +3031,29 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
             assert_eq!(&row[..row_bytes], expected_row, "{label}");
             assert_eq!(&row[row_bytes..], &[0xaa; 4], "{label}");
         }
+    }
+}
+
+#[test]
+fn decoder_new_rejects_12bit_cmyk_ycck_as_not_implemented() {
+    for (bytes, label) in [
+        (extended_12bit_cmyk_8x8_jpeg(), "12-bit CMYK"),
+        (extended_12bit_ycck_8x8_jpeg(), "12-bit YCCK"),
+    ] {
+        let err = match Decoder::new(&bytes) {
+            Ok(_) => panic!("{label} decoder should reject construction"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(
+                err,
+                JpegError::NotImplemented {
+                    sof: SofKind::Extended12
+                }
+            ),
+            "{label}: {err}"
+        );
     }
 }
 

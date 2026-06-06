@@ -7,15 +7,16 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
     extended_12bit_grayscale_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
     extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
     extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_422_32x8_jpeg,
     extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
-    extended_12bit_ycbcr_restart_16x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
-    lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_predictor_ycbcr_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    extended_12bit_ycbcr_restart_16x8_jpeg, extended_12bit_ycck_8x8_jpeg,
+    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
@@ -274,6 +275,63 @@ fn capability_report_marks_subsampled_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
                     .reason
                     .expect("Metal rejection reason")
                     .contains("YCbCr"));
+            }
+        }
+    }
+}
+
+#[test]
+fn capability_report_rejects_12bit_four_component_cpu_paths_explicitly() {
+    for (name, input, expected_color) in [
+        (
+            "12-bit CMYK",
+            extended_12bit_cmyk_8x8_jpeg(),
+            ColorSpace::Cmyk,
+        ),
+        (
+            "12-bit YCCK",
+            extended_12bit_ycck_8x8_jpeg(),
+            ColorSpace::Ycck,
+        ),
+    ] {
+        for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16] {
+            for op in [
+                JpegDecodeOp::Full,
+                JpegDecodeOp::Region(Rect {
+                    x: 1,
+                    y: 1,
+                    w: 6,
+                    h: 6,
+                }),
+                JpegDecodeOp::Scaled(Downscale::Half),
+                JpegDecodeOp::RegionScaled {
+                    roi: Rect {
+                        x: 1,
+                        y: 1,
+                        w: 6,
+                        h: 6,
+                    },
+                    scale: Downscale::Half,
+                },
+            ] {
+                let report =
+                    JpegCapabilityReport::inspect(&input, JpegCapabilityRequest { op, fmt })
+                        .unwrap_or_else(|err| {
+                            panic!("capability report should parse {name} metadata: {err}")
+                        });
+
+                assert_eq!(report.info.sof_kind, SofKind::Extended12, "{name}");
+                assert_eq!(report.info.bit_depth, 12, "{name}");
+                assert_eq!(report.info.color_space, expected_color, "{name}");
+                assert_eq!(report.info.sampling.components().len(), 4, "{name}");
+                assert!(!report.cpu.eligible, "{name} {fmt:?} {op:?}");
+                assert!(report
+                    .cpu
+                    .reason
+                    .expect("CPU rejection reason")
+                    .contains("12-bit four-component CMYK/YCCK"));
+                assert!(!report.owned_cuda.eligible, "{name}");
+                assert!(!report.metal_fast.eligible, "{name}");
             }
         }
     }

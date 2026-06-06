@@ -1571,6 +1571,11 @@ pub(crate) fn cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(0))
 }
 
+/// An 8x8 12-bit extended sequential Adobe APP14 CMYK JPEG.
+pub(crate) fn extended_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_8x8_jpeg(Some(0))
+}
+
 /// A 16x8 Adobe APP14 CMYK JPEG with 4:2:2 sampling and all decoded channels 128.
 pub(crate) fn cmyk_16x8_422_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
@@ -1584,6 +1589,11 @@ pub(crate) fn cmyk_16x16_420_jpeg() -> Vec<u8> {
 /// An 8x8 Adobe APP14 YCCK JPEG whose four decoded channels are all 128.
 pub(crate) fn ycck_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(2))
+}
+
+/// An 8x8 12-bit extended sequential Adobe APP14 YCCK JPEG.
+pub(crate) fn extended_12bit_ycck_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_8x8_jpeg(Some(2))
 }
 
 /// A 16x8 Adobe APP14 YCCK JPEG with 4:2:2 sampling and all decoded channels 128.
@@ -1723,6 +1733,17 @@ pub(crate) fn progressive_8x8_jpeg() -> Vec<u8> {
 
 fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
     four_component_constant_jpeg(app14_transform, 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+fn four_component_12bit_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
+    let mut bytes = four_component_8x8_jpeg(app14_transform);
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("four-component fixture has SOF0 marker");
+    bytes[sof + 1] = 0xc1;
+    bytes[sof + 4] = 12;
+    bytes
 }
 
 fn four_component_constant_jpeg(
