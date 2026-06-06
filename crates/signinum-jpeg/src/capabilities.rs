@@ -159,6 +159,16 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
             }
             return JpegBackendEligibility::eligible();
         }
+        SofKind::Progressive12
+            if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) =>
+        {
+            if info.color_space != ColorSpace::Grayscale {
+                return JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16 only",
+                );
+            }
+            return JpegBackendEligibility::eligible();
+        }
         SofKind::Extended12 | SofKind::Progressive12 => {
             return JpegBackendEligibility::rejected(
                 "JPEG CPU decode does not yet support this 12-bit JPEG output",

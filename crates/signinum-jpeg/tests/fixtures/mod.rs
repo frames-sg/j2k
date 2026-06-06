@@ -35,6 +35,22 @@ pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// An 8x8 12-bit progressive grayscale JPEG with one DC-only scan.
+pub(crate) fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[0xff, 0xc2, 0x00, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 0, 0]);
+    bytes.push(0x00);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 pub(crate) const LOSSLESS_GRAYSCALE_3X3_PIXELS: [u8; 9] =
     [130, 132, 136, 128, 135, 142, 125, 137, 150];
 

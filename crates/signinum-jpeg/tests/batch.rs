@@ -12,7 +12,10 @@ use signinum_jpeg::{
     TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 mod fixtures;
-use fixtures::{cmyk_8x8_jpeg, four_component_8x8_rgb, progressive_8x8_jpeg, ycck_8x8_jpeg};
+use fixtures::{
+    cmyk_8x8_jpeg, four_component_8x8_rgb, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_8x8_jpeg, ycck_8x8_jpeg,
+};
 use std::num::NonZeroUsize;
 use std::thread;
 
@@ -176,6 +179,81 @@ fn session_batch_scaled_and_region_scaled_progressive8_matches_single_tile_decod
         session
             .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
             .expect("progressive session region-scaled batch");
+    }
+
+    assert_eq!(actual_scaled, expected_scaled);
+    assert_eq!(actual_region, expected_region);
+}
+
+#[test]
+fn session_batch_scaled_and_region_scaled_progressive12_matches_single_tile_decode() {
+    let bytes = progressive_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit progressive decoder");
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = (
+        dec.info().dimensions.0.div_ceil(2),
+        dec.info().dimensions.1.div_ceil(2),
+    );
+    let scaled_roi = Rect {
+        x: roi.x / 2,
+        y: roi.y / 2,
+        w: (roi.x + roi.w).div_ceil(2) - roi.x / 2,
+        h: (roi.y + roi.h).div_ceil(2) - roi.y / 2,
+    };
+    let scaled_stride = scaled_full.0 as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let region_stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut expected_scaled = vec![0u8; scaled_stride * scaled_full.1 as usize];
+    let mut expected_region = vec![0u8; region_stride * scaled_roi.h as usize];
+    dec.decode_scaled_into(
+        &mut expected_scaled,
+        scaled_stride,
+        PixelFormat::Rgb16,
+        scale,
+    )
+    .expect("12-bit progressive scaled reference");
+    dec.decode_region_scaled_into(
+        &mut expected_region,
+        region_stride,
+        PixelFormat::Rgb16,
+        roi,
+        scale,
+    )
+    .expect("12-bit progressive region-scaled reference");
+
+    let mut actual_scaled = vec![0u8; expected_scaled.len()];
+    let mut actual_region = vec![0u8; expected_region.len()];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    {
+        let mut jobs = vec![TileScaledDecodeJob {
+            input: &bytes,
+            out: actual_scaled.as_mut_slice(),
+            stride: scaled_stride,
+            scale,
+        }];
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive session scaled batch");
+    }
+    {
+        let mut jobs = vec![TileRegionScaledDecodeJob {
+            input: &bytes,
+            out: actual_region.as_mut_slice(),
+            stride: region_stride,
+            roi,
+            scale,
+        }];
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive session region-scaled batch");
     }
 
     assert_eq!(actual_scaled, expected_scaled);

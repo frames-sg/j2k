@@ -38,10 +38,11 @@ ROI/scaled/tile-batch support covers supported 8-bit baseline or extended
 sequential inputs, plus progressive 8-bit full/ROI/scaled/region-scaled output
 from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
 CPU conversion to RGB/RGBA is available. Initial 12-bit extended sequential
-grayscale full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded
-`Rgb16` is available, while 12-bit multi-component RGB, 12-bit progressive,
-expanded four-component fixture coverage, and broader lossless SOF3 remain
-structured unsupported or not-implemented cases until the CPU parity phases in
+and progressive grayscale full-image/ROI/scaled/region-scaled decode to
+`Gray16` or expanded `Rgb16` is available, while 12-bit multi-component RGB,
+stronger non-constant 12-bit oracle fixtures, expanded four-component fixture
+coverage, and broader lossless SOF3 remain structured unsupported or
+not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
@@ -170,9 +171,9 @@ For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
-CMYK/YCCK coverage, broader 12-bit extended/progressive support, and broader
-SOF3 CPU parity must land before any Metal acceleration for those classes is
-promoted.
+CMYK/YCCK coverage, broader 12-bit multi-component support, stronger
+non-constant 12-bit oracle fixtures, and broader SOF3 CPU parity must land
+before any Metal acceleration for those classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable

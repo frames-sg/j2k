@@ -24,10 +24,10 @@ unsupported errors until a separate entropy and conformance plan exists.
 - progressive 8-bit full-image, ROI, scaled, and region-scaled CPU decode via
   full progressive coefficient assembly and output projection
 - parser metadata for 12-bit extended/progressive and lossless SOF3
-- initial 12-bit extended sequential grayscale full-image/ROI/scaled/
-  region-scaled CPU decode to `Gray16` or expanded `Rgb16`; broader 12-bit
-  multi-component RGB and progressive support still returns structured unsupported or
-  `NotImplemented`
+- initial 12-bit extended sequential and progressive grayscale full-image/ROI/
+  scaled/region-scaled CPU decode to `Gray16` or expanded `Rgb16`; broader
+  12-bit multi-component RGB support and stronger non-constant 12-bit oracle
+  fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7; color layouts, row output, and restart-coded SOF3 remain open
@@ -206,10 +206,18 @@ Purpose: complete the non-lossless 12-bit DCT path.
 Implementation requirements:
 
 - Extend progressive coefficient assembly to 12-bit precision.
+  Status: landed for initial grayscale SOF2 coefficient assembly to native
+  `Gray16` or expanded `Rgb16` output.
 - Support full-image first, then ROI/scaled through the same output machinery
   used by Phase A2 and B1.
+  Status: full-image, ROI, scaled, and region-scaled output have landed for
+  the initial grayscale path through full progressive coefficient assembly and
+  12-bit block projection.
 - Keep capability reasons separate for unsupported progressive 12-bit shapes
   during partial implementation.
+  Status: capability reporting marks grayscale `Progressive12`
+  `Gray16`/`Rgb16` CPU-eligible while keeping Metal/CUDA rejected; broader
+  12-bit progressive color output remains unsupported.
 
 Metal follow-up candidate:
 
@@ -219,6 +227,9 @@ Metal follow-up candidate:
 Exit criteria:
 
 - 12-bit progressive full and viewport-shaped CPU outputs match oracle data.
+  Status: partially met for the committed all-zero grayscale SOF2 fixture
+  covering full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16` output.
+  Non-constant external-oracle fixtures and multi-component RGB remain open.
 
 ## Phase C1: Lossless SOF3 CPU Decode
 

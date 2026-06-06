@@ -7,8 +7,8 @@ use crate::context::DecoderContext;
 use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
 use crate::entropy::huffman::HuffmanTable;
 use crate::entropy::progressive::{
-    decode_progressive, PreparedProgressiveComponentPlan, PreparedProgressivePlan,
-    PreparedProgressiveScan, PreparedProgressiveScanComponent,
+    decode_progressive, decode_progressive_dct_blocks, PreparedProgressiveComponentPlan,
+    PreparedProgressivePlan, PreparedProgressiveScan, PreparedProgressiveScanComponent,
 };
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
@@ -16,6 +16,7 @@ use crate::entropy::sequential::{
     decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
     stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
 };
+use crate::entropy::ZIGZAG;
 use crate::error::{HuffmanFailure, JpegError, MarkerKind, Warning};
 use crate::info::{
     ColorSpace, DecodeOptions, DownscaleFactor, Info, OutputFormat, Rect, RestartIndex,
@@ -317,48 +318,40 @@ impl<'a> Decoder<'a> {
             options,
         } = view;
         let backend = Backend::detect();
-        let (info, warnings, plan, progressive_plan, lossless_plan) =
-            if info.sof_kind == SofKind::Progressive8 {
-                let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
-                let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
-                (
-                    info,
-                    Arc::<[Warning]>::from(header.warnings.as_slice()),
-                    plan,
-                    Some(progressive_plan),
-                    None,
-                )
-            } else if info.sof_kind == SofKind::Lossless {
-                let (plan, lossless_plan) = Self::build_lossless_plan(&header, &info, ctx)?;
-                (
-                    info,
-                    Arc::<[Warning]>::from(header.warnings.as_slice()),
-                    plan,
-                    None,
-                    Some(lossless_plan),
-                )
-            } else if options == DecodeOptions::default() {
-                if let Some(scan_offset) = header.sos_offset {
-                    let header_prefix = &bytes[..scan_offset];
-                    let (info, warnings, plan) = ctx.resolve_decode_plan(header_prefix, |ctx| {
-                        let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-                        Ok((
-                            info.clone(),
-                            Arc::<[Warning]>::from(header.warnings.as_slice()),
-                            plan,
-                        ))
-                    })?;
-                    (info, warnings, plan, None, None)
-                } else {
+        let (info, warnings, plan, progressive_plan, lossless_plan) = if matches!(
+            info.sof_kind,
+            SofKind::Progressive8 | SofKind::Progressive12
+        ) {
+            let progressive_plan = Self::build_progressive_plan(&header, &info, ctx)?;
+            let plan = Self::build_progressive_host_output_plan(&header, &info, ctx)?;
+            (
+                info,
+                Arc::<[Warning]>::from(header.warnings.as_slice()),
+                plan,
+                Some(progressive_plan),
+                None,
+            )
+        } else if info.sof_kind == SofKind::Lossless {
+            let (plan, lossless_plan) = Self::build_lossless_plan(&header, &info, ctx)?;
+            (
+                info,
+                Arc::<[Warning]>::from(header.warnings.as_slice()),
+                plan,
+                None,
+                Some(lossless_plan),
+            )
+        } else if options == DecodeOptions::default() {
+            if let Some(scan_offset) = header.sos_offset {
+                let header_prefix = &bytes[..scan_offset];
+                let (info, warnings, plan) = ctx.resolve_decode_plan(header_prefix, |ctx| {
                     let plan = Self::build_prepared_plan(&header, &info, ctx)?;
-                    (
-                        info,
+                    Ok((
+                        info.clone(),
                         Arc::<[Warning]>::from(header.warnings.as_slice()),
                         plan,
-                        None,
-                        None,
-                    )
-                }
+                    ))
+                })?;
+                (info, warnings, plan, None, None)
             } else {
                 let plan = Self::build_prepared_plan(&header, &info, ctx)?;
                 (
@@ -368,7 +361,17 @@ impl<'a> Decoder<'a> {
                     None,
                     None,
                 )
-            };
+            }
+        } else {
+            let plan = Self::build_prepared_plan(&header, &info, ctx)?;
+            (
+                info,
+                Arc::<[Warning]>::from(header.warnings.as_slice()),
+                plan,
+                None,
+                None,
+            )
+        };
         Ok(Self {
             bytes,
             info,
@@ -550,12 +553,22 @@ impl<'a> Decoder<'a> {
         info: &Info,
         ctx: &mut DecoderContext,
     ) -> Result<PreparedProgressivePlan, JpegError> {
-        if info.sof_kind != SofKind::Progressive8 {
+        if !matches!(
+            info.sof_kind,
+            SofKind::Progressive8 | SofKind::Progressive12
+        ) {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        match info.color_space {
-            ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb => {}
-            color_space => return Err(JpegError::UnsupportedColorSpace { color_space }),
+        match (info.sof_kind, info.color_space) {
+            (
+                SofKind::Progressive8,
+                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
+            )
+            | (SofKind::Progressive12, ColorSpace::Grayscale) => {}
+            (SofKind::Progressive12, _) => {
+                return Err(JpegError::NotImplemented { sof: info.sof_kind });
+            }
+            (_, color_space) => return Err(JpegError::UnsupportedColorSpace { color_space }),
         }
         validate_sampling_factors(header, info)?;
         if header.progressive_scans.is_empty() {
@@ -938,11 +951,27 @@ impl<'a> Decoder<'a> {
                         downscale,
                     );
                 }
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_gray16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
                 self.decode_extended12_gray16_into(out, stride)
             }
             OutputFormat::Gray16Scaled { .. } => {
                 if self.lossless_plan.is_some() {
                     return self.decode_lossless_gray16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_gray16_region_scaled_into(
                         out,
                         stride,
                         Rect::full(self.info.dimensions),
@@ -956,13 +985,33 @@ impl<'a> Decoder<'a> {
                     downscale,
                 )
             }
-            OutputFormat::Rgb16 => self.decode_extended12_rgb16_into(out, stride),
-            OutputFormat::Rgb16Scaled { .. } => self.decode_extended12_rgb16_region_scaled_into(
-                out,
-                stride,
-                Rect::full(self.info.dimensions),
-                downscale,
-            ),
+            OutputFormat::Rgb16 => {
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_rgb16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
+                self.decode_extended12_rgb16_into(out, stride)
+            }
+            OutputFormat::Rgb16Scaled { .. } => {
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_rgb16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
+                self.decode_extended12_rgb16_region_scaled_into(
+                    out,
+                    stride,
+                    Rect::full(self.info.dimensions),
+                    downscale,
+                )
+            }
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1295,6 +1344,11 @@ impl<'a> Decoder<'a> {
                     return self
                         .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
                 }
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_gray16_region_scaled_into(
+                        out, stride, roi, downscale,
+                    );
+                }
                 self.decode_extended12_gray16_region_into(out, stride, roi)
             }
             OutputFormat::Gray16Scaled { .. } => {
@@ -1302,10 +1356,27 @@ impl<'a> Decoder<'a> {
                     return self
                         .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
                 }
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_gray16_region_scaled_into(
+                        out, stride, roi, downscale,
+                    );
+                }
                 self.decode_extended12_gray16_region_scaled_into(out, stride, roi, downscale)
             }
-            OutputFormat::Rgb16 => self.decode_extended12_rgb16_region_into(out, stride, roi),
+            OutputFormat::Rgb16 => {
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_rgb16_region_scaled_into(
+                        out, stride, roi, downscale,
+                    );
+                }
+                self.decode_extended12_rgb16_region_into(out, stride, roi)
+            }
             OutputFormat::Rgb16Scaled { .. } => {
+                if self.info.sof_kind == SofKind::Progressive12 {
+                    return self.decode_progressive12_rgb16_region_scaled_into(
+                        out, stride, roi, downscale,
+                    );
+                }
                 self.decode_extended12_rgb16_region_scaled_into(out, stride, roi, downscale)
             }
         };
@@ -2138,6 +2209,99 @@ impl Decoder<'_> {
         Ok(outcome)
     }
 
+    fn decode_progressive12_gray16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_progressive12_region_into(out, stride, roi, downscale, Extended12Output::Gray16)
+    }
+
+    fn decode_progressive12_rgb16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_progressive12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
+    }
+
+    fn decode_progressive12_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        output: Extended12Output,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if self.info.sof_kind != SofKind::Progressive12
+            || self.info.color_space != ColorSpace::Grayscale
+            || plan.components.len() != 1
+        {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if !roi.is_within(self.info.dimensions) {
+            return Err(JpegError::RectOutOfBounds {
+                rect: roi,
+                width: self.info.dimensions.0,
+                height: self.info.dimensions.1,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let component = &plan.components[0];
+        let component_coeffs = &dct_blocks.quantized[0];
+        let (width, height) = self.info.dimensions;
+        let mut dequant = [0i16; 64];
+        let mut pixels = [0u16; 64];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output,
+        };
+
+        for block_y in 0..component.block_rows as usize {
+            for block_x in 0..component.block_cols as usize {
+                let block_index = block_y * component.block_cols as usize + block_x;
+                dequantize_progressive12_block(
+                    &component_coeffs[block_index],
+                    &component.quant,
+                    &mut dequant,
+                );
+                if dequant[1..].iter().all(|&coeff| coeff == 0) {
+                    pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
+                } else {
+                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                }
+                write_extended12_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    ((block_x as u32) * 8, (block_y as u32) * 8),
+                    &pixels,
+                );
+            }
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
     fn decode_extended12_gray16_into(
         &self,
         out: &mut [u8],
@@ -2308,6 +2472,15 @@ struct Extended12WriteRegion {
     dimensions: (u32, u32),
     downscale: DownscaleFactor,
     output: Extended12Output,
+}
+
+fn dequantize_progressive12_block(coeffs: &[i32; 64], quant: &[u16; 64], out: &mut [i16; 64]) {
+    out.fill(0);
+    for k in 0..64 {
+        let natural_idx = usize::from(ZIGZAG[k]);
+        let value = coeffs[natural_idx].wrapping_mul(i32::from(quant[k]));
+        out[natural_idx] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
 }
 
 fn write_extended12_block_region(
@@ -2681,6 +2854,20 @@ fn output_format_from_parts(
             }),
             (SofKind::Extended12, PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
             (SofKind::Extended12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
+                factor: jpeg_downscale(scale),
+            }),
+            (SofKind::Progressive12, PixelFormat::Gray16, Downscale::None) => {
+                Ok(OutputFormat::Gray16)
+            }
+            (SofKind::Progressive12, PixelFormat::Gray16, scale) => {
+                Ok(OutputFormat::Gray16Scaled {
+                    factor: jpeg_downscale(scale),
+                })
+            }
+            (SofKind::Progressive12, PixelFormat::Rgb16, Downscale::None) => {
+                Ok(OutputFormat::Rgb16)
+            }
+            (SofKind::Progressive12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
                 factor: jpeg_downscale(scale),
             }),
             (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
