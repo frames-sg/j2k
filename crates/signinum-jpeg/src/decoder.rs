@@ -393,7 +393,9 @@ impl<'a> Decoder<'a> {
             SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12 => {}
             other => return Err(JpegError::NotImplemented { sof: other }),
         }
-        if info.sof_kind == SofKind::Extended12 && info.color_space != ColorSpace::Grayscale {
+        if info.sof_kind == SofKind::Extended12
+            && !matches!(info.color_space, ColorSpace::Grayscale | ColorSpace::Rgb)
+        {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         match info.color_space {
@@ -564,7 +566,7 @@ impl<'a> Decoder<'a> {
                 SofKind::Progressive8,
                 ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
             )
-            | (SofKind::Progressive12, ColorSpace::Grayscale) => {}
+            | (SofKind::Progressive12, ColorSpace::Grayscale | ColorSpace::Rgb) => {}
             (SofKind::Progressive12, _) => {
                 return Err(JpegError::NotImplemented { sof: info.sof_kind });
             }
@@ -2244,8 +2246,10 @@ impl Decoder<'_> {
                 sof: self.info.sof_kind,
             })?;
         if self.info.sof_kind != SofKind::Progressive12
-            || self.info.color_space != ColorSpace::Grayscale
-            || plan.components.len() != 1
+            || !matches!(
+                self.info.color_space,
+                ColorSpace::Grayscale | ColorSpace::Rgb
+            )
         {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
@@ -2256,6 +2260,14 @@ impl Decoder<'_> {
                 rect: roi,
                 width: self.info.dimensions.0,
                 height: self.info.dimensions.1,
+            });
+        }
+        if self.info.color_space == ColorSpace::Rgb && matches!(output, Extended12Output::Rgb16) {
+            return self.decode_progressive12_rgb444_region_into(out, stride, roi, downscale);
+        }
+        if self.info.color_space != ColorSpace::Grayscale || plan.components.len() != 1 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
             });
         }
 
@@ -2292,6 +2304,88 @@ impl Decoder<'_> {
                     write_region,
                     ((block_x as u32) * 8, (block_y as u32) * 8),
                     &pixels,
+                );
+            }
+        }
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    fn decode_progressive12_rgb444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.components.len() != 3
+            || plan.sampling.max_h != 1
+            || plan.sampling.max_v != 1
+            || plan
+                .components
+                .iter()
+                .any(|component| component.h != 1 || component.v != 1 || component.output_index > 2)
+        {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let (width, height) = self.info.dimensions;
+        let component_indices = progressive_rgb_component_indices(plan)?;
+        let block_cols = plan.components[component_indices[0]].block_cols as usize;
+        let block_rows = plan.components[component_indices[0]].block_rows as usize;
+        let mut dequant = [[0i16; 64]; 3];
+        let mut pixels = [[0u16; 64]; 3];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for block_y in 0..block_rows {
+            for block_x in 0..block_cols {
+                for output_index in 0..3 {
+                    let component_index = component_indices[output_index];
+                    let component = &plan.components[component_index];
+                    let component_coeffs = &dct_blocks.quantized[component_index];
+                    let block_index = block_y * component.block_cols as usize + block_x;
+                    dequantize_progressive12_block(
+                        &component_coeffs[block_index],
+                        &component.quant,
+                        &mut dequant[output_index],
+                    );
+                    if dequant[output_index][1..].iter().all(|&coeff| coeff == 0) {
+                        pixels[output_index].fill(crate::idct::idct_islow_12bit_dc_only_sample(
+                            dequant[output_index][0],
+                        ));
+                    } else {
+                        crate::idct::idct_islow_12bit(
+                            &dequant[output_index],
+                            &mut pixels[output_index],
+                        );
+                    }
+                }
+                write_extended12_rgb_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    ((block_x as u32) * 8, (block_y as u32) * 8),
+                    &pixels[0],
+                    &pixels[1],
+                    &pixels[2],
                 );
             }
         }
@@ -2388,11 +2482,7 @@ impl Decoder<'_> {
         downscale: DownscaleFactor,
         output: Extended12Output,
     ) -> Result<DecodeOutcome, JpegError> {
-        if self.info.sof_kind != SofKind::Extended12
-            || self.info.color_space != ColorSpace::Grayscale
-            || self.plan.components.len() != 1
-            || self.plan.restart_interval.is_some()
-        {
+        if self.info.sof_kind != SofKind::Extended12 || self.plan.restart_interval.is_some() {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -2402,6 +2492,14 @@ impl Decoder<'_> {
                 rect: roi,
                 width: self.info.dimensions.0,
                 height: self.info.dimensions.1,
+            });
+        }
+        if self.info.color_space == ColorSpace::Rgb && matches!(output, Extended12Output::Rgb16) {
+            return self.decode_extended12_rgb444_region_into(out, stride, roi, downscale);
+        }
+        if self.info.color_space != ColorSpace::Grayscale || self.plan.components.len() != 1 {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
             });
         }
 
@@ -2424,30 +2522,76 @@ impl Decoder<'_> {
 
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
-                let activity = decode_block_with_activity(
+                decode_extended12_block_pixels(
                     &mut br,
-                    &component.dc_table,
-                    &component.ac_table,
+                    component,
                     &mut prev_dc,
-                    component.quant.as_ref(),
                     &mut coeff,
+                    &mut pixels,
                 )?;
-                match activity {
-                    BlockActivity::DcOnly => {
-                        pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(
-                            coeff.dc_coeff(),
-                        ));
-                    }
-                    BlockActivity::BottomHalfZero | BlockActivity::General => {
-                        crate::idct::idct_islow_12bit(coeff.coefficients(), &mut pixels);
-                    }
-                }
                 write_extended12_block_region(
                     out,
                     stride,
                     write_region,
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
+                );
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_rgb444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        validate_extended12_rgb444_plan(&self.plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = [0i32; 3];
+        let mut coeffs: [CoefficientBlock; 3] =
+            core::array::from_fn(|_| CoefficientBlock::default());
+        let mut pixels = [[0u16; 64]; 3];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                for component in &self.plan.components {
+                    let output_index = component.output_index;
+                    decode_extended12_block_pixels(
+                        &mut br,
+                        component,
+                        &mut prev_dc[output_index],
+                        &mut coeffs[output_index],
+                        &mut pixels[output_index],
+                    )?;
+                }
+                write_extended12_rgb_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels[0],
+                    &pixels[1],
+                    &pixels[2],
                 );
             }
         }
@@ -2474,12 +2618,124 @@ struct Extended12WriteRegion {
     output: Extended12Output,
 }
 
+fn decode_extended12_block_pixels(
+    br: &mut BitReader<'_>,
+    component: &PreparedComponentPlan,
+    prev_dc: &mut i32,
+    coeff: &mut CoefficientBlock,
+    pixels: &mut [u16; 64],
+) -> Result<(), JpegError> {
+    let activity = decode_block_with_activity(
+        br,
+        &component.dc_table,
+        &component.ac_table,
+        prev_dc,
+        component.quant.as_ref(),
+        coeff,
+    )?;
+    match activity {
+        BlockActivity::DcOnly => {
+            pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(
+                coeff.dc_coeff(),
+            ));
+        }
+        BlockActivity::BottomHalfZero | BlockActivity::General => {
+            crate::idct::idct_islow_12bit(coeff.coefficients(), pixels);
+        }
+    }
+    Ok(())
+}
+
+fn validate_extended12_rgb444_plan(
+    plan: &PreparedDecodePlan,
+    sof: SofKind,
+) -> Result<(), JpegError> {
+    if plan.components.len() != 3 || plan.sampling.max_h != 1 || plan.sampling.max_v != 1 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    let mut seen = [false; 3];
+    for component in &plan.components {
+        if component.h != 1 || component.v != 1 || component.output_index > 2 {
+            return Err(JpegError::NotImplemented { sof });
+        }
+        if seen[component.output_index] {
+            return Err(JpegError::NotImplemented { sof });
+        }
+        seen[component.output_index] = true;
+    }
+    if seen.iter().any(|&present| !present) {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    Ok(())
+}
+
+fn progressive_rgb_component_indices(
+    plan: &PreparedProgressivePlan,
+) -> Result<[usize; 3], JpegError> {
+    let mut indices = [usize::MAX; 3];
+    for (component_index, component) in plan.components.iter().enumerate() {
+        if component.output_index < 3 {
+            if indices[component.output_index] != usize::MAX {
+                return Err(JpegError::NotImplemented {
+                    sof: SofKind::Progressive12,
+                });
+            }
+            indices[component.output_index] = component_index;
+        }
+    }
+    if indices.contains(&usize::MAX) {
+        return Err(JpegError::NotImplemented {
+            sof: SofKind::Progressive12,
+        });
+    }
+    Ok(indices)
+}
+
 fn dequantize_progressive12_block(coeffs: &[i32; 64], quant: &[u16; 64], out: &mut [i16; 64]) {
     out.fill(0);
     for k in 0..64 {
         let natural_idx = usize::from(ZIGZAG[k]);
         let value = coeffs[natural_idx].wrapping_mul(i32::from(quant[k]));
         out[natural_idx] = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+}
+
+fn write_extended12_rgb_block_region(
+    out: &mut [u8],
+    stride: usize,
+    region: Extended12WriteRegion,
+    block_origin: (u32, u32),
+    r_pixels: &[u16; 64],
+    g_pixels: &[u16; 64],
+    b_pixels: &[u16; 64],
+) {
+    let (width, height) = region.dimensions;
+    let (x0, y0) = block_origin;
+    let block_x1 = (x0 + 8).min(width);
+    let block_y1 = (y0 + 8).min(height);
+    let denom = region.downscale.denominator();
+    let output_rect = region.output_rect;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        if source_y < y0 || source_y >= block_y1 {
+            continue;
+        }
+        let src_row = (source_y - y0) as usize;
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            if source_x < x0 || source_x >= block_x1 {
+                continue;
+            }
+            let src_col = (source_x - x0) as usize;
+            let src_index = src_row * 8 + src_col;
+            let dst_col = (output_x - output_rect.x) as usize;
+            let dst_start = dst_row * stride + dst_col * 6;
+            let dst = &mut out[dst_start..dst_start + 6];
+            dst[0..2].copy_from_slice(&r_pixels[src_index].to_le_bytes());
+            dst[2..4].copy_from_slice(&g_pixels[src_index].to_le_bytes());
+            dst[4..6].copy_from_slice(&b_pixels[src_index].to_le_bytes());
+        }
     }
 }
 

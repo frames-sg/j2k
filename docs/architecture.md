@@ -256,13 +256,15 @@ conversion now lives in that fused sequential path. Progressive 8-bit
 full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
 assembly followed by output projection. Initial 12-bit extended sequential
 and progressive grayscale full-image/ROI/scaled/region-scaled decode writes
-native `Gray16` samples or expanded `Rgb16` samples. Expanded four-component
-coverage, broader 12-bit multi-component RGB support, stronger non-constant
-12-bit oracle fixtures, and broader lossless SOF3 color/restart/row support
-remain separate CPU parity work. Initial SOF3 8-bit grayscale `Gray8` and
-16-bit grayscale `Gray16` full-image/ROI/scaled/region-scaled decode for
-predictors 1-7 is implemented as a non-DCT predictor path. Splitting the
-module is planned but gated on stable benchmark and parity coverage.
+native `Gray16` samples or expanded `Rgb16` samples; initial 12-bit APP14 RGB
+4:4:4 full-image/ROI/scaled/region-scaled decode writes native `Rgb16`
+samples. Expanded four-component coverage, broader 12-bit YCbCr/subsampled
+color support, stronger non-constant 12-bit oracle fixtures, and broader
+lossless SOF3 color/restart/row support remain separate CPU parity work.
+Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
+full-image/ROI/scaled/region-scaled decode for predictors 1-7 is implemented
+as a non-DCT predictor path. Splitting the module is planned but gated on
+stable benchmark and parity coverage.
 
 J2K parses boxes (COD, QCD, QCC, etc.) and codestream structure on CPU, then
 drives either the native CPU reconstruction path or a MetalDirect plan. ROI and
@@ -472,11 +474,12 @@ provisional and check the most recent commits before relying on it.
 - Expanding JPEG compatibility through CPU parity first: initial CMYK/YCCK CPU
   conversion and progressive 8-bit ROI/scaled CPU output projection have
   landed. Initial 12-bit extended sequential and progressive grayscale
-  `Gray16`/`Rgb16` full-image/ROI/scaled/region-scaled decode has landed,
-  while expanded four-component coverage, broader 12-bit multi-component
-  support, stronger non-constant 12-bit oracle fixtures, and broader lossless
-  SOF3 color/restart/row support remain active parity work. Initial SOF3
-  8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
+  `Gray16`/`Rgb16` full-image/ROI/scaled/region-scaled decode and initial
+  12-bit APP14 RGB 4:4:4 `Rgb16` decode have landed, while expanded
+  four-component coverage, broader 12-bit YCbCr/subsampled color support,
+  stronger non-constant 12-bit oracle fixtures, and broader lossless SOF3
+  color/restart/row support remain active parity work. Initial SOF3 8-bit
+  grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled decode for predictors 1-7 has landed.
   Metal acceleration for those classes is gated on
   parity and measured resident wins.

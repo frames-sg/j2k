@@ -35,6 +35,44 @@ pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// An 8x8 12-bit extended sequential APP14 RGB JPEG.
+pub(crate) fn extended_12bit_rgb_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[
+        0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 8, 0, 8, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(dc_category4_rgb_entropy());
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_rgb_8x8_jpeg`].
+pub(crate) fn extended_12bit_rgb_8x8_rgb16() -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 * 8 * 6);
+    for _ in 0..64 {
+        for sample in [2064u16, 2072, 2032] {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+    }
+    out
+}
+
 /// An 8x8 12-bit progressive grayscale JPEG with one DC-only scan.
 pub(crate) fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -49,6 +87,49 @@ pub(crate) fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     bytes.push(0x00);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
+}
+
+/// An 8x8 12-bit progressive APP14 RGB JPEG with one DC-only scan.
+pub(crate) fn progressive_12bit_rgb_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[
+        0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc2, 0x00, 17, 12, 0, 8, 0, 8, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 0, 0,
+    ]);
+    bytes.extend(dc_category4_rgb_progressive_entropy());
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn dc_category4_rgb_entropy() -> Vec<u8> {
+    let mut bits = Vec::new();
+    for magnitude in [0b1000, 0b1100, 0b0111] {
+        push_bits(&mut bits, 0, 1);
+        push_bits(&mut bits, magnitude, 4);
+        push_bits(&mut bits, 0, 1);
+    }
+    pack_entropy_bits(bits)
+}
+
+fn dc_category4_rgb_progressive_entropy() -> Vec<u8> {
+    let mut bits = Vec::new();
+    for magnitude in [0b1000, 0b1100, 0b0111] {
+        push_bits(&mut bits, 0, 1);
+        push_bits(&mut bits, magnitude, 4);
+    }
+    pack_entropy_bits(bits)
 }
 
 pub(crate) const LOSSLESS_GRAYSCALE_3X3_PIXELS: [u8; 9] =

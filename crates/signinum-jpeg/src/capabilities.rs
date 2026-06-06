@@ -147,27 +147,61 @@ impl JpegCapabilityReport {
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
         SofKind::Extended12 if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
-            if info.color_space != ColorSpace::Grayscale {
-                return JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16 only",
-                );
-            }
             if info.restart_interval.is_some() {
                 return JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended decode does not yet support restart intervals",
                 );
             }
-            return JpegBackendEligibility::eligible();
+            return match (info.color_space, request.fmt) {
+                (ColorSpace::Grayscale, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+                    JpegBackendEligibility::eligible()
+                }
+                (ColorSpace::Rgb, PixelFormat::Rgb16)
+                    if info.sampling.len() == 3
+                        && info.sampling.max_h == 1
+                        && info.sampling.max_v == 1
+                        && info
+                            .sampling
+                            .components()
+                            .iter()
+                            .all(|&(h, v)| h == 1 && v == 1) =>
+                {
+                    JpegBackendEligibility::eligible()
+                }
+                (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4 sampling only",
+                ),
+                _ => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16 or APP14 RGB Rgb16 only",
+                ),
+            };
         }
         SofKind::Progressive12
             if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) =>
         {
-            if info.color_space != ColorSpace::Grayscale {
-                return JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16 only",
-                );
-            }
-            return JpegBackendEligibility::eligible();
+            return match (info.color_space, request.fmt) {
+                (ColorSpace::Grayscale, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+                    JpegBackendEligibility::eligible()
+                }
+                (ColorSpace::Rgb, PixelFormat::Rgb16)
+                    if info.sampling.len() == 3
+                        && info.sampling.max_h == 1
+                        && info.sampling.max_v == 1
+                        && info
+                            .sampling
+                            .components()
+                            .iter()
+                            .all(|&(h, v)| h == 1 && v == 1) =>
+                {
+                    JpegBackendEligibility::eligible()
+                }
+                (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit progressive RGB decode currently supports 4:4:4 sampling only",
+                ),
+                _ => JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16 or APP14 RGB Rgb16 only",
+                ),
+            };
         }
         SofKind::Extended12 | SofKind::Progressive12 => {
             return JpegBackendEligibility::rejected(

@@ -711,11 +711,12 @@ Current v1 scope is explicit:
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
   assembly plus output projection. Initial 12-bit extended sequential
   and progressive grayscale `Gray16`/`Rgb16` full-image/ROI/scaled/
-  region-scaled output is CPU-backed, as is initial lossless SOF3 8-bit
-  grayscale `Gray8` and 16-bit grayscale `Gray16` full-image/ROI/scaled/
-  region-scaled output for predictors 1-7. Expanded four-component coverage,
-  broader 12-bit multi-component RGB support, stronger non-constant 12-bit
-  oracle fixtures, and broader SOF3 color/restart/row support stay structured
+  region-scaled output is CPU-backed, and initial 12-bit APP14 RGB 4:4:4
+  `Rgb16` output is CPU-backed. Initial lossless SOF3 8-bit grayscale `Gray8`
+  and 16-bit grayscale `Gray16` full-image/ROI/scaled/region-scaled output for
+  predictors 1-7 is CPU-backed. Expanded four-component coverage, broader
+  12-bit YCbCr/subsampled color support, stronger non-constant 12-bit oracle
+  fixtures, and broader SOF3 color/restart/row support stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
   The coalesced benchmark

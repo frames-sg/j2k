@@ -16,11 +16,11 @@ on a single visual smoke test.
   sequential CMYK/YCCK RGB/RGBA CPU coverage and progressive 8-bit
   ROI/scaled/region-scaled CPU coverage have landed. Initial
   full-image/ROI/scaled/region-scaled 12-bit extended sequential and
-  progressive grayscale `Gray16`/`Rgb16` coverage has landed, but expanded
-  four-component fixtures, 12-bit multi-component RGB output, stronger
-  non-constant 12-bit oracle fixtures, and broader lossless SOF3
-  color/restart/row support must land CPU parity fixtures and reference
-  outputs before any Metal route is promoted.
+  progressive grayscale `Gray16`/`Rgb16` coverage and initial 12-bit APP14 RGB
+  4:4:4 `Rgb16` coverage have landed, but expanded four-component fixtures,
+  12-bit YCbCr/subsampled color output, stronger non-constant 12-bit oracle
+  fixtures, and broader lossless SOF3 color/restart/row support must land CPU
+  parity fixtures and reference outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.
