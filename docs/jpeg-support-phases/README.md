@@ -28,9 +28,9 @@ unsupported errors until a separate entropy and conformance plan exists.
   region-scaled CPU decode to `Gray16` or expanded `Rgb16`; broader 12-bit
   multi-component RGB and progressive support still returns structured unsupported or
   `NotImplemented`
-- initial lossless SOF3 8-bit grayscale full-image CPU decode to `Gray8` for
-  predictors 1-7; other precisions, color layouts, row/ROI/scaled output, and
-  restart-coded SOF3 remain open
+- initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
+  decode to `Gray8` for predictors 1-7; other precisions, color layouts, row
+  output, and restart-coded SOF3 remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -227,8 +227,8 @@ Purpose: support non-DCT lossless JPEG used by older medical pipelines.
 Implementation requirements:
 
 - Implement the SOF3 predictor pipeline separately from DCT decode.
-  Status: initial predictors 1-7 full-image grayscale `Gray8` pipeline has
-  landed and is separate from DCT/IDCT decode.
+  Status: initial predictors 1-7 full-image/ROI/scaled/region-scaled grayscale
+  `Gray8` pipeline has landed and is separate from DCT/IDCT decode.
 - Start with common predictor selections and sample precisions represented by
   committed fixtures.
   Status: predictors 1-7, 8-bit grayscale predictor-sensitive fixtures have
@@ -237,9 +237,10 @@ Implementation requirements:
   model is understood.
   Status: `Gray8` is supported only for the initial 8-bit grayscale shape.
 - Add predictor-specific tests, restart-marker tests, malformed-stream tests,
-  and row/ROI behavior where the predictor dependencies allow it.
-  Status: predictor-specific positive coverage has landed for predictors 1-7;
-  restart, malformed, row, ROI, precision, and color coverage remain open.
+  and row behavior where the predictor dependencies allow it.
+  Status: predictor-specific positive coverage has landed for predictors 1-7,
+  including ROI/scaled/region-scaled output; restart, malformed, row,
+  precision, and color coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
@@ -255,7 +256,7 @@ Exit criteria:
 
 - SOF3 CPU decode matches oracle output for committed predictor fixtures.
   Status: partially met for the committed predictors 1-7 8-bit grayscale
-  fixture.
+  fixture across full-image/ROI/scaled/region-scaled output.
 - DCT decode code remains isolated from lossless predictor logic.
   Status: met for the initial predictors 1-7 path.
 

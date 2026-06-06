@@ -912,12 +912,12 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    if fmt == OutputFormat::Gray8 {
-                        return self.decode_lossless_gray8_into(out, stride);
-                    }
-                    return Err(JpegError::NotImplemented {
-                        sof: self.info.sof_kind,
-                    });
+                    return self.decode_lossless_gray8_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
                 }
                 let mut writer = Gray8Writer::new(out, stride, w);
                 self.decode_with_writer(
@@ -1259,9 +1259,8 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    return Err(JpegError::NotImplemented {
-                        sof: self.info.sof_kind,
-                    });
+                    return self
+                        .decode_lossless_gray8_region_scaled_into(out, stride, roi, downscale);
                 }
                 let base = Gray8Writer::new(out, stride, scaled_roi.w);
                 let (source_x0, source_width) =
@@ -1998,6 +1997,34 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_lossless_gray8_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
+            return self.decode_lossless_gray8_into(out, stride);
+        }
+
+        let (width, height) = self.info.dimensions;
+        let full_stride = width as usize;
+        let mut full = allocate_output_buffer(full_stride * height as usize);
+        let mut outcome = self.decode_lossless_gray8_into(&mut full, full_stride)?;
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        copy_gray8_scaled_rect(
+            &full,
+            (width, height),
+            output_rect,
+            downscale.denominator(),
+            out,
+            stride,
+        );
+        outcome.decoded = roi;
+        Ok(outcome)
+    }
+
     fn decode_extended12_gray16_into(
         &self,
         out: &mut [u8],
@@ -2420,6 +2447,28 @@ fn merged_warnings(header_warnings: &[Warning], scan_warnings: Vec<Warning>) -> 
     warnings
 }
 
+fn copy_gray8_scaled_rect(
+    full: &[u8],
+    dimensions: (u32, u32),
+    output_rect: Rect,
+    denom: u32,
+    out: &mut [u8],
+    stride: usize,
+) {
+    let (width, height) = dimensions;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        let dst_row = (output_y - output_rect.y) as usize;
+        let dst_start = dst_row * stride;
+        let dst = &mut out[dst_start..dst_start + output_rect.w as usize];
+        for (dst_px, output_x) in (output_rect.x..output_rect.x + output_rect.w).enumerate() {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            let src = source_y as usize * width as usize + source_x as usize;
+            dst[dst_px] = full[src];
+        }
+    }
+}
+
 fn jpeg_passthrough_syntax(info: &Info) -> Option<CompressedTransferSyntax> {
     match info.sof_kind {
         SofKind::Baseline8 if info.bit_depth == 8 => Some(CompressedTransferSyntax::JpegBaseline8),
@@ -2470,7 +2519,9 @@ fn output_format_from_parts(
     if sof_kind == SofKind::Lossless {
         return match (fmt, scale) {
             (PixelFormat::Gray8, Downscale::None) => Ok(OutputFormat::Gray8),
-            (PixelFormat::Gray8, _) => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
+            (PixelFormat::Gray8, scale) => Ok(OutputFormat::Gray8Scaled {
+                factor: jpeg_downscale(scale),
+            }),
             _ => Err(JpegError::NotImplemented { sof: sof_kind }),
         };
     }

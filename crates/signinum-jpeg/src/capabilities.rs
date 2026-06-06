@@ -164,14 +164,12 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 "JPEG CPU decode does not yet support this 12-bit JPEG output",
             )
         }
-        SofKind::Lossless
-            if request.op == JpegDecodeOp::Full && request.fmt == PixelFormat::Gray8 =>
-        {
+        SofKind::Lossless if request.fmt == PixelFormat::Gray8 => {
             if info.color_space == ColorSpace::Grayscale && info.bit_depth == 8 {
                 return JpegBackendEligibility::eligible();
             }
             return JpegBackendEligibility::rejected(
-                "JPEG CPU lossless SOF3 decode currently supports 8-bit grayscale Gray8 only",
+                "JPEG CPU lossless SOF3 decode currently supports 8-bit grayscale Gray8 full/ROI/scaled output only",
             );
         }
         SofKind::Lossless => {

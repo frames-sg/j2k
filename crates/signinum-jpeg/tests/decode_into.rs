@@ -335,6 +335,119 @@ fn decode_into_gray8_accepts_lossless_grayscale_common_predictors() {
 }
 
 #[test]
+fn decode_region_into_gray8_crops_lossless_grayscale_common_predictors() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let expected = crop_gray(&LOSSLESS_GRAYSCALE_3X3_PIXELS, 3, roi);
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = roi.w as usize + 2;
+        let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+        let outcome = dec
+            .decode_region_into(&mut buf, stride, PixelFormat::Gray8, roi)
+            .unwrap_or_else(|err| {
+                panic!("lossless predictor-{predictor} grayscale ROI decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(roi.w as usize))
+        {
+            assert_eq!(&row[..roi.w as usize], expected_row);
+            assert_eq!(&row[roi.w as usize..], &[0xaa; 2]);
+        }
+    }
+}
+
+#[test]
+fn decode_scaled_into_gray8_projects_lossless_grayscale_common_predictors() {
+    let scale = Downscale::Half;
+    let scaled_w = 2;
+    let scaled_h = 2;
+    let expected = project_scaled_gray(
+        &LOSSLESS_GRAYSCALE_3X3_PIXELS,
+        3,
+        3,
+        Rect {
+            x: 0,
+            y: 0,
+            w: scaled_w,
+            h: scaled_h,
+        },
+        2,
+    );
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = scaled_w as usize + 2;
+        let mut buf = vec![0xaau8; stride * scaled_h as usize];
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, stride, PixelFormat::Gray8, scale)
+            .unwrap_or_else(|err| {
+                panic!("lossless predictor-{predictor} grayscale scaled decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(scaled_w as usize))
+        {
+            assert_eq!(&row[..scaled_w as usize], expected_row);
+            assert_eq!(&row[scaled_w as usize..], &[0xaa; 2]);
+        }
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_gray8_projects_lossless_grayscale_common_predictors() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let expected = project_scaled_gray(&LOSSLESS_GRAYSCALE_3X3_PIXELS, 3, 3, scaled_roi, 2);
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = scaled_roi.w as usize + 2;
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(&mut buf, stride, PixelFormat::Gray8, roi, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "lossless predictor-{predictor} grayscale region-scaled decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(scaled_roi.w as usize))
+        {
+            assert_eq!(&row[..scaled_roi.w as usize], expected_row);
+            assert_eq!(&row[scaled_roi.w as usize..], &[0xaa; 2]);
+        }
+    }
+}
+
+#[test]
 fn decode_into_rejects_undersized_buffer_with_api_misuse_error() {
     let bytes = minimal_baseline_420_jpeg();
     let dec = Decoder::new(&bytes).unwrap();
@@ -582,6 +695,17 @@ fn crop_rgb(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
     out
 }
 
+fn crop_gray(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(roi.w as usize * roi.h as usize);
+    for y in roi.y..roi.y + roi.h {
+        let row = y as usize * width as usize;
+        let start = row + roi.x as usize;
+        let end = start + roi.w as usize;
+        out.extend_from_slice(&full[start..end]);
+    }
+    out
+}
+
 fn project_scaled_rgb(
     full: &[u8],
     width: u32,
@@ -596,6 +720,25 @@ fn project_scaled_rgb(
             let src_x = (sx * denom).min(width - 1);
             let offset = (src_y as usize * width as usize + src_x as usize) * 3;
             out.extend_from_slice(&full[offset..offset + 3]);
+        }
+    }
+    out
+}
+
+fn project_scaled_gray(
+    full: &[u8],
+    width: u32,
+    height: u32,
+    output_rect: Rect,
+    denom: u32,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(output_rect.w as usize * output_rect.h as usize);
+    for sy in output_rect.y..output_rect.y + output_rect.h {
+        let src_y = (sy * denom).min(height - 1);
+        for sx in output_rect.x..output_rect.x + output_rect.w {
+            let src_x = (sx * denom).min(width - 1);
+            let offset = src_y as usize * width as usize + src_x as usize;
+            out.push(full[offset]);
         }
     }
     out
