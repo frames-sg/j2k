@@ -398,6 +398,10 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
             signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
             break;
         }
+        if (!dc && ssss == 0u && run != 0u && run != 15u) {
+            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, symbol, reader.pos);
+            break;
+        }
         unsigned int coeff_bits = dc ? symbol : (symbol & 0x0Fu);
         if (coeff_bits > 15u) {
             signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, coeff_bits, reader.pos);

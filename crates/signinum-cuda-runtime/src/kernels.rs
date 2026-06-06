@@ -527,6 +527,13 @@ mod tests {
             .find("state.zigzag_index += run + 1u;")
             .expect("AC coefficient advance");
         assert!(zrl_overflow_guard < coefficient_advance);
+        let malformed_zero_ac_guard = sync_source
+            .find("if (!dc && ssss == 0u && run != 0u && run != 15u) {")
+            .expect("malformed zero-amplitude AC guard");
+        let eob_branch = sync_source
+            .find("if (ssss == 0u && run != 15u) {")
+            .expect("EOB branch");
+        assert!(malformed_zero_ac_guard < eob_branch);
     }
 
     #[test]
