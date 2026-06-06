@@ -21,6 +21,8 @@ design notes that an agent can reach without leaving the repo.
 - [`docs/support-matrix.md`](support-matrix.md) — stable surfaces, backend limits,
   MSRV, and benchmark-publication gates.
 - [`docs/wsi-decode-api.md`](wsi-decode-api.md) — public WSI decode API guide.
+- [`docs/jpeg-support-phases/`](jpeg-support-phases/README.md) — CPU-first JPEG
+  compatibility expansion plan and Metal promotion gates.
 - [`docs/wsi-dicom-passthrough.md`](wsi-dicom-passthrough.md) — passthrough-first
   policy for WSI/DICOM conversion layers built on these codec primitives.
 - Crate-level `README.md` files where present — crate-scoped contracts and
@@ -42,7 +44,7 @@ promotion gates are satisfied.
 | `signinum-profile` | instrumentation helper | Shared profiling helpers used by implementation crates at runtime. Published only because public crates depend on it; not a user-facing API. |
 | `signinum-cuda-runtime` | runtime helper | CUDA Driver API, CUDA memory, and bundled kernel launch helpers used by CUDA adapters. Published support crate, not the primary user-facing API. |
 | `signinum-tilecodec` | codec | Tile decompression primitives: Deflate, Zstd, LZW, Uncompressed. Implements `TileDecompress` from `core`. |
-| `signinum-jpeg` | codec | Native pure-Rust JPEG inspect/decode for WSI tiles. CPU-first. Owns SIMD backends and fused entropy/IDCT/upsample paths. Its baseline JPEG encoder is a compatibility/fallback utility, not the diagnostic WSI/DICOM encode path. |
+| `signinum-jpeg` | codec | Native pure-Rust JPEG inspect/decode for supported WSI-oriented 8-bit Huffman classes. CPU-first. Owns SIMD backends and fused entropy/IDCT/upsample paths for current sequential fast paths; broader JPEG compatibility is tracked in [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). Its baseline JPEG encoder is a compatibility/fallback utility, not the diagnostic WSI/DICOM encode path. |
 | `signinum-j2k-native` | codec engine | Published implementation dependency for `signinum-j2k`; not the stable user-facing API. Lives under `#![forbid(unsafe_code)]` and uses `fearless_simd`. |
 | `signinum-j2k` | codec | Public JPEG 2000 / HTJ2K crate. Wraps `j2k-native` with the signinum-core trait surface (inspect, decode, ROI, scaled, row-bounded, tile-batch, and lossless encode). |
 | `signinum-j2k-compare` | dev-only | OpenJPEG FFI bindings used as a reference decoder for conformance and parity testing. Unpublished. |
@@ -246,11 +248,13 @@ decoder = Decoder::from_view(view)
                 Auto/Cpu may wrap CPU output in a host-backed DeviceSurface
 ```
 
-JPEG is fully fused on CPU: entropy decode, IDCT scheduling, upsampling, ROI,
-and the fast 4:2:0 path live together in
+Current 8-bit sequential JPEG fast paths are fused on CPU: entropy decode, IDCT
+scheduling, upsampling, ROI, and the fast 4:2:0 path live together in
 `crates/signinum-jpeg/src/entropy/sequential.rs` because splitting them
-regresses WSI tile-batch performance. Splitting that module is planned but
-gated on stable benchmark and parity coverage.
+regresses WSI tile-batch performance. Progressive ROI/scaled, CMYK/YCCK,
+12-bit, and lossless SOF3 are separate CPU parity work and must not be treated
+as already covered by that fused sequential path. Splitting the module is
+planned but gated on stable benchmark and parity coverage.
 
 J2K parses boxes (COD, QCD, QCC, etc.) and codestream structure on CPU, then
 drives either the native CPU reconstruction path or a MetalDirect plan. ROI and
@@ -457,6 +461,10 @@ provisional and check the most recent commits before relying on it.
 - Adaptive backend routing: deciding when `BackendRequest::Auto` should
   upgrade a batch to Metal vs. stay on CPU.
 - Keeping the public WSI decode API guide aligned with the core trait surface.
+- Expanding JPEG compatibility through CPU parity first: CMYK/YCCK,
+  progressive ROI/scaled, 12-bit extended/progressive, and lossless SOF3.
+  Metal acceleration for those classes is gated on parity and measured
+  resident wins.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.
 - Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode` and
   stage accelerators in `signinum-transcode-metal`. These crates remain

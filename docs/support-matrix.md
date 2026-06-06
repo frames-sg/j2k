@@ -10,7 +10,7 @@ claims.
 |---------|--------|-------|
 | `signinum` | Stable facade | Recommended import surface for applications that need JPEG, JPEG 2000 / HTJ2K, tile decompression, and shared core contracts. |
 | `signinum-core` | Stable library | Pixel formats, backend requests, passthrough rows, scratch/context contracts, and device-submission traits. |
-| `signinum-jpeg` | Stable library | JPEG inspect, CPU decode, ROI/scaled WSI tile decode, batch decode, and baseline JPEG fixture/fallback encode. |
+| `signinum-jpeg` | Stable library | JPEG inspect, CPU decode for the current 8-bit Huffman subset, ROI/scaled WSI tile decode for supported sequential inputs, batch decode, and baseline JPEG fixture/fallback encode. Broader CPU parity for CMYK/YCCK, progressive ROI/scaled, 12-bit, and lossless SOF3 is tracked in [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). |
 | `signinum-j2k` | Stable library | JPEG 2000 / HTJ2K inspect, CPU decode, ROI/scaled decode, row-bounded decode, batch decode, and lossless encode. |
 | `signinum-tilecodec` | Stable library | Deflate, Zstd, LZW, and uncompressed container-tile decompression primitives. |
 | `signinum-cli` | Stable behavior | `signinum inspect <file>` header inspection. CLI behavior is tested, but Rust API semver tooling does not apply to the binary surface. |
@@ -36,8 +36,8 @@ claims.
 | Workflow | Supported through | Notes |
 |----------|-------------------|-------|
 | Header inspection | `signinum::jpeg`, `signinum::j2k`, `signinum-cli` | Does not decode pixels. |
-| Caller-owned CPU decode | `signinum::jpeg`, `signinum::j2k` | Portable default path. |
-| ROI and scaled tile decode | `signinum::jpeg`, `signinum::j2k` | Used for WSI tile pipelines that bring their own container, cache, and pyramid logic. |
+| Caller-owned CPU decode | `signinum::jpeg`, `signinum::j2k` | Portable default path for supported codestream classes. |
+| ROI and scaled tile decode | `signinum::jpeg`, `signinum::j2k` | Used for WSI tile pipelines that bring their own container, cache, and pyramid logic. JPEG ROI/scaled support is currently strongest for supported sequential inputs; progressive ROI/scaled is planned as CPU parity work before Metal acceleration. |
 | Row-bounded J2K decode | `signinum::j2k` | Intended for memory-bound decode workflows. |
 | Tile decompression | `signinum::tilecodec` | Container compression only; container parsing is out of scope. |
 | Whole-slide container parsing | Out of scope | Use `statumen` before invoking signinum codecs. |
@@ -48,7 +48,7 @@ claims.
 | Backend | Status | Limits |
 |---------|--------|--------|
 | CPU | Supported | Always available and used as the portable fallback for `BackendRequest::Auto`. |
-| Metal | Experimental | Apple Silicon macOS only. Device-output APIs are available for selected adapter paths. |
+| Metal | Experimental | Apple Silicon macOS only. Device-output APIs are available for selected adapter paths. New JPEG classes require CPU parity and benchmark evidence before resident Metal routing. |
 | CUDA | Experimental | Requires a CUDA driver. Runtime allocation/copy helpers are enabled through adapter `cuda-runtime` features. |
 
 ## Security and fuzzing

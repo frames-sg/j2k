@@ -211,6 +211,14 @@ on stable Signinum benchmark routes.
   - `jpeg-decoder`: `Decoder::decode`
   - `zune-jpeg`: `JpegDecoder::decode` with Luma output
   - `libjpeg-turbo`: reused TurboJPEG handle + `tj3Decompress8(..., TJPF_GRAY)`
+
+New JPEG compatibility classes must add CPU parity and baseline benchmark rows
+before Metal candidate rows:
+
+- CMYK/YCCK `Rgb8` and `Rgba8`
+- progressive full, ROI, scaled, and region-scaled output
+- 12-bit extended/progressive `Gray16` and `Rgb16`
+- lossless SOF3 predictor cases
 - `decode_rows_rgb`
   - `signinum-jpeg`: `Decoder::new` + `decode_rows` into a `RowSink<u8>`
   - no cross-crate comparator; TurboJPEG is a packed-output API, so this
@@ -696,15 +704,17 @@ be reintroduced as narrow, intentional benches.
 
 Current v1 scope is explicit:
 
-- JPEG: supported baseline WSI tile shapes can run Metal kernel paths for full,
-  region, scaled, region+scaled, and batched RGB device-output decode;
-  compatible queued region+scaled requests use a real `BatchOp::RegionScaled`
-  path. The coalesced benchmark intentionally queues 64 identical requests and
-  can collapse them to one immutable Metal surface; the distinct benchmark
-  queues 64 different JPEG byte streams so it measures cold-pan batch
-  throughput instead of duplicate-input reuse. Unsupported shapes fall back
-  through CPU decode plus device-surface upload according to the requested
-  backend
+- JPEG: selected 8-bit YCbCr sequential RGB8 WSI tile shapes can run Metal
+  kernel paths for full, region, scaled, region+scaled, and batched
+  device-output decode; compatible queued region+scaled requests use a real
+  `BatchOp::RegionScaled` path. CMYK/YCCK, progressive ROI/scaled, 12-bit, and
+  lossless SOF3 stay CPU-backed or structured unsupported until CPU parity and
+  benchmark-approved resident Metal wins land. The coalesced benchmark
+  intentionally queues 64 identical requests and can collapse them to one
+  immutable Metal surface; the distinct benchmark queues 64 different JPEG byte
+  streams so it measures cold-pan batch throughput instead of duplicate-input
+  reuse. Unsupported shapes fall back through CPU decode plus device-surface
+  upload according to the requested backend
 - J2K: grayscale and RGB full-tile plus ROI+scaled MetalDirect paths keep marker
   parsing and plan construction on CPU, then dispatch supported classic Tier-1
   or HTJ2K cleanup jobs, grouped sub-band work, IDWT, optional MCT, and
@@ -834,9 +844,10 @@ converted from a synchronization diagnostic into a fused decode stage with
 resident buffers and WSI-shaped inputs.
 
 Set `SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE=1` when the run must fail
-instead of benchmarking the CPU-upload fallback. Small committed fixtures are
-useful for compile smoke tests, but realistic GPU comparisons need larger
-WSI-shaped JPEG tiles.
+instead of benchmarking the CPU-upload fallback. In this repository that flag
+means strict Signinum-owned CUDA JPEG decode, not nvJPEG or a vendor hardware
+decode route. Small committed fixtures are useful for compile smoke tests, but
+realistic GPU comparisons need larger WSI-shaped JPEG tiles.
 
 For J2K CUDA HTJ2K planning/profile smoke tests:
 
@@ -988,3 +999,7 @@ is ≥2× over scalar, matching NEON.
   not fail on runtime performance deltas.
 - libjpeg-turbo remains the primary JPEG parity oracle, and it is now also a
   direct speed comparator when available locally through `pkg-config`.
+- New JPEG compatibility classes follow
+  [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): publish CPU
+  parity and baseline rows before adding Metal candidate rows, and route Metal
+  automatically only after resident-output measurements show a real win.

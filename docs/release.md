@@ -10,8 +10,10 @@ the public runtime crates that depend on them can be installed from crates.io.
 
 Metal and CUDA adapter crates are published as pre-1.0 artifacts where their
 APIs changed for the facade boundary.
-Runtime backend selection defaults to `Auto`; supported compiled device paths
-may run before CPU fallback.
+Runtime backend selection defaults to `Auto`; device paths may run before CPU
+fallback only for benchmark-approved supported shapes. Unproven JPEG classes
+remain CPU-backed, structured unsupported, or not implemented until their
+CPU parity and backend promotion gates land.
 CUDA explicit requests can produce CUDA device memory surfaces when built with
 `cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` uses
 Signinum-owned CUDA kernels for supported full-frame RGB8 4:2:0, 4:2:2, and

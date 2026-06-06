@@ -13,7 +13,9 @@
 CUDA today has only the two *separate* endpoints — owned full-frame JPEG CUDA decode
 (`signinum-jpeg-cuda`) and HTJ2K *pixel* encode (`signinum-j2k-cuda`) — which force a
 pixel round-trip. Metal already has the coefficient-domain shortcut
-(`signinum-transcode-metal`). This brings CUDA to parity.
+(`signinum-transcode-metal`). This brings CUDA to parity with that Metal
+transcode-stage accelerator shape; it is not a universal JPEG decode or CPU
+parity claim.
 
 ## 2. Architecture (follows the repo's CUDA split)
 

@@ -11,6 +11,17 @@ on a single visual smoke test.
   bench suites.
 - Tolerance is bit-exact for the committed baseline fixtures. Any future lossy
   tolerance must be recorded per fixture in the manifest.
+- New JPEG support classes follow the CPU-first phase plan in
+  [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). CMYK/YCCK,
+  progressive ROI/scaled, 12-bit extended/progressive, and lossless SOF3 must
+  land CPU parity fixtures and reference outputs before any Metal route is
+  promoted.
+- A/B/C fixture entries must record the oracle source and version, output
+  pixel format, and accepted tolerance. If libjpeg-turbo does not support a
+  class, the alternative oracle must be recorded with the exact command used.
+- JPEG Metal and CUDA adapter parity must compare resident outputs against the
+  CPU oracle for the same JPEG class. CPU-staged upload paths do not count as
+  resident decode parity.
 
 ## JPEG 2000 / HTJ2K
 
@@ -18,12 +29,9 @@ on a single visual smoke test.
   engine and, where available, OpenJPEG/Grok comparator paths.
 - ROI, scaled, combined ROI+scaled, row, and tile-batch surfaces are tested as
   API behavior, not only as full-frame decode.
-- Metal and CUDA-named adapter crates must preserve CPU parity for fallback
+- J2K Metal and CUDA-named adapter crates must preserve CPU parity for fallback
   host surfaces. Metal crates must preserve decoded bytes for explicit
-  Metal-backed ROI+scaled surfaces. Strict JPEG CUDA surfaces produced by
-  Signinum-owned kernels are checked against the CPU reference with the
-  documented owned-kernel tolerance and report owned decode separately from
-  copy fallback stats.
+  Metal-backed ROI+scaled surfaces.
 
 ## Maintenance Rules
 

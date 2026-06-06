@@ -13,7 +13,10 @@ destination, and re-encode only when that is not possible.
    frame/tile order, and destination transfer syntax are compatible, copy the
    compressed tile bytes into the destination container unchanged.
 3. If passthrough is not legal and diagnostic-preserving output is required,
-   decode to pixels and encode a new lossless JPEG 2000 or HTJ2K codestream.
+   decode to pixels only when Signinum supports the source JPEG class, then
+   encode a new lossless JPEG 2000 or HTJ2K codestream. Unsupported source
+   classes should be rejected or delegated explicitly rather than silently
+   treated as covered fallback transcodes.
 4. Use baseline JPEG encoding only for explicit non-diagnostic fallback cases:
    generated fixtures, preview/export derivatives, or a caller-requested legacy
    transfer syntax where lossy output is acceptable.

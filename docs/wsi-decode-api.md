@@ -33,6 +33,14 @@ Common shapes:
 - `decode_region_scaled_into` decodes a source-coordinate ROI on a reduced
   resolution grid.
 
+These are API shapes, not universal JPEG coverage claims. Current JPEG CPU
+ROI/scaled/tile-batch support is for supported 8-bit baseline or extended
+sequential inputs, while progressive 8-bit is currently full-image/full-scale
+only. CMYK/YCCK output, progressive ROI/scaled, 12-bit extended/progressive,
+and lossless SOF3 remain structured unsupported or not-implemented cases until
+the CPU parity phases in [`docs/jpeg-support-phases`](jpeg-support-phases/README.md)
+land.
+
 ROI coordinates are always expressed in source-image pixels. For
 `decode_region_scaled_into`, the returned `DecodeOutcome::decoded` rectangle is
 the floor-start / ceil-end projection of the source ROI into the scaled grid.
@@ -153,7 +161,12 @@ decode.
 
 For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
-Use `metal_fast` for broad Metal fast-packet shape support and
+The current universal-compatibility expansion is tracked in
+[`docs/jpeg-support-phases`](jpeg-support-phases/README.md): CPU parity for
+CMYK/YCCK, progressive ROI/scaled, 12-bit extended/progressive, and lossless
+SOF3 must land before any Metal acceleration for those classes is promoted.
+Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
+4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable
 caller-owned RGB8 Metal buffer/texture batch APIs. The resident-output query is
 narrower than `metal_fast`: it requires RGB8 output and a full, scaled, or

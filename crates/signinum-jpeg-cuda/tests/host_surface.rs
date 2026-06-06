@@ -6,10 +6,8 @@ use signinum_core::{
 use signinum_jpeg_cuda::{Codec, CudaSession, Decoder, Error};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
-const BASELINE_422: &[u8] =
-    include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_422_16x8.jpg");
-const BASELINE_444: &[u8] =
-    include_bytes!("../../signinum-jpeg/fixtures/conformance/baseline_444_8x8.jpg");
+const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
+const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
 const OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA: u8 = 2;
 
 #[test]
