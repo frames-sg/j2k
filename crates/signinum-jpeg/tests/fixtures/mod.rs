@@ -38,9 +38,18 @@ pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
 pub(crate) const LOSSLESS_GRAYSCALE_3X3_PIXELS: [u8; 9] =
     [130, 132, 136, 128, 135, 142, 125, 137, 150];
 
+pub(crate) const LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS: [u16; 9] = [
+    33000, 33012, 33025, 32990, 33020, 33044, 32970, 33030, 33080,
+];
+
 /// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
 pub(crate) fn lossless_predictor_grayscale_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_grayscale_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_3X3_PIXELS)
+}
+
+/// A 3x3 16-bit SOF3 lossless grayscale JPEG using predictor 1..=7.
+pub(crate) fn lossless_predictor_grayscale_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_grayscale_16bit_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS)
 }
 
 fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
@@ -64,6 +73,32 @@ fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8
     bytes
 }
 
+fn lossless_grayscale_16bit_jpeg(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    samples: &[u16],
+) -> Vec<u8> {
+    assert_eq!(samples.len(), usize::from(width) * usize::from(height));
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 11, 16]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[1, 1, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=15);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, predictor, 0, 0]);
+    bytes.extend(lossless_entropy_16bit(width, predictor, samples));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 fn lossless_entropy(width: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
     let width = usize::from(width);
     let mut bits = Vec::new();
@@ -71,6 +106,23 @@ fn lossless_entropy(width: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
         let x = idx % width;
         let y = idx / width;
         let predicted = lossless_predicted_value(samples, width, x, y, predictor);
+        let diff = i32::from(sample) - predicted;
+        let category = lossless_diff_category(diff);
+        push_bits(&mut bits, u32::from(category), 4);
+        if category != 0 {
+            push_bits(&mut bits, lossless_magnitude_bits(diff, category), category);
+        }
+    }
+    pack_entropy_bits(bits)
+}
+
+fn lossless_entropy_16bit(width: u16, predictor: u8, samples: &[u16]) -> Vec<u8> {
+    let width = usize::from(width);
+    let mut bits = Vec::new();
+    for (idx, &sample) in samples.iter().enumerate() {
+        let x = idx % width;
+        let y = idx / width;
+        let predicted = lossless_predicted_value_16bit(samples, width, x, y, predictor);
         let diff = i32::from(sample) - predicted;
         let category = lossless_diff_category(diff);
         push_bits(&mut bits, u32::from(category), 4);
@@ -111,6 +163,39 @@ fn lossless_predicted_value(
         6 => rb + ((ra - rc) >> 1),
         7 => (ra + rb) >> 1,
         _ => 128,
+    }
+}
+
+fn lossless_predicted_value_16bit(
+    samples: &[u16],
+    width: usize,
+    x: usize,
+    y: usize,
+    predictor: u8,
+) -> i32 {
+    let idx = y * width + x;
+    if x == 0 && y == 0 {
+        return 32768;
+    }
+    if y == 0 {
+        return i32::from(samples[idx - 1]);
+    }
+    if x == 0 {
+        return i32::from(samples[idx - width]);
+    }
+
+    let ra = i32::from(samples[idx - 1]);
+    let rb = i32::from(samples[idx - width]);
+    let rc = i32::from(samples[idx - width - 1]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 32768,
     }
 }
 

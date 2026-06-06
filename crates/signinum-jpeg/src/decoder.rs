@@ -247,6 +247,7 @@ pub struct Decoder<'a> {
 #[derive(Debug, Clone)]
 struct PreparedLosslessPlan {
     predictor: u8,
+    bit_depth: u8,
     dc_table: Arc<HuffmanTable>,
     dimensions: (u32, u32),
     scan_offset: usize,
@@ -469,7 +470,7 @@ impl<'a> Decoder<'a> {
         if info.sof_kind != SofKind::Lossless {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        if info.bit_depth != 8 || info.color_space != ColorSpace::Grayscale {
+        if !matches!(info.bit_depth, 8 | 16) || info.color_space != ColorSpace::Grayscale {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         if header.scan_count != 1 || header.restart_interval.is_some() {
@@ -536,6 +537,7 @@ impl<'a> Decoder<'a> {
         };
         let lossless = PreparedLosslessPlan {
             predictor: scan.ss,
+            bit_depth: info.bit_depth,
             dc_table,
             dimensions: info.dimensions,
             scan_offset: plan.scan_offset,
@@ -927,13 +929,33 @@ impl<'a> Decoder<'a> {
                     Rect::full(self.info.dimensions),
                 )
             }
-            OutputFormat::Gray16 => self.decode_extended12_gray16_into(out, stride),
-            OutputFormat::Gray16Scaled { .. } => self.decode_extended12_gray16_region_scaled_into(
-                out,
-                stride,
-                Rect::full(self.info.dimensions),
-                downscale,
-            ),
+            OutputFormat::Gray16 => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_gray16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
+                self.decode_extended12_gray16_into(out, stride)
+            }
+            OutputFormat::Gray16Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_gray16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
+                self.decode_extended12_gray16_region_scaled_into(
+                    out,
+                    stride,
+                    Rect::full(self.info.dimensions),
+                    downscale,
+                )
+            }
             OutputFormat::Rgb16 => self.decode_extended12_rgb16_into(out, stride),
             OutputFormat::Rgb16Scaled { .. } => self.decode_extended12_rgb16_region_scaled_into(
                 out,
@@ -1268,8 +1290,18 @@ impl<'a> Decoder<'a> {
                 let mut writer = CroppedWriter::new(base, scaled_roi, source_x0, source_width);
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
-            OutputFormat::Gray16 => self.decode_extended12_gray16_region_into(out, stride, roi),
+            OutputFormat::Gray16 => {
+                if self.lossless_plan.is_some() {
+                    return self
+                        .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
+                }
+                self.decode_extended12_gray16_region_into(out, stride, roi)
+            }
             OutputFormat::Gray16Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    return self
+                        .decode_lossless_gray16_region_scaled_into(out, stride, roi, downscale);
+                }
                 self.decode_extended12_gray16_region_scaled_into(out, stride, roi, downscale)
             }
             OutputFormat::Rgb16 => self.decode_extended12_rgb16_region_into(out, stride, roi),
@@ -1966,6 +1998,11 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
+        if plan.bit_depth != 8 {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            });
+        }
         if !(1..=7).contains(&plan.predictor) {
             return Err(JpegError::UnsupportedPredictor {
                 predictor: plan.predictor,
@@ -2014,6 +2051,82 @@ impl Decoder<'_> {
         let mut outcome = self.decode_lossless_gray8_into(&mut full, full_stride)?;
         let output_rect = scaled_rect_covering(roi, downscale)?;
         copy_gray8_scaled_rect(
+            &full,
+            (width, height),
+            output_rect,
+            downscale.denominator(),
+            out,
+            stride,
+        );
+        outcome.decoded = roi;
+        Ok(outcome)
+    }
+
+    fn decode_lossless_gray16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.bit_depth != 16 {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            });
+        }
+        if !(1..=7).contains(&plan.predictor) {
+            return Err(JpegError::UnsupportedPredictor {
+                predictor: plan.predictor,
+            });
+        }
+
+        let (width, height) = plan.dimensions;
+        let scan_bytes = &self.bytes[plan.scan_offset..];
+        let mut br = BitReader::new(scan_bytes);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let predictor = lossless_predictor_value_u16(plan.predictor, out, stride, x, y);
+                let diff = plan.dc_table.decode_fast_dc(&mut br)?;
+                let sample = predictor + diff;
+                if !(0..=u16::MAX as i32).contains(&sample) {
+                    return Err(JpegError::HuffmanDecode {
+                        mcu: 0,
+                        reason: HuffmanFailure::InvalidSymbol,
+                    });
+                }
+                let offset = y * stride + x * 2;
+                out[offset..offset + 2].copy_from_slice(&(sample as u16).to_le_bytes());
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_lossless_gray16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
+            return self.decode_lossless_gray16_into(out, stride);
+        }
+
+        let (width, height) = self.info.dimensions;
+        let full_stride = width as usize * 2;
+        let mut full = allocate_output_buffer(full_stride * height as usize);
+        let mut outcome = self.decode_lossless_gray16_into(&mut full, full_stride)?;
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        copy_gray16_scaled_rect(
             &full,
             (width, height),
             output_rect,
@@ -2434,6 +2547,44 @@ fn lossless_predictor_value(predictor: u8, out: &[u8], stride: usize, x: usize, 
     }
 }
 
+fn lossless_predictor_value_u16(
+    predictor: u8,
+    out: &[u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+) -> i32 {
+    if x == 0 && y == 0 {
+        return 32768;
+    }
+    if y == 0 {
+        return i32::from(read_gray16_sample(out, (x - 1) * 2));
+    }
+    if x == 0 {
+        return i32::from(read_gray16_sample(out, (y - 1) * stride));
+    }
+
+    let row = y * stride;
+    let prev_row = (y - 1) * stride;
+    let ra = i32::from(read_gray16_sample(out, row + (x - 1) * 2));
+    let rb = i32::from(read_gray16_sample(out, prev_row + x * 2));
+    let rc = i32::from(read_gray16_sample(out, prev_row + (x - 1) * 2));
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 32768,
+    }
+}
+
+fn read_gray16_sample(out: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([out[offset], out[offset + 1]])
+}
+
 fn merged_warnings(header_warnings: &[Warning], scan_warnings: Vec<Warning>) -> Vec<Warning> {
     if header_warnings.is_empty() {
         return scan_warnings;
@@ -2465,6 +2616,28 @@ fn copy_gray8_scaled_rect(
             let source_x = output_x.saturating_mul(denom).min(width - 1);
             let src = source_y as usize * width as usize + source_x as usize;
             dst[dst_px] = full[src];
+        }
+    }
+}
+
+fn copy_gray16_scaled_rect(
+    full: &[u8],
+    dimensions: (u32, u32),
+    output_rect: Rect,
+    denom: u32,
+    out: &mut [u8],
+    stride: usize,
+) {
+    let (width, height) = dimensions;
+    let full_stride = width as usize * 2;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            let src = source_y as usize * full_stride + source_x as usize * 2;
+            let dst = dst_row * stride + (output_x - output_rect.x) as usize * 2;
+            out[dst..dst + 2].copy_from_slice(&full[src..src + 2]);
         }
     }
 }
@@ -2520,6 +2693,10 @@ fn output_format_from_parts(
         return match (fmt, scale) {
             (PixelFormat::Gray8, Downscale::None) => Ok(OutputFormat::Gray8),
             (PixelFormat::Gray8, scale) => Ok(OutputFormat::Gray8Scaled {
+                factor: jpeg_downscale(scale),
+            }),
+            (PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
+            (PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
                 factor: jpeg_downscale(scale),
             }),
             _ => Err(JpegError::NotImplemented { sof: sof_kind }),

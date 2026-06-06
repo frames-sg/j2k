@@ -44,7 +44,8 @@ expanded four-component fixture coverage, and broader lossless SOF3 remain
 structured unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
-8-bit grayscale predictors 1-7 decoded to `Gray8`.
+grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
+16-bit streams.
 
 ROI coordinates are always expressed in source-image pixels. For
 `decode_region_scaled_into`, the output buffer covers the floor-start /

@@ -711,12 +711,12 @@ Current v1 scope is explicit:
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
   assembly plus output projection. Initial 12-bit extended sequential
   grayscale `Gray16`/`Rgb16` full-image/ROI/scaled/region-scaled output is
-  CPU-backed, as is initial lossless SOF3 8-bit grayscale
-  full-image/ROI/scaled/region-scaled output for predictors 1-7. Expanded
-  four-component coverage, broader 12-bit multi-component RGB/progressive
-  support, and broader SOF3 precision/color/restart support stay structured
-  unsupported until CPU parity lands; all new Metal routes stay disabled until
-  benchmark-approved resident wins land.
+  CPU-backed, as is initial lossless SOF3 8-bit grayscale `Gray8` and 16-bit
+  grayscale `Gray16` full-image/ROI/scaled/region-scaled output for predictors
+  1-7. Expanded four-component coverage, broader 12-bit multi-component
+  RGB/progressive support, and broader SOF3 color/restart/row support stay
+  structured unsupported until CPU parity lands; all new Metal routes stay
+  disabled until benchmark-approved resident wins land.
   The coalesced benchmark
   intentionally queues 64 identical requests and can collapse them to one
   immutable Metal surface; the distinct benchmark queues 64 different JPEG byte

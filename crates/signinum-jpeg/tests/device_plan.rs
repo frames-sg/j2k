@@ -7,7 +7,8 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, lossless_predictor_grayscale_3x3_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg,
+    cmyk_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_predictor_grayscale_3x3_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -374,6 +375,51 @@ fn capability_report_marks_lossless_common_predictor_gray8_roi_and_scaled_cpu_el
 
             assert_eq!(report.info.sof_kind, SofKind::Lossless);
             assert_eq!(report.info.bit_depth, 8);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_marks_lossless_16bit_gray16_cpu_eligible() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Gray16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse 16-bit SOF3 predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 16);
             assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
             assert!(!report.owned_cuda.eligible);
             assert!(!report.metal_fast.eligible);

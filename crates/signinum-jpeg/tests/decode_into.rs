@@ -7,8 +7,9 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
 mod fixtures;
 use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg,
-    lossless_predictor_grayscale_3x3_jpeg, minimal_baseline_420_jpeg, progressive_8x8_jpeg,
-    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_3X3_PIXELS,
+    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    minimal_baseline_420_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
+    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
 };
 
 #[test]
@@ -448,6 +449,136 @@ fn decode_region_scaled_into_gray8_projects_lossless_grayscale_common_predictors
 }
 
 #[test]
+fn decode_into_gray16_accepts_lossless_16bit_grayscale_common_predictors() {
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless 16-bit predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let (w, h) = dec.info().dimensions;
+        let stride = w as usize * PixelFormat::Gray16.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * h as usize];
+
+        let outcome = dec
+            .decode_into(&mut buf, stride, PixelFormat::Gray16)
+            .unwrap_or_else(|err| {
+                panic!("lossless 16-bit predictor-{predictor} Gray16 decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((w, h)));
+        assert_gray16_samples(
+            &buf,
+            stride,
+            w,
+            &LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+            predictor,
+        );
+    }
+}
+
+#[test]
+fn decode_region_into_gray16_crops_lossless_16bit_grayscale_common_predictors() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let expected = crop_gray16(&LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, 3, roi);
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless 16-bit predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = roi.w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
+        let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+        let outcome = dec
+            .decode_region_into(&mut buf, stride, PixelFormat::Gray16, roi)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "lossless 16-bit predictor-{predictor} Gray16 ROI decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        assert_gray16_rows_with_padding(&buf, stride, roi.w, &expected, 4, predictor);
+    }
+}
+
+#[test]
+fn decode_scaled_into_gray16_projects_lossless_16bit_grayscale_common_predictors() {
+    let scaled_w = 2;
+    let scaled_h = 2;
+    let expected = project_scaled_gray16(
+        &LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+        3,
+        3,
+        Rect {
+            x: 0,
+            y: 0,
+            w: scaled_w,
+            h: scaled_h,
+        },
+        2,
+    );
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless 16-bit predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = scaled_w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
+        let mut buf = vec![0xaau8; stride * scaled_h as usize];
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, stride, PixelFormat::Gray16, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!("lossless 16-bit predictor-{predictor} Gray16 scaled decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
+        assert_gray16_rows_with_padding(&buf, stride, scaled_w, &expected, 4, predictor);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_gray16_projects_lossless_16bit_grayscale_common_predictors() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let expected = project_scaled_gray16(&LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, 3, 3, scaled_roi, 2);
+    for predictor in 1..=7 {
+        let bytes = lossless_predictor_grayscale_16bit_3x3_jpeg(predictor);
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("lossless 16-bit predictor-{predictor} grayscale JPEG must construct: {err}")
+        });
+        let stride = scaled_roi.w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut buf,
+                stride,
+                PixelFormat::Gray16,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "lossless 16-bit predictor-{predictor} Gray16 region-scaled decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        assert_gray16_rows_with_padding(&buf, stride, scaled_roi.w, &expected, 4, predictor);
+    }
+}
+
+#[test]
 fn decode_into_rejects_undersized_buffer_with_api_misuse_error() {
     let bytes = minimal_baseline_420_jpeg();
     let dec = Decoder::new(&bytes).unwrap();
@@ -706,6 +837,17 @@ fn crop_gray(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
     out
 }
 
+fn crop_gray16(full: &[u16], width: u32, roi: Rect) -> Vec<u16> {
+    let mut out = Vec::with_capacity(roi.w as usize * roi.h as usize);
+    for y in roi.y..roi.y + roi.h {
+        let row = y as usize * width as usize;
+        let start = row + roi.x as usize;
+        let end = start + roi.w as usize;
+        out.extend_from_slice(&full[start..end]);
+    }
+    out
+}
+
 fn project_scaled_rgb(
     full: &[u8],
     width: u32,
@@ -742,6 +884,69 @@ fn project_scaled_gray(
         }
     }
     out
+}
+
+fn project_scaled_gray16(
+    full: &[u16],
+    width: u32,
+    height: u32,
+    output_rect: Rect,
+    denom: u32,
+) -> Vec<u16> {
+    let mut out = Vec::with_capacity(output_rect.w as usize * output_rect.h as usize);
+    for sy in output_rect.y..output_rect.y + output_rect.h {
+        let src_y = (sy * denom).min(height - 1);
+        for sx in output_rect.x..output_rect.x + output_rect.w {
+            let src_x = (sx * denom).min(width - 1);
+            let offset = src_y as usize * width as usize + src_x as usize;
+            out.push(full[offset]);
+        }
+    }
+    out
+}
+
+fn assert_gray16_samples(buf: &[u8], stride: usize, width: u32, expected: &[u16], context: u8) {
+    for (row, expected_row) in buf
+        .chunks_exact(stride)
+        .zip(expected.chunks_exact(width as usize))
+    {
+        for (sample, expected) in row[..width as usize * 2]
+            .chunks_exact(2)
+            .zip(expected_row.iter().copied())
+        {
+            assert_eq!(
+                u16::from_le_bytes([sample[0], sample[1]]),
+                expected,
+                "predictor {context}"
+            );
+        }
+    }
+}
+
+fn assert_gray16_rows_with_padding(
+    buf: &[u8],
+    stride: usize,
+    width: u32,
+    expected: &[u16],
+    pad: usize,
+    context: u8,
+) {
+    for (row, expected_row) in buf
+        .chunks_exact(stride)
+        .zip(expected.chunks_exact(width as usize))
+    {
+        for (sample, expected) in row[..width as usize * 2]
+            .chunks_exact(2)
+            .zip(expected_row.iter().copied())
+        {
+            assert_eq!(
+                u16::from_le_bytes([sample[0], sample[1]]),
+                expected,
+                "predictor {context}"
+            );
+        }
+        assert_eq!(&row[width as usize * 2..], vec![0xaa; pad].as_slice());
+    }
 }
 
 fn scaled_rect_covering_for_test(rect: Rect, denom: u32) -> Rect {
