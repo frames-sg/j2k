@@ -4857,8 +4857,7 @@ fn fast420_packets_share_full_rgb_batch_shape(
     packet: &JpegMetalFast420PacketV1,
     segment_count: usize,
 ) -> bool {
-    packet.restart_interval_mcus == 0
-        && packet.dimensions == first.dimensions
+    packet.dimensions == first.dimensions
         && packet.mcus_per_row == first.mcus_per_row
         && packet.mcu_rows == first.mcu_rows
         && packet.entropy_checkpoints.len() == segment_count
@@ -5474,7 +5473,7 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
     let Some(first) = fast420_packets.first().copied() else {
         return Ok(None);
     };
-    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+    if first.entropy_checkpoints.is_empty() {
         return Ok(None);
     }
 
@@ -5907,7 +5906,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
     let Some(first) = fast420_packets.first().copied() else {
         return Ok(None);
     };
-    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+    if first.entropy_checkpoints.is_empty() {
         return Ok(None);
     }
 
