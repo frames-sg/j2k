@@ -340,6 +340,11 @@ impl CudaJpegChunkedEntropyConfig {
                 message: "JPEG entropy subsequence_words must be nonzero".to_string(),
             });
         }
+        if self.subsequence_words.checked_mul(32).is_none() {
+            return Err(CudaError::InvalidArgument {
+                message: "JPEG entropy subsequence_words bit size exceeds u32".to_string(),
+            });
+        }
         if self.sequence_len == 0 {
             return Err(CudaError::InvalidArgument {
                 message: "JPEG entropy sequence_len must be nonzero".to_string(),
@@ -12654,6 +12659,17 @@ mod tests {
 
         assert!(zero_words.validate().is_err());
         assert!(zero_sequence.validate().is_err());
+    }
+
+    #[test]
+    fn jpeg_chunked_entropy_config_rejects_subsequence_bit_overflow() {
+        let config = CudaJpegChunkedEntropyConfig {
+            subsequence_words: (u32::MAX / 32) + 1,
+            ..CudaJpegChunkedEntropyConfig::default()
+        };
+
+        assert!(config.validate().is_err());
+        assert!(config.subsequence_count_for_entropy_bytes(1).is_err());
     }
 
     #[test]
