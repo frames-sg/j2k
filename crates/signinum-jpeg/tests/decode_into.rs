@@ -202,6 +202,29 @@ fn decode_region_into_gray16_crops_extended12_grayscale_samples() {
 }
 
 #[test]
+fn decode_scaled_into_gray16_projects_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let scale = Downscale::Half;
+    let scaled_w = 4;
+    let scaled_h = 4;
+    let stride = scaled_w as usize * PixelFormat::Gray16.bytes_per_pixel() + 4;
+    let mut buf = vec![0xaau8; stride * scaled_h as usize];
+
+    let outcome = dec
+        .decode_scaled_into(&mut buf, stride, PixelFormat::Gray16, scale)
+        .expect("12-bit grayscale scaled decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full(dec.info().dimensions));
+    for row in buf.chunks_exact(stride) {
+        for sample in row[..scaled_w as usize * 2].chunks_exact(2) {
+            assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
+        }
+        assert_eq!(&row[scaled_w as usize * 2..], &[0xaa; 4]);
+    }
+}
+
+#[test]
 fn decode_into_rgb16_expands_extended12_grayscale_samples() {
     let bytes = extended_12bit_grayscale_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
@@ -252,6 +275,38 @@ fn decode_region_into_rgb16_crops_extended12_grayscale_samples() {
             assert_eq!(channels, [2048; 3]);
         }
         assert_eq!(&row[roi.w as usize * 6..], &[0xaa; 6]);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgb16_projects_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
+        .expect("12-bit grayscale region-scaled Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    for row in buf.chunks_exact(stride) {
+        for pixel in row[..scaled_roi.w as usize * 6].chunks_exact(6) {
+            let channels = [
+                u16::from_le_bytes([pixel[0], pixel[1]]),
+                u16::from_le_bytes([pixel[2], pixel[3]]),
+                u16::from_le_bytes([pixel[4], pixel[5]]),
+            ];
+            assert_eq!(channels, [2048; 3]);
+        }
+        assert_eq!(&row[scaled_roi.w as usize * 6..], &[0xaa; 6]);
     }
 }
 

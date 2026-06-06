@@ -928,7 +928,19 @@ impl<'a> Decoder<'a> {
                 )
             }
             OutputFormat::Gray16 => self.decode_extended12_gray16_into(out, stride),
+            OutputFormat::Gray16Scaled { .. } => self.decode_extended12_gray16_region_scaled_into(
+                out,
+                stride,
+                Rect::full(self.info.dimensions),
+                downscale,
+            ),
             OutputFormat::Rgb16 => self.decode_extended12_rgb16_into(out, stride),
+            OutputFormat::Rgb16Scaled { .. } => self.decode_extended12_rgb16_region_scaled_into(
+                out,
+                stride,
+                Rect::full(self.info.dimensions),
+                downscale,
+            ),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1258,7 +1270,13 @@ impl<'a> Decoder<'a> {
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
             OutputFormat::Gray16 => self.decode_extended12_gray16_region_into(out, stride, roi),
+            OutputFormat::Gray16Scaled { .. } => {
+                self.decode_extended12_gray16_region_scaled_into(out, stride, roi, downscale)
+            }
             OutputFormat::Rgb16 => self.decode_extended12_rgb16_region_into(out, stride, roi),
+            OutputFormat::Rgb16Scaled { .. } => {
+                self.decode_extended12_rgb16_region_scaled_into(out, stride, roi, downscale)
+            }
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1989,6 +2007,7 @@ impl Decoder<'_> {
             out,
             stride,
             Rect::full(self.info.dimensions),
+            DownscaleFactor::Full,
             Extended12Output::Gray16,
         )
     }
@@ -1999,7 +2018,23 @@ impl Decoder<'_> {
         stride: usize,
         roi: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_extended12_region_into(out, stride, roi, Extended12Output::Gray16)
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            roi,
+            DownscaleFactor::Full,
+            Extended12Output::Gray16,
+        )
+    }
+
+    fn decode_extended12_gray16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, downscale, Extended12Output::Gray16)
     }
 
     fn decode_extended12_rgb16_into(
@@ -2011,6 +2046,7 @@ impl Decoder<'_> {
             out,
             stride,
             Rect::full(self.info.dimensions),
+            DownscaleFactor::Full,
             Extended12Output::Rgb16,
         )
     }
@@ -2021,7 +2057,23 @@ impl Decoder<'_> {
         stride: usize,
         roi: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_extended12_region_into(out, stride, roi, Extended12Output::Rgb16)
+        self.decode_extended12_region_into(
+            out,
+            stride,
+            roi,
+            DownscaleFactor::Full,
+            Extended12Output::Rgb16,
+        )
+    }
+
+    fn decode_extended12_rgb16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_extended12_region_into(out, stride, roi, downscale, Extended12Output::Rgb16)
     }
 
     fn decode_extended12_region_into(
@@ -2029,6 +2081,7 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
         roi: Rect,
+        downscale: DownscaleFactor,
         output: Extended12Output,
     ) -> Result<DecodeOutcome, JpegError> {
         if self.info.sof_kind != SofKind::Extended12
@@ -2048,6 +2101,7 @@ impl Decoder<'_> {
             });
         }
 
+        let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
         let component = &self.plan.components[0];
         let (width, height) = self.info.dimensions;
@@ -2057,6 +2111,12 @@ impl Decoder<'_> {
         let mut prev_dc = 0i32;
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u16; 64];
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output,
+        };
 
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
@@ -2081,11 +2141,9 @@ impl Decoder<'_> {
                 write_extended12_block_region(
                     out,
                     stride,
-                    roi,
-                    (width, height),
+                    write_region,
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
-                    output,
                 );
             }
         }
@@ -2104,54 +2162,56 @@ enum Extended12Output {
     Rgb16,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Extended12WriteRegion {
+    output_rect: Rect,
+    dimensions: (u32, u32),
+    downscale: DownscaleFactor,
+    output: Extended12Output,
+}
+
 fn write_extended12_block_region(
     out: &mut [u8],
     stride: usize,
-    roi: Rect,
-    dimensions: (u32, u32),
+    region: Extended12WriteRegion,
     block_origin: (u32, u32),
     pixels: &[u16; 64],
-    output: Extended12Output,
 ) {
-    let (width, height) = dimensions;
+    let (width, height) = region.dimensions;
     let (x0, y0) = block_origin;
     let block_x1 = (x0 + 8).min(width);
     let block_y1 = (y0 + 8).min(height);
-    let roi_x1 = roi.x + roi.w;
-    let roi_y1 = roi.y + roi.h;
-    let copy_x0 = x0.max(roi.x);
-    let copy_y0 = y0.max(roi.y);
-    let copy_x1 = block_x1.min(roi_x1);
-    let copy_y1 = block_y1.min(roi_y1);
-    if copy_x0 >= copy_x1 || copy_y0 >= copy_y1 {
-        return;
-    }
-
-    let copy_w = (copy_x1 - copy_x0) as usize;
-    let bytes_per_pixel = match output {
+    let denom = region.downscale.denominator();
+    let bytes_per_pixel = match region.output {
         Extended12Output::Gray16 => 2,
         Extended12Output::Rgb16 => 6,
     };
-    for source_y in copy_y0..copy_y1 {
+    let output_rect = region.output_rect;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        if source_y < y0 || source_y >= block_y1 {
+            continue;
+        }
         let src_row = (source_y - y0) as usize;
-        let src_col = (copy_x0 - x0) as usize;
-        let dst_row = (source_y - roi.y) as usize;
-        let dst_col = (copy_x0 - roi.x) as usize;
-        let dst_start = dst_row * stride + dst_col * bytes_per_pixel;
-        let dst = &mut out[dst_start..dst_start + copy_w * bytes_per_pixel];
-        let src = &pixels[src_row * 8 + src_col..src_row * 8 + src_col + copy_w];
-        match output {
-            Extended12Output::Gray16 => {
-                for (dst_sample, sample) in dst.chunks_exact_mut(2).zip(src.iter().copied()) {
-                    dst_sample.copy_from_slice(&sample.to_le_bytes());
-                }
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            if source_x < x0 || source_x >= block_x1 {
+                continue;
             }
-            Extended12Output::Rgb16 => {
-                for (dst_pixel, sample) in dst.chunks_exact_mut(6).zip(src.iter().copied()) {
-                    let sample = sample.to_le_bytes();
-                    dst_pixel[0..2].copy_from_slice(&sample);
-                    dst_pixel[2..4].copy_from_slice(&sample);
-                    dst_pixel[4..6].copy_from_slice(&sample);
+            let src_col = (source_x - x0) as usize;
+            let sample = pixels[src_row * 8 + src_col].to_le_bytes();
+            let dst_col = (output_x - output_rect.x) as usize;
+            let dst_start = dst_row * stride + dst_col * bytes_per_pixel;
+            let dst = &mut out[dst_start..dst_start + bytes_per_pixel];
+            match region.output {
+                Extended12Output::Gray16 => {
+                    dst.copy_from_slice(&sample);
+                }
+                Extended12Output::Rgb16 => {
+                    dst[0..2].copy_from_slice(&sample);
+                    dst[2..4].copy_from_slice(&sample);
+                    dst[4..6].copy_from_slice(&sample);
                 }
             }
         }
@@ -2274,8 +2334,8 @@ fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
         OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => "Rgb8",
         OutputFormat::Rgba8 { .. } => "Rgba8",
         OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
-        OutputFormat::Gray16 => "Gray16",
-        OutputFormat::Rgb16 => "Rgb16",
+        OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. } => "Gray16",
+        OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. } => "Rgb16",
     }
 }
 
@@ -2394,10 +2454,13 @@ fn output_format_from_parts(
     if matches!(sof_kind, SofKind::Extended12 | SofKind::Progressive12) {
         return match (sof_kind, fmt, scale) {
             (SofKind::Extended12, PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
+            (SofKind::Extended12, PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
+                factor: jpeg_downscale(scale),
+            }),
             (SofKind::Extended12, PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
-            (SofKind::Extended12, PixelFormat::Gray16 | PixelFormat::Rgb16, _) => {
-                Err(JpegError::DownscaleUnsupported { sof: sof_kind })
-            }
+            (SofKind::Extended12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
+                factor: jpeg_downscale(scale),
+            }),
             (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
                 Err(JpegError::NotImplemented { sof: sof_kind })
             }

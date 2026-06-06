@@ -146,16 +146,18 @@ impl JpegCapabilityReport {
 
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
-        SofKind::Extended12
-            if matches!(request.op, JpegDecodeOp::Full | JpegDecodeOp::Region(_))
-                && matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) =>
-        {
-            if info.color_space == ColorSpace::Grayscale {
-                return JpegBackendEligibility::eligible();
+        SofKind::Extended12 if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+            if info.color_space != ColorSpace::Grayscale {
+                return JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16 only",
+                );
             }
-            return JpegBackendEligibility::rejected(
-                "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16 only",
-            );
+            if info.restart_interval.is_some() {
+                return JpegBackendEligibility::rejected(
+                    "JPEG CPU 12-bit extended decode does not yet support restart intervals",
+                );
+            }
+            return JpegBackendEligibility::eligible();
         }
         SofKind::Extended12 | SofKind::Progressive12 => {
             return JpegBackendEligibility::rejected(

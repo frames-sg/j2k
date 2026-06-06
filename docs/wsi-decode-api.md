@@ -38,19 +38,19 @@ ROI/scaled/tile-batch support covers supported 8-bit baseline or extended
 sequential inputs, plus progressive 8-bit full/ROI/scaled/region-scaled output
 from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
 CPU conversion to RGB/RGBA is available. Initial 12-bit extended sequential
-grayscale full-image and non-scaled ROI decode to `Gray16` or expanded `Rgb16`
-is available, while 12-bit multi-component RGB, 12-bit progressive, 12-bit
-scaled output, expanded four-component fixture coverage, and broader lossless
-SOF3 remain structured unsupported or not-implemented cases until the CPU parity
-phases in
+grayscale full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded
+`Rgb16` is available, while 12-bit multi-component RGB, 12-bit progressive,
+expanded four-component fixture coverage, and broader lossless SOF3 remain
+structured unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image 8-bit grayscale predictors
 1-7 decoded to `Gray8`.
 
 ROI coordinates are always expressed in source-image pixels. For
-`decode_region_scaled_into`, the returned `DecodeOutcome::decoded` rectangle is
-the floor-start / ceil-end projection of the source ROI into the scaled grid.
-`Downscale::None` preserves the original ROI.
+`decode_region_scaled_into`, the output buffer covers the floor-start /
+ceil-end projection of the source ROI into the scaled grid, while
+`DecodeOutcome::decoded` remains the source-coordinate ROI. `Downscale::None`
+preserves the original ROI and writes the unscaled region dimensions.
 
 ```rust
 use signinum_core::{Downscale, ImageDecode, PixelFormat, Rect};

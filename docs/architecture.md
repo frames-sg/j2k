@@ -255,9 +255,9 @@ regresses WSI tile-batch performance. Initial CMYK/YCCK RGB/RGBA CPU
 conversion now lives in that fused sequential path. Progressive 8-bit
 full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
 assembly followed by output projection. Initial 12-bit extended sequential
-grayscale full-image and non-scaled ROI decode writes native `Gray16` samples
-or expanded `Rgb16` samples. Expanded four-component coverage, broader 12-bit
-multi-component RGB/progressive/scaled support, and broader lossless SOF3
+grayscale full-image/ROI/scaled/region-scaled decode writes native `Gray16`
+samples or expanded `Rgb16` samples. Expanded four-component coverage, broader
+12-bit multi-component RGB/progressive support, and broader lossless SOF3
 precision/color/restart/ROI/scaled support remain separate CPU parity work.
 Initial SOF3 8-bit grayscale full-image decode for predictors 1-7 is implemented
 as a non-DCT predictor path. Splitting the module is
@@ -471,10 +471,10 @@ provisional and check the most recent commits before relying on it.
 - Expanding JPEG compatibility through CPU parity first: initial CMYK/YCCK CPU
   conversion and progressive 8-bit ROI/scaled CPU output projection have
   landed. Initial 12-bit extended sequential grayscale `Gray16`/`Rgb16`
-  full-image and non-scaled ROI decode has landed, while expanded
-  four-component coverage, broader 12-bit extended/progressive/scaled support,
-  and broader lossless SOF3 precision/color/restart/ROI/scaled support remain
-  active parity work. Initial SOF3 8-bit grayscale full-image decode for
+  full-image/ROI/scaled/region-scaled decode has landed, while expanded
+  four-component coverage, broader 12-bit multi-component extended/progressive
+  support, and broader lossless SOF3 precision/color/restart/ROI/scaled support
+  remain active parity work. Initial SOF3 8-bit grayscale full-image decode for
   predictors 1-7 has landed. Metal acceleration for those classes is gated on
   parity and measured resident wins.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.

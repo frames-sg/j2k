@@ -268,6 +268,55 @@ fn capability_report_marks_extended12_rgb16_full_and_region_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_extended12_gray16_and_rgb16_scaled_cpu_eligible() {
+    let input = grayscale_sof_jpeg(0xc1, 12);
+    for fmt in [PixelFormat::Gray16, PixelFormat::Rgb16] {
+        for op in [
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 6,
+                    h: 6,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(&input, JpegCapabilityRequest { op, fmt })
+                .expect("capability report should parse 12-bit SOF1 metadata");
+
+            assert_eq!(report.info.sof_kind, SofKind::Extended12);
+            assert!(report.cpu.eligible, "fmt {fmt:?} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_rejects_extended12_restart_interval_cpu_decode() {
+    let input = grayscale_restart_sof_jpeg(0xc1, 12);
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Scaled(Downscale::Half),
+            fmt: PixelFormat::Gray16,
+        },
+    )
+    .expect("capability report should parse 12-bit restart metadata");
+
+    assert_eq!(report.info.sof_kind, SofKind::Extended12);
+    assert_eq!(report.info.restart_interval, Some(1));
+    assert!(!report.cpu.eligible);
+    assert!(report
+        .cpu
+        .reason
+        .expect("12-bit restart rejection")
+        .contains("restart intervals"));
+}
+
+#[test]
 fn capability_report_marks_lossless_common_predictor_gray8_full_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_predictor_grayscale_3x3_jpeg(predictor);
@@ -792,6 +841,17 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
 
 fn grayscale_sof_jpeg(marker: u8, precision: u8) -> Vec<u8> {
     let mut bytes = grayscale_jpeg(8, 8);
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("SOF0 marker");
+    bytes[sof + 1] = marker;
+    bytes[sof + 4] = precision;
+    bytes
+}
+
+fn grayscale_restart_sof_jpeg(marker: u8, precision: u8) -> Vec<u8> {
+    let mut bytes = grayscale_restart_jpeg();
     let sof = bytes
         .windows(2)
         .position(|window| window == [0xff, 0xc0])
