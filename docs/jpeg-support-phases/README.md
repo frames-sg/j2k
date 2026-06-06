@@ -24,11 +24,15 @@ unsupported errors until a separate entropy and conformance plan exists.
 - progressive 8-bit full-image, ROI, scaled, and region-scaled CPU decode via
   full progressive coefficient assembly and output projection
 - parser metadata for 12-bit extended/progressive and lossless SOF3
-- initial 12-bit extended sequential and progressive grayscale full-image/ROI/
-  scaled/region-scaled CPU decode to `Gray16` or expanded `Rgb16`, plus
+- initial 12-bit extended sequential grayscale full-image/ROI/scaled/
+  region-scaled CPU decode to `Gray16` or expanded `Rgb16`, including
+  restart-coded grayscale streams; initial 12-bit progressive grayscale
+  full-image/ROI/scaled/region-scaled CPU decode to `Gray16` or expanded
+  `Rgb16`; plus
   initial 12-bit APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/
   ROI/scaled/region-scaled CPU decode to `Rgb16`; other 12-bit subsampled
-  color support and stronger non-constant 12-bit oracle fixtures remain open
+  color support, 12-bit color restart intervals, and stronger non-constant
+  12-bit oracle fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
@@ -63,6 +67,59 @@ measured acceleration work.
    - benchmark-approved Auto eligibility
 6. Docs must avoid saying "all JPEGs" until arithmetic, hierarchical, and
    differential JPEG have a separate accepted plan and implementation.
+
+## Completion Phase Map
+
+This roadmap uses lettered compatibility phases for the CPU work and numbered
+completion phases for the overall product goal.
+
+### Phase 1: CPU Parity And Routing
+
+Deliver the in-repo CPU support needed before any new Metal route is allowed.
+This includes Phase A1/A2, B1/B2, C1, and D below:
+
+- 8-bit sequential CMYK/YCCK CPU decode.
+- Progressive 8-bit ROI/scaled/region-scaled CPU decode.
+- 12-bit extended and progressive CPU decode to native 16-bit output.
+- Lossless SOF3 CPU decode and row behavior where the predictor dependencies
+  allow it.
+- Capability reporting that lets Statumen and other callers route without
+  duplicating JPEG marker, sampling, precision, or output-format logic.
+
+Phase 1 is not complete until unsupported arithmetic, hierarchical, differential,
+and remaining color/precision shapes have explicit structured rejection tests or
+their own accepted implementation plan.
+
+### Phase 2: Resident Metal Acceleration
+
+After the matching CPU phase exits, add Metal only where resident execution can
+win. This maps to M0-M4 below:
+
+- Add benchmark rows before promotion logic.
+- Keep Metal outputs resident in caller-owned `MTLBuffer` or texture storage.
+- Target CMYK/YCCK conversion, progressive coefficient-to-pixel output, 12-bit
+  IDCT/store, and lossless predictor experiments only after CPU parity exists.
+- Keep `BackendRequest::Auto` on CPU unless the Metal route has repeatable
+  Apple Silicon wins for the exact shape.
+
+CPU-decode-then-upload paths may exist as explicitly named staging helpers, but
+they do not count as Metal decode support.
+
+### Phase 3: Production Hardening And Promotion
+
+Turn the supported CPU and Metal shapes into release-quality WSI runtime
+behavior:
+
+- Expand fixtures beyond tiny synthetic cases into external-oracle and real WSI
+  tile corpora with source, command, version, and tolerance recorded.
+- Add malformed-stream, fuzz, restart-interval, row, batch-session, and
+  capability regression coverage for every promoted class.
+- Add stable API snapshots after route vocabulary and output contracts are
+  settled.
+- Publish benchmark claims only with host, command, revision, input source, and
+  comparator availability recorded.
+- Promote Auto routing only after CPU parity, resident Metal parity, and
+  benchmark evidence agree.
 
 ## Phase 0: Docs, Fixtures, And Capability Audit
 
@@ -179,24 +236,26 @@ Implementation requirements:
 - Add 12-bit quantized coefficient and IDCT output handling without truncating
   internal precision.
   Status: initial scalar full-image/ROI/scaled/region-scaled grayscale
-  `Gray16`/`Rgb16`, APP14 RGB 4:4:4 `Rgb16`, and YCbCr
-  4:4:4/4:2:2/4:2:0 `Rgb16` paths have landed for SOF1 12-bit streams
-  without restart markers.
+  `Gray16`/`Rgb16`, including restart-coded grayscale streams, plus APP14 RGB
+  4:4:4 `Rgb16` and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` paths have landed for
+  SOF1 12-bit streams. Color restart intervals remain open.
 - Prefer `Gray16` and `Rgb16` output for native precision.
   Status: `Gray16` and expanded grayscale `Rgb16` are available for the initial
-  grayscale path, and direct APP14 RGB 4:4:4 plus YCbCr
+  grayscale path, including restart-coded streams, and direct APP14 RGB 4:4:4 plus YCbCr
   4:4:4/4:2:2/4:2:0 `Rgb16` is available for the initial color path; other
-  12-bit subsampled color remains open.
+  12-bit subsampled color and 12-bit color restart intervals remain open.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
   Status: 12-bit-to-8-bit output stays unsupported.
 - Add ROI, scaled, region-scaled, and batch coverage after full-image parity.
   Status: ROI, scaled, and region-scaled output have landed for the initial
-  grayscale, APP14 RGB 4:4:4, and YCbCr 4:4:4/4:2:2/4:2:0 paths;
-  session-batch coverage has landed for the initial color paths.
+  grayscale path, including restart-coded grayscale streams, and for APP14 RGB
+  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 paths; session-batch coverage has landed
+  for the initial color paths.
 - Update `JpegOutputBuffer` and capability reporting for 16-bit output formats.
   Status: capability reporting marks full-image/ROI/scaled/region-scaled
-  `Extended12` grayscale `Gray16`/`Rgb16`, APP14 RGB 4:4:4 `Rgb16`, and
+  `Extended12` grayscale `Gray16`/`Rgb16`, including restart-coded grayscale
+  streams, APP14 RGB 4:4:4 `Rgb16`, and
   YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` CPU-eligible.
 
 Metal follow-up candidate:
@@ -209,10 +268,10 @@ Exit criteria:
 
 - 12-bit extended sequential CPU decode matches the reference oracle for
   full-image and API-shaped outputs.
-  Status: partially met for the committed all-zero grayscale fixture and
-  channel-distinct APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 fixtures
-  covering full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16` output as
-  applicable.
+  Status: partially met for the committed all-zero grayscale fixture, the
+  restart-coded all-zero grayscale fixture, and channel-distinct APP14 RGB 4:4:4
+  and YCbCr 4:4:4/4:2:2/4:2:0 fixtures covering full-image/ROI/scaled/
+  region-scaled `Gray16`/`Rgb16` output as applicable.
 - 8-bit paths do not share precision state that can corrupt current behavior.
 
 ## Phase B2: 12-Bit Progressive CPU Decode

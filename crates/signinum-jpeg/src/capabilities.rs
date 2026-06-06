@@ -147,9 +147,9 @@ impl JpegCapabilityReport {
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
         SofKind::Extended12 if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
-            if info.restart_interval.is_some() {
+            if info.restart_interval.is_some() && info.color_space != ColorSpace::Grayscale {
                 return JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended decode does not yet support restart intervals",
+                    "JPEG CPU 12-bit extended color decode does not yet support restart intervals",
                 );
             }
             return match (info.color_space, request.fmt) {

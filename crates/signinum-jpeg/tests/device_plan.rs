@@ -7,10 +7,11 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
-    extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
-    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    cmyk_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
+    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_422_32x8_jpeg,
+    extended_12bit_ycbcr_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_3x3_jpeg,
     progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
     progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
@@ -715,25 +716,40 @@ fn capability_report_marks_progressive12_ycbcr420_rgb16_cpu_eligible() {
 }
 
 #[test]
-fn capability_report_rejects_extended12_restart_interval_cpu_decode() {
-    let input = grayscale_restart_sof_jpeg(0xc1, 12);
-    let report = JpegCapabilityReport::inspect(
-        &input,
-        JpegCapabilityRequest {
-            op: JpegDecodeOp::Scaled(Downscale::Half),
-            fmt: PixelFormat::Gray16,
-        },
-    )
-    .expect("capability report should parse 12-bit restart metadata");
+fn capability_report_marks_extended12_restart_grayscale_cpu_eligible() {
+    let input = extended_12bit_grayscale_restart_16x8_jpeg();
+    for fmt in [PixelFormat::Gray16, PixelFormat::Rgb16] {
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 2,
+                y: 1,
+                w: 12,
+                h: 6,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 2,
+                    y: 1,
+                    w: 12,
+                    h: 6,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(&input, JpegCapabilityRequest { op, fmt })
+                .expect("capability report should parse 12-bit restart metadata");
 
-    assert_eq!(report.info.sof_kind, SofKind::Extended12);
-    assert_eq!(report.info.restart_interval, Some(1));
-    assert!(!report.cpu.eligible);
-    assert!(report
-        .cpu
-        .reason
-        .expect("12-bit restart rejection")
-        .contains("restart intervals"));
+            assert_eq!(report.info.sof_kind, SofKind::Extended12);
+            assert_eq!(report.info.restart_interval, Some(1));
+            assert_eq!(report.info.dimensions, (16, 8));
+            assert_eq!(report.info.color_space, ColorSpace::Grayscale);
+            assert!(report.cpu.eligible, "fmt {fmt:?}, op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
 }
 
 #[test]
@@ -1474,17 +1490,6 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
 
 fn grayscale_sof_jpeg(marker: u8, precision: u8) -> Vec<u8> {
     let mut bytes = grayscale_jpeg(8, 8);
-    let sof = bytes
-        .windows(2)
-        .position(|window| window == [0xff, 0xc0])
-        .expect("SOF0 marker");
-    bytes[sof + 1] = marker;
-    bytes[sof + 4] = precision;
-    bytes
-}
-
-fn grayscale_restart_sof_jpeg(marker: u8, precision: u8) -> Vec<u8> {
-    let mut bytes = grayscale_restart_jpeg();
     let sof = bytes
         .windows(2)
         .position(|window| window == [0xff, 0xc0])

@@ -35,6 +35,26 @@ pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 16x8 12-bit extended sequential grayscale JPEG with DRI=1 and RST0.
+pub(crate) fn extended_12bit_grayscale_restart_16x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[0xff, 0xc1, 0x00, 11, 12, 0, 8, 0, 16, 1, 1, 0x11, 0]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
+    bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00]);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// An 8x8 12-bit extended sequential APP14 RGB JPEG.
 pub(crate) fn extended_12bit_rgb_8x8_jpeg() -> Vec<u8> {
     let mut bytes = Vec::new();

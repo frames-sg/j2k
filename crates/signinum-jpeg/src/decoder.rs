@@ -3009,7 +3009,7 @@ impl Decoder<'_> {
         downscale: DownscaleFactor,
         output: Extended12Output,
     ) -> Result<DecodeOutcome, JpegError> {
-        if self.info.sof_kind != SofKind::Extended12 || self.plan.restart_interval.is_some() {
+        if self.info.sof_kind != SofKind::Extended12 {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -3022,6 +3022,13 @@ impl Decoder<'_> {
             });
         }
         if matches!(output, Extended12Output::Rgb16) {
+            if self.plan.restart_interval.is_some()
+                && self.info.color_space != ColorSpace::Grayscale
+            {
+                return Err(JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                });
+            }
             match self.info.color_space {
                 ColorSpace::Rgb => {
                     return self.decode_extended12_color444_region_into(
@@ -3070,6 +3077,10 @@ impl Decoder<'_> {
         let mut prev_dc = 0i32;
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u16; 64];
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let mut mcus_since_restart = 0u32;
+        let mut expected_rst = 0u8;
+        let total_mcus = mcu_cols * mcu_rows;
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -3079,6 +3090,17 @@ impl Decoder<'_> {
 
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart > 0 && mcus_since_restart == restart {
+                    consume_extended12_restart(
+                        &mut br,
+                        current_mcu,
+                        total_mcus,
+                        &mut expected_rst,
+                    )?;
+                    prev_dc = 0;
+                    mcus_since_restart = 0;
+                }
                 decode_extended12_block_pixels(
                     &mut br,
                     component,
@@ -3093,6 +3115,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
+                mcus_since_restart += 1;
             }
         }
 
@@ -4005,6 +4028,30 @@ fn consume_lossless_restart(
     let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
         mcu_at: sample_index,
         mcu_total: total_samples,
+    })?;
+    let expected = 0xD0 | *expected_rst;
+    if marker != expected {
+        return Err(JpegError::RestartMismatch {
+            offset: br.position(),
+            expected: *expected_rst,
+            found: marker,
+        });
+    }
+    *expected_rst = (*expected_rst + 1) & 0x07;
+    br.reset_at_restart();
+    Ok(())
+}
+
+fn consume_extended12_restart(
+    br: &mut BitReader<'_>,
+    mcu_index: u32,
+    total_mcus: u32,
+    expected_rst: &mut u8,
+) -> Result<(), JpegError> {
+    let _ = br.ensure_bits(1);
+    let marker = br.take_marker().ok_or(JpegError::UnexpectedEoi {
+        mcu_at: mcu_index,
+        mcu_total: total_mcus,
     })?;
     let expected = 0xD0 | *expected_rst;
     if marker != expected {
