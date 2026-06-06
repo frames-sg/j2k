@@ -246,18 +246,40 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 "JPEG CPU decode does not yet support this 12-bit JPEG output",
             )
         }
-        SofKind::Lossless if matches!(request.fmt, PixelFormat::Gray8 | PixelFormat::Gray16) => {
-            if info.color_space != ColorSpace::Grayscale {
-                return JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 decode currently supports grayscale output only",
-                );
-            }
-            return match (info.bit_depth, request.fmt) {
-                (8, PixelFormat::Gray8) | (16, PixelFormat::Gray16) => {
+        SofKind::Lossless
+            if matches!(
+                request.fmt,
+                PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::Rgb8
+            ) =>
+        {
+            return match (info.color_space, info.bit_depth, request.fmt) {
+                (ColorSpace::Grayscale, 8, PixelFormat::Gray8)
+                | (ColorSpace::Grayscale, 16, PixelFormat::Gray16) => {
                     JpegBackendEligibility::eligible()
                 }
+                (ColorSpace::Rgb, 8, PixelFormat::Rgb8)
+                    if info.restart_interval.is_none()
+                        && info.sampling.len() == 3
+                        && info.sampling.max_h == 1
+                        && info.sampling.max_v == 1
+                        && info
+                            .sampling
+                            .components()
+                            .iter()
+                            .all(|&(h, v)| h == 1 && v == 1) =>
+                {
+                    JpegBackendEligibility::eligible()
+                }
+                (ColorSpace::Rgb, 8, PixelFormat::Rgb8) if info.restart_interval.is_some() => {
+                    JpegBackendEligibility::rejected(
+                        "JPEG CPU lossless SOF3 APP14 RGB decode does not yet support restart intervals",
+                    )
+                }
+                (ColorSpace::Rgb, 8, PixelFormat::Rgb8) => JpegBackendEligibility::rejected(
+                    "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
+                ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8 or 16-bit Gray16 grayscale output only",
+                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, or 8-bit APP14 RGB Rgb8 output only",
                 ),
             };
         }

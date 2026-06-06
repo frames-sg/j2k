@@ -10,7 +10,7 @@ use fixtures::{
     cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
     extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
     lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
-    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    lossless_predictor_rgb_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
     progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
     progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
@@ -847,6 +847,77 @@ fn capability_report_marks_restart_coded_lossless_grayscale_cpu_eligible() {
             assert!(!report.metal_fast.eligible);
         }
     }
+}
+
+#[test]
+fn capability_report_marks_lossless_app14_rgb8_cpu_eligible() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_rgb_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgb8,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse SOF3 APP14 RGB predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 8);
+            assert_eq!(report.info.color_space, ColorSpace::Rgb);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_rejects_lossless_app14_rgb_restart_explicitly() {
+    let input = insert_restart_interval(lossless_predictor_rgb_3x3_jpeg(1), 1);
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )
+    .expect("capability report should parse unsupported SOF3 APP14 RGB restart metadata");
+
+    assert_eq!(report.info.sof_kind, SofKind::Lossless);
+    assert_eq!(report.info.color_space, ColorSpace::Rgb);
+    assert_eq!(report.info.restart_interval, Some(1));
+    assert!(!report.cpu.eligible);
+    assert!(report
+        .cpu
+        .reason
+        .expect("restart rejection")
+        .contains("restart intervals"));
+    assert!(!report.owned_cuda.eligible);
+    assert!(!report.metal_fast.eligible);
 }
 
 #[test]

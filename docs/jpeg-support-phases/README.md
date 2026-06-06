@@ -31,8 +31,9 @@ unsupported errors until a separate entropy and conformance plan exists.
   color support and stronger non-constant 12-bit oracle fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
-  1-7, including restart-coded grayscale streams; color layouts, row output,
-  and non-grayscale restart coverage remain open
+  1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
+  to `Rgb8`; YCbCr/16-bit color layouts, row output, and non-grayscale
+  restart coverage remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -260,13 +261,14 @@ Implementation requirements:
 - Support `Gray8`/`Gray16` and RGB variants only when the component and sample
   model is understood.
   Status: `Gray8` is supported for the initial 8-bit grayscale shape and
-  `Gray16` is supported for the initial 16-bit grayscale shape; RGB variants
-  remain open.
+  `Gray16` is supported for the initial 16-bit grayscale shape; `Rgb8` is
+  supported for the initial 8-bit APP14 RGB 4:4:4 shape.
 - Add predictor-specific tests, restart-marker tests, malformed-stream tests,
   and row behavior where the predictor dependencies allow it.
   Status: predictor-specific positive coverage has landed for predictors 1-7,
-  including ROI/scaled/region-scaled output; restart, malformed, row,
-  color, and broader precision coverage remain open.
+  including ROI/scaled/region-scaled output; restart-coded grayscale coverage
+  and APP14 RGB color coverage have landed. Malformed streams, row output,
+  YCbCr/16-bit color, and broader precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during

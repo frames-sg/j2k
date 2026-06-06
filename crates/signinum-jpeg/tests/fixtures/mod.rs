@@ -440,9 +440,19 @@ pub(crate) const LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS: [u16; 9] = [
     33000, 33012, 33025, 32990, 33020, 33044, 32970, 33030, 33080,
 ];
 
+pub(crate) const LOSSLESS_RGB_3X3_PIXELS: [u8; 27] = [
+    130, 50, 200, 132, 53, 198, 136, 55, 195, 128, 54, 202, 135, 56, 199, 142, 59, 196, 125, 57,
+    204, 137, 60, 201, 150, 64, 198,
+];
+
 /// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
 pub(crate) fn lossless_predictor_grayscale_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_grayscale_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_3X3_PIXELS)
+}
+
+/// A 3x3 SOF3 lossless APP14 RGB JPEG using predictor 1..=7.
+pub(crate) fn lossless_predictor_rgb_3x3_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_rgb_jpeg(3, 3, predictor, &LOSSLESS_RGB_3X3_PIXELS)
 }
 
 /// A 3x3 SOF3 lossless grayscale JPEG with row-boundary restart markers.
@@ -477,6 +487,33 @@ fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8
     bytes.extend(dht);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, predictor, 0, 0]);
     bytes.extend(lossless_entropy(width, predictor, samples));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn lossless_rgb_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
+    assert_eq!(samples.len(), usize::from(width) * usize::from(height) * 3);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[
+        0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+    ]);
+    bytes.extend(lossless_rgb_entropy(width, predictor, samples));
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }
@@ -587,6 +624,27 @@ fn lossless_entropy(width: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
         push_bits(&mut bits, u32::from(category), 4);
         if category != 0 {
             push_bits(&mut bits, lossless_magnitude_bits(diff, category), category);
+        }
+    }
+    pack_entropy_bits(bits)
+}
+
+fn lossless_rgb_entropy(width: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {
+    let width = usize::from(width);
+    let mut bits = Vec::new();
+    for pixel in 0..samples.len() / 3 {
+        let x = pixel % width;
+        let y = pixel / width;
+        for component in 0..3 {
+            let sample = samples[pixel * 3 + component];
+            let predicted =
+                lossless_predicted_rgb_value(samples, width, x, y, component, predictor);
+            let diff = i32::from(sample) - predicted;
+            let category = lossless_diff_category(diff);
+            push_bits(&mut bits, u32::from(category), 4);
+            if category != 0 {
+                push_bits(&mut bits, lossless_magnitude_bits(diff, category), category);
+            }
         }
     }
     pack_entropy_bits(bits)
@@ -750,6 +808,40 @@ fn lossless_predicted_value_16bit(
         6 => rb + ((ra - rc) >> 1),
         7 => (ra + rb) >> 1,
         _ => 32768,
+    }
+}
+
+fn lossless_predicted_rgb_value(
+    samples: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    component: usize,
+    predictor: u8,
+) -> i32 {
+    let idx = (y * width + x) * 3 + component;
+    if x == 0 && y == 0 {
+        return 128;
+    }
+    if y == 0 {
+        return i32::from(samples[idx - 3]);
+    }
+    if x == 0 {
+        return i32::from(samples[idx - width * 3]);
+    }
+
+    let ra = i32::from(samples[idx - 3]);
+    let rb = i32::from(samples[idx - width * 3]);
+    let rc = i32::from(samples[idx - (width + 1) * 3]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 128,
     }
 }
 

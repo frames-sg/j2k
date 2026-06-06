@@ -478,62 +478,71 @@ impl<'a> Decoder<'a> {
         if info.sof_kind != SofKind::Lossless {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        if !matches!(info.bit_depth, 8 | 16) || info.color_space != ColorSpace::Grayscale {
-            return Err(JpegError::NotImplemented { sof: info.sof_kind });
-        }
         if header.scan_count != 1 {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         let scan = header.scan.as_ref().ok_or(JpegError::MissingMarker {
             marker: MarkerKind::Sos,
         })?;
-        if scan.components.len() != 1 {
-            return Err(JpegError::UnsupportedComponentCount {
-                count: scan.components.len() as u8,
-            });
-        }
         if !(1..=7).contains(&scan.ss) {
             return Err(JpegError::UnsupportedPredictor { predictor: scan.ss });
         }
         if scan.se != 0 || scan.ah != 0 || scan.al != 0 {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
-        let scan_component = scan.components[0];
-        let component_index = find_component_index(&header.component_ids, scan_component.id)
-            .ok_or(JpegError::UnknownScanComponent {
-                offset: header.sos_offset.unwrap_or_default(),
-                component: scan_component.id,
-            })?;
-        let (h, v) =
-            header
-                .sampling
-                .component(component_index)
-                .ok_or(JpegError::MissingMarker {
-                    marker: MarkerKind::Sof,
-                })?;
-        let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
-            .as_ref()
-            .ok_or(JpegError::MissingHuffmanTable {
-                component: scan_component.id,
-                class: 0,
-                id: scan_component.dc_table,
-            })?;
-        let dc_table = ctx.resolve_huffman_table(raw_dc)?;
+        let expected_components = match (info.color_space, info.bit_depth) {
+            (ColorSpace::Grayscale, 8 | 16) => 1,
+            (ColorSpace::Rgb, 8) => 3,
+            _ => return Err(JpegError::NotImplemented { sof: info.sof_kind }),
+        };
+        if scan.components.len() != expected_components {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: scan.components.len() as u8,
+            });
+        }
         let empty_raw = RawHuffmanTable {
             bits: [0; 16],
             values: HuffmanValues::default(),
         };
         let empty_huffman = ctx.resolve_huffman_table(&empty_raw)?;
-        let component = PreparedComponentPlan {
-            h,
-            v,
-            output_index: component_index,
-            quant: ctx.resolve_quant_table([1; 64]),
-            dc_table: Arc::clone(&dc_table),
-            ac_table: empty_huffman,
-        };
+        let mut components = Vec::with_capacity(scan.components.len());
+        let mut first_dc_table = None;
+        for scan_component in scan.components.iter().copied() {
+            let component_index = find_component_index(&header.component_ids, scan_component.id)
+                .ok_or(JpegError::UnknownScanComponent {
+                    offset: header.sos_offset.unwrap_or_default(),
+                    component: scan_component.id,
+                })?;
+            let (h, v) =
+                header
+                    .sampling
+                    .component(component_index)
+                    .ok_or(JpegError::MissingMarker {
+                        marker: MarkerKind::Sof,
+                    })?;
+            if info.color_space == ColorSpace::Rgb && (h != 1 || v != 1) {
+                return Err(JpegError::NotImplemented { sof: info.sof_kind });
+            }
+            let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
+                .as_ref()
+                .ok_or(JpegError::MissingHuffmanTable {
+                    component: scan_component.id,
+                    class: 0,
+                    id: scan_component.dc_table,
+                })?;
+            let dc_table = ctx.resolve_huffman_table(raw_dc)?;
+            first_dc_table.get_or_insert_with(|| Arc::clone(&dc_table));
+            components.push(PreparedComponentPlan {
+                h,
+                v,
+                output_index: component_index,
+                quant: ctx.resolve_quant_table([1; 64]),
+                dc_table,
+                ac_table: Arc::clone(&empty_huffman),
+            });
+        }
         let plan = PreparedDecodePlan {
-            components: vec![component],
+            components,
             sampling: info.sampling,
             color_space: info.color_space,
             restart_interval: header.restart_interval,
@@ -546,7 +555,9 @@ impl<'a> Decoder<'a> {
         let lossless = PreparedLosslessPlan {
             predictor: scan.ss,
             bit_depth: info.bit_depth,
-            dc_table,
+            dc_table: first_dc_table.ok_or(JpegError::MissingMarker {
+                marker: MarkerKind::Sos,
+            })?,
             dimensions: info.dimensions,
             scan_offset: plan.scan_offset,
         };
@@ -912,6 +923,14 @@ impl<'a> Decoder<'a> {
         let decode_start = profile_enabled.then(Instant::now);
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_rgb8_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                    );
+                }
                 let mut writer = Rgb8Writer::new(out, stride, w);
                 self.decode_rgb_with_writer(
                     pool,
@@ -1269,6 +1288,10 @@ impl<'a> Decoder<'a> {
         let decode_start = profile_enabled.then(Instant::now);
         let result = match fmt {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
+                if self.lossless_plan.is_some() {
+                    return self
+                        .decode_lossless_rgb8_region_scaled_into(out, stride, roi, downscale);
+                }
                 if fmt == OutputFormat::Rgb8
                     && downscale == DownscaleFactor::Full
                     && self.progressive_plan.is_none()
@@ -2145,6 +2168,111 @@ impl Decoder<'_> {
         let mut outcome = self.decode_lossless_gray8_into(&mut full, full_stride)?;
         let output_rect = scaled_rect_covering(roi, downscale)?;
         copy_gray8_scaled_rect(
+            &full,
+            (width, height),
+            output_rect,
+            downscale.denominator(),
+            out,
+            stride,
+        );
+        outcome.decoded = roi;
+        Ok(outcome)
+    }
+
+    fn decode_lossless_rgb8_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.bit_depth != 8 {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            });
+        }
+        if self.info.color_space != ColorSpace::Rgb {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if self.plan.components.len() != 3 {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: self.plan.components.len() as u8,
+            });
+        }
+        if self.plan.restart_interval.is_some() {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if !(1..=7).contains(&plan.predictor) {
+            return Err(JpegError::UnsupportedPredictor {
+                predictor: plan.predictor,
+            });
+        }
+
+        let (width, height) = plan.dimensions;
+        let scan_bytes = &self.bytes[plan.scan_offset..];
+        let mut br = BitReader::new(scan_bytes);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                for component in &self.plan.components {
+                    if component.output_index >= 3 {
+                        return Err(JpegError::UnsupportedComponentCount {
+                            count: self.plan.components.len() as u8,
+                        });
+                    }
+                    let predictor = lossless_predictor_rgb8(
+                        plan.predictor,
+                        out,
+                        stride,
+                        x,
+                        y,
+                        component.output_index,
+                    );
+                    let diff = component.dc_table.decode_fast_dc(&mut br)?;
+                    let sample = predictor + diff;
+                    if !(0..=255).contains(&sample) {
+                        return Err(JpegError::HuffmanDecode {
+                            mcu: 0,
+                            reason: HuffmanFailure::InvalidSymbol,
+                        });
+                    }
+                    let offset = y * stride + x * 3 + component.output_index;
+                    out[offset] = sample as u8;
+                }
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_lossless_rgb8_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
+            return self.decode_lossless_rgb8_into(out, stride);
+        }
+
+        let (width, height) = self.info.dimensions;
+        let full_stride = width as usize * 3;
+        let mut full = allocate_output_buffer(full_stride * height as usize);
+        let mut outcome = self.decode_lossless_rgb8_into(&mut full, full_stride)?;
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        copy_rgb8_scaled_rect(
             &full,
             (width, height),
             output_rect,
@@ -3660,6 +3788,41 @@ fn lossless_predictor_value(predictor: u8, out: &[u8], stride: usize, x: usize, 
     }
 }
 
+fn lossless_predictor_rgb8(
+    predictor: u8,
+    out: &[u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    component: usize,
+) -> i32 {
+    if x == 0 && y == 0 {
+        return 128;
+    }
+    if y == 0 {
+        return i32::from(out[(x - 1) * 3 + component]);
+    }
+    if x == 0 {
+        return i32::from(out[(y - 1) * stride + component]);
+    }
+
+    let row = y * stride;
+    let prev_row = (y - 1) * stride;
+    let ra = i32::from(out[row + (x - 1) * 3 + component]);
+    let rb = i32::from(out[prev_row + x * 3 + component]);
+    let rc = i32::from(out[prev_row + (x - 1) * 3 + component]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 128,
+    }
+}
+
 fn lossless_predictor_value_u16(
     predictor: u8,
     out: &[u8],
@@ -3729,6 +3892,27 @@ fn copy_gray8_scaled_rect(
             let source_x = output_x.saturating_mul(denom).min(width - 1);
             let src = source_y as usize * width as usize + source_x as usize;
             dst[dst_px] = full[src];
+        }
+    }
+}
+
+fn copy_rgb8_scaled_rect(
+    full: &[u8],
+    dimensions: (u32, u32),
+    output_rect: Rect,
+    denom: u32,
+    out: &mut [u8],
+    stride: usize,
+) {
+    let (width, height) = dimensions;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            let src = (source_y as usize * width as usize + source_x as usize) * 3;
+            let dst = dst_row * stride + (output_x - output_rect.x) as usize * 3;
+            out[dst..dst + 3].copy_from_slice(&full[src..src + 3]);
         }
     }
 }
@@ -3824,6 +4008,10 @@ fn output_format_from_parts(
             }),
             (PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
             (PixelFormat::Gray16, scale) => Ok(OutputFormat::Gray16Scaled {
+                factor: jpeg_downscale(scale),
+            }),
+            (PixelFormat::Rgb8, Downscale::None) => Ok(OutputFormat::Rgb8),
+            (PixelFormat::Rgb8, scale) => Ok(OutputFormat::Rgb8Scaled {
                 factor: jpeg_downscale(scale),
             }),
             _ => Err(JpegError::NotImplemented { sof: sof_kind }),
