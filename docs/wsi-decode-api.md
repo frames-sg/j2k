@@ -158,6 +158,10 @@ Use `metal_fast` for broad Metal fast-packet shape support and
 caller-owned RGB8 Metal buffer/texture batch APIs. The resident-output query is
 narrower than `metal_fast`: it requires RGB8 output and a full, scaled, or
 region-scaled batch shape supported by those reusable-output APIs.
+`MetalBatchOutputBuffer::ensure_rgb8_tiles` and
+`MetalBatchTextureOutput::ensure_rgba8_tiles` retain existing Metal allocations
+when the requested tile shape already fits and replace them only when the
+layout or capacity must change.
 
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.

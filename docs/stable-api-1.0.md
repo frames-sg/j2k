@@ -291,14 +291,16 @@ Tier: Adapter API.
 
 Stable modules and types: `viewport`, `Error`, `SurfaceResidency`, `Surface`,
 `Codec`, `Decoder`, `MetalBackendSession`, `MetalSession`,
-`MetalSubmission`, `JpegBaselineMetalEncodeTile`, `Info`, and
-`JpegRectPublic`.
+`MetalSubmission`, `MetalBatchOutputBuffer`, `MetalBatchTextureOutput`,
+`JpegBaselineMetalEncodeTile`, `Info`, and `JpegRectPublic`.
 
 Stable functions and methods: `Surface::pitch_bytes`, `Surface::residency`,
 `Surface::as_bytes`, `Surface::download_into`, `Surface::metal_buffer`,
 `Decoder::new`, `Codec` trait implementations, `MetalSession` constructors and
 decode/submit methods, `TileBatchDecodeManyDevice::decode_tiles_to_device` for
-full-tile JPEG Metal batches, `encode_jpeg_baseline_from_metal_buffer`,
+full-tile JPEG Metal batches, `MetalBatchOutputBuffer::ensure_rgb8_tiles`,
+`MetalBatchTextureOutput::ensure_rgba8_tiles`,
+`encode_jpeg_baseline_from_metal_buffer`,
 `encode_jpeg_baseline_batch_from_metal_buffers`, and viewport helpers
 `viewport_source_bounds`, `is_contiguous_viewport_workload`,
 `choose_viewport_surface_strategy`, `suggest_viewport_workload`,

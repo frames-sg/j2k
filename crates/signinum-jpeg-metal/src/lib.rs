@@ -293,6 +293,28 @@ impl MetalBatchOutputBuffer {
         Self::new_tiles(session, dimensions, PixelFormat::Rgb8, tile_capacity)
     }
 
+    /// Ensure this output buffer can hold `tile_capacity` RGB8 tiles with `dimensions`.
+    ///
+    /// The existing allocation is retained when it already has the requested
+    /// layout and at least the requested capacity. Otherwise the buffer is
+    /// replaced with a new allocation.
+    pub fn ensure_rgb8_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        dimensions: (u32, u32),
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        if self.dimensions == dimensions
+            && self.fmt == PixelFormat::Rgb8
+            && self.tile_capacity >= tile_capacity
+        {
+            return Ok(());
+        }
+
+        *self = Self::new_rgb8_tiles(session, dimensions, tile_capacity)?;
+        Ok(())
+    }
+
     fn new_tiles(
         session: &MetalBackendSession,
         dimensions: (u32, u32),
@@ -429,6 +451,29 @@ impl MetalBatchTextureOutput {
             fmt: PixelFormat::Rgba8,
             metal_fmt: MTLPixelFormat::RGBA8Unorm,
         })
+    }
+
+    /// Ensure this output set can hold `tile_capacity` RGBA8 textures with `dimensions`.
+    ///
+    /// Existing textures are retained when they already have the requested
+    /// layout and at least the requested capacity. Otherwise the texture set is
+    /// replaced with new private RGBA8 textures.
+    pub fn ensure_rgba8_tiles(
+        &mut self,
+        session: &MetalBackendSession,
+        dimensions: (u32, u32),
+        tile_capacity: usize,
+    ) -> Result<(), Error> {
+        if self.dimensions == dimensions
+            && self.fmt == PixelFormat::Rgba8
+            && self.metal_fmt == MTLPixelFormat::RGBA8Unorm
+            && self.tile_capacity() >= tile_capacity
+        {
+            return Ok(());
+        }
+
+        *self = Self::new_rgba8_tiles(session, dimensions, tile_capacity)?;
+        Ok(())
     }
 
     /// Tile dimensions for this output allocation.
@@ -3118,6 +3163,67 @@ mod tests {
                 expected_rgba
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_output_buffer_ensure_reuses_matching_allocation_and_grows_capacity() {
+        use metal::foreign_types::ForeignTypeRef;
+
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
+        let original_buffer = output.buffer().as_ptr();
+
+        output
+            .ensure_rgb8_tiles(&session, (16, 16), 1)
+            .expect("ensure smaller matching output");
+        assert_eq!(output.buffer().as_ptr(), original_buffer);
+        assert_eq!(output.dimensions(), (16, 16));
+        assert_eq!(output.tile_capacity(), 2);
+
+        output
+            .ensure_rgb8_tiles(&session, (16, 16), 3)
+            .expect("ensure larger output");
+        assert_ne!(output.buffer().as_ptr(), original_buffer);
+        assert_eq!(output.dimensions(), (16, 16));
+        assert_eq!(output.tile_capacity(), 3);
+        assert_eq!(
+            output.byte_len(),
+            16 * 16 * PixelFormat::Rgb8.bytes_per_pixel() * 3
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_texture_output_ensure_reuses_matching_textures_and_grows_capacity() {
+        use metal::foreign_types::ForeignTypeRef;
+
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2)
+            .expect("texture output");
+        let original_texture = output.texture(0).expect("texture").as_ptr();
+
+        output
+            .ensure_rgba8_tiles(&session, (16, 16), 1)
+            .expect("ensure smaller matching texture output");
+        assert_eq!(
+            output.texture(0).expect("texture").as_ptr(),
+            original_texture
+        );
+        assert_eq!(output.dimensions(), (16, 16));
+        assert_eq!(output.tile_capacity(), 2);
+
+        output
+            .ensure_rgba8_tiles(&session, (16, 16), 3)
+            .expect("ensure larger texture output");
+        assert_ne!(
+            output.texture(0).expect("texture").as_ptr(),
+            original_texture
+        );
+        assert_eq!(output.dimensions(), (16, 16));
+        assert_eq!(output.tile_capacity(), 3);
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
     }
 
     #[cfg(target_os = "macos")]
