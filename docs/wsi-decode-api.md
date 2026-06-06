@@ -183,8 +183,9 @@ state into exact caller-owned outputs instead of reparsing the JPEG byte
 slices. The corresponding
 `Codec::decode_rgb8_decoder_*_batch_into_resizable_metal_{buffer,textures}_with_session`
 helpers add output resize for changing tile counts or output shapes. Resizable
-resident batch helpers reject mixed output dimensions before resizing the
-caller-owned Metal output. At the viewport layer,
+resident batch helpers reject mixed output dimensions and mixed fast-packet
+sampling families before resizing the caller-owned Metal output. At the
+viewport layer,
 `decode_viewport_to_resizable_metal_{buffer,textures}_with_session` accepts any
 viewport workload and selects direct contiguous resident decode when eligible,
 otherwise it uses resident component-row composition. Callers that already keep
