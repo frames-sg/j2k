@@ -19,8 +19,8 @@ use signinum_jpeg_metal::viewport::{
 };
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::viewport::{
-    decode_viewport_to_resizable_metal_buffer_with_session,
-    decode_viewport_to_resizable_metal_textures_with_session,
+    decode_viewport_to_resizable_metal_buffer_with_decoder_session,
+    decode_viewport_to_resizable_metal_textures_with_decoder_session,
 };
 use signinum_jpeg_metal::{Codec, Decoder, MetalSession, ScratchPool};
 #[cfg(target_os = "macos")]
@@ -661,10 +661,10 @@ fn bench_resident_viewport_buffer_case(
         MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("buffer output");
     let bytes = input.bytes.clone();
     group.bench_function(format!("{shape}/{}", input.name), move |b| {
-        let decoder = CpuDecoder::new(&bytes).expect("cpu decoder");
+        let decoder = Decoder::new(&bytes).expect("metal decoder");
         let mut pool = CpuScratchPool::new();
         b.iter(|| {
-            let surface = decode_viewport_to_resizable_metal_buffer_with_session(
+            let surface = decode_viewport_to_resizable_metal_buffer_with_decoder_session(
                 &decoder,
                 &mut pool,
                 &workload,
@@ -689,10 +689,10 @@ fn bench_resident_viewport_texture_case(
         MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
     let bytes = input.bytes.clone();
     group.bench_function(format!("{shape}/{}", input.name), move |b| {
-        let decoder = CpuDecoder::new(&bytes).expect("cpu decoder");
+        let decoder = Decoder::new(&bytes).expect("metal decoder");
         let mut pool = CpuScratchPool::new();
         b.iter(|| {
-            let tile = decode_viewport_to_resizable_metal_textures_with_session(
+            let tile = decode_viewport_to_resizable_metal_textures_with_decoder_session(
                 &decoder,
                 &mut pool,
                 &workload,

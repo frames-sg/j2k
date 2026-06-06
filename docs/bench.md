@@ -741,6 +741,10 @@ Current v1 scope is explicit:
 - `viewer_resident_viewport_rgb_buffer_warm`
 - `viewer_resident_viewport_rgba_texture_warm`
 
+The resident viewport warm groups keep a parsed `signinum_jpeg_metal::Decoder`
+wrapper and caller-owned Metal output alive across iterations, so they measure
+the cached-packet resident viewport path rather than byte-slice reparsing.
+
 Compile the Metal benches:
 
 ```sh
