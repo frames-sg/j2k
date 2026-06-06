@@ -6,7 +6,8 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg,
+    extended_12bit_grayscale_restart_16x8_jpeg, four_component_16x16_rgb, four_component_16x8_rgb,
     four_component_8x8_rgb, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
     lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
     lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
@@ -16,8 +17,8 @@ use fixtures::{
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
     lossless_ycbcr_3x3_rgb8, minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
     progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
-    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
-    LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
+    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+    LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
     extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
@@ -2939,6 +2940,95 @@ fn decode_region_scaled_into_rgba8_projects_cmyk_and_ycck_with_padding() {
         {
             assert_eq!(&row[..row_bytes], expected_row);
             assert_eq!(&row[row_bytes..], &[0xaa; 4]);
+        }
+    }
+}
+
+#[test]
+fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
+    for (bytes, expected, width, height, label) in [
+        (
+            cmyk_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            8,
+            "CMYK 4:2:2",
+        ),
+        (
+            ycck_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            8,
+            "YCCK 4:2:2",
+        ),
+        (
+            cmyk_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            16,
+            "CMYK 4:2:0",
+        ),
+        (
+            ycck_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            16,
+            "YCCK 4:2:0",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} four-component JPEG should construct: {err}"));
+        let mut full = vec![0u8; expected.len()];
+
+        let outcome = dec
+            .decode_into(
+                &mut full,
+                width * PixelFormat::Rgb8.bytes_per_pixel(),
+                PixelFormat::Rgb8,
+            )
+            .unwrap_or_else(|err| panic!("{label} full RGB8 decode should succeed: {err}"));
+
+        assert_eq!(
+            outcome.decoded,
+            Rect::full((width as u32, height as u32)),
+            "{label}"
+        );
+        assert_eq!(full, expected, "{label}");
+
+        let roi = Rect {
+            x: width as u32 / 4,
+            y: height as u32 / 4,
+            w: width as u32 / 2,
+            h: height as u32 / 2,
+        };
+        let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+        let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let stride = row_bytes + 4;
+        let expected_rgba = rgb8_to_rgba8(
+            &project_scaled_rgb(&expected, width as u32, height as u32, scaled_roi, 2),
+            255,
+        );
+        let mut region = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut region,
+                stride,
+                PixelFormat::Rgba8,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{label} region-scaled RGBA8 decode should succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, roi, "{label}");
+        for (row, expected_row) in region
+            .chunks_exact(stride)
+            .zip(expected_rgba.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row, "{label}");
+            assert_eq!(&row[row_bytes..], &[0xaa; 4], "{label}");
         }
     }
 }

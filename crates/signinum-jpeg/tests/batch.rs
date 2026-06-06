@@ -13,18 +13,20 @@ use signinum_jpeg::{
 };
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
-    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
-    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_420_restart_32x32_rgb16,
-    extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_422_32x8_rgb16,
-    extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16, four_component_8x8_rgb,
-    lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_predictor_ycbcr_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_3x3_jpeg,
-    lossless_ycbcr_16bit_3x3_rgb16, lossless_ycbcr_3x3_rgb8, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
-    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
-    ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg,
+    extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
+    extended_12bit_ycbcr_420_32x32_rgb16, extended_12bit_ycbcr_420_restart_32x32_jpeg,
+    extended_12bit_ycbcr_420_restart_32x32_rgb16, extended_12bit_ycbcr_422_32x8_jpeg,
+    extended_12bit_ycbcr_422_32x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
+    extended_12bit_ycbcr_8x8_rgb16, four_component_16x16_rgb, four_component_16x8_rgb,
+    four_component_8x8_rgb, lossless_predictor_rgb_16bit_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_rgb_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_ycbcr_3x3_rgb8, progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
+    ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
 };
 use std::num::NonZeroUsize;
 use std::thread;
@@ -816,6 +818,87 @@ fn session_batch_decode_converts_cmyk_and_ycck() {
     assert_eq!(outcomes.len(), 2);
     for output in rgba_outputs {
         assert_eq!(output, expected_rgba);
+    }
+}
+
+#[test]
+fn session_batch_decode_subsampled_cmyk_ycck_matches_expected_pixels() {
+    let cases = [
+        (
+            cmyk_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            "CMYK 4:2:2",
+        ),
+        (
+            ycck_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            "YCCK 4:2:2",
+        ),
+        (
+            cmyk_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            "CMYK 4:2:0",
+        ),
+        (
+            ycck_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            "YCCK 4:2:0",
+        ),
+    ];
+    let mut rgb_outputs = cases
+        .iter()
+        .map(|(_, expected, _, _)| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut rgba_outputs = cases
+        .iter()
+        .map(|(_, expected, _, _)| vec![0u8; expected.len() / 3 * 4])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = cases
+            .iter()
+            .zip(rgb_outputs.iter_mut())
+            .map(|((input, _, width, _), out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: *width * PixelFormat::Rgb8.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("subsampled CMYK/YCCK RGB8 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), cases.len());
+    for ((_, expected, _, label), output) in cases.iter().zip(rgb_outputs.iter()) {
+        assert_eq!(output, expected, "{label}");
+    }
+
+    let outcomes = {
+        let mut jobs = cases
+            .iter()
+            .zip(rgba_outputs.iter_mut())
+            .map(|((input, _, width, _), out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: *width * PixelFormat::Rgba8.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgba8)
+            .expect("subsampled CMYK/YCCK RGBA8 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), cases.len());
+    for ((_, expected, _, label), output) in cases.iter().zip(rgba_outputs.iter()) {
+        assert_eq!(output, &rgb8_to_rgba8(expected, 255), "{label}");
     }
 }
 

@@ -26,9 +26,10 @@ on a single visual smoke test.
   full/ROI/scaled/region-scaled `Rgba8`, 16-bit APP14 RGB/YCbCr
   full/ROI/scaled/region-scaled `Rgba16`, and 8-bit plus 16-bit YCbCr 4:4:4
   `Rgb8`/`Rgb16`
-  output/row streaming have also landed, but expanded
-  four-component subsampled/malformed fixtures, other 12-bit subsampled color
-  output, stronger non-constant 12-bit oracle fixtures, and other lossless
+  output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
+  4:2:2/4:2:0 fixture coverage. Malformed or broader four-component fixtures,
+  other 12-bit subsampled color output, stronger non-constant 12-bit oracle
+  fixtures, and other lossless
   SOF3 16-bit color layouts must land CPU parity fixtures and reference
   outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output

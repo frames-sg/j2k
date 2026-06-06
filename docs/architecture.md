@@ -254,9 +254,9 @@ scheduling, upsampling, ROI, and the fast 4:2:0 path live together in
 regresses WSI tile-batch performance. Initial CMYK/YCCK `Rgb8` and `Rgba8`
 full/ROI/scaled/region-scaled CPU conversion now lives in
 that fused sequential path, including RGB row streaming for the supported
-four-component fixtures. Progressive 8-bit
-full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
-assembly followed by output projection. Initial 12-bit extended sequential
+four-component fixtures and initial 4:2:2/4:2:0 fixture coverage. Progressive
+8-bit full/ROI/scaled/region-scaled CPU decode uses full progressive
+coefficient assembly followed by output projection. Initial 12-bit extended sequential
 grayscale full-image/ROI/scaled/region-scaled decode writes native `Gray16`
 samples or expanded `Rgb16`/`Rgba16` samples, including restart-coded
 grayscale streams.
@@ -269,10 +269,11 @@ APP14 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba8`, 16-bit APP14
 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba16`,
 16-bit grayscale `Gray16` row streaming, 8-bit YCbCr 4:4:4 `Rgb8` output,
 and 16-bit APP14 RGB plus YCbCr 4:4:4
-`Rgb16` output/row streaming have landed. Expanded
-four-component subsampled/malformed coverage, other 12-bit subsampled color
-support, stronger non-constant 12-bit oracle fixtures, and other lossless
-SOF3 16-bit color layouts remain separate CPU parity work.
+`Rgb16` output/row streaming have landed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
+fixture coverage has landed; malformed or
+broader four-component coverage, other 12-bit subsampled color support,
+stronger non-constant 12-bit oracle fixtures, and other lossless SOF3 16-bit
+color layouts remain separate CPU parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
 full-image/ROI/scaled/region-scaled decode for predictors 1-7, including
 restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8`/`Rgba8` and
@@ -495,9 +496,9 @@ provisional and check the most recent commits before relying on it.
   streams, initial 12-bit progressive grayscale `Gray16`/`Rgb16`/`Rgba16`
   full-image/ROI/scaled/region-scaled decode, and initial 12-bit APP14 RGB
   4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` decode, including restart-coded
-  color streams, have landed, while expanded four-component subsampled/malformed
-  coverage, other 12-bit subsampled color support, stronger non-constant 12-bit
-  oracle fixtures, and other lossless SOF3 16-bit color layouts remain
+  color streams, have landed, while malformed or broader four-component
+  coverage, other 12-bit subsampled color support, stronger non-constant
+  12-bit oracle fixtures, and other lossless SOF3 16-bit color layouts remain
   active parity work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`

@@ -1571,14 +1571,44 @@ pub(crate) fn cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(0))
 }
 
+/// A 16x8 Adobe APP14 CMYK JPEG with 4:2:2 sampling and all decoded channels 128.
+pub(crate) fn cmyk_16x8_422_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 16x16 Adobe APP14 CMYK JPEG with 4:2:0 sampling and all decoded channels 128.
+pub(crate) fn cmyk_16x16_420_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(0), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
+}
+
 /// An 8x8 Adobe APP14 YCCK JPEG whose four decoded channels are all 128.
 pub(crate) fn ycck_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(2))
 }
 
+/// A 16x8 Adobe APP14 YCCK JPEG with 4:2:2 sampling and all decoded channels 128.
+pub(crate) fn ycck_16x8_422_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 16x16 Adobe APP14 YCCK JPEG with 4:2:0 sampling and all decoded channels 128.
+pub(crate) fn ycck_16x16_420_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(2), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
+}
+
 /// Reference RGB pixels for [`cmyk_8x8_jpeg`] and [`ycck_8x8_jpeg`].
 pub(crate) fn four_component_8x8_rgb() -> Vec<u8> {
     vec![64; 8 * 8 * 3]
+}
+
+/// Reference RGB pixels for 16x8 constant CMYK/YCCK fixtures.
+pub(crate) fn four_component_16x8_rgb() -> Vec<u8> {
+    vec![64; 16 * 8 * 3]
+}
+
+/// Reference RGB pixels for 16x16 constant CMYK/YCCK fixtures.
+pub(crate) fn four_component_16x16_rgb() -> Vec<u8> {
+    vec![64; 16 * 16 * 3]
 }
 
 /// An 8×8 baseline JPEG with 4:4:4 sampling.
@@ -1692,6 +1722,15 @@ pub(crate) fn progressive_8x8_jpeg() -> Vec<u8> {
 }
 
 fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
+    four_component_constant_jpeg(app14_transform, 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+fn four_component_constant_jpeg(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
     if let Some(transform) = app14_transform {
@@ -1702,9 +1741,15 @@ fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
     }
     bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
     bytes.extend(std::iter::repeat_n(1u8, 64));
-    bytes.extend_from_slice(&[
-        0xff, 0xc0, 0x00, 20, 8, 0, 8, 0, 8, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0,
-    ]);
+    bytes.extend_from_slice(&[0xff, 0xc0, 0x00, 20, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.push(4);
+    for (idx, &(h, v)) in sampling.iter().enumerate() {
+        bytes.push((idx + 1) as u8);
+        bytes.push((h << 4) | v);
+        bytes.push(0);
+    }
     bytes.extend_from_slice(&[
         0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
     ]);
@@ -1712,7 +1757,22 @@ fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
         0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
     ]);
     bytes.extend_from_slice(&[
-        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0, 0x00, 0xff, 0xd9,
+        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0,
     ]);
+    let max_h = sampling.iter().map(|&(h, _)| h).max().unwrap_or(1);
+    let max_v = sampling.iter().map(|&(_, v)| v).max().unwrap_or(1);
+    let mcu_cols = u32::from(width).div_ceil(u32::from(max_h) * 8);
+    let mcu_rows = u32::from(height).div_ceil(u32::from(max_v) * 8);
+    let blocks_per_mcu = sampling
+        .iter()
+        .map(|&(h, v)| u32::from(h) * u32::from(v))
+        .sum::<u32>();
+    let mut bits = Vec::new();
+    for _ in 0..(mcu_cols * mcu_rows * blocks_per_mcu) {
+        bits.push(false);
+        bits.push(false);
+    }
+    bytes.extend(pack_entropy_bits(bits));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }

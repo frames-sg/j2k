@@ -7,7 +7,8 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg,
+    extended_12bit_grayscale_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
     extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_ycbcr_420_32x32_jpeg,
     extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_422_32x8_jpeg,
     extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_8x8_jpeg,
@@ -20,7 +21,7 @@ use fixtures::{
     lossless_restart_predictor_ycbcr_3x3_jpeg, progressive_12bit_grayscale_8x8_jpeg,
     progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
     progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
-    ycck_8x8_jpeg,
+    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -188,6 +189,92 @@ fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
             assert!(report.cpu.eligible, "{expected_color:?} {op:?}");
             assert!(!report.owned_cuda.eligible);
             assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_marks_subsampled_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
+    for (name, input, expected_color, expected_dimensions, expected_sampling) in [
+        (
+            "CMYK 4:2:2",
+            cmyk_16x8_422_jpeg(),
+            ColorSpace::Cmyk,
+            (16, 8),
+            (2, 1),
+        ),
+        (
+            "YCCK 4:2:2",
+            ycck_16x8_422_jpeg(),
+            ColorSpace::Ycck,
+            (16, 8),
+            (2, 1),
+        ),
+        (
+            "CMYK 4:2:0",
+            cmyk_16x16_420_jpeg(),
+            ColorSpace::Cmyk,
+            (16, 16),
+            (2, 2),
+        ),
+        (
+            "YCCK 4:2:0",
+            ycck_16x16_420_jpeg(),
+            ColorSpace::Ycck,
+            (16, 16),
+            (2, 2),
+        ),
+    ] {
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgba8] {
+            for op in [
+                JpegDecodeOp::Full,
+                JpegDecodeOp::Region(Rect {
+                    x: expected_dimensions.0 / 4,
+                    y: expected_dimensions.1 / 4,
+                    w: expected_dimensions.0 / 2,
+                    h: expected_dimensions.1 / 2,
+                }),
+                JpegDecodeOp::Scaled(Downscale::Half),
+                JpegDecodeOp::RegionScaled {
+                    roi: Rect {
+                        x: expected_dimensions.0 / 4,
+                        y: expected_dimensions.1 / 4,
+                        w: expected_dimensions.0 / 2,
+                        h: expected_dimensions.1 / 2,
+                    },
+                    scale: Downscale::Half,
+                },
+            ] {
+                let report =
+                    JpegCapabilityReport::inspect(&input, JpegCapabilityRequest { op, fmt })
+                        .unwrap_or_else(|err| {
+                            panic!("capability report should parse {name} metadata: {err}")
+                        });
+
+                assert_eq!(report.info.sof_kind, SofKind::Baseline8, "{name}");
+                assert_eq!(report.info.dimensions, expected_dimensions, "{name}");
+                assert_eq!(report.info.color_space, expected_color, "{name}");
+                assert_eq!(report.info.sampling.max_h, expected_sampling.0, "{name}");
+                assert_eq!(report.info.sampling.max_v, expected_sampling.1, "{name}");
+                assert_eq!(report.info.sampling.components().len(), 4, "{name}");
+                assert!(report.cpu.eligible, "{name} {fmt:?} {op:?}");
+                assert!(!report.owned_cuda.eligible, "{name}");
+                let owned_cuda_reason = report
+                    .owned_cuda
+                    .reason
+                    .expect("owned CUDA rejection reason");
+                if op == JpegDecodeOp::Full && fmt == PixelFormat::Rgb8 {
+                    assert!(owned_cuda_reason.contains("YCbCr"), "{name}");
+                } else {
+                    assert!(owned_cuda_reason.contains("full-tile RGB8"), "{name}");
+                }
+                assert!(!report.metal_fast.eligible, "{name}");
+                assert!(report
+                    .metal_fast
+                    .reason
+                    .expect("Metal rejection reason")
+                    .contains("YCbCr"));
+            }
         }
     }
 }

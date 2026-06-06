@@ -18,7 +18,8 @@ unsupported errors until a separate entropy and conformance plan exists.
 
 - baseline sequential and extended sequential 8-bit CPU decode
 - grayscale, YCbCr, and APP14 RGB CPU decode
-- initial 8-bit sequential CMYK/YCCK CPU conversion to `Rgb8`/`Rgba8`
+- initial 8-bit sequential CMYK/YCCK CPU conversion to `Rgb8`/`Rgba8`,
+  including 4:4:4 and initial 4:2:2/4:2:0 fixture coverage
 - ROI, scaled, region-scaled, tile-batch, batch-session, and reusable host
   output paths for sequential WSI-shaped work
 - progressive 8-bit full-image, ROI, scaled, and region-scaled CPU decode via
@@ -181,8 +182,9 @@ Implementation requirements:
   existing API shape supports them.
   Status: full-image, ROI, scaled, region-scaled, and batch-session coverage
   has landed for the supported RGB/RGBA output shapes. Row output has landed
-  for the supported RGB row surfaces. Subsampled four-component fixtures and
-  malformed coverage remain open.
+  for the supported RGB row surfaces. Initial 4:2:2/4:2:0 four-component
+  fixtures have landed; malformed and broader four-component coverage remain
+  open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
   Status: capability reports now mark supported CMYK/YCCK CPU RGB8/RGBA8
