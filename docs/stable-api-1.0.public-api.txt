@@ -3662,6 +3662,7 @@ pub fn signinum_jpeg_metal::MetalBackendSession::fmt(&self, &mut core::fmt::Form
 pub struct signinum_jpeg_metal::MetalSession
 impl signinum_jpeg_metal::MetalSession
 pub fn signinum_jpeg_metal::MetalSession::submissions(&self) -> u64
+pub fn signinum_jpeg_metal::MetalSession::with_backend_session(signinum_jpeg_metal::MetalBackendSession) -> Self
 impl core::fmt::Debug for signinum_jpeg_metal::MetalSession
 pub fn signinum_jpeg_metal::MetalSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct signinum_jpeg_metal::Surface

@@ -161,7 +161,7 @@ pub(crate) fn flush_if_needed(session: &mut crate::session::SessionState) {
     let batches = group_compatible_requests(std::mem::take(&mut session.queued), session);
     for batch in batches {
         session.submissions = session.submissions.saturating_add(1);
-        match crate::decode_compatible_batch(&batch) {
+        match crate::decode_compatible_batch_with_session(&batch, session) {
             Ok(Some(results)) => {
                 for (request, result) in batch.into_iter().zip(results) {
                     session.completed[request.output_slot] = Some(result);

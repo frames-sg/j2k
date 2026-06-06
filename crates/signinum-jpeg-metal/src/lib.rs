@@ -22,6 +22,8 @@ pub mod viewport;
 
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
+use std::sync::Mutex;
+#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
 use signinum_core::{
@@ -328,6 +330,16 @@ pub struct MetalSession {
 }
 
 impl MetalSession {
+    /// Create a tile batching session that reuses an existing Metal backend session.
+    #[cfg(target_os = "macos")]
+    pub fn with_backend_session(backend_session: MetalBackendSession) -> Self {
+        Self {
+            shared: session::SharedSession(Arc::new(Mutex::new(
+                session::SessionState::with_backend_session(backend_session),
+            ))),
+        }
+    }
+
     /// Number of Metal or emulated submissions flushed through this session.
     pub fn submissions(&self) -> u64 {
         self.shared.0.lock().expect("metal session").submissions
@@ -1175,18 +1187,28 @@ pub(crate) fn decode_surface_from_bytes(
     )
 }
 
+#[cfg(not(target_os = "macos"))]
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn decode_compatible_batch(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    let _ = requests;
+    Ok(None)
+}
+
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn decode_compatible_batch_with_session(
+    requests: &[batch::QueuedRequest],
+    session: &mut session::SessionState,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
     #[cfg(target_os = "macos")]
     {
-        compute::decode_full_batch_to_surfaces(requests)
+        compute::decode_full_batch_to_surfaces_with_session_state(requests, session)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = requests;
-        Ok(None)
+        let _ = session;
+        decode_compatible_batch(requests)
     }
 }
 
@@ -1821,6 +1843,92 @@ mod tests {
             assert_eq!(surface.dimensions(), (16, 16));
             assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn queued_jpeg_batch_decode_uses_metal_session_runtime() {
+        use signinum_core::DeviceSubmission as _;
+
+        let backend_session = MetalBackendSession::system_default().expect("Metal backend session");
+        assert!(backend_session.runtime.get().is_none());
+        let mut session = MetalSession::with_backend_session(backend_session.clone());
+        let mut ctx = signinum_core::DecoderContext::<signinum_jpeg::DecoderContext>::new();
+        let mut pool = ScratchPool::new();
+
+        let submissions = (0..2)
+            .map(|_| {
+                <Codec as signinum_core::TileBatchDecodeSubmit>::submit_tile_to_device(
+                    &mut ctx,
+                    &mut session,
+                    &mut pool,
+                    BASELINE_420,
+                    PixelFormat::Rgb8,
+                    BackendRequest::Metal,
+                )
+                .expect("queued Metal tile submit")
+            })
+            .collect::<Vec<_>>();
+
+        for submission in submissions {
+            let surface = submission.wait().expect("queued Metal surface");
+            assert_eq!(surface.backend_kind(), BackendKind::Metal);
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (16, 16));
+        }
+
+        assert_eq!(session.submissions(), 1);
+        assert!(
+            backend_session.runtime.get().is_some(),
+            "queued MetalSession batch decode should reuse its backend runtime"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_queued_jpeg_batch_decode_lazily_initializes_backend_session() {
+        use signinum_core::DeviceSubmission as _;
+
+        let mut session = MetalSession::default();
+        assert!(session
+            .shared
+            .0
+            .lock()
+            .expect("metal session")
+            .backend_session
+            .is_none());
+        let mut ctx = signinum_core::DecoderContext::<signinum_jpeg::DecoderContext>::new();
+        let mut pool = ScratchPool::new();
+
+        let submissions = (0..2)
+            .map(|_| {
+                <Codec as signinum_core::TileBatchDecodeSubmit>::submit_tile_to_device(
+                    &mut ctx,
+                    &mut session,
+                    &mut pool,
+                    BASELINE_420,
+                    PixelFormat::Rgb8,
+                    BackendRequest::Metal,
+                )
+                .expect("queued Metal tile submit")
+            })
+            .collect::<Vec<_>>();
+
+        for submission in submissions {
+            let surface = submission.wait().expect("queued Metal surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+        }
+
+        let runtime_initialized = session
+            .shared
+            .0
+            .lock()
+            .expect("metal session")
+            .backend_session
+            .as_ref()
+            .and_then(|backend| backend.runtime.get())
+            .is_some();
+        assert!(runtime_initialized);
     }
 
     #[cfg(target_os = "macos")]

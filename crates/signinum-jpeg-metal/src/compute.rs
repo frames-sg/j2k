@@ -6411,6 +6411,7 @@ fn try_decode_repeated_region_scaled_batch_to_surfaces(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_full_batch_to_surfaces(
     requests: &[batch::QueuedRequest],
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
@@ -6431,6 +6432,21 @@ pub(crate) fn decode_full_batch_to_surfaces_with_session(
     };
 
     with_runtime_for_session(session, |runtime| {
+        decode_full_batch_to_surfaces_with_runtime(runtime, requests, &packets)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_full_batch_to_surfaces_with_session_state(
+    requests: &[batch::QueuedRequest],
+    session: &mut crate::session::SessionState,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    let Some(packets) = batched_fast_packets(requests)? else {
+        return Ok(None);
+    };
+
+    let backend_session = session.backend_session()?;
+    with_runtime_for_session(backend_session, |runtime| {
         decode_full_batch_to_surfaces_with_runtime(runtime, requests, &packets)
     })
 }

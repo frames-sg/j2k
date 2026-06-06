@@ -51,12 +51,22 @@ pub(crate) struct SessionState {
     pub(crate) submissions: u64,
     pub(crate) queued: Vec<crate::batch::QueuedRequest>,
     pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) backend_session: Option<crate::MetalBackendSession>,
     batch_shapes: VecDeque<CachedBatchShape>,
     fast_packets: VecDeque<CachedFastPackets>,
     input_aliases: VecDeque<CachedInputAlias>,
 }
 
 impl SessionState {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_backend_session(backend_session: crate::MetalBackendSession) -> Self {
+        Self {
+            backend_session: Some(backend_session),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn queue_request(&mut self, request: crate::batch::QueuedRequest) -> usize {
         let slot = self.completed.len();
         self.completed.push(None);
@@ -214,6 +224,17 @@ impl SessionState {
         });
 
         (fast444_packet, fast422_packet, fast420_packet)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn backend_session(&mut self) -> Result<&crate::MetalBackendSession, Error> {
+        if self.backend_session.is_none() {
+            self.backend_session = Some(crate::MetalBackendSession::system_default()?);
+        }
+        Ok(self
+            .backend_session
+            .as_ref()
+            .expect("backend session initialized"))
     }
 }
 
