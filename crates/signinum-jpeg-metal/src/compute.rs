@@ -6643,6 +6643,33 @@ fn fast422_packets_share_full_rgb_batch_shape(
 }
 
 #[cfg(target_os = "macos")]
+fn fast422_full_rgb_batch_groups(packets: &[&JpegMetalFast422PacketV1]) -> Option<Vec<Vec<usize>>> {
+    let mut groups = Vec::<Vec<usize>>::new();
+    'packet: for (index, packet) in packets.iter().copied().enumerate() {
+        if packet.restart_interval_mcus != 0
+            || packet.entropy_bytes.is_empty()
+            || packet.entropy_checkpoints.is_empty()
+        {
+            return None;
+        }
+
+        for group in &mut groups {
+            let first = packets[group[0]];
+            if fast422_packets_share_full_rgb_batch_shape(
+                first,
+                packet,
+                first.entropy_checkpoints.len(),
+            ) {
+                group.push(index);
+                continue 'packet;
+            }
+        }
+        groups.push(vec![index]);
+    }
+    Some(groups)
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast422_full_rgb_batch_to_surfaces(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -6932,7 +6959,7 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8)
@@ -6955,14 +6982,20 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let segment_count = first.entropy_checkpoints.len();
-    if !fast422_packets
-        .iter()
-        .all(|packet| fast422_packets_share_full_rgb_batch_shape(first, packet, segment_count))
-    {
+    let Some(groups) = fast422_full_rgb_batch_groups(&fast422_packets) else {
         return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast422_full_rgba_batch_to_textures(
+            runtime,
+            requests,
+            &fast422_packets,
+            output,
+            groups,
+        );
     }
 
+    let segment_count = first.entropy_checkpoints.len();
     let tile_count = fast422_packets.len();
     let tile_count_u32 = checked_u32(tile_count, "fast422 texture batch tile count")?;
     let segment_count_u32 = checked_u32(segment_count, "fast422 texture batch segment count")?;
@@ -7328,6 +7361,68 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_grouped_fast422_full_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast422_packets: &[&JpegMetalFast422PacketV1],
+    output: &crate::MetalBatchTextureOutput,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    for packet in fast422_packets {
+        let out_stride = packet.dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let out_tile_len = out_stride * packet.dimensions.1 as usize;
+        validate_rgba_texture_batch_output(
+            output,
+            packet.dimensions,
+            requests.len(),
+            out_tile_len,
+        )?;
+    }
+
+    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_output = output.clone_slots(&group_indices)?;
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| BatchedFastPacket::Fast422(fast422_packets[index]))
+            .collect::<Vec<_>>();
+
+        let Some(group_results) = try_decode_fast422_full_rgba_batch_to_textures(
+            runtime,
+            &group_requests,
+            &group_packets,
+            &group_output,
+        )?
+        else {
+            return Ok(None);
+        };
+        if group_results.len() != group_indices.len() {
+            return Err(Error::MetalKernel {
+                message: "JPEG Metal grouped fast422 texture result count mismatch".to_string(),
+            });
+        }
+        for (original_index, result) in group_indices.into_iter().zip(group_results) {
+            merged_results[original_index] = Some(result);
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast422 texture result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn fast444_packets_share_region_scaled_batch_shape(
     first: &JpegMetalFast444PacketV1,
     packet: &JpegMetalFast444PacketV1,
@@ -7347,6 +7442,37 @@ fn fast444_packets_share_region_scaled_batch_shape(
         && packet.cb_ac_table == first.cb_ac_table
         && packet.cr_dc_table == first.cr_dc_table
         && packet.cr_ac_table == first.cr_ac_table
+}
+
+#[cfg(target_os = "macos")]
+fn fast444_full_rgb_batch_groups(
+    packets: &[(&JpegMetalFast444PacketV1, PlaneMode)],
+) -> Option<Vec<Vec<usize>>> {
+    let mut groups = Vec::<Vec<usize>>::new();
+    'packet: for (index, (packet, mode)) in packets.iter().copied().enumerate() {
+        if packet.restart_interval_mcus != 0
+            || packet.entropy_bytes.is_empty()
+            || packet.entropy_checkpoints.is_empty()
+        {
+            return None;
+        }
+
+        for group in &mut groups {
+            let (first, first_mode) = packets[group[0]];
+            if mode == first_mode
+                && fast444_packets_share_region_scaled_batch_shape(
+                    first,
+                    packet,
+                    first.entropy_checkpoints.len(),
+                )
+            {
+                group.push(index);
+                continue 'packet;
+            }
+        }
+        groups.push(vec![index]);
+    }
+    Some(groups)
 }
 
 #[cfg(target_os = "macos")]
@@ -7624,7 +7750,7 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
     packets: &[BatchedFastPacket<'_>],
     output: &crate::MetalBatchTextureOutput,
 ) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8)
@@ -7647,14 +7773,20 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let segment_count = first.entropy_checkpoints.len();
-    if !fast444_packets.iter().all(|(packet, mode)| {
-        *mode == first_mode
-            && fast444_packets_share_region_scaled_batch_shape(first, packet, segment_count)
-    }) {
+    let Some(groups) = fast444_full_rgb_batch_groups(&fast444_packets) else {
         return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast444_full_rgba_batch_to_textures(
+            runtime,
+            requests,
+            &fast444_packets,
+            output,
+            groups,
+        );
     }
 
+    let segment_count = first.entropy_checkpoints.len();
     let tile_count = fast444_packets.len();
     let width = first.dimensions.0;
     let height = first.dimensions.1;
@@ -7810,6 +7942,71 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         first.dimensions,
         requests.len(),
     )?))
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_grouped_fast444_full_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast444_packets: &[(&JpegMetalFast444PacketV1, PlaneMode)],
+    output: &crate::MetalBatchTextureOutput,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    for (packet, _) in fast444_packets {
+        let out_stride = packet.dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let out_tile_len = out_stride * packet.dimensions.1 as usize;
+        validate_rgba_texture_batch_output(
+            output,
+            packet.dimensions,
+            requests.len(),
+            out_tile_len,
+        )?;
+    }
+
+    let mut merged_results: Vec<Option<Result<crate::MetalTextureTile, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_output = output.clone_slots(&group_indices)?;
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| {
+                let (packet, mode) = fast444_packets[index];
+                BatchedFastPacket::Fast444(packet, mode)
+            })
+            .collect::<Vec<_>>();
+
+        let Some(group_results) = try_decode_fast444_full_rgba_batch_to_textures(
+            runtime,
+            &group_requests,
+            &group_packets,
+            &group_output,
+        )?
+        else {
+            return Ok(None);
+        };
+        if group_results.len() != group_indices.len() {
+            return Err(Error::MetalKernel {
+                message: "JPEG Metal grouped fast444 texture result count mismatch".to_string(),
+            });
+        }
+        for (original_index, result) in group_indices.into_iter().zip(group_results) {
+            merged_results[original_index] = Some(result);
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast444 texture result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
 }
 
 #[cfg(target_os = "macos")]
