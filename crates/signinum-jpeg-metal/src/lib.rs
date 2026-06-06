@@ -2420,6 +2420,173 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn assert_table_mixed_full_buffer_groups_resident(
+        subsampling: JpegSubsampling,
+        dimensions: (u32, u32),
+        first_quality: u8,
+        second_quality: u8,
+    ) {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let rgb_a = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_b = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        let mut rgb_c = signinum_test_support::patterned_rgb8(dimensions.0, dimensions.1);
+        for (index, pixel) in rgb_b.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(43)
+                .wrapping_add(17);
+            pixel[0] ^= delta.rotate_left(1);
+            pixel[1] = pixel[1].wrapping_sub(delta);
+            pixel[2] = pixel[2].wrapping_add(delta.rotate_right(2));
+        }
+        for (index, pixel) in rgb_c.chunks_exact_mut(3).enumerate() {
+            let delta = patterned_index_byte(index)
+                .wrapping_mul(47)
+                .wrapping_add(23);
+            pixel[0] = pixel[0].wrapping_add(delta.rotate_left(2));
+            pixel[1] ^= delta.rotate_right(1);
+            pixel[2] = pixel[2].wrapping_sub(delta);
+        }
+
+        let jpeg_a = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_a,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: first_quality,
+                subsampling,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode first table-mixed full buffer jpeg");
+        let jpeg_b = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_b,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: second_quality,
+                subsampling,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode second table-mixed full buffer jpeg");
+        let jpeg_c = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb_c,
+                width: dimensions.0,
+                height: dimensions.1,
+            },
+            JpegEncodeOptions {
+                quality: first_quality,
+                subsampling,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode third table-mixed full buffer jpeg");
+
+        match subsampling {
+            JpegSubsampling::Ybr420 => {
+                let packet_a = build_metal_fast420_packet(&jpeg_a.data).expect("first packet");
+                let packet_b = build_metal_fast420_packet(&jpeg_b.data).expect("second packet");
+                let packet_c = build_metal_fast420_packet(&jpeg_c.data).expect("third packet");
+                assert_eq!(packet_a.y_quant, packet_c.y_quant);
+                assert_eq!(packet_a.y_dc_table, packet_c.y_dc_table);
+                assert_eq!(
+                    packet_a.entropy_checkpoints.len(),
+                    packet_c.entropy_checkpoints.len()
+                );
+                assert_ne!(packet_a.y_quant, packet_b.y_quant);
+            }
+            JpegSubsampling::Ybr422 => {
+                let packet_a = build_metal_fast422_packet(&jpeg_a.data).expect("first packet");
+                let packet_b = build_metal_fast422_packet(&jpeg_b.data).expect("second packet");
+                let packet_c = build_metal_fast422_packet(&jpeg_c.data).expect("third packet");
+                assert_eq!(packet_a.y_quant, packet_c.y_quant);
+                assert_eq!(packet_a.y_dc_table, packet_c.y_dc_table);
+                assert_eq!(
+                    packet_a.entropy_checkpoints.len(),
+                    packet_c.entropy_checkpoints.len()
+                );
+                assert_ne!(packet_a.y_quant, packet_b.y_quant);
+            }
+            JpegSubsampling::Ybr444 => {
+                let packet_a = build_metal_fast444_packet(&jpeg_a.data).expect("first packet");
+                let packet_b = build_metal_fast444_packet(&jpeg_b.data).expect("second packet");
+                let packet_c = build_metal_fast444_packet(&jpeg_c.data).expect("third packet");
+                assert_eq!(packet_a.y_quant, packet_c.y_quant);
+                assert_eq!(packet_a.y_dc_table, packet_c.y_dc_table);
+                assert_eq!(
+                    packet_a.entropy_checkpoints.len(),
+                    packet_c.entropy_checkpoints.len()
+                );
+                assert_ne!(packet_a.y_quant, packet_b.y_quant);
+            }
+            JpegSubsampling::Gray => panic!("table-mixed buffer helper expects YCbCr sampling"),
+        }
+
+        let output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, dimensions, 3).expect("output buffer");
+        let inputs = [
+            jpeg_a.data.as_slice(),
+            jpeg_b.data.as_slice(),
+            jpeg_c.data.as_slice(),
+        ];
+        let expected_tiles = inputs
+            .iter()
+            .map(|input| {
+                CpuDecoder::new(input)
+                    .expect("cpu decoder")
+                    .decode(PixelFormat::Rgb8)
+                    .expect("cpu decode")
+                    .0
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(expected_tiles[0], expected_tiles[1]);
+        assert_ne!(expected_tiles[0], expected_tiles[2]);
+        assert_ne!(expected_tiles[1], expected_tiles[2]);
+
+        let surfaces =
+            Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+                .expect("decode table-mixed full tiles into reusable output buffer");
+
+        assert_eq!(surfaces.len(), 3);
+        for (index, surface) in surfaces.into_iter().enumerate() {
+            let surface = surface.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), dimensions);
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected_tiles[index].as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_table_mixed_fast420_buffer_batch_groups_resident_dispatches() {
+        assert_table_mixed_full_buffer_groups_resident(JpegSubsampling::Ybr420, (128, 96), 90, 72);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_table_mixed_fast422_buffer_batch_groups_resident_dispatches() {
+        assert_table_mixed_full_buffer_groups_resident(JpegSubsampling::Ybr422, (128, 96), 91, 73);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_table_mixed_fast444_buffer_batch_groups_resident_dispatches() {
+        assert_table_mixed_full_buffer_groups_resident(JpegSubsampling::Ybr444, (96, 96), 92, 74);
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_output_buffer() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
