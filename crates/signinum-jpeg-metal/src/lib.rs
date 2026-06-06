@@ -49,7 +49,10 @@ pub use encode::{
 };
 
 #[cfg(target_os = "macos")]
-use metal::{Buffer, BufferRef, CommandBuffer, Device, MTLResourceOptions};
+use metal::{
+    Buffer, BufferRef, CommandBuffer, Device, MTLPixelFormat, MTLResourceOptions, MTLStorageMode,
+    MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
+};
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the Metal JPEG backend.
@@ -376,6 +379,120 @@ impl MetalBatchOutputBuffer {
 
     pub(crate) fn clone_buffer(&self) -> Buffer {
         self.buffer.clone()
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+/// Reusable caller-owned Metal textures for full-tile JPEG batch output.
+pub struct MetalBatchTextureOutput {
+    textures: Vec<Texture>,
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+    metal_fmt: MTLPixelFormat,
+}
+
+#[cfg(target_os = "macos")]
+impl MetalBatchTextureOutput {
+    /// Allocate reusable private RGBA8 textures for `tile_capacity` full-size tiles.
+    pub fn new_rgba8_tiles(
+        session: &MetalBackendSession,
+        dimensions: (u32, u32),
+        tile_capacity: usize,
+    ) -> Result<Self, Error> {
+        if dimensions.0 == 0 || dimensions.1 == 0 || tile_capacity == 0 {
+            return Err(Error::UnsupportedMetalRequest {
+                reason:
+                    "JPEG Metal batch texture output requires nonzero dimensions and tile capacity",
+            });
+        }
+
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
+        descriptor.set_width(u64::from(dimensions.0));
+        descriptor.set_height(u64::from(dimensions.1));
+        descriptor.set_depth(1);
+        descriptor.set_mipmap_level_count(1);
+        descriptor.set_sample_count(1);
+        descriptor.set_storage_mode(MTLStorageMode::Private);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+
+        let mut textures = Vec::with_capacity(tile_capacity);
+        for _ in 0..tile_capacity {
+            textures.push(session.device().new_texture(&descriptor));
+        }
+
+        Ok(Self {
+            textures,
+            dimensions,
+            fmt: PixelFormat::Rgba8,
+            metal_fmt: MTLPixelFormat::RGBA8Unorm,
+        })
+    }
+
+    /// Tile dimensions for this output allocation.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Pixel format for this output allocation.
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.fmt
+    }
+
+    /// Metal pixel format for each backing texture.
+    pub fn metal_pixel_format(&self) -> MTLPixelFormat {
+        self.metal_fmt
+    }
+
+    /// Number of reusable tile texture slots.
+    pub fn tile_capacity(&self) -> usize {
+        self.textures.len()
+    }
+
+    /// Return a reusable output texture by tile slot.
+    pub fn texture(&self, index: usize) -> Option<&TextureRef> {
+        self.textures.get(index).map(std::convert::AsRef::as_ref)
+    }
+
+    pub(crate) fn clone_texture(&self, index: usize) -> Option<Texture> {
+        self.textures.get(index).cloned()
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+/// One decoded JPEG tile resident in a caller-owned Metal texture.
+pub struct MetalTextureTile {
+    texture: Texture,
+    dimensions: (u32, u32),
+    fmt: PixelFormat,
+}
+
+#[cfg(target_os = "macos")]
+impl MetalTextureTile {
+    pub(crate) fn new(texture: Texture, dimensions: (u32, u32), fmt: PixelFormat) -> Self {
+        Self {
+            texture,
+            dimensions,
+            fmt,
+        }
+    }
+
+    /// Backing Metal texture containing the decoded tile.
+    pub fn texture(&self) -> &TextureRef {
+        self.texture.as_ref()
+    }
+
+    /// Decoded tile dimensions.
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    /// Decoded tile pixel format.
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.fmt
     }
 }
 
@@ -960,6 +1077,25 @@ impl Codec {
         compute::decode_full_rgb8_batch_into_output_with_session(&requests, output, session)?
             .ok_or(Error::UnsupportedMetalRequest {
                 reason: "JPEG Metal reusable batch output currently supports batchable full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
+            })
+    }
+
+    #[cfg(target_os = "macos")]
+    /// Decode a full-tile RGB8 JPEG batch into reusable caller-owned Metal RGBA8 textures.
+    pub fn decode_rgb8_batch_into_metal_textures_with_session(
+        inputs: &[&[u8]],
+        output: &MetalBatchTextureOutput,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let requests = Self::rgb8_metal_batch_requests(inputs, |_| batch::BatchOp::Full)?;
+
+        compute::decode_full_rgb8_batch_into_textures_with_session(&requests, output, session)?
+            .ok_or(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal texture batch output currently supports batchable full-tile RGB8 fast 4:4:4 inputs",
             })
     }
 
@@ -2349,6 +2485,86 @@ mod tests {
             allocations_after_first,
             "warm session batch should reuse shared upload/status buffers"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+        for pixel in rgb.chunks_exact(3) {
+            rgba.extend_from_slice(pixel);
+            rgba.push(u8::MAX);
+        }
+        rgba
+    }
+
+    #[cfg(target_os = "macos")]
+    fn download_rgba8_texture(
+        session: &MetalBackendSession,
+        texture: &metal::TextureRef,
+        dimensions: (u32, u32),
+    ) -> Vec<u8> {
+        let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let byte_len = row_bytes * dimensions.1 as usize;
+        let buffer = session.device().new_buffer(
+            byte_len as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let queue = session.device().new_command_queue();
+        let command_buffer = queue.new_command_buffer();
+        let blit = command_buffer.new_blit_command_encoder();
+        blit.copy_from_texture_to_buffer(
+            texture,
+            0,
+            0,
+            metal::MTLOrigin { x: 0, y: 0, z: 0 },
+            metal::MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
+            &buffer,
+            0,
+            row_bytes as u64,
+            byte_len as u64,
+            metal::MTLBlitOption::None,
+        );
+        blit.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (8, 8), 2).expect("texture output");
+        let inputs = [BASELINE_444, BASELINE_444];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_444)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (8, 8));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (8, 8));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

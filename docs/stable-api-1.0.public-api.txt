@@ -3579,6 +3579,7 @@ pub signinum_jpeg_metal::SurfaceResidency::MetalResidentDecode
 pub struct signinum_jpeg_metal::Codec
 impl signinum_jpeg_metal::Codec
 pub fn signinum_jpeg_metal::Codec::decode_rgb8_batch_into_metal_buffer_with_session(&[&[u8]], &signinum_jpeg_metal::MetalBatchOutputBuffer, &signinum_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<core::result::Result<signinum_jpeg_metal::Surface, signinum_jpeg_metal::Error>>, signinum_jpeg_metal::Error>
+pub fn signinum_jpeg_metal::Codec::decode_rgb8_batch_into_metal_textures_with_session(&[&[u8]], &signinum_jpeg_metal::MetalBatchTextureOutput, &signinum_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<core::result::Result<signinum_jpeg_metal::MetalTextureTile, signinum_jpeg_metal::Error>>, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::Codec::decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(&[&[u8]], signinum_core::types::Rect, signinum_core::scale::Downscale, &signinum_jpeg_metal::MetalBatchOutputBuffer, &signinum_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<core::result::Result<signinum_jpeg_metal::Surface, signinum_jpeg_metal::Error>>, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::Codec::decode_rgb8_scaled_batch_into_metal_buffer_with_session(&[&[u8]], signinum_core::scale::Downscale, &signinum_jpeg_metal::MetalBatchOutputBuffer, &signinum_jpeg_metal::MetalBackendSession) -> core::result::Result<alloc::vec::Vec<core::result::Result<signinum_jpeg_metal::Surface, signinum_jpeg_metal::Error>>, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::Codec::submit_tile_region_scaled_to_device(&mut signinum_core::context::DecoderContext<signinum_jpeg::context::DecoderContext>, &mut signinum_jpeg_metal::MetalSession, &mut signinum_jpeg::internal::scratch::ScratchPool, &[u8], signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale, signinum_core::backend::BackendRequest) -> core::result::Result<<Self as signinum_core::traits::TileBatchDecodeSubmit>::SubmittedSurface, signinum_jpeg_metal::Error>
@@ -3672,12 +3673,25 @@ pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::pitch_bytes(&self) -> usize
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::pixel_format(&self) -> signinum_core::pixel::PixelFormat
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::tile_capacity(&self) -> usize
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::tile_stride_bytes(&self) -> usize
+pub struct signinum_jpeg_metal::MetalBatchTextureOutput
+impl signinum_jpeg_metal::MetalBatchTextureOutput
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::metal_pixel_format(&self) -> metal::constants::MTLPixelFormat
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::new_rgba8_tiles(&signinum_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<Self, signinum_jpeg_metal::Error>
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::pixel_format(&self) -> signinum_core::pixel::PixelFormat
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::texture(&self, usize) -> core::option::Option<&metal::texture::TextureRef>
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::tile_capacity(&self) -> usize
 pub struct signinum_jpeg_metal::MetalSession
 impl signinum_jpeg_metal::MetalSession
 pub fn signinum_jpeg_metal::MetalSession::submissions(&self) -> u64
 pub fn signinum_jpeg_metal::MetalSession::with_backend_session(signinum_jpeg_metal::MetalBackendSession) -> Self
 impl core::fmt::Debug for signinum_jpeg_metal::MetalSession
 pub fn signinum_jpeg_metal::MetalSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct signinum_jpeg_metal::MetalTextureTile
+impl signinum_jpeg_metal::MetalTextureTile
+pub fn signinum_jpeg_metal::MetalTextureTile::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg_metal::MetalTextureTile::pixel_format(&self) -> signinum_core::pixel::PixelFormat
+pub fn signinum_jpeg_metal::MetalTextureTile::texture(&self) -> &metal::texture::TextureRef
 pub struct signinum_jpeg_metal::Surface
 impl signinum_jpeg_metal::Surface
 pub fn signinum_jpeg_metal::Surface::as_bytes(&self) -> &[u8]

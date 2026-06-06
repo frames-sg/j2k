@@ -2233,7 +2233,8 @@ kernel void jpeg_pack_444_rgb_batch(
 
     const uint idx = plane_base + src_y * params.src_width + src_x;
     const uint out_base = gid.z * params.out_stride * params.height;
-    const uint out_idx = out_base + gid.y * params.out_stride + gid.x * 3u;
+    const uint out_idx =
+        out_base + gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
 
     if (params.mode == MODE_GRAY) {
         const uchar gray = plane0[idx];
@@ -2251,6 +2252,10 @@ kernel void jpeg_pack_444_rgb_batch(
         out[out_idx] = clamp_u8(y + ((91881 * cr + (1 << 15)) >> 16));
         out[out_idx + 1] = clamp_u8(y - ((22554 * cb + 46802 * cr + (1 << 15)) >> 16));
         out[out_idx + 2] = clamp_u8(y + ((116130 * cb + (1 << 15)) >> 16));
+    }
+
+    if (params.out_format == OUT_RGBA) {
+        out[out_idx + 3] = uchar(params.alpha);
     }
 }
 

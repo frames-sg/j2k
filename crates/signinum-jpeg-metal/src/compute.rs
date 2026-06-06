@@ -16,7 +16,7 @@ use std::{
 #[cfg(target_os = "macos")]
 use metal::{
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState,
-    Device, MTLResourceOptions, MTLSize,
+    Device, MTLBlitOption, MTLOrigin, MTLPixelFormat, MTLResourceOptions, MTLSize,
 };
 use signinum_core::{BackendRequest, BufferError, PixelFormat, Rect};
 use signinum_jpeg::{
@@ -4859,6 +4859,23 @@ fn region_scaled_batch_error_results(
 }
 
 #[cfg(target_os = "macos")]
+fn texture_batch_error_results(
+    requests: &[batch::QueuedRequest],
+    status_buffer: &Buffer,
+    total_decode_threads: u32,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    let Some(status) = first_decode_error_status(status_buffer, total_decode_threads) else {
+        return Ok(None);
+    };
+    let mut results = Vec::with_capacity(requests.len());
+    for request in requests {
+        let decoder = CpuDecoder::new(request.input.as_ref())?;
+        results.push(Err(decode_error_from_cpu(&decoder, request.fmt, status)));
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RegionScaledBatchPlan {
     decode_params: JpegFastRegionScaledBatchParams,
@@ -6156,6 +6173,321 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_fast444_full_rgba_batch_to_textures(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchTextureOutput,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    if requests.len() < 2
+        || requests
+            .iter()
+            .any(|request| request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8)
+    {
+        return Ok(None);
+    }
+
+    let mut fast444_packets = Vec::with_capacity(packets.len());
+    for packet in packets {
+        let BatchedFastPacket::Fast444(packet, mode) = packet else {
+            return Ok(None);
+        };
+        fast444_packets.push((*packet, *mode));
+    }
+
+    let Some((first, first_mode)) = fast444_packets.first().copied() else {
+        return Ok(None);
+    };
+    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+        return Ok(None);
+    }
+
+    let segment_count = first.entropy_checkpoints.len();
+    if !fast444_packets.iter().all(|(packet, mode)| {
+        *mode == first_mode
+            && fast444_packets_share_region_scaled_batch_shape(first, packet, segment_count)
+    }) {
+        return Ok(None);
+    }
+
+    let tile_count = fast444_packets.len();
+    let width = first.dimensions.0;
+    let height = first.dimensions.1;
+    let out_stride = width as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let out_tile_len = out_stride * height as usize;
+    if output.dimensions() != first.dimensions
+        || output.pixel_format() != PixelFormat::Rgba8
+        || output.metal_pixel_format() != MTLPixelFormat::RGBA8Unorm
+    {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal batch texture output shape does not match requested RGBA8 tiles",
+        });
+    }
+    if output.tile_capacity() < tile_count {
+        return Err(BufferError::OutputTooSmall {
+            required: out_tile_len
+                .checked_mul(tile_count)
+                .ok_or(BufferError::SizeOverflow {
+                    what: "JPEG Metal batch texture output bytes",
+                })?,
+            have: out_tile_len.checked_mul(output.tile_capacity()).ok_or(
+                BufferError::SizeOverflow {
+                    what: "JPEG Metal batch texture output bytes",
+                },
+            )?,
+        }
+        .into());
+    }
+    for index in 0..tile_count {
+        let Some(texture) = output.texture(index) else {
+            return Err(Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            });
+        };
+        if texture.width() != u64::from(width)
+            || texture.height() != u64::from(height)
+            || texture.pixel_format() != MTLPixelFormat::RGBA8Unorm
+        {
+            return Err(Error::UnsupportedMetalRequest {
+                reason:
+                    "JPEG Metal batch texture output texture does not match requested RGBA8 tiles",
+            });
+        }
+    }
+
+    let tile_count_u32 = checked_u32(tile_count, "fast444 batch tile count")?;
+    let segment_count_u32 = checked_u32(segment_count, "fast444 batch segment count")?;
+    let total_decode_threads = checked_u32(
+        tile_count
+            .checked_mul(segment_count)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal fast444 texture batch decode thread count overflowed"
+                    .to_string(),
+            })?,
+        "fast444 texture batch decode thread count",
+    )?;
+
+    let plane_len = width as usize * height as usize;
+    let decode_params = JpegFastRegionScaledBatchParams {
+        scaled_width: width,
+        scaled_height: height,
+        chroma_width: width,
+        chroma_height: height,
+        mcus_per_row: first.mcus_per_row,
+        mcu_rows: first.mcu_rows,
+        segment_count: segment_count_u32,
+        tile_count: tile_count_u32,
+        scale_shift: 0,
+        origin_x: 0,
+        origin_y: 0,
+    };
+    let pack_params = JpegWindowedPackBatchParams {
+        src_width: width,
+        src_height: height,
+        chroma_width: width,
+        chroma_height: height,
+        src_x: 0,
+        src_y: 0,
+        width,
+        height,
+        tile_count: tile_count_u32,
+        out_stride: checked_u32(out_stride, "fast444 texture batch output stride")?,
+        alpha: u32::from(u8::MAX),
+        mode: plane_mode_to_u32(first_mode),
+        out_format: OUT_RGBA,
+    };
+
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let Some(entropy_buffers) = batch_entropy_buffers(
+        runtime,
+        &mut batch_scratch,
+        BatchEntropyBufferKeys {
+            payload: "fast444_texture_entropy",
+            offsets: "fast444_texture_entropy_offsets",
+            lens: "fast444_texture_entropy_lens",
+            checkpoints: "fast444_texture_entropy_checkpoints",
+        },
+        fast444_packets
+            .iter()
+            .map(|(packet, _)| packet.entropy_bytes.as_slice()),
+        fast444_packets
+            .iter()
+            .map(|(packet, _)| packet.entropy_checkpoints.as_slice()),
+        tile_count,
+        segment_count,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let y_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast444_texture_y", plane_len * tile_count);
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_texture_cb",
+        plane_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_texture_cr",
+        plane_len * tile_count,
+    );
+    let rgba_staging = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_texture_rgba_staging",
+        out_tile_len * tile_count,
+    );
+    let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
+    let status_buffer = batch_scratch.shared_buffer_with_slice(
+        &runtime.device,
+        "fast444_texture_status",
+        &statuses,
+    );
+    let dc_tables = [
+        PreparedHuffmanHost::from(&first.y_dc_table),
+        PreparedHuffmanHost::from(&first.cb_dc_table),
+        PreparedHuffmanHost::from(&first.cr_dc_table),
+    ];
+    let ac_tables = [
+        PreparedHuffmanHost::from(&first.y_ac_table),
+        PreparedHuffmanHost::from(&first.cb_ac_table),
+        PreparedHuffmanHost::from(&first.cr_ac_table),
+    ];
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder
+        .set_compute_pipeline_state(&runtime.fast444_scaled_region_batch_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&cb_plane), 0);
+    decoder_encoder.set_buffer(3, Some(&cr_plane), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFastRegionScaledBatchParams>() as u64,
+        (&raw const decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        first.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        first.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        first.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
+    decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
+    decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
+    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    dispatch_1d_pipeline(
+        decoder_encoder,
+        &runtime.fast444_scaled_region_batch_decode_pipeline,
+        total_decode_threads,
+    );
+    decoder_encoder.end_encoding();
+
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(&runtime.pack_444_rgb_batch_pipeline);
+    pack_encoder.set_buffer(0, Some(&y_plane), 0);
+    pack_encoder.set_buffer(1, Some(&cb_plane), 0);
+    pack_encoder.set_buffer(2, Some(&cr_plane), 0);
+    pack_encoder.set_buffer(3, Some(&rgba_staging), 0);
+    pack_encoder.set_bytes(
+        4,
+        size_of::<JpegWindowedPackBatchParams>() as u64,
+        (&raw const pack_params).cast(),
+    );
+    dispatch_3d_pipeline(
+        pack_encoder,
+        &runtime.pack_444_rgb_batch_pipeline,
+        (width, height, tile_count_u32),
+    );
+    pack_encoder.end_encoding();
+
+    let blit_encoder = command_buffer.new_blit_command_encoder();
+    for index in 0..tile_count {
+        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        blit_encoder.copy_from_buffer_to_texture(
+            &rgba_staging,
+            (index * out_tile_len) as u64,
+            out_stride as u64,
+            out_tile_len as u64,
+            MTLSize::new(u64::from(width), u64::from(height), 1),
+            texture,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLBlitOption::None,
+        );
+    }
+    blit_encoder.end_encoding();
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+    drop(batch_scratch);
+
+    if let Some(results) =
+        texture_batch_error_results(requests, &status_buffer, total_decode_threads)?
+    {
+        return Ok(Some(results));
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for index in 0..requests.len() {
+        let texture = output
+            .clone_texture(index)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal batch texture output slot was missing".to_string(),
+            })?;
+        results.push(Ok(crate::MetalTextureTile::new(
+            texture,
+            first.dimensions,
+            PixelFormat::Rgba8,
+        )));
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -7226,6 +7558,31 @@ fn decode_full_rgb8_batch_into_output_with_runtime(
     }
 
     Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn decode_full_rgb8_batch_into_textures_with_session(
+    requests: &[batch::QueuedRequest],
+    output: &crate::MetalBatchTextureOutput,
+    session: &crate::MetalBackendSession,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    let Some(packets) = batched_fast_packets(requests)? else {
+        return Ok(None);
+    };
+
+    with_runtime_for_session(session, |runtime| {
+        decode_full_rgb8_batch_into_textures_with_runtime(runtime, requests, &packets, output)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn decode_full_rgb8_batch_into_textures_with_runtime(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchTextureOutput,
+) -> Result<Option<Vec<Result<crate::MetalTextureTile, Error>>>, Error> {
+    try_decode_fast444_full_rgba_batch_to_textures(runtime, requests, packets, output)
 }
 
 #[cfg(target_os = "macos")]
