@@ -5164,18 +5164,18 @@ fn fast420_region_scaled_batch_plan(
 }
 
 #[cfg(target_os = "macos")]
-struct Fast420RegionScaledTextureGroup {
+struct Fast420RegionScaledGroup {
     indices: Vec<usize>,
     scale: signinum_core::Downscale,
     plan: RegionScaledBatchPlan,
 }
 
 #[cfg(target_os = "macos")]
-fn fast420_region_scaled_texture_batch_groups(
+fn fast420_region_scaled_batch_groups(
     requests: &[batch::QueuedRequest],
     packets: &[&JpegMetalFast420PacketV1],
 ) -> Result<Option<Vec<Vec<usize>>>, Error> {
-    let mut groups = Vec::<Fast420RegionScaledTextureGroup>::new();
+    let mut groups = Vec::<Fast420RegionScaledGroup>::new();
     'packet: for (index, (request, packet)) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
@@ -5209,7 +5209,7 @@ fn fast420_region_scaled_texture_batch_groups(
                 continue 'packet;
             }
         }
-        groups.push(Fast420RegionScaledTextureGroup {
+        groups.push(Fast420RegionScaledGroup {
             indices: vec![index],
             scale,
             plan,
@@ -5291,18 +5291,18 @@ fn fast422_region_scaled_batch_plan(
 }
 
 #[cfg(target_os = "macos")]
-struct Fast422RegionScaledTextureGroup {
+struct Fast422RegionScaledGroup {
     indices: Vec<usize>,
     scale: signinum_core::Downscale,
     plan: RegionScaledBatchPlan,
 }
 
 #[cfg(target_os = "macos")]
-fn fast422_region_scaled_texture_batch_groups(
+fn fast422_region_scaled_batch_groups(
     requests: &[batch::QueuedRequest],
     packets: &[&JpegMetalFast422PacketV1],
 ) -> Result<Option<Vec<Vec<usize>>>, Error> {
-    let mut groups = Vec::<Fast422RegionScaledTextureGroup>::new();
+    let mut groups = Vec::<Fast422RegionScaledGroup>::new();
     'packet: for (index, (request, packet)) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
@@ -5336,7 +5336,7 @@ fn fast422_region_scaled_texture_batch_groups(
                 continue 'packet;
             }
         }
-        groups.push(Fast422RegionScaledTextureGroup {
+        groups.push(Fast422RegionScaledGroup {
             indices: vec![index],
             scale,
             plan,
@@ -5392,6 +5392,88 @@ fn batch_output_buffer_or_new(
     }
 
     Ok(output.clone_buffer())
+}
+
+#[cfg(target_os = "macos")]
+type GroupedSurfaceResult = (usize, Result<Surface, Error>);
+
+#[cfg(target_os = "macos")]
+fn copy_grouped_region_scaled_surfaces_to_output(
+    runtime: &MetalRuntime,
+    output: &crate::MetalBatchOutputBuffer,
+    dimensions: (u32, u32),
+    out_tile_len: usize,
+    group_indices: &[usize],
+    group_results: Vec<Result<Surface, Error>>,
+) -> Result<Vec<GroupedSurfaceResult>, Error> {
+    if group_results.len() != group_indices.len() {
+        return Err(Error::MetalKernel {
+            message: "JPEG Metal grouped region scaled buffer result count mismatch".to_string(),
+        });
+    }
+
+    let output_buffer = output.clone_buffer();
+    let mut copies = Vec::<(Buffer, usize, usize)>::new();
+    let mut mapped_results = Vec::with_capacity(group_indices.len());
+    for (original_index, result) in group_indices.iter().copied().zip(group_results) {
+        match result {
+            Ok(surface) => {
+                let (source, source_offset) =
+                    surface.metal_buffer().ok_or_else(|| Error::MetalKernel {
+                        message:
+                            "JPEG Metal grouped region scaled buffer source was not Metal-backed"
+                                .to_string(),
+                    })?;
+                let destination_offset = original_index
+                    .checked_mul(output.tile_stride_bytes())
+                    .ok_or_else(|| Error::MetalKernel {
+                        message:
+                            "JPEG Metal grouped region scaled buffer destination offset overflowed"
+                                .to_string(),
+                    })?;
+                copies.push((source.clone(), source_offset, destination_offset));
+                mapped_results.push((
+                    original_index,
+                    Ok(Surface::from_metal_buffer_offset(
+                        output_buffer.clone(),
+                        dimensions,
+                        PixelFormat::Rgb8,
+                        destination_offset,
+                    )),
+                ));
+            }
+            Err(error) => mapped_results.push((original_index, Err(error))),
+        }
+    }
+
+    if !copies.is_empty() {
+        let command_buffer = runtime.queue.new_command_buffer();
+        let blit = command_buffer.new_blit_command_encoder();
+        for (source, source_offset, destination_offset) in copies {
+            blit.copy_from_buffer(
+                &source,
+                u64::try_from(source_offset).map_err(|_| Error::MetalKernel {
+                    message: "JPEG Metal grouped region scaled buffer source offset exceeds u64"
+                        .to_string(),
+                })?,
+                &output_buffer,
+                u64::try_from(destination_offset).map_err(|_| Error::MetalKernel {
+                    message:
+                        "JPEG Metal grouped region scaled buffer destination offset exceeds u64"
+                            .to_string(),
+                })?,
+                u64::try_from(out_tile_len).map_err(|_| Error::MetalKernel {
+                    message: "JPEG Metal grouped region scaled buffer copy size exceeds u64"
+                        .to_string(),
+                })?,
+            );
+        }
+        blit.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+    }
+
+    Ok(mapped_results)
 }
 
 #[cfg(target_os = "macos")]
@@ -7590,7 +7672,7 @@ fn fast444_full_rgb_batch_groups(
 }
 
 #[cfg(target_os = "macos")]
-struct Fast444RegionScaledTextureGroup {
+struct Fast444RegionScaledGroup {
     indices: Vec<usize>,
     mode: PlaneMode,
     scale: signinum_core::Downscale,
@@ -7598,11 +7680,11 @@ struct Fast444RegionScaledTextureGroup {
 }
 
 #[cfg(target_os = "macos")]
-fn fast444_region_scaled_texture_batch_groups(
+fn fast444_region_scaled_batch_groups(
     requests: &[batch::QueuedRequest],
     packets: &[(&JpegMetalFast444PacketV1, PlaneMode)],
 ) -> Option<Vec<Vec<usize>>> {
-    let mut groups = Vec::<Fast444RegionScaledTextureGroup>::new();
+    let mut groups = Vec::<Fast444RegionScaledGroup>::new();
     'packet: for (index, (request, (packet, mode))) in
         requests.iter().zip(packets.iter().copied()).enumerate()
     {
@@ -7639,7 +7721,7 @@ fn fast444_region_scaled_texture_batch_groups(
                 continue 'packet;
             }
         }
-        groups.push(Fast444RegionScaledTextureGroup {
+        groups.push(Fast444RegionScaledGroup {
             indices: vec![index],
             mode,
             scale,
@@ -8216,7 +8298,7 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
     packets: &[BatchedFastPacket<'_>],
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
@@ -8244,6 +8326,19 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
     };
     if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
         return Ok(None);
+    }
+
+    let Some(groups) = fast444_region_scaled_batch_groups(requests, &fast444_packets) else {
+        return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+            runtime,
+            requests,
+            &fast444_packets,
+            output,
+            groups,
+        );
     }
 
     let first_scaled = first_roi.scaled_covering(first_scale);
@@ -8513,6 +8608,125 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_grouped_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast444_packets: &[(&JpegMetalFast444PacketV1, PlaneMode)],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(output) = output {
+        for (request, (packet, _)) in requests.iter().zip(fast444_packets.iter().copied()) {
+            let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+                return Ok(None);
+            };
+            let scaled = roi.scaled_covering(scale);
+            let scaled_roi = signinum_jpeg::Rect {
+                x: scaled.x,
+                y: scaled.y,
+                w: scaled.w,
+                h: scaled.h,
+            };
+            let Some(params) = fast444_scaled_region_params(packet, scale, scaled_roi) else {
+                return Ok(None);
+            };
+            let out_dims = (params.scaled_width, params.scaled_height);
+            let out_stride = out_dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+            let out_tile_len = out_stride * out_dims.1 as usize;
+            batch_output_buffer_or_new(
+                runtime,
+                Some(output),
+                out_dims,
+                requests.len(),
+                out_stride,
+                out_tile_len,
+            )?;
+        }
+    }
+
+    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| {
+                let (packet, mode) = fast444_packets[index];
+                BatchedFastPacket::Fast444(packet, mode)
+            })
+            .collect::<Vec<_>>();
+
+        let Some(group_results) =
+            try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
+                runtime,
+                &group_requests,
+                &group_packets,
+                None,
+            )?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(output) = output {
+            let Some(&first_group_index) = group_indices.first() else {
+                continue;
+            };
+            let batch::BatchOp::RegionScaled { roi, scale } = requests[first_group_index].op else {
+                return Ok(None);
+            };
+            let (packet, _) = fast444_packets[first_group_index];
+            let scaled = roi.scaled_covering(scale);
+            let scaled_roi = signinum_jpeg::Rect {
+                x: scaled.x,
+                y: scaled.y,
+                w: scaled.w,
+                h: scaled.h,
+            };
+            let Some(params) = fast444_scaled_region_params(packet, scale, scaled_roi) else {
+                return Ok(None);
+            };
+            let out_dims = (params.scaled_width, params.scaled_height);
+            let out_tile_len =
+                out_dims.0 as usize * out_dims.1 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+            for (original_index, result) in copy_grouped_region_scaled_surfaces_to_output(
+                runtime,
+                output,
+                out_dims,
+                out_tile_len,
+                &group_indices,
+                group_results,
+            )? {
+                merged_results[original_index] = Some(result);
+            }
+        } else {
+            if group_results.len() != group_indices.len() {
+                return Err(Error::MetalKernel {
+                    message:
+                        "JPEG Metal grouped fast444 region scaled buffer result count mismatch"
+                            .to_string(),
+                });
+            }
+            for (original_index, result) in group_indices.into_iter().zip(group_results) {
+                merged_results[original_index] = Some(result);
+            }
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast444 region scaled buffer result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast444_region_scaled_rgba_batch_to_textures(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -8549,8 +8763,7 @@ fn try_decode_fast444_region_scaled_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let Some(groups) = fast444_region_scaled_texture_batch_groups(requests, &fast444_packets)
-    else {
+    let Some(groups) = fast444_region_scaled_batch_groups(requests, &fast444_packets) else {
         return Ok(None);
     };
     if groups.len() > 1 {
@@ -8905,7 +9118,7 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
     packets: &[BatchedFastPacket<'_>],
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
@@ -8933,6 +9146,19 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
     };
     if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
         return Ok(None);
+    }
+
+    let Some(groups) = fast420_region_scaled_batch_groups(requests, &fast420_packets)? else {
+        return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+            runtime,
+            requests,
+            &fast420_packets,
+            output,
+            groups,
+        );
     }
 
     let segment_count = first.entropy_checkpoints.len();
@@ -9150,6 +9376,114 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_grouped_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast420_packets: &[&JpegMetalFast420PacketV1],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(output) = output {
+        for (request, packet) in requests.iter().zip(fast420_packets.iter().copied()) {
+            let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+                return Ok(None);
+            };
+            let segment_count_u32 = checked_u32(
+                packet.entropy_checkpoints.len(),
+                "fast420 grouped region scaled buffer segment count",
+            )?;
+            let Some(plan) =
+                fast420_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+            else {
+                return Ok(None);
+            };
+            batch_output_buffer_or_new(
+                runtime,
+                Some(output),
+                plan.out_dims,
+                requests.len(),
+                plan.pack_params.out_stride as usize,
+                plan.out_tile_len,
+            )?;
+        }
+    }
+
+    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| BatchedFastPacket::Fast420(fast420_packets[index]))
+            .collect::<Vec<_>>();
+
+        let Some(group_results) =
+            try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
+                runtime,
+                &group_requests,
+                &group_packets,
+                None,
+            )?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(output) = output {
+            let Some(&first_group_index) = group_indices.first() else {
+                continue;
+            };
+            let batch::BatchOp::RegionScaled { roi, scale } = requests[first_group_index].op else {
+                return Ok(None);
+            };
+            let packet = fast420_packets[first_group_index];
+            let segment_count_u32 = checked_u32(
+                packet.entropy_checkpoints.len(),
+                "fast420 grouped region scaled buffer segment count",
+            )?;
+            let Some(plan) =
+                fast420_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+            else {
+                return Ok(None);
+            };
+            for (original_index, result) in copy_grouped_region_scaled_surfaces_to_output(
+                runtime,
+                output,
+                plan.out_dims,
+                plan.out_tile_len,
+                &group_indices,
+                group_results,
+            )? {
+                merged_results[original_index] = Some(result);
+            }
+        } else {
+            if group_results.len() != group_indices.len() {
+                return Err(Error::MetalKernel {
+                    message:
+                        "JPEG Metal grouped fast420 region scaled buffer result count mismatch"
+                            .to_string(),
+                });
+            }
+            for (original_index, result) in group_indices.into_iter().zip(group_results) {
+                merged_results[original_index] = Some(result);
+            }
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast420 region scaled buffer result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -9186,8 +9520,7 @@ fn try_decode_fast420_region_scaled_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let Some(groups) = fast420_region_scaled_texture_batch_groups(requests, &fast420_packets)?
-    else {
+    let Some(groups) = fast420_region_scaled_batch_groups(requests, &fast420_packets)? else {
         return Ok(None);
     };
     if groups.len() > 1 {
@@ -9502,7 +9835,7 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
     packets: &[BatchedFastPacket<'_>],
     output: Option<&crate::MetalBatchOutputBuffer>,
 ) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
-    if requests.len() < 2
+    if requests.is_empty()
         || requests
             .iter()
             .any(|request| request.fmt != PixelFormat::Rgb8)
@@ -9530,6 +9863,19 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
     };
     if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
         return Ok(None);
+    }
+
+    let Some(groups) = fast422_region_scaled_batch_groups(requests, &fast422_packets)? else {
+        return Ok(None);
+    };
+    if groups.len() > 1 {
+        return try_decode_grouped_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+            runtime,
+            requests,
+            &fast422_packets,
+            output,
+            groups,
+        );
     }
 
     let segment_count = first.entropy_checkpoints.len();
@@ -9747,6 +10093,114 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_grouped_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    fast422_packets: &[&JpegMetalFast422PacketV1],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+    groups: Vec<Vec<usize>>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if let Some(output) = output {
+        for (request, packet) in requests.iter().zip(fast422_packets.iter().copied()) {
+            let batch::BatchOp::RegionScaled { roi, scale } = request.op else {
+                return Ok(None);
+            };
+            let segment_count_u32 = checked_u32(
+                packet.entropy_checkpoints.len(),
+                "fast422 grouped region scaled buffer segment count",
+            )?;
+            let Some(plan) =
+                fast422_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+            else {
+                return Ok(None);
+            };
+            batch_output_buffer_or_new(
+                runtime,
+                Some(output),
+                plan.out_dims,
+                requests.len(),
+                plan.pack_params.out_stride as usize,
+                plan.out_tile_len,
+            )?;
+        }
+    }
+
+    let mut merged_results: Vec<Option<Result<Surface, Error>>> =
+        (0..requests.len()).map(|_| None).collect();
+    for group_indices in groups {
+        let group_requests = group_indices
+            .iter()
+            .map(|&index| requests[index].clone())
+            .collect::<Vec<_>>();
+        let group_packets = group_indices
+            .iter()
+            .map(|&index| BatchedFastPacket::Fast422(fast422_packets[index]))
+            .collect::<Vec<_>>();
+
+        let Some(group_results) =
+            try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
+                runtime,
+                &group_requests,
+                &group_packets,
+                None,
+            )?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(output) = output {
+            let Some(&first_group_index) = group_indices.first() else {
+                continue;
+            };
+            let batch::BatchOp::RegionScaled { roi, scale } = requests[first_group_index].op else {
+                return Ok(None);
+            };
+            let packet = fast422_packets[first_group_index];
+            let segment_count_u32 = checked_u32(
+                packet.entropy_checkpoints.len(),
+                "fast422 grouped region scaled buffer segment count",
+            )?;
+            let Some(plan) =
+                fast422_region_scaled_batch_plan(packet, roi, scale, 1, segment_count_u32)
+            else {
+                return Ok(None);
+            };
+            for (original_index, result) in copy_grouped_region_scaled_surfaces_to_output(
+                runtime,
+                output,
+                plan.out_dims,
+                plan.out_tile_len,
+                &group_indices,
+                group_results,
+            )? {
+                merged_results[original_index] = Some(result);
+            }
+        } else {
+            if group_results.len() != group_indices.len() {
+                return Err(Error::MetalKernel {
+                    message:
+                        "JPEG Metal grouped fast422 region scaled buffer result count mismatch"
+                            .to_string(),
+                });
+            }
+            for (original_index, result) in group_indices.into_iter().zip(group_results) {
+                merged_results[original_index] = Some(result);
+            }
+        }
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for (index, result) in merged_results.into_iter().enumerate() {
+        results.push(result.ok_or_else(|| Error::MetalKernel {
+            message: format!(
+                "JPEG Metal grouped fast422 region scaled buffer result for tile {index} was missing"
+            ),
+        })?);
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast422_region_scaled_rgba_batch_to_textures(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -9783,8 +10237,7 @@ fn try_decode_fast422_region_scaled_rgba_batch_to_textures(
         return Ok(None);
     }
 
-    let Some(groups) = fast422_region_scaled_texture_batch_groups(requests, &fast422_packets)?
-    else {
+    let Some(groups) = fast422_region_scaled_batch_groups(requests, &fast422_packets)? else {
         return Ok(None);
     };
     if groups.len() > 1 {
