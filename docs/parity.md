@@ -30,10 +30,11 @@ on a single visual smoke test.
   4:2:2/4:2:0 fixture coverage and structured rejection for one malformed
   non-leading-max sampling fixture. Broader malformed four-component fixtures,
   other 12-bit subsampled color output, stronger non-constant 12-bit oracle
-  fixtures, 12-bit CMYK/YCCK implementation, and other lossless
-  SOF3 16-bit color layouts must land CPU parity fixtures and reference
-  outputs before any Metal route is promoted. 12-bit extended CMYK/YCCK is
-  currently covered by structured not-implemented/capability rejection tests;
+  fixtures, subsampled/restart-coded 12-bit CMYK/YCCK implementation, and
+  other lossless SOF3 16-bit color layouts must land CPU parity fixtures and
+  reference outputs before any Metal route is promoted. Initial 12-bit extended
+  CMYK/YCCK 4:4:4 `Rgb16`/`Rgba16` full/ROI/scaled/region-scaled decode and
+  session-batch coverage have landed;
   recognized lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 shapes are covered by
   rejected capability-report tests.
 - A/B/C fixture entries must record the oracle source and version, output

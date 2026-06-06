@@ -8,11 +8,12 @@ mod fixtures;
 use fixtures::{
     cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
     extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
-    extended_12bit_ycck_8x8_jpeg, four_component_16x16_rgb, four_component_16x8_rgb,
-    four_component_8x8_rgb, grayscale_8x8_jpeg, lossless_predictor_grayscale_16bit_3x3_jpeg,
-    lossless_predictor_grayscale_3x3_jpeg, lossless_predictor_rgb_16bit_3x3_jpeg,
-    lossless_predictor_rgb_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_predictor_ycbcr_3x3_jpeg, lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
+    extended_12bit_ycck_8x8_jpeg, four_component_12bit_8x8_rgb16, four_component_16x16_rgb,
+    four_component_16x8_rgb, four_component_8x8_rgb, grayscale_8x8_jpeg,
+    lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
@@ -3036,24 +3037,96 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
 }
 
 #[test]
-fn decoder_new_rejects_12bit_cmyk_ycck_as_not_implemented() {
+fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
     for (bytes, label) in [
         (extended_12bit_cmyk_8x8_jpeg(), "12-bit CMYK"),
         (extended_12bit_ycck_8x8_jpeg(), "12-bit YCCK"),
     ] {
-        let err = match Decoder::new(&bytes) {
-            Ok(_) => panic!("{label} decoder should reject construction"),
-            Err(err) => err,
-        };
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} decoder should construct: {err}"));
+        let expected_full = four_component_12bit_8x8_rgb16();
+        let full_rect = Rect::full((8, 8));
 
-        assert!(
-            matches!(
-                err,
-                JpegError::NotImplemented {
-                    sof: SofKind::Extended12
-                }
-            ),
-            "{label}: {err}"
+        let mut full = vec![0u8; 8 * 8 * PixelFormat::Rgb16.bytes_per_pixel()];
+        let outcome = dec
+            .decode_into(
+                &mut full,
+                8 * PixelFormat::Rgb16.bytes_per_pixel(),
+                PixelFormat::Rgb16,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGB16 full decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, full_rect, "{label}");
+        assert_eq!(full, expected_full, "{label}");
+
+        let roi = Rect {
+            x: 1,
+            y: 2,
+            w: 5,
+            h: 4,
+        };
+        let expected_roi = crop_rgb16_bytes(&expected_full, 8, roi);
+        let mut roi_buf = vec![0u8; roi.w as usize * roi.h as usize * 6];
+        let outcome = dec
+            .decode_region_into(
+                &mut roi_buf,
+                roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel(),
+                PixelFormat::Rgb16,
+                roi,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGB16 ROI decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, roi, "{label}");
+        assert_eq!(roi_buf, expected_roi, "{label}");
+
+        let scaled_rect = scaled_rect_covering_for_test(full_rect, 2);
+        let scaled_row_bytes = scaled_rect.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let scaled_stride = scaled_row_bytes + 8;
+        let expected_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, 8, full_rect, 2),
+            u16::MAX,
+        );
+        let mut scaled = vec![0xaau8; scaled_stride * scaled_rect.h as usize];
+        let outcome = dec
+            .decode_scaled_into(
+                &mut scaled,
+                scaled_stride,
+                PixelFormat::Rgba16,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGBA16 scaled decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, full_rect, "{label}");
+        assert_padded_rgba16_rows(
+            &scaled,
+            scaled_stride,
+            scaled_rect.w as usize,
+            &expected_scaled,
+        );
+
+        let region_scaled = scaled_rect_covering_for_test(roi, 2);
+        let region_scaled_row_bytes =
+            region_scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let region_scaled_stride = region_scaled_row_bytes + 8;
+        let expected_region_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, 8, roi, 2),
+            u16::MAX,
+        );
+        let mut region_scaled_buf = vec![0xaau8; region_scaled_stride * region_scaled.h as usize];
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut region_scaled_buf,
+                region_scaled_stride,
+                PixelFormat::Rgba16,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{label} RGBA16 region-scaled decode should succeed: {err}")
+            });
+        assert_eq!(outcome.decoded, roi, "{label}");
+        assert_padded_rgba16_rows(
+            &region_scaled_buf,
+            region_scaled_stride,
+            region_scaled.w as usize,
+            &expected_region_scaled,
         );
     }
 }

@@ -430,7 +430,11 @@ impl<'a> Decoder<'a> {
         if info.sof_kind == SofKind::Extended12
             && !matches!(
                 info.color_space,
-                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb
+                ColorSpace::Grayscale
+                    | ColorSpace::YCbCr
+                    | ColorSpace::Rgb
+                    | ColorSpace::Cmyk
+                    | ColorSpace::Ycck
             )
         {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
@@ -3786,7 +3790,12 @@ impl Decoder<'_> {
                         }
                     };
                 }
-                _ => {}
+                ColorSpace::Cmyk | ColorSpace::Ycck => {
+                    return self.decode_extended12_four_component444_region_into(
+                        out, stride, roi, downscale,
+                    );
+                }
+                ColorSpace::Grayscale => {}
             }
         }
         if self.info.color_space != ColorSpace::Grayscale || self.plan.components.len() != 1 {
@@ -3983,6 +3992,78 @@ impl Decoder<'_> {
             &planes,
         );
 
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_extended12_four_component444_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        validate_extended12_four_component444_plan(&self.plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = [0i32; 4];
+        let mut coeffs: [CoefficientBlock; 4] =
+            core::array::from_fn(|_| CoefficientBlock::default());
+        let mut pixels = [[0u16; 64]; 4];
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let mut mcus_since_restart = 0u32;
+        let mut expected_rst = 0u8;
+        let total_mcus = mcu_cols * mcu_rows;
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: (width, height),
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                let current_mcu = mcu_y * mcu_cols + mcu_x;
+                if restart > 0 && mcus_since_restart == restart {
+                    consume_extended12_restart(
+                        &mut br,
+                        current_mcu,
+                        total_mcus,
+                        &mut expected_rst,
+                    )?;
+                    prev_dc.fill(0);
+                    mcus_since_restart = 0;
+                }
+                for component in &self.plan.components {
+                    let output_index = component.output_index;
+                    decode_extended12_block_pixels(
+                        &mut br,
+                        component,
+                        &mut prev_dc[output_index],
+                        &mut coeffs[output_index],
+                        &mut pixels[output_index],
+                    )?;
+                }
+                write_extended12_four_component_block_region(
+                    out,
+                    stride,
+                    write_region,
+                    self.info.color_space,
+                    (mcu_x * 8, mcu_y * 8),
+                    &pixels,
+                );
+                mcus_since_restart += 1;
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
         Ok(DecodeOutcome {
             decoded: roi,
             warnings: merged_warnings(&self.warnings, scan_warnings),
@@ -4238,6 +4319,29 @@ fn validate_extended12_color444_plan(
     Ok(())
 }
 
+fn validate_extended12_four_component444_plan(
+    plan: &PreparedDecodePlan,
+    sof: SofKind,
+) -> Result<(), JpegError> {
+    if plan.components.len() != 4 || plan.sampling.max_h != 1 || plan.sampling.max_v != 1 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    let mut seen = [false; 4];
+    for component in &plan.components {
+        if component.h != 1 || component.v != 1 || component.output_index > 3 {
+            return Err(JpegError::NotImplemented { sof });
+        }
+        if seen[component.output_index] {
+            return Err(JpegError::NotImplemented { sof });
+        }
+        seen[component.output_index] = true;
+    }
+    if seen.iter().any(|&present| !present) {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    Ok(())
+}
+
 fn validate_extended12_ycbcr422_plan(
     plan: &PreparedDecodePlan,
     sof: SofKind,
@@ -4426,6 +4530,59 @@ fn write_extended12_rgb_block_region(
                     pixels[2][src_index],
                 ),
             };
+            dst[0..2].copy_from_slice(&r.to_le_bytes());
+            dst[2..4].copy_from_slice(&g.to_le_bytes());
+            dst[4..6].copy_from_slice(&b.to_le_bytes());
+        }
+    }
+}
+
+fn write_extended12_four_component_block_region(
+    out: &mut [u8],
+    stride: usize,
+    region: Extended12WriteRegion,
+    color_space: ColorSpace,
+    block_origin: (u32, u32),
+    pixels: &[[u16; 64]; 4],
+) {
+    let (width, height) = region.dimensions;
+    let (x0, y0) = block_origin;
+    let block_x1 = (x0 + 8).min(width);
+    let block_y1 = (y0 + 8).min(height);
+    let denom = region.downscale.denominator();
+    let output_rect = region.output_rect;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1);
+        if source_y < y0 || source_y >= block_y1 {
+            continue;
+        }
+        let src_row = (source_y - y0) as usize;
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1);
+            if source_x < x0 || source_x >= block_x1 {
+                continue;
+            }
+            let src_col = (source_x - x0) as usize;
+            let src_index = src_row * 8 + src_col;
+            let (r, g, b) = match color_space {
+                ColorSpace::Cmyk => crate::color::cmyk::inverted_cmyk12_to_rgb16(
+                    pixels[0][src_index],
+                    pixels[1][src_index],
+                    pixels[2][src_index],
+                    pixels[3][src_index],
+                ),
+                ColorSpace::Ycck => crate::color::cmyk::ycck12_to_rgb16(
+                    pixels[0][src_index],
+                    pixels[1][src_index],
+                    pixels[2][src_index],
+                    pixels[3][src_index],
+                ),
+                _ => unreachable!("12-bit four-component path only accepts CMYK/YCCK"),
+            };
+            let dst_col = (output_x - output_rect.x) as usize;
+            let dst_start = dst_row * stride + dst_col * 6;
+            let dst = &mut out[dst_start..dst_start + 6];
             dst[0..2].copy_from_slice(&r.to_le_bytes());
             dst[2..4].copy_from_slice(&g.to_le_bytes());
             dst[4..6].copy_from_slice(&b.to_le_bytes());

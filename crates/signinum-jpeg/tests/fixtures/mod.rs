@@ -1638,6 +1638,11 @@ pub(crate) fn four_component_8x8_rgb() -> Vec<u8> {
     vec![64; 8 * 8 * 3]
 }
 
+/// Reference native-range RGB16 pixels for 12-bit CMYK/YCCK 4:4:4 fixtures.
+pub(crate) fn four_component_12bit_8x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(8, 8, [1024, 1024, 1024])
+}
+
 /// Reference RGB pixels for 16x8 constant CMYK/YCCK fixtures.
 pub(crate) fn four_component_16x8_rgb() -> Vec<u8> {
     vec![64; 16 * 8 * 3]

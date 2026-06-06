@@ -283,7 +283,7 @@ fn capability_report_marks_subsampled_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
 }
 
 #[test]
-fn capability_report_rejects_12bit_four_component_cpu_paths_explicitly() {
+fn capability_report_marks_12bit_four_component_444_cpu_eligible() {
     for (name, input, expected_color) in [
         (
             "12-bit CMYK",
@@ -326,12 +326,13 @@ fn capability_report_rejects_12bit_four_component_cpu_paths_explicitly() {
                 assert_eq!(report.info.bit_depth, 12, "{name}");
                 assert_eq!(report.info.color_space, expected_color, "{name}");
                 assert_eq!(report.info.sampling.components().len(), 4, "{name}");
-                assert!(!report.cpu.eligible, "{name} {fmt:?} {op:?}");
-                assert!(report
-                    .cpu
-                    .reason
-                    .expect("CPU rejection reason")
-                    .contains("12-bit four-component CMYK/YCCK"));
+                assert_eq!(
+                    report.info.sampling.components(),
+                    &[(1, 1), (1, 1), (1, 1), (1, 1)],
+                    "{name}"
+                );
+                assert!(report.cpu.eligible, "{name} {fmt:?} {op:?}");
+                assert_eq!(report.cpu.reason, None, "{name} {fmt:?} {op:?}");
                 assert!(!report.owned_cuda.eligible, "{name}");
                 assert!(!report.metal_fast.eligible, "{name}");
             }
