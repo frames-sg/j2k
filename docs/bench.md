@@ -718,8 +718,9 @@ Current v1 scope is explicit:
   including restart-coded color streams. Initial
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled output, 8-bit APP14 RGB `Rgb8` output,
-  8-bit YCbCr 4:4:4 `Rgb8` output, and 16-bit APP14 RGB plus YCbCr 4:4:4
-  `Rgb16` output for predictors 1-7 are CPU-backed, including restart-coded
+  8-bit APP14 RGB full/ROI `Rgba8` output, 8-bit YCbCr 4:4:4 `Rgb8` plus
+  full/ROI `Rgba8` output, and 16-bit APP14 RGB plus YCbCr 4:4:4 `Rgb16`
+  output for predictors 1-7 are CPU-backed, including restart-coded
   grayscale, APP14 RGB, and YCbCr streams; 8-bit SOF3 grayscale/RGB/YCbCr row
   streaming and 16-bit SOF3 grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16`
   row streaming are also CPU-backed. Expanded

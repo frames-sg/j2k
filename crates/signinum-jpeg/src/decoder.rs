@@ -950,6 +950,14 @@ impl<'a> Decoder<'a> {
                 )
             }
             OutputFormat::Rgba8 { alpha } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_rgba8_region_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        alpha,
+                    );
+                }
                 let mut writer = Rgba8Writer::new(out, stride, w, alpha);
                 self.decode_with_writer(
                     pool,
@@ -1488,6 +1496,9 @@ impl<'a> Decoder<'a> {
                 }
             }
             OutputFormat::Rgba8 { alpha } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_rgba8_region_into(out, stride, roi, alpha);
+                }
                 let base = Rgba8Writer::new(out, stride, scaled_roi.w, alpha);
                 let (source_x0, source_width) =
                     self.source_window_for_output_rect(downscale, scaled_roi);
@@ -2596,6 +2607,33 @@ impl Decoder<'_> {
             stride,
         );
         outcome.decoded = roi;
+        Ok(outcome)
+    }
+
+    fn decode_lossless_rgba8_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        alpha: u8,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let rgb_stride = roi.w as usize * 3;
+        let mut rgb = allocate_output_buffer(rgb_stride * roi.h as usize);
+        let outcome = match self.info.color_space {
+            ColorSpace::YCbCr => self.decode_lossless_ycbcr8_region_scaled_into(
+                &mut rgb,
+                rgb_stride,
+                roi,
+                DownscaleFactor::Full,
+            ),
+            _ => self.decode_lossless_rgb8_region_scaled_into(
+                &mut rgb,
+                rgb_stride,
+                roi,
+                DownscaleFactor::Full,
+            ),
+        }?;
+        copy_rgb8_to_rgba8(&rgb, rgb_stride, roi.w, roi.h, out, stride, alpha);
         Ok(outcome)
     }
 
@@ -4994,6 +5032,26 @@ fn copy_ycbcr8_row_to_rgb8(src: &[u8], dst: &mut [u8]) {
     }
 }
 
+fn copy_rgb8_to_rgba8(
+    src: &[u8],
+    src_stride: usize,
+    width: u32,
+    height: u32,
+    dst: &mut [u8],
+    dst_stride: usize,
+    alpha: u8,
+) {
+    let src_row_bytes = width as usize * 3;
+    let dst_row_bytes = width as usize * 4;
+    for y in 0..height as usize {
+        let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
+        let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
+        for (source, target) in src_row.chunks_exact(3).zip(dst_row.chunks_exact_mut(4)) {
+            target.copy_from_slice(&[source[0], source[1], source[2], alpha]);
+        }
+    }
+}
+
 fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
     let (width, height) = dimensions;
     let row_bytes = width as usize * 6;
@@ -5143,6 +5201,8 @@ fn output_format_from_parts(
             (PixelFormat::Rgb8, scale) => Ok(OutputFormat::Rgb8Scaled {
                 factor: jpeg_downscale(scale),
             }),
+            (PixelFormat::Rgba8, Downscale::None) => Ok(OutputFormat::Rgba8 { alpha: 255 }),
+            (PixelFormat::Rgba8, _) => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
             (PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
             (PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
                 factor: jpeg_downscale(scale),

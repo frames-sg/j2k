@@ -54,8 +54,9 @@ The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
 16-bit streams, including restart-coded grayscale streams, plus APP14 RGB
 predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16` for 16-bit
-streams, plus 8-bit and 16-bit YCbCr 4:4:4 predictors 1-7 decoded to
-`Rgb8`/`Rgb16`, including restart-coded APP14 RGB and YCbCr streams. The SOF3
+streams, with full/ROI `Rgba8` for 8-bit APP14 RGB, plus 8-bit and 16-bit
+YCbCr 4:4:4 predictors 1-7 decoded to `Rgb8`/`Rgb16`, with full/ROI `Rgba8`
+for 8-bit YCbCr, including restart-coded APP14 RGB and YCbCr streams. The SOF3
 row path supports RGB8 rows for 8-bit grayscale/RGB/YCbCr streams,
 little-endian `Gray16` rows for 16-bit grayscale streams, and little-endian
 `Rgb16` rows for 16-bit APP14 RGB/YCbCr streams.

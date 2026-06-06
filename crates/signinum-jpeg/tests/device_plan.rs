@@ -1076,6 +1076,42 @@ fn capability_report_marks_lossless_app14_rgb8_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_lossless_app14_rgb8_rgba8_cpu_eligible_for_unscaled_output() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_rgb_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba8,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse SOF3 APP14 RGB RGBA8 predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 8);
+            assert_eq!(report.info.color_space, ColorSpace::Rgb);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
 fn capability_report_marks_lossless_app14_rgb16_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_predictor_rgb_16bit_3x3_jpeg(predictor);
@@ -1189,6 +1225,42 @@ fn capability_report_marks_lossless_ycbcr_rgb8_cpu_eligible() {
             .unwrap_or_else(|err| {
                 panic!(
                     "capability report should parse SOF3 YCbCr predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 8);
+            assert_eq!(report.info.color_space, ColorSpace::YCbCr);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_marks_lossless_ycbcr_rgb8_rgba8_cpu_eligible_for_unscaled_output() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_ycbcr_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba8,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse SOF3 YCbCr RGBA8 predictor-{predictor} metadata: {err}"
                 )
             });
 
