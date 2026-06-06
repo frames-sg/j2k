@@ -171,9 +171,9 @@ or output shapes. For contiguous viewport workloads,
 exposes the same reusable-output behavior at the viewport layer and rejects
 non-contiguous composition shapes instead of materializing a CPU viewport.
 For sparse or non-contiguous RGB8 viewport composition,
-`compose_viewport_to_resizable_metal_buffer_with_session` decodes component rows
-into reusable Metal plane buffers and packs the composed viewport into a
-caller-owned Metal buffer.
+`compose_viewport_to_resizable_metal_{buffer,textures}_with_session` decodes
+component rows into reusable Metal plane buffers and packs the composed viewport
+into a caller-owned Metal buffer or texture.
 
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.

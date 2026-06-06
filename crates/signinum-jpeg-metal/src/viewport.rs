@@ -520,6 +520,32 @@ pub fn compose_viewport_to_resizable_metal_buffer_with_session(
 }
 
 #[cfg(target_os = "macos")]
+/// Compose a viewport workload into a reusable caller-owned Metal texture.
+///
+/// This path supports sparse and non-contiguous workloads. It decodes component
+/// rows into reusable Metal plane buffers, resizes `output` to one RGBA8
+/// viewport slot, and packs the composed viewport directly into that
+/// caller-owned texture.
+pub fn compose_viewport_to_resizable_metal_textures_with_session(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchTextureOutput,
+    session: &MetalBackendSession,
+) -> Result<MetalTextureTile, Error> {
+    output.ensure_rgba8_tiles(session, workload.viewport_dims, 1)?;
+    crate::compute::compose_rgb_viewport_from_regions_into_textures_with_session(
+        decoder,
+        pool,
+        workload.scale,
+        workload.viewport_dims,
+        &workload.tiles,
+        output,
+        session,
+    )
+}
+
+#[cfg(target_os = "macos")]
 /// Decode a contiguous viewport region through the Metal hybrid path.
 pub fn decode_viewport_region_hybrid(
     decoder: &CpuDecoder<'_>,

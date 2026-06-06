@@ -1616,6 +1616,91 @@ impl PlaneStage {
         ))
     }
 
+    fn finish_rgba8_into_texture_output_with_runtime(
+        self,
+        runtime: &MetalRuntime,
+        output: &crate::MetalBatchTextureOutput,
+    ) -> Result<crate::MetalTextureTile, Error> {
+        let rgb_pitch_bytes = self.dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
+        let rgb_tile_len = rgb_pitch_bytes * self.dims.1 as usize;
+        let rgba_tile_len =
+            self.dims.0 as usize * self.dims.1 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        validate_rgba_texture_batch_output(output, self.dims, 1, rgba_tile_len)?;
+        let out_buffer = {
+            let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+            batch_scratch.private_buffer(
+                &runtime.device,
+                "viewport_sparse_rgba_texture_rgb8",
+                rgb_tile_len,
+            )
+        };
+        let texture = output.texture(0).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        let pack_params = JpegPackParams {
+            width: self.dims.0,
+            height: self.dims.1,
+            out_stride: u32::try_from(rgb_pitch_bytes)
+                .expect("JPEG Metal output stride fits in u32"),
+            alpha: u32::from(u8::MAX),
+            mode: match self.mode {
+                PlaneMode::Gray => MODE_GRAY,
+                PlaneMode::YCbCr => MODE_YCBCR,
+                PlaneMode::Rgb => MODE_RGB,
+            },
+            out_format: OUT_RGB,
+        };
+        let texture_params = JpegRgb8ToRgbaTextureParams {
+            width: self.dims.0,
+            height: self.dims.1,
+            in_stride: u32::try_from(rgb_pitch_bytes)
+                .expect("JPEG Metal RGB texture input stride fits in u32"),
+            alpha: u32::from(u8::MAX),
+        };
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let pack_encoder = command_buffer.new_compute_command_encoder();
+        pack_encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        pack_encoder.set_buffer(0, Some(&self.plane0), 0);
+        pack_encoder.set_buffer(1, self.plane1.as_ref().map(std::convert::AsRef::as_ref), 0);
+        pack_encoder.set_buffer(2, self.plane2.as_ref().map(std::convert::AsRef::as_ref), 0);
+        pack_encoder.set_buffer(3, Some(&out_buffer), 0);
+        pack_encoder.set_bytes(
+            4,
+            size_of::<JpegPackParams>() as u64,
+            (&raw const pack_params).cast(),
+        );
+        dispatch_2d_pipeline(pack_encoder, &runtime.pack_pipeline, self.dims);
+        pack_encoder.end_encoding();
+
+        let texture_encoder = command_buffer.new_compute_command_encoder();
+        texture_encoder.set_compute_pipeline_state(&runtime.rgb8_to_rgba_texture_pipeline);
+        texture_encoder.set_buffer(0, Some(&out_buffer), 0);
+        texture_encoder.set_bytes(
+            1,
+            size_of::<JpegRgb8ToRgbaTextureParams>() as u64,
+            (&raw const texture_params).cast(),
+        );
+        texture_encoder.set_texture(0, Some(texture));
+        dispatch_2d_pipeline(
+            texture_encoder,
+            &runtime.rgb8_to_rgba_texture_pipeline,
+            self.dims,
+        );
+        texture_encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let texture = output.clone_texture(0).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        Ok(crate::MetalTextureTile::new(
+            texture,
+            self.dims,
+            PixelFormat::Rgba8,
+        ))
+    }
+
     fn dispatch_private_rgb8_with_runtime(
         self,
         runtime: &MetalRuntime,
@@ -14366,6 +14451,50 @@ pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
             )?;
         }
         stage.finish_rgb8_into_output_with_runtime(runtime, output)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn compose_rgb_viewport_from_regions_into_textures_with_session(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut signinum_jpeg::ScratchPool,
+    scale: signinum_core::Downscale,
+    viewport_dims: (u32, u32),
+    tiles: &[ViewportTile],
+    output: &crate::MetalBatchTextureOutput,
+    session: &crate::MetalBackendSession,
+) -> Result<crate::MetalTextureTile, Error> {
+    with_runtime_for_session(session, |runtime| {
+        let mut stage =
+            cached_plane_stage(&runtime.device, decoder.info().color_space, viewport_dims)?;
+        for tile in tiles {
+            let dims = tile.source_roi.scaled_covering(scale);
+            if (dims.w, dims.h) != (tile.dest.w, tile.dest.h) {
+                return Err(Error::MetalKernel {
+                    message: format!(
+                        "viewport tile dims {:?} do not match destination rect {:?}",
+                        (dims.w, dims.h),
+                        tile.dest
+                    ),
+                });
+            }
+            let mut writer = ViewportPlaneWriter {
+                stage: &mut stage,
+                dest: tile.dest,
+            };
+            decoder.decode_region_component_rows_with_scratch(
+                pool,
+                &mut writer,
+                signinum_jpeg::Rect {
+                    x: tile.source_roi.x,
+                    y: tile.source_roi.y,
+                    w: tile.source_roi.w,
+                    h: tile.source_roi.h,
+                },
+                scale,
+            )?;
+        }
+        stage.finish_rgba8_into_texture_output_with_runtime(runtime, output)
     })
 }
 
