@@ -2909,7 +2909,7 @@ mod tests {
                     3
                 },
             ),
-            (BASELINE_422, (16, 8), 3),
+            (BASELINE_422, (16, 8), 0),
             (BASELINE_444, (8, 8), 0),
         ];
 
@@ -2976,6 +2976,45 @@ mod tests {
             compute::jpeg_private_buffer_allocations_for_test(),
             0,
             "fused 4:4:4 texture batch decode should not allocate private Y/Cb/Cr staging planes"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast422_texture_batch_decode_fuses_directly_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 8), 2).expect("texture output");
+        let inputs = [BASELINE_422, BASELINE_422];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        compute::reset_jpeg_private_buffer_allocations_for_test();
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (16, 8));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+        assert_eq!(
+            compute::jpeg_private_buffer_allocations_for_test(),
+            0,
+            "fused 4:2:2 texture batch decode should not allocate private Y/Cb/Cr staging planes"
         );
     }
 

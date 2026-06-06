@@ -166,6 +166,18 @@ struct JpegFast444TextureBatchParams {
     uint mode;
 };
 
+struct JpegFast422TextureBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint segment_count;
+    uint tile_index;
+    uint alpha;
+};
+
 struct JpegWindowedPackBatchParams {
     uint src_width;
     uint src_height;
@@ -2119,6 +2131,34 @@ inline uchar h2v1_sample(
     return uchar((3u * curr + next + 2u) >> 2);
 }
 
+inline uchar h2v1_sample_thread(
+    thread const uchar *row,
+    uint n,
+    uint x
+) {
+    if (n == 0) {
+        return 0;
+    }
+    if (n == 1) {
+        return row[0];
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    if (x == 0u) {
+        return row[0];
+    }
+    if (x == n * 2u - 1u) {
+        return row[n - 1u];
+    }
+    if ((x & 1u) == 0u) {
+        const uint prev = uint(row[sample - 1u]);
+        const uint curr = uint(row[sample]);
+        return uchar((3u * curr + prev + 2u) >> 2);
+    }
+    const uint curr = uint(row[sample]);
+    const uint next = uint(row[sample + 1u]);
+    return uchar((3u * curr + next + 2u) >> 2);
+}
+
 inline void h2v2_sample_even_pair(
     device const uchar *near_row,
     device const uchar *curr_row,
@@ -3076,6 +3116,134 @@ kernel void jpeg_decode_fast422_batch(
             idct_islow(coeffs, pixels);
         }
         deposit_block(tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, pixels);
+        advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_decode_fast422_rgba_texture_batch(
+    device const uchar *entropy [[buffer(0)]],
+    constant JpegFast422TextureBatchParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant PreparedHuffman &y_dc [[buffer(8)]],
+    constant PreparedHuffman &y_ac [[buffer(9)]],
+    constant PreparedHuffman &cb_dc [[buffer(10)]],
+    constant PreparedHuffman &cb_ac [[buffer(11)]],
+    constant PreparedHuffman &cr_dc [[buffer(12)]],
+    constant PreparedHuffman &cr_ac [[buffer(13)]],
+    device const uint *entropy_offsets [[buffer(14)]],
+    device const uint *entropy_lens [[buffer(15)]],
+    device JpegDecodeStatus *status [[buffer(16)]],
+    device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.segment_count) {
+        return;
+    }
+
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    const uint status_index = params.tile_index * params.segment_count + gid;
+    device JpegDecodeStatus *thread_status = status + status_index;
+    thread_status->code = FAST420_STATUS_OK;
+    thread_status->detail = 0;
+    thread_status->position = 0;
+    thread_status->reserved = 0;
+
+    const uint checkpoint_base = params.tile_index * params.segment_count;
+    const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
+    uint start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    uint end_mcu = total_mcus;
+    if (gid + 1u < params.segment_count) {
+        end_mcu = min(total_mcus, entropy_checkpoints[checkpoint_base + gid + 1u].mcu_index);
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    const uint entropy_base = entropy_offsets[params.tile_index];
+    const uint entropy_end = entropy_base + entropy_lens[params.tile_index];
+    thread BitReader br;
+    br.pos = entropy_base + checkpoint.entropy_pos;
+    br.acc = checkpoint.bit_acc;
+    br.bits = checkpoint.bit_count;
+
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    thread short coeffs[64];
+    thread uchar y_left_pixels[64];
+    thread uchar y_right_pixels[64];
+    thread uchar cb_pixels[64];
+    thread uchar cr_pixels[64];
+
+    uint mx = 0u;
+    uint my = 0u;
+    init_mcu_cursor(start_mcu, params.mcus_per_row, mx, my);
+    for (uint mcu_index = start_mcu; mcu_index < end_mcu; ++mcu_index) {
+        const uint y_x = mx * 16u;
+        const uint y_y = my * 8u;
+        bool dc_only = false;
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y_left_pixels);
+        } else {
+            idct_islow(coeffs, y_left_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y_right_pixels);
+        } else {
+            idct_islow(coeffs, y_right_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cb_pixels);
+        } else {
+            idct_islow(coeffs, cb_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cr_pixels);
+        } else {
+            idct_islow(coeffs, cr_pixels);
+        }
+
+        const uint copy_width = min(16u, params.width - min(y_x, params.width));
+        const uint copy_height = min(8u, params.height - min(y_y, params.height));
+        for (uint by = 0u; by < copy_height; ++by) {
+            thread const uchar *cb_row = cb_pixels + by * 8u;
+            thread const uchar *cr_row = cr_pixels + by * 8u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint x = y_x + bx;
+                const uchar y_value = bx < 8u
+                    ? y_left_pixels[by * 8u + bx]
+                    : y_right_pixels[by * 8u + (bx - 8u)];
+                const uchar cb_value = h2v1_sample_thread(cb_row, params.chroma_width, x);
+                const uchar cr_value = h2v1_sample_thread(cr_row, params.chroma_width, x);
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(x, y_y + by)
+                );
+            }
+        }
         advance_mcu_cursor(mx, my, params.mcus_per_row);
     }
 }
