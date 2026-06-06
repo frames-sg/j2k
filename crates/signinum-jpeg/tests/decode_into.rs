@@ -1456,6 +1456,184 @@ fn decode_into_rgb16_converts_restart_coded_lossless_ycbcr16() {
 }
 
 #[test]
+fn decode_into_rgba16_accepts_lossless_color_common_predictors() {
+    for predictor in 1..=7 {
+        for (bytes, expected_rgb, label) in [
+            (
+                lossless_predictor_rgb_16bit_3x3_jpeg(predictor),
+                rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS),
+                "APP14 RGB",
+            ),
+            (
+                lossless_predictor_ycbcr_16bit_3x3_jpeg(predictor),
+                lossless_ycbcr_16bit_3x3_rgb16(),
+                "YCbCr",
+            ),
+        ] {
+            let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+                panic!("lossless 16-bit predictor-{predictor} {label} JPEG must construct: {err}")
+            });
+            let (w, h) = dec.info().dimensions;
+            let stride = w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+            let mut buf = vec![0u8; stride * h as usize];
+
+            let outcome = dec
+                .decode_into(&mut buf, stride, PixelFormat::Rgba16)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "lossless 16-bit predictor-{predictor} {label} RGBA16 decode must succeed: {err}"
+                    )
+                });
+
+            assert_eq!(outcome.decoded, Rect::full((w, h)));
+            assert_eq!(
+                buf,
+                rgb16_to_rgba16(&expected_rgb, u16::MAX),
+                "{label} predictor {predictor}"
+            );
+        }
+    }
+}
+
+#[test]
+fn decode_region_into_rgba16_crops_restart_coded_lossless_color() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let row_bytes = roi.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+    let stride = row_bytes + 8;
+
+    for (bytes, expected_rgb, label) in [
+        (
+            lossless_restart_predictor_rgb_16bit_3x3_jpeg(4),
+            rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS),
+            "APP14 RGB",
+        ),
+        (
+            lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(4),
+            lossless_ycbcr_16bit_3x3_rgb16(),
+            "YCbCr",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("restart-coded lossless 16-bit {label} JPEG must construct: {err}")
+        });
+        let cropped = crop_rgb16_bytes(&expected_rgb, 3, roi);
+        let expected = rgb16_to_rgba16(&cropped, u16::MAX);
+        let mut buf = vec![0xaau8; stride * roi.h as usize];
+
+        let outcome = dec
+            .decode_region_into(&mut buf, stride, PixelFormat::Rgba16, roi)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded lossless 16-bit {label} RGBA16 ROI decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row);
+            assert_eq!(&row[row_bytes..], &[0xaa; 8]);
+        }
+    }
+}
+
+#[test]
+fn decode_scaled_into_rgba16_projects_lossless_color() {
+    let roi = Rect::full((3, 3));
+    let scaled = scaled_rect_covering_for_test(roi, 2);
+
+    for (bytes, expected_rgb, label) in [
+        (
+            lossless_predictor_rgb_16bit_3x3_jpeg(5),
+            rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS),
+            "APP14 RGB",
+        ),
+        (
+            lossless_predictor_ycbcr_16bit_3x3_jpeg(5),
+            lossless_ycbcr_16bit_3x3_rgb16(),
+            "YCbCr",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("lossless 16-bit {label} JPEG must construct: {err}"));
+        let stride = scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * scaled.h as usize];
+        let expected = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_rgb, 3, roi, 2),
+            u16::MAX,
+        );
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, stride, PixelFormat::Rgba16, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!("lossless 16-bit {label} RGBA16 scaled decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        assert_eq!(buf, expected);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgba16_projects_restart_coded_lossless_color() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+    let stride = row_bytes + 8;
+
+    for (bytes, expected_rgb, label) in [
+        (
+            lossless_restart_predictor_rgb_16bit_3x3_jpeg(5),
+            rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS),
+            "APP14 RGB",
+        ),
+        (
+            lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(5),
+            lossless_ycbcr_16bit_3x3_rgb16(),
+            "YCbCr",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("restart-coded lossless 16-bit {label} JPEG must construct: {err}")
+        });
+        let expected = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_rgb, 3, roi, 2),
+            u16::MAX,
+        );
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgba16, roi, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded lossless 16-bit {label} RGBA16 region-scaled decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row);
+            assert_eq!(&row[row_bytes..], &[0xaa; 8]);
+        }
+    }
+}
+
+#[test]
 fn decode_region_into_gray8_crops_lossless_grayscale_common_predictors() {
     let roi = Rect {
         x: 1,
@@ -2317,6 +2495,27 @@ fn rgb16_samples_to_le_bytes(samples: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
     for sample in samples {
         out.extend_from_slice(&sample.to_le_bytes());
+    }
+    out
+}
+
+fn rgb16_to_rgba16(rgb: &[u8], alpha: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgb.len() / 6 * 8);
+    let alpha = alpha.to_le_bytes();
+    for pixel in rgb.chunks_exact(6) {
+        out.extend_from_slice(pixel);
+        out.extend_from_slice(&alpha);
+    }
+    out
+}
+
+fn crop_rgb16_bytes(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(roi.w as usize * roi.h as usize * 6);
+    for y in roi.y..roi.y + roi.h {
+        let row = y as usize * width * 6;
+        let start = row + roi.x as usize * 6;
+        let end = start + roi.w as usize * 6;
+        out.extend_from_slice(&full[start..end]);
     }
     out
 }

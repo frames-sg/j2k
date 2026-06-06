@@ -79,6 +79,16 @@ fn rgb16_samples_to_le_bytes(samples: &[u16]) -> Vec<u8> {
     out
 }
 
+fn rgb16_to_rgba16(rgb: &[u8], alpha: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgb.len() / 6 * 8);
+    let alpha = alpha.to_le_bytes();
+    for pixel in rgb.chunks_exact(6) {
+        out.extend_from_slice(pixel);
+        out.extend_from_slice(&alpha);
+    }
+    out
+}
+
 #[test]
 fn production_batch_decode_empty_input_succeeds() {
     let mut jobs: Vec<TileDecodeJob<'_, '_>> = Vec::new();
@@ -350,6 +360,8 @@ fn session_batch_decode_progressive12_app14_rgb_matches_single_tile_decode() {
 fn session_batch_decode_lossless_app14_rgb16_matches_single_tile_decode() {
     let expected = rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS);
     let stride = 3 * PixelFormat::Rgb16.bytes_per_pixel();
+    let expected_rgba = rgb16_to_rgba16(&expected, u16::MAX);
+    let rgba_stride = 3 * PixelFormat::Rgba16.bytes_per_pixel();
     let mut session = JpegBatchSession::new(TileBatchOptions {
         workers: NonZeroUsize::new(2),
     });
@@ -359,6 +371,10 @@ fn session_batch_decode_lossless_app14_rgb16_matches_single_tile_decode() {
         lossless_restart_predictor_rgb_16bit_3x3_jpeg(1),
     ] {
         let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut rgba_outputs = vec![
+            vec![0u8; expected_rgba.len()],
+            vec![0u8; expected_rgba.len()],
+        ];
         let outcomes = {
             let mut jobs = outputs
                 .iter_mut()
@@ -376,6 +392,25 @@ fn session_batch_decode_lossless_app14_rgb16_matches_single_tile_decode() {
         assert_eq!(outcomes.len(), 2);
         for output in outputs {
             assert_eq!(output, expected);
+        }
+
+        let outcomes = {
+            let mut jobs = rgba_outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride: rgba_stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .expect("lossless SOF3 APP14 RGBA16 session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in rgba_outputs {
+            assert_eq!(output, expected_rgba);
         }
     }
 }
@@ -418,6 +453,8 @@ fn session_batch_decode_lossless_ycbcr_matches_single_tile_decode() {
 fn session_batch_decode_lossless_ycbcr16_matches_single_tile_decode() {
     let expected = lossless_ycbcr_16bit_3x3_rgb16();
     let stride = 3 * PixelFormat::Rgb16.bytes_per_pixel();
+    let expected_rgba = rgb16_to_rgba16(&expected, u16::MAX);
+    let rgba_stride = 3 * PixelFormat::Rgba16.bytes_per_pixel();
     let mut session = JpegBatchSession::new(TileBatchOptions {
         workers: NonZeroUsize::new(2),
     });
@@ -427,6 +464,10 @@ fn session_batch_decode_lossless_ycbcr16_matches_single_tile_decode() {
         lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(1),
     ] {
         let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut rgba_outputs = vec![
+            vec![0u8; expected_rgba.len()],
+            vec![0u8; expected_rgba.len()],
+        ];
         let outcomes = {
             let mut jobs = outputs
                 .iter_mut()
@@ -444,6 +485,25 @@ fn session_batch_decode_lossless_ycbcr16_matches_single_tile_decode() {
         assert_eq!(outcomes.len(), 2);
         for output in outputs {
             assert_eq!(output, expected);
+        }
+
+        let outcomes = {
+            let mut jobs = rgba_outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride: rgba_stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .expect("lossless SOF3 16-bit YCbCr RGBA16 session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in rgba_outputs {
+            assert_eq!(output, expected_rgba);
         }
     }
 }

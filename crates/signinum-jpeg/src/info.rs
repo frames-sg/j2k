@@ -223,6 +223,8 @@ pub(crate) enum OutputFormat {
     Gray16Scaled { factor: DownscaleFactor },
     Rgb16,
     Rgb16Scaled { factor: DownscaleFactor },
+    Rgba16 { alpha: u16 },
+    Rgba16Scaled { alpha: u16, factor: DownscaleFactor },
 }
 
 impl OutputFormat {
@@ -233,19 +235,24 @@ impl OutputFormat {
             Self::Gray8 | Self::Gray8Scaled { .. } => 1,
             Self::Gray16 | Self::Gray16Scaled { .. } => 2,
             Self::Rgb16 | Self::Rgb16Scaled { .. } => 6,
+            Self::Rgba16 { .. } | Self::Rgba16Scaled { .. } => 8,
         }
     }
 
     pub(crate) fn downscale(self) -> DownscaleFactor {
         match self {
-            Self::Rgb8 | Self::Rgba8 { .. } | Self::Gray8 | Self::Gray16 | Self::Rgb16 => {
-                DownscaleFactor::Full
-            }
+            Self::Rgb8
+            | Self::Rgba8 { .. }
+            | Self::Gray8
+            | Self::Gray16
+            | Self::Rgb16
+            | Self::Rgba16 { .. } => DownscaleFactor::Full,
             Self::Rgb8Scaled { factor }
             | Self::Rgba8Scaled { factor, .. }
             | Self::Gray8Scaled { factor }
             | Self::Gray16Scaled { factor }
-            | Self::Rgb16Scaled { factor } => factor,
+            | Self::Rgb16Scaled { factor }
+            | Self::Rgba16Scaled { factor, .. } => factor,
         }
     }
 }
@@ -484,6 +491,18 @@ mod tests {
             }
             .bytes_per_pixel(),
             6
+        );
+        assert_eq!(
+            OutputFormat::Rgba16 { alpha: u16::MAX }.bytes_per_pixel(),
+            8
+        );
+        assert_eq!(
+            OutputFormat::Rgba16Scaled {
+                alpha: u16::MAX,
+                factor: DownscaleFactor::Half
+            }
+            .bytes_per_pixel(),
+            8
         );
     }
 

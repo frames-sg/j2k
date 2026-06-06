@@ -249,6 +249,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     | PixelFormat::Rgb8
                     | PixelFormat::Rgba8
                     | PixelFormat::Rgb16
+                    | PixelFormat::Rgba16
             ) =>
         {
             return match (info.color_space, info.bit_depth, request.fmt) {
@@ -261,7 +262,11 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     8,
                     PixelFormat::Rgb8 | PixelFormat::Rgba8,
                 )
-                | (ColorSpace::Rgb | ColorSpace::YCbCr, 16, PixelFormat::Rgb16)
+                | (
+                    ColorSpace::Rgb | ColorSpace::YCbCr,
+                    16,
+                    PixelFormat::Rgb16 | PixelFormat::Rgba16,
+                )
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 1
                         && info.sampling.max_v == 1
@@ -274,15 +279,15 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     JpegBackendEligibility::eligible()
                 }
                 (ColorSpace::Rgb, 8, PixelFormat::Rgb8 | PixelFormat::Rgba8)
-                | (ColorSpace::Rgb, 16, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                | (ColorSpace::Rgb, 16, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
                 ),
                 (ColorSpace::YCbCr, 8, PixelFormat::Rgb8 | PixelFormat::Rgba8)
-                | (ColorSpace::YCbCr, 16, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                | (ColorSpace::YCbCr, 16, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU lossless SOF3 YCbCr decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, 8-bit YCbCr Rgb8/Rgba8, 16-bit YCbCr Rgb16, 8-bit APP14 RGB Rgb8/Rgba8, or 16-bit APP14 RGB Rgb16 output only",
+                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, 8-bit YCbCr Rgb8/Rgba8, 16-bit YCbCr Rgb16/Rgba16, 8-bit APP14 RGB Rgb8/Rgba8, or 16-bit APP14 RGB Rgb16/Rgba16 output only",
                 ),
             };
         }

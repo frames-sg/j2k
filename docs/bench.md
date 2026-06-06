@@ -720,7 +720,8 @@ Current v1 scope is explicit:
   full-image/ROI/scaled/region-scaled output, 8-bit APP14 RGB `Rgb8` output,
   8-bit APP14 RGB full/ROI/scaled/region-scaled `Rgba8` output, 8-bit YCbCr
   4:4:4 `Rgb8` plus full/ROI/scaled/region-scaled `Rgba8` output, and
-  16-bit APP14 RGB plus YCbCr 4:4:4 `Rgb16`
+  16-bit APP14 RGB plus YCbCr 4:4:4 `Rgb16` plus full/ROI/scaled/region-scaled
+  `Rgba16`
   output for predictors 1-7 are CPU-backed, including restart-coded
   grayscale, APP14 RGB, and YCbCr streams; 8-bit SOF3 grayscale/RGB/YCbCr row
   streaming and 16-bit SOF3 grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16`
@@ -728,7 +729,7 @@ Current v1 scope is explicit:
   four-component subsampled/malformed
   coverage, other 12-bit
   subsampled color support, stronger non-constant 12-bit oracle fixtures, and
-  remaining SOF3 16-bit color layouts stay structured
+  other SOF3 16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
   The coalesced benchmark

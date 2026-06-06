@@ -1086,6 +1086,20 @@ impl<'a> Decoder<'a> {
                     downscale,
                 )
             }
+            OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_rgba16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                        alpha,
+                    );
+                }
+                Err(JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                })
+            }
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1575,6 +1589,16 @@ impl<'a> Decoder<'a> {
                     );
                 }
                 self.decode_extended12_rgb16_region_scaled_into(out, stride, roi, downscale)
+            }
+            OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
+                if self.lossless_plan.is_some() {
+                    return self.decode_lossless_rgba16_region_scaled_into(
+                        out, stride, roi, downscale, alpha,
+                    );
+                }
+                Err(JpegError::NotImplemented {
+                    sof: self.info.sof_kind,
+                })
             }
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
@@ -3142,6 +3166,36 @@ impl Decoder<'_> {
         Ok(outcome)
     }
 
+    fn decode_lossless_rgba16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        alpha: u16,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let rgb_stride = output_rect.w as usize * 6;
+        let mut rgb = allocate_output_buffer(rgb_stride * output_rect.h as usize);
+        let outcome = match self.info.color_space {
+            ColorSpace::YCbCr => self
+                .decode_lossless_ycbcr16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale),
+            _ => {
+                self.decode_lossless_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
+            }
+        }?;
+        copy_rgb16_to_rgba16(
+            &rgb,
+            rgb_stride,
+            output_rect.w,
+            output_rect.h,
+            out,
+            stride,
+            alpha,
+        );
+        Ok(outcome)
+    }
+
     fn decode_lossless_gray16_into(
         &self,
         out: &mut [u8],
@@ -4594,6 +4648,7 @@ fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
         OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
         OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. } => "Gray16",
         OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. } => "Rgb16",
+        OutputFormat::Rgba16 { .. } | OutputFormat::Rgba16Scaled { .. } => "Rgba16",
     }
 }
 
@@ -5056,6 +5111,28 @@ fn copy_rgb8_to_rgba8(
     }
 }
 
+fn copy_rgb16_to_rgba16(
+    src: &[u8],
+    src_stride: usize,
+    width: u32,
+    height: u32,
+    dst: &mut [u8],
+    dst_stride: usize,
+    alpha: u16,
+) {
+    let src_row_bytes = width as usize * 6;
+    let dst_row_bytes = width as usize * 8;
+    let alpha = alpha.to_le_bytes();
+    for y in 0..height as usize {
+        let src_row = &src[y * src_stride..y * src_stride + src_row_bytes];
+        let dst_row = &mut dst[y * dst_stride..y * dst_stride + dst_row_bytes];
+        for (source, target) in src_row.chunks_exact(6).zip(dst_row.chunks_exact_mut(8)) {
+            target[..6].copy_from_slice(source);
+            target[6..8].copy_from_slice(&alpha);
+        }
+    }
+}
+
 fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
     let (width, height) = dimensions;
     let row_bytes = width as usize * 6;
@@ -5212,6 +5289,11 @@ fn output_format_from_parts(
             }),
             (PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
             (PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
+                factor: jpeg_downscale(scale),
+            }),
+            (PixelFormat::Rgba16, Downscale::None) => Ok(OutputFormat::Rgba16 { alpha: u16::MAX }),
+            (PixelFormat::Rgba16, scale) => Ok(OutputFormat::Rgba16Scaled {
+                alpha: u16::MAX,
                 factor: jpeg_downscale(scale),
             }),
             _ => Err(JpegError::NotImplemented { sof: sof_kind }),

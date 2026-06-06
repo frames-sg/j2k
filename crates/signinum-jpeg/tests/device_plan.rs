@@ -1178,6 +1178,52 @@ fn capability_report_marks_lossless_app14_rgb16_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_lossless_app14_rgb16_rgba16_cpu_eligible() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_rgb_16bit_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse 16-bit SOF3 APP14 RGB RGBA16 predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 16);
+            assert_eq!(report.info.color_space, ColorSpace::Rgb);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
 fn capability_report_marks_restart_coded_lossless_app14_rgb8_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_restart_predictor_rgb_3x3_jpeg(predictor);
@@ -1372,6 +1418,52 @@ fn capability_report_marks_lossless_ycbcr16_rgb16_cpu_eligible() {
             .unwrap_or_else(|err| {
                 panic!(
                     "capability report should parse SOF3 16-bit YCbCr predictor-{predictor} metadata: {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless);
+            assert_eq!(report.info.bit_depth, 16);
+            assert_eq!(report.info.color_space, ColorSpace::YCbCr);
+            assert!(report.cpu.eligible, "predictor {predictor} op {op:?}");
+            assert!(!report.owned_cuda.eligible);
+            assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_marks_lossless_ycbcr16_rgba16_cpu_eligible() {
+    for predictor in 1..=7 {
+        let input = lossless_predictor_ycbcr_16bit_3x3_jpeg(predictor);
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "capability report should parse SOF3 16-bit YCbCr RGBA16 predictor-{predictor} metadata: {err}"
                 )
             });
 

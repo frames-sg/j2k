@@ -47,20 +47,20 @@ expanded `Rgb16` is available, and initial 12-bit APP14 RGB 4:4:4 plus YCbCr
 4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available, including restart-coded
 color streams. Other 12-bit subsampled color, stronger non-constant 12-bit
 oracle fixtures, expanded four-component subsampled/malformed fixture coverage,
-and remaining lossless SOF3 16-bit color layouts remain structured unsupported
+and other lossless SOF3 16-bit color layouts remain structured unsupported
 or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
 16-bit streams, including restart-coded grayscale streams, plus APP14 RGB
-predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16` for 16-bit
-streams, with full/ROI/scaled/region-scaled `Rgba8` for 8-bit APP14 RGB, plus
-8-bit and 16-bit YCbCr 4:4:4 predictors 1-7 decoded to `Rgb8`/`Rgb16`, with
-full/ROI/scaled/region-scaled `Rgba8` for 8-bit YCbCr, including restart-coded
-APP14 RGB and YCbCr streams. The SOF3
-row path supports RGB8 rows for 8-bit grayscale/RGB/YCbCr streams,
-little-endian `Gray16` rows for 16-bit grayscale streams, and little-endian
-`Rgb16` rows for 16-bit APP14 RGB/YCbCr streams.
+predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16`/`Rgba16` for
+16-bit streams, with full/ROI/scaled/region-scaled `Rgba8` for 8-bit APP14
+RGB, plus 8-bit and 16-bit YCbCr 4:4:4 predictors 1-7 decoded to
+`Rgb8`/`Rgb16`, with full/ROI/scaled/region-scaled `Rgba8` for 8-bit YCbCr and
+`Rgba16` for 16-bit YCbCr, including restart-coded APP14 RGB and YCbCr
+streams. The SOF3 row path supports RGB8 rows for 8-bit
+grayscale/RGB/YCbCr streams, little-endian `Gray16` rows for 16-bit grayscale
+streams, and little-endian `Rgb16` rows for 16-bit APP14 RGB/YCbCr streams.
 
 ROI coordinates are always expressed in source-image pixels. For
 `decode_region_scaled_into`, the output buffer covers the floor-start /
