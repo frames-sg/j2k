@@ -4,6 +4,7 @@
 
 use crate::backend::Backend;
 use crate::context::DecoderContext;
+use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
 use crate::entropy::huffman::HuffmanTable;
 use crate::entropy::progressive::{
     decode_progressive, PreparedProgressiveComponentPlan, PreparedProgressivePlan,
@@ -12,7 +13,7 @@ use crate::entropy::progressive::{
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
     decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
-    decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu,
+    decode_scan_fast_tile_rgb_region_scaled, fast_tile_region_first_decode_mcu, finish_scan,
     stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
 };
 use crate::error::{JpegError, MarkerKind, Warning};
@@ -20,6 +21,7 @@ use crate::info::{
     ColorSpace, DecodeOptions, DownscaleFactor, Info, OutputFormat, Rect, RestartIndex,
     RestartSegment, SofKind,
 };
+use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::{checkpoint_before_mcu, CpuCheckpointCache, DeviceCheckpoint};
 use crate::internal::scratch::{ScratchPool, SinkRows};
 use crate::output::{
@@ -360,8 +362,11 @@ impl<'a> Decoder<'a> {
         ctx: &mut DecoderContext,
     ) -> Result<PreparedDecodePlan, JpegError> {
         match info.sof_kind {
-            SofKind::Baseline8 | SofKind::Extended8 => {}
+            SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12 => {}
             other => return Err(JpegError::NotImplemented { sof: other }),
+        }
+        if info.sof_kind == SofKind::Extended12 && info.color_space != ColorSpace::Grayscale {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         match info.color_space {
             ColorSpace::Grayscale
@@ -808,6 +813,7 @@ impl<'a> Decoder<'a> {
                     Rect::full(self.info.dimensions),
                 )
             }
+            OutputFormat::Gray16 => self.decode_extended12_gray16_into(out, stride),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1131,6 +1137,9 @@ impl<'a> Decoder<'a> {
                 let mut writer = CroppedWriter::new(base, scaled_roi, source_x0, source_width);
                 self.decode_with_writer(pool, &mut writer, downscale, roi)
             }
+            OutputFormat::Gray16 => Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            }),
         };
         if let (Some(total_start), Some(decode_start), Ok(outcome)) =
             (total_start, decode_start, &result)
@@ -1809,6 +1818,83 @@ impl Decoder<'_> {
             warnings: merged_warnings(&self.warnings, scan_warnings),
         })
     }
+
+    fn decode_extended12_gray16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if self.info.sof_kind != SofKind::Extended12
+            || self.info.color_space != ColorSpace::Grayscale
+            || self.plan.components.len() != 1
+            || self.plan.restart_interval.is_some()
+        {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let component = &self.plan.components[0];
+        let (width, height) = self.info.dimensions;
+        let mcu_cols = width.div_ceil(8);
+        let mcu_rows = height.div_ceil(8);
+        let mut br = BitReader::new(scan_bytes);
+        let mut prev_dc = 0i32;
+        let mut coeff = CoefficientBlock::default();
+        let mut pixels = [0u16; 64];
+
+        for mcu_y in 0..mcu_rows {
+            for mcu_x in 0..mcu_cols {
+                let activity = decode_block_with_activity(
+                    &mut br,
+                    &component.dc_table,
+                    &component.ac_table,
+                    &mut prev_dc,
+                    component.quant.as_ref(),
+                    &mut coeff,
+                )?;
+                match activity {
+                    BlockActivity::DcOnly => {
+                        pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(
+                            coeff.dc_coeff(),
+                        ));
+                    }
+                    BlockActivity::BottomHalfZero | BlockActivity::General => {
+                        crate::idct::idct_islow_12bit(coeff.coefficients(), &mut pixels);
+                    }
+                }
+                write_gray16_block(out, stride, width, height, mcu_x * 8, mcu_y * 8, &pixels);
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+}
+
+fn write_gray16_block(
+    out: &mut [u8],
+    stride: usize,
+    width: u32,
+    height: u32,
+    x0: u32,
+    y0: u32,
+    pixels: &[u16; 64],
+) {
+    let copy_w = (width - x0).min(8) as usize;
+    let copy_h = (height - y0).min(8) as usize;
+    for row in 0..copy_h {
+        let dst_start = (y0 as usize + row) * stride + x0 as usize * 2;
+        let dst = &mut out[dst_start..dst_start + copy_w * 2];
+        let src = &pixels[row * 8..row * 8 + copy_w];
+        for (dst_sample, sample) in dst.chunks_exact_mut(2).zip(src.iter().copied()) {
+            dst_sample.copy_from_slice(&sample.to_le_bytes());
+        }
+    }
 }
 
 fn restart_index_for_stream(
@@ -1927,6 +2013,7 @@ fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
         OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => "Rgb8",
         OutputFormat::Rgba8 { .. } => "Rgba8",
         OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
+        OutputFormat::Gray16 => "Gray16",
     }
 }
 
@@ -2014,6 +2101,19 @@ fn output_format_from_parts(
     fmt: PixelFormat,
     scale: Downscale,
 ) -> Result<OutputFormat, JpegError> {
+    if matches!(sof_kind, SofKind::Extended12 | SofKind::Progressive12) {
+        return match (sof_kind, fmt, scale) {
+            (SofKind::Extended12, PixelFormat::Gray16, Downscale::None) => Ok(OutputFormat::Gray16),
+            (SofKind::Extended12, PixelFormat::Gray16, _) => {
+                Err(JpegError::DownscaleUnsupported { sof: sof_kind })
+            }
+            (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
+                Err(JpegError::NotImplemented { sof: sof_kind })
+            }
+            _ => Err(JpegError::UnsupportedBitDepth { depth: 12 }),
+        };
+    }
+
     match (fmt, scale) {
         (PixelFormat::Rgb8, Downscale::None) => Ok(OutputFormat::Rgb8),
         (PixelFormat::Rgb8, scale) => Ok(OutputFormat::Rgb8Scaled {

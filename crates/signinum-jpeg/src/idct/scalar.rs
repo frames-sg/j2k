@@ -72,6 +72,30 @@ pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
         .clamp(0, 255) as u8
 }
 
+/// Inverse DCT of a 12-bit JPEG block, returning native 0..4095 sample values.
+pub(crate) fn idct_islow_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
+    let mut work = [Wrapping(0i32); 64];
+    if input[32..].iter().all(|&coeff| coeff == 0) {
+        for col in 0..8 {
+            idct_1d_column_bottom_half_zero(input, &mut work, col);
+        }
+    } else {
+        for col in 0..8 {
+            idct_1d_column(input, &mut work, col);
+        }
+    }
+    for row in 0..8 {
+        idct_1d_row_12bit(&work, output, row);
+    }
+}
+
+/// Return the uniform native 12-bit sample produced by the DC-only ISLOW path.
+pub(crate) fn idct_islow_12bit_dc_only_sample(dc_coeff: i16) -> u16 {
+    ((i32::from(dc_coeff) + 4) >> 3)
+        .wrapping_add(2048)
+        .clamp(0, 4095) as u16
+}
+
 fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
     let p0 = Wrapping(input[col] as i32);
     let p1 = Wrapping(input[col + 8] as i32);
@@ -285,10 +309,92 @@ fn idct_1d_row(work: &[Wrapping<i32>; 64], output: &mut [u8; 64], row: usize) {
     output[base + 4] = descale_and_clamp(tmp13 - tmp0 + rounding, shift);
 }
 
+fn idct_1d_row_12bit(work: &[Wrapping<i32>; 64], output: &mut [u16; 64], row: usize) {
+    let base = row * 8;
+    let p0 = work[base];
+    let p1 = work[base + 1];
+    let p2 = work[base + 2];
+    let p3 = work[base + 3];
+    let p4 = work[base + 4];
+    let p5 = work[base + 5];
+    let p6 = work[base + 6];
+    let p7 = work[base + 7];
+
+    let shift = CONST_BITS + PASS1_BITS + 3;
+    let rounding = Wrapping(1i32 << (shift - 1));
+
+    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
+        let dc_shift = PASS1_BITS + 3;
+        let rounding_dc = Wrapping(1i32 << (dc_shift - 1));
+        let pixel = descale_and_clamp_12bit(p0 + rounding_dc, dc_shift);
+        for i in 0..8 {
+            output[base + i] = pixel;
+        }
+        return;
+    }
+
+    let z2 = p2;
+    let z3 = p6;
+    let z1 = (z2 + z3) * FIX_0_541196100;
+    let tmp2 = z1 + z3 * (-FIX_1_847759065);
+    let tmp3 = z1 + z2 * FIX_0_765366865;
+
+    let tmp0 = (p0 + p4) << CONST_BITS;
+    let tmp1 = (p0 - p4) << CONST_BITS;
+
+    let tmp10 = tmp0 + tmp3;
+    let tmp13 = tmp0 - tmp3;
+    let tmp11 = tmp1 + tmp2;
+    let tmp12 = tmp1 - tmp2;
+
+    let tmp0 = p7;
+    let tmp1 = p5;
+    let tmp2 = p3;
+    let tmp3 = p1;
+
+    let z1 = tmp0 + tmp3;
+    let z2 = tmp1 + tmp2;
+    let z3 = tmp0 + tmp2;
+    let z4 = tmp1 + tmp3;
+    let z5 = (z3 + z4) * FIX_1_175875602;
+
+    let tmp0 = tmp0 * FIX_0_298631336;
+    let tmp1 = tmp1 * FIX_2_053119869;
+    let tmp2 = tmp2 * FIX_3_072711026;
+    let tmp3 = tmp3 * FIX_1_501321110;
+    let z1 = z1 * (-FIX_0_899976223);
+    let z2 = z2 * (-FIX_2_562915447);
+    let z3 = z3 * (-FIX_1_961570560);
+    let z4 = z4 * (-FIX_0_390180644);
+
+    let z3 = z3 + z5;
+    let z4 = z4 + z5;
+
+    let tmp0 = tmp0 + z1 + z3;
+    let tmp1 = tmp1 + z2 + z4;
+    let tmp2 = tmp2 + z2 + z3;
+    let tmp3 = tmp3 + z1 + z4;
+
+    output[base] = descale_and_clamp_12bit(tmp10 + tmp3 + rounding, shift);
+    output[base + 7] = descale_and_clamp_12bit(tmp10 - tmp3 + rounding, shift);
+    output[base + 1] = descale_and_clamp_12bit(tmp11 + tmp2 + rounding, shift);
+    output[base + 6] = descale_and_clamp_12bit(tmp11 - tmp2 + rounding, shift);
+    output[base + 2] = descale_and_clamp_12bit(tmp12 + tmp1 + rounding, shift);
+    output[base + 5] = descale_and_clamp_12bit(tmp12 - tmp1 + rounding, shift);
+    output[base + 3] = descale_and_clamp_12bit(tmp13 + tmp0 + rounding, shift);
+    output[base + 4] = descale_and_clamp_12bit(tmp13 - tmp0 + rounding, shift);
+}
+
 fn descale_and_clamp(value: Wrapping<i32>, shift: usize) -> u8 {
     let shifted = value.0 >> shift;
     let level_shifted = shifted.wrapping_add(128);
     level_shifted.clamp(0, 255) as u8
+}
+
+fn descale_and_clamp_12bit(value: Wrapping<i32>, shift: usize) -> u16 {
+    let shifted = value.0 >> shift;
+    let level_shifted = shifted.wrapping_add(2048);
+    level_shifted.clamp(0, 4095) as u16
 }
 
 #[cfg(test)]

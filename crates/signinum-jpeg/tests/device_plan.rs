@@ -193,6 +193,25 @@ fn capability_report_inspects_12_bit_and_lossless_sof_without_building_decoder()
 }
 
 #[test]
+fn capability_report_marks_extended12_gray16_full_cpu_eligible() {
+    let input = grayscale_sof_jpeg(0xc1, 12);
+    let report = JpegCapabilityReport::inspect(
+        &input,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Gray16,
+        },
+    )
+    .expect("capability report should parse 12-bit SOF1 metadata");
+
+    assert_eq!(report.info.sof_kind, SofKind::Extended12);
+    assert_eq!(report.info.bit_depth, 12);
+    assert!(report.cpu.eligible);
+    assert!(!report.owned_cuda.eligible);
+    assert!(!report.metal_fast.eligible);
+}
+
+#[test]
 fn capability_report_marks_owned_cuda_eligible_for_fast_422_and_444_rgb8() {
     for (input, expected_dimensions, expected_shape) in [
         (BASELINE_422, (16, 8), "4:2:2"),

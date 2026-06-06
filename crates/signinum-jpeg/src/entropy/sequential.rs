@@ -894,7 +894,10 @@ fn mcu_row_intersects_rect(stripe_index: u32, mcu_height_px: u32, rect: Rect) ->
     y0 < rect_y1 && y1 > rect.y
 }
 
-fn finish_scan(br: &mut BitReader<'_>, validate_eoi: bool) -> Result<Vec<Warning>, JpegError> {
+pub(crate) fn finish_scan(
+    br: &mut BitReader<'_>,
+    validate_eoi: bool,
+) -> Result<Vec<Warning>, JpegError> {
     if !validate_eoi {
         return Ok(Vec::new());
     }

@@ -146,9 +146,19 @@ impl JpegCapabilityReport {
 
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
+        SofKind::Extended12
+            if request.op == JpegDecodeOp::Full && request.fmt == PixelFormat::Gray16 =>
+        {
+            if info.color_space == ColorSpace::Grayscale {
+                return JpegBackendEligibility::eligible();
+            }
+            return JpegBackendEligibility::rejected(
+                "JPEG CPU 12-bit extended decode currently supports grayscale Gray16 only",
+            );
+        }
         SofKind::Extended12 | SofKind::Progressive12 => {
             return JpegBackendEligibility::rejected(
-                "JPEG CPU decode does not yet support 12-bit JPEG output",
+                "JPEG CPU decode does not yet support this 12-bit JPEG output",
             )
         }
         SofKind::Lossless => {

@@ -59,6 +59,7 @@ pub(crate) fn validate_buffer(
 ) -> Result<(), JpegError> {
     let fmt = match bytes_per_pixel {
         1 => PixelFormat::Gray8,
+        2 => PixelFormat::Gray16,
         3 => PixelFormat::Rgb8,
         4 => PixelFormat::Rgba8,
         _ => {

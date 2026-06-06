@@ -16,6 +16,25 @@ pub(crate) fn grayscale_8x8_jpeg() -> Vec<u8> {
     include_bytes!("../../fixtures/conformance/grayscale_8x8.jpg").to_vec()
 }
 
+/// An 8x8 12-bit extended sequential grayscale JPEG with all-zero DCT blocks.
+pub(crate) fn extended_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[0xff, 0xc1, 0x00, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
+    bytes.push(0x00);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 /// An 8x8 Adobe APP14 CMYK JPEG whose four decoded channels are all 128.
 pub(crate) fn cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_8x8_jpeg(Some(0))

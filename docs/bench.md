@@ -709,9 +709,11 @@ Current v1 scope is explicit:
   device-output decode; compatible queued region+scaled requests use a real
   `BatchOp::RegionScaled` path. Initial CMYK/YCCK support is CPU-backed, and
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
-  assembly plus output projection. Expanded four-component coverage, 12-bit,
-  and lossless SOF3 stay structured unsupported until CPU parity lands; all
-  new Metal routes stay disabled until benchmark-approved resident wins land.
+  assembly plus output projection. Initial 12-bit extended sequential
+  grayscale `Gray16` full-image output is CPU-backed. Expanded four-component
+  coverage, broader 12-bit RGB/progressive/ROI/scaled support, and lossless
+  SOF3 stay structured unsupported until CPU parity lands; all new Metal routes
+  stay disabled until benchmark-approved resident wins land.
   The coalesced benchmark
   intentionally queues 64 identical requests and can collapse them to one
   immutable Metal surface; the distinct benchmark queues 64 different JPEG byte

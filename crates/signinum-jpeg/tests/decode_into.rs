@@ -6,8 +6,9 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg, minimal_baseline_420_jpeg,
-    progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg,
+    cmyk_8x8_jpeg, extended_12bit_grayscale_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg,
+    minimal_baseline_420_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
+    ycck_8x8_jpeg,
 };
 
 #[test]
@@ -154,6 +155,24 @@ fn decode_into_gray8_produces_single_byte_per_pixel() {
         .unwrap();
     assert_eq!(outcome.decoded.w, 8);
     assert!(buf.iter().any(|&b| b != 0), "expected non-zero pixels");
+}
+
+#[test]
+fn decode_into_gray16_accepts_extended12_grayscale_samples() {
+    let bytes = extended_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Gray16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Gray16)
+        .expect("12-bit grayscale decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    for sample in buf.chunks_exact(2) {
+        assert_eq!(u16::from_le_bytes([sample[0], sample[1]]), 2048);
+    }
 }
 
 #[test]
