@@ -2143,6 +2143,48 @@ inline uchar h2v2_sample_thread(
     return uchar((this_sum * 3u + next_sum + 7u) >> 4);
 }
 
+inline uchar h2v2_sample_thread_local(
+    thread const uchar *near_row,
+    thread const uchar *curr_row,
+    uint n,
+    uint x,
+    uint local_sample_base,
+    uchar left_near_sample,
+    uchar left_curr_sample
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2, n - 1);
+    const uint local_sample = sample - local_sample_base;
+    const uint this_sum = 3u * uint(curr_row[local_sample]) + uint(near_row[local_sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = local_sample == 0u
+            ? 3u * uint(left_curr_sample) + uint(left_near_sample)
+            : 3u * uint(curr_row[local_sample - 1]) + uint(near_row[local_sample - 1]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[local_sample + 1]) + uint(near_row[local_sample + 1]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
+inline uint fast420_boundary_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast420_boundary_sample_base(uint record_index) {
+    return record_index * 64u;
+}
+
 inline uchar h2v1_sample(
     device const uchar *row,
     uint n,
@@ -2761,6 +2803,8 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     device const uint *entropy_lens [[buffer(15)]],
     device JpegDecodeStatus *status [[buffer(16)]],
     device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    device uint *boundary_meta [[buffer(18)]],
+    device uchar *boundary_samples [[buffer(19)]],
     texture2d<float, access::write> out [[texture(0)]],
     uint gid [[thread_position_in_grid]]
 ) {
@@ -2775,6 +2819,11 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     thread_status->detail = 0;
     thread_status->position = 0;
     thread_status->reserved = 0;
+    const uint boundary_meta_base = fast420_boundary_meta_base(status_index);
+    boundary_meta[boundary_meta_base] = 0u;
+    boundary_meta[boundary_meta_base + 1u] = 0u;
+    boundary_meta[boundary_meta_base + 2u] = 0u;
+    boundary_meta[boundary_meta_base + 3u] = 0u;
 
     const uint checkpoint_base = params.tile_index * params.segment_count;
     const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
@@ -2808,6 +2857,11 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     thread uchar y11_pixels[64];
     thread uchar cb_pixels[64];
     thread uchar cr_pixels[64];
+    thread uchar prev_y10_pixels[64];
+    thread uchar prev_y11_pixels[64];
+    thread uchar prev_cb_pixels[64];
+    thread uchar prev_cr_pixels[64];
+    bool have_prev_horizontal = false;
 
     uint mx = 0u;
     uint my = 0u;
@@ -2873,18 +2927,117 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
 
         const uint copy_width = min(16u, params.width - min(y_x, params.width));
         const uint copy_height = min(16u, params.height - min(y_y, params.height));
+        const uint chroma_y_base = my * 8u;
+        const uint copy_chroma_height = min(8u, params.chroma_height - min(chroma_y_base, params.chroma_height));
+        const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
+        const bool ends_mid_row = mcu_index + 1u >= end_mcu && mx + 1u < params.mcus_per_row;
+        const uint boundary_sample_base = fast420_boundary_sample_base(status_index);
+        if (starts_mid_row) {
+            boundary_meta[boundary_meta_base] = y_x;
+            boundary_meta[boundary_meta_base + 1u] = y_y;
+            boundary_meta[boundary_meta_base + 2u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + by] = by < 8u
+                    ? y00_pixels[by * 8u]
+                    : y01_pixels[(by - 8u) * 8u];
+            }
+            for (uint cy = 0u; cy < copy_chroma_height; ++cy) {
+                boundary_samples[boundary_sample_base + 16u + cy] = cb_pixels[cy * 8u];
+                boundary_samples[boundary_sample_base + 24u + cy] = cr_pixels[cy * 8u];
+            }
+        }
+        if (ends_mid_row) {
+            boundary_meta[boundary_meta_base + 3u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + 32u + by] = by < 8u
+                    ? y10_pixels[by * 8u + 7u]
+                    : y11_pixels[(by - 8u) * 8u + 7u];
+            }
+            for (uint cy = 0u; cy < copy_chroma_height; ++cy) {
+                boundary_samples[boundary_sample_base + 48u + cy] = cb_pixels[cy * 8u + 7u];
+                boundary_samples[boundary_sample_base + 56u + cy] = cr_pixels[cy * 8u + 7u];
+            }
+        }
+        if (have_prev_horizontal && mx > 0u) {
+            const uint left_x = y_x - 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                const uint out_y = y_y + by;
+                const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+                const uint near_y = (out_y & 1u) == 0u
+                    ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+                    : min(chroma_y + 1u, params.chroma_height - 1u);
+                const uint local_chroma_y = chroma_y - chroma_y_base;
+                const uint local_near_y = near_y - chroma_y_base;
+                const uint left_cb_sum = 3u * uint(prev_cb_pixels[local_chroma_y * 8u + 7u])
+                    + uint(prev_cb_pixels[local_near_y * 8u + 7u]);
+                const uint left_cr_sum = 3u * uint(prev_cr_pixels[local_chroma_y * 8u + 7u])
+                    + uint(prev_cr_pixels[local_near_y * 8u + 7u]);
+                const uint right_cb_sum = 3u * uint(cb_pixels[local_chroma_y * 8u])
+                    + uint(cb_pixels[local_near_y * 8u]);
+                const uint right_cr_sum = 3u * uint(cr_pixels[local_chroma_y * 8u])
+                    + uint(cr_pixels[local_near_y * 8u]);
+                const uchar left_y = by < 8u
+                    ? prev_y10_pixels[by * 8u + 7u]
+                    : prev_y11_pixels[(by - 8u) * 8u + 7u];
+                const uchar right_y = by < 8u
+                    ? y00_pixels[by * 8u]
+                    : y01_pixels[(by - 8u) * 8u];
+                out.write(
+                    rgba_float_ycbcr(
+                        left_y,
+                        uchar((left_cb_sum * 3u + right_cb_sum + 7u) >> 4),
+                        uchar((left_cr_sum * 3u + right_cr_sum + 7u) >> 4),
+                        params.alpha
+                    ),
+                    uint2(left_x, out_y)
+                );
+                out.write(
+                    rgba_float_ycbcr(
+                        right_y,
+                        uchar((right_cb_sum * 3u + left_cb_sum + 8u) >> 4),
+                        uchar((right_cr_sum * 3u + left_cr_sum + 8u) >> 4),
+                        params.alpha
+                    ),
+                    uint2(y_x, out_y)
+                );
+            }
+        }
+
+        const uint local_sample_base = mx * 8u;
+        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
+        const uint last_chroma_x = params.chroma_width * 2u - 1u;
         for (uint by = 0u; by < copy_height; ++by) {
             const uint out_y = y_y + by;
             const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
             const uint near_y = (out_y & 1u) == 0u
                 ? (chroma_y == 0u ? 0u : chroma_y - 1u)
                 : min(chroma_y + 1u, params.chroma_height - 1u);
-            thread const uchar *curr_cb = cb_pixels + chroma_y * 8u;
-            thread const uchar *curr_cr = cr_pixels + chroma_y * 8u;
-            thread const uchar *near_cb = cb_pixels + near_y * 8u;
-            thread const uchar *near_cr = cr_pixels + near_y * 8u;
+            const uint local_chroma_y = chroma_y - chroma_y_base;
+            const uint local_near_y = near_y - chroma_y_base;
+            thread const uchar *curr_cb = cb_pixels + local_chroma_y * 8u;
+            thread const uchar *curr_cr = cr_pixels + local_chroma_y * 8u;
+            thread const uchar *near_cb = cb_pixels + local_near_y * 8u;
+            thread const uchar *near_cr = cr_pixels + local_near_y * 8u;
+            const uchar left_curr_cb = mx == 0u || starts_mid_row
+                ? curr_cb[0]
+                : prev_cb_pixels[local_chroma_y * 8u + 7u];
+            const uchar left_curr_cr = mx == 0u || starts_mid_row
+                ? curr_cr[0]
+                : prev_cr_pixels[local_chroma_y * 8u + 7u];
+            const uchar left_near_cb = mx == 0u || starts_mid_row
+                ? near_cb[0]
+                : prev_cb_pixels[local_near_y * 8u + 7u];
+            const uchar left_near_cr = mx == 0u || starts_mid_row
+                ? near_cr[0]
+                : prev_cr_pixels[local_near_y * 8u + 7u];
             for (uint bx = 0u; bx < copy_width; ++bx) {
                 const uint out_x = y_x + bx;
+                if (mx > 0u && bx == 0u) {
+                    continue;
+                }
+                if (has_right_mcu && bx == 15u && out_x != last_chroma_x) {
+                    continue;
+                }
                 uchar y_value;
                 if (by < 8u) {
                     y_value = bx < 8u
@@ -2895,15 +3048,107 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                         ? y01_pixels[(by - 8u) * 8u + bx]
                         : y11_pixels[(by - 8u) * 8u + (bx - 8u)];
                 }
-                const uchar cb_value = h2v2_sample_thread(near_cb, curr_cb, params.chroma_width, out_x);
-                const uchar cr_value = h2v2_sample_thread(near_cr, curr_cr, params.chroma_width, out_x);
+                const uchar cb_value = h2v2_sample_thread_local(
+                    near_cb,
+                    curr_cb,
+                    params.chroma_width,
+                    out_x,
+                    local_sample_base,
+                    left_near_cb,
+                    left_curr_cb
+                );
+                const uchar cr_value = h2v2_sample_thread_local(
+                    near_cr,
+                    curr_cr,
+                    params.chroma_width,
+                    out_x,
+                    local_sample_base,
+                    left_near_cr,
+                    left_curr_cr
+                );
                 out.write(
                     rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
                     uint2(out_x, out_y)
                 );
             }
         }
+
+        for (uint i = 0u; i < 64u; ++i) {
+            prev_y10_pixels[i] = y10_pixels[i];
+            prev_y11_pixels[i] = y11_pixels[i];
+            prev_cb_pixels[i] = cb_pixels[i];
+            prev_cr_pixels[i] = cr_pixels[i];
+        }
+        have_prev_horizontal = true;
         advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uchar *boundary_samples [[buffer(1)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid == 0u || gid >= params.segment_count) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * params.segment_count + gid;
+    const uint previous_record_index = record_index - 1u;
+    const uint meta_base = fast420_boundary_meta_base(record_index);
+    const uint previous_meta_base = fast420_boundary_meta_base(previous_record_index);
+    if (boundary_meta[meta_base + 2u] == 0u || boundary_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = boundary_meta[meta_base];
+    const uint y = boundary_meta[meta_base + 1u];
+    if (x == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast420_boundary_sample_base(record_index);
+    const uint previous_sample_base = fast420_boundary_sample_base(previous_record_index);
+    const uint copy_height = min(16u, params.height - y);
+    const uint chroma_y_base = y / 2u;
+    for (uint by = 0u; by < copy_height; ++by) {
+        const uint out_y = y + by;
+        const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+        const uint near_y = (out_y & 1u) == 0u
+            ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+            : min(chroma_y + 1u, params.chroma_height - 1u);
+        const uint local_chroma_y = chroma_y - chroma_y_base;
+        const uint local_near_y = near_y - chroma_y_base;
+        const uint left_cb_sum = 3u * uint(boundary_samples[previous_sample_base + 48u + local_chroma_y])
+            + uint(boundary_samples[previous_sample_base + 48u + local_near_y]);
+        const uint left_cr_sum = 3u * uint(boundary_samples[previous_sample_base + 56u + local_chroma_y])
+            + uint(boundary_samples[previous_sample_base + 56u + local_near_y]);
+        const uint right_cb_sum = 3u * uint(boundary_samples[sample_base + 16u + local_chroma_y])
+            + uint(boundary_samples[sample_base + 16u + local_near_y]);
+        const uint right_cr_sum = 3u * uint(boundary_samples[sample_base + 24u + local_chroma_y])
+            + uint(boundary_samples[sample_base + 24u + local_near_y]);
+        const uchar left_y = boundary_samples[previous_sample_base + 32u + by];
+        const uchar right_y = boundary_samples[sample_base + by];
+        out.write(
+            rgba_float_ycbcr(
+                left_y,
+                uchar((left_cb_sum * 3u + right_cb_sum + 7u) >> 4),
+                uchar((left_cr_sum * 3u + right_cr_sum + 7u) >> 4),
+                params.alpha
+            ),
+            uint2(x - 1u, out_y)
+        );
+        out.write(
+            rgba_float_ycbcr(
+                right_y,
+                uchar((right_cb_sum * 3u + left_cb_sum + 8u) >> 4),
+                uchar((right_cr_sum * 3u + left_cr_sum + 8u) >> 4),
+                params.alpha
+            ),
+            uint2(x, out_y)
+        );
     }
 }
 
