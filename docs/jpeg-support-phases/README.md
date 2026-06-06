@@ -35,11 +35,10 @@ unsupported errors until a separate entropy and conformance plan exists.
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
-  to `Rgb8`, 8-bit YCbCr 4:4:4 decode to `Rgb8`, and 16-bit APP14 RGB decode
-  to `Rgb16`, including restart-coded APP14 RGB and YCbCr streams; 8-bit
-  grayscale/RGB row streaming and 16-bit grayscale `Gray16` row streaming have
-  landed, while lossless 16-bit YCbCr and other 16-bit color layouts remain
-  open
+  to `Rgb8`, 8-bit YCbCr 4:4:4 decode to `Rgb8`, and 16-bit APP14 RGB plus
+  YCbCr 4:4:4 decode to `Rgb16`, including restart-coded APP14 RGB and YCbCr
+  streams; 8-bit grayscale/RGB row streaming and 16-bit grayscale `Gray16` row
+  streaming have landed, while other lossless 16-bit color layouts remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -335,12 +334,12 @@ Implementation requirements:
 - Add predictor-specific tests, restart-marker tests, malformed-stream tests,
   and row behavior where the predictor dependencies allow it.
   Status: predictor-specific positive coverage has landed for predictors 1-7,
-  including ROI/scaled/region-scaled output; restart-coded grayscale coverage
-  APP14 RGB color/restart coverage has landed for 8-bit `Rgb8` and 16-bit
-  `Rgb16` output, and 8-bit YCbCr 4:4:4 `Rgb8` coverage has landed. 8-bit
+  including ROI/scaled/region-scaled output; restart-coded grayscale coverage,
+  APP14 RGB color/restart coverage for 8-bit `Rgb8` and 16-bit `Rgb16` output,
+  and 8-bit plus 16-bit YCbCr 4:4:4 `Rgb8`/`Rgb16` coverage have landed. 8-bit
   grayscale/RGB row streaming and 16-bit grayscale `Gray16` row streaming have
-  landed. Malformed streams, lossless 16-bit YCbCr, other 16-bit color layouts,
-  and broader precision coverage remain open.
+  landed. Malformed streams, other lossless 16-bit color layouts, and broader
+  precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
@@ -358,7 +357,7 @@ Exit criteria:
   Status: partially met for the committed predictors 1-7 8-bit and 16-bit
   grayscale fixtures across full-image/ROI/scaled/region-scaled output, 8-bit
   and 16-bit APP14 RGB fixtures across full-image/ROI/scaled/region-scaled
-  output, 8-bit YCbCr 4:4:4 fixtures across full-image/ROI/scaled/
+  output, 8-bit and 16-bit YCbCr 4:4:4 fixtures across full-image/ROI/scaled/
   region-scaled output, plus 8-bit grayscale/RGB row streaming and 16-bit
   grayscale `Gray16` row streaming.
 - DCT decode code remains isolated from lossless predictor logic.

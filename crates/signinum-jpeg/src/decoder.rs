@@ -493,7 +493,7 @@ impl<'a> Decoder<'a> {
         let expected_components = match (info.color_space, info.bit_depth) {
             (ColorSpace::Grayscale, 8 | 16) => 1,
             (ColorSpace::Rgb, 8 | 16) => 3,
-            (ColorSpace::YCbCr, 8) => 3,
+            (ColorSpace::YCbCr, 8 | 16) => 3,
             _ => return Err(JpegError::NotImplemented { sof: info.sof_kind }),
         };
         if scan.components.len() != expected_components {
@@ -1020,12 +1020,20 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Rgb16 => {
                 if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgb16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                        _ => self.decode_lossless_rgb16_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                    };
                 }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
@@ -1039,12 +1047,20 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Rgb16Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgb16_region_scaled_into(
-                        out,
-                        stride,
-                        Rect::full(self.info.dimensions),
-                        downscale,
-                    );
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                        _ => self.decode_lossless_rgb16_region_scaled_into(
+                            out,
+                            stride,
+                            Rect::full(self.info.dimensions),
+                            downscale,
+                        ),
+                    };
                 }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
@@ -1480,8 +1496,13 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Rgb16 => {
                 if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale);
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
+                            out, stride, roi, downscale,
+                        ),
+                        _ => self
+                            .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale),
+                    };
                 }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
@@ -1492,8 +1513,13 @@ impl<'a> Decoder<'a> {
             }
             OutputFormat::Rgb16Scaled { .. } => {
                 if self.lossless_plan.is_some() {
-                    return self
-                        .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale);
+                    return match self.info.color_space {
+                        ColorSpace::YCbCr => self.decode_lossless_ycbcr16_region_scaled_into(
+                            out, stride, roi, downscale,
+                        ),
+                        _ => self
+                            .decode_lossless_rgb16_region_scaled_into(out, stride, roi, downscale),
+                    };
                 }
                 if self.info.sof_kind == SofKind::Progressive12 {
                     return self.decode_progressive12_rgb16_region_scaled_into(
@@ -2727,6 +2753,15 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_lossless_color16_components_into(out, stride, ColorSpace::Rgb)
+    }
+
+    fn decode_lossless_color16_components_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError> {
         let plan = self
             .lossless_plan
             .as_ref()
@@ -2738,7 +2773,7 @@ impl Decoder<'_> {
                 depth: plan.bit_depth,
             });
         }
-        if self.info.color_space != ColorSpace::Rgb {
+        if self.info.color_space != color_space {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -2813,6 +2848,17 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_lossless_ycbcr16_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let outcome =
+            self.decode_lossless_color16_components_into(out, stride, ColorSpace::YCbCr)?;
+        convert_ycbcr16_to_rgb16_in_place(out, stride, self.info.dimensions);
+        Ok(outcome)
+    }
+
     fn decode_lossless_rgb16_region_scaled_into(
         &self,
         out: &mut [u8],
@@ -2828,6 +2874,39 @@ impl Decoder<'_> {
         let full_stride = width as usize * 6;
         let mut full = allocate_output_buffer(full_stride * height as usize);
         let mut outcome = self.decode_lossless_rgb16_into(&mut full, full_stride)?;
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        copy_rgb16_scaled_rect(
+            &full,
+            (width, height),
+            output_rect,
+            downscale.denominator(),
+            out,
+            stride,
+        );
+        outcome.decoded = roi;
+        Ok(outcome)
+    }
+
+    fn decode_lossless_ycbcr16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if roi == Rect::full(self.info.dimensions) && downscale == DownscaleFactor::Full {
+            return self.decode_lossless_ycbcr16_into(out, stride);
+        }
+
+        let (width, height) = self.info.dimensions;
+        let full_stride = width as usize * 6;
+        let mut full = allocate_output_buffer(full_stride * height as usize);
+        let mut outcome = self.decode_lossless_color16_components_into(
+            &mut full,
+            full_stride,
+            ColorSpace::YCbCr,
+        )?;
+        convert_ycbcr16_to_rgb16_in_place(&mut full, full_stride, self.info.dimensions);
         let output_rect = scaled_rect_covering(roi, downscale)?;
         copy_rgb16_scaled_rect(
             &full,
@@ -4689,6 +4768,23 @@ fn convert_ycbcr8_to_rgb8_in_place(out: &mut [u8], stride: usize, dimensions: (u
         for pixel in row.chunks_exact_mut(3) {
             let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]);
             pixel.copy_from_slice(&[r, g, b]);
+        }
+    }
+}
+
+fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
+    let (width, height) = dimensions;
+    let row_bytes = width as usize * 6;
+    for y in 0..height as usize {
+        let row = &mut out[y * stride..y * stride + row_bytes];
+        for pixel in row.chunks_exact_mut(6) {
+            let y = u16::from_le_bytes([pixel[0], pixel[1]]);
+            let cb = u16::from_le_bytes([pixel[2], pixel[3]]);
+            let cr = u16::from_le_bytes([pixel[4], pixel[5]]);
+            let (r, g, b) = crate::color::ycbcr::ycbcr16_to_rgb16(y, cb, cr);
+            pixel[0..2].copy_from_slice(&r.to_le_bytes());
+            pixel[2..4].copy_from_slice(&g.to_le_bytes());
+            pixel[4..6].copy_from_slice(&b.to_le_bytes());
         }
     }
 }
