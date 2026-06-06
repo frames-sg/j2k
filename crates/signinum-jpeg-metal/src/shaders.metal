@@ -178,6 +178,18 @@ struct JpegFast422TextureBatchParams {
     uint alpha;
 };
 
+struct JpegFast420TextureBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint segment_count;
+    uint tile_index;
+    uint alpha;
+};
+
 struct JpegWindowedPackBatchParams {
     uint src_width;
     uint src_height;
@@ -2103,6 +2115,34 @@ inline uchar h2v2_sample(
     return uchar((this_sum * 3u + next_sum + 7u) >> 4);
 }
 
+inline uchar h2v2_sample_thread(
+    thread const uchar *near_row,
+    thread const uchar *curr_row,
+    uint n,
+    uint x
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2, n - 1);
+    const uint this_sum = 3u * uint(curr_row[sample]) + uint(near_row[sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = 3u * uint(curr_row[sample - 1]) + uint(near_row[sample - 1]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[sample + 1]) + uint(near_row[sample + 1]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
 inline uchar h2v1_sample(
     device const uchar *row,
     uint n,
@@ -2662,6 +2702,168 @@ kernel void jpeg_decode_fast420_batch(
             idct_islow(coeffs, pixels);
         }
         deposit_block(tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, pixels);
+        advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_decode_fast420_rgba_texture_batch(
+    device const uchar *entropy [[buffer(0)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant PreparedHuffman &y_dc [[buffer(8)]],
+    constant PreparedHuffman &y_ac [[buffer(9)]],
+    constant PreparedHuffman &cb_dc [[buffer(10)]],
+    constant PreparedHuffman &cb_ac [[buffer(11)]],
+    constant PreparedHuffman &cr_dc [[buffer(12)]],
+    constant PreparedHuffman &cr_ac [[buffer(13)]],
+    device const uint *entropy_offsets [[buffer(14)]],
+    device const uint *entropy_lens [[buffer(15)]],
+    device JpegDecodeStatus *status [[buffer(16)]],
+    device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.segment_count) {
+        return;
+    }
+
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    const uint status_index = params.tile_index * params.segment_count + gid;
+    device JpegDecodeStatus *thread_status = status + status_index;
+    thread_status->code = FAST420_STATUS_OK;
+    thread_status->detail = 0;
+    thread_status->position = 0;
+    thread_status->reserved = 0;
+
+    const uint checkpoint_base = params.tile_index * params.segment_count;
+    const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
+    uint start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    uint end_mcu = total_mcus;
+    if (gid + 1u < params.segment_count) {
+        end_mcu = min(total_mcus, entropy_checkpoints[checkpoint_base + gid + 1u].mcu_index);
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    const uint entropy_base = entropy_offsets[params.tile_index];
+    const uint entropy_end = entropy_base + entropy_lens[params.tile_index];
+    thread BitReader br;
+    br.pos = entropy_base + checkpoint.entropy_pos;
+    br.acc = checkpoint.bit_acc;
+    br.bits = checkpoint.bit_count;
+
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    thread short coeffs[64];
+    thread uchar y00_pixels[64];
+    thread uchar y10_pixels[64];
+    thread uchar y01_pixels[64];
+    thread uchar y11_pixels[64];
+    thread uchar cb_pixels[64];
+    thread uchar cr_pixels[64];
+
+    uint mx = 0u;
+    uint my = 0u;
+    init_mcu_cursor(start_mcu, params.mcus_per_row, mx, my);
+    for (uint mcu_index = start_mcu; mcu_index < end_mcu; ++mcu_index) {
+        const uint y_x = mx * 16u;
+        const uint y_y = my * 16u;
+        bool dc_only = false;
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y00_pixels);
+        } else {
+            idct_islow(coeffs, y00_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y10_pixels);
+        } else {
+            idct_islow(coeffs, y10_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y01_pixels);
+        } else {
+            idct_islow(coeffs, y01_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y11_pixels);
+        } else {
+            idct_islow(coeffs, y11_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cb_pixels);
+        } else {
+            idct_islow(coeffs, cb_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cr_pixels);
+        } else {
+            idct_islow(coeffs, cr_pixels);
+        }
+
+        const uint copy_width = min(16u, params.width - min(y_x, params.width));
+        const uint copy_height = min(16u, params.height - min(y_y, params.height));
+        for (uint by = 0u; by < copy_height; ++by) {
+            const uint out_y = y_y + by;
+            const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+            const uint near_y = (out_y & 1u) == 0u
+                ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+                : min(chroma_y + 1u, params.chroma_height - 1u);
+            thread const uchar *curr_cb = cb_pixels + chroma_y * 8u;
+            thread const uchar *curr_cr = cr_pixels + chroma_y * 8u;
+            thread const uchar *near_cb = cb_pixels + near_y * 8u;
+            thread const uchar *near_cr = cr_pixels + near_y * 8u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint out_x = y_x + bx;
+                uchar y_value;
+                if (by < 8u) {
+                    y_value = bx < 8u
+                        ? y00_pixels[by * 8u + bx]
+                        : y10_pixels[by * 8u + (bx - 8u)];
+                } else {
+                    y_value = bx < 8u
+                        ? y01_pixels[(by - 8u) * 8u + bx]
+                        : y11_pixels[(by - 8u) * 8u + (bx - 8u)];
+                }
+                const uchar cb_value = h2v2_sample_thread(near_cb, curr_cb, params.chroma_width, out_x);
+                const uchar cr_value = h2v2_sample_thread(near_cr, curr_cr, params.chroma_width, out_x);
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(out_x, out_y)
+                );
+            }
+        }
         advance_mcu_cursor(mx, my, params.mcus_per_row);
     }
 }
