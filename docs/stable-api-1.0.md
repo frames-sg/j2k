@@ -292,14 +292,16 @@ Tier: Adapter API.
 Stable modules and types: `viewport`, `Error`, `SurfaceResidency`, `Surface`,
 `Codec`, `Decoder`, `MetalBackendSession`, `MetalSession`,
 `MetalSubmission`, `MetalBatchOutputBuffer`, `MetalBatchTextureOutput`,
-`JpegBaselineMetalEncodeTile`, `Info`, `JpegRectPublic`, and
-`ViewportResidentOutputStrategy`.
+`JpegBaselineMetalEncodeTile`, `JpegMetalResidentBatchReport`, `Info`,
+`JpegRectPublic`, and `ViewportResidentOutputStrategy`.
 
 Stable functions and methods: `Surface::pitch_bytes`, `Surface::residency`,
 `Surface::as_bytes`, `Surface::download_into`, `Surface::metal_buffer`,
-`Decoder::new`, `Codec` trait implementations, `MetalSession` constructors and
-decode/submit methods, `TileBatchDecodeManyDevice::decode_tiles_to_device` for
-full-tile JPEG Metal batches,
+`Decoder::new`, `JpegMetalResidentBatchReport::required_tile_capacity`,
+`Codec` trait implementations, `MetalSession` constructors and decode/submit
+methods, `TileBatchDecodeManyDevice::decode_tiles_to_device` for full-tile JPEG
+Metal batches,
+`Codec::inspect_rgb8_decoder_batch_metal_output`,
 `Codec::decode_rgb8_batch_into_resizable_metal_buffer_with_session`,
 `Codec::decode_rgb8_batch_into_resizable_metal_textures_with_session`,
 `Codec::decode_rgb8_scaled_batch_into_resizable_metal_buffer_with_session`,

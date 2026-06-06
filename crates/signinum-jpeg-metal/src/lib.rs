@@ -1180,6 +1180,51 @@ struct Rgb8MetalBatchRequests {
     output_dimensions: Option<(u32, u32)>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Preflight report for RGB8 JPEG Metal resident decoder batches.
+pub struct JpegMetalResidentBatchReport {
+    /// Requested decode operation.
+    pub op: signinum_jpeg::JpegDecodeOp,
+    /// Number of decoder tiles in the batch.
+    pub tile_count: usize,
+    /// Required output dimensions when the batch is eligible and shape-compatible.
+    pub output_dimensions: Option<(u32, u32)>,
+    /// Whether the batch can use reusable RGB8 Metal resident output.
+    pub eligibility: signinum_jpeg::JpegBackendEligibility,
+}
+
+#[cfg(target_os = "macos")]
+impl JpegMetalResidentBatchReport {
+    /// Required number of tile slots in caller-owned Metal output.
+    #[must_use]
+    pub fn required_tile_capacity(&self) -> usize {
+        self.tile_count
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rgb8_metal_output_dimensions_for_op(
+    full_dimensions: (u32, u32),
+    op: signinum_jpeg::JpegDecodeOp,
+) -> Option<(u32, u32)> {
+    match op {
+        signinum_jpeg::JpegDecodeOp::Full => Some(full_dimensions),
+        signinum_jpeg::JpegDecodeOp::Scaled(scale) => Some(scaled_dims(full_dimensions, scale)),
+        signinum_jpeg::JpegDecodeOp::RegionScaled { roi, scale } => {
+            let scaled = Rect {
+                x: roi.x,
+                y: roi.y,
+                w: roi.w,
+                h: roi.h,
+            }
+            .scaled_covering(scale);
+            Some((scaled.w, scaled.h))
+        }
+        signinum_jpeg::JpegDecodeOp::Region(_) => None,
+    }
+}
+
 impl ImageCodec for Codec {
     type Error = Error;
     type Warning = CpuWarning;
@@ -1187,6 +1232,102 @@ impl ImageCodec for Codec {
 }
 
 impl Codec {
+    #[cfg(target_os = "macos")]
+    /// Inspect a cached RGB8 decoder batch for reusable Metal resident output.
+    ///
+    /// The report exposes whether the batch is resident-output eligible and,
+    /// when eligible, the exact output dimensions and tile capacity callers
+    /// should allocate before dispatch.
+    pub fn inspect_rgb8_decoder_batch_metal_output(
+        decoders: &[&Decoder<'_>],
+        op: signinum_jpeg::JpegDecodeOp,
+    ) -> JpegMetalResidentBatchReport {
+        if decoders.is_empty() {
+            return JpegMetalResidentBatchReport {
+                op,
+                tile_count: 0,
+                output_dimensions: None,
+                eligibility: signinum_jpeg::JpegBackendEligibility {
+                    eligible: true,
+                    reason: None,
+                },
+            };
+        }
+
+        let mut output_dimensions = None;
+        for decoder in decoders {
+            let request = signinum_jpeg::JpegCapabilityRequest {
+                op,
+                fmt: PixelFormat::Rgb8,
+            };
+            let report = signinum_jpeg::JpegCapabilityReport::for_decoder(decoder.inner(), request);
+            let eligibility = report.metal_resident_rgb8_batch_output();
+            if !eligibility.eligible {
+                return JpegMetalResidentBatchReport {
+                    op,
+                    tile_count: decoders.len(),
+                    output_dimensions: None,
+                    eligibility,
+                };
+            }
+
+            if decoder.fast444_packet().is_none()
+                && decoder.fast422_packet().is_none()
+                && decoder.fast420_packet().is_none()
+            {
+                return JpegMetalResidentBatchReport {
+                    op,
+                    tile_count: decoders.len(),
+                    output_dimensions: None,
+                    eligibility: signinum_jpeg::JpegBackendEligibility {
+                        eligible: false,
+                        reason: Some(
+                            "JPEG Metal reusable resident batch output requires cached fast-packet state",
+                        ),
+                    },
+                };
+            }
+
+            let Some(dimensions) =
+                rgb8_metal_output_dimensions_for_op(decoder.inner().info().dimensions, op)
+            else {
+                return JpegMetalResidentBatchReport {
+                    op,
+                    tile_count: decoders.len(),
+                    output_dimensions: None,
+                    eligibility,
+                };
+            };
+            if let Some(first) = output_dimensions {
+                if first != dimensions {
+                    return JpegMetalResidentBatchReport {
+                        op,
+                        tile_count: decoders.len(),
+                        output_dimensions: None,
+                        eligibility: signinum_jpeg::JpegBackendEligibility {
+                            eligible: false,
+                            reason: Some(
+                                "JPEG Metal reusable RGB8 batch output requires matching output dimensions",
+                            ),
+                        },
+                    };
+                }
+            } else {
+                output_dimensions = Some(dimensions);
+            }
+        }
+
+        JpegMetalResidentBatchReport {
+            op,
+            tile_count: decoders.len(),
+            output_dimensions,
+            eligibility: signinum_jpeg::JpegBackendEligibility {
+                eligible: true,
+                reason: None,
+            },
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn observe_rgb8_batch_output_dimensions(
         first_output_dimensions: &mut Option<(u32, u32)>,
@@ -3339,6 +3480,93 @@ mod tests {
         assert!(matches!(err, Error::UnsupportedMetalRequest { .. }));
         assert_eq!(output.dimensions(), (1, 1));
         assert_eq!(output.tile_capacity(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_metal_report_exposes_required_output_shape() {
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_420).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let full = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        let scaled = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Scaled(Downscale::Quarter),
+        );
+        let roi = Rect {
+            x: 1,
+            y: 2,
+            w: 10,
+            h: 9,
+        };
+        let region_scaled = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::RegionScaled {
+                roi: signinum_jpeg::Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                scale: Downscale::Quarter,
+            },
+        );
+
+        assert!(full.eligibility.eligible);
+        assert_eq!(full.tile_count, 2);
+        assert_eq!(full.output_dimensions, Some((16, 16)));
+        assert_eq!(full.required_tile_capacity(), 2);
+
+        assert!(scaled.eligibility.eligible);
+        assert_eq!(scaled.output_dimensions, Some((4, 4)));
+
+        assert!(region_scaled.eligibility.eligible);
+        let expected = roi.scaled_covering(Downscale::Quarter);
+        assert_eq!(
+            region_scaled.output_dimensions,
+            Some((expected.w, expected.h))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_metal_report_rejects_incompatible_batches_without_launch() {
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_444).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let mixed = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        let region = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &[&first],
+            signinum_jpeg::JpegDecodeOp::Region(signinum_jpeg::Rect {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+            }),
+        );
+
+        assert!(!mixed.eligibility.eligible);
+        assert_eq!(mixed.output_dimensions, None);
+        assert!(mixed
+            .eligibility
+            .reason
+            .expect("mixed rejection")
+            .contains("matching output dimensions"));
+
+        assert!(!region.eligibility.eligible);
+        assert!(region
+            .eligibility
+            .reason
+            .expect("region rejection")
+            .contains("full, scaled, or region-scaled"));
     }
 
     #[cfg(target_os = "macos")]
