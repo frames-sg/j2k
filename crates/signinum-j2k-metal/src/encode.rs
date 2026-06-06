@@ -22,9 +22,9 @@ use signinum_j2k_native::{
     J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
 };
 use signinum_j2k_native::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kCodeBlockStyle, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Output, J2kHtCodeBlockEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(all(test, target_os = "macos"))]
 use std::cell::Cell;
@@ -39,7 +39,7 @@ use std::time::Instant;
 
 /// Encode-stage accelerator for JPEG 2000 Metal work.
 ///
-/// The type is wired into the native encoder hook interface and reports
+/// The type is wired into the public J2K encode-stage interface and reports
 /// dispatches for each required encode stage.
 #[derive(Debug, Clone)]
 pub struct MetalEncodeStageAccelerator {
@@ -217,9 +217,9 @@ fn metal_dispatch_option<T>(
     }
 }
 
-impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
-    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
-        J2kEncodeDispatchReport {
+impl signinum_j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
+    fn dispatch_report(&self) -> signinum_j2k::J2kEncodeDispatchReport {
+        signinum_j2k::J2kEncodeDispatchReport {
             deinterleave: 0,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: 0,
@@ -238,7 +238,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_rct(
         &mut self,
-        job: J2kForwardRctJob<'_>,
+        job: signinum_j2k::J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if !self
@@ -267,8 +267,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_dwt53(
         &mut self,
-        job: J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+        job: signinum_j2k::J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -289,7 +289,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
             let output = metal_dispatch_option(
                 compute::encode_forward_dwt53(job.samples, job.width, job.height, job.num_levels),
                 "Metal forward 5/3 DWT encode kernel failed",
-            )?;
+            )?
+            .map(public_dwt53_output_from_native);
             if output.is_some() {
                 self.forward_dwt53_dispatches = self.forward_dwt53_dispatches.saturating_add(1);
             }
@@ -304,8 +305,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_block(
         &mut self,
-        job: J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        job: signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -317,9 +318,10 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
-                compute::encode_classic_tier1_code_block(job),
+                compute::encode_classic_tier1_code_block(native_tier1_job_from_public(job)),
                 "Metal classic Tier-1 encode kernel failed",
-            )?;
+            )?
+            .map(public_encoded_j2k_from_native);
             if encoded.is_some() {
                 self.tier1_code_block_dispatches =
                     self.tier1_code_block_dispatches.saturating_add(1);
@@ -335,8 +337,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_blocks(
         &mut self,
-        jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+        jobs: &[signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k::EncodedJ2kCodeBlock>>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -347,10 +349,21 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(target_os = "macos")]
         {
+            let native_jobs = jobs
+                .iter()
+                .copied()
+                .map(native_tier1_job_from_public)
+                .collect::<Vec<_>>();
             let encoded = metal_dispatch_option(
-                compute::encode_classic_tier1_code_blocks(jobs),
+                compute::encode_classic_tier1_code_blocks(&native_jobs),
                 "Metal classic Tier-1 encode batch kernel failed",
-            )?;
+            )?
+            .map(|blocks| {
+                blocks
+                    .into_iter()
+                    .map(public_encoded_j2k_from_native)
+                    .collect()
+            });
             if encoded.is_some() && !jobs.is_empty() {
                 self.tier1_code_block_dispatches =
                     self.tier1_code_block_dispatches.saturating_add(1);
@@ -366,8 +379,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_block(
         &mut self,
-        job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        job: signinum_j2k::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -380,9 +393,10 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(target_os = "macos")]
         {
             let encoded = metal_dispatch_option(
-                compute::encode_ht_cleanup_code_block(job),
+                compute::encode_ht_cleanup_code_block(native_ht_job_from_public(job)),
                 "Metal HTJ2K code-block encode kernel failed",
-            )?;
+            )?
+            .map(public_encoded_ht_from_native);
             if encoded.is_some() {
                 self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
             }
@@ -397,8 +411,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_blocks(
         &mut self,
-        jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        jobs: &[signinum_j2k::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k::EncodedHtJ2kCodeBlock>>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -410,10 +424,21 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(target_os = "macos")]
         {
+            let native_jobs = jobs
+                .iter()
+                .copied()
+                .map(native_ht_job_from_public)
+                .collect::<Vec<_>>();
             let encoded = metal_dispatch_option(
-                compute::encode_ht_cleanup_code_blocks(jobs),
+                compute::encode_ht_cleanup_code_blocks(&native_jobs),
                 "Metal HTJ2K code-block encode batch kernel failed",
-            )?;
+            )?
+            .map(|blocks| {
+                blocks
+                    .into_iter()
+                    .map(public_encoded_ht_from_native)
+                    .collect()
+            });
             if encoded.is_some() && !jobs.is_empty() {
                 self.ht_code_block_dispatches = self.ht_code_block_dispatches.saturating_add(1);
             }
@@ -428,7 +453,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_htj2k_tile(
         &mut self,
-        job: J2kHtj2kTileEncodeJob<'_>,
+        job: signinum_j2k::J2kHtj2kTileEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         #[cfg(target_os = "macos")]
         {
@@ -436,11 +461,12 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 let _ = job;
                 return Ok(None);
             }
+            let native_job = native_htj2k_tile_job_from_public(job);
             self.auto_host_output_force_cpu_fallback = false;
-            let Some(options) = lossless_options_for_resident_htj2k_tile_job(job) else {
+            let Some(options) = lossless_options_for_resident_htj2k_tile_job(native_job) else {
                 return Ok(None);
             };
-            if !should_use_resident_htj2k_host_tile_for_auto(job) {
+            if !should_use_resident_htj2k_host_tile_for_auto(native_job) {
                 self.auto_host_output_force_cpu_fallback = true;
                 return Ok(None);
             }
@@ -509,7 +535,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_packetization(
         &mut self,
-        job: J2kPacketizationEncodeJob<'_>,
+        job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         self.auto_host_output_force_cpu_fallback = false;
@@ -522,8 +548,24 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(target_os = "macos")]
         {
+            let packet_descriptors = job
+                .packet_descriptors
+                .iter()
+                .copied()
+                .map(native_packet_descriptor_from_public)
+                .collect::<Vec<_>>();
+            let resolutions = native_packet_resolutions_from_public(job.resolutions);
+            let native_job = J2kPacketizationEncodeJob {
+                resolution_count: job.resolution_count,
+                num_layers: job.num_layers,
+                num_components: job.num_components,
+                code_block_count: job.code_block_count,
+                progression_order: native_packet_progression_from_public(job.progression_order),
+                packet_descriptors: &packet_descriptors,
+                resolutions: &resolutions,
+            };
             let encoded = metal_dispatch_option(
-                compute::encode_tier2_packetization(job),
+                compute::encode_tier2_packetization(native_job),
                 "Metal Tier-2 packetization encode kernel failed",
             )?;
             if encoded.is_some() {
@@ -535,6 +577,215 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         {
             let _ = job;
             Ok(None)
+        }
+    }
+}
+
+fn native_tier1_job_from_public(
+    job: signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>,
+) -> J2kTier1CodeBlockEncodeJob<'_> {
+    J2kTier1CodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        sub_band_type: native_subband_from_public(job.sub_band_type),
+        total_bitplanes: job.total_bitplanes,
+        style: native_style_from_public(job.style),
+    }
+}
+
+const fn native_subband_from_public(subband: signinum_j2k::J2kSubBandType) -> J2kSubBandType {
+    match subband {
+        signinum_j2k::J2kSubBandType::LowLow => J2kSubBandType::LowLow,
+        signinum_j2k::J2kSubBandType::HighLow => J2kSubBandType::HighLow,
+        signinum_j2k::J2kSubBandType::LowHigh => J2kSubBandType::LowHigh,
+        signinum_j2k::J2kSubBandType::HighHigh => J2kSubBandType::HighHigh,
+    }
+}
+
+const fn native_style_from_public(style: signinum_j2k::J2kCodeBlockStyle) -> J2kCodeBlockStyle {
+    J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
+        reset_context_probabilities: style.reset_context_probabilities,
+        termination_on_each_pass: style.termination_on_each_pass,
+        vertically_causal_context: style.vertically_causal_context,
+        segmentation_symbols: style.segmentation_symbols,
+    }
+}
+
+fn native_ht_job_from_public(
+    job: signinum_j2k::J2kHtCodeBlockEncodeJob<'_>,
+) -> J2kHtCodeBlockEncodeJob<'_> {
+    J2kHtCodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        total_bitplanes: job.total_bitplanes,
+        target_coding_passes: job.target_coding_passes,
+    }
+}
+
+fn native_htj2k_tile_job_from_public(
+    job: signinum_j2k::J2kHtj2kTileEncodeJob<'_>,
+) -> J2kHtj2kTileEncodeJob<'_> {
+    J2kHtj2kTileEncodeJob {
+        pixels: job.pixels,
+        width: job.width,
+        height: job.height,
+        num_components: job.num_components,
+        bit_depth: job.bit_depth,
+        signed: job.signed,
+        num_decomposition_levels: job.num_decomposition_levels,
+        reversible: job.reversible,
+        use_mct: job.use_mct,
+        guard_bits: job.guard_bits,
+        code_block_width: job.code_block_width,
+        code_block_height: job.code_block_height,
+        progression_order: native_packet_progression_from_public(job.progression_order),
+        component_sampling: job.component_sampling,
+        quantization_steps: job.quantization_steps,
+    }
+}
+
+fn public_dwt53_output_from_native(
+    output: J2kForwardDwt53Output,
+) -> signinum_j2k::J2kForwardDwt53Output {
+    signinum_j2k::J2kForwardDwt53Output {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels: output
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k::J2kForwardDwt53Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn public_encoded_j2k_from_native(block: EncodedJ2kCodeBlock) -> signinum_j2k::EncodedJ2kCodeBlock {
+    signinum_j2k::EncodedJ2kCodeBlock {
+        data: block.data,
+        segments: block
+            .segments
+            .into_iter()
+            .map(|segment| signinum_j2k::J2kCodeBlockSegment {
+                data_offset: segment.data_offset,
+                data_length: segment.data_length,
+                start_coding_pass: segment.start_coding_pass,
+                end_coding_pass: segment.end_coding_pass,
+                use_arithmetic: segment.use_arithmetic,
+            })
+            .collect(),
+        number_of_coding_passes: block.number_of_coding_passes,
+        missing_bit_planes: block.missing_bit_planes,
+    }
+}
+
+fn public_encoded_ht_from_native(
+    block: EncodedHtJ2kCodeBlock,
+) -> signinum_j2k::EncodedHtJ2kCodeBlock {
+    signinum_j2k::EncodedHtJ2kCodeBlock {
+        data: block.data,
+        cleanup_length: block.cleanup_length,
+        refinement_length: block.refinement_length,
+        num_coding_passes: block.num_coding_passes,
+        num_zero_bitplanes: block.num_zero_bitplanes,
+    }
+}
+
+fn native_packet_resolutions_from_public<'a>(
+    resolutions: &'a [signinum_j2k::J2kPacketizationResolution<'a>],
+) -> Vec<J2kPacketizationResolution<'a>> {
+    resolutions
+        .iter()
+        .map(|resolution| J2kPacketizationResolution {
+            subbands: resolution
+                .subbands
+                .iter()
+                .map(|subband| J2kPacketizationSubband {
+                    code_blocks: subband
+                        .code_blocks
+                        .iter()
+                        .copied()
+                        .map(native_packet_code_block_from_public)
+                        .collect(),
+                    num_cbs_x: subband.num_cbs_x,
+                    num_cbs_y: subband.num_cbs_y,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+const fn native_packet_code_block_from_public(
+    code_block: signinum_j2k::J2kPacketizationCodeBlock<'_>,
+) -> J2kPacketizationCodeBlock<'_> {
+    J2kPacketizationCodeBlock {
+        data: code_block.data,
+        ht_cleanup_length: code_block.ht_cleanup_length,
+        ht_refinement_length: code_block.ht_refinement_length,
+        num_coding_passes: code_block.num_coding_passes,
+        num_zero_bitplanes: code_block.num_zero_bitplanes,
+        previously_included: code_block.previously_included,
+        l_block: code_block.l_block,
+        block_coding_mode: native_packet_block_mode_from_public(code_block.block_coding_mode),
+    }
+}
+
+const fn native_packet_block_mode_from_public(
+    mode: signinum_j2k::J2kPacketizationBlockCodingMode,
+) -> J2kPacketizationBlockCodingMode {
+    match mode {
+        signinum_j2k::J2kPacketizationBlockCodingMode::Classic => {
+            J2kPacketizationBlockCodingMode::Classic
+        }
+        signinum_j2k::J2kPacketizationBlockCodingMode::HighThroughput => {
+            J2kPacketizationBlockCodingMode::HighThroughput
+        }
+    }
+}
+
+const fn native_packet_descriptor_from_public(
+    descriptor: signinum_j2k::J2kPacketizationPacketDescriptor,
+) -> J2kPacketizationPacketDescriptor {
+    J2kPacketizationPacketDescriptor {
+        packet_index: descriptor.packet_index,
+        state_index: descriptor.state_index,
+        layer: descriptor.layer,
+        resolution: descriptor.resolution,
+        component: descriptor.component,
+        precinct: descriptor.precinct,
+    }
+}
+
+const fn native_packet_progression_from_public(
+    progression: signinum_j2k::J2kPacketizationProgressionOrder,
+) -> J2kPacketizationProgressionOrder {
+    match progression {
+        signinum_j2k::J2kPacketizationProgressionOrder::Lrcp => {
+            J2kPacketizationProgressionOrder::Lrcp
+        }
+        signinum_j2k::J2kPacketizationProgressionOrder::Rlcp => {
+            J2kPacketizationProgressionOrder::Rlcp
+        }
+        signinum_j2k::J2kPacketizationProgressionOrder::Rpcl => {
+            J2kPacketizationProgressionOrder::Rpcl
+        }
+        signinum_j2k::J2kPacketizationProgressionOrder::Pcrl => {
+            J2kPacketizationProgressionOrder::Pcrl
+        }
+        signinum_j2k::J2kPacketizationProgressionOrder::Cprl => {
+            J2kPacketizationProgressionOrder::Cprl
         }
     }
 }
@@ -675,7 +926,7 @@ impl MetalEncodedJ2k {
             EncodedJ2k {
                 codestream,
                 backend: BackendKind::Metal,
-                dispatch_report: J2kEncodeDispatchReport::default(),
+                dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
                 components: self.components,
@@ -5020,7 +5271,7 @@ fn encode_cpu_codestream_from_prepacketized_ht_tile(
     Ok(EncodedJ2k {
         codestream,
         backend: BackendKind::Cpu,
-        dispatch_report: J2kEncodeDispatchReport::default(),
+        dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -5912,19 +6163,19 @@ mod tests {
     use signinum_core::DeviceSubmission;
     #[cfg(target_os = "macos")]
     use signinum_core::{BackendKind, PixelFormat};
+    use signinum_j2k::{
+        encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
+        J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kLosslessEncodeOptions,
+        J2kLosslessSamples,
+    };
     #[cfg(target_os = "macos")]
     use signinum_j2k::{
-        encode_j2k_lossless_with_accelerator, encode_j2k_lossy_with_accelerator,
-        EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessSamples,
+        encode_j2k_lossy_with_accelerator, J2kBlockCodingMode, J2kEncodeValidation,
         J2kLossyEncodeOptions, J2kLossySamples, J2kProgressionOrder,
     };
-    use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
-    use signinum_j2k_native::{
-        encode_with_accelerator, DecodeSettings, EncodeOptions, Image, J2kEncodeDispatchReport,
-        J2kEncodeStageAccelerator, J2kForwardRctJob,
-    };
     #[cfg(target_os = "macos")]
-    use signinum_j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle, J2kForwardDwt53Job};
+    use signinum_j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle};
+    use signinum_j2k_native::{DecodeSettings, Image};
     use std::time::Duration;
 
     #[cfg(target_os = "macos")]
@@ -6732,7 +6983,7 @@ mod tests {
             encoded: EncodedJ2k {
                 codestream: Vec::new(),
                 backend: signinum_core::BackendKind::Metal,
-                dispatch_report: J2kEncodeDispatchReport::default(),
+                dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
                 width: 0,
                 height: 0,
                 components: 1,
@@ -6803,17 +7054,21 @@ mod tests {
     #[test]
     fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
         let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| (i & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).expect("valid RGB samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::PreferDevice)
+            .with_max_decomposition_levels(Some(1));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with metal stage accelerator");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            signinum_core::BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal stage accelerator");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -6854,17 +7109,21 @@ mod tests {
     #[test]
     fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
         let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 0,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 7, 5, 3, 8, false).expect("valid RGB samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(0));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 7, 5, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with metal forward RCT");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal forward RCT");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -8616,17 +8875,21 @@ mod tests {
     #[test]
     fn metal_forward_dwt53_dispatch_round_trips_gray8_lossless_tile() {
         let pixels: Vec<u8> = (0..8 * 8).map(|i| ((i * 5) & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 8, 8, 1, 8, false).expect("valid gray samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(1));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with metal forward DWT 5/3");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal forward DWT 5/3");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -8676,17 +8939,21 @@ mod tests {
         let pixels: Vec<u8> = (0..256 * 256)
             .map(|idx| ((idx * 17 + 3) & 0xFF) as u8)
             .collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 0,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 256, 256, 1, 8, false).expect("valid gray samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(0));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 256, 256, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with batched Metal classic Tier-1");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with batched Metal classic Tier-1");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");

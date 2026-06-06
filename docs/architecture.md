@@ -29,8 +29,9 @@ design notes that an agent can reach without leaving the repo.
 ## System map
 
 The workspace is a single Cargo workspace defined in [`Cargo.toml`](../Cargo.toml).
-All crates live under `crates/` and share `edition = 2021` and
-`rust-version = 1.88`. The current public line is `0.4.x`: the facade, core,
+Most library and binary crates live under `crates/`; the workspace automation
+crate lives under `xtask/`. Workspace crates share `edition = 2021` and
+`rust-version = 1.88`. The current public line is `0.5.x`: the facade, core,
 CPU codec, tilecodec, and CLI surfaces are treated as stable for the facade
 release, while adapter and transcode APIs remain experimental until their
 promotion gates are satisfied.
@@ -52,8 +53,10 @@ promotion gates are satisfied.
 | `signinum-transcode` | experimental | Coefficient-domain JPEG to HTJ2K transcode experiments. Owns the coupling between JPEG DCT extraction and native HTJ2K coefficient encode so codec crates stay independent. APIs in this crate are not stable until validation coverage and codestream integration land. |
 | `signinum-transcode-cuda` | experimental adapter | CUDA accelerator for selected `signinum-transcode` stages. Uses `signinum-cuda-runtime` kernels for coefficient-domain DCT-grid to wavelet and fused 9/7 code-block paths. |
 | `signinum-transcode-metal` | experimental adapter | Metal accelerator for selected `signinum-transcode` stages. Keeps JPEG parsing, entropy decode, dequantization, scheduling, and HTJ2K encode on CPU while optionally replacing direct DCT-grid to wavelet projection. |
+| `signinum-test-support` | dev helper | Shared synthetic-image and benchmark input generators for tests, benches, and examples. Not a runtime dependency of public crates. |
 | `signinum` | facade | Stable public import surface over `core`, the CPU codecs, tile decompression, and optional Metal/CUDA adapters behind facade features. |
 | `signinum-cli` | binary | `signinum inspect <file>` entry point. Header parsing only, no decode. |
+| `xtask` | workspace tool | Repository-local automation for tests, docs, benches, fuzz builds, coverage, and packaging. Lives under `xtask/` instead of `crates/` and is never published. |
 
 Out-of-tree but in-repo:
 
@@ -121,6 +124,8 @@ Workspace edges (excluding external crates and `dev-dependencies`):
 signinum-core         (leaf)
 signinum-profile      (instrumentation helper)
 signinum-cuda-runtime (CUDA runtime helper)
+signinum-test-support (dev helper)
+xtask                 (workspace automation)
 
 signinum-tilecodec    -> signinum-core
 
@@ -133,7 +138,7 @@ signinum-j2k          -> signinum-j2k-native, signinum-core
 signinum-j2k-metal    -> signinum-j2k, signinum-j2k-native, signinum-profile, signinum-core
 signinum-j2k-cuda     -> signinum-j2k, signinum-j2k-native, signinum-cuda-runtime, signinum-profile, signinum-core
 
-signinum-transcode    -> signinum-jpeg, signinum-j2k-native
+signinum-transcode    -> signinum-jpeg, signinum-j2k, signinum-j2k-native
 signinum-transcode-cuda -> signinum-transcode, signinum-j2k-native, signinum-cuda-runtime
 signinum-transcode-metal -> signinum-transcode
 
@@ -320,8 +325,8 @@ READMEs, benchmark notes, and release notes.
 
 `signinum-j2k-cuda` exposes `encode_j2k_lossless_with_cuda`, a strict
 on-device HTJ2K lossless encode path. Its design goal is a codestream
-byte-identical to the native CPU reference (`signinum_j2k_native::encode_htj2k`
-/ the CPU lossless path). Byte-parity is the contract enforced by the
+byte-identical to the public `signinum-j2k` CPU lossless path. Byte-parity is
+the contract enforced by the
 `cuda-x86_64-compatibility` job in `.github/workflows/gpu-validation.yml`: that
 job sets `SIGNINUM_REQUIRE_CUDA_RUNTIME` and runs the `htj2k_encode_parity` test
 suite with a fail-closed executed-count floor (at least 8 parity tests must

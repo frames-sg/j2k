@@ -6,19 +6,28 @@ use core::fmt;
 use std::time::Instant;
 
 use rayon::prelude::*;
+use signinum_j2k::{
+    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
+    IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment, J2kCodeBlockStyle,
+    J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationSubband, J2kProgressionOrder, J2kQuantizeSubbandJob, J2kSubBandType,
+    J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactImage, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
+    PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
+};
 use signinum_j2k_native::{
     encode_precomputed_htj2k_53_with_accelerator,
     encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
     encode_preencoded_htj2k_97_owned_with_accelerator,
-    encode_prequantized_htj2k_97_with_accelerator, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
-    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image,
+    encode_prequantized_htj2k_97_with_accelerator,
 };
 use signinum_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent, JpegDctImage,
@@ -49,11 +58,118 @@ use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 /// default but overshoots the external baseline size for this transcode path.
 pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 1.9;
 
+/// HTJ2K encode options used after JPEG coefficient-domain wavelet bands are produced.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct JpegToHtj2kEncodeOptions {
+    /// Number of wavelet decomposition levels.
+    pub num_decomposition_levels: u8,
+    /// Whether to emit reversible/lossless coding.
+    pub reversible: bool,
+    /// Code-block width exponent minus two.
+    pub code_block_width_exp: u8,
+    /// Code-block height exponent minus two.
+    pub code_block_height_exp: u8,
+    /// JPEG 2000 guard bits.
+    pub guard_bits: u8,
+    /// Whether to encode HTJ2K code blocks instead of classic EBCOT.
+    pub use_ht_block_coding: bool,
+    /// Packet progression order.
+    pub progression_order: J2kProgressionOrder,
+    /// Whether to write a TLM marker segment.
+    pub write_tlm: bool,
+    /// Whether to write PLT packet-length marker segments.
+    pub write_plt: bool,
+    /// Whether to write PLM packet-length marker segments.
+    pub write_plm: bool,
+    /// Whether to write SOP marker segments before packets.
+    pub write_sop: bool,
+    /// Whether to write EPH markers after packet headers.
+    pub write_eph: bool,
+    /// Whether to apply JPEG 2000 multi-component transform.
+    pub use_mct: bool,
+    /// Number of cumulative quality layers.
+    pub num_layers: u8,
+    /// Optional cumulative packet-body byte targets for each quality layer.
+    pub quality_layer_byte_targets: Vec<u64>,
+    /// Whether native HTJ2K validation is enabled after encode.
+    pub validate_high_throughput_codestream: bool,
+    /// Global irreversible 9/7 quantization scale.
+    pub irreversible_quantization_scale: f32,
+    /// Per-subband irreversible 9/7 quantization scales.
+    pub irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
+    pub component_sampling: Option<Vec<(u8, u8)>>,
+    /// Optional tile size for multi-tile codestreams.
+    pub tile_size: Option<(u32, u32)>,
+    /// Optional precinct exponents in COD order.
+    pub precinct_exponents: Vec<(u8, u8)>,
+}
+
+impl Default for JpegToHtj2kEncodeOptions {
+    fn default() -> Self {
+        Self {
+            num_decomposition_levels: 5,
+            reversible: true,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            guard_bits: 1,
+            use_ht_block_coding: false,
+            progression_order: J2kProgressionOrder::Lrcp,
+            write_tlm: false,
+            write_plt: false,
+            write_plm: false,
+            write_sop: false,
+            write_eph: false,
+            use_mct: true,
+            num_layers: 1,
+            quality_layer_byte_targets: Vec::new(),
+            validate_high_throughput_codestream: true,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+            component_sampling: None,
+            tile_size: None,
+            precinct_exponents: Vec::new(),
+        }
+    }
+}
+
+impl JpegToHtj2kEncodeOptions {
+    fn to_native(&self) -> signinum_j2k_native::EncodeOptions {
+        signinum_j2k_native::EncodeOptions {
+            num_decomposition_levels: self.num_decomposition_levels,
+            reversible: self.reversible,
+            code_block_width_exp: self.code_block_width_exp,
+            code_block_height_exp: self.code_block_height_exp,
+            guard_bits: self.guard_bits,
+            use_ht_block_coding: self.use_ht_block_coding,
+            progression_order: native_progression_order(self.progression_order),
+            write_tlm: self.write_tlm,
+            write_plt: self.write_plt,
+            write_plm: self.write_plm,
+            write_sop: self.write_sop,
+            write_eph: self.write_eph,
+            use_mct: self.use_mct,
+            num_layers: self.num_layers,
+            quality_layer_byte_targets: self.quality_layer_byte_targets.clone(),
+            validate_high_throughput_codestream: self.validate_high_throughput_codestream,
+            irreversible_quantization_scale: self.irreversible_quantization_scale,
+            irreversible_quantization_subband_scales: native_quantization_scales(
+                self.irreversible_quantization_subband_scales,
+            ),
+            component_sampling: self.component_sampling.clone(),
+            tile_size: self.tile_size,
+            precinct_exponents: self.precinct_exponents.clone(),
+        }
+    }
+}
+
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
 pub struct JpegToHtj2kOptions {
-    /// Native HTJ2K encode options used after wavelet bands are produced.
-    pub encode_options: EncodeOptions,
+    /// HTJ2K encode options used after wavelet bands are produced.
+    pub encode_options: JpegToHtj2kEncodeOptions,
     /// Coefficient production path used for HTJ2K precomputed bands.
     pub coefficient_path: JpegToHtj2kCoefficientPath,
     /// Materialize the float IDCT-then-DWT oracle and report rounded
@@ -99,14 +215,14 @@ impl JpegToHtj2kOptions {
     }
 }
 
-fn transcode_encode_options(reversible: bool) -> EncodeOptions {
-    EncodeOptions {
+fn transcode_encode_options(reversible: bool) -> JpegToHtj2kEncodeOptions {
+    JpegToHtj2kEncodeOptions {
         num_decomposition_levels: 1,
         reversible,
         use_ht_block_coding: true,
         use_mct: false,
         validate_high_throughput_codestream: false,
-        ..EncodeOptions::default()
+        ..JpegToHtj2kEncodeOptions::default()
     }
 }
 
@@ -1727,7 +1843,7 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
     Ok(true)
 }
 
-fn htj2k97_codeblock_options(options: &EncodeOptions) -> Htj2k97CodeBlockOptions {
+fn htj2k97_codeblock_options(options: &JpegToHtj2kEncodeOptions) -> Htj2k97CodeBlockOptions {
     Htj2k97CodeBlockOptions {
         bit_depth: 8,
         guard_bits: options.guard_bits.max(2),
@@ -1735,6 +1851,671 @@ fn htj2k97_codeblock_options(options: &EncodeOptions) -> Htj2k97CodeBlockOptions
         code_block_height_exp: options.code_block_height_exp,
         irreversible_quantization_scale: options.irreversible_quantization_scale,
         irreversible_quantization_subband_scales: options.irreversible_quantization_subband_scales,
+    }
+}
+
+struct NativeEncodeStageAdapter<'a, A: J2kEncodeStageAccelerator + ?Sized> {
+    inner: &'a mut A,
+}
+
+impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageAccelerator
+    for NativeEncodeStageAdapter<'_, A>
+{
+    fn dispatch_report(&self) -> signinum_j2k_native::J2kEncodeDispatchReport {
+        native_dispatch_report(self.inner.dispatch_report())
+    }
+
+    fn encode_deinterleave(
+        &mut self,
+        job: signinum_j2k_native::J2kDeinterleaveToF32Job<'_>,
+    ) -> Result<Option<Vec<Vec<f32>>>, &'static str> {
+        self.inner.encode_deinterleave(J2kDeinterleaveToF32Job {
+            pixels: job.pixels,
+            num_pixels: job.num_pixels,
+            num_components: job.num_components,
+            bit_depth: job.bit_depth,
+            signed: job.signed,
+        })
+    }
+
+    fn encode_forward_rct(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardRctJob<'_>,
+    ) -> Result<bool, &'static str> {
+        self.inner.encode_forward_rct(J2kForwardRctJob {
+            plane0: job.plane0,
+            plane1: job.plane1,
+            plane2: job.plane2,
+        })
+    }
+
+    fn encode_forward_ict(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardIctJob<'_>,
+    ) -> Result<bool, &'static str> {
+        self.inner.encode_forward_ict(J2kForwardIctJob {
+            plane0: job.plane0,
+            plane1: job.plane1,
+            plane2: job.plane2,
+        })
+    }
+
+    fn encode_forward_dwt53(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardDwt53Job<'_>,
+    ) -> Result<Option<signinum_j2k_native::J2kForwardDwt53Output>, &'static str> {
+        self.inner
+            .encode_forward_dwt53(J2kForwardDwt53Job {
+                samples: job.samples,
+                width: job.width,
+                height: job.height,
+                num_levels: job.num_levels,
+            })
+            .map(|output| output.map(native_dwt53_output))
+    }
+
+    fn encode_forward_dwt97(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardDwt97Job<'_>,
+    ) -> Result<Option<signinum_j2k_native::J2kForwardDwt97Output>, &'static str> {
+        self.inner
+            .encode_forward_dwt97(J2kForwardDwt97Job {
+                samples: job.samples,
+                width: job.width,
+                height: job.height,
+                num_levels: job.num_levels,
+            })
+            .map(|output| output.map(native_dwt97_output))
+    }
+
+    fn encode_quantize_subband(
+        &mut self,
+        job: signinum_j2k_native::J2kQuantizeSubbandJob<'_>,
+    ) -> Result<Option<Vec<i32>>, &'static str> {
+        self.inner.encode_quantize_subband(J2kQuantizeSubbandJob {
+            coefficients: job.coefficients,
+            step_exponent: job.step_exponent,
+            step_mantissa: job.step_mantissa,
+            range_bits: job.range_bits,
+            reversible: job.reversible,
+        })
+    }
+
+    fn encode_tier1_code_block(
+        &mut self,
+        job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> Result<Option<signinum_j2k_native::EncodedJ2kCodeBlock>, &'static str> {
+        self.inner
+            .encode_tier1_code_block(public_tier1_job(job))
+            .map(|block| block.map(native_encoded_j2k))
+    }
+
+    fn encode_tier1_code_blocks(
+        &mut self,
+        jobs: &[signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<signinum_j2k_native::EncodedJ2kCodeBlock>>, &'static str> {
+        let public_jobs = jobs
+            .iter()
+            .copied()
+            .map(public_tier1_job)
+            .collect::<Vec<_>>();
+        self.inner
+            .encode_tier1_code_blocks(&public_jobs)
+            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_j2k).collect()))
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> Result<Option<signinum_j2k_native::EncodedHtJ2kCodeBlock>, &'static str> {
+        self.inner
+            .encode_ht_code_block(public_ht_job(job))
+            .map(|block| block.map(native_encoded_ht))
+    }
+
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> Result<Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str> {
+        let public_jobs = jobs.iter().copied().map(public_ht_job).collect::<Vec<_>>();
+        self.inner
+            .encode_ht_code_blocks(&public_jobs)
+            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_ht).collect()))
+    }
+
+    fn encode_ht_subband(
+        &mut self,
+        job: signinum_j2k_native::J2kHtSubbandEncodeJob<'_>,
+    ) -> Result<Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str> {
+        self.inner
+            .encode_ht_subband(J2kHtSubbandEncodeJob {
+                coefficients: job.coefficients,
+                width: job.width,
+                height: job.height,
+                step_exponent: job.step_exponent,
+                step_mantissa: job.step_mantissa,
+                range_bits: job.range_bits,
+                reversible: job.reversible,
+                code_block_width: job.code_block_width,
+                code_block_height: job.code_block_height,
+                total_bitplanes: job.total_bitplanes,
+            })
+            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_ht).collect()))
+    }
+
+    fn encode_htj2k_tile(
+        &mut self,
+        job: signinum_j2k_native::J2kHtj2kTileEncodeJob<'_>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        self.inner.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
+            pixels: job.pixels,
+            width: job.width,
+            height: job.height,
+            num_components: job.num_components,
+            bit_depth: job.bit_depth,
+            signed: job.signed,
+            num_decomposition_levels: job.num_decomposition_levels,
+            reversible: job.reversible,
+            use_mct: job.use_mct,
+            guard_bits: job.guard_bits,
+            code_block_width: job.code_block_width,
+            code_block_height: job.code_block_height,
+            progression_order: public_packet_progression(job.progression_order),
+            component_sampling: job.component_sampling,
+            quantization_steps: job.quantization_steps,
+        })
+    }
+
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.inner.prefer_parallel_cpu_code_block_fallback()
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        self.inner.prefer_parallel_cpu_tile_encode()
+    }
+
+    fn encode_packetization(
+        &mut self,
+        job: signinum_j2k_native::J2kPacketizationEncodeJob<'_>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        let packet_descriptors = job
+            .packet_descriptors
+            .iter()
+            .copied()
+            .map(public_packet_descriptor)
+            .collect::<Vec<_>>();
+        let resolutions = job
+            .resolutions
+            .iter()
+            .map(public_packet_resolution)
+            .collect::<Vec<_>>();
+        self.inner.encode_packetization(J2kPacketizationEncodeJob {
+            resolution_count: job.resolution_count,
+            num_layers: job.num_layers,
+            num_components: job.num_components,
+            code_block_count: job.code_block_count,
+            progression_order: public_packet_progression(job.progression_order),
+            packet_descriptors: &packet_descriptors,
+            resolutions: &resolutions,
+        })
+    }
+}
+
+fn native_quantization_scales(
+    scales: IrreversibleQuantizationSubbandScales,
+) -> signinum_j2k_native::IrreversibleQuantizationSubbandScales {
+    signinum_j2k_native::IrreversibleQuantizationSubbandScales {
+        low_low: scales.low_low,
+        high_low: scales.high_low,
+        low_high: scales.low_high,
+        high_high: scales.high_high,
+    }
+}
+
+fn native_progression_order(
+    progression: J2kProgressionOrder,
+) -> signinum_j2k_native::EncodeProgressionOrder {
+    match progression {
+        J2kProgressionOrder::Lrcp => signinum_j2k_native::EncodeProgressionOrder::Lrcp,
+        J2kProgressionOrder::Rlcp => signinum_j2k_native::EncodeProgressionOrder::Rlcp,
+        J2kProgressionOrder::Rpcl => signinum_j2k_native::EncodeProgressionOrder::Rpcl,
+        J2kProgressionOrder::Pcrl => signinum_j2k_native::EncodeProgressionOrder::Pcrl,
+        J2kProgressionOrder::Cprl => signinum_j2k_native::EncodeProgressionOrder::Cprl,
+    }
+}
+
+fn native_dispatch_report(
+    report: J2kEncodeDispatchReport,
+) -> signinum_j2k_native::J2kEncodeDispatchReport {
+    signinum_j2k_native::J2kEncodeDispatchReport {
+        deinterleave: report.deinterleave,
+        forward_rct: report.forward_rct,
+        forward_ict: report.forward_ict,
+        forward_dwt53: report.forward_dwt53,
+        forward_dwt97: report.forward_dwt97,
+        quantize_subband: report.quantize_subband,
+        tier1_code_block: report.tier1_code_block,
+        ht_code_block: report.ht_code_block,
+        packetization: report.packetization,
+    }
+}
+
+fn public_subband(subband: signinum_j2k_native::J2kSubBandType) -> J2kSubBandType {
+    match subband {
+        signinum_j2k_native::J2kSubBandType::LowLow => J2kSubBandType::LowLow,
+        signinum_j2k_native::J2kSubBandType::HighLow => J2kSubBandType::HighLow,
+        signinum_j2k_native::J2kSubBandType::LowHigh => J2kSubBandType::LowHigh,
+        signinum_j2k_native::J2kSubBandType::HighHigh => J2kSubBandType::HighHigh,
+    }
+}
+
+fn native_subband(subband: J2kSubBandType) -> signinum_j2k_native::J2kSubBandType {
+    match subband {
+        J2kSubBandType::LowLow => signinum_j2k_native::J2kSubBandType::LowLow,
+        J2kSubBandType::HighLow => signinum_j2k_native::J2kSubBandType::HighLow,
+        J2kSubBandType::LowHigh => signinum_j2k_native::J2kSubBandType::LowHigh,
+        J2kSubBandType::HighHigh => signinum_j2k_native::J2kSubBandType::HighHigh,
+    }
+}
+
+fn public_style(style: signinum_j2k_native::J2kCodeBlockStyle) -> J2kCodeBlockStyle {
+    J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
+        reset_context_probabilities: style.reset_context_probabilities,
+        termination_on_each_pass: style.termination_on_each_pass,
+        vertically_causal_context: style.vertically_causal_context,
+        segmentation_symbols: style.segmentation_symbols,
+    }
+}
+
+fn native_segment(segment: J2kCodeBlockSegment) -> signinum_j2k_native::J2kCodeBlockSegment {
+    signinum_j2k_native::J2kCodeBlockSegment {
+        data_offset: segment.data_offset,
+        data_length: segment.data_length,
+        start_coding_pass: segment.start_coding_pass,
+        end_coding_pass: segment.end_coding_pass,
+        use_arithmetic: segment.use_arithmetic,
+    }
+}
+
+fn native_encoded_j2k(block: EncodedJ2kCodeBlock) -> signinum_j2k_native::EncodedJ2kCodeBlock {
+    signinum_j2k_native::EncodedJ2kCodeBlock {
+        data: block.data,
+        segments: block.segments.into_iter().map(native_segment).collect(),
+        number_of_coding_passes: block.number_of_coding_passes,
+        missing_bit_planes: block.missing_bit_planes,
+    }
+}
+
+fn native_encoded_ht(block: EncodedHtJ2kCodeBlock) -> signinum_j2k_native::EncodedHtJ2kCodeBlock {
+    signinum_j2k_native::EncodedHtJ2kCodeBlock {
+        data: block.data,
+        cleanup_length: block.cleanup_length,
+        refinement_length: block.refinement_length,
+        num_coding_passes: block.num_coding_passes,
+        num_zero_bitplanes: block.num_zero_bitplanes,
+    }
+}
+
+fn public_tier1_job(
+    job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
+) -> J2kTier1CodeBlockEncodeJob<'_> {
+    J2kTier1CodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        sub_band_type: public_subband(job.sub_band_type),
+        total_bitplanes: job.total_bitplanes,
+        style: public_style(job.style),
+    }
+}
+
+fn public_ht_job(
+    job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
+) -> J2kHtCodeBlockEncodeJob<'_> {
+    J2kHtCodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        total_bitplanes: job.total_bitplanes,
+        target_coding_passes: job.target_coding_passes,
+    }
+}
+
+fn native_dwt53_output(
+    output: J2kForwardDwt53Output,
+) -> signinum_j2k_native::J2kForwardDwt53Output {
+    signinum_j2k_native::J2kForwardDwt53Output {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels: output
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt53Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn native_dwt97_output(
+    output: J2kForwardDwt97Output,
+) -> signinum_j2k_native::J2kForwardDwt97Output {
+    signinum_j2k_native::J2kForwardDwt97Output {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels: output
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt97Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn public_packet_descriptor(
+    descriptor: signinum_j2k_native::J2kPacketizationPacketDescriptor,
+) -> J2kPacketizationPacketDescriptor {
+    J2kPacketizationPacketDescriptor {
+        packet_index: descriptor.packet_index,
+        state_index: descriptor.state_index,
+        layer: descriptor.layer,
+        resolution: descriptor.resolution,
+        component: descriptor.component,
+        precinct: descriptor.precinct,
+    }
+}
+
+fn public_packet_resolution<'a>(
+    resolution: &signinum_j2k_native::J2kPacketizationResolution<'a>,
+) -> J2kPacketizationResolution<'a> {
+    J2kPacketizationResolution {
+        subbands: resolution
+            .subbands
+            .iter()
+            .map(|subband| J2kPacketizationSubband {
+                code_blocks: subband
+                    .code_blocks
+                    .iter()
+                    .copied()
+                    .map(public_packet_code_block)
+                    .collect(),
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            })
+            .collect(),
+    }
+}
+
+fn public_packet_code_block(
+    code_block: signinum_j2k_native::J2kPacketizationCodeBlock<'_>,
+) -> J2kPacketizationCodeBlock<'_> {
+    J2kPacketizationCodeBlock {
+        data: code_block.data,
+        ht_cleanup_length: code_block.ht_cleanup_length,
+        ht_refinement_length: code_block.ht_refinement_length,
+        num_coding_passes: code_block.num_coding_passes,
+        num_zero_bitplanes: code_block.num_zero_bitplanes,
+        previously_included: code_block.previously_included,
+        l_block: code_block.l_block,
+        block_coding_mode: public_packet_block_mode(code_block.block_coding_mode),
+    }
+}
+
+fn public_packet_block_mode(
+    mode: signinum_j2k_native::J2kPacketizationBlockCodingMode,
+) -> J2kPacketizationBlockCodingMode {
+    match mode {
+        signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic => {
+            J2kPacketizationBlockCodingMode::Classic
+        }
+        signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput => {
+            J2kPacketizationBlockCodingMode::HighThroughput
+        }
+    }
+}
+
+fn public_packet_progression(
+    progression: signinum_j2k_native::J2kPacketizationProgressionOrder,
+) -> J2kPacketizationProgressionOrder {
+    match progression {
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp => {
+            J2kPacketizationProgressionOrder::Lrcp
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp => {
+            J2kPacketizationProgressionOrder::Rlcp
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl => {
+            J2kPacketizationProgressionOrder::Rpcl
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl => {
+            J2kPacketizationProgressionOrder::Pcrl
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl => {
+            J2kPacketizationProgressionOrder::Cprl
+        }
+    }
+}
+
+fn native_precomputed53_image(
+    image: PrecomputedHtj2k53Image,
+) -> signinum_j2k_native::PrecomputedHtj2k53Image {
+    signinum_j2k_native::PrecomputedHtj2k53Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PrecomputedHtj2k53Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    dwt: native_dwt53_output(component.dwt),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_precomputed97_image(
+    image: PrecomputedHtj2k97Image,
+) -> signinum_j2k_native::PrecomputedHtj2k97Image {
+    signinum_j2k_native::PrecomputedHtj2k97Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PrecomputedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    dwt: native_dwt97_output(component.dwt),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_prequantized_image(
+    image: PrequantizedHtj2k97Image,
+) -> signinum_j2k_native::PrequantizedHtj2k97Image {
+    signinum_j2k_native::PrequantizedHtj2k97Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PrequantizedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    resolutions: component
+                        .resolutions
+                        .into_iter()
+                        .map(
+                            |resolution| signinum_j2k_native::PrequantizedHtj2k97Resolution {
+                                subbands: resolution
+                                    .subbands
+                                    .into_iter()
+                                    .map(|subband| {
+                                        signinum_j2k_native::PrequantizedHtj2k97Subband {
+                                    sub_band_type: native_subband(subband.sub_band_type),
+                                    num_cbs_x: subband.num_cbs_x,
+                                    num_cbs_y: subband.num_cbs_y,
+                                    total_bitplanes: subband.total_bitplanes,
+                                    code_blocks: subband
+                                        .code_blocks
+                                        .into_iter()
+                                        .map(|block| {
+                                            signinum_j2k_native::PrequantizedHtj2k97CodeBlock {
+                                                coefficients: block.coefficients,
+                                                width: block.width,
+                                                height: block.height,
+                                            }
+                                        })
+                                        .collect(),
+                                }
+                                    })
+                                    .collect(),
+                            },
+                        )
+                        .collect(),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_preencoded_image(
+    image: PreencodedHtj2k97Image,
+) -> signinum_j2k_native::PreencodedHtj2k97Image {
+    signinum_j2k_native::PreencodedHtj2k97Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PreencodedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    resolutions: component
+                        .resolutions
+                        .into_iter()
+                        .map(
+                            |resolution| signinum_j2k_native::PreencodedHtj2k97Resolution {
+                                subbands: resolution
+                                    .subbands
+                                    .into_iter()
+                                    .map(|subband| signinum_j2k_native::PreencodedHtj2k97Subband {
+                                        sub_band_type: native_subband(subband.sub_band_type),
+                                        num_cbs_x: subband.num_cbs_x,
+                                        num_cbs_y: subband.num_cbs_y,
+                                        total_bitplanes: subband.total_bitplanes,
+                                        code_blocks: subband
+                                            .code_blocks
+                                            .into_iter()
+                                            .map(|block| {
+                                                signinum_j2k_native::PreencodedHtj2k97CodeBlock {
+                                                    width: block.width,
+                                                    height: block.height,
+                                                    encoded: native_encoded_ht(block.encoded),
+                                                }
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect(),
+                            },
+                        )
+                        .collect(),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_compact_preencoded_image(
+    image: PreencodedHtj2k97CompactImage,
+) -> signinum_j2k_native::PreencodedHtj2k97CompactImage {
+    signinum_j2k_native::PreencodedHtj2k97CompactImage {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        payload: image.payload,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PreencodedHtj2k97CompactComponent {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    resolutions: component
+                        .resolutions
+                        .into_iter()
+                        .map(
+                            |resolution| signinum_j2k_native::PreencodedHtj2k97CompactResolution {
+                                subbands: resolution
+                                    .subbands
+                                    .into_iter()
+                                    .map(|subband| {
+                                        signinum_j2k_native::PreencodedHtj2k97CompactSubband {
+                                    sub_band_type: native_subband(subband.sub_band_type),
+                                    num_cbs_x: subband.num_cbs_x,
+                                    num_cbs_y: subband.num_cbs_y,
+                                    total_bitplanes: subband.total_bitplanes,
+                                    code_blocks: subband
+                                        .code_blocks
+                                        .into_iter()
+                                        .map(|block| {
+                                            signinum_j2k_native::PreencodedHtj2k97CompactCodeBlock {
+                                                width: block.width,
+                                                height: block.height,
+                                                payload_range: block.payload_range,
+                                                cleanup_length: block.cleanup_length,
+                                                refinement_length: block.refinement_length,
+                                                num_coding_passes: block.num_coding_passes,
+                                                num_zero_bitplanes: block.num_zero_bitplanes,
+                                            }
+                                        })
+                                        .collect(),
+                                }
+                                    })
+                                    .collect(),
+                            },
+                        )
+                        .collect(),
+                },
+            )
+            .collect(),
     }
 }
 
@@ -2067,6 +2848,7 @@ fn can_encode_float97_precomputed_tiles_batch(
         })
 }
 
+#[allow(clippy::too_many_lines)]
 fn encode_float97_precomputed_tiles_batch<E: J2kEncodeStageAccelerator>(
     prepared_tiles: Vec<Float97BatchTile>,
     options: &JpegToHtj2kOptions,
@@ -2125,17 +2907,27 @@ fn encode_float97_precomputed_tiles_batch<E: J2kEncodeStageAccelerator>(
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestreams = match encode_precomputed_htj2k_97_batch_with_accelerator(
-        &images,
-        &options.encode_options,
-        encode_accelerator,
-    ) {
-        Ok(codestreams) => codestreams,
-        Err(error) => {
-            return records
-                .into_iter()
-                .map(|record| (record.tile_index, Err(JpegToHtj2kError::Encode(error))))
-                .collect();
+    let native_images = images
+        .into_iter()
+        .map(native_precomputed97_image)
+        .collect::<Vec<_>>();
+    let codestreams = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter {
+            inner: encode_accelerator,
+        };
+        let native_encode_options = options.encode_options.to_native();
+        match encode_precomputed_htj2k_97_batch_with_accelerator(
+            &native_images,
+            &native_encode_options,
+            &mut native_encode_accelerator,
+        ) {
+            Ok(codestreams) => codestreams,
+            Err(error) => {
+                return records
+                    .into_iter()
+                    .map(|record| (record.tile_index, Err(JpegToHtj2kError::Encode(error))))
+                    .collect();
+            }
         }
     };
     let encode_dispatch_after = encode_accelerator.dispatch_report();
@@ -2257,12 +3049,19 @@ fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
         components,
     };
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestream = encode_precomputed_htj2k_53_with_accelerator(
-        &precomputed,
-        &options.encode_options,
-        encode_accelerator,
-    )
-    .map_err(JpegToHtj2kError::Encode)?;
+    let native_precomputed = native_precomputed53_image(precomputed);
+    let codestream = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter {
+            inner: encode_accelerator,
+        };
+        let native_encode_options = options.encode_options.to_native();
+        encode_precomputed_htj2k_53_with_accelerator(
+            &native_precomputed,
+            &native_encode_options,
+            &mut native_encode_accelerator,
+        )
+        .map_err(JpegToHtj2kError::Encode)?
+    };
     record_encode_dispatch_delta(
         &mut timings,
         encode_dispatch_before,
@@ -2337,95 +3136,103 @@ fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestream = if preencoded_compact_components.iter().any(Option::is_some) {
-        let components = preencoded_compact_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 compact preencoded batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let preencoded = PreencodedHtj2k97CompactImage {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            payload: preencoded_compact_payload,
-            components,
+    let codestream = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter {
+            inner: encode_accelerator,
         };
-        encode_preencoded_htj2k_97_compact_owned_with_accelerator(
-            preencoded,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else if preencoded_components.iter().any(Option::is_some) {
-        let components = preencoded_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 preencoded batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let preencoded = PreencodedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_preencoded_htj2k_97_owned_with_accelerator(
-            preencoded,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else if prequantized_components.iter().any(Option::is_some) {
-        let components = prequantized_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 code-block batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prequantized = PrequantizedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_prequantized_htj2k_97_with_accelerator(
-            &prequantized,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else {
-        let components = precomputed_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let precomputed = PrecomputedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_precomputed_htj2k_97_with_accelerator(
-            &precomputed,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
+        let native_encode_options = options.encode_options.to_native();
+        if preencoded_compact_components.iter().any(Option::is_some) {
+            let components = preencoded_compact_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 compact preencoded batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let preencoded = PreencodedHtj2k97CompactImage {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                payload: preencoded_compact_payload,
+                components,
+            };
+            encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+                native_compact_preencoded_image(preencoded),
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else if preencoded_components.iter().any(Option::is_some) {
+            let components = preencoded_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 preencoded batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let preencoded = PreencodedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            encode_preencoded_htj2k_97_owned_with_accelerator(
+                native_preencoded_image(preencoded),
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else if prequantized_components.iter().any(Option::is_some) {
+            let components = prequantized_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 code-block batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let prequantized = PrequantizedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            let native_prequantized = native_prequantized_image(prequantized);
+            encode_prequantized_htj2k_97_with_accelerator(
+                &native_prequantized,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else {
+            let components = precomputed_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let precomputed = PrecomputedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            let native_precomputed = native_precomputed97_image(precomputed);
+            encode_precomputed_htj2k_97_with_accelerator(
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        }
     };
     record_encode_dispatch_delta(
         &mut timings,
@@ -2530,6 +3337,7 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
+    let native_encode_options = options.encode_options.to_native();
     let codestream = match component_batch.precomputed_components {
         PrecomputedComponentBatch::Dwt53(components) => {
             let precomputed = PrecomputedHtj2k53Image {
@@ -2539,10 +3347,14 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
                 signed: false,
                 components,
             };
+            let native_precomputed = native_precomputed53_image(precomputed);
+            let mut native_encode_accelerator = NativeEncodeStageAdapter {
+                inner: encode_accelerator,
+            };
             encode_precomputed_htj2k_53_with_accelerator(
-                &precomputed,
-                &options.encode_options,
-                encode_accelerator,
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
             )
             .map_err(JpegToHtj2kError::Encode)?
         }
@@ -2554,10 +3366,14 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
                 signed: false,
                 components,
             };
+            let native_precomputed = native_precomputed97_image(precomputed);
+            let mut native_encode_accelerator = NativeEncodeStageAdapter {
+                inner: encode_accelerator,
+            };
             encode_precomputed_htj2k_97_with_accelerator(
-                &precomputed,
-                &options.encode_options,
-                encode_accelerator,
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
             )
             .map_err(JpegToHtj2kError::Encode)?
         }
@@ -4087,7 +4903,6 @@ mod tests {
         PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
         PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
     };
-    use signinum_j2k_native::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
     use signinum_jpeg::transcode::JpegDctCodingMode;
     use signinum_jpeg::ColorSpace;
 

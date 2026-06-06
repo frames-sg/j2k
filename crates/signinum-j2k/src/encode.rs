@@ -4,11 +4,22 @@ use alloc::vec::Vec;
 
 use signinum_core::{BackendKind, Unsupported};
 use signinum_j2k_native::{
-    DecodeSettings, EncodeOptions, EncodeProgressionOrder, Image, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator,
+    DecodeSettings, EncodeOptions, EncodeProgressionOrder as NativeEncodeProgressionOrder, Image,
 };
 
-use crate::J2kError;
+use crate::{
+    adapter::encode_stage::{
+        encoded_ht_to_native, encoded_j2k_to_native, style_from_native, subband_from_native,
+        J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+        J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Output,
+        J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob,
+        J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
+        J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+        J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+        J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
+    },
+    J2kError,
+};
 
 /// Backend preference for JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -745,6 +756,7 @@ fn encode_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossless_options(samples, options);
+    let mut native_accelerator = NativeEncodeStageAdapter { inner: accelerator };
     signinum_j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -753,7 +765,7 @@ fn encode_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        accelerator,
+        &mut native_accelerator,
     )
     .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossless encode failed: {err}")))
 }
@@ -788,6 +800,7 @@ fn encode_lossy_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossy_options(samples, options, quantization_scale)?;
+    let mut native_accelerator = NativeEncodeStageAdapter { inner: accelerator };
     signinum_j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -796,9 +809,391 @@ fn encode_lossy_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        accelerator,
+        &mut native_accelerator,
     )
     .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossy encode failed: {err}")))
+}
+
+struct NativeEncodeStageAdapter<'a, A: J2kEncodeStageAccelerator + ?Sized> {
+    inner: &'a mut A,
+}
+
+impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageAccelerator
+    for NativeEncodeStageAdapter<'_, A>
+{
+    fn dispatch_report(&self) -> signinum_j2k_native::J2kEncodeDispatchReport {
+        self.inner.dispatch_report().to_native()
+    }
+
+    fn encode_deinterleave(
+        &mut self,
+        job: signinum_j2k_native::J2kDeinterleaveToF32Job<'_>,
+    ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+        self.inner.encode_deinterleave(J2kDeinterleaveToF32Job {
+            pixels: job.pixels,
+            num_pixels: job.num_pixels,
+            num_components: job.num_components,
+            bit_depth: job.bit_depth,
+            signed: job.signed,
+        })
+    }
+
+    fn encode_forward_rct(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardRctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        self.inner.encode_forward_rct(J2kForwardRctJob {
+            plane0: job.plane0,
+            plane1: job.plane1,
+            plane2: job.plane2,
+        })
+    }
+
+    fn encode_forward_ict(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardIctJob<'_>,
+    ) -> core::result::Result<bool, &'static str> {
+        self.inner.encode_forward_ict(J2kForwardIctJob {
+            plane0: job.plane0,
+            plane1: job.plane1,
+            plane2: job.plane2,
+        })
+    }
+
+    fn encode_forward_dwt53(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<signinum_j2k_native::J2kForwardDwt53Output>, &'static str>
+    {
+        self.inner
+            .encode_forward_dwt53(J2kForwardDwt53Job {
+                samples: job.samples,
+                width: job.width,
+                height: job.height,
+                num_levels: job.num_levels,
+            })
+            .map(|output| output.map(dwt53_output_to_native))
+    }
+
+    fn encode_forward_dwt97(
+        &mut self,
+        job: signinum_j2k_native::J2kForwardDwt97Job<'_>,
+    ) -> core::result::Result<Option<signinum_j2k_native::J2kForwardDwt97Output>, &'static str>
+    {
+        self.inner
+            .encode_forward_dwt97(J2kForwardDwt97Job {
+                samples: job.samples,
+                width: job.width,
+                height: job.height,
+                num_levels: job.num_levels,
+            })
+            .map(|output| output.map(dwt97_output_to_native))
+    }
+
+    fn encode_quantize_subband(
+        &mut self,
+        job: signinum_j2k_native::J2kQuantizeSubbandJob<'_>,
+    ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+        self.inner.encode_quantize_subband(J2kQuantizeSubbandJob {
+            coefficients: job.coefficients,
+            step_exponent: job.step_exponent,
+            step_mantissa: job.step_mantissa,
+            range_bits: job.range_bits,
+            reversible: job.reversible,
+        })
+    }
+
+    fn encode_tier1_code_block(
+        &mut self,
+        job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k_native::EncodedJ2kCodeBlock>, &'static str> {
+        self.inner
+            .encode_tier1_code_block(tier1_job_from_native(job))
+            .map(|block| block.map(encoded_j2k_to_native))
+    }
+
+    fn encode_tier1_code_blocks(
+        &mut self,
+        jobs: &[signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k_native::EncodedJ2kCodeBlock>>, &'static str>
+    {
+        let public_jobs = jobs
+            .iter()
+            .copied()
+            .map(tier1_job_from_native)
+            .collect::<Vec<_>>();
+        self.inner
+            .encode_tier1_code_blocks(&public_jobs)
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_j2k_to_native).collect())
+            })
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k_native::EncodedHtJ2kCodeBlock>, &'static str>
+    {
+        self.inner
+            .encode_ht_code_block(ht_job_from_native(job))
+            .map(|block| block.map(encoded_ht_to_native))
+    }
+
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str>
+    {
+        let public_jobs = jobs
+            .iter()
+            .copied()
+            .map(ht_job_from_native)
+            .collect::<Vec<_>>();
+        self.inner
+            .encode_ht_code_blocks(&public_jobs)
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_ht_to_native).collect())
+            })
+    }
+
+    fn encode_ht_subband(
+        &mut self,
+        job: signinum_j2k_native::J2kHtSubbandEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str>
+    {
+        self.inner
+            .encode_ht_subband(J2kHtSubbandEncodeJob {
+                coefficients: job.coefficients,
+                width: job.width,
+                height: job.height,
+                step_exponent: job.step_exponent,
+                step_mantissa: job.step_mantissa,
+                range_bits: job.range_bits,
+                reversible: job.reversible,
+                code_block_width: job.code_block_width,
+                code_block_height: job.code_block_height,
+                total_bitplanes: job.total_bitplanes,
+            })
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_ht_to_native).collect())
+            })
+    }
+
+    fn encode_htj2k_tile(
+        &mut self,
+        job: signinum_j2k_native::J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        self.inner.encode_htj2k_tile(J2kHtj2kTileEncodeJob {
+            pixels: job.pixels,
+            width: job.width,
+            height: job.height,
+            num_components: job.num_components,
+            bit_depth: job.bit_depth,
+            signed: job.signed,
+            num_decomposition_levels: job.num_decomposition_levels,
+            reversible: job.reversible,
+            use_mct: job.use_mct,
+            guard_bits: job.guard_bits,
+            code_block_width: job.code_block_width,
+            code_block_height: job.code_block_height,
+            progression_order: packet_progression_from_native(job.progression_order),
+            component_sampling: job.component_sampling,
+            quantization_steps: job.quantization_steps,
+        })
+    }
+
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.inner.prefer_parallel_cpu_code_block_fallback()
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        self.inner.prefer_parallel_cpu_tile_encode()
+    }
+
+    fn encode_packetization(
+        &mut self,
+        job: signinum_j2k_native::J2kPacketizationEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        let packet_descriptors = job
+            .packet_descriptors
+            .iter()
+            .copied()
+            .map(packet_descriptor_from_native)
+            .collect::<Vec<_>>();
+        let resolutions = job
+            .resolutions
+            .iter()
+            .map(packet_resolution_from_native)
+            .collect::<Vec<_>>();
+        self.inner.encode_packetization(J2kPacketizationEncodeJob {
+            resolution_count: job.resolution_count,
+            num_layers: job.num_layers,
+            num_components: job.num_components,
+            code_block_count: job.code_block_count,
+            progression_order: packet_progression_from_native(job.progression_order),
+            packet_descriptors: &packet_descriptors,
+            resolutions: &resolutions,
+        })
+    }
+}
+
+fn tier1_job_from_native(
+    job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
+) -> J2kTier1CodeBlockEncodeJob<'_> {
+    J2kTier1CodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        sub_band_type: subband_from_native(job.sub_band_type),
+        total_bitplanes: job.total_bitplanes,
+        style: style_from_native(job.style),
+    }
+}
+
+fn ht_job_from_native(
+    job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
+) -> J2kHtCodeBlockEncodeJob<'_> {
+    J2kHtCodeBlockEncodeJob {
+        coefficients: job.coefficients,
+        width: job.width,
+        height: job.height,
+        total_bitplanes: job.total_bitplanes,
+        target_coding_passes: job.target_coding_passes,
+    }
+}
+
+fn dwt53_output_to_native(
+    output: J2kForwardDwt53Output,
+) -> signinum_j2k_native::J2kForwardDwt53Output {
+    signinum_j2k_native::J2kForwardDwt53Output {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels: output
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt53Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn dwt97_output_to_native(
+    output: J2kForwardDwt97Output,
+) -> signinum_j2k_native::J2kForwardDwt97Output {
+    signinum_j2k_native::J2kForwardDwt97Output {
+        ll: output.ll,
+        ll_width: output.ll_width,
+        ll_height: output.ll_height,
+        levels: output
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt97Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn packet_descriptor_from_native(
+    descriptor: signinum_j2k_native::J2kPacketizationPacketDescriptor,
+) -> J2kPacketizationPacketDescriptor {
+    J2kPacketizationPacketDescriptor {
+        packet_index: descriptor.packet_index,
+        state_index: descriptor.state_index,
+        layer: descriptor.layer,
+        resolution: descriptor.resolution,
+        component: descriptor.component,
+        precinct: descriptor.precinct,
+    }
+}
+
+fn packet_resolution_from_native<'a>(
+    resolution: &signinum_j2k_native::J2kPacketizationResolution<'a>,
+) -> J2kPacketizationResolution<'a> {
+    J2kPacketizationResolution {
+        subbands: resolution
+            .subbands
+            .iter()
+            .map(|subband| J2kPacketizationSubband {
+                code_blocks: subband
+                    .code_blocks
+                    .iter()
+                    .copied()
+                    .map(packet_code_block_from_native)
+                    .collect(),
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            })
+            .collect(),
+    }
+}
+
+fn packet_code_block_from_native(
+    code_block: signinum_j2k_native::J2kPacketizationCodeBlock<'_>,
+) -> J2kPacketizationCodeBlock<'_> {
+    J2kPacketizationCodeBlock {
+        data: code_block.data,
+        ht_cleanup_length: code_block.ht_cleanup_length,
+        ht_refinement_length: code_block.ht_refinement_length,
+        num_coding_passes: code_block.num_coding_passes,
+        num_zero_bitplanes: code_block.num_zero_bitplanes,
+        previously_included: code_block.previously_included,
+        l_block: code_block.l_block,
+        block_coding_mode: packet_block_mode_from_native(code_block.block_coding_mode),
+    }
+}
+
+const fn packet_block_mode_from_native(
+    mode: signinum_j2k_native::J2kPacketizationBlockCodingMode,
+) -> J2kPacketizationBlockCodingMode {
+    match mode {
+        signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic => {
+            J2kPacketizationBlockCodingMode::Classic
+        }
+        signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput => {
+            J2kPacketizationBlockCodingMode::HighThroughput
+        }
+    }
+}
+
+const fn packet_progression_from_native(
+    progression: signinum_j2k_native::J2kPacketizationProgressionOrder,
+) -> J2kPacketizationProgressionOrder {
+    match progression {
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp => {
+            J2kPacketizationProgressionOrder::Lrcp
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp => {
+            J2kPacketizationProgressionOrder::Rlcp
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl => {
+            J2kPacketizationProgressionOrder::Rpcl
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl => {
+            J2kPacketizationProgressionOrder::Pcrl
+        }
+        signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl => {
+            J2kPacketizationProgressionOrder::Cprl
+        }
+    }
 }
 
 fn encode_lossy_targeted(
@@ -1014,13 +1409,13 @@ fn lossy_quality_layer_byte_targets(
     Ok(targets)
 }
 
-fn native_progression_order(progression: J2kProgressionOrder) -> EncodeProgressionOrder {
+fn native_progression_order(progression: J2kProgressionOrder) -> NativeEncodeProgressionOrder {
     match progression {
-        J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
-        J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
-        J2kProgressionOrder::Rpcl => EncodeProgressionOrder::Rpcl,
-        J2kProgressionOrder::Pcrl => EncodeProgressionOrder::Pcrl,
-        J2kProgressionOrder::Cprl => EncodeProgressionOrder::Cprl,
+        J2kProgressionOrder::Lrcp => NativeEncodeProgressionOrder::Lrcp,
+        J2kProgressionOrder::Rlcp => NativeEncodeProgressionOrder::Rlcp,
+        J2kProgressionOrder::Rpcl => NativeEncodeProgressionOrder::Rpcl,
+        J2kProgressionOrder::Pcrl => NativeEncodeProgressionOrder::Pcrl,
+        J2kProgressionOrder::Cprl => NativeEncodeProgressionOrder::Cprl,
     }
 }
 

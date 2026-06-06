@@ -874,7 +874,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "flate2",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-cli"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-j2k",
  "signinum-jpeg",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-core"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-cuda-runtime"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "libloading",
  "thiserror",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "signinum-core",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-metal"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "cc",
  "libc",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "fearless_simd",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "jpeg-decoder",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-cuda"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "jpeg-encoder",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg-metal"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "jpeg-decoder",
@@ -1026,15 +1026,15 @@ dependencies = [
 
 [[package]]
 name = "signinum-profile"
-version = "0.4.4"
+version = "0.5.0"
 
 [[package]]
 name = "signinum-test-support"
-version = "0.4.4"
+version = "0.5.0"
 
 [[package]]
 name = "signinum-tilecodec"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "flate2",
@@ -1046,18 +1046,19 @@ dependencies = [
 
 [[package]]
 name = "signinum-transcode"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "proptest",
  "rayon",
+ "signinum-j2k",
  "signinum-j2k-native",
  "signinum-jpeg",
 ]
 
 [[package]]
 name = "signinum-transcode-cuda"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-cuda-runtime",
  "signinum-j2k-native",
@@ -1067,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-transcode-metal"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "criterion",
  "metal",

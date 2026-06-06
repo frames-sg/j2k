@@ -451,6 +451,11 @@ jobs, scalar decode helpers, encode-stage jobs, `J2kEncodeDispatchReport`,
 `HtUvlcTableEntry`, `ht_uvlc_encode_table`, and precomputed/prequantized
 HTJ2K image/component/resolution/subband/codeblock types.
 
+These native implementation types must not be re-exported by `signinum`,
+`signinum-j2k`, `signinum-transcode`, or adapter public APIs. Public adapter
+contracts that need J2K encode-stage types live under `signinum-j2k::adapter`
+as owned wrapper types, with private conversion at the native boundary.
+
 ### `signinum-cuda-runtime`
 
 Tier: Adapter Integration API.

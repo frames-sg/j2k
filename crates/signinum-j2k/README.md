@@ -9,7 +9,7 @@ Install:
 cargo add signinum-j2k
 ```
 
-The stable `0.4.x` surface covers borrowed inspect/parse, compressed
+The stable `0.5.x` surface covers borrowed inspect/parse, compressed
 passthrough candidates, full-frame decode, ROI decode, reduced-resolution
 decode, combined ROI+reduced-resolution decode, row-bounded decode, tile-batch
 decode, and lossless JPEG 2000 / HTJ2K encode through the shared

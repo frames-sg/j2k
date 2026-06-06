@@ -162,7 +162,7 @@ predicates for broad policy decisions and preserve detailed errors for logging.
 
 `signinum-j2k-cuda` exposes `encode_j2k_lossless_with_cuda` for on-device
 HTJ2K lossless encode. The function targets a codestream byte-identical to
-`signinum_j2k_native::encode_htj2k` (the native CPU lossless path).
+the public `signinum-j2k` lossless HTJ2K CPU encode path.
 
 **Supported inputs:** reversible 5/3 DWT, HT cleanup-pass-only, single tile /
 single quality layer / single precinct, 1-component (grayscale), 3-component

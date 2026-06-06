@@ -20,12 +20,13 @@ pub use htj2k97_codeblock_oracle::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, prequantized_component_from_dwt97,
     quantize_codeblock_subband,
 };
-pub use signinum_j2k_native::EncodeProgressionOrder;
+pub use signinum_j2k::J2kProgressionOrder as EncodeProgressionOrder;
 
 pub use jpeg_to_htj2k::{
     jpeg_to_htj2k, jpeg_to_htj2k_batch, BatchTranscodeReport, EncodedTranscode,
-    EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
-    JpegToHtj2kOptions, JpegToHtj2kTranscoder, TranscodeComponentReport, TranscodeReport,
-    TranscodeTimingReport, TranscodeValidationClassification, TranscodeValidationMetrics,
+    EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
+    JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
+    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
+    TranscodeValidationClassification, TranscodeValidationMetrics,
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };

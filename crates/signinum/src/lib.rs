@@ -341,7 +341,123 @@ pub mod j2k {
                 job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
             ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
                 self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
-                signinum_j2k_native::encode_j2k_packetization_scalar(job).map(Some)
+                encode_packetization_scalar(job).map(Some)
+            }
+        }
+
+        fn encode_packetization_scalar(
+            job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
+        ) -> core::result::Result<Vec<u8>, &'static str> {
+            let packet_descriptors = job
+                .packet_descriptors
+                .iter()
+                .copied()
+                .map(native_packet_descriptor)
+                .collect::<Vec<_>>();
+            let resolutions = job
+                .resolutions
+                .iter()
+                .map(native_packet_resolution)
+                .collect::<Vec<_>>();
+            let native_job = signinum_j2k_native::J2kPacketizationEncodeJob {
+                resolution_count: job.resolution_count,
+                num_layers: job.num_layers,
+                num_components: job.num_components,
+                code_block_count: job.code_block_count,
+                progression_order: native_packet_progression(job.progression_order),
+                packet_descriptors: &packet_descriptors,
+                resolutions: &resolutions,
+            };
+            signinum_j2k_native::encode_j2k_packetization_scalar(native_job)
+        }
+
+        fn native_packet_descriptor(
+            descriptor: signinum_j2k::J2kPacketizationPacketDescriptor,
+        ) -> signinum_j2k_native::J2kPacketizationPacketDescriptor {
+            signinum_j2k_native::J2kPacketizationPacketDescriptor {
+                packet_index: descriptor.packet_index,
+                state_index: descriptor.state_index,
+                layer: descriptor.layer,
+                resolution: descriptor.resolution,
+                component: descriptor.component,
+                precinct: descriptor.precinct,
+            }
+        }
+
+        fn native_packet_resolution<'a>(
+            resolution: &signinum_j2k::J2kPacketizationResolution<'a>,
+        ) -> signinum_j2k_native::J2kPacketizationResolution<'a> {
+            signinum_j2k_native::J2kPacketizationResolution {
+                subbands: resolution
+                    .subbands
+                    .iter()
+                    .map(native_packet_subband)
+                    .collect(),
+            }
+        }
+
+        fn native_packet_subband<'a>(
+            subband: &signinum_j2k::J2kPacketizationSubband<'a>,
+        ) -> signinum_j2k_native::J2kPacketizationSubband<'a> {
+            signinum_j2k_native::J2kPacketizationSubband {
+                code_blocks: subband
+                    .code_blocks
+                    .iter()
+                    .copied()
+                    .map(native_packet_code_block)
+                    .collect(),
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            }
+        }
+
+        fn native_packet_code_block(
+            code_block: signinum_j2k::J2kPacketizationCodeBlock<'_>,
+        ) -> signinum_j2k_native::J2kPacketizationCodeBlock<'_> {
+            signinum_j2k_native::J2kPacketizationCodeBlock {
+                data: code_block.data,
+                ht_cleanup_length: code_block.ht_cleanup_length,
+                ht_refinement_length: code_block.ht_refinement_length,
+                num_coding_passes: code_block.num_coding_passes,
+                num_zero_bitplanes: code_block.num_zero_bitplanes,
+                previously_included: code_block.previously_included,
+                l_block: code_block.l_block,
+                block_coding_mode: native_packet_block_coding_mode(code_block.block_coding_mode),
+            }
+        }
+
+        fn native_packet_block_coding_mode(
+            mode: signinum_j2k::J2kPacketizationBlockCodingMode,
+        ) -> signinum_j2k_native::J2kPacketizationBlockCodingMode {
+            match mode {
+                signinum_j2k::J2kPacketizationBlockCodingMode::Classic => {
+                    signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic
+                }
+                signinum_j2k::J2kPacketizationBlockCodingMode::HighThroughput => {
+                    signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput
+                }
+            }
+        }
+
+        fn native_packet_progression(
+            progression: signinum_j2k::J2kPacketizationProgressionOrder,
+        ) -> signinum_j2k_native::J2kPacketizationProgressionOrder {
+            match progression {
+                signinum_j2k::J2kPacketizationProgressionOrder::Lrcp => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Rlcp => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Rpcl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Pcrl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Cprl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl
+                }
             }
         }
 

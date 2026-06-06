@@ -11,7 +11,7 @@ use crate::{
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
-    J2kError,
+    CpuDecodeParallelism, J2kError,
 };
 use alloc::vec::Vec;
 use core::convert::Infallible;
@@ -133,17 +133,15 @@ impl<'a> J2kDecoder<'a> {
         &self.info
     }
 
-    /// Return the native CPU decode parallelism policy for this decoder.
-    pub fn cpu_decode_parallelism(&self) -> signinum_j2k_native::CpuDecodeParallelism {
-        self.native_context.cpu_decode_parallelism()
+    /// Return the CPU decode parallelism policy for this decoder.
+    pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {
+        CpuDecodeParallelism::from_native(self.native_context.cpu_decode_parallelism())
     }
 
-    /// Set the native CPU decode parallelism policy for this decoder.
-    pub fn set_cpu_decode_parallelism(
-        &mut self,
-        parallelism: signinum_j2k_native::CpuDecodeParallelism,
-    ) {
-        self.native_context.set_cpu_decode_parallelism(parallelism);
+    /// Set the CPU decode parallelism policy for this decoder.
+    pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
+        self.native_context
+            .set_cpu_decode_parallelism(parallelism.to_native());
     }
 
     /// Original compressed bytes backing this decoder.
@@ -645,8 +643,6 @@ fn should_retry_with_backend(error: &J2kError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use signinum_j2k_native::CpuDecodeParallelism;
-
     #[test]
     fn scaled_decode_native_context_preserves_configured_parallelism() {
         let mut decoder = J2kDecoder {
@@ -671,7 +667,7 @@ mod tests {
 
         assert_eq!(
             native_context.cpu_decode_parallelism(),
-            CpuDecodeParallelism::Serial
+            CpuDecodeParallelism::Serial.to_native()
         );
     }
 }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_j2k_cuda::{CudaEncodeStageAccelerator, CudaEncodeStageTimings};
-use signinum_j2k_native::{
+use signinum_j2k::{
     J2kEncodeStageAccelerator, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder,
 };
+use signinum_j2k_cuda::{CudaEncodeStageAccelerator, CudaEncodeStageTimings};
 
 #[cfg(feature = "cuda-runtime")]
 use signinum_core::{CodecError, PixelFormat};

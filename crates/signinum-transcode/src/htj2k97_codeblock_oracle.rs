@@ -13,10 +13,11 @@
 
 use crate::accelerator::Htj2k97CodeBlockOptions;
 use crate::dct97_2d::Dwt97TwoDimensional;
-use signinum_j2k_native::{
-    irreversible_quantization_step_for_subband, J2kSubBandType, PrequantizedHtj2k97CodeBlock,
-    PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+use signinum_j2k::{
+    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
+use signinum_j2k_native::irreversible_quantization_step_for_subband;
 
 /// Quantize one level of float 9/7 bands into a prequantized HTJ2K component.
 ///
@@ -180,10 +181,30 @@ fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType)
         options.bit_depth,
         options.guard_bits,
         options.irreversible_quantization_scale,
-        options.irreversible_quantization_subband_scales,
-        sub_band_type,
+        native_quantization_scales(options.irreversible_quantization_subband_scales),
+        native_subband(sub_band_type),
     );
     (step.exponent, step.mantissa)
+}
+
+fn native_quantization_scales(
+    scales: signinum_j2k::IrreversibleQuantizationSubbandScales,
+) -> signinum_j2k_native::IrreversibleQuantizationSubbandScales {
+    signinum_j2k_native::IrreversibleQuantizationSubbandScales {
+        low_low: scales.low_low,
+        high_low: scales.high_low,
+        low_high: scales.low_high,
+        high_high: scales.high_high,
+    }
+}
+
+fn native_subband(subband: J2kSubBandType) -> signinum_j2k_native::J2kSubBandType {
+    match subband {
+        J2kSubBandType::LowLow => signinum_j2k_native::J2kSubBandType::LowLow,
+        J2kSubBandType::HighLow => signinum_j2k_native::J2kSubBandType::HighLow,
+        J2kSubBandType::LowHigh => signinum_j2k_native::J2kSubBandType::LowHigh,
+        J2kSubBandType::HighHigh => signinum_j2k_native::J2kSubBandType::HighHigh,
+    }
 }
 
 fn pow2i_f64(exp: i32) -> f64 {
@@ -199,10 +220,11 @@ fn htj2k97_code_block_dim(exp_minus_two: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use signinum_j2k::{IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Image};
     use signinum_j2k_native::{
         encode_precomputed_htj2k_97, encode_prequantized_htj2k_97, EncodeOptions,
         J2kForwardDwt97Level, J2kForwardDwt97Output, PrecomputedHtj2k97Component,
-        PrecomputedHtj2k97Image, PrequantizedHtj2k97Image,
+        PrecomputedHtj2k97Image,
     };
 
     // Boundary-free coefficients on a 0.25 grid: exact in both f32 and f64, and
@@ -284,7 +306,7 @@ mod tests {
             code_block_height_exp: 2,
             irreversible_quantization_scale: 1.0,
             irreversible_quantization_subband_scales:
-                signinum_j2k_native::IrreversibleQuantizationSubbandScales::default(),
+                IrreversibleQuantizationSubbandScales::default(),
         };
         let component = prequantized_component_from_dwt97(&dwt, codeblock_options, 1, 1);
         let prequantized_image = PrequantizedHtj2k97Image {
@@ -297,7 +319,8 @@ mod tests {
 
         let expected = encode_precomputed_htj2k_97(&precomputed_image, &options)
             .expect("native precomputed 9/7 encode");
-        let actual = encode_prequantized_htj2k_97(&prequantized_image, &options)
+        let native_prequantized_image = native_prequantized_image(prequantized_image);
+        let actual = encode_prequantized_htj2k_97(&native_prequantized_image, &options)
             .expect("oracle prequantized 9/7 encode");
 
         assert_eq!(
@@ -315,7 +338,7 @@ mod tests {
             code_block_height_exp: 2,
             irreversible_quantization_scale: 1.9,
             irreversible_quantization_subband_scales:
-                signinum_j2k_native::IrreversibleQuantizationSubbandScales::default(),
+                IrreversibleQuantizationSubbandScales::default(),
         };
         let high_low_delta = htj2k97_subband_delta(options, J2kSubBandType::HighLow);
         let high_high_delta = htj2k97_subband_delta(options, J2kSubBandType::HighHigh);
@@ -333,5 +356,61 @@ mod tests {
             htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh),
             default_hh_bitplanes
         );
+    }
+
+    fn native_prequantized_image(
+        image: PrequantizedHtj2k97Image,
+    ) -> signinum_j2k_native::PrequantizedHtj2k97Image {
+        signinum_j2k_native::PrequantizedHtj2k97Image {
+            width: image.width,
+            height: image.height,
+            bit_depth: image.bit_depth,
+            signed: image.signed,
+            components: image
+                .components
+                .into_iter()
+                .map(
+                    |component| signinum_j2k_native::PrequantizedHtj2k97Component {
+                        x_rsiz: component.x_rsiz,
+                        y_rsiz: component.y_rsiz,
+                        resolutions: component
+                            .resolutions
+                            .into_iter()
+                            .map(
+                                |resolution| {
+                                    signinum_j2k_native::PrequantizedHtj2k97Resolution {
+                                        subbands: resolution
+                                            .subbands
+                                            .into_iter()
+                                            .map(|subband| {
+                                                signinum_j2k_native::PrequantizedHtj2k97Subband {
+                                                    sub_band_type: native_subband(
+                                                        subband.sub_band_type,
+                                                    ),
+                                                    num_cbs_x: subband.num_cbs_x,
+                                                    num_cbs_y: subband.num_cbs_y,
+                                                    total_bitplanes: subband.total_bitplanes,
+                                                    code_blocks: subband
+                                                        .code_blocks
+                                                        .into_iter()
+                                                        .map(|block| {
+                                                            signinum_j2k_native::PrequantizedHtj2k97CodeBlock {
+                                                                coefficients: block.coefficients,
+                                                                width: block.width,
+                                                                height: block.height,
+                                                            }
+                                                        })
+                                                        .collect(),
+                                                }
+                                            })
+                                            .collect(),
+                                    }
+                                },
+                            )
+                            .collect(),
+                    },
+                )
+                .collect(),
+        }
     }
 }

@@ -63,7 +63,7 @@ Most application code should start with the facade:
 
 ```toml
 [dependencies]
-signinum = "0.4.4"
+signinum = "0.5.0"
 ```
 
 The facade exposes:
@@ -296,6 +296,7 @@ foundation -> codecs / codec engines -> device adapters -> facade / CLI
 | Runtime helper | `signinum-cuda-runtime` | CUDA Driver API allocation, copy, kernel, and nvJPEG loading used by CUDA adapters |
 | Facade and CLI | `signinum`, `signinum-cli` | One import surface for application code and `signinum inspect <file>` |
 | Reference tooling | `signinum-j2k-compare` | OpenJPEG/Grok comparison helpers for tests and benches; not a runtime dependency |
+| Non-API tooling | `signinum-test-support`, `xtask` | Unpublished generators and repository automation |
 
 The full system map, dependency rules, and current adapter routing policy live
 in [docs/architecture.md](docs/architecture.md).

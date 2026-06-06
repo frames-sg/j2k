@@ -9,13 +9,14 @@
 use crate::dct53_2d::Dwt53TwoDimensional;
 use crate::dct97_2d::Dwt97TwoDimensional;
 use rayon::prelude::*;
-pub use signinum_j2k_native::{
-    IrreversibleQuantizationSubbandScales, J2kSubBandType, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
-    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
-    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+pub use signinum_j2k::{
+    EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kSubBandType,
+    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use signinum_jpeg::transcode::idct_islow_block;
 

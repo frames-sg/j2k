@@ -4,7 +4,7 @@
 
 use core::fmt;
 
-use signinum_j2k_native::{
+use signinum_j2k::{
     J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
     PrecomputedHtj2k97Image,

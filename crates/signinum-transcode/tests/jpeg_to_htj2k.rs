@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_j2k_native::{
-    DecodeSettings, EncodedHtJ2kCodeBlock, Image, J2kEncodeStageAccelerator,
+use signinum_j2k::{
+    EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kEncodeStageAccelerator,
     J2kHtCodeBlockEncodeJob,
 };
+use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -146,7 +147,7 @@ fn option_constructors_select_consistent_default_codec_modes() {
         lossy
             .encode_options
             .irreversible_quantization_subband_scales,
-        signinum_j2k_native::IrreversibleQuantizationSubbandScales::default()
+        IrreversibleQuantizationSubbandScales::default()
     );
 }
 

@@ -1,6 +1,6 @@
 # Support Matrix
 
-This matrix describes what is stable enough for broad use on the `0.4.x` line,
+This matrix describes what is stable enough for broad use on the `0.5.x` line,
 what remains experimental, and what evidence is required for public benchmark
 claims.
 
@@ -23,6 +23,13 @@ claims.
 | `signinum-jpeg-cuda`, `signinum-j2k-cuda` | Experimental adapters | CUDA device-memory paths require a CUDA driver and optional runtime feature support. `signinum-j2k-cuda` reserves `BackendRequest::Cuda` for strict CUDA-resident HTJ2K codestream decode; the current resident path covers full-frame, ROI, reduced-resolution, and ROI+scaled HTJ2K `Gray8`, `Gray16`, `Rgb8`, `Rgba8`, `Rgb16`, and `Rgba16`, with pinned compressed-payload upload, reusable device HT tables, and separate 5/3 vs 9/7 IDWT entrypoints. CPU-staged J2K uploads use explicit CPU-staged APIs. `encode_j2k_lossless_with_cuda` exposes strict CUDA HTJ2K encode stages and treats every backend preference as device-required, including forward RCT/ICT, forward 5/3 and 9/7 DWT, sub-band quantization, batched HT cleanup code-block encode with cooperative magnitude reduction, first-inclusion packetization with HT refinement pass headers and cooperative packet payload assembly, later-layer packet contributions for code blocks already included in prior packets, and deferred first inclusion after empty or non-empty prior packets through flattened persistent tag-tree state. |
 | `signinum-transcode`, `signinum-transcode-metal`, `signinum-transcode-cuda` | Experimental transcode | Promotion requires synthetic and real JPEG sampling coverage, native and external HTJ2K acceptance, documented error histograms, loud unsupported-mode failures, and benchmark evidence. |
 | `signinum-j2k-native`, `signinum-profile`, `signinum-cuda-runtime` | Published support crates | Public because stable crates depend on them, but not the primary user-facing API. |
+
+## Non-API Tooling
+
+| Surface | Status | Scope |
+|---------|--------|-------|
+| `signinum-test-support` | Unpublished dev helper | Workspace-versioned synthetic image and benchmark generators for tests, benches, and examples. |
+| `xtask` | Unpublished workspace tool | Repository-local automation for tests, docs, benches, fuzz builds, coverage, and packaging. |
 
 ## Supported Workflows
 
@@ -93,7 +100,7 @@ The current MSRV is Rust 1.88, pinned by [`rust-toolchain.toml`](../rust-toolcha
 Lowering MSRV requires a passing all-features compile audit and the required CI
 gate set on the selected lower toolchain before release.
 
-The `0.4.x` audit candidates are Rust 1.85, 1.88, 1.90, 1.92, 1.93, and 1.94.
+The `0.5.x` audit candidates are Rust 1.85, 1.88, 1.90, 1.92, 1.93, and 1.94.
 Rust 1.85 is blocked by `fearless_simd 0.3.0`: that dependency uses
 `#[target_feature]` on a safe NEON dispatch function, which Rust 1.85 rejects.
 Rust 1.88 is the oldest candidate that passed the workspace all-features

@@ -121,7 +121,8 @@ fn wavelet_image_converts_to_encodable_precomputed_htj2k_image() {
         vec![(1, 1), (2, 2), (2, 2)]
     );
 
-    let bytes = encode_precomputed_htj2k_53(&precomputed, &precomputed_options())
+    let native_precomputed = native_precomputed_53(precomputed);
+    let bytes = encode_precomputed_htj2k_53(&native_precomputed, &precomputed_options())
         .expect("converted wavelet image encodes as HTJ2K");
     let decoded = Image::new(&bytes, &DecodeSettings::default())
         .expect("native parser accepts converted HTJ2K")
@@ -169,7 +170,8 @@ fn wavelet_image_97_converts_to_encodable_precomputed_htj2k_image() {
     assert!(!precomputed.signed);
     assert_eq!(precomputed.components.len(), 1);
 
-    let bytes = encode_precomputed_htj2k_97(&precomputed, &precomputed_lossy_options())
+    let native_precomputed = native_precomputed_97(precomputed);
+    let bytes = encode_precomputed_htj2k_97(&native_precomputed, &precomputed_lossy_options())
         .expect("converted 9/7 wavelet image encodes as HTJ2K");
     let decoded = Image::new(&bytes, &DecodeSettings::default())
         .expect("native parser accepts converted 9/7 HTJ2K")
@@ -225,6 +227,100 @@ fn component97(width: usize, height: usize, x_rsiz: u16, y_rsiz: u16) -> Wavelet
             lh: band97(width.div_ceil(2), height / 2),
             hh: band97(width / 2, height / 2),
         }],
+    }
+}
+
+fn native_precomputed_53(
+    image: signinum_j2k::PrecomputedHtj2k53Image,
+) -> signinum_j2k_native::PrecomputedHtj2k53Image {
+    signinum_j2k_native::PrecomputedHtj2k53Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PrecomputedHtj2k53Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    dwt: native_dwt53(component.dwt),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_dwt53(
+    dwt: signinum_j2k::J2kForwardDwt53Output,
+) -> signinum_j2k_native::J2kForwardDwt53Output {
+    signinum_j2k_native::J2kForwardDwt53Output {
+        ll: dwt.ll,
+        ll_width: dwt.ll_width,
+        ll_height: dwt.ll_height,
+        levels: dwt
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt53Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
+    }
+}
+
+fn native_precomputed_97(
+    image: signinum_j2k::PrecomputedHtj2k97Image,
+) -> signinum_j2k_native::PrecomputedHtj2k97Image {
+    signinum_j2k_native::PrecomputedHtj2k97Image {
+        width: image.width,
+        height: image.height,
+        bit_depth: image.bit_depth,
+        signed: image.signed,
+        components: image
+            .components
+            .into_iter()
+            .map(
+                |component| signinum_j2k_native::PrecomputedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    dwt: native_dwt97(component.dwt),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn native_dwt97(
+    dwt: signinum_j2k::J2kForwardDwt97Output,
+) -> signinum_j2k_native::J2kForwardDwt97Output {
+    signinum_j2k_native::J2kForwardDwt97Output {
+        ll: dwt.ll,
+        ll_width: dwt.ll_width,
+        ll_height: dwt.ll_height,
+        levels: dwt
+            .levels
+            .into_iter()
+            .map(|level| signinum_j2k_native::J2kForwardDwt97Level {
+                hl: level.hl,
+                lh: level.lh,
+                hh: level.hh,
+                width: level.width,
+                height: level.height,
+                low_width: level.low_width,
+                low_height: level.low_height,
+                high_width: level.high_width,
+                high_height: level.high_height,
+            })
+            .collect(),
     }
 }
 

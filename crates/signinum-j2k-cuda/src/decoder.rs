@@ -25,8 +25,6 @@ use signinum_j2k::{
     adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
     J2kDecoder as CpuDecoder, J2kError, J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
-#[cfg(feature = "cuda-runtime")]
-use signinum_j2k_native::J2kDirectBandId;
 use signinum_j2k_native::{
     DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage,
 };
@@ -42,7 +40,8 @@ use crate::{
 };
 #[cfg(feature = "cuda-runtime")]
 use crate::{
-    CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kTransform, CudaSurfaceStats, SurfaceResidency,
+    CudaHtj2kBandId, CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kTransform, CudaSurfaceStats,
+    SurfaceResidency,
 };
 
 #[cfg(feature = "cuda-runtime")]
@@ -433,8 +432,8 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_region_plan_with_profile(
+    /// Build a flat CUDA HTJ2K grayscale region decode plan and return stage timings.
+    pub fn build_cuda_htj2k_grayscale_region_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         roi: Rect,
@@ -481,8 +480,9 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
+    /// Build a flat reduced-resolution CUDA HTJ2K grayscale decode plan and
+    /// return stage timings.
+    pub fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         output_dimensions: (u32, u32),
@@ -527,8 +527,9 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
+    /// Build a flat reduced-resolution CUDA HTJ2K grayscale region decode
+    /// plan and return stage timings.
+    pub fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         scaled_roi: Rect,
@@ -656,7 +657,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -721,7 +722,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -793,7 +794,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -885,7 +886,7 @@ impl<'a> J2kDecoder<'a> {
 
 #[cfg(feature = "cuda-runtime")]
 struct CudaCoefficientBand {
-    band_id: J2kDirectBandId,
+    band_id: CudaHtj2kBandId,
     buffer: CudaPooledDeviceBuffer,
 }
 
@@ -1700,7 +1701,7 @@ fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'a>(
         mct_dimensions: native_plan.dimensions,
         bit_depths: native_plan.bit_depths,
         mct: native_plan.mct,
-        transform: CudaHtj2kTransform::from(native_plan.transform),
+        transform: CudaHtj2kTransform::from_native(native_plan.transform),
         payload,
         components,
         report,
@@ -3161,7 +3162,7 @@ fn checked_area(width: u32, height: u32) -> Result<usize, Error> {
 #[cfg(feature = "cuda-runtime")]
 fn find_cuda_band(
     bands: &[CudaCoefficientBand],
-    band_id: J2kDirectBandId,
+    band_id: CudaHtj2kBandId,
 ) -> Result<&CudaCoefficientBand, Error> {
     bands
         .iter()

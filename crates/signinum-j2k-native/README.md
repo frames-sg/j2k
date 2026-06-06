@@ -9,6 +9,6 @@ cargo add signinum-j2k
 ```
 
 This crate contains the pure-Rust JPEG 2000 / HTJ2K engine used by the public
-`signinum-j2k` stable `0.4.x` API. It is published so `signinum-j2k` can be consumed
+`signinum-j2k` stable `0.5.x` API. It is published so `signinum-j2k` can be consumed
 from crates.io, but downstream users should prefer the stable `signinum-j2k`
 wrapper unless they intentionally need engine-level APIs.

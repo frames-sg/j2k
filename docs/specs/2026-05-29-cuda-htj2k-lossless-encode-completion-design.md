@@ -40,8 +40,8 @@ CPU fallback, validated by tests that genuinely run (not skip) on the CUDA runne
 ## 2. Definition of done (acceptance criteria)
 
 - `encode_j2k_lossless_with_cuda` returns a codestream **byte-identical** to
-  `signinum_j2k_native::encode_htj2k` for every in-scope input (§3) — asserted
-  directly as `assert_eq!(bytes_cuda, bytes_native)`, not merely round-trip.
+  the public `signinum-j2k` CPU lossless path for every in-scope input (§3) —
+  asserted directly as `assert_eq!(bytes_cuda, bytes_cpu)`, not merely round-trip.
 - Every in-scope input also **round-trips** (`decode(bytes) == pixels`).
 - **No silent CPU fallback**: out-of-scope inputs return typed errors; the
   accelerator never returns `Ok(None)` for an in-scope input (§6).

@@ -207,6 +207,138 @@ fn architecture_dependency_graph_matches_cargo_metadata() {
 }
 
 #[test]
+fn architecture_docs_classify_workspace_and_in_repo_tool_crates() {
+    let root = repo_root();
+    let docs =
+        fs::read_to_string(root.join("docs/architecture.md")).expect("read architecture docs");
+
+    for required in [
+        "`signinum-test-support`",
+        "dev helper",
+        "`xtask`",
+        "workspace tool",
+        "`xtask/`",
+    ] {
+        assert!(
+            docs.contains(required),
+            "docs/architecture.md must classify `{required}`"
+        );
+    }
+    assert!(
+        !docs.contains("All crates live under `crates/`"),
+        "docs/architecture.md must not claim xtask lives under crates/"
+    );
+}
+
+#[test]
+fn tooling_and_validation_crates_stay_unpublished() {
+    let root = repo_root();
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+    let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
+    let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
+
+    for (manifest, package) in [
+        (
+            "crates/signinum-test-support/Cargo.toml",
+            "signinum-test-support",
+        ),
+        ("xtask/Cargo.toml", "xtask"),
+        (
+            "tests/nvidia-baseline/Cargo.toml",
+            "signinum-nvidia-baseline",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(manifest))
+            .unwrap_or_else(|err| panic!("read {manifest}: {err}"));
+        assert!(
+            source.contains("publish = false"),
+            "{manifest} must stay unpublished"
+        );
+        assert!(
+            !publishable.contains(&format!("\"{package}\"")),
+            "xtask publishable package gate must not include {package}"
+        );
+    }
+
+    assert!(
+        workspace.contains("\"crates/signinum-test-support\""),
+        "root workspace must include signinum-test-support for shared test helpers"
+    );
+    assert!(
+        workspace.contains("\"xtask\""),
+        "root workspace must include xtask for cargo xtask automation"
+    );
+    assert!(
+        !workspace.contains("\"tests/nvidia-baseline\""),
+        "root workspace must not include the standalone NVIDIA baseline workspace"
+    );
+}
+
+#[test]
+fn public_crates_do_not_reexport_signinum_j2k_native() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+
+    for crate_dir in [
+        "crates/signinum/src",
+        "crates/signinum-j2k/src",
+        "crates/signinum-transcode/src",
+        "crates/signinum-j2k-metal/src",
+        "crates/signinum-j2k-cuda/src",
+        "crates/signinum-transcode-metal/src",
+        "crates/signinum-transcode-cuda/src",
+    ] {
+        for path in rust_sources(&root.join(crate_dir)) {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            for (line_idx, line) in source.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("pub use signinum_j2k_native")
+                    || trimmed.starts_with("pub type ") && trimmed.contains("signinum_j2k_native")
+                {
+                    offenders.push(format!(
+                        "{}:{}:{}",
+                        path.strip_prefix(root).unwrap_or(&path).display(),
+                        line_idx + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "public crates must not re-export native J2K implementation types:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn rendered_public_api_does_not_expose_signinum_j2k_native() {
+    let root = repo_root();
+    let stable_api_snapshot = fs::read_to_string(root.join("docs/stable-api-1.0.public-api.txt"))
+        .expect("read stable API snapshot");
+
+    for package in [
+        "signinum",
+        "signinum-j2k",
+        "signinum-transcode",
+        "signinum-j2k-metal",
+        "signinum-j2k-cuda",
+        "signinum-transcode-metal",
+        "signinum-transcode-cuda",
+    ] {
+        let api = cargo_public_api(root, package)
+            .unwrap_or_else(|| stable_api_snapshot_section(&stable_api_snapshot, package));
+        assert!(
+            !api.contains("signinum_j2k_native"),
+            "public API for package {package} exposes signinum_j2k_native:\n{api}"
+        );
+    }
+}
+
+#[test]
 fn wsi_decode_api_guide_covers_public_surfaces() {
     let root = repo_root();
     let readme = fs::read_to_string(root.join("README.md")).expect("read README");
@@ -252,7 +384,13 @@ fn ci_workflow_keeps_docs_and_benchmark_compile_gates() {
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
     let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
 
-    for required in ["cargo xtask doc", "cargo xtask bench-build", "macos-latest"] {
+    for required in [
+        "cargo xtask doc",
+        "cargo xtask stable-api",
+        "cargo xtask bench-build",
+        "cargo-public-api@0.52.0",
+        "macos-latest",
+    ] {
         assert!(
             workflow.contains(required),
             "CI workflow must contain `{required}`"
@@ -287,8 +425,8 @@ fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
         "CI semver job must use cargo-semver-checks action v2"
     );
     assert!(
-        semver_job.contains("release-type: patch"),
-        "CI semver job must check patch-release compatibility for the 0.4.x line"
+        semver_job.contains("release-type: minor"),
+        "CI semver job must check minor-release compatibility for the 0.5.x line"
     );
 
     for package in [
@@ -1352,6 +1490,50 @@ fn architecture_doc_dependency_edges(docs: &str) -> BTreeSet<(String, String)> {
 
 fn format_edge(edge: &(String, String)) -> String {
     format!("{} -> {}", edge.0, edge.1)
+}
+
+fn cargo_public_api(root: &Path, package: &str) -> Option<String> {
+    let output = Command::new("cargo")
+        .args(["public-api", "-p", package, "--all-features"])
+        .current_dir(root)
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping cargo-public-api check for {package}: cargo not found");
+            return None;
+        }
+        Err(err) => panic!("run cargo public-api for {package}: {err}"),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    if !output.status.success()
+        && combined.contains("no such command")
+        && combined.contains("public-api")
+    {
+        eprintln!("skipping cargo-public-api check for {package}: cargo-public-api not installed");
+        return None;
+    }
+
+    assert!(
+        output.status.success(),
+        "cargo public-api failed for package {package}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    Some(combined)
+}
+
+fn stable_api_snapshot_section(snapshot: &str, package: &str) -> String {
+    let heading = format!("## `{package}`");
+    let start = snapshot
+        .find(&heading)
+        .unwrap_or_else(|| panic!("stable API snapshot is missing section {heading}"));
+    let after_heading = &snapshot[start + heading.len()..];
+    let end = after_heading.find("\n## `").unwrap_or(after_heading.len());
+    after_heading[..end].to_owned()
 }
 
 fn rust_sources(dir: &Path) -> Vec<std::path::PathBuf> {

@@ -155,14 +155,14 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signinum-core"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "signinum-tilecodec"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "signinum-core",

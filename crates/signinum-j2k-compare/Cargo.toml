@@ -9,8 +9,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.4" }
-signinum-j2k = { path = "../signinum-j2k", version = "=0.4.4" }
+signinum-core = { path = "../signinum-core", version = "=0.5.0" }
+signinum-j2k = { path = "../signinum-j2k", version = "=0.5.0" }
 openjpeg-sys = "1.0.12"
 
 [dev-dependencies]

@@ -9,15 +9,14 @@ use signinum_cuda_runtime::{
     CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_cuda::CudaHtj2kDecodePlan;
+use signinum_j2k_cuda::J2kDecoder;
 #[cfg(feature = "cuda-runtime")]
 use signinum_j2k_native::{
     decode_ht_code_block_scalar, encode_ht_code_block_scalar, encode_htj2k, ht_uvlc_encode_table,
     ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0, ht_vlc_encode_table1, ht_vlc_table0,
-    ht_vlc_table1, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecodeJob, Image,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband,
+    ht_vlc_table1, EncodeOptions, HtCodeBlockDecodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
 };
 
 #[cfg(feature = "cuda-runtime")]
@@ -89,14 +88,10 @@ fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
     }
 
     let bytes = ht_gray8_fixture();
-    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse image");
-    let mut decoder_context = DecoderContext::default();
-    let native_plan = image
-        .build_direct_grayscale_plan_with_context(&mut decoder_context)
-        .expect("native direct plan");
-    let cuda_plan =
-        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, PixelFormat::Gray8, (0, 0))
-            .expect("CUDA flat plan");
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let (cuda_plan, _) = decoder
+        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
+        .expect("CUDA flat plan");
     let block = cuda_plan
         .code_blocks()
         .first()
@@ -180,15 +175,10 @@ fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() 
         return;
     }
 
-    let image = Image::new(openhtj2k_refinement_fixture(), &DecodeSettings::default())
-        .expect("parse image");
-    let mut decoder_context = DecoderContext::default();
-    let native_plan = image
-        .build_direct_grayscale_plan_with_context(&mut decoder_context)
-        .expect("native direct plan");
-    let cuda_plan =
-        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, PixelFormat::Gray8, (0, 0))
-            .expect("CUDA flat plan");
+    let mut decoder = J2kDecoder::new(openhtj2k_refinement_fixture()).expect("decoder");
+    let (cuda_plan, _) = decoder
+        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
+        .expect("CUDA flat plan");
     let block = cuda_plan
         .code_blocks()
         .iter()

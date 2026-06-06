@@ -12,17 +12,18 @@ use signinum_cuda_runtime::{
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState, CudaJ2kQuantizeJob,
     CudaJ2kQuantizeSubbandRegionJob, CudaJ2kResidentComponents, CudaJ2kStridedInterleavedPixels,
 };
-use signinum_j2k_native::{
+use signinum_j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
     J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
     J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationResolution,
+    J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_native::{
-    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
+use signinum_j2k::{
+    J2kForwardDwt53Level, J2kForwardDwt97Level, J2kPacketizationPacketDescriptor,
+    J2kPacketizationSubband,
 };
 #[cfg(feature = "cuda-runtime")]
 use std::{
@@ -1073,7 +1074,7 @@ fn flatten_cuda_htj2k_packetization_job(
 }
 
 fn seed_cuda_htj2k_packetization_state(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
 ) -> core::result::Result<CudaHtj2kPacketizationState, &'static str> {
     let mut subbands = Vec::with_capacity(resolution.subbands.len());
     for subband in &resolution.subbands {
@@ -1115,7 +1116,7 @@ fn seed_cuda_htj2k_packetization_state(
 
 fn validate_cuda_htj2k_packetization_state_layout(
     state: &CudaHtj2kPacketizationState,
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
 ) -> core::result::Result<(), &'static str> {
     if state.subbands.len() != resolution.subbands.len() {
         return Err("CUDA HTJ2K packetization state layout mismatch");
@@ -1267,7 +1268,7 @@ impl CudaHtj2kPacketizationTagTreeState {
 
 fn record_cuda_htj2k_packetization_first_inclusion_layers(
     state: &mut CudaHtj2kPacketizationState,
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
 ) -> core::result::Result<(), &'static str> {
     validate_cuda_htj2k_packetization_state_layout(state, resolution)?;
@@ -1389,14 +1390,14 @@ fn update_cuda_htj2k_packetization_state_after_block(
 }
 
 fn flatten_cuda_htj2k_packet(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
 ) -> core::result::Result<(), &'static str> {
     flatten_cuda_htj2k_packet_inner(resolution, 0, None, sink)
 }
 
 fn flatten_cuda_htj2k_packet_with_state(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
     state: &mut CudaHtj2kPacketizationState,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
@@ -1405,7 +1406,7 @@ fn flatten_cuda_htj2k_packet_with_state(
 }
 
 fn flatten_cuda_htj2k_packet_inner(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
     mut state: Option<&mut CudaHtj2kPacketizationState>,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
@@ -3540,7 +3541,7 @@ fn cuda_dwt53_output_to_j2k(
 
     let mut levels = Vec::with_capacity(output.levels().len());
     for shape in output.levels() {
-        levels.push(signinum_j2k_native::J2kForwardDwt53Level {
+        levels.push(J2kForwardDwt53Level {
             hl: extract_cuda_subband(
                 transformed,
                 full_width,
@@ -3619,7 +3620,7 @@ fn cuda_dwt97_output_to_j2k(
 
     let mut levels = Vec::with_capacity(output.levels().len());
     for shape in output.levels() {
-        levels.push(signinum_j2k_native::J2kForwardDwt97Level {
+        levels.push(J2kForwardDwt97Level {
             hl: extract_cuda_subband(
                 transformed,
                 full_width,
@@ -3706,12 +3707,14 @@ mod tests {
         EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
         J2kLosslessSamples,
     };
-    use signinum_j2k_native::J2kEncodeStageAccelerator;
+    use signinum_j2k::{
+        J2kEncodeStageAccelerator, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
+        J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+        J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    };
     use signinum_j2k_native::{
-        encode_with_accelerator, DecodeSettings, EncodeOptions, Image,
-        J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-        J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder,
-        J2kPacketizationResolution, J2kPacketizationSubband,
+        encode_with_accelerator as encode_with_native_accelerator, DecodeSettings, EncodeOptions,
+        Image,
     };
 
     fn assert_strict_cuda_classic_tier1_error<E: CodecError + ?Sized>(err: &E, context: &str) {
@@ -3721,6 +3724,481 @@ mod tests {
             message.contains("tier1_code_block") || message.contains("deinterleave"),
             "expected {context} error to mention either the missing classic tier-1 stage or unavailable CUDA deinterleave, got {message}"
         );
+    }
+
+    struct NativeEncodeStageAcceleratorBridge<'a> {
+        inner: &'a mut CudaEncodeStageAccelerator,
+    }
+
+    impl signinum_j2k_native::J2kEncodeStageAccelerator for NativeEncodeStageAcceleratorBridge<'_> {
+        fn dispatch_report(&self) -> signinum_j2k_native::J2kEncodeDispatchReport {
+            let report = self.inner.dispatch_report();
+            signinum_j2k_native::J2kEncodeDispatchReport {
+                deinterleave: report.deinterleave,
+                forward_rct: report.forward_rct,
+                forward_ict: report.forward_ict,
+                forward_dwt53: report.forward_dwt53,
+                forward_dwt97: report.forward_dwt97,
+                quantize_subband: report.quantize_subband,
+                tier1_code_block: report.tier1_code_block,
+                ht_code_block: report.ht_code_block,
+                packetization: report.packetization,
+            }
+        }
+
+        fn encode_deinterleave(
+            &mut self,
+            job: signinum_j2k_native::J2kDeinterleaveToF32Job<'_>,
+        ) -> core::result::Result<Option<Vec<Vec<f32>>>, &'static str> {
+            self.inner
+                .encode_deinterleave(signinum_j2k::J2kDeinterleaveToF32Job {
+                    pixels: job.pixels,
+                    num_pixels: job.num_pixels,
+                    num_components: job.num_components,
+                    bit_depth: job.bit_depth,
+                    signed: job.signed,
+                })
+        }
+
+        fn encode_forward_rct(
+            &mut self,
+            job: signinum_j2k_native::J2kForwardRctJob<'_>,
+        ) -> core::result::Result<bool, &'static str> {
+            self.inner
+                .encode_forward_rct(signinum_j2k::J2kForwardRctJob {
+                    plane0: job.plane0,
+                    plane1: job.plane1,
+                    plane2: job.plane2,
+                })
+        }
+
+        fn encode_forward_ict(
+            &mut self,
+            job: signinum_j2k_native::J2kForwardIctJob<'_>,
+        ) -> core::result::Result<bool, &'static str> {
+            self.inner
+                .encode_forward_ict(signinum_j2k::J2kForwardIctJob {
+                    plane0: job.plane0,
+                    plane1: job.plane1,
+                    plane2: job.plane2,
+                })
+        }
+
+        fn encode_forward_dwt53(
+            &mut self,
+            job: signinum_j2k_native::J2kForwardDwt53Job<'_>,
+        ) -> core::result::Result<Option<signinum_j2k_native::J2kForwardDwt53Output>, &'static str>
+        {
+            let output = self
+                .inner
+                .encode_forward_dwt53(signinum_j2k::J2kForwardDwt53Job {
+                    samples: job.samples,
+                    width: job.width,
+                    height: job.height,
+                    num_levels: job.num_levels,
+                })?;
+            Ok(output.map(public_dwt53_to_native))
+        }
+
+        fn encode_forward_dwt97(
+            &mut self,
+            job: signinum_j2k_native::J2kForwardDwt97Job<'_>,
+        ) -> core::result::Result<Option<signinum_j2k_native::J2kForwardDwt97Output>, &'static str>
+        {
+            let output = self
+                .inner
+                .encode_forward_dwt97(signinum_j2k::J2kForwardDwt97Job {
+                    samples: job.samples,
+                    width: job.width,
+                    height: job.height,
+                    num_levels: job.num_levels,
+                })?;
+            Ok(output.map(public_dwt97_to_native))
+        }
+
+        fn encode_quantize_subband(
+            &mut self,
+            job: signinum_j2k_native::J2kQuantizeSubbandJob<'_>,
+        ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
+            self.inner
+                .encode_quantize_subband(signinum_j2k::J2kQuantizeSubbandJob {
+                    coefficients: job.coefficients,
+                    step_exponent: job.step_exponent,
+                    step_mantissa: job.step_mantissa,
+                    range_bits: job.range_bits,
+                    reversible: job.reversible,
+                })
+        }
+
+        fn encode_tier1_code_block(
+            &mut self,
+            job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
+        ) -> core::result::Result<Option<signinum_j2k_native::EncodedJ2kCodeBlock>, &'static str>
+        {
+            let output =
+                self.inner
+                    .encode_tier1_code_block(signinum_j2k::J2kTier1CodeBlockEncodeJob {
+                        coefficients: job.coefficients,
+                        width: job.width,
+                        height: job.height,
+                        sub_band_type: public_subband(job.sub_band_type),
+                        total_bitplanes: job.total_bitplanes,
+                        style: public_code_block_style(job.style),
+                    })?;
+            Ok(output.map(public_encoded_j2k_to_native))
+        }
+
+        fn encode_tier1_code_blocks(
+            &mut self,
+            jobs: &[signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>],
+        ) -> core::result::Result<Option<Vec<signinum_j2k_native::EncodedJ2kCodeBlock>>, &'static str>
+        {
+            let public_jobs: Vec<_> = jobs
+                .iter()
+                .map(|job| signinum_j2k::J2kTier1CodeBlockEncodeJob {
+                    coefficients: job.coefficients,
+                    width: job.width,
+                    height: job.height,
+                    sub_band_type: public_subband(job.sub_band_type),
+                    total_bitplanes: job.total_bitplanes,
+                    style: public_code_block_style(job.style),
+                })
+                .collect();
+            let output = self.inner.encode_tier1_code_blocks(&public_jobs)?;
+            Ok(output.map(|blocks| {
+                blocks
+                    .into_iter()
+                    .map(public_encoded_j2k_to_native)
+                    .collect()
+            }))
+        }
+
+        fn encode_ht_code_block(
+            &mut self,
+            job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
+        ) -> core::result::Result<Option<signinum_j2k_native::EncodedHtJ2kCodeBlock>, &'static str>
+        {
+            let output =
+                self.inner
+                    .encode_ht_code_block(signinum_j2k::J2kHtCodeBlockEncodeJob {
+                        coefficients: job.coefficients,
+                        width: job.width,
+                        height: job.height,
+                        total_bitplanes: job.total_bitplanes,
+                        target_coding_passes: job.target_coding_passes,
+                    })?;
+            Ok(output.map(public_encoded_ht_to_native))
+        }
+
+        fn encode_ht_code_blocks(
+            &mut self,
+            jobs: &[signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>],
+        ) -> core::result::Result<
+            Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>,
+            &'static str,
+        > {
+            let public_jobs: Vec<_> = jobs
+                .iter()
+                .map(|job| signinum_j2k::J2kHtCodeBlockEncodeJob {
+                    coefficients: job.coefficients,
+                    width: job.width,
+                    height: job.height,
+                    total_bitplanes: job.total_bitplanes,
+                    target_coding_passes: job.target_coding_passes,
+                })
+                .collect();
+            let output = self.inner.encode_ht_code_blocks(&public_jobs)?;
+            Ok(output.map(|blocks| {
+                blocks
+                    .into_iter()
+                    .map(public_encoded_ht_to_native)
+                    .collect()
+            }))
+        }
+
+        fn encode_ht_subband(
+            &mut self,
+            job: signinum_j2k_native::J2kHtSubbandEncodeJob<'_>,
+        ) -> core::result::Result<
+            Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>,
+            &'static str,
+        > {
+            let output = self
+                .inner
+                .encode_ht_subband(signinum_j2k::J2kHtSubbandEncodeJob {
+                    coefficients: job.coefficients,
+                    width: job.width,
+                    height: job.height,
+                    step_exponent: job.step_exponent,
+                    step_mantissa: job.step_mantissa,
+                    range_bits: job.range_bits,
+                    reversible: job.reversible,
+                    code_block_width: job.code_block_width,
+                    code_block_height: job.code_block_height,
+                    total_bitplanes: job.total_bitplanes,
+                })?;
+            Ok(output.map(|blocks| {
+                blocks
+                    .into_iter()
+                    .map(public_encoded_ht_to_native)
+                    .collect()
+            }))
+        }
+
+        fn encode_htj2k_tile(
+            &mut self,
+            job: signinum_j2k_native::J2kHtj2kTileEncodeJob<'_>,
+        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+            self.inner
+                .encode_htj2k_tile(signinum_j2k::J2kHtj2kTileEncodeJob {
+                    pixels: job.pixels,
+                    width: job.width,
+                    height: job.height,
+                    num_components: job.num_components,
+                    bit_depth: job.bit_depth,
+                    signed: job.signed,
+                    num_decomposition_levels: job.num_decomposition_levels,
+                    reversible: job.reversible,
+                    use_mct: job.use_mct,
+                    guard_bits: job.guard_bits,
+                    code_block_width: job.code_block_width,
+                    code_block_height: job.code_block_height,
+                    progression_order: public_packet_progression(job.progression_order),
+                    component_sampling: job.component_sampling,
+                    quantization_steps: job.quantization_steps,
+                })
+        }
+
+        fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+            self.inner.prefer_parallel_cpu_code_block_fallback()
+        }
+
+        fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+            self.inner.prefer_parallel_cpu_tile_encode()
+        }
+
+        fn encode_packetization(
+            &mut self,
+            job: signinum_j2k_native::J2kPacketizationEncodeJob<'_>,
+        ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+            let packet_descriptors: Vec<_> = job
+                .packet_descriptors
+                .iter()
+                .map(
+                    |descriptor| signinum_j2k::J2kPacketizationPacketDescriptor {
+                        packet_index: descriptor.packet_index,
+                        state_index: descriptor.state_index,
+                        layer: descriptor.layer,
+                        resolution: descriptor.resolution,
+                        component: descriptor.component,
+                        precinct: descriptor.precinct,
+                    },
+                )
+                .collect();
+            let resolutions: Vec<_> = job
+                .resolutions
+                .iter()
+                .map(public_packetization_resolution)
+                .collect();
+            self.inner
+                .encode_packetization(signinum_j2k::J2kPacketizationEncodeJob {
+                    resolution_count: job.resolution_count,
+                    num_layers: job.num_layers,
+                    num_components: job.num_components,
+                    code_block_count: job.code_block_count,
+                    progression_order: public_packet_progression(job.progression_order),
+                    packet_descriptors: &packet_descriptors,
+                    resolutions: &resolutions,
+                })
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_with_cuda_test_accelerator(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        components: u8,
+        bit_depth: u8,
+        signed: bool,
+        options: &EncodeOptions,
+        accelerator: &mut CudaEncodeStageAccelerator,
+    ) -> core::result::Result<Vec<u8>, &'static str> {
+        let mut bridge = NativeEncodeStageAcceleratorBridge { inner: accelerator };
+        encode_with_native_accelerator(
+            pixels,
+            width,
+            height,
+            components,
+            bit_depth,
+            signed,
+            options,
+            &mut bridge,
+        )
+    }
+
+    fn public_subband(
+        subband: signinum_j2k_native::J2kSubBandType,
+    ) -> signinum_j2k::J2kSubBandType {
+        match subband {
+            signinum_j2k_native::J2kSubBandType::LowLow => signinum_j2k::J2kSubBandType::LowLow,
+            signinum_j2k_native::J2kSubBandType::HighLow => signinum_j2k::J2kSubBandType::HighLow,
+            signinum_j2k_native::J2kSubBandType::LowHigh => signinum_j2k::J2kSubBandType::LowHigh,
+            signinum_j2k_native::J2kSubBandType::HighHigh => signinum_j2k::J2kSubBandType::HighHigh,
+        }
+    }
+
+    fn public_code_block_style(
+        style: signinum_j2k_native::J2kCodeBlockStyle,
+    ) -> signinum_j2k::J2kCodeBlockStyle {
+        signinum_j2k::J2kCodeBlockStyle {
+            selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
+            reset_context_probabilities: style.reset_context_probabilities,
+            termination_on_each_pass: style.termination_on_each_pass,
+            vertically_causal_context: style.vertically_causal_context,
+            segmentation_symbols: style.segmentation_symbols,
+        }
+    }
+
+    fn public_encoded_j2k_to_native(
+        block: signinum_j2k::EncodedJ2kCodeBlock,
+    ) -> signinum_j2k_native::EncodedJ2kCodeBlock {
+        signinum_j2k_native::EncodedJ2kCodeBlock {
+            data: block.data,
+            segments: block
+                .segments
+                .into_iter()
+                .map(|segment| signinum_j2k_native::J2kCodeBlockSegment {
+                    data_offset: segment.data_offset,
+                    data_length: segment.data_length,
+                    start_coding_pass: segment.start_coding_pass,
+                    end_coding_pass: segment.end_coding_pass,
+                    use_arithmetic: segment.use_arithmetic,
+                })
+                .collect(),
+            number_of_coding_passes: block.number_of_coding_passes,
+            missing_bit_planes: block.missing_bit_planes,
+        }
+    }
+
+    fn public_encoded_ht_to_native(
+        block: signinum_j2k::EncodedHtJ2kCodeBlock,
+    ) -> signinum_j2k_native::EncodedHtJ2kCodeBlock {
+        signinum_j2k_native::EncodedHtJ2kCodeBlock {
+            data: block.data,
+            cleanup_length: block.cleanup_length,
+            refinement_length: block.refinement_length,
+            num_coding_passes: block.num_coding_passes,
+            num_zero_bitplanes: block.num_zero_bitplanes,
+        }
+    }
+
+    fn public_dwt53_to_native(
+        output: signinum_j2k::J2kForwardDwt53Output,
+    ) -> signinum_j2k_native::J2kForwardDwt53Output {
+        signinum_j2k_native::J2kForwardDwt53Output {
+            ll: output.ll,
+            ll_width: output.ll_width,
+            ll_height: output.ll_height,
+            levels: output
+                .levels
+                .into_iter()
+                .map(|level| signinum_j2k_native::J2kForwardDwt53Level {
+                    hl: level.hl,
+                    lh: level.lh,
+                    hh: level.hh,
+                    width: level.width,
+                    height: level.height,
+                    low_width: level.low_width,
+                    low_height: level.low_height,
+                    high_width: level.high_width,
+                    high_height: level.high_height,
+                })
+                .collect(),
+        }
+    }
+
+    fn public_dwt97_to_native(
+        output: signinum_j2k::J2kForwardDwt97Output,
+    ) -> signinum_j2k_native::J2kForwardDwt97Output {
+        signinum_j2k_native::J2kForwardDwt97Output {
+            ll: output.ll,
+            ll_width: output.ll_width,
+            ll_height: output.ll_height,
+            levels: output
+                .levels
+                .into_iter()
+                .map(|level| signinum_j2k_native::J2kForwardDwt97Level {
+                    hl: level.hl,
+                    lh: level.lh,
+                    hh: level.hh,
+                    width: level.width,
+                    height: level.height,
+                    low_width: level.low_width,
+                    low_height: level.low_height,
+                    high_width: level.high_width,
+                    high_height: level.high_height,
+                })
+                .collect(),
+        }
+    }
+
+    fn public_packet_progression(
+        progression: signinum_j2k_native::J2kPacketizationProgressionOrder,
+    ) -> signinum_j2k::J2kPacketizationProgressionOrder {
+        match progression {
+            signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp => {
+                signinum_j2k::J2kPacketizationProgressionOrder::Lrcp
+            }
+            signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp => {
+                signinum_j2k::J2kPacketizationProgressionOrder::Rlcp
+            }
+            signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl => {
+                signinum_j2k::J2kPacketizationProgressionOrder::Rpcl
+            }
+            signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl => {
+                signinum_j2k::J2kPacketizationProgressionOrder::Pcrl
+            }
+            signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl => {
+                signinum_j2k::J2kPacketizationProgressionOrder::Cprl
+            }
+        }
+    }
+
+    fn public_packetization_resolution<'a>(
+        resolution: &signinum_j2k_native::J2kPacketizationResolution<'a>,
+    ) -> signinum_j2k::J2kPacketizationResolution<'a> {
+        signinum_j2k::J2kPacketizationResolution {
+            subbands: resolution
+                .subbands
+                .iter()
+                .map(|subband| signinum_j2k::J2kPacketizationSubband {
+                    code_blocks: subband
+                        .code_blocks
+                        .iter()
+                        .map(|block| signinum_j2k::J2kPacketizationCodeBlock {
+                            data: block.data,
+                            ht_cleanup_length: block.ht_cleanup_length,
+                            ht_refinement_length: block.ht_refinement_length,
+                            num_coding_passes: block.num_coding_passes,
+                            num_zero_bitplanes: block.num_zero_bitplanes,
+                            previously_included: block.previously_included,
+                            l_block: block.l_block,
+                            block_coding_mode: match block.block_coding_mode {
+                                signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic => {
+                                    signinum_j2k::J2kPacketizationBlockCodingMode::Classic
+                                }
+                                signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput => {
+                                    signinum_j2k::J2kPacketizationBlockCodingMode::HighThroughput
+                                }
+                            },
+                        })
+                        .collect(),
+                    num_cbs_x: subband.num_cbs_x,
+                    num_cbs_y: subband.num_cbs_y,
+                })
+                .collect(),
+        }
     }
 
     #[test]
@@ -4384,7 +4862,7 @@ mod tests {
         let pixels = [0u8, 128, 255, 64, 32, 16];
         let mut accelerator = CudaEncodeStageAccelerator::default();
         let components = accelerator
-            .encode_deinterleave(signinum_j2k_native::J2kDeinterleaveToF32Job {
+            .encode_deinterleave(signinum_j2k::J2kDeinterleaveToF32Job {
                 pixels: &pixels,
                 num_pixels: 2,
                 num_components: 3,
@@ -4407,7 +4885,7 @@ mod tests {
             .prefer_cpu_ht_subband(true)
             .prefer_cpu_quantize_subband(true);
         let output = accelerator
-            .encode_ht_subband(signinum_j2k_native::J2kHtSubbandEncodeJob {
+            .encode_ht_subband(signinum_j2k::J2kHtSubbandEncodeJob {
                 coefficients: &[0.0; 16],
                 width: 4,
                 height: 4,
@@ -4428,7 +4906,7 @@ mod tests {
         assert_eq!(accelerator.dispatch_report().total(), 0);
 
         let quantized = accelerator
-            .encode_quantize_subband(signinum_j2k_native::J2kQuantizeSubbandJob {
+            .encode_quantize_subband(signinum_j2k::J2kQuantizeSubbandJob {
                 coefficients: &[0.0; 16],
                 step_exponent: 8,
                 step_mantissa: 0,
@@ -4621,9 +5099,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA stage accelerator");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA stage accelerator");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4680,9 +5166,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 7, 5, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward RCT");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            7,
+            5,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward RCT");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4711,9 +5205,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 3, 8, false, &options, &mut accelerator)
-                .expect("encode irreversible RGB with CUDA forward ICT");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode irreversible RGB with CUDA forward ICT");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4741,9 +5243,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward DWT 5/3");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward DWT 5/3");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4772,9 +5282,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward DWT 9/7");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward DWT 9/7");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4803,9 +5321,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA quantization");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA quantization");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4836,9 +5362,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4878,9 +5412,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4922,9 +5464,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 3, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K RGB DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K RGB DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4966,9 +5516,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode irreversible HTJ2K DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode irreversible HTJ2K DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -5010,9 +5568,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K with CUDA HT codeblock kernel");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K with CUDA HT codeblock kernel");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -5039,7 +5605,7 @@ mod tests {
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
         let encoded = accelerator
-            .encode_ht_code_block(signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+            .encode_ht_code_block(signinum_j2k::J2kHtCodeBlockEncodeJob {
                 coefficients: &coefficients,
                 width: 4,
                 height: 4,
@@ -5079,9 +5645,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K with CUDA HT batch codeblock kernel");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K with CUDA HT batch codeblock kernel");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()

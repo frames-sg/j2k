@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_core::{CacheStats, CodecContext};
-use signinum_j2k_native::CpuDecodeParallelism;
+
+use crate::CpuDecodeParallelism;
 
 /// Reusable JPEG 2000 decode context and cache state.
 #[derive(Debug, Default, Clone)]

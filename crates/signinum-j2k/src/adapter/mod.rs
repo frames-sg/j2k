@@ -7,3 +7,6 @@ pub mod adaptive_route;
 
 /// Device decode request normalization.
 pub mod device_plan;
+
+/// Encode-stage adapter contracts.
+pub mod encode_stage;

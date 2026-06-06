@@ -239,14 +239,14 @@ dependencies = [
 
 [[package]]
 name = "signinum-core"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "signinum-cuda-runtime"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "libloading",
  "thiserror",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-core",
  "signinum-j2k-native",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-cuda"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-core",
  "signinum-cuda-runtime",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-j2k-native"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "fearless_simd",
  "libm",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-jpeg"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "memchr",
  "rayon",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-nvidia-baseline"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-core",
  "signinum-j2k-cuda",
@@ -309,11 +309,11 @@ dependencies = [
 
 [[package]]
 name = "signinum-profile"
-version = "0.4.4"
+version = "0.5.0"
 
 [[package]]
 name = "signinum-transcode"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "rayon",
  "signinum-j2k-native",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-transcode-cuda"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "signinum-cuda-runtime",
  "signinum-j2k-native",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "signinum-transcode-metal"
-version = "0.4.4"
+version = "0.5.0"
 dependencies = [
  "metal",
  "rayon",

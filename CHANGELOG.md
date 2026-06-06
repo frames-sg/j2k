@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `status_d2h_us`, and `output_d2h_us` remain zero until the CUDA runtime
   exposes split transfer timings.
 
-## [0.4.4] - 2026-05-26
+## [0.5.0] - 2026-05-26
 
 ### Added
 

@@ -70,6 +70,10 @@ failure. The publish workflow's dry-run mode mirrors that limit: it uses
 `cargo package --list` for crates blocked only by unpublished workspace
 dependencies. Real publishes still run `cargo publish` in dependency order.
 
+Unpublished tooling is versioned but not released as runtime API:
+`signinum-test-support` follows the workspace version and remains
+`publish = false`; `xtask` stays `0.0.0` and unpublished.
+
 The crates.io publish order uses the current manifest versions and is enforced
 by `.github/workflows/publish.yml`:
 

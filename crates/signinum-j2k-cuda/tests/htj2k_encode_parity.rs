@@ -683,10 +683,10 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_runtime_required() {
-    use signinum_j2k_cuda::CudaEncodeStageAccelerator;
-    use signinum_j2k_native::{
+    use signinum_j2k::{
         J2kEncodeStageAccelerator as _, J2kHtj2kTileEncodeJob, J2kPacketizationProgressionOrder,
     };
+    use signinum_j2k_cuda::CudaEncodeStageAccelerator;
 
     if !runtime_required() {
         return;

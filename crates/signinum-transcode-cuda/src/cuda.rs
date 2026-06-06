@@ -9,12 +9,11 @@
 //! [`CudaTranscodeError::UnsupportedJob`], which Auto mode treats as a scalar
 //! fallback and Explicit mode surfaces as an error.
 
-use signinum_j2k_native::EncodedHtJ2kCodeBlock;
 use signinum_transcode::accelerator::{
     DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job,
     DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
-    Dwt97BatchStageTimings, Htj2k97CodeBlockOptions, J2kSubBandType, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
+    Dwt97BatchStageTimings, EncodedHtJ2kCodeBlock, Htj2k97CodeBlockOptions, J2kSubBandType,
+    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
     PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
     PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
     PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,

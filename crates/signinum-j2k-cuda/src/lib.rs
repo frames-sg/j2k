@@ -24,8 +24,8 @@ mod surface;
 pub use codec::Codec;
 pub use decoder::J2kDecoder;
 pub use direct_plan::{
-    CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kRect, CudaHtj2kStoreStep,
-    CudaHtj2kSubband, CudaHtj2kTransform,
+    CudaHtj2kBandId, CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, CudaHtj2kIdwtStep, CudaHtj2kRect,
+    CudaHtj2kStoreStep, CudaHtj2kSubband, CudaHtj2kTransform,
 };
 #[cfg(feature = "cuda-runtime")]
 #[doc(hidden)]
