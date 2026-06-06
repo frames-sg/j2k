@@ -217,7 +217,7 @@ before Metal candidate rows:
 
 - CMYK/YCCK `Rgb8` and `Rgba8`
 - progressive full, ROI, scaled, and region-scaled output
-- 12-bit extended/progressive `Gray16` and `Rgb16`
+- 12-bit extended/progressive `Gray16`, `Rgb16`, and `Rgba16`
 - lossless SOF3 predictor cases
 - `decode_rows_rgb`
   - `signinum-jpeg`: `Decoder::new` + `decode_rows` into a `RowSink<u8>`
@@ -711,10 +711,10 @@ Current v1 scope is explicit:
   full/ROI/scaled/region-scaled output, plus RGB row streaming, is CPU-backed, and
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
   assembly plus output projection. Initial 12-bit extended sequential
-  grayscale `Gray16`/`Rgb16` full-image/ROI/scaled/region-scaled output is
+  grayscale `Gray16`/`Rgb16`/`Rgba16` full-image/ROI/scaled/region-scaled output is
   CPU-backed, including restart-coded grayscale streams, and initial 12-bit
-  progressive grayscale `Gray16`/`Rgb16` output is CPU-backed. Initial 12-bit
-  APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` output is CPU-backed,
+  progressive grayscale `Gray16`/`Rgb16`/`Rgba16` output is CPU-backed. Initial 12-bit
+  APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` output is CPU-backed,
   including restart-coded color streams. Initial
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled output, 8-bit APP14 RGB `Rgb8` output,

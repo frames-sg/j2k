@@ -146,12 +146,20 @@ impl JpegCapabilityReport {
 
 fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEligibility {
     match info.sof_kind {
-        SofKind::Extended12 if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+        SofKind::Extended12
+            if matches!(
+                request.fmt,
+                PixelFormat::Gray16 | PixelFormat::Rgb16 | PixelFormat::Rgba16
+            ) =>
+        {
             return match (info.color_space, request.fmt) {
-                (ColorSpace::Grayscale, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+                (
+                    ColorSpace::Grayscale,
+                    PixelFormat::Gray16 | PixelFormat::Rgb16 | PixelFormat::Rgba16,
+                ) => {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::Rgb | ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::Rgb | ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 1
                         && info.sampling.max_v == 1
@@ -163,7 +171,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 2
                         && info.sampling.max_v == 1
@@ -171,7 +179,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 2
                         && info.sampling.max_v == 2
@@ -179,25 +187,31 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
                 ),
-                (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                (ColorSpace::Rgb, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16 only",
+                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
                 ),
             };
         }
         SofKind::Progressive12
-            if matches!(request.fmt, PixelFormat::Gray16 | PixelFormat::Rgb16) =>
+            if matches!(
+                request.fmt,
+                PixelFormat::Gray16 | PixelFormat::Rgb16 | PixelFormat::Rgba16
+            ) =>
         {
             return match (info.color_space, request.fmt) {
-                (ColorSpace::Grayscale, PixelFormat::Gray16 | PixelFormat::Rgb16) => {
+                (
+                    ColorSpace::Grayscale,
+                    PixelFormat::Gray16 | PixelFormat::Rgb16 | PixelFormat::Rgba16,
+                ) => {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::Rgb | ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::Rgb | ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 1
                         && info.sampling.max_v == 1
@@ -209,7 +223,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 2
                         && info.sampling.max_v == 1
@@ -217,7 +231,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 2
                         && info.sampling.max_v == 2
@@ -225,14 +239,14 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::YCbCr, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                (ColorSpace::YCbCr, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit progressive YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
                 ),
-                (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
+                (ColorSpace::Rgb, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit progressive RGB decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16 only",
+                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
                 ),
             };
         }

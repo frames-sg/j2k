@@ -719,6 +719,50 @@ fn session_batch_decode_progressive12_ycbcr420_matches_single_tile_decode() {
 }
 
 #[test]
+fn session_batch_decode_12bit_rgba16_matches_single_tile_decode() {
+    for (bytes, expected_rgb, width, label) in [
+        (
+            extended_12bit_rgb_8x8_jpeg(),
+            extended_12bit_rgb_8x8_rgb16(),
+            8,
+            "12-bit extended APP14 RGB",
+        ),
+        (
+            progressive_12bit_ycbcr_420_32x32_jpeg(),
+            extended_12bit_ycbcr_420_32x32_rgb16(),
+            32,
+            "12-bit progressive YCbCr 4:2:0",
+        ),
+    ] {
+        let expected = rgb16_to_rgba16(&expected_rgb, u16::MAX);
+        let stride = width * PixelFormat::Rgba16.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut session = JpegBatchSession::new(TileBatchOptions {
+            workers: NonZeroUsize::new(2),
+        });
+
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .unwrap_or_else(|err| panic!("{label} RGBA16 session batch decode: {err}"))
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
+    }
+}
+
+#[test]
 fn session_batch_decode_converts_cmyk_and_ycck() {
     let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
     let expected = four_component_8x8_rgb();

@@ -256,7 +256,7 @@ fn capability_report_inspects_12_bit_and_lossless_sof_without_building_decoder()
             &input,
             JpegCapabilityRequest {
                 op: JpegDecodeOp::Full,
-                fmt: PixelFormat::Rgba16,
+                fmt: PixelFormat::Rgba8,
             },
         )
         .expect("capability report should parse unsupported SOF metadata");
@@ -643,6 +643,88 @@ fn capability_report_marks_extended12_color_restart_rgb16_cpu_eligible() {
 }
 
 #[test]
+fn capability_report_marks_extended12_rgba16_cpu_eligible() {
+    for (name, input, expected_color, expected_dimensions, expected_sampling) in [
+        (
+            "grayscale",
+            grayscale_sof_jpeg(0xc1, 12),
+            ColorSpace::Grayscale,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "APP14 RGB 4:4:4",
+            extended_12bit_rgb_8x8_jpeg(),
+            ColorSpace::Rgb,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:4:4",
+            extended_12bit_ycbcr_8x8_jpeg(),
+            ColorSpace::YCbCr,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:2:2",
+            extended_12bit_ycbcr_422_32x8_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 8),
+            (2, 1),
+        ),
+        (
+            "YCbCr 4:2:0",
+            extended_12bit_ycbcr_420_32x32_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 32),
+            (2, 2),
+        ),
+    ] {
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: expected_dimensions.0 / 2,
+                h: expected_dimensions.1 / 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: expected_dimensions.0 / 2,
+                    h: expected_dimensions.1 / 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!("capability report should parse 12-bit extended {name} metadata: {err}")
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Extended12, "{name}");
+            assert_eq!(report.info.bit_depth, 12, "{name}");
+            assert_eq!(report.info.dimensions, expected_dimensions, "{name}");
+            assert_eq!(report.info.color_space, expected_color, "{name}");
+            assert_eq!(report.info.sampling.max_h, expected_sampling.0, "{name}");
+            assert_eq!(report.info.sampling.max_v, expected_sampling.1, "{name}");
+            assert!(report.cpu.eligible, "{name} op {op:?}");
+            assert!(!report.owned_cuda.eligible, "{name}");
+            assert!(!report.metal_fast.eligible, "{name}");
+        }
+    }
+}
+
+#[test]
 fn capability_report_marks_progressive12_gray16_and_rgb16_cpu_eligible() {
     let input = progressive_12bit_grayscale_8x8_jpeg();
     for fmt in [PixelFormat::Gray16, PixelFormat::Rgb16] {
@@ -674,6 +756,88 @@ fn capability_report_marks_progressive12_gray16_and_rgb16_cpu_eligible() {
             assert!(report.cpu.eligible, "fmt {fmt:?} op {op:?}");
             assert!(!report.owned_cuda.eligible);
             assert!(!report.metal_fast.eligible);
+        }
+    }
+}
+
+#[test]
+fn capability_report_marks_progressive12_rgba16_cpu_eligible() {
+    for (name, input, expected_color, expected_dimensions, expected_sampling) in [
+        (
+            "grayscale",
+            progressive_12bit_grayscale_8x8_jpeg(),
+            ColorSpace::Grayscale,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "APP14 RGB 4:4:4",
+            progressive_12bit_rgb_8x8_jpeg(),
+            ColorSpace::Rgb,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:4:4",
+            progressive_12bit_ycbcr_8x8_jpeg(),
+            ColorSpace::YCbCr,
+            (8, 8),
+            (1, 1),
+        ),
+        (
+            "YCbCr 4:2:2",
+            progressive_12bit_ycbcr_422_32x8_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 8),
+            (2, 1),
+        ),
+        (
+            "YCbCr 4:2:0",
+            progressive_12bit_ycbcr_420_32x32_jpeg(),
+            ColorSpace::YCbCr,
+            (32, 32),
+            (2, 2),
+        ),
+    ] {
+        for op in [
+            JpegDecodeOp::Full,
+            JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 1,
+                w: expected_dimensions.0 / 2,
+                h: expected_dimensions.1 / 2,
+            }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: expected_dimensions.0 / 2,
+                    h: expected_dimensions.1 / 2,
+                },
+                scale: Downscale::Half,
+            },
+        ] {
+            let report = JpegCapabilityReport::inspect(
+                &input,
+                JpegCapabilityRequest {
+                    op,
+                    fmt: PixelFormat::Rgba16,
+                },
+            )
+            .unwrap_or_else(|err| {
+                panic!("capability report should parse 12-bit progressive {name} metadata: {err}")
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Progressive12, "{name}");
+            assert_eq!(report.info.bit_depth, 12, "{name}");
+            assert_eq!(report.info.dimensions, expected_dimensions, "{name}");
+            assert_eq!(report.info.color_space, expected_color, "{name}");
+            assert_eq!(report.info.sampling.max_h, expected_sampling.0, "{name}");
+            assert_eq!(report.info.sampling.max_v, expected_sampling.1, "{name}");
+            assert!(report.cpu.eligible, "{name} op {op:?}");
+            assert!(!report.owned_cuda.eligible, "{name}");
+            assert!(!report.metal_fast.eligible, "{name}");
         }
     }
 }

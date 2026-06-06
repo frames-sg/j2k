@@ -17,9 +17,9 @@ on a single visual smoke test.
   coverage, RGB row streaming, and progressive 8-bit
   ROI/scaled/region-scaled CPU coverage have landed. Initial
   full-image/ROI/scaled/region-scaled 12-bit extended sequential grayscale
-  `Gray16`/`Rgb16` coverage, including restart-coded grayscale streams, initial
-  12-bit progressive grayscale `Gray16`/`Rgb16` coverage, and initial 12-bit
-  APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` coverage, including
+  `Gray16`/`Rgb16`/`Rgba16` coverage, including restart-coded grayscale streams, initial
+  12-bit progressive grayscale `Gray16`/`Rgb16`/`Rgba16` coverage, and initial 12-bit
+  APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage, including
   restart-coded color streams, have landed. Initial lossless SOF3 8-bit
   grayscale/RGB/YCbCr row streaming, 16-bit grayscale row streaming, 16-bit
   APP14 RGB `Rgb16` output/row streaming, 8-bit APP14 RGB/YCbCr

@@ -258,11 +258,12 @@ four-component fixtures. Progressive 8-bit
 full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
 assembly followed by output projection. Initial 12-bit extended sequential
 grayscale full-image/ROI/scaled/region-scaled decode writes native `Gray16`
-samples or expanded `Rgb16` samples, including restart-coded grayscale streams.
+samples or expanded `Rgb16`/`Rgba16` samples, including restart-coded
+grayscale streams.
 Initial 12-bit progressive grayscale full-image/ROI/scaled/region-scaled decode
-writes native `Gray16` samples or expanded `Rgb16` samples; initial 12-bit
+writes native `Gray16` samples or expanded `Rgb16`/`Rgba16` samples; initial 12-bit
 APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/
-region-scaled decode writes native `Rgb16` samples, including restart-coded
+region-scaled decode writes native `Rgb16`/`Rgba16` samples, including restart-coded
 color streams. Initial SOF3 8-bit grayscale/RGB/YCbCr row streaming, 8-bit
 APP14 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba8`, 16-bit APP14
 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba16`,
@@ -489,11 +490,11 @@ provisional and check the most recent commits before relying on it.
 - Expanding JPEG compatibility through CPU parity first: initial CMYK/YCCK CPU
   `Rgb8` and `Rgba8` full/ROI/scaled/region-scaled conversion and
   progressive 8-bit ROI/scaled CPU output projection have landed. Initial
-  12-bit extended sequential grayscale `Gray16`/`Rgb16`
+  12-bit extended sequential grayscale `Gray16`/`Rgb16`/`Rgba16`
   full-image/ROI/scaled/region-scaled decode, including restart-coded grayscale
-  streams, initial 12-bit progressive grayscale `Gray16`/`Rgb16`
+  streams, initial 12-bit progressive grayscale `Gray16`/`Rgb16`/`Rgba16`
   full-image/ROI/scaled/region-scaled decode, and initial 12-bit APP14 RGB
-  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` decode, including restart-coded
+  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` decode, including restart-coded
   color streams, have landed, while expanded four-component subsampled/malformed
   coverage, other 12-bit subsampled color support, stronger non-constant 12-bit
   oracle fixtures, and other lossless SOF3 16-bit color layouts remain

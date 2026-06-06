@@ -1096,6 +1096,18 @@ impl<'a> Decoder<'a> {
                         alpha,
                     );
                 }
+                if matches!(
+                    self.info.sof_kind,
+                    SofKind::Extended12 | SofKind::Progressive12
+                ) {
+                    return self.decode_12bit_rgba16_region_scaled_into(
+                        out,
+                        stride,
+                        Rect::full(self.info.dimensions),
+                        downscale,
+                        alpha,
+                    );
+                }
                 Err(JpegError::NotImplemented {
                     sof: self.info.sof_kind,
                 })
@@ -1593,6 +1605,14 @@ impl<'a> Decoder<'a> {
             OutputFormat::Rgba16 { alpha } | OutputFormat::Rgba16Scaled { alpha, .. } => {
                 if self.lossless_plan.is_some() {
                     return self.decode_lossless_rgba16_region_scaled_into(
+                        out, stride, roi, downscale, alpha,
+                    );
+                }
+                if matches!(
+                    self.info.sof_kind,
+                    SofKind::Extended12 | SofKind::Progressive12
+                ) {
+                    return self.decode_12bit_rgba16_region_scaled_into(
                         out, stride, roi, downscale, alpha,
                     );
                 }
@@ -3183,6 +3203,34 @@ impl Decoder<'_> {
             _ => {
                 self.decode_lossless_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
             }
+        }?;
+        copy_rgb16_to_rgba16(
+            &rgb,
+            rgb_stride,
+            output_rect.w,
+            output_rect.h,
+            out,
+            stride,
+            alpha,
+        );
+        Ok(outcome)
+    }
+
+    fn decode_12bit_rgba16_region_scaled_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        alpha: u16,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let rgb_stride = output_rect.w as usize * 6;
+        let mut rgb = allocate_output_buffer(rgb_stride * output_rect.h as usize);
+        let outcome = if self.info.sof_kind == SofKind::Progressive12 {
+            self.decode_progressive12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
+        } else {
+            self.decode_extended12_rgb16_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
         }?;
         copy_rgb16_to_rgba16(
             &rgb,
@@ -5248,6 +5296,13 @@ fn output_format_from_parts(
             (SofKind::Extended12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
                 factor: jpeg_downscale(scale),
             }),
+            (SofKind::Extended12, PixelFormat::Rgba16, Downscale::None) => {
+                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
+            }
+            (SofKind::Extended12, PixelFormat::Rgba16, scale) => Ok(OutputFormat::Rgba16Scaled {
+                alpha: u16::MAX,
+                factor: jpeg_downscale(scale),
+            }),
             (SofKind::Progressive12, PixelFormat::Gray16, Downscale::None) => {
                 Ok(OutputFormat::Gray16)
             }
@@ -5262,6 +5317,15 @@ fn output_format_from_parts(
             (SofKind::Progressive12, PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
                 factor: jpeg_downscale(scale),
             }),
+            (SofKind::Progressive12, PixelFormat::Rgba16, Downscale::None) => {
+                Ok(OutputFormat::Rgba16 { alpha: u16::MAX })
+            }
+            (SofKind::Progressive12, PixelFormat::Rgba16, scale) => {
+                Ok(OutputFormat::Rgba16Scaled {
+                    alpha: u16::MAX,
+                    factor: jpeg_downscale(scale),
+                })
+            }
             (_, PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
                 Err(JpegError::NotImplemented { sof: sof_kind })
             }

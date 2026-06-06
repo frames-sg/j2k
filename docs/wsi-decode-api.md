@@ -40,12 +40,14 @@ from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
 CPU conversion is available for `Rgb8` and `Rgba8` full/ROI/scaled/
 region-scaled output, with RGB row streaming for the supported
 four-component fixtures. Initial 12-bit extended sequential grayscale
-full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded `Rgb16` is
-available, including restart-coded grayscale streams. Initial 12-bit
+full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded
+`Rgb16`/`Rgba16` is available, including restart-coded grayscale streams.
+Initial 12-bit
 progressive grayscale full-image/ROI/scaled/region-scaled decode to `Gray16` or
-expanded `Rgb16` is available, and initial 12-bit APP14 RGB 4:4:4 plus YCbCr
-4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available, including restart-coded
-color streams. Other 12-bit subsampled color, stronger non-constant 12-bit
+expanded `Rgb16`/`Rgba16` is available, and initial 12-bit APP14 RGB 4:4:4
+plus YCbCr 4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available,
+including restart-coded color streams. Other 12-bit subsampled color,
+stronger non-constant 12-bit
 oracle fixtures, expanded four-component subsampled/malformed fixture coverage,
 and other lossless SOF3 16-bit color layouts remain structured unsupported
 or not-implemented cases until the CPU parity phases in
@@ -186,7 +188,7 @@ backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
 CMYK/YCCK subsampled/malformed coverage, other 12-bit subsampled color support,
-stronger non-constant 12-bit oracle fixtures, and remaining SOF3 16-bit color
+stronger non-constant 12-bit oracle fixtures, and other SOF3 16-bit color
 CPU parity must land before any Metal acceleration for those classes is
 promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
