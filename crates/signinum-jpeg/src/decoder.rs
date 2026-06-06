@@ -2205,11 +2205,6 @@ impl Decoder<'_> {
                 count: self.plan.components.len() as u8,
             });
         }
-        if self.plan.restart_interval.is_some() {
-            return Err(JpegError::NotImplemented {
-                sof: self.info.sof_kind,
-            });
-        }
         if !(1..=7).contains(&plan.predictor) {
             return Err(JpegError::UnsupportedPredictor {
                 predictor: plan.predictor,
@@ -2219,22 +2214,40 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let total_pixels = width.saturating_mul(height);
+        let mut pixels_since_restart = 0u32;
+        let mut expected_rst = 0u8;
         for y in 0..height as usize {
             for x in 0..width as usize {
+                let pixel_index = y as u32 * width + x as u32;
+                if restart > 0 && pixels_since_restart == restart {
+                    consume_lossless_restart(
+                        &mut br,
+                        pixel_index,
+                        total_pixels,
+                        &mut expected_rst,
+                    )?;
+                    pixels_since_restart = 0;
+                }
                 for component in &self.plan.components {
                     if component.output_index >= 3 {
                         return Err(JpegError::UnsupportedComponentCount {
                             count: self.plan.components.len() as u8,
                         });
                     }
-                    let predictor = lossless_predictor_rgb8(
-                        plan.predictor,
-                        out,
-                        stride,
-                        x,
-                        y,
-                        component.output_index,
-                    );
+                    let predictor = if restart > 0 && pixels_since_restart == 0 {
+                        128
+                    } else {
+                        lossless_predictor_rgb8(
+                            plan.predictor,
+                            out,
+                            stride,
+                            x,
+                            y,
+                            component.output_index,
+                        )
+                    };
                     let diff = component.dc_table.decode_fast_dc(&mut br)?;
                     let sample = predictor + diff;
                     if !(0..=255).contains(&sample) {
@@ -2246,6 +2259,7 @@ impl Decoder<'_> {
                     let offset = y * stride + x * 3 + component.output_index;
                     out[offset] = sample as u8;
                 }
+                pixels_since_restart += 1;
             }
         }
 

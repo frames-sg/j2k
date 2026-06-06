@@ -32,8 +32,8 @@ unsupported errors until a separate entropy and conformance plan exists.
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
-  to `Rgb8`; YCbCr/16-bit color layouts, row output, and non-grayscale
-  restart coverage remain open
+  to `Rgb8`, including restart-coded APP14 RGB streams; YCbCr/16-bit color
+  layouts and row output remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -267,8 +267,8 @@ Implementation requirements:
   and row behavior where the predictor dependencies allow it.
   Status: predictor-specific positive coverage has landed for predictors 1-7,
   including ROI/scaled/region-scaled output; restart-coded grayscale coverage
-  and APP14 RGB color coverage have landed. Malformed streams, row output,
-  YCbCr/16-bit color, and broader precision coverage remain open.
+  and APP14 RGB color/restart coverage have landed. Malformed streams, row
+  output, YCbCr/16-bit color, and broader precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during

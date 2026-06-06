@@ -258,8 +258,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     JpegBackendEligibility::eligible()
                 }
                 (ColorSpace::Rgb, 8, PixelFormat::Rgb8)
-                    if info.restart_interval.is_none()
-                        && info.sampling.len() == 3
+                    if info.sampling.len() == 3
                         && info.sampling.max_h == 1
                         && info.sampling.max_v == 1
                         && info
@@ -269,11 +268,6 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                             .all(|&(h, v)| h == 1 && v == 1) =>
                 {
                     JpegBackendEligibility::eligible()
-                }
-                (ColorSpace::Rgb, 8, PixelFormat::Rgb8) if info.restart_interval.is_some() => {
-                    JpegBackendEligibility::rejected(
-                        "JPEG CPU lossless SOF3 APP14 RGB decode does not yet support restart intervals",
-                    )
                 }
                 (ColorSpace::Rgb, 8, PixelFormat::Rgb8) => JpegBackendEligibility::rejected(
                     "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
