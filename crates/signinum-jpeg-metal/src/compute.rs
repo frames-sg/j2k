@@ -16,7 +16,7 @@ use std::{
 #[cfg(target_os = "macos")]
 use metal::{
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState,
-    Device, MTLBlitOption, MTLOrigin, MTLPixelFormat, MTLResourceOptions, MTLSize,
+    Device, MTLPixelFormat, MTLResourceOptions, MTLSize,
 };
 use signinum_core::{BackendRequest, BufferError, PixelFormat, Rect};
 use signinum_jpeg::{
@@ -510,6 +510,19 @@ struct JpegWindowedPackBatchParams {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct JpegTexturePackBatchParams {
+    width: u32,
+    height: u32,
+    chroma_width: u32,
+    chroma_height: u32,
+    tile_index: u32,
+    alpha: u32,
+    mode: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct PreparedHuffmanHost {
     min_code: [i32; 17],
     max_code: [i32; 17],
@@ -653,14 +666,15 @@ pub(crate) struct MetalRuntime {
     pack_420_rgb_pipeline: ComputePipelineState,
     pack_420_rgba_pipeline: ComputePipelineState,
     pack_420_rgb_batch_pipeline: ComputePipelineState,
-    pack_420_rgba_batch_pipeline: ComputePipelineState,
+    pack_420_rgba_texture_pipeline: ComputePipelineState,
     pack_420_windowed_rgb_batch_pipeline: ComputePipelineState,
     pack_422_rgb_pipeline: ComputePipelineState,
     pack_422_rgba_pipeline: ComputePipelineState,
     pack_422_rgb_batch_pipeline: ComputePipelineState,
-    pack_422_rgba_batch_pipeline: ComputePipelineState,
+    pack_422_rgba_texture_pipeline: ComputePipelineState,
     pack_422_windowed_rgb_batch_pipeline: ComputePipelineState,
     pack_444_rgb_batch_pipeline: ComputePipelineState,
+    pack_444_rgba_texture_pipeline: ComputePipelineState,
     pack_422_windowed_pipeline: ComputePipelineState,
     pack_422_windowed_rgb_pipeline: ComputePipelineState,
     pack_422_windowed_rgba_pipeline: ComputePipelineState,
@@ -722,10 +736,10 @@ impl MetalRuntime {
         let pack_420_rgb_batch_function = library.get_function("jpeg_pack_420_rgb_batch", None)?;
         let pack_420_rgb_batch_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_420_rgb_batch_function)?;
-        let pack_420_rgba_batch_function =
-            library.get_function("jpeg_pack_420_rgba_batch", None)?;
-        let pack_420_rgba_batch_pipeline =
-            device.new_compute_pipeline_state_with_function(&pack_420_rgba_batch_function)?;
+        let pack_420_rgba_texture_function =
+            library.get_function("jpeg_pack_420_rgba_texture", None)?;
+        let pack_420_rgba_texture_pipeline =
+            device.new_compute_pipeline_state_with_function(&pack_420_rgba_texture_function)?;
         let pack_420_windowed_rgb_batch_function =
             library.get_function("jpeg_pack_420_windowed_rgb_batch", None)?;
         let pack_420_windowed_rgb_batch_pipeline = device
@@ -739,10 +753,10 @@ impl MetalRuntime {
         let pack_422_rgb_batch_function = library.get_function("jpeg_pack_422_rgb_batch", None)?;
         let pack_422_rgb_batch_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_422_rgb_batch_function)?;
-        let pack_422_rgba_batch_function =
-            library.get_function("jpeg_pack_422_rgba_batch", None)?;
-        let pack_422_rgba_batch_pipeline =
-            device.new_compute_pipeline_state_with_function(&pack_422_rgba_batch_function)?;
+        let pack_422_rgba_texture_function =
+            library.get_function("jpeg_pack_422_rgba_texture", None)?;
+        let pack_422_rgba_texture_pipeline =
+            device.new_compute_pipeline_state_with_function(&pack_422_rgba_texture_function)?;
         let pack_422_windowed_rgb_batch_function =
             library.get_function("jpeg_pack_422_windowed_rgb_batch", None)?;
         let pack_422_windowed_rgb_batch_pipeline = device
@@ -750,6 +764,10 @@ impl MetalRuntime {
         let pack_444_rgb_batch_function = library.get_function("jpeg_pack_444_rgb_batch", None)?;
         let pack_444_rgb_batch_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_444_rgb_batch_function)?;
+        let pack_444_rgba_texture_function =
+            library.get_function("jpeg_pack_444_rgba_texture", None)?;
+        let pack_444_rgba_texture_pipeline =
+            device.new_compute_pipeline_state_with_function(&pack_444_rgba_texture_function)?;
         let pack_422_windowed_function = library.get_function("jpeg_pack_422_windowed", None)?;
         let pack_422_windowed_pipeline =
             device.new_compute_pipeline_state_with_function(&pack_422_windowed_function)?;
@@ -862,14 +880,15 @@ impl MetalRuntime {
             pack_420_rgb_pipeline,
             pack_420_rgba_pipeline,
             pack_420_rgb_batch_pipeline,
-            pack_420_rgba_batch_pipeline,
+            pack_420_rgba_texture_pipeline,
             pack_420_windowed_rgb_batch_pipeline,
             pack_422_rgb_pipeline,
             pack_422_rgba_pipeline,
             pack_422_rgb_batch_pipeline,
-            pack_422_rgba_batch_pipeline,
+            pack_422_rgba_texture_pipeline,
             pack_422_windowed_rgb_batch_pipeline,
             pack_444_rgb_batch_pipeline,
+            pack_444_rgba_texture_pipeline,
             pack_422_windowed_pipeline,
             pack_422_windowed_rgb_pipeline,
             pack_422_windowed_rgba_pipeline,
@@ -5137,38 +5156,6 @@ fn validate_rgba_texture_batch_output(
 }
 
 #[cfg(target_os = "macos")]
-fn blit_rgba_staging_to_textures(
-    command_buffer: &CommandBufferRef,
-    rgba_staging: &Buffer,
-    output: &crate::MetalBatchTextureOutput,
-    dimensions: (u32, u32),
-    tile_count: usize,
-    out_stride: usize,
-    out_tile_len: usize,
-) -> Result<(), Error> {
-    let blit_encoder = command_buffer.new_blit_command_encoder();
-    for index in 0..tile_count {
-        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
-            message: "JPEG Metal batch texture output slot was missing".to_string(),
-        })?;
-        blit_encoder.copy_from_buffer_to_texture(
-            rgba_staging,
-            (index * out_tile_len) as u64,
-            out_stride as u64,
-            out_tile_len as u64,
-            MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
-            texture,
-            0,
-            0,
-            MTLOrigin { x: 0, y: 0, z: 0 },
-            MTLBlitOption::None,
-        );
-    }
-    blit_encoder.end_encoding();
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
 fn texture_batch_success_results(
     output: &crate::MetalBatchTextureOutput,
     dimensions: (u32, u32),
@@ -5188,6 +5175,39 @@ fn texture_batch_success_results(
         )));
     }
     Ok(results)
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_rgba_texture_pack(
+    command_buffer: &CommandBufferRef,
+    pipeline: &ComputePipelineState,
+    planes: (&Buffer, &Buffer, &Buffer),
+    output: &crate::MetalBatchTextureOutput,
+    params: JpegTexturePackBatchParams,
+    tile_count: usize,
+    dispatch_dims: (u32, u32),
+) -> Result<(), Error> {
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(pipeline);
+    pack_encoder.set_buffer(0, Some(planes.0), 0);
+    pack_encoder.set_buffer(1, Some(planes.1), 0);
+    pack_encoder.set_buffer(2, Some(planes.2), 0);
+    for index in 0..tile_count {
+        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        let mut params = params;
+        params.tile_index = checked_u32(index, "texture batch tile index")?;
+        pack_encoder.set_texture(0, Some(texture));
+        pack_encoder.set_bytes(
+            3,
+            size_of::<JpegTexturePackBatchParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(pack_encoder, pipeline, dispatch_dims);
+    }
+    pack_encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -5798,11 +5818,6 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
         "fast420_texture_cr",
         chroma_len * tile_count,
     );
-    let rgba_staging = batch_scratch.private_buffer(
-        &runtime.device,
-        "fast420_texture_rgba_staging",
-        out_tile_len * tile_count,
-    );
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
@@ -6003,36 +6018,23 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
         }
     }
 
-    let pack_encoder = command_buffer.new_compute_command_encoder();
-    pack_encoder.set_compute_pipeline_state(&runtime.pack_420_rgba_batch_pipeline);
-    pack_encoder.set_buffer(0, Some(&y_plane), 0);
-    pack_encoder.set_buffer(1, Some(&cb_plane), 0);
-    pack_encoder.set_buffer(2, Some(&cr_plane), 0);
-    pack_encoder.set_buffer(3, Some(&rgba_staging), 0);
-    pack_encoder.set_bytes(
-        4,
-        size_of::<JpegFast420BatchParams>() as u64,
-        (&raw const params).cast(),
-    );
-    dispatch_3d_pipeline(
-        pack_encoder,
-        &runtime.pack_420_rgba_batch_pipeline,
-        (
-            packed_pair_extent(width),
-            packed_pair_extent(height),
-            tile_count_u32,
-        ),
-    );
-    pack_encoder.end_encoding();
-
-    blit_rgba_staging_to_textures(
+    let pack_params = JpegTexturePackBatchParams {
+        width,
+        height,
+        chroma_width,
+        chroma_height,
+        tile_index: 0,
+        alpha: u32::from(u8::MAX),
+        mode: MODE_YCBCR,
+    };
+    dispatch_rgba_texture_pack(
         command_buffer,
-        &rgba_staging,
+        &runtime.pack_420_rgba_texture_pipeline,
+        (&y_plane, &cb_plane, &cr_plane),
         output,
-        first.dimensions,
+        pack_params,
         tile_count,
-        out_stride,
-        out_tile_len,
+        (packed_pair_extent(width), packed_pair_extent(height)),
     )?;
 
     command_buffer.commit();
@@ -6486,11 +6488,6 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
         "fast422_texture_cr",
         chroma_len * tile_count,
     );
-    let rgba_staging = batch_scratch.private_buffer(
-        &runtime.device,
-        "fast422_texture_rgba_staging",
-        out_tile_len * tile_count,
-    );
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
@@ -6576,32 +6573,23 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
     );
     decoder_encoder.end_encoding();
 
-    let pack_encoder = command_buffer.new_compute_command_encoder();
-    pack_encoder.set_compute_pipeline_state(&runtime.pack_422_rgba_batch_pipeline);
-    pack_encoder.set_buffer(0, Some(&y_plane), 0);
-    pack_encoder.set_buffer(1, Some(&cb_plane), 0);
-    pack_encoder.set_buffer(2, Some(&cr_plane), 0);
-    pack_encoder.set_buffer(3, Some(&rgba_staging), 0);
-    pack_encoder.set_bytes(
-        4,
-        size_of::<JpegFast420BatchParams>() as u64,
-        (&raw const params).cast(),
-    );
-    dispatch_3d_pipeline(
-        pack_encoder,
-        &runtime.pack_422_rgba_batch_pipeline,
-        (packed_pair_extent(width), height, tile_count_u32),
-    );
-    pack_encoder.end_encoding();
-
-    blit_rgba_staging_to_textures(
+    let pack_params = JpegTexturePackBatchParams {
+        width,
+        height,
+        chroma_width,
+        chroma_height,
+        tile_index: 0,
+        alpha: u32::from(u8::MAX),
+        mode: MODE_YCBCR,
+    };
+    dispatch_rgba_texture_pack(
         command_buffer,
-        &rgba_staging,
+        &runtime.pack_422_rgba_texture_pipeline,
+        (&y_plane, &cb_plane, &cr_plane),
         output,
-        first.dimensions,
+        pack_params,
         tile_count,
-        out_stride,
-        out_tile_len,
+        (packed_pair_extent(width), height),
     )?;
 
     command_buffer.commit();
@@ -6982,22 +6970,6 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         origin_x: 0,
         origin_y: 0,
     };
-    let pack_params = JpegWindowedPackBatchParams {
-        src_width: width,
-        src_height: height,
-        chroma_width: width,
-        chroma_height: height,
-        src_x: 0,
-        src_y: 0,
-        width,
-        height,
-        tile_count: tile_count_u32,
-        out_stride: checked_u32(out_stride, "fast444 texture batch output stride")?,
-        alpha: u32::from(u8::MAX),
-        mode: plane_mode_to_u32(first_mode),
-        out_format: OUT_RGBA,
-    };
-
     let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
@@ -7032,11 +7004,6 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         &runtime.device,
         "fast444_texture_cr",
         plane_len * tile_count,
-    );
-    let rgba_staging = batch_scratch.private_buffer(
-        &runtime.device,
-        "fast444_texture_rgba_staging",
-        out_tile_len * tile_count,
     );
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer = batch_scratch.shared_buffer_with_slice(
@@ -7124,32 +7091,23 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
     );
     decoder_encoder.end_encoding();
 
-    let pack_encoder = command_buffer.new_compute_command_encoder();
-    pack_encoder.set_compute_pipeline_state(&runtime.pack_444_rgb_batch_pipeline);
-    pack_encoder.set_buffer(0, Some(&y_plane), 0);
-    pack_encoder.set_buffer(1, Some(&cb_plane), 0);
-    pack_encoder.set_buffer(2, Some(&cr_plane), 0);
-    pack_encoder.set_buffer(3, Some(&rgba_staging), 0);
-    pack_encoder.set_bytes(
-        4,
-        size_of::<JpegWindowedPackBatchParams>() as u64,
-        (&raw const pack_params).cast(),
-    );
-    dispatch_3d_pipeline(
-        pack_encoder,
-        &runtime.pack_444_rgb_batch_pipeline,
-        (width, height, tile_count_u32),
-    );
-    pack_encoder.end_encoding();
-
-    blit_rgba_staging_to_textures(
+    let pack_params = JpegTexturePackBatchParams {
+        width,
+        height,
+        chroma_width: width,
+        chroma_height: height,
+        tile_index: 0,
+        alpha: u32::from(u8::MAX),
+        mode: plane_mode_to_u32(first_mode),
+    };
+    dispatch_rgba_texture_pack(
         command_buffer,
-        &rgba_staging,
+        &runtime.pack_444_rgba_texture_pipeline,
+        (&y_plane, &cb_plane, &cr_plane),
         output,
-        first.dimensions,
+        pack_params,
         tile_count,
-        out_stride,
-        out_tile_len,
+        (width, height),
     )?;
 
     command_buffer.commit();

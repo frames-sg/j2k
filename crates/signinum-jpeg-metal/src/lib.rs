@@ -2642,6 +2642,52 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn rgb8_texture_batch_decode_avoids_private_rgba_staging_buffers() {
+        let cases = [
+            (
+                BASELINE_420,
+                (16, 16),
+                if std::env::var_os("SIGNINUM_JPEG_METAL_SPLIT_FAST420_BATCH").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                {
+                    5
+                } else {
+                    3
+                },
+            ),
+            (BASELINE_422, (16, 8), 3),
+            (BASELINE_444, (8, 8), 3),
+        ];
+
+        for (input, dimensions, expected_private_allocations) in cases {
+            let session = MetalBackendSession::system_default().expect("Metal backend session");
+            let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, dimensions, 2)
+                .expect("texture output");
+            let inputs = [input, input];
+
+            compute::reset_jpeg_private_buffer_allocations_for_test();
+            let tiles = Codec::decode_rgb8_batch_into_metal_textures_with_session(
+                &inputs, &output, &session,
+            )
+            .expect("decode into reusable textures");
+            assert_eq!(tiles.len(), 2);
+            for tile in tiles {
+                assert_eq!(
+                    tile.expect("texture tile").pixel_format(),
+                    PixelFormat::Rgba8
+                );
+            }
+
+            assert_eq!(
+                compute::jpeg_private_buffer_allocations_for_test(),
+                expected_private_allocations,
+                "texture batch decode should not allocate a private RGBA staging buffer for {dimensions:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn jpeg_device_decode_uses_private_internal_planes() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let mut decoder = Decoder::new(BASELINE_420).expect("decoder");

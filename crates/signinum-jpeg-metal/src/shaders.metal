@@ -171,6 +171,16 @@ struct JpegWindowedPackBatchParams {
     uint out_format;
 };
 
+struct JpegTexturePackBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint tile_index;
+    uint alpha;
+    uint mode;
+};
+
 struct JpegDecodeStatus {
     uint code;
     uint detail;
@@ -2169,6 +2179,30 @@ inline void store_rgba_ycbcr(
     out[out_idx + 3u] = uchar(alpha);
 }
 
+inline float4 rgba_float_ycbcr(
+    uchar y_value,
+    uchar cb_value,
+    uchar cr_value,
+    uint alpha
+) {
+    const int y = int(y_value);
+    const int cb_centered = int(cb_value) - 128;
+    const int cr_centered = int(cr_value) - 128;
+    const uchar r = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
+    const uchar g = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
+    const uchar b = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    return float4(float(r), float(g), float(b), float(uchar(alpha))) / 255.0f;
+}
+
+inline float4 rgba_float_direct(
+    uchar r,
+    uchar g,
+    uchar b,
+    uint alpha
+) {
+    return float4(float(r), float(g), float(b), float(uchar(alpha))) / 255.0f;
+}
+
 kernel void jpeg_pack(
     device const uchar *plane0 [[buffer(0)]],
     device const uchar *plane1 [[buffer(1)]],
@@ -2268,6 +2302,35 @@ kernel void jpeg_pack_444_rgb_batch(
 
     if (params.out_format == OUT_RGBA) {
         out[out_idx + 3] = uchar(params.alpha);
+    }
+}
+
+kernel void jpeg_pack_444_rgba_texture(
+    device const uchar *plane0 [[buffer(0)]],
+    device const uchar *plane1 [[buffer(1)]],
+    device const uchar *plane2 [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint plane_len = params.width * params.height;
+    const uint plane_base = params.tile_index * plane_len;
+    const uint idx = plane_base + gid.y * params.width + gid.x;
+
+    if (params.mode == MODE_GRAY) {
+        const uchar gray = plane0[idx];
+        out.write(rgba_float_direct(gray, gray, gray, params.alpha), gid);
+    } else if (params.mode == MODE_RGB) {
+        out.write(
+            rgba_float_direct(plane0[idx], plane1[idx], plane2[idx], params.alpha),
+            gid
+        );
+    } else {
+        out.write(rgba_float_ycbcr(plane0[idx], plane1[idx], plane2[idx], params.alpha), gid);
     }
 }
 
@@ -5577,6 +5640,85 @@ kernel void jpeg_pack_420_rgba_batch(
     }
 }
 
+kernel void jpeg_pack_420_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    const uint y0 = gid.y * 2u;
+    if (x0 >= params.width || y0 >= params.height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.width * params.height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint chroma_y = min(y0 / 2u, params.chroma_height - 1u);
+    const uint near_y = (y0 & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cb = tile_cb_plane + near_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cr = tile_cr_plane + near_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v2_sample_even_pair(near_cb, curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr, curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx0 = y0 * params.width + x0;
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx0], cb0, cr0, params.alpha),
+        uint2(x0, y0)
+    );
+    const uint x1 = x0 + 1u;
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx0 + 1u], cb1, cr1, params.alpha),
+            uint2(x1, y0)
+        );
+    }
+
+    const uint y1 = y0 + 1u;
+    if (y1 >= params.height) {
+        return;
+    }
+
+    const uint chroma_y1 = min(y1 / 2u, params.chroma_height - 1u);
+    const uint near_y1 = (y1 & 1u) == 0u
+        ? (chroma_y1 == 0u ? 0u : chroma_y1 - 1u)
+        : min(chroma_y1 + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb1 = tile_cb_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cb1 = tile_cb_plane + near_y1 * params.chroma_width;
+    device const uchar *curr_cr1 = tile_cr_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cr1 = tile_cr_plane + near_y1 * params.chroma_width;
+
+    h2v2_sample_even_pair(near_cb1, curr_cb1, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr1, curr_cr1, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx1 = y1 * params.width + x0;
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx1], cb0, cr0, params.alpha),
+        uint2(x0, y1)
+    );
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx1 + 1u], cb1, cr1, params.alpha),
+            uint2(x1, y1)
+        );
+    }
+}
+
 kernel void jpeg_pack_422_rgb(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -5683,6 +5825,50 @@ kernel void jpeg_pack_422_rgba_batch(
     store_rgba_ycbcr(out, out_idx, tile_y_plane[y_idx], cb0, cr0, params.alpha);
     if (x1 < params.width) {
         store_rgba_ycbcr(out, out_idx + 4u, tile_y_plane[y_idx + 1u], cb1, cr1, params.alpha);
+    }
+}
+
+kernel void jpeg_pack_422_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    if (x0 >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.width * params.height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = gid.y * params.width + x0;
+    const uint chroma_y = min(gid.y, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v1_sample_even_pair(curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v1_sample_even_pair(curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx], cb0, cr0, params.alpha),
+        uint2(x0, gid.y)
+    );
+    const uint x1 = x0 + 1u;
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx + 1u], cb1, cr1, params.alpha),
+            uint2(x1, gid.y)
+        );
     }
 }
 
