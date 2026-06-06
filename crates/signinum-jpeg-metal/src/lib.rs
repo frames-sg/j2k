@@ -1095,7 +1095,7 @@ impl Codec {
 
         compute::decode_full_rgb8_batch_into_textures_with_session(&requests, output, session)?
             .ok_or(Error::UnsupportedMetalRequest {
-                reason: "JPEG Metal texture batch output currently supports batchable full-tile RGB8 fast 4:4:4 inputs",
+                reason: "JPEG Metal texture batch output currently supports batchable full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
             })
     }
 
@@ -2062,6 +2062,7 @@ mod tests {
     const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
     const BASELINE_420_RESTART: &[u8] =
         include_bytes!("../fixtures/jpeg/baseline_420_restart_32x16.jpg");
+    const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
     const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
     #[cfg(not(target_os = "macos"))]
     const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
@@ -2555,6 +2556,78 @@ mod tests {
         for (index, tile) in tiles.into_iter().enumerate() {
             let tile = tile.expect("texture tile");
             assert_eq!(tile.dimensions(), (8, 8));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast420_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output = MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 16), 2)
+            .expect("texture output");
+        let inputs = [BASELINE_420, BASELINE_420];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (16, 16));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (16, 16));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast422_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (16, 8), 2).expect("texture output");
+        let inputs = [BASELINE_422, BASELINE_422];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_422)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles =
+            Codec::decode_rgb8_batch_into_metal_textures_with_session(&inputs, &output, &session)
+                .expect("decode into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (16, 8));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (16, 8));
             assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
             assert!(std::ptr::eq(
                 tile.texture(),

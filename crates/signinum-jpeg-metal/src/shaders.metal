@@ -2157,6 +2157,18 @@ inline void store_rgb_ycbcr(
     out[out_idx + 2u] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
 }
 
+inline void store_rgba_ycbcr(
+    device uchar *out,
+    uint out_idx,
+    uchar y_value,
+    uchar cb_value,
+    uchar cr_value,
+    uint alpha
+) {
+    store_rgb_ycbcr(out, out_idx, y_value, cb_value, cr_value);
+    out[out_idx + 3u] = uchar(alpha);
+}
+
 kernel void jpeg_pack(
     device const uchar *plane0 [[buffer(0)]],
     device const uchar *plane1 [[buffer(1)]],
@@ -5494,6 +5506,77 @@ kernel void jpeg_pack_420_rgba(
     out[out_idx + 3] = uchar(params.alpha);
 }
 
+kernel void jpeg_pack_420_rgba_batch(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    device uchar *out [[buffer(3)]],
+    constant JpegFast420BatchParams &params [[buffer(4)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    const uint y0 = gid.y * 2u;
+    if (x0 >= params.width || y0 >= params.height || gid.z >= params.tile_count) {
+        return;
+    }
+
+    const uint y_plane_base = gid.z * params.width * params.height;
+    const uint chroma_plane_base = gid.z * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint x1 = x0 + 1u;
+    const uint out_base = gid.z * params.out_stride * params.height;
+
+    const uint chroma_y = min(y0 / 2u, params.chroma_height - 1u);
+    const uint near_y = (y0 & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cb = tile_cb_plane + near_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cr = tile_cr_plane + near_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v2_sample_even_pair(near_cb, curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr, curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx0 = y0 * params.width + x0;
+    const uint out_idx0 = out_base + y0 * params.out_stride + x0 * 4u;
+    store_rgba_ycbcr(out, out_idx0, tile_y_plane[y_idx0], cb0, cr0, params.alpha);
+    if (x1 < params.width) {
+        store_rgba_ycbcr(out, out_idx0 + 4u, tile_y_plane[y_idx0 + 1u], cb1, cr1, params.alpha);
+    }
+
+    const uint y1 = y0 + 1u;
+    if (y1 >= params.height) {
+        return;
+    }
+
+    const uint chroma_y1 = min(y1 / 2u, params.chroma_height - 1u);
+    const uint near_y1 = (y1 & 1u) == 0u
+        ? (chroma_y1 == 0u ? 0u : chroma_y1 - 1u)
+        : min(chroma_y1 + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb1 = tile_cb_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cb1 = tile_cb_plane + near_y1 * params.chroma_width;
+    device const uchar *curr_cr1 = tile_cr_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cr1 = tile_cr_plane + near_y1 * params.chroma_width;
+
+    h2v2_sample_even_pair(near_cb1, curr_cb1, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr1, curr_cr1, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx1 = y1 * params.width + x0;
+    const uint out_idx1 = out_base + y1 * params.out_stride + x0 * 4u;
+    store_rgba_ycbcr(out, out_idx1, tile_y_plane[y_idx1], cb0, cr0, params.alpha);
+    if (x1 < params.width) {
+        store_rgba_ycbcr(out, out_idx1 + 4u, tile_y_plane[y_idx1 + 1u], cb1, cr1, params.alpha);
+    }
+}
+
 kernel void jpeg_pack_422_rgb(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -5560,6 +5643,46 @@ kernel void jpeg_pack_422_rgb_batch(
     store_rgb_ycbcr(out, out_idx, tile_y_plane[y_idx], cb0, cr0);
     if (x1 < params.width) {
         store_rgb_ycbcr(out, out_idx + 3u, tile_y_plane[y_idx + 1u], cb1, cr1);
+    }
+}
+
+kernel void jpeg_pack_422_rgba_batch(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    device uchar *out [[buffer(3)]],
+    constant JpegFast420BatchParams &params [[buffer(4)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    if (x0 >= params.width || gid.y >= params.height || gid.z >= params.tile_count) {
+        return;
+    }
+
+    const uint y_plane_base = gid.z * params.width * params.height;
+    const uint chroma_plane_base = gid.z * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint x1 = x0 + 1u;
+    const uint y_idx = gid.y * params.width + x0;
+    const uint chroma_y = min(gid.y, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v1_sample_even_pair(curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v1_sample_even_pair(curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    const uint out_base = gid.z * params.out_stride * params.height;
+    const uint out_idx = out_base + gid.y * params.out_stride + x0 * 4u;
+    store_rgba_ycbcr(out, out_idx, tile_y_plane[y_idx], cb0, cr0, params.alpha);
+    if (x1 < params.width) {
+        store_rgba_ycbcr(out, out_idx + 4u, tile_y_plane[y_idx + 1u], cb1, cr1, params.alpha);
     }
 }
 
