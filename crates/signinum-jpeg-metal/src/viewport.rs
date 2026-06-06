@@ -3,7 +3,7 @@
 use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use signinum_jpeg::adapter::{
     build_metal_fast420_packet_for_decoder, build_metal_fast422_packet_for_decoder,
-    build_metal_fast444_packet_for_decoder,
+    build_metal_fast444_packet_for_decoder, decoder_bytes,
 };
 use signinum_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
@@ -542,6 +542,64 @@ pub fn compose_viewport_to_resizable_metal_textures_with_session(
         &workload.tiles,
         output,
         session,
+    )
+}
+
+#[cfg(target_os = "macos")]
+/// Decode any viewport workload into a reusable caller-owned Metal buffer.
+///
+/// Contiguous workloads use the direct resident region-scaled batch path when
+/// eligible. Sparse or unsupported direct shapes use resident component-row
+/// composition into the same caller-owned RGB8 buffer.
+pub fn decode_viewport_to_resizable_metal_buffer_with_session(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchOutputBuffer,
+    session: &MetalBackendSession,
+) -> Result<Surface, Error> {
+    if is_contiguous_viewport_workload(workload)
+        && validate_explicit_metal_viewport_request(decoder, workload).is_ok()
+    {
+        return decode_viewport_region_to_resizable_metal_buffer_with_session(
+            decoder_bytes(decoder),
+            workload,
+            output,
+            session,
+        );
+    }
+
+    compose_viewport_to_resizable_metal_buffer_with_session(
+        decoder, pool, workload, output, session,
+    )
+}
+
+#[cfg(target_os = "macos")]
+/// Decode any viewport workload into reusable caller-owned Metal textures.
+///
+/// Contiguous workloads use the direct resident region-scaled texture batch path
+/// when eligible. Sparse or unsupported direct shapes use resident component-row
+/// composition into the same caller-owned RGBA8 texture.
+pub fn decode_viewport_to_resizable_metal_textures_with_session(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut ScratchPool,
+    workload: &ViewportWorkload,
+    output: &mut MetalBatchTextureOutput,
+    session: &MetalBackendSession,
+) -> Result<MetalTextureTile, Error> {
+    if is_contiguous_viewport_workload(workload)
+        && validate_explicit_metal_viewport_request(decoder, workload).is_ok()
+    {
+        return decode_viewport_region_to_resizable_metal_textures_with_session(
+            decoder_bytes(decoder),
+            workload,
+            output,
+            session,
+        );
+    }
+
+    compose_viewport_to_resizable_metal_textures_with_session(
+        decoder, pool, workload, output, session,
     )
 }
 

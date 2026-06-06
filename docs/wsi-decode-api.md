@@ -166,14 +166,15 @@ the output shape from the full dimensions or source ROI. The
 `Codec::decode_rgb8_*_into_resizable_metal_{buffer,textures}_with_session`
 helpers combine request parsing, output resize, and resident batch decode for
 viewport loops that reuse one caller-owned output across changing tile counts
-or output shapes. For contiguous viewport workloads,
+or output shapes. At the viewport layer,
+`decode_viewport_to_resizable_metal_{buffer,textures}_with_session` accepts any
+viewport workload and selects direct contiguous resident decode when eligible,
+otherwise it uses resident component-row composition. For callers that need
+explicit separation, contiguous viewport workloads can use
 `decode_viewport_region_to_resizable_metal_{buffer,textures}_with_session`
-exposes the same reusable-output behavior at the viewport layer and rejects
-non-contiguous composition shapes instead of materializing a CPU viewport.
-For sparse or non-contiguous RGB8 viewport composition,
-`compose_viewport_to_resizable_metal_{buffer,textures}_with_session` decodes
-component rows into reusable Metal plane buffers and packs the composed viewport
-into a caller-owned Metal buffer or texture.
+and sparse or non-contiguous RGB8 viewport composition can use
+`compose_viewport_to_resizable_metal_{buffer,textures}_with_session`; both
+forms pack the composed viewport into caller-owned Metal output.
 
 Callers should use explicit device requests only when they need that backend.
 Use `Auto` for viewer paths where CPU fallback is acceptable.

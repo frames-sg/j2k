@@ -322,7 +322,9 @@ full-tile JPEG Metal batches,
 `compose_viewport_to_resizable_metal_textures_with_session`,
 `decode_viewport_region_hybrid`,
 `decode_viewport_region_to_resizable_metal_buffer_with_session`, and
-`decode_viewport_region_to_resizable_metal_textures_with_session`.
+`decode_viewport_region_to_resizable_metal_textures_with_session`,
+`decode_viewport_to_resizable_metal_buffer_with_session`, and
+`decode_viewport_to_resizable_metal_textures_with_session`.
 
 Stable behavior: `BackendRequest::Cpu` is host-backed, `BackendRequest::Auto`
 may choose Metal and must expose residency, and `BackendRequest::Metal` returns
