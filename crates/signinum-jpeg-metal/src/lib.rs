@@ -1617,6 +1617,12 @@ impl Codec {
             return Ok(Vec::new());
         }
 
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        output.ensure_rgb8_batch_report(session, &report)?;
+
         let Rgb8MetalBatchRequests {
             requests,
             output_dimensions: Some(output_dimensions),
@@ -1723,6 +1729,12 @@ impl Codec {
         if decoders.is_empty() {
             return Ok(Vec::new());
         }
+
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        output.ensure_rgba8_batch_report(session, &report)?;
 
         let Rgb8MetalBatchRequests {
             requests,
@@ -1858,6 +1870,12 @@ impl Codec {
         if decoders.is_empty() {
             return Ok(Vec::new());
         }
+
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::Scaled(scale),
+        );
+        output.ensure_rgb8_batch_report(session, &report)?;
 
         let Rgb8MetalBatchRequests {
             requests,
@@ -2003,6 +2021,12 @@ impl Codec {
             return Ok(Vec::new());
         }
 
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::Scaled(scale),
+        );
+        output.ensure_rgba8_batch_report(session, &report)?;
+
         let Rgb8MetalBatchRequests {
             requests,
             output_dimensions: Some(output_dimensions),
@@ -2144,6 +2168,15 @@ impl Codec {
             return Ok(Vec::new());
         }
 
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::RegionScaled {
+                roi: roi.into(),
+                scale,
+            },
+        );
+        output.ensure_rgb8_batch_report(session, &report)?;
+
         let output_dimensions = {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
@@ -2281,6 +2314,15 @@ impl Codec {
         if decoders.is_empty() {
             return Ok(Vec::new());
         }
+
+        let report = Self::inspect_rgb8_decoder_batch_metal_output(
+            decoders,
+            signinum_jpeg::JpegDecodeOp::RegionScaled {
+                roi: roi.into(),
+                scale,
+            },
+        );
+        output.ensure_rgba8_batch_report(session, &report)?;
 
         let output_dimensions = {
             let scaled = roi.scaled_covering(scale);
@@ -3597,6 +3639,63 @@ mod tests {
         };
 
         assert!(matches!(err, Error::UnsupportedMetalRequest { .. }));
+        assert_eq!(output.dimensions(), (1, 1));
+        assert_eq!(output.tile_capacity(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+        let rgb = signinum_test_support::patterned_rgb8(16, 16);
+        let fast420 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast420 jpeg");
+        let fast444 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr444,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast444 jpeg");
+        let first = Decoder::new(&fast420.data).expect("first decoder");
+        let second = Decoder::new(&fast444.data).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let err = match Codec::decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
+            &decoders,
+            &mut output,
+            &session,
+        ) {
+            Ok(_) => panic!("mixed sampling should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            Error::UnsupportedMetalRequest { reason }
+                if reason.contains("same fast-packet sampling family")
+        ));
         assert_eq!(output.dimensions(), (1, 1));
         assert_eq!(output.tile_capacity(), 1);
     }
@@ -5143,6 +5242,63 @@ mod tests {
         };
 
         assert!(matches!(err, Error::UnsupportedMetalRequest { .. }));
+        assert_eq!(output.dimensions(), (1, 1));
+        assert_eq!(output.tile_capacity(), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_decoder_batch_rejects_mixed_sampling_without_resizing_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let mut output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+        let rgb = signinum_test_support::patterned_rgb8(16, 16);
+        let fast420 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr420,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast420 jpeg");
+        let fast444 = encode_jpeg_baseline(
+            JpegSamples::Rgb8 {
+                data: &rgb,
+                width: 16,
+                height: 16,
+            },
+            JpegEncodeOptions {
+                quality: 90,
+                subsampling: JpegSubsampling::Ybr444,
+                restart_interval: None,
+                backend: JpegBackend::Cpu,
+            },
+        )
+        .expect("encode fast444 jpeg");
+        let first = Decoder::new(&fast420.data).expect("first decoder");
+        let second = Decoder::new(&fast444.data).expect("second decoder");
+        let decoders = [&first, &second];
+
+        let err = match Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
+            &decoders,
+            &mut output,
+            &session,
+        ) {
+            Ok(_) => panic!("mixed sampling should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            Error::UnsupportedMetalRequest { reason }
+                if reason.contains("same fast-packet sampling family")
+        ));
         assert_eq!(output.dimensions(), (1, 1));
         assert_eq!(output.tile_capacity(), 1);
     }
