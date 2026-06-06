@@ -554,20 +554,23 @@ fn bench_resident_texture_batches(c: &mut Criterion, inputs: &[BenchInput], has_
             .filter(|input| input.mode == DecodeMode::Rgb && supports_resident_texture_batch(input))
         {
             let session = MetalBackendSession::system_default().expect("Metal backend session");
-            let output =
+            let mut output =
                 MetalBatchTextureOutput::new_rgba8_tiles(&session, input.dimensions, batch_size)
                     .expect("texture output");
-            let repeated_inputs = vec![input.bytes.as_slice(); batch_size];
+            let decoders = (0..batch_size)
+                .map(|_| Decoder::new(input.bytes.as_slice()).expect("metal decoder"))
+                .collect::<Vec<_>>();
             group.bench_function(
                 format!(
                     "batch{batch_size}/warm_session_reused_textures/{}",
                     input.name
                 ),
                 move |b| {
+                    let decoder_refs = decoders.iter().collect::<Vec<_>>();
                     b.iter(|| {
-                        let tiles = Codec::decode_rgb8_batch_into_metal_textures_with_session(
-                            &repeated_inputs,
-                            &output,
+                        let tiles = Codec::decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session(
+                            &decoder_refs,
+                            &mut output,
                             &session,
                         )
                         .expect("resident texture batch decode");

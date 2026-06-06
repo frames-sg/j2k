@@ -1,5 +1,6 @@
 const SHADER_SOURCE: &str = include_str!("../src/shaders.metal");
 const COMPUTE_SOURCE: &str = include_str!("../src/compute.rs");
+const COMPARE_BENCH_SOURCE: &str = include_str!("../benches/compare.rs");
 
 #[test]
 fn decode_loops_advance_mcu_coordinates_incrementally() {
@@ -109,5 +110,26 @@ fn jpeg_encode_parallel_path_accepts_restart_segments() {
         !COMPUTE_SOURCE
             .contains("if first.restart_interval_mcus != 0 {\n        return Ok(None);\n    }"),
         "restart intervals must not force the JPEG batch encoder off the optimized Metal path"
+    );
+}
+
+#[test]
+fn resident_texture_bench_uses_cached_decoder_batches() {
+    let start = COMPARE_BENCH_SOURCE
+        .find("fn bench_resident_texture_batches(")
+        .expect("compare bench should define resident texture batch group");
+    let end = COMPARE_BENCH_SOURCE[start..]
+        .find("#[cfg(not(target_os = \"macos\"))]")
+        .map(|offset| start + offset)
+        .expect("compare bench should define non-macOS resident texture stub");
+    let bench = &COMPARE_BENCH_SOURCE[start..end];
+
+    assert!(
+        bench.contains("decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session"),
+        "warm resident texture benchmarks should use cached Decoder batch APIs"
+    );
+    assert!(
+        !bench.contains("decode_rgb8_batch_into_metal_textures_with_session("),
+        "warm resident texture benchmarks should not rebuild byte-slice batch state"
     );
 }
