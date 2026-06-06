@@ -263,17 +263,18 @@ Initial 12-bit progressive grayscale full-image/ROI/scaled/region-scaled decode
 writes native `Gray16` samples or expanded `Rgb16` samples; initial 12-bit
 APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/
 region-scaled decode writes native `Rgb16` samples, including restart-coded
-color streams. Initial SOF3 8-bit grayscale/RGB row streaming and 16-bit
-grayscale `Gray16` row streaming have landed. Expanded four-component
-subsampled/malformed coverage, other 12-bit subsampled color support, stronger
-non-constant 12-bit oracle fixtures, and broader lossless SOF3 YCbCr/16-bit
-color support remain separate CPU parity work.
+color streams. Initial SOF3 8-bit grayscale/RGB row streaming, 16-bit
+grayscale `Gray16` row streaming, and 16-bit APP14 RGB `Rgb16` output have
+landed. Expanded four-component subsampled/malformed coverage, other 12-bit
+subsampled color support, stronger non-constant 12-bit oracle fixtures, and
+broader lossless SOF3 YCbCr plus other 16-bit color support remain separate CPU
+parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
 full-image/ROI/scaled/region-scaled decode for predictors 1-7, including
-restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8` decode for
-predictors 1-7, including restart-coded APP14 RGB streams, is implemented as a
-non-DCT predictor path. Splitting the module is planned but gated on stable
-benchmark and parity coverage.
+restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8` and 16-bit APP14
+RGB `Rgb16` decode for predictors 1-7, including restart-coded APP14 RGB
+streams, is implemented as a non-DCT predictor path. Splitting the module is
+planned but gated on stable benchmark and parity coverage.
 
 J2K parses boxes (COD, QCD, QCC, etc.) and codestream structure on CPU, then
 drives either the native CPU reconstruction path or a MetalDirect plan. ROI and
@@ -490,13 +491,14 @@ provisional and check the most recent commits before relying on it.
   4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` decode, including restart-coded
   color streams, have landed, while expanded four-component subsampled/malformed
   coverage, other 12-bit subsampled color support, stronger non-constant 12-bit
-  oracle fixtures, and broader lossless SOF3 YCbCr/16-bit color support remain
-  active parity work.
+  oracle fixtures, and broader lossless SOF3 YCbCr plus other 16-bit color
+  support remain active parity work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled decode for predictors 1-7, including
-  restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8` decode for
-  predictors 1-7, including restart-coded APP14 RGB streams, has landed.
+  restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8` and 16-bit
+  APP14 RGB `Rgb16` decode for predictors 1-7, including restart-coded APP14
+  RGB streams, has landed.
   Metal acceleration for those classes is gated on
   parity and measured resident wins.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.

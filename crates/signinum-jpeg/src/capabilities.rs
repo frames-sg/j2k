@@ -244,7 +244,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
         SofKind::Lossless
             if matches!(
                 request.fmt,
-                PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::Rgb8
+                PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::Rgb8 | PixelFormat::Rgb16
             ) =>
         {
             return match (info.color_space, info.bit_depth, request.fmt) {
@@ -253,6 +253,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     JpegBackendEligibility::eligible()
                 }
                 (ColorSpace::Rgb, 8, PixelFormat::Rgb8)
+                | (ColorSpace::Rgb, 16, PixelFormat::Rgb16)
                     if info.sampling.len() == 3
                         && info.sampling.max_h == 1
                         && info.sampling.max_v == 1
@@ -264,11 +265,12 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
-                (ColorSpace::Rgb, 8, PixelFormat::Rgb8) => JpegBackendEligibility::rejected(
+                (ColorSpace::Rgb, 8, PixelFormat::Rgb8)
+                | (ColorSpace::Rgb, 16, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
                     "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, or 8-bit APP14 RGB Rgb8 output only",
+                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, 8-bit APP14 RGB Rgb8, or 16-bit APP14 RGB Rgb16 output only",
                 ),
             };
         }

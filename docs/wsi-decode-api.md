@@ -47,15 +47,16 @@ expanded `Rgb16` is available, and initial 12-bit APP14 RGB 4:4:4 plus YCbCr
 4:4:4/4:2:2/4:2:0 decode to `Rgb16` is available, including restart-coded
 color streams. Other 12-bit subsampled color, stronger non-constant 12-bit
 oracle fixtures, expanded four-component subsampled/malformed fixture coverage,
-and lossless SOF3 YCbCr/16-bit color output remain structured unsupported or
-not-implemented cases until the CPU parity phases in
+and lossless SOF3 YCbCr plus other 16-bit color layouts remain structured
+unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
-16-bit streams, including restart-coded grayscale streams, plus 8-bit APP14
-RGB predictors 1-7 decoded to `Rgb8`, including restart-coded APP14 RGB
-streams. The SOF3 row path supports RGB8 rows for 8-bit grayscale/RGB streams
-and little-endian `Gray16` rows for 16-bit grayscale streams.
+16-bit streams, including restart-coded grayscale streams, plus APP14 RGB
+predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16` for 16-bit
+streams, including restart-coded APP14 RGB streams. The SOF3 row path supports
+RGB8 rows for 8-bit grayscale/RGB streams and little-endian `Gray16` rows for
+16-bit grayscale streams.
 
 ROI coordinates are always expressed in source-image pixels. For
 `decode_region_scaled_into`, the output buffer covers the floor-start /
@@ -181,9 +182,9 @@ backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
 CMYK/YCCK subsampled/malformed coverage, other 12-bit subsampled color support,
-stronger non-constant 12-bit oracle fixtures, and broader SOF3 YCbCr/16-bit
-color CPU parity must land before any Metal acceleration for those classes is
-promoted.
+stronger non-constant 12-bit oracle fixtures, and broader SOF3 YCbCr plus
+other 16-bit color CPU parity must land before any Metal acceleration for those
+classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable
