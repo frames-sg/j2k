@@ -3,9 +3,10 @@
 use signinum_core::{
     BackendKind, BackendRequest, CodecError, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, Rect,
+    TileBatchDecodeManyDevice,
 };
 use signinum_jpeg_metal::{
-    Decoder, Error, MetalBackendSession, MetalSession, ScratchPool, SurfaceResidency,
+    Codec, Decoder, Error, MetalBackendSession, MetalSession, ScratchPool, SurfaceResidency,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
@@ -124,6 +125,31 @@ fn fast422_decode_to_metal_matches_cpu_decode_bytes() {
     assert_eq!(surface.dimensions(), dims);
     assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
     assert_eq!(surface.as_bytes(), host.as_slice());
+}
+
+#[test]
+fn codec_many_device_decode_batches_full_tiles_to_metal_surfaces() {
+    let mut ctx = signinum_core::DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    let inputs = [BASELINE_420, BASELINE_422];
+
+    let surfaces = <Codec as TileBatchDecodeManyDevice>::decode_tiles_to_device(
+        &mut ctx,
+        &mut pool,
+        &inputs,
+        PixelFormat::Rgb8,
+        BackendRequest::Metal,
+    )
+    .expect("full-tile Metal batch decode");
+
+    assert_eq!(surfaces.len(), 2);
+    assert_eq!(surfaces[0].dimensions(), (16, 16));
+    assert_eq!(surfaces[1].dimensions(), (16, 8));
+    assert!(surfaces.iter().all(|surface| {
+        surface.backend_kind() == BackendKind::Metal
+            && surface.residency() == SurfaceResidency::MetalResidentDecode
+            && surface.pixel_format() == PixelFormat::Rgb8
+    }));
 }
 
 #[test]

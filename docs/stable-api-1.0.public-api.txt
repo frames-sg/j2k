@@ -3594,6 +3594,10 @@ pub type signinum_jpeg_metal::Codec::Warning = signinum_jpeg::error::Warning
 impl signinum_core::traits::TileBatchDecodeDevice for signinum_jpeg_metal::Codec
 pub type signinum_jpeg_metal::Codec::Context = signinum_jpeg::context::DecoderContext
 pub type signinum_jpeg_metal::Codec::DeviceSurface = signinum_jpeg_metal::Surface
+impl signinum_core::traits::TileBatchDecodeManyDevice for signinum_jpeg_metal::Codec
+pub type signinum_jpeg_metal::Codec::Context = signinum_jpeg::context::DecoderContext
+pub type signinum_jpeg_metal::Codec::DeviceSurface = signinum_jpeg_metal::Surface
+pub fn signinum_jpeg_metal::Codec::decode_tiles_to_device(&mut signinum_core::context::DecoderContext<Self::Context>, &mut Self::Pool, &[&[u8]], signinum_core::pixel::PixelFormat, signinum_core::backend::BackendRequest) -> core::result::Result<alloc::vec::Vec<Self::DeviceSurface>, Self::Error>
 impl signinum_core::traits::TileBatchDecodeSubmit for signinum_jpeg_metal::Codec
 pub type signinum_jpeg_metal::Codec::Context = signinum_jpeg::context::DecoderContext
 pub type signinum_jpeg_metal::Codec::DeviceSurface = signinum_jpeg_metal::Surface

@@ -106,9 +106,10 @@ ROI+scaled decode.
 
 ## Device Surfaces
 
-Use `ImageDecodeDevice`, `ImageDecodeSubmit`, `TileBatchDecodeDevice`, or
-`TileBatchDecodeSubmit` when a downstream pipeline wants a backend-tagged
-surface. Completed operations return a `DeviceSurface`, which reports:
+Use `ImageDecodeDevice`, `ImageDecodeSubmit`, `TileBatchDecodeDevice`,
+`TileBatchDecodeManyDevice`, or `TileBatchDecodeSubmit` when a downstream
+pipeline wants a backend-tagged surface. Completed operations return a
+`DeviceSurface`, which reports:
 
 - backend kind
 - dimensions
