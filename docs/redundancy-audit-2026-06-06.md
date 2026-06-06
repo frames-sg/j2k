@@ -65,30 +65,43 @@ Largest source buckets by scanned line count:
 
 Subsystem: CPU/native JPEG, current dirty worktree.
 
-Status: addressed in the current SOF3 follow-up by removing lossless planning
-failures from parsed-`Info` fallback reporting and adding capability tests for
-predictors 1-7 plus explicit predictor-8 and scan-parameter rejection. The
-restart-coded grayscale follow-up now adds positive SOF3 restart capability
-coverage for predictors 1-7.
+Status: addressed in the current SOF3 follow-up by keeping unsupported
+predictors and malformed scan parameters out of parsed-`Info` fallback
+reporting, while allowing recognized unsupported lossless sampling shapes to
+return rejected capability metadata. Capability tests cover predictors 1-7,
+explicit predictor-8 and scan-parameter rejection, and subsampled SOF3 color
+shape rejection. The restart-coded grayscale follow-up added positive SOF3
+restart capability coverage for predictors 1-7.
 
 Evidence:
 
-- `JpegCapabilityReport::inspect` falls back to reporting from parsed `Info` for `UnsupportedPredictor` in `crates/signinum-jpeg/src/capabilities.rs:97` and `crates/signinum-jpeg/src/capabilities.rs:295`.
-- `cpu_eligibility` marks full `Gray8` SOF3 as eligible from `Info` only in `crates/signinum-jpeg/src/capabilities.rs:147`.
-- `build_lossless_plan` rejects unsupported predictor, scan count, component count, and invalid scan params in `crates/signinum-jpeg/src/decoder.rs:464`; restart-coded grayscale SOF3 now reaches decode.
-- Positive capability tests cover grayscale predictors 1-7, including restart-coded grayscale SOF3.
+- `JpegCapabilityReport::inspect` falls back to reporting from parsed `Info`
+  only through the guarded predicate in `crates/signinum-jpeg/src/capabilities.rs`.
+- `cpu_eligibility` reports explicit SOF3 support and rejection reasons from
+  parsed color, bit-depth, sampling, and output format metadata.
+- `build_lossless_plan` rejects unsupported predictor, scan count, component
+  count, invalid scan params, and unsupported color sampling before decode;
+  restart-coded grayscale SOF3 now reaches decode.
+- Positive capability tests cover grayscale predictors 1-7, including
+  restart-coded grayscale SOF3. Negative capability tests cover predictor-8,
+  invalid scan parameters, and unsupported subsampled SOF3 color shapes.
 
 Confidence: High.
 
 Risk: Unsupported SOF3 lossless inputs can be reported as CPU-eligible even though decoder setup rejects them. That is a correctness and API-contract issue for capability reporting.
 
-Proposed consolidation: Introduce one shared lossless-support predicate or carry full lossless scan support metadata into capability reporting. Do not recompute "eligible" from `Info` alone after `UnsupportedPredictor` or related lossless planning failures.
+Proposed consolidation: Introduce one shared lossless-support predicate or
+carry full lossless scan support metadata into capability reporting. Do not
+recompute "eligible" from `Info` alone after `UnsupportedPredictor`,
+malformed scan parameters, or other invalid lossless planning failures.
 
 Validation if refactored:
 
 - Add capability tests for SOF3 predictor other than 1.
 - Add capability tests for SOF3 with restart interval. Done for grayscale predictors 1-7.
 - Add capability tests for invalid SOF3 scan params such as `Se`, `Ah`, and `Al`.
+- Add capability tests for recognized but unsupported SOF3 color sampling
+  shapes. Done for 16-bit APP14 RGB/YCbCr 4:2:2 fixtures.
 - Run focused JPEG capability/decode tests before merging the current JPEG work.
 
 ### P1 - JPEG Metal Fast-Path Families Are Mostly Copy-Variant Code

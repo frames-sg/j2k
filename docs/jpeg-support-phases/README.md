@@ -359,13 +359,15 @@ Implementation requirements:
   `Rgb8`/`Rgba8`/`Rgb16`/`Rgba16`
   coverage have landed. 8-bit
   grayscale/RGB/YCbCr row streaming and 16-bit grayscale `Gray16` plus APP14
-  RGB/YCbCr `Rgb16` row streaming have landed. Malformed streams, other
-  lossless 16-bit color layouts, and broader precision coverage remain
-  open.
+  RGB/YCbCr `Rgb16` row streaming have landed. Recognized 16-bit APP14
+  RGB/YCbCr 4:2:2 SOF3 shapes now report rejected capability metadata instead
+  of a vague planner failure. Malformed streams, other lossless 16-bit color
+  layouts, and broader precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
-  decode setup and capability inspection.
+  decode setup and capability inspection; malformed SOF3 scan parameters remain
+  hard planner errors rather than parsed-`Info` capability fallbacks.
 
 Metal follow-up candidate:
 

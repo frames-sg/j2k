@@ -19,7 +19,8 @@ use fixtures::{
     lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_3x3_jpeg, malformed_cmyk_nonleading_max_sampling_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_3x3_jpeg,
+    lossless_ycbcr_16bit_422_3x3_jpeg, malformed_cmyk_nonleading_max_sampling_jpeg,
     progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
     progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
     progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
@@ -1919,6 +1920,77 @@ fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallb
         },
     )
     .expect_err("unsupported SOF3 scan shape should not infer eligibility from parsed info");
+
+    assert!(matches!(
+        err,
+        JpegError::NotImplemented {
+            sof: SofKind::Lossless
+        }
+    ));
+}
+
+#[test]
+fn capability_report_rejects_lossless_subsampled_color_shapes_with_metadata() {
+    for (input, color_space, reason) in [
+        (
+            lossless_rgb_16bit_422_3x3_jpeg(),
+            ColorSpace::Rgb,
+            "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
+        ),
+        (
+            lossless_ycbcr_16bit_422_3x3_jpeg(),
+            ColorSpace::YCbCr,
+            "JPEG CPU lossless SOF3 YCbCr decode currently supports 4:4:4 sampling only",
+        ),
+    ] {
+        let report = JpegCapabilityReport::inspect(
+            &input,
+            JpegCapabilityRequest {
+                op: JpegDecodeOp::Full,
+                fmt: PixelFormat::Rgb16,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "subsampled lossless SOF3 {color_space:?} should report unsupported capability metadata, got {err}"
+            )
+        });
+
+        assert_eq!(report.info.sof_kind, SofKind::Lossless);
+        assert_eq!(report.info.bit_depth, 16);
+        assert_eq!(report.info.dimensions, (3, 3));
+        assert_eq!(report.info.color_space, color_space);
+        assert_eq!(report.info.sampling.max_h, 2);
+        assert_eq!(report.info.sampling.max_v, 1);
+        assert_eq!(report.info.sampling.components(), &[(2, 1), (1, 1), (1, 1)]);
+        assert_eq!(report.cpu.reason, Some(reason));
+        assert!(!report.cpu.eligible);
+        assert!(!report.owned_cuda.eligible);
+        assert!(!report.metal_fast.eligible);
+    }
+}
+
+#[test]
+fn capability_report_rejects_malformed_subsampled_lossless_scan_params_without_info_fallback() {
+    let mut invalid_scan_params = lossless_ycbcr_16bit_422_3x3_jpeg();
+    let sos = invalid_scan_params
+        .windows(2)
+        .position(|w| w == [0xff, 0xda])
+        .expect("fixture has SOS");
+    let scan_component_count = usize::from(invalid_scan_params[sos + 4]);
+    let se_offset = sos + 6 + scan_component_count * 2;
+    invalid_scan_params[se_offset] = 1;
+
+    let err = JpegCapabilityReport::inspect(
+        &invalid_scan_params,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb16,
+        },
+    )
+    .expect_err(
+        "malformed subsampled SOF3 scan shape should not infer eligibility from parsed info",
+    );
 
     assert!(matches!(
         err,

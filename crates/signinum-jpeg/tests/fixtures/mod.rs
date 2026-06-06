@@ -693,6 +693,13 @@ pub(crate) fn lossless_predictor_rgb_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_rgb_16bit_jpeg(3, 3, predictor, &LOSSLESS_RGB_16BIT_3X3_PIXELS)
 }
 
+/// A 3x3 16-bit SOF3 lossless APP14 RGB JPEG with unsupported 4:2:2 sampling.
+pub(crate) fn lossless_rgb_16bit_422_3x3_jpeg() -> Vec<u8> {
+    let mut bytes = lossless_predictor_rgb_16bit_3x3_jpeg(1);
+    set_first_sof3_component_sampling(&mut bytes, 0x21);
+    bytes
+}
+
 /// A 3x3 16-bit SOF3 lossless APP14 RGB JPEG with row-boundary restart markers.
 pub(crate) fn lossless_restart_predictor_rgb_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_rgb_16bit_restart_jpeg(3, 3, predictor, 3, &LOSSLESS_RGB_16BIT_3X3_PIXELS)
@@ -717,6 +724,13 @@ pub(crate) fn lossless_predictor_ycbcr_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> 
     lossless_ycbcr_16bit_jpeg(3, 3, predictor, &LOSSLESS_YCBCR_16BIT_3X3_PIXELS)
 }
 
+/// A 3x3 16-bit SOF3 lossless YCbCr JPEG with unsupported 4:2:2 sampling.
+pub(crate) fn lossless_ycbcr_16bit_422_3x3_jpeg() -> Vec<u8> {
+    let mut bytes = lossless_predictor_ycbcr_16bit_3x3_jpeg(1);
+    set_first_sof3_component_sampling(&mut bytes, 0x21);
+    bytes
+}
+
 /// A 3x3 16-bit SOF3 lossless YCbCr JPEG with row-boundary restart markers.
 pub(crate) fn lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_ycbcr_16bit_restart_jpeg(3, 3, predictor, 3, &LOSSLESS_YCBCR_16BIT_3X3_PIXELS)
@@ -724,6 +738,14 @@ pub(crate) fn lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(predictor: u8) -> 
 
 pub(crate) fn lossless_ycbcr_16bit_3x3_rgb16() -> Vec<u8> {
     ycbcr16_pixels_to_rgb16(&LOSSLESS_YCBCR_16BIT_3X3_PIXELS)
+}
+
+fn set_first_sof3_component_sampling(bytes: &mut [u8], sampling: u8) {
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc3])
+        .expect("fixture has SOF3 marker");
+    bytes[sof + 11] = sampling;
 }
 
 fn lossless_grayscale_jpeg(width: u16, height: u16, predictor: u8, samples: &[u8]) -> Vec<u8> {

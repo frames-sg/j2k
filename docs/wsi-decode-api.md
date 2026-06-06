@@ -52,6 +52,9 @@ broader four-component malformed fixture coverage, and other lossless SOF3
 16-bit color layouts remain structured unsupported
 or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
+Recognized lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 shapes now return
+capability reports with rejected CPU eligibility, while malformed SOF3 scan
+parameters continue to surface as decode-planner errors.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
 16-bit streams, including restart-coded grayscale streams, plus APP14 RGB

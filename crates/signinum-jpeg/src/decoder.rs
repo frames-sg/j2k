@@ -229,6 +229,40 @@ impl<'a> JpegView<'a> {
             self.info.restart_interval,
         )
     }
+
+    pub(crate) fn has_lossless_subsampled_color_capability_shape(&self) -> bool {
+        if self.info.sof_kind != SofKind::Lossless
+            || !matches!(self.info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
+            || !matches!(self.info.bit_depth, 8 | 16)
+            || self.info.sampling.len() != 3
+            || !self
+                .info
+                .sampling
+                .components()
+                .iter()
+                .any(|&(h, v)| h != 1 || v != 1)
+            || self.header.scan_count != 1
+        {
+            return false;
+        }
+
+        let Some(scan) = self.header.scan.as_ref() else {
+            return false;
+        };
+        if !(1..=7).contains(&scan.ss)
+            || scan.se != 0
+            || scan.ah != 0
+            || scan.al != 0
+            || scan.components.len() != 3
+        {
+            return false;
+        }
+
+        scan.components.iter().all(|scan_component| {
+            find_component_index(&self.header.component_ids, scan_component.id).is_some()
+                && self.header.huffman_tables.dc[scan_component.dc_table as usize].is_some()
+        })
+    }
 }
 
 /// A borrowed view of a JPEG stream ready to decode. Constructed via

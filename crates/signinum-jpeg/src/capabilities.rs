@@ -97,9 +97,16 @@ impl JpegCapabilityReport {
     pub fn inspect(input: &[u8], request: JpegCapabilityRequest) -> Result<Self, JpegError> {
         let view = JpegView::parse(input)?;
         let info = view.info().clone();
+        let has_lossless_subsampled_color_capability_shape =
+            view.has_lossless_subsampled_color_capability_shape();
         match Decoder::from_view(view) {
             Ok(decoder) => Ok(Self::for_decoder(&decoder, request)),
-            Err(err) if can_report_from_parsed_info(&err) => {
+            Err(err)
+                if can_report_from_parsed_info(
+                    &err,
+                    has_lossless_subsampled_color_capability_shape,
+                ) =>
+            {
                 Ok(Self::for_planner_rejected_info(info, request, &err))
             }
             Err(err) => Err(err),
@@ -443,9 +450,18 @@ fn supports_metal_resident_batch_scale(scale: Downscale) -> bool {
     )
 }
 
-fn can_report_from_parsed_info(err: &JpegError) -> bool {
-    matches!(err, JpegError::NotImplemented { sof } if *sof != SofKind::Lossless)
-        || matches!(err, JpegError::UnsupportedColorSpace { .. })
+fn can_report_from_parsed_info(
+    err: &JpegError,
+    has_lossless_subsampled_color_capability_shape: bool,
+) -> bool {
+    match err {
+        JpegError::UnsupportedColorSpace { .. } => true,
+        JpegError::NotImplemented { sof } if *sof != SofKind::Lossless => true,
+        JpegError::NotImplemented {
+            sof: SofKind::Lossless,
+        } => has_lossless_subsampled_color_capability_shape,
+        _ => false,
+    }
 }
 
 fn unavailable_device_summary(info: &Info) -> DeviceBatchSummary {
