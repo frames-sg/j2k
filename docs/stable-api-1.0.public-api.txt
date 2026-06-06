@@ -2677,6 +2677,8 @@ pub fn signinum_j2k::view::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usi
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_into_with_scratch(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_region_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_region_scaled_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
+pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows_u16_bounded<R: signinum_core::row_sink::RowSink<u16>>(&mut self, &mut R, signinum_j2k::view::J2kRowDecodeOptions) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_core::traits::DecodeRowsError<signinum_j2k::error::J2kError, <R as signinum_core::row_sink::RowSink>::Error>>
+pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows_u8_bounded<R: signinum_core::row_sink::RowSink<u8>>(&mut self, &mut R, signinum_j2k::view::J2kRowDecodeOptions) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_core::traits::DecodeRowsError<signinum_j2k::error::J2kError, <R as signinum_core::row_sink::RowSink>::Error>>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::from_view(signinum_j2k::view::J2kView<'a>) -> core::result::Result<Self, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::info(&self) -> &signinum_core::types::Info
@@ -2702,6 +2704,12 @@ impl<'a> signinum_core::traits::ImageDecodeRows<'a, u16> for signinum_j2k::view:
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows<R: signinum_core::row_sink::RowSink<u16>>(&mut self, &mut R) -> core::result::Result<signinum_core::types::DecodeOutcome<Self::Warning>, signinum_core::traits::DecodeRowsError<Self::Error, <R as signinum_core::row_sink::RowSink>::Error>>
 impl<'a> signinum_core::traits::ImageDecodeRows<'a, u8> for signinum_j2k::view::J2kDecoder<'a>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows<R: signinum_core::row_sink::RowSink<u8>>(&mut self, &mut R) -> core::result::Result<signinum_core::types::DecodeOutcome<Self::Warning>, signinum_core::traits::DecodeRowsError<Self::Error, <R as signinum_core::row_sink::RowSink>::Error>>
+pub struct signinum_j2k::view::J2kRowDecodeOptions
+impl signinum_j2k::view::J2kRowDecodeOptions
+pub const fn signinum_j2k::view::J2kRowDecodeOptions::max_rows_per_stripe(self) -> u32
+pub const fn signinum_j2k::view::J2kRowDecodeOptions::new(u32) -> Self
+impl core::default::Default for signinum_j2k::view::J2kRowDecodeOptions
+pub fn signinum_j2k::view::J2kRowDecodeOptions::default() -> Self
 pub struct signinum_j2k::view::J2kView<'a>
 impl<'a> signinum_j2k::view::J2kView<'a>
 pub fn signinum_j2k::view::J2kView<'a>::bytes(&self) -> &'a [u8]
@@ -3026,6 +3034,8 @@ pub fn signinum_j2k::view::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usi
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_into_with_scratch(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_region_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_region_scaled_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
+pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows_u16_bounded<R: signinum_core::row_sink::RowSink<u16>>(&mut self, &mut R, signinum_j2k::view::J2kRowDecodeOptions) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_core::traits::DecodeRowsError<signinum_j2k::error::J2kError, <R as signinum_core::row_sink::RowSink>::Error>>
+pub fn signinum_j2k::view::J2kDecoder<'a>::decode_rows_u8_bounded<R: signinum_core::row_sink::RowSink<u8>>(&mut self, &mut R, signinum_j2k::view::J2kRowDecodeOptions) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_core::traits::DecodeRowsError<signinum_j2k::error::J2kError, <R as signinum_core::row_sink::RowSink>::Error>>
 pub fn signinum_j2k::view::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::from_view(signinum_j2k::view::J2kView<'a>) -> core::result::Result<Self, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::view::J2kDecoder<'a>::info(&self) -> &signinum_core::types::Info
@@ -3265,6 +3275,12 @@ pub signinum_j2k::J2kQuantizeSubbandJob::range_bits: u8
 pub signinum_j2k::J2kQuantizeSubbandJob::reversible: bool
 pub signinum_j2k::J2kQuantizeSubbandJob::step_exponent: u16
 pub signinum_j2k::J2kQuantizeSubbandJob::step_mantissa: u16
+pub struct signinum_j2k::J2kRowDecodeOptions
+impl signinum_j2k::view::J2kRowDecodeOptions
+pub const fn signinum_j2k::view::J2kRowDecodeOptions::max_rows_per_stripe(self) -> u32
+pub const fn signinum_j2k::view::J2kRowDecodeOptions::new(u32) -> Self
+impl core::default::Default for signinum_j2k::view::J2kRowDecodeOptions
+pub fn signinum_j2k::view::J2kRowDecodeOptions::default() -> Self
 pub struct signinum_j2k::J2kScratchPool
 impl signinum_j2k::scratch::J2kScratchPool
 pub const fn signinum_j2k::scratch::J2kScratchPool::new() -> Self
@@ -3407,12 +3423,22 @@ pub struct signinum_j2k::TileDecodeJob<'i, 'o>
 pub signinum_j2k::TileDecodeJob::input: &'i [u8]
 pub signinum_j2k::TileDecodeJob::out: &'o mut [u8]
 pub signinum_j2k::TileDecodeJob::stride: usize
+pub struct signinum_j2k::TileRegionDecodeJob<'i, 'o>
+pub signinum_j2k::TileRegionDecodeJob::input: &'i [u8]
+pub signinum_j2k::TileRegionDecodeJob::out: &'o mut [u8]
+pub signinum_j2k::TileRegionDecodeJob::roi: signinum_core::types::Rect
+pub signinum_j2k::TileRegionDecodeJob::stride: usize
 pub struct signinum_j2k::TileRegionScaledDecodeJob<'i, 'o>
 pub signinum_j2k::TileRegionScaledDecodeJob::input: &'i [u8]
 pub signinum_j2k::TileRegionScaledDecodeJob::out: &'o mut [u8]
 pub signinum_j2k::TileRegionScaledDecodeJob::roi: signinum_core::types::Rect
 pub signinum_j2k::TileRegionScaledDecodeJob::scale: signinum_core::scale::Downscale
 pub signinum_j2k::TileRegionScaledDecodeJob::stride: usize
+pub struct signinum_j2k::TileScaledDecodeJob<'i, 'o>
+pub signinum_j2k::TileScaledDecodeJob::input: &'i [u8]
+pub signinum_j2k::TileScaledDecodeJob::out: &'o mut [u8]
+pub signinum_j2k::TileScaledDecodeJob::scale: signinum_core::scale::Downscale
+pub signinum_j2k::TileScaledDecodeJob::stride: usize
 pub trait signinum_j2k::J2kEncodeStageAccelerator
 pub fn signinum_j2k::J2kEncodeStageAccelerator::dispatch_report(&self) -> signinum_j2k::adapter::encode_stage::J2kEncodeDispatchReport
 pub fn signinum_j2k::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, signinum_j2k::adapter::encode_stage::J2kDeinterleaveToF32Job<'_>) -> core::result::Result<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>, &'static str>
@@ -3448,9 +3474,13 @@ pub fn signinum_j2k::adapter::encode_stage::CpuOnlyJ2kEncodeStageAccelerator::en
 pub fn signinum_j2k::adapter::encode_stage::CpuOnlyJ2kEncodeStageAccelerator::prefer_parallel_cpu_code_block_fallback(&self) -> bool
 pub fn signinum_j2k::adapter::encode_stage::CpuOnlyJ2kEncodeStageAccelerator::prefer_parallel_cpu_tile_encode(&self) -> bool
 pub fn signinum_j2k::decode_tile_into_in_context(&[u8], &mut signinum_core::context::DecoderContext<signinum_j2k::context::J2kContext>, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
+pub fn signinum_j2k::decode_tile_region_into_in_context(&[u8], &mut signinum_core::context::DecoderContext<signinum_j2k::context::J2kContext>, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::decode_tile_region_scaled_into_in_context(&[u8], &mut signinum_core::context::DecoderContext<signinum_j2k::context::J2kContext>, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::types::Rect, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
+pub fn signinum_j2k::decode_tile_scaled_into_in_context(&[u8], &mut signinum_core::context::DecoderContext<signinum_j2k::context::J2kContext>, &mut signinum_j2k::scratch::J2kScratchPool, &mut [u8], usize, signinum_core::pixel::PixelFormat, signinum_core::scale::Downscale) -> core::result::Result<signinum_core::types::DecodeOutcome<core::convert::Infallible>, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::decode_tiles_into(&mut [signinum_j2k::TileDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<signinum_core::types::DecodeOutcome<core::convert::Infallible>>, signinum_j2k::TileBatchError>
+pub fn signinum_j2k::decode_tiles_region_into(&mut [signinum_j2k::TileRegionDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<signinum_core::types::DecodeOutcome<core::convert::Infallible>>, signinum_j2k::TileBatchError>
 pub fn signinum_j2k::decode_tiles_region_scaled_into(&mut [signinum_j2k::TileRegionScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<signinum_core::types::DecodeOutcome<core::convert::Infallible>>, signinum_j2k::TileBatchError>
+pub fn signinum_j2k::decode_tiles_scaled_into(&mut [signinum_j2k::TileScaledDecodeJob<'_, '_>], signinum_core::pixel::PixelFormat, signinum_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<signinum_core::types::DecodeOutcome<core::convert::Infallible>>, signinum_j2k::TileBatchError>
 pub fn signinum_j2k::encode_j2k_lossless(signinum_j2k::J2kLosslessSamples<'_>, &signinum_j2k::J2kLosslessEncodeOptions) -> core::result::Result<signinum_j2k::EncodedJ2k, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::encode_j2k_lossless_with_accelerator(signinum_j2k::J2kLosslessSamples<'_>, &signinum_j2k::J2kLosslessEncodeOptions, signinum_core::backend::BackendKind, &mut impl signinum_j2k::adapter::encode_stage::J2kEncodeStageAccelerator) -> core::result::Result<signinum_j2k::EncodedJ2k, signinum_j2k::error::J2kError>
 pub fn signinum_j2k::encode_j2k_lossy(signinum_j2k::J2kLossySamples<'_>, &signinum_j2k::J2kLossyEncodeOptions) -> core::result::Result<signinum_j2k::EncodedLossyJ2k, signinum_j2k::error::J2kError>
