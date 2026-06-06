@@ -6,29 +6,9 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect};
 
 mod fixtures;
 use fixtures::{
-    grayscale_8x8_jpeg, minimal_baseline_420_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg,
-    rgb_app14_8x8_rgb,
+    cmyk_8x8_jpeg, four_component_8x8_rgb, grayscale_8x8_jpeg, minimal_baseline_420_jpeg,
+    progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_8x8_jpeg,
 };
-
-fn minimal_cmyk_baseline_jpeg() -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0xff, 0xd8]);
-    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
-    bytes.extend(std::iter::repeat_n(1u8, 64));
-    bytes.extend_from_slice(&[
-        0xff, 0xc0, 0x00, 20, 8, 0, 8, 0, 8, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0, 0x00, 0xff, 0xd9,
-    ]);
-    bytes
-}
 
 #[test]
 fn decode_into_rgb8_returns_decoded_rect_full_image() {
@@ -351,11 +331,33 @@ fn decode_region_into_rgb8_scaled_crops_constant_app14_rgb_pixels() {
 }
 
 #[test]
-fn decoder_new_rejects_cmyk_baseline_as_unsupported() {
-    let bytes = minimal_cmyk_baseline_jpeg();
-    let err = Decoder::new(&bytes).expect_err("CMYK should not reach scalar decoder");
-    assert!(matches!(err, JpegError::UnsupportedColorSpace { .. }));
-    assert!(err.is_unsupported());
+fn decode_into_rgb8_converts_cmyk_and_ycck() {
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let (w, h) = dec.info().dimensions;
+        let mut buf = vec![0u8; (w * h * 3) as usize];
+
+        dec.decode_into(&mut buf, (w * 3) as usize, PixelFormat::Rgb8)
+            .expect("CMYK/YCCK to RGB8 decode should succeed");
+
+        assert_eq!(buf, four_component_8x8_rgb());
+    }
+}
+
+#[test]
+fn decode_into_rgba8_converts_cmyk_and_ycck_with_alpha() {
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let (w, h) = dec.info().dimensions;
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+
+        dec.decode_into(&mut buf, (w * 4) as usize, PixelFormat::Rgba8)
+            .expect("CMYK/YCCK to RGBA8 decode should succeed");
+
+        for pixel in buf.chunks_exact(4) {
+            assert_eq!(pixel, &[64, 64, 64, 255]);
+        }
+    }
 }
 
 #[test]

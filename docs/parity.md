@@ -12,10 +12,11 @@ on a single visual smoke test.
 - Tolerance is bit-exact for the committed baseline fixtures. Any future lossy
   tolerance must be recorded per fixture in the manifest.
 - New JPEG support classes follow the CPU-first phase plan in
-  [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). CMYK/YCCK,
-  progressive ROI/scaled, 12-bit extended/progressive, and lossless SOF3 must
-  land CPU parity fixtures and reference outputs before any Metal route is
-  promoted.
+  [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). Initial
+  sequential CMYK/YCCK RGB/RGBA CPU coverage has landed, but expanded
+  four-component fixtures, progressive ROI/scaled, 12-bit
+  extended/progressive, and lossless SOF3 must land CPU parity fixtures and
+  reference outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.

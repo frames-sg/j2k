@@ -364,8 +364,11 @@ impl<'a> Decoder<'a> {
             other => return Err(JpegError::NotImplemented { sof: other }),
         }
         match info.color_space {
-            ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb => {}
-            color_space => return Err(JpegError::UnsupportedColorSpace { color_space }),
+            ColorSpace::Grayscale
+            | ColorSpace::YCbCr
+            | ColorSpace::Rgb
+            | ColorSpace::Cmyk
+            | ColorSpace::Ycck => {}
         }
 
         let mut dc_tables: [Option<Arc<HuffmanTable>>; 4] = Default::default();

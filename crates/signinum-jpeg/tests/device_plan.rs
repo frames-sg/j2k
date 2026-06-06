@@ -6,7 +6,7 @@ use signinum_jpeg::{
 };
 
 mod fixtures;
-use fixtures::progressive_8x8_jpeg;
+use fixtures::{cmyk_8x8_jpeg, progressive_8x8_jpeg, ycck_8x8_jpeg};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
 const BASELINE_422: &[u8] = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
@@ -85,10 +85,10 @@ fn capability_report_exposes_metadata_and_fast_backend_eligibility() {
 }
 
 #[test]
-fn capability_report_inspects_cmyk_and_ycck_without_building_decoder() {
+fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_eligible() {
     for (input, expected_color) in [
-        (minimal_cmyk_baseline_jpeg(), ColorSpace::Cmyk),
-        (minimal_ycck_baseline_jpeg(), ColorSpace::Ycck),
+        (cmyk_8x8_jpeg(), ColorSpace::Cmyk),
+        (ycck_8x8_jpeg(), ColorSpace::Ycck),
     ] {
         let report = JpegCapabilityReport::inspect(
             &input,
@@ -101,12 +101,7 @@ fn capability_report_inspects_cmyk_and_ycck_without_building_decoder() {
 
         assert_eq!(report.info.sof_kind, SofKind::Baseline8);
         assert_eq!(report.info.color_space, expected_color);
-        assert!(!report.cpu.eligible);
-        assert!(report
-            .cpu
-            .reason
-            .expect("CPU rejection reason")
-            .contains("CMYK/YCCK"));
+        assert!(report.cpu.eligible);
         assert!(!report.owned_cuda.eligible);
         assert!(!report.metal_fast.eligible);
         assert!(report
@@ -652,38 +647,6 @@ fn grayscale_restart_jpeg() -> Vec<u8> {
     ]);
     bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
     bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
-    bytes
-}
-
-fn minimal_cmyk_baseline_jpeg() -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0xff, 0xd8]);
-    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
-    bytes.extend(std::iter::repeat_n(1u8, 64));
-    bytes.extend_from_slice(&[
-        0xff, 0xc0, 0x00, 20, 8, 0, 8, 0, 8, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0, 0x00, 0xff, 0xd9,
-    ]);
-    bytes
-}
-
-fn minimal_ycck_baseline_jpeg() -> Vec<u8> {
-    let mut bytes = minimal_cmyk_baseline_jpeg();
-    bytes.splice(
-        2..2,
-        [
-            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
-            0x00, 0x02,
-        ],
-    );
     bytes
 }
 

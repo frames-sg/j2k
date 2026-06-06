@@ -251,10 +251,11 @@ decoder = Decoder::from_view(view)
 Current 8-bit sequential JPEG fast paths are fused on CPU: entropy decode, IDCT
 scheduling, upsampling, ROI, and the fast 4:2:0 path live together in
 `crates/signinum-jpeg/src/entropy/sequential.rs` because splitting them
-regresses WSI tile-batch performance. Progressive ROI/scaled, CMYK/YCCK,
-12-bit, and lossless SOF3 are separate CPU parity work and must not be treated
-as already covered by that fused sequential path. Splitting the module is
-planned but gated on stable benchmark and parity coverage.
+regresses WSI tile-batch performance. Initial CMYK/YCCK RGB/RGBA CPU
+conversion now lives in that fused sequential path, while expanded
+four-component coverage, progressive ROI/scaled, 12-bit, and lossless SOF3 are
+separate CPU parity work. Splitting the module is planned but gated on stable
+benchmark and parity coverage.
 
 J2K parses boxes (COD, QCD, QCC, etc.) and codestream structure on CPU, then
 drives either the native CPU reconstruction path or a MetalDirect plan. ROI and
@@ -461,10 +462,11 @@ provisional and check the most recent commits before relying on it.
 - Adaptive backend routing: deciding when `BackendRequest::Auto` should
   upgrade a batch to Metal vs. stay on CPU.
 - Keeping the public WSI decode API guide aligned with the core trait surface.
-- Expanding JPEG compatibility through CPU parity first: CMYK/YCCK,
-  progressive ROI/scaled, 12-bit extended/progressive, and lossless SOF3.
-  Metal acceleration for those classes is gated on parity and measured
-  resident wins.
+- Expanding JPEG compatibility through CPU parity first: initial CMYK/YCCK
+  CPU conversion has landed, while expanded four-component coverage,
+  progressive ROI/scaled, 12-bit extended/progressive, and lossless SOF3 remain
+  active parity work. Metal acceleration for those classes is gated on parity
+  and measured resident wins.
 - Broadening release CI and adding self-hosted x86_64 GPU benchmark coverage.
 - Coefficient-domain JPEG to HTJ2K experiments in `signinum-transcode` and
   stage accelerators in `signinum-transcode-metal`. These crates remain

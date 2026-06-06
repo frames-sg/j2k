@@ -16,6 +16,21 @@ pub(crate) fn grayscale_8x8_jpeg() -> Vec<u8> {
     include_bytes!("../../fixtures/conformance/grayscale_8x8.jpg").to_vec()
 }
 
+/// An 8x8 Adobe APP14 CMYK JPEG whose four decoded channels are all 128.
+pub(crate) fn cmyk_8x8_jpeg() -> Vec<u8> {
+    four_component_8x8_jpeg(Some(0))
+}
+
+/// An 8x8 Adobe APP14 YCCK JPEG whose four decoded channels are all 128.
+pub(crate) fn ycck_8x8_jpeg() -> Vec<u8> {
+    four_component_8x8_jpeg(Some(2))
+}
+
+/// Reference RGB pixels for [`cmyk_8x8_jpeg`] and [`ycck_8x8_jpeg`].
+pub(crate) fn four_component_8x8_rgb() -> Vec<u8> {
+    vec![64; 8 * 8 * 3]
+}
+
 /// An 8×8 baseline JPEG with 4:4:4 sampling.
 pub(crate) fn baseline_444_8x8_jpeg() -> Vec<u8> {
     include_bytes!("../../fixtures/conformance/baseline_444_8x8.jpg").to_vec()
@@ -124,4 +139,30 @@ pub(crate) fn progressive_8x8_jpeg() -> Vec<u8> {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x01, 0x3f, 0x10, 0x7f, 0xff, 0xd9,
     ]
+}
+
+fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    if let Some(transform) = app14_transform {
+        bytes.extend_from_slice(&[
+            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, transform,
+        ]);
+    }
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(1u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc0, 0x00, 20, 8, 0, 8, 0, 8, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0e, 4, 1, 0x00, 2, 0x00, 3, 0x00, 4, 0x00, 0, 63, 0, 0x00, 0xff, 0xd9,
+    ]);
+    bytes
 }

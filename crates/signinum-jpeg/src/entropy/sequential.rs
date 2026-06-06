@@ -6,6 +6,7 @@
 
 use crate::backend::Backend;
 use crate::bench_support::{BenchBlockActivityCounts, BenchFast420Profile};
+use crate::color::cmyk::{inverted_cmyk_to_rgb, ycck_to_rgb};
 use crate::color::upsample::{
     upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
 };
@@ -15,7 +16,7 @@ use crate::entropy::block::{
     BlockActivity, CoefficientBlock, ReducedIdctCoefficients,
 };
 use crate::entropy::huffman::HuffmanTable;
-use crate::error::{HuffmanFailure, JpegError, Warning};
+use crate::error::{JpegError, Warning};
 use crate::idct::downscale;
 use crate::info::{ColorSpace, DownscaleFactor, Rect, SamplingFactors};
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
@@ -210,7 +211,7 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
         ColorSpace::YCbCr if is_ycbcr_420(plan) => OutputScratch::YCbCr420(ycbcr_420_rows),
         ColorSpace::YCbCr => OutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb => OutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => OutputScratch::Grayscale,
+        ColorSpace::Cmyk | ColorSpace::Ycck => OutputScratch::RgbGeneric(rgb_generic_rows),
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -365,7 +366,7 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
         ColorSpace::YCbCr if is_ycbcr_420(plan) => RgbOutputScratch::YCbCr420,
         ColorSpace::YCbCr => RgbOutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => RgbOutputScratch::None,
+        ColorSpace::Cmyk | ColorSpace::Ycck => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -3223,10 +3224,26 @@ fn emit_stripe<W: OutputWriter>(
             }
         }
         ColorSpace::Cmyk | ColorSpace::Ycck => {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::InvalidSymbol,
-            });
+            let OutputScratch::RgbGeneric(scratch) = output_scratch else {
+                unreachable!("CMYK/YCCK decode requires reusable row scratch");
+            };
+            for local_y in 0..stripe_rows {
+                fill_four_component_rgb_row(
+                    plan,
+                    prev,
+                    curr,
+                    next,
+                    local_y as u32,
+                    width,
+                    scratch,
+                )?;
+                writer.write_rgb_row(
+                    y_start + local_y as u32,
+                    &scratch.r[..width],
+                    &scratch.g[..width],
+                    &scratch.b[..width],
+                )?;
+            }
         }
     }
     Ok(())
@@ -3450,11 +3467,132 @@ fn emit_stripe_rgb<W: OutputWriter + InterleavedRgbWriter>(
             }
         }
         ColorSpace::Cmyk | ColorSpace::Ycck => {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::InvalidSymbol,
-            });
+            let RgbOutputScratch::RgbGeneric(scratch) = output_scratch else {
+                unreachable!("CMYK/YCCK RGB output requires reusable row scratch");
+            };
+            for local_y in 0..stripe_rows {
+                fill_four_component_rgb_row(
+                    plan,
+                    prev,
+                    curr,
+                    next,
+                    local_y as u32,
+                    width,
+                    scratch,
+                )?;
+                writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {
+                    backend.fill_rgb_row_from_rgb(
+                        &scratch.r[..width],
+                        &scratch.g[..width],
+                        &scratch.b[..width],
+                        dst,
+                    );
+                    Ok(())
+                })?;
+            }
         }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_four_component_rgb_row(
+    plan: &PreparedDecodePlan,
+    prev: Option<&StripeBuffer>,
+    curr: &StripeBuffer,
+    next: Option<&StripeBuffer>,
+    local_y: u32,
+    width: usize,
+    scratch: &mut RgbGenericRows,
+) -> Result<(), JpegError> {
+    let (c0_h, c0_v) = plan
+        .sampling
+        .component(0)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 0 })?;
+    let (c1_h, c1_v) = plan
+        .sampling
+        .component(1)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 1 })?;
+    let (c2_h, c2_v) = plan
+        .sampling
+        .component(2)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
+    let (k_h, k_v) = plan
+        .sampling
+        .component(3)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 3 })?;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
+
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        0,
+        c0_h,
+        c0_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.r,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        1,
+        c1_h,
+        c1_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.g,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        2,
+        c2_h,
+        c2_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.b,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        3,
+        k_h,
+        k_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.k,
+    );
+
+    for x in 0..width {
+        let (r, g, b) = match plan.color_space {
+            ColorSpace::Cmyk => {
+                inverted_cmyk_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x])
+            }
+            ColorSpace::Ycck => ycck_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x]),
+            _ => unreachable!("four-component conversion requires CMYK/YCCK input"),
+        };
+        scratch.r[x] = r;
+        scratch.g[x] = g;
+        scratch.b[x] = b;
     }
 
     Ok(())

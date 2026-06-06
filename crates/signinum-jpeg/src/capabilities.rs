@@ -164,12 +164,6 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
         SofKind::Baseline8 | SofKind::Extended8 | SofKind::Progressive8 => {}
     }
 
-    if matches!(info.color_space, ColorSpace::Cmyk | ColorSpace::Ycck) {
-        return JpegBackendEligibility::rejected(
-            "JPEG CPU decode does not yet support CMYK/YCCK color conversion",
-        );
-    }
-
     match (request.fmt, request.op.scale()) {
         (PixelFormat::Rgb8 | PixelFormat::Gray8, _) => JpegBackendEligibility::eligible(),
         (PixelFormat::Rgba8, Downscale::None) => JpegBackendEligibility::eligible(),

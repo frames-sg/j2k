@@ -10,7 +10,7 @@ claims.
 |---------|--------|-------|
 | `signinum` | Stable facade | Recommended import surface for applications that need JPEG, JPEG 2000 / HTJ2K, tile decompression, and shared core contracts. |
 | `signinum-core` | Stable library | Pixel formats, backend requests, passthrough rows, scratch/context contracts, and device-submission traits. |
-| `signinum-jpeg` | Stable library | JPEG inspect, CPU decode for the current 8-bit Huffman subset, ROI/scaled WSI tile decode for supported sequential inputs, batch decode, and baseline JPEG fixture/fallback encode. Broader CPU parity for CMYK/YCCK, progressive ROI/scaled, 12-bit, and lossless SOF3 is tracked in [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). |
+| `signinum-jpeg` | Stable library | JPEG inspect, CPU decode for the current 8-bit Huffman subset, ROI/scaled WSI tile decode for supported sequential inputs, batch decode, baseline JPEG fixture/fallback encode, and initial 8-bit sequential CMYK/YCCK CPU conversion to RGB/RGBA. Broader CPU parity for progressive ROI/scaled, 12-bit, lossless SOF3, and expanded four-component fixture coverage is tracked in [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). |
 | `signinum-j2k` | Stable library | JPEG 2000 / HTJ2K inspect, CPU decode, ROI/scaled decode, row-bounded decode, batch decode, and lossless encode. |
 | `signinum-tilecodec` | Stable library | Deflate, Zstd, LZW, and uncompressed container-tile decompression primitives. |
 | `signinum-cli` | Stable behavior | `signinum inspect <file>` header inspection. CLI behavior is tested, but Rust API semver tooling does not apply to the binary surface. |

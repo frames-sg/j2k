@@ -12,7 +12,7 @@ use signinum_jpeg::{
     TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 mod fixtures;
-use fixtures::progressive_8x8_jpeg;
+use fixtures::{cmyk_8x8_jpeg, four_component_8x8_rgb, progressive_8x8_jpeg, ycck_8x8_jpeg};
 use std::num::NonZeroUsize;
 use std::thread;
 
@@ -105,6 +105,37 @@ fn production_batch_decode_progressive8_matches_single_tile_decode() {
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn session_batch_decode_converts_cmyk_and_ycck() {
+    let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
+    let expected = four_component_8x8_rgb();
+    let stride = 8 * 3;
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = inputs
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|(input, out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("CMYK/YCCK session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
 }
 
 #[test]

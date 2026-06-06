@@ -18,6 +18,7 @@ unsupported errors until a separate entropy and conformance plan exists.
 
 - baseline sequential and extended sequential 8-bit CPU decode
 - grayscale, YCbCr, and APP14 RGB CPU decode
+- initial 8-bit sequential CMYK/YCCK CPU conversion to `Rgb8`/`Rgba8`
 - ROI, scaled, region-scaled, tile-batch, batch-session, and reusable host
   output paths for sequential WSI-shaped work
 - progressive 8-bit full-image CPU decode
@@ -59,9 +60,10 @@ Purpose: make existing claims honest before broadening decode support.
 Required work:
 
 - Update support docs to state current JPEG limits and link to this roadmap.
-- Add or extend capability tests for current rejection reasons:
-  `Extended12`, `Progressive12`, `Lossless`, CMYK/YCCK, progressive ROI/scaled,
-  arithmetic SOFs, hierarchical SOFs, and differential SOFs.
+- Add or extend capability tests for current support and rejection reasons:
+  initial CMYK/YCCK CPU support, `Extended12`, `Progressive12`, `Lossless`,
+  progressive ROI/scaled, arithmetic SOFs, hierarchical SOFs, and differential
+  SOFs.
 - Build or import small conformance fixtures for A/B/C:
   - CMYK baseline and YCCK baseline
   - progressive 8-bit with ROI/scaled reference output
@@ -87,13 +89,20 @@ after the Phase B precision work is stable.
 Implementation requirements:
 
 - Keep parser APP14 handling as the source of truth for CMYK vs YCCK.
+  Status: initial APP14 CMYK/YCCK fixtures use parser-owned color metadata.
 - Add CPU output conversion to `Rgb8` and `Rgba8` for 8-bit CMYK/YCCK inputs.
+  Status: initial full-image and batch-session RGB/RGBA coverage has landed
+  for 8-bit sequential APP14 CMYK/YCCK fixtures.
 - Preserve clear behavior for unsupported direct CMYK output unless
   `signinum-core` gains a public CMYK pixel format.
 - Add row, full-image, ROI, scaled, region-scaled, and batch tests where the
   existing API shape supports them.
+  Status: row, ROI, scaled, region-scaled, subsampled four-component, and
+  malformed coverage remain open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
+  Status: capability reports now mark initial CMYK/YCCK CPU RGB8 support while
+  keeping Metal/CUDA rejected.
 
 Metal follow-up candidate:
 
