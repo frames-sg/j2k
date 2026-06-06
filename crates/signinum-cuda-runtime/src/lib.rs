@@ -311,7 +311,11 @@ pub enum CudaJpegRgb8Sampling {
 pub struct CudaJpegChunkedEntropyConfig {
     /// Subsequence size in 32-bit words.
     pub subsequence_words: u32,
-    /// Number of adjacent subsequences handled as one synchronization sequence.
+    /// Reserved synchronization-sequence length for future grouped scans.
+    ///
+    /// The current diagnostic records adjacent-subsequence overflow results for
+    /// every neighboring pair; this value is validated and passed through the
+    /// ABI for compatibility with grouped synchronization experiments.
     pub sequence_len: u32,
     /// Maximum adjacent subsequences an overflow decoder may scan.
     pub max_overflow_subsequences: u32,

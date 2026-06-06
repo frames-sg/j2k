@@ -196,6 +196,16 @@ fn parse_subsampling(value: &str) -> JpegSubsampling {
 fn bench_chunked_entropy_diagnostic(c: &mut Criterion) {
     let (width, height) = generated_dimensions();
     let input = generated_chunked_entropy_jpeg(width, height);
+
+    if let Err(error) = probe_chunked_entropy_diagnostic(&input) {
+        assert!(
+            std::env::var_os("SIGNINUM_REQUIRE_CUDA_BENCH").is_none(),
+            "SIGNINUM_REQUIRE_CUDA_BENCH is set but CUDA JPEG chunked entropy diagnostic is unavailable: {error}"
+        );
+        eprintln!("skipping CUDA JPEG chunked entropy diagnostic bench: {error}");
+        return;
+    }
+
     let mut group = c.benchmark_group("jpeg_cuda_chunked_entropy");
     group.sample_size(10);
 
@@ -234,6 +244,17 @@ fn generated_chunked_entropy_jpeg(width: u16, height: u16) -> Vec<u8> {
         "jpeg_cuda_chunked_entropy requires generated 4:2:0 JPEG input; unset SIGNINUM_CUDA_BENCH_SUBSAMPLING/SIGNINUM_GPU_BENCH_SUBSAMPLING or set it to 420"
     );
     generated_jpeg(width, height)
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn probe_chunked_entropy_diagnostic(input: &[u8]) -> Result<(), signinum_jpeg_cuda::Error> {
+    let mut session = CudaSession::default();
+    CudaCodec::diagnose_tile_rgb8_chunked_entropy_with_session(
+        input,
+        signinum_cuda_runtime::CudaJpegChunkedEntropyConfig::default(),
+        &mut session,
+    )
+    .map(|_| ())
 }
 
 #[cfg(feature = "cuda-runtime")]
