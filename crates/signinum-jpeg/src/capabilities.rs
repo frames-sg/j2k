@@ -296,10 +296,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
 
     match (request.fmt, request.op.scale()) {
         (PixelFormat::Rgb8 | PixelFormat::Gray8, _) => JpegBackendEligibility::eligible(),
-        (PixelFormat::Rgba8, Downscale::None) => JpegBackendEligibility::eligible(),
-        (PixelFormat::Rgba8, _) => JpegBackendEligibility::rejected(
-            "JPEG CPU decode supports RGBA8 only for unscaled output",
-        ),
+        (PixelFormat::Rgba8, _) => JpegBackendEligibility::eligible(),
         (PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
             JpegBackendEligibility::rejected("JPEG CPU decode does not support 16-bit output")
         }

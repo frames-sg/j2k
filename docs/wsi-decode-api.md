@@ -37,8 +37,8 @@ These are API shapes, not universal JPEG coverage claims. Current JPEG CPU
 ROI/scaled/tile-batch support covers supported 8-bit baseline or extended
 sequential inputs, plus progressive 8-bit full/ROI/scaled/region-scaled output
 from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
-CPU conversion is available for `Rgb8` full/ROI/scaled/region-scaled output
-and `Rgba8` full/ROI output, with RGB row streaming for the supported
+CPU conversion is available for `Rgb8` and `Rgba8` full/ROI/scaled/
+region-scaled output, with RGB row streaming for the supported
 four-component fixtures. Initial 12-bit extended sequential grayscale
 full-image/ROI/scaled/region-scaled decode to `Gray16` or expanded `Rgb16` is
 available, including restart-coded grayscale streams. Initial 12-bit

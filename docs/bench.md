@@ -707,8 +707,8 @@ Current v1 scope is explicit:
 - JPEG: selected 8-bit YCbCr sequential RGB8 WSI tile shapes can run Metal
   kernel paths for full, region, scaled, region+scaled, and batched
   device-output decode; compatible queued region+scaled requests use a real
-  `BatchOp::RegionScaled` path. Initial CMYK/YCCK `Rgb8`
-  full/ROI/scaled/region-scaled, RGB row streaming, and `Rgba8` full/ROI support is CPU-backed, and
+  `BatchOp::RegionScaled` path. Initial CMYK/YCCK `Rgb8` and `Rgba8`
+  full/ROI/scaled/region-scaled output, plus RGB row streaming, is CPU-backed, and
   progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
   assembly plus output projection. Initial 12-bit extended sequential
   grayscale `Gray16`/`Rgb16` full-image/ROI/scaled/region-scaled output is

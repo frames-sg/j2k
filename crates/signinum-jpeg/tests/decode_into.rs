@@ -2454,6 +2454,37 @@ fn decode_scaled_into_rgb8_projects_cmyk_and_ycck() {
 }
 
 #[test]
+fn decode_scaled_into_rgba8_projects_cmyk_and_ycck() {
+    let expected = rgb8_to_rgba8(
+        &project_scaled_rgb(
+            &four_component_8x8_rgb(),
+            8,
+            8,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 4,
+                h: 4,
+            },
+            2,
+        ),
+        255,
+    );
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0u8; expected.len()];
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, 4 * 4, PixelFormat::Rgba8, Downscale::Half)
+            .expect("CMYK/YCCK RGBA8 scaled decode should succeed");
+
+        assert_eq!(outcome.decoded, Rect::full((8, 8)));
+        assert_eq!(buf, expected);
+    }
+}
+
+#[test]
 fn decode_region_scaled_into_rgb8_projects_cmyk_and_ycck_with_padding() {
     let roi = Rect {
         x: 1,
@@ -2481,6 +2512,41 @@ fn decode_region_scaled_into_rgb8_projects_cmyk_and_ycck_with_padding() {
         {
             assert_eq!(&row[..row_bytes], expected_row);
             assert_eq!(&row[row_bytes..], &[0xaa; 5]);
+        }
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgba8_projects_cmyk_and_ycck_with_padding() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let expected = rgb8_to_rgba8(
+        &project_scaled_rgb(&four_component_8x8_rgb(), 8, 8, scaled_roi, 2),
+        255,
+    );
+    let row_bytes = scaled_roi.w as usize * 4;
+    let stride = row_bytes + 4;
+
+    for bytes in [cmyk_8x8_jpeg(), ycck_8x8_jpeg()] {
+        let dec = Decoder::new(&bytes).expect("four-component baseline JPEG should construct");
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgba8, roi, Downscale::Half)
+            .expect("CMYK/YCCK RGBA8 region-scaled decode should succeed");
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row);
+            assert_eq!(&row[row_bytes..], &[0xaa; 4]);
         }
     }
 }

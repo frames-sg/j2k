@@ -251,8 +251,8 @@ decoder = Decoder::from_view(view)
 Current 8-bit sequential JPEG fast paths are fused on CPU: entropy decode, IDCT
 scheduling, upsampling, ROI, and the fast 4:2:0 path live together in
 `crates/signinum-jpeg/src/entropy/sequential.rs` because splitting them
-regresses WSI tile-batch performance. Initial CMYK/YCCK `Rgb8`
-full/ROI/scaled/region-scaled and `Rgba8` full/ROI CPU conversion now lives in
+regresses WSI tile-batch performance. Initial CMYK/YCCK `Rgb8` and `Rgba8`
+full/ROI/scaled/region-scaled CPU conversion now lives in
 that fused sequential path, including RGB row streaming for the supported
 four-component fixtures. Progressive 8-bit
 full/ROI/scaled/region-scaled CPU decode uses full progressive coefficient
@@ -486,7 +486,7 @@ provisional and check the most recent commits before relying on it.
   upgrade a batch to Metal vs. stay on CPU.
 - Keeping the public WSI decode API guide aligned with the core trait surface.
 - Expanding JPEG compatibility through CPU parity first: initial CMYK/YCCK CPU
-  `Rgb8` full/ROI/scaled/region-scaled plus `Rgba8` full/ROI conversion and
+  `Rgb8` and `Rgba8` full/ROI/scaled/region-scaled conversion and
   progressive 8-bit ROI/scaled CPU output projection have landed. Initial
   12-bit extended sequential grayscale `Gray16`/`Rgb16`
   full-image/ROI/scaled/region-scaled decode, including restart-coded grayscale

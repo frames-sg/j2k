@@ -13,8 +13,8 @@ on a single visual smoke test.
   tolerance must be recorded per fixture in the manifest.
 - New JPEG support classes follow the CPU-first phase plan in
   [`docs/jpeg-support-phases`](jpeg-support-phases/README.md). Initial
-  sequential CMYK/YCCK `Rgb8` full/ROI/scaled/region-scaled plus `Rgba8`
-  full/ROI CPU coverage, RGB row streaming, and progressive 8-bit
+  sequential CMYK/YCCK `Rgb8` and `Rgba8` full/ROI/scaled/region-scaled CPU
+  coverage, RGB row streaming, and progressive 8-bit
   ROI/scaled/region-scaled CPU coverage have landed. Initial
   full-image/ROI/scaled/region-scaled 12-bit extended sequential grayscale
   `Gray16`/`Rgb16` coverage, including restart-coded grayscale streams, initial

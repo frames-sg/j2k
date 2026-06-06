@@ -5228,7 +5228,10 @@ fn output_format_from_parts(
             factor: jpeg_downscale(scale),
         }),
         (PixelFormat::Rgba8, Downscale::None) => Ok(OutputFormat::Rgba8 { alpha: 255 }),
-        (PixelFormat::Rgba8, _) => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
+        (PixelFormat::Rgba8, scale) => Ok(OutputFormat::Rgba8Scaled {
+            alpha: 255,
+            factor: jpeg_downscale(scale),
+        }),
         (PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16, _) => {
             Err(JpegError::UnsupportedBitDepth { depth: 16 })
         }

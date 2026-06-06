@@ -169,11 +169,10 @@ Implementation requirements:
 - Keep parser APP14 handling as the source of truth for CMYK vs YCCK.
   Status: initial APP14 CMYK/YCCK fixtures use parser-owned color metadata.
 - Add CPU output conversion to `Rgb8` and `Rgba8` for 8-bit CMYK/YCCK inputs.
-  Status: `Rgb8` full-image, ROI, scaled, region-scaled, and batch-session
-  coverage has landed for 8-bit sequential APP14 CMYK/YCCK fixtures. `Rgba8`
-  full-image and ROI coverage has landed; `decode_rows` and region component
-  row output are covered for the supported RGB output shape. Scaled `Rgba8`
-  remains unsupported by the public output-format policy.
+  Status: `Rgb8` and `Rgba8` full-image, ROI, scaled, region-scaled, and
+  batch-session coverage has landed for 8-bit sequential APP14 CMYK/YCCK
+  fixtures. `decode_rows` and region component row output are covered for the
+  supported RGB output shape.
 - Preserve clear behavior for unsupported direct CMYK output unless
   `signinum-core` gains a public CMYK pixel format.
 - Add row, full-image, ROI, scaled, region-scaled, and batch tests where the

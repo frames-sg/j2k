@@ -110,7 +110,7 @@ fn capability_report_exposes_metadata_and_fast_backend_eligibility() {
 }
 
 #[test]
-fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_eligible() {
+fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_rgba8_eligible() {
     for (input, expected_color) in [
         (cmyk_8x8_jpeg(), ColorSpace::Cmyk),
         (ycck_8x8_jpeg(), ColorSpace::Ycck),
@@ -163,6 +163,16 @@ fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_eligible() {
                 w: 3,
                 h: 4,
             }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 6,
+                    h: 6,
+                },
+                scale: Downscale::Half,
+            },
         ] {
             let report = JpegCapabilityReport::inspect(
                 &input,
