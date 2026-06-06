@@ -811,12 +811,20 @@ benchmark generates 4:2:0 input only; it fails before timing if
 `SIGNINUM_CUDA_BENCH_SUBSAMPLING` or `SIGNINUM_GPU_BENCH_SUBSAMPLING` is set to
 `422` or `444`.
 
-Decision gate note: the 2026-06-06 remote CUDA gate on `jcwal@cuda-wsl` did not
-pass. The required `generated_420_chunked_entropy_diagnostic_runs_when_runtime_required`
-test reported `failed_state_count() == 62` instead of `0`, so this path must not
-be wired into production decode or WSI realism work yet. Remote Criterion rows
-for `jpeg_cuda_chunked_entropy` were not run because the first gate condition
-failed.
+Decision gate note: the 2026-06-06 remote CUDA gate on `jcwal@cuda-wsl` now
+passes for the required
+`generated_420_chunked_entropy_diagnostic_runs_when_runtime_required` test. The
+same host reported the generated diagnostic Criterion rows below:
+
+| Row | Time |
+| --- | --- |
+| `jpeg_cuda_chunked_entropy/cpu_fast_packet_planning` | `42.524 ms .. 43.027 ms` |
+| `jpeg_cuda_chunked_entropy/cuda_chunked_entropy_sync` | `102.33 ms .. 103.50 ms` |
+
+The CUDA row is a diagnostic baseline and is not competitive with CPU packet
+planning yet. Keep this path out of production decode routing until it is
+converted from a synchronization diagnostic into a fused decode stage with
+resident buffers and WSI-shaped inputs.
 
 Set `SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE=1` when the run must fail
 instead of benchmarking the CPU-upload fallback. Small committed fixtures are

@@ -359,30 +359,38 @@ __device__ bool signinum_jpeg_entropy_scan_one_symbol420(
     const unsigned int before_pos = reader.pos;
     const unsigned int before_bits = reader.bits;
     if (!signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)) {
+        // Diagnostic self-sync starts at arbitrary bit offsets, so invalid
+        // prefixes are expected until a candidate stream resynchronizes.
+        if (status.code == JPEG_STATUS_HUFFMAN) {
+            if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, 1u)) {
+                state.bit_pos = params.entropy_bits;
+                status.code = JPEG_STATUS_OK;
+                return true;
+            }
+            signinum_jpeg_consume_bits(reader, 1u);
+            state.bit_pos += 1u;
+            status.code = JPEG_STATUS_OK;
+            status.detail = 0u;
+            status.position = 0u;
+            return true;
+        }
+        if (status.code == JPEG_STATUS_TRUNCATED) {
+            state.bit_pos = params.entropy_bits;
+            status.code = JPEG_STATUS_OK;
+            return true;
+        }
         return false;
     }
     const unsigned int run = symbol >> 4u;
     const unsigned int ssss = symbol & 0x0Fu;
-    if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {
-        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + 16u, reader.pos);
-        return false;
-    }
-    if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {
-        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
-        return false;
-    }
-    if (!dc && ssss == 0u && run != 0u && run != 15u) {
-        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, symbol, reader.pos);
-        return false;
-    }
     unsigned int coeff_bits = dc ? symbol : (symbol & 0x0Fu);
     if (coeff_bits > 15u) {
         signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, coeff_bits, reader.pos);
         return false;
     }
     if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits)) {
-        signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, coeff_bits, reader.pos);
-        return false;
+        state.bit_pos = params.entropy_bits;
+        return true;
     }
     signinum_jpeg_consume_bits(reader, coeff_bits);
     unsigned int consumed = 0u;

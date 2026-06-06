@@ -511,15 +511,24 @@ mod tests {
         assert!(sync_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
         assert!(overflow_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
         assert!(overflow_source.contains("const unsigned char *entropy,"));
-        let ac_overflow_guard = scanner_source
-            .find("if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {")
-            .expect("AC run overflow guard");
+        let huffman_recovery = scanner_source
+            .find("if (status.code == JPEG_STATUS_HUFFMAN) {")
+            .expect("self-sync Huffman recovery");
+        let one_bit_advance = scanner_source
+            .find("state.bit_pos += 1u;")
+            .expect("self-sync one-bit recovery advance");
+        assert!(huffman_recovery < one_bit_advance);
+        let truncated_recovery = scanner_source
+            .find("if (status.code == JPEG_STATUS_TRUNCATED) {")
+            .expect("self-sync truncated entropy recovery");
         let amplitude_read = scanner_source
             .find(
                 "if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits))",
             )
             .expect("amplitude bit read");
-        assert!(ac_overflow_guard < amplitude_read);
+        assert!(truncated_recovery < amplitude_read);
+        assert!(!scanner_source.contains("state.zigzag_index + run >= 64u"));
+        assert!(!scanner_source.contains("run != 0u && run != 15u"));
         assert!(cuda_source.contains("__device__ bool signinum_jpeg_decode_symbol_real("));
         assert!(cuda_source.contains("__device__ bool signinum_jpeg_real_bits_consumed("));
         assert!(scanner_source.contains(
@@ -534,20 +543,14 @@ mod tests {
             .find("state.bit_pos += consumed;")
             .expect("bit position advance");
         assert!(no_progress_guard < bit_pos_advance);
-        let zrl_overflow_guard = scanner_source
-            .find("if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {")
-            .expect("ZRL overflow guard");
         let coefficient_advance = scanner_source
             .find("state.zigzag_index += run + 1u;")
             .expect("AC coefficient advance");
-        assert!(zrl_overflow_guard < coefficient_advance);
-        let malformed_zero_ac_guard = scanner_source
-            .find("if (!dc && ssss == 0u && run != 0u && run != 15u) {")
-            .expect("malformed zero-amplitude AC guard");
+        assert!(amplitude_read < coefficient_advance);
         let eob_branch = scanner_source
             .find("if (ssss == 0u && run != 15u) {")
             .expect("EOB branch");
-        assert!(malformed_zero_ac_guard < eob_branch);
+        assert!(eob_branch < coefficient_advance);
         assert!(overflow_source
             .contains("stop_bit = state.bit_pos + min(overflow_limit, remaining_bits);"));
     }
