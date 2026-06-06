@@ -1128,6 +1128,34 @@ impl Codec {
     }
 
     #[cfg(target_os = "macos")]
+    /// Decode a scaled RGB8 JPEG batch into reusable caller-owned Metal RGBA8 textures.
+    pub fn decode_rgb8_scaled_batch_into_metal_textures_with_session(
+        inputs: &[&[u8]],
+        scale: Downscale,
+        output: &MetalBatchTextureOutput,
+        session: &MetalBackendSession,
+    ) -> Result<Vec<Result<MetalTextureTile, Error>>, Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let requests = Self::rgb8_metal_batch_requests(inputs, |decoder| {
+            let (w, h) = decoder.info().dimensions;
+            batch::BatchOp::RegionScaled {
+                roi: Rect { x: 0, y: 0, w, h },
+                scale,
+            }
+        })?;
+
+        compute::decode_region_scaled_rgb8_batch_into_textures_with_session(
+            &requests, output, session,
+        )?
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal texture scaled batch output currently supports batchable RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs with half, quarter, or eighth scaling",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     /// Decode a region-scaled RGB8 JPEG batch into a reusable caller-owned Metal buffer.
     pub fn decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
@@ -2636,6 +2664,44 @@ mod tests {
         for (index, tile) in tiles.into_iter().enumerate() {
             let tile = tile.expect("texture tile");
             assert_eq!(tile.dimensions(), (8, 8));
+            assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+            assert!(std::ptr::eq(
+                tile.texture(),
+                output.texture(index).expect("output texture")
+            ));
+            assert_eq!(
+                download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+                expected_rgba
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_scaled_batch_decode_can_write_into_reusable_metal_textures() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let scale = Downscale::Quarter;
+        let output =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (4, 4), 2).expect("texture output");
+        let inputs = [BASELINE_420, BASELINE_420];
+        let (expected_rgb, _) = CpuDecoder::new(BASELINE_420)
+            .expect("cpu decoder")
+            .decode_scaled(PixelFormat::Rgb8, scale)
+            .expect("cpu scaled decode");
+        let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+        let tiles = Codec::decode_rgb8_scaled_batch_into_metal_textures_with_session(
+            &inputs, scale, &output, &session,
+        )
+        .expect("decode scaled into reusable textures");
+
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(output.tile_capacity(), 2);
+        assert_eq!(output.dimensions(), (4, 4));
+        assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+        for (index, tile) in tiles.into_iter().enumerate() {
+            let tile = tile.expect("texture tile");
+            assert_eq!(tile.dimensions(), (4, 4));
             assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
             assert!(std::ptr::eq(
                 tile.texture(),
