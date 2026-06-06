@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_j2k::{
-    decode_tiles_into, decode_tiles_region_scaled_into, Downscale, J2kDecoder, PixelFormat, Rect,
-    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, Downscale, J2kDecoder, PixelFormat, Rect, TileBatchOptions,
+    TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
 use std::num::NonZeroUsize;
@@ -294,6 +295,94 @@ fn production_batch_region_scaled_decode_parallel_preserves_order_and_output() {
     assert_eq!(outcomes.len(), JOBS);
     for outcome in &outcomes {
         assert_eq!(outcome.decoded, scaled_roi);
+    }
+    for (index, out) in outputs.iter().enumerate() {
+        assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+#[test]
+fn production_batch_region_decode_parallel_preserves_order_and_output() {
+    const JOBS: usize = 12;
+    let codestream = rgb_fixture();
+    let roi = Rect {
+        x: 1,
+        y: 0,
+        w: 2,
+        h: 3,
+    };
+    let stride = roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut pool = signinum_j2k::J2kScratchPool::new();
+    let mut expected = vec![0_u8; stride * roi.h as usize];
+    decoder
+        .decode_region_into(&mut pool, &mut expected, stride, PixelFormat::Rgb8, roi)
+        .expect("decode reference");
+
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0_u8; expected.len()])
+        .collect::<Vec<_>>();
+    let options = TileBatchOptions::new(NonZeroUsize::new(3));
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileRegionDecodeJob {
+                input: codestream.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+                roi,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_into(&mut jobs, PixelFormat::Rgb8, options).expect("batch decode")
+    };
+
+    assert_eq!(outcomes.len(), JOBS);
+    for outcome in &outcomes {
+        assert_eq!(outcome.decoded, roi);
+    }
+    for (index, out) in outputs.iter().enumerate() {
+        assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+#[test]
+fn production_batch_scaled_decode_parallel_preserves_order_and_output() {
+    const JOBS: usize = 12;
+    let codestream = ht_rgb_fixture();
+    let scale = Downscale::Half;
+    let scaled = Rect::full((16, 16)).scaled_covering(scale);
+    let stride = scaled.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut pool = signinum_j2k::J2kScratchPool::new();
+    let mut expected = vec![0_u8; stride * scaled.h as usize];
+    decoder
+        .decode_scaled_into(&mut pool, &mut expected, stride, PixelFormat::Rgb8, scale)
+        .expect("decode reference");
+
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0_u8; expected.len()])
+        .collect::<Vec<_>>();
+    let options = TileBatchOptions::new(NonZeroUsize::new(3));
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: codestream.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options).expect("batch decode")
+    };
+
+    assert_eq!(outcomes.len(), JOBS);
+    for outcome in &outcomes {
+        assert_eq!(outcome.decoded, scaled);
     }
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");

@@ -4,7 +4,7 @@ use signinum_core::{
     BufferError, DecoderContext, Downscale, ImageDecodeRows, PixelFormat, Rect, RowSink,
     TileBatchDecode,
 };
-use signinum_j2k::{J2kCodec, J2kContext, J2kDecoder, J2kError};
+use signinum_j2k::{J2kCodec, J2kContext, J2kDecoder, J2kError, J2kRowDecodeOptions};
 use signinum_j2k_native::{encode, encode_htj2k, DecodeSettings, EncodeOptions, Image};
 
 fn encode_codestream(
@@ -89,6 +89,45 @@ fn wrap_codestream_jp2(
     bytes.extend_from_slice(&[bpc, 7, 0, 0]);
     bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
     bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
+
+    let len = (8 + codestream.len()) as u32;
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(b"jp2c");
+    bytes.extend_from_slice(codestream);
+    bytes
+}
+
+fn wrap_rgba_codestream_jp2(codestream: &[u8], width: u32, height: u32, bit_depth: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+
+    let bpc = bit_depth.saturating_sub(1);
+    let jp2h_len = 8 + 22 + 15 + 34;
+    bytes.extend_from_slice(&(jp2h_len as u32).to_be_bytes());
+    bytes.extend_from_slice(b"jp2h");
+    bytes.extend_from_slice(&[0, 0, 0, 22, b'i', b'h', b'd', b'r']);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&4_u16.to_be_bytes());
+    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
+    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
+    bytes.extend_from_slice(&16_u32.to_be_bytes());
+    bytes.extend_from_slice(&[0, 0, 0, 34, b'c', b'd', b'e', b'f']);
+    bytes.extend_from_slice(&4_u16.to_be_bytes());
+    for (channel, channel_type, association) in [
+        (0_u16, 0_u16, 1_u16),
+        (1_u16, 0_u16, 2_u16),
+        (2_u16, 0_u16, 3_u16),
+        (3_u16, 1_u16, 0_u16),
+    ] {
+        bytes.extend_from_slice(&channel.to_be_bytes());
+        bytes.extend_from_slice(&channel_type.to_be_bytes());
+        bytes.extend_from_slice(&association.to_be_bytes());
+    }
 
     let len = (8 + codestream.len()) as u32;
     bytes.extend_from_slice(&len.to_be_bytes());
@@ -328,15 +367,108 @@ fn decode_rgb16_roundtrips_native_samples() {
 }
 
 #[test]
-fn decode_rejects_unsupported_rgba16_output() {
-    let pixels = [1, 2, 3, 4, 5, 6];
-    let codestream = encode_codestream(&pixels, 2, 1, 3, 8, true);
+fn decode_rgba16_fills_opaque_alpha_for_rgb_source() {
+    let samples = [0_u16, 1, 2, 1024, 2048, 3072];
+    let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
+    let codestream = encode_codestream(&pixels, 2, 1, 3, 12, true);
     let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
     let mut out = [0_u8; 16];
-    let err = decoder
+    decoder
         .decode_into(&mut out, 2 * 4 * 2, PixelFormat::Rgba16)
-        .unwrap_err();
-    assert!(matches!(err, J2kError::Unsupported(_)));
+        .expect("decode");
+    let expected: Vec<u8> = [0_u16, 1, 2, 4095, 1024, 2048, 3072, 4095]
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(out, expected.as_slice());
+}
+
+#[test]
+fn decode_rgba16_preserves_jp2_alpha_channel() {
+    let samples = [0_u16, 1, 2, 3, 1024, 2048, 3072, 4095];
+    let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
+    let codestream = encode_codestream(&pixels, 2, 1, 4, 12, true);
+    let jp2 = wrap_rgba_codestream_jp2(&codestream, 2, 1, 12);
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut out = [0_u8; 16];
+    decoder
+        .decode_into(&mut out, 2 * 4 * 2, PixelFormat::Rgba16)
+        .expect("decode");
+    assert_eq!(out, pixels.as_slice());
+}
+
+#[test]
+fn decode_rgba16_roi_scaled_and_region_scaled_preserve_alpha() {
+    let samples: Vec<u16> = (0..4 * 4 * 4).map(|sample| sample * 3).collect();
+    let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
+    let codestream = encode_codestream(&pixels, 4, 4, 4, 12, true);
+    let jp2 = wrap_rgba_codestream_jp2(&codestream, 4, 4, 12);
+    let fmt = PixelFormat::Rgba16;
+    let bytes_per_pixel = fmt.bytes_per_pixel();
+
+    let mut full_decoder = J2kDecoder::new(&jp2).expect("full decoder");
+    let full_stride = 4 * bytes_per_pixel;
+    let mut full = vec![0_u8; full_stride * 4];
+    full_decoder
+        .decode_into(&mut full, full_stride, fmt)
+        .expect("full decode");
+
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let mut region_decoder = J2kDecoder::new(&jp2).expect("region decoder");
+    let region_stride = roi.w as usize * bytes_per_pixel;
+    let mut region = vec![0_u8; region_stride * roi.h as usize];
+    let region_outcome = region_decoder
+        .decode_region_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut region,
+            region_stride,
+            fmt,
+            roi,
+        )
+        .expect("region decode");
+    assert_eq!(region_outcome.decoded, roi);
+    assert_eq!(region, crop_bytes(&full, 4, bytes_per_pixel, roi));
+
+    let scale = Downscale::Half;
+    let scaled_dims = (2, 2);
+    let scaled_stride = scaled_dims.0 as usize * bytes_per_pixel;
+    let mut scaled_decoder = J2kDecoder::new(&jp2).expect("scaled decoder");
+    let mut scaled = vec![0_u8; scaled_stride * scaled_dims.1 as usize];
+    let scaled_outcome = scaled_decoder
+        .decode_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut scaled,
+            scaled_stride,
+            fmt,
+            scale,
+        )
+        .expect("scaled decode");
+    assert_eq!(scaled_outcome.decoded, Rect::full(scaled_dims));
+
+    let scaled_roi = roi.scaled_covering(scale);
+    let mut region_scaled_decoder = J2kDecoder::new(&jp2).expect("region scaled decoder");
+    let region_scaled_stride = scaled_roi.w as usize * bytes_per_pixel;
+    let mut region_scaled = vec![0_u8; region_scaled_stride * scaled_roi.h as usize];
+    let region_scaled_outcome = region_scaled_decoder
+        .decode_region_scaled_into(
+            &mut signinum_j2k::J2kScratchPool::new(),
+            &mut region_scaled,
+            region_scaled_stride,
+            fmt,
+            roi,
+            scale,
+        )
+        .expect("region scaled decode");
+    assert_eq!(region_scaled_outcome.decoded, scaled_roi);
+    assert_eq!(
+        region_scaled,
+        crop_bytes(&scaled, scaled_dims.0 as usize, bytes_per_pixel, scaled_roi)
+    );
 }
 
 #[test]
@@ -804,6 +936,44 @@ fn decode_rows_u16_matches_full_gray16_decode() {
     let mut sink = CollectRowsU16::default();
     <J2kDecoder<'_> as ImageDecodeRows<'_, u16>>::decode_rows(&mut decoder, &mut sink)
         .expect("row decode");
+    let collected: Vec<u8> = sink.rows.into_iter().flat_map(u16::to_le_bytes).collect();
+    assert_eq!(collected, full);
+}
+
+#[test]
+fn decode_rows_u8_bounded_matches_full_rgba8_decode_one_row_at_a_time() {
+    let pixels: Vec<u8> = (0_u8..32).collect();
+    let codestream = encode_codestream(&pixels, 4, 2, 4, 8, true);
+    let jp2 = wrap_rgba_codestream_jp2(&codestream, 4, 2, 8);
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut full = [0_u8; 32];
+    decoder
+        .decode_into(&mut full, 4 * 4, PixelFormat::Rgba8)
+        .expect("full decode");
+
+    let mut sink = CollectRowsU8::default();
+    decoder
+        .decode_rows_u8_bounded(&mut sink, J2kRowDecodeOptions::new(1))
+        .expect("bounded row decode");
+    assert_eq!(sink.rows, full);
+}
+
+#[test]
+fn decode_rows_u16_bounded_matches_full_rgba16_decode_one_row_at_a_time() {
+    let samples: Vec<u16> = (0..4 * 2 * 4).map(|sample| sample * 11).collect();
+    let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
+    let codestream = encode_codestream(&pixels, 4, 2, 4, 12, true);
+    let jp2 = wrap_rgba_codestream_jp2(&codestream, 4, 2, 12);
+    let mut decoder = J2kDecoder::new(&jp2).expect("decoder");
+    let mut full = vec![0_u8; 4 * 2 * 4 * 2];
+    decoder
+        .decode_into(&mut full, 4 * 4 * 2, PixelFormat::Rgba16)
+        .expect("full decode");
+
+    let mut sink = CollectRowsU16::default();
+    decoder
+        .decode_rows_u16_bounded(&mut sink, J2kRowDecodeOptions::new(1))
+        .expect("bounded row decode");
     let collected: Vec<u8> = sink.rows.into_iter().flat_map(u16::to_le_bytes).collect();
     assert_eq!(collected, full);
 }

@@ -38,7 +38,7 @@ pub(crate) fn decode_image_into_with_native_context<'a>(
                 fmt,
             )
         }
-        PixelFormat::Rgb16 | PixelFormat::Gray16 => {
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image
                 .decode_native_with_context(native_context)
                 .map_err(|err| J2kError::Backend(err.to_string()))?;
@@ -51,7 +51,6 @@ pub(crate) fn decode_image_into_with_native_context<'a>(
                 fmt,
             )
         }
-        PixelFormat::Rgba16 => unreachable!("validated above"),
         _ => Err(Unsupported {
             what: "pixel format is not yet supported by signinum-j2k",
         }
@@ -90,7 +89,7 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
                 .map_err(|err| J2kError::Backend(err.to_string()))?;
             write_components_u8_output(&components, out, stride, fmt)
         }
-        PixelFormat::Rgb16 | PixelFormat::Gray16 => {
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image
                 .decode_native_region_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
                 .map_err(|err| J2kError::Backend(err.to_string()))?;
@@ -103,7 +102,6 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
                 fmt,
             )
         }
-        PixelFormat::Rgba16 => unreachable!("validated above"),
         _ => Err(Unsupported {
             what: "pixel format is not yet supported by signinum-j2k",
         }
@@ -234,16 +232,6 @@ fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     ((rounded.clamp(0.0, max_value) / max_value) * f32::from(u8::MAX)).round() as u8
 }
 
-pub(crate) fn validate_supported_format(fmt: PixelFormat) -> Result<(), J2kError> {
-    if matches!(fmt, PixelFormat::Rgba16) {
-        return Err(Unsupported {
-            what: "Rgba16 output is not supported by signinum-j2k M1",
-        }
-        .into());
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_buffer(
     dims: (u32, u32),
     out_len: usize,
@@ -329,6 +317,45 @@ fn write_u16_output(
             );
             Ok(())
         }
+        (ColorSpace::RGB, true, 4, PixelFormat::Rgb16) => {
+            write_u16_channel_rows(U16ChannelRows {
+                src: &raw.data,
+                bytes_per_sample: raw.bytes_per_sample,
+                bit_depth: raw.bit_depth,
+                source_channels: 4,
+                layout: U16ChannelLayout::Drop,
+                out,
+                stride,
+                dims: (width, height),
+            });
+            Ok(())
+        }
+        (ColorSpace::RGB, false, 3, PixelFormat::Rgba16) => {
+            write_u16_channel_rows(U16ChannelRows {
+                src: &raw.data,
+                bytes_per_sample: raw.bytes_per_sample,
+                bit_depth: raw.bit_depth,
+                source_channels: 3,
+                layout: U16ChannelLayout::Synthesize,
+                out,
+                stride,
+                dims: (width, height),
+            });
+            Ok(())
+        }
+        (ColorSpace::RGB, true, 4, PixelFormat::Rgba16) => {
+            write_u16_channel_rows(U16ChannelRows {
+                src: &raw.data,
+                bytes_per_sample: raw.bytes_per_sample,
+                bit_depth: raw.bit_depth,
+                source_channels: 4,
+                layout: U16ChannelLayout::Preserve,
+                out,
+                stride,
+                dims: (width, height),
+            });
+            Ok(())
+        }
         (ColorSpace::Gray, false, 1, PixelFormat::Gray16) => {
             convert_or_copy_u16(
                 &raw.data,
@@ -346,6 +373,24 @@ fn write_u16_output(
         }
         .into()),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum U16ChannelLayout {
+    Drop,
+    Synthesize,
+    Preserve,
+}
+
+struct U16ChannelRows<'src, 'out> {
+    src: &'src [u8],
+    bytes_per_sample: u8,
+    bit_depth: u8,
+    source_channels: usize,
+    layout: U16ChannelLayout,
+    out: &'out mut [u8],
+    stride: usize,
+    dims: (usize, usize),
 }
 
 fn copy_rows_exact(src: &[u8], out: &mut [u8], stride: usize, row_bytes: usize, height: usize) {
@@ -393,6 +438,80 @@ fn drop_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height
     }
 }
 
+fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
+    let U16ChannelRows {
+        src,
+        bytes_per_sample,
+        bit_depth,
+        source_channels,
+        layout,
+        out,
+        stride,
+        dims,
+    } = job;
+    let (width, height) = dims;
+    let dst_channels = match layout {
+        U16ChannelLayout::Drop => 3,
+        U16ChannelLayout::Synthesize | U16ChannelLayout::Preserve => 4,
+    };
+    let bytes_per_sample = usize::from(bytes_per_sample);
+    let src_row_bytes = width * source_channels * bytes_per_sample;
+    let dst_row_bytes = width * dst_channels * 2;
+    let alpha = opaque_alpha_u16(bytes_per_sample, bit_depth);
+
+    for (src_row, dst_row) in src
+        .chunks_exact(src_row_bytes)
+        .zip(out.chunks_exact_mut(stride))
+        .take(height)
+    {
+        let dst_row = &mut dst_row[..dst_row_bytes];
+        for x in 0..width {
+            let src_pixel = &src_row[x * source_channels * bytes_per_sample..];
+            let dst_pixel = &mut dst_row[x * dst_channels * 2..(x + 1) * dst_channels * 2];
+            for channel in 0..3 {
+                let sample = output_u16_sample(src_pixel, channel, bytes_per_sample, bit_depth);
+                dst_pixel[channel * 2..channel * 2 + 2].copy_from_slice(&sample.to_le_bytes());
+            }
+            match layout {
+                U16ChannelLayout::Drop => {}
+                U16ChannelLayout::Synthesize => {
+                    dst_pixel[6..8].copy_from_slice(&alpha.to_le_bytes());
+                }
+                U16ChannelLayout::Preserve => {
+                    let sample = output_u16_sample(src_pixel, 3, bytes_per_sample, bit_depth);
+                    dst_pixel[6..8].copy_from_slice(&sample.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+fn opaque_alpha_u16(bytes_per_sample: usize, bit_depth: u8) -> u16 {
+    if bytes_per_sample == 1 {
+        u16::MAX
+    } else {
+        ((1_u32 << bit_depth.min(16)) - 1).max(1) as u16
+    }
+}
+
+fn output_u16_sample(
+    src_pixel: &[u8],
+    channel: usize,
+    bytes_per_sample: usize,
+    bit_depth: u8,
+) -> u16 {
+    let offset = channel * bytes_per_sample;
+    if bytes_per_sample == 2 {
+        return u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]);
+    }
+    widen_u8_sample_to_u16(src_pixel[offset], bit_depth)
+}
+
+fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
+    let max_value = ((1_u32 << bit_depth.min(16)) - 1).max(1);
+    ((u32::from(sample) * u32::from(u16::MAX) + (max_value / 2)) / max_value) as u16
+}
+
 fn convert_or_copy_u16(
     src: &[u8],
     bytes_per_sample: u8,
@@ -405,7 +524,6 @@ fn convert_or_copy_u16(
     let (width, height) = dims;
     let dst_row_bytes = width * channels * 2;
     let src_row_bytes = width * channels * usize::from(bytes_per_sample);
-    let max_value = ((1_u32 << bit_depth.min(16)) - 1).max(1);
     for (src_row, dst_row) in src
         .chunks_exact(src_row_bytes)
         .zip(out.chunks_exact_mut(stride))
@@ -417,8 +535,8 @@ fn convert_or_copy_u16(
             continue;
         }
         for (sample, dst_sample) in src_row.iter().zip(dst_row.chunks_exact_mut(2)) {
-            let widened = (u32::from(*sample) * u32::from(u16::MAX) + (max_value / 2)) / max_value;
-            dst_sample.copy_from_slice(&(widened as u16).to_le_bytes());
+            let widened = widen_u8_sample_to_u16(*sample, bit_depth);
+            dst_sample.copy_from_slice(&widened.to_le_bytes());
         }
     }
 }

@@ -30,12 +30,14 @@ pub mod adapter;
 
 /// Borrowed view and decoder entry points.
 pub mod view;
-pub use view::{J2kCodec, J2kDecoder, J2kView};
+pub use view::{J2kCodec, J2kDecoder, J2kRowDecodeOptions, J2kView};
 
 pub use batch::{
-    decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
-    decode_tiles_region_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob,
+    decode_tile_into_in_context, decode_tile_region_into_in_context,
+    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
+    decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use adapter::adaptive_route::{
