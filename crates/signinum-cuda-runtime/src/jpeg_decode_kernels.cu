@@ -309,7 +309,12 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
     SigninumJpegEntropySyncState state;
     state.code = JPEG_STATUS_OK;
     state.start_bit = gid * params.subsequence_bits;
-    state.end_bit = min(state.start_bit + params.subsequence_bits, params.entropy_bits);
+    if (state.start_bit >= params.entropy_bits) {
+        state.end_bit = params.entropy_bits;
+    } else {
+        const unsigned int remaining_bits = params.entropy_bits - state.start_bit;
+        state.end_bit = state.start_bit + min(params.subsequence_bits, remaining_bits);
+    }
     state.bit_pos = state.start_bit;
     state.symbol_count = 0u;
     state.block_phase = 0u;
@@ -336,6 +341,12 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
         if (!signinum_jpeg_decode_symbol(reader, entropy, params.entropy_len, table, &status, symbol)) {
             break;
         }
+        const unsigned int run = symbol >> 4u;
+        const unsigned int ssss = symbol & 0x0Fu;
+        if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {
+            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
+            break;
+        }
         unsigned int coeff_bits = dc ? symbol : (symbol & 0x0Fu);
         if (coeff_bits > 15u) {
             signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, coeff_bits, reader.pos);
@@ -353,8 +364,6 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
             state.symbol_count += 1u;
             continue;
         }
-        const unsigned int run = symbol >> 4u;
-        const unsigned int ssss = symbol & 0x0Fu;
         if (ssss == 0u && run != 15u) {
             state.symbol_count += 64u - state.zigzag_index;
             state.zigzag_index = 0u;

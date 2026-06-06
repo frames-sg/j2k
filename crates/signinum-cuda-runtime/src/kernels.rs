@@ -487,6 +487,25 @@ mod tests {
         assert!(
             cuda_source.contains("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
         );
+        assert!(cuda_source.contains(
+            "const unsigned int remaining_bits = params.entropy_bits - state.start_bit;"
+        ));
+        let sync_source = cuda_source
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_sync420(")
+            .nth(1)
+            .expect("entropy sync source")
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+            .next()
+            .expect("entropy sync source before overflow stub");
+        let ac_overflow_guard = sync_source
+            .find("if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {")
+            .expect("AC run overflow guard");
+        let amplitude_read = sync_source
+            .find(
+                "if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits))",
+            )
+            .expect("amplitude bit read");
+        assert!(ac_overflow_guard < amplitude_read);
     }
 
     #[test]
