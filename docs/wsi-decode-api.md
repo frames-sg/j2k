@@ -168,11 +168,14 @@ helpers combine request parsing, output resize, and resident batch decode for
 viewport loops that reuse one caller-owned output across changing tile counts
 or output shapes. For warm WSI batches that already keep parsed
 `signinum_jpeg_metal::Decoder` wrappers alive,
-`Codec::decode_rgb8_decoder_*_batch_into_resizable_metal_{buffer,textures}_with_session`
+`Codec::decode_rgb8_decoder_*_batch_into_metal_{buffer,textures}_with_session`
 submits full, scaled, or region-scaled resident batches from cached fast-packet
-state instead of reparsing the JPEG byte slices. Resizable resident batch
-helpers reject mixed output dimensions before resizing the caller-owned Metal
-output. At the viewport layer,
+state into exact caller-owned outputs instead of reparsing the JPEG byte
+slices. The corresponding
+`Codec::decode_rgb8_decoder_*_batch_into_resizable_metal_{buffer,textures}_with_session`
+helpers add output resize for changing tile counts or output shapes. Resizable
+resident batch helpers reject mixed output dimensions before resizing the
+caller-owned Metal output. At the viewport layer,
 `decode_viewport_to_resizable_metal_{buffer,textures}_with_session` accepts any
 viewport workload and selects direct contiguous resident decode when eligible,
 otherwise it uses resident component-row composition. Callers that already keep
