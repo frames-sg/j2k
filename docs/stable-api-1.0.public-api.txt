@@ -3535,6 +3535,9 @@ pub use signinum_jpeg_metal::JpegPixelFormat
 pub use signinum_jpeg_metal::JpegRectPublic
 pub use signinum_jpeg_metal::ScratchPool
 pub mod signinum_jpeg_metal::viewport
+pub enum signinum_jpeg_metal::viewport::ViewportResidentOutputStrategy
+pub signinum_jpeg_metal::viewport::ViewportResidentOutputStrategy::Composite
+pub signinum_jpeg_metal::viewport::ViewportResidentOutputStrategy::DirectContiguous
 pub enum signinum_jpeg_metal::viewport::ViewportSurfaceStrategy
 pub signinum_jpeg_metal::viewport::ViewportSurfaceStrategy::CpuComposite
 pub signinum_jpeg_metal::viewport::ViewportSurfaceStrategy::CpuContiguous
@@ -3547,6 +3550,7 @@ pub struct signinum_jpeg_metal::viewport::ViewportWorkload
 pub signinum_jpeg_metal::viewport::ViewportWorkload::scale: signinum_core::scale::Downscale
 pub signinum_jpeg_metal::viewport::ViewportWorkload::tiles: alloc::vec::Vec<signinum_jpeg_metal::viewport::ViewportTile>
 pub signinum_jpeg_metal::viewport::ViewportWorkload::viewport_dims: (u32, u32)
+pub fn signinum_jpeg_metal::viewport::choose_resizable_metal_viewport_strategy(&signinum_jpeg::decoder::Decoder<'_>, &signinum_jpeg_metal::viewport::ViewportWorkload) -> core::result::Result<signinum_jpeg_metal::viewport::ViewportResidentOutputStrategy, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::viewport::choose_viewport_surface_strategy(&signinum_jpeg_metal::viewport::ViewportWorkload, signinum_core::backend::BackendRequest) -> core::result::Result<signinum_jpeg_metal::viewport::ViewportSurfaceStrategy, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::viewport::compose_viewport_cpu(&signinum_jpeg::decoder::Decoder<'_>, &mut signinum_jpeg::internal::scratch::ScratchPool, signinum_core::pixel::PixelFormat, signinum_core::scale::Downscale, (u32, u32), &[signinum_jpeg_metal::viewport::ViewportTile]) -> core::result::Result<alloc::vec::Vec<u8>, signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::viewport::compose_viewport_cpu_to_surface(&signinum_jpeg::decoder::Decoder<'_>, &mut signinum_jpeg::internal::scratch::ScratchPool, signinum_core::scale::Downscale, (u32, u32), &[signinum_jpeg_metal::viewport::ViewportTile]) -> core::result::Result<signinum_jpeg_metal::Surface, signinum_jpeg_metal::Error>

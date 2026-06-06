@@ -292,7 +292,8 @@ Tier: Adapter API.
 Stable modules and types: `viewport`, `Error`, `SurfaceResidency`, `Surface`,
 `Codec`, `Decoder`, `MetalBackendSession`, `MetalSession`,
 `MetalSubmission`, `MetalBatchOutputBuffer`, `MetalBatchTextureOutput`,
-`JpegBaselineMetalEncodeTile`, `Info`, and `JpegRectPublic`.
+`JpegBaselineMetalEncodeTile`, `Info`, `JpegRectPublic`, and
+`ViewportResidentOutputStrategy`.
 
 Stable functions and methods: `Surface::pitch_bytes`, `Surface::residency`,
 `Surface::as_bytes`, `Surface::download_into`, `Surface::metal_buffer`,
@@ -314,14 +315,15 @@ full-tile JPEG Metal batches,
 `encode_jpeg_baseline_from_metal_buffer`,
 `encode_jpeg_baseline_batch_from_metal_buffers`, and viewport helpers
 `viewport_source_bounds`, `is_contiguous_viewport_workload`,
-`choose_viewport_surface_strategy`, `suggest_viewport_workload`,
+`choose_viewport_surface_strategy`,
+`choose_resizable_metal_viewport_strategy`, `suggest_viewport_workload`,
 `compose_viewport_cpu`, `decode_viewport_region_cpu`,
 `decode_viewport_to_surface`, `decode_viewport_region_cpu_to_surface`,
 `compose_viewport_cpu_to_surface`, `compose_viewport_hybrid`,
 `compose_viewport_to_resizable_metal_buffer_with_session`,
 `compose_viewport_to_resizable_metal_textures_with_session`,
 `decode_viewport_region_hybrid`,
-`decode_viewport_region_to_resizable_metal_buffer_with_session`, and
+`decode_viewport_region_to_resizable_metal_buffer_with_session`,
 `decode_viewport_region_to_resizable_metal_textures_with_session`,
 `decode_viewport_to_resizable_metal_buffer_with_session`, and
 `decode_viewport_to_resizable_metal_textures_with_session`.

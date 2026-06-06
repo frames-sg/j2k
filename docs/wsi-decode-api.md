@@ -170,7 +170,10 @@ or output shapes. At the viewport layer,
 `decode_viewport_to_resizable_metal_{buffer,textures}_with_session` accepts any
 viewport workload and selects direct contiguous resident decode when eligible,
 otherwise it uses resident component-row composition. For callers that need
-explicit separation, contiguous viewport workloads can use
+to route or annotate work before dispatch,
+`choose_resizable_metal_viewport_strategy` reports the same direct-vs-composite
+decision. For callers that need explicit separation, contiguous viewport
+workloads can use
 `decode_viewport_region_to_resizable_metal_{buffer,textures}_with_session`
 and sparse or non-contiguous RGB8 viewport composition can use
 `compose_viewport_to_resizable_metal_{buffer,textures}_with_session`; both

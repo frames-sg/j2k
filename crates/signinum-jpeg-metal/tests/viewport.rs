@@ -2,19 +2,20 @@
 
 use signinum_core::{BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
 use signinum_jpeg::{Decoder, ScratchPool};
-use signinum_jpeg_metal::viewport::{
-    choose_viewport_surface_strategy, compose_viewport_cpu, decode_viewport_region_cpu,
-    decode_viewport_to_surface, is_contiguous_viewport_workload, suggest_viewport_workload,
-    viewport_source_bounds, ViewportSurfaceStrategy, ViewportTile,
-};
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::viewport::{
-    compose_viewport_hybrid, compose_viewport_to_resizable_metal_buffer_with_session,
+    choose_resizable_metal_viewport_strategy, compose_viewport_hybrid,
+    compose_viewport_to_resizable_metal_buffer_with_session,
     compose_viewport_to_resizable_metal_textures_with_session, decode_viewport_region_hybrid,
     decode_viewport_region_to_resizable_metal_buffer_with_session,
     decode_viewport_region_to_resizable_metal_textures_with_session,
     decode_viewport_to_resizable_metal_buffer_with_session,
-    decode_viewport_to_resizable_metal_textures_with_session,
+    decode_viewport_to_resizable_metal_textures_with_session, ViewportResidentOutputStrategy,
+};
+use signinum_jpeg_metal::viewport::{
+    choose_viewport_surface_strategy, compose_viewport_cpu, decode_viewport_region_cpu,
+    decode_viewport_to_surface, is_contiguous_viewport_workload, suggest_viewport_workload,
+    viewport_source_bounds, ViewportSurfaceStrategy, ViewportTile,
 };
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::{
@@ -322,6 +323,69 @@ fn cpu_auto_strategy_prefers_contiguous_when_available() {
     assert_eq!(
         choose_viewport_surface_strategy(&workload, BackendRequest::Cpu).expect("cpu strategy"),
         ViewportSurfaceStrategy::CpuContiguous
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_strategy_reports_direct_contiguous_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: quadrant_tiles().to_vec(),
+    };
+
+    assert_eq!(
+        choose_resizable_metal_viewport_strategy(&decoder, &workload)
+            .expect("resident viewport strategy"),
+        ViewportResidentOutputStrategy::DirectContiguous
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_strategy_reports_sparse_composition_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+
+    assert_eq!(
+        choose_resizable_metal_viewport_strategy(&decoder, &workload)
+            .expect("resident viewport strategy"),
+        ViewportResidentOutputStrategy::Composite
     );
 }
 

@@ -5,7 +5,9 @@ use signinum_jpeg::adapter::{
     build_metal_fast420_packet_for_decoder, build_metal_fast422_packet_for_decoder,
     build_metal_fast444_packet_for_decoder, decoder_bytes,
 };
-use signinum_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
+use signinum_jpeg::{
+    ColorSpace as JpegColorSpace, Decoder as CpuDecoder, Rect as JpegRect, ScratchPool,
+};
 
 use crate::{batch, routing, Error, Surface};
 #[cfg(target_os = "macos")]
@@ -48,6 +50,16 @@ pub enum ViewportSurfaceStrategy {
     HybridComposite,
     /// Decode one contiguous source region through the Metal path.
     HybridContiguous,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Resident Metal output strategy selected for a reusable viewport decode.
+pub enum ViewportResidentOutputStrategy {
+    /// Decode the contiguous source bounds through the direct resident batch path.
+    DirectContiguous,
+    /// Decode component rows into resident planes and pack the composed viewport.
+    Composite,
 }
 
 /// Compute the bounding source rectangle covering all tiles in a workload.
@@ -236,6 +248,62 @@ fn validate_explicit_metal_viewport_request(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_resident_viewport_composition_request(
+    decoder: &CpuDecoder<'_>,
+    workload: &ViewportWorkload,
+) -> Result<(), Error> {
+    if workload.tiles.is_empty() {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal resident viewport output requires at least one viewport tile",
+        });
+    }
+    if matches!(
+        decoder.info().color_space,
+        JpegColorSpace::Cmyk | JpegColorSpace::Ycck
+    ) {
+        return Err(Error::UnsupportedMetalRequest {
+            reason:
+                "JPEG Metal resident viewport composition does not support CMYK/YCCK JPEG output",
+        });
+    }
+
+    for tile in &workload.tiles {
+        let dims = tile.source_roi.scaled_covering(workload.scale);
+        if (dims.w, dims.h) != (tile.dest.w, tile.dest.h) {
+            return Err(Error::UnsupportedMetalRequest {
+                reason:
+                    "JPEG Metal resident viewport tile dimensions do not match destination rect",
+            });
+        }
+        if tile.dest.x.saturating_add(tile.dest.w) > workload.viewport_dims.0
+            || tile.dest.y.saturating_add(tile.dest.h) > workload.viewport_dims.1
+        {
+            return Err(Error::UnsupportedMetalRequest {
+                reason: "JPEG Metal resident viewport destination exceeds viewport dimensions",
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+/// Choose the resident Metal strategy for a reusable viewport output request.
+pub fn choose_resizable_metal_viewport_strategy(
+    decoder: &CpuDecoder<'_>,
+    workload: &ViewportWorkload,
+) -> Result<ViewportResidentOutputStrategy, Error> {
+    if is_contiguous_viewport_workload(workload)
+        && validate_explicit_metal_viewport_request(decoder, workload).is_ok()
+    {
+        return Ok(ViewportResidentOutputStrategy::DirectContiguous);
+    }
+
+    validate_resident_viewport_composition_request(decoder, workload)?;
+    Ok(ViewportResidentOutputStrategy::Composite)
 }
 
 /// Suggest a fixed-size centered viewport workload for an image.
@@ -507,6 +575,7 @@ pub fn compose_viewport_to_resizable_metal_buffer_with_session(
     output: &mut MetalBatchOutputBuffer,
     session: &MetalBackendSession,
 ) -> Result<Surface, Error> {
+    validate_resident_viewport_composition_request(decoder, workload)?;
     output.ensure_rgb8_tiles(session, workload.viewport_dims, 1)?;
     crate::compute::compose_rgb_viewport_from_regions_into_output_with_session(
         decoder,
@@ -533,6 +602,7 @@ pub fn compose_viewport_to_resizable_metal_textures_with_session(
     output: &mut MetalBatchTextureOutput,
     session: &MetalBackendSession,
 ) -> Result<MetalTextureTile, Error> {
+    validate_resident_viewport_composition_request(decoder, workload)?;
     output.ensure_rgba8_tiles(session, workload.viewport_dims, 1)?;
     crate::compute::compose_rgb_viewport_from_regions_into_textures_with_session(
         decoder,
@@ -558,20 +628,21 @@ pub fn decode_viewport_to_resizable_metal_buffer_with_session(
     output: &mut MetalBatchOutputBuffer,
     session: &MetalBackendSession,
 ) -> Result<Surface, Error> {
-    if is_contiguous_viewport_workload(workload)
-        && validate_explicit_metal_viewport_request(decoder, workload).is_ok()
-    {
-        return decode_viewport_region_to_resizable_metal_buffer_with_session(
-            decoder_bytes(decoder),
-            workload,
-            output,
-            session,
-        );
+    match choose_resizable_metal_viewport_strategy(decoder, workload)? {
+        ViewportResidentOutputStrategy::DirectContiguous => {
+            decode_viewport_region_to_resizable_metal_buffer_with_session(
+                decoder_bytes(decoder),
+                workload,
+                output,
+                session,
+            )
+        }
+        ViewportResidentOutputStrategy::Composite => {
+            compose_viewport_to_resizable_metal_buffer_with_session(
+                decoder, pool, workload, output, session,
+            )
+        }
     }
-
-    compose_viewport_to_resizable_metal_buffer_with_session(
-        decoder, pool, workload, output, session,
-    )
 }
 
 #[cfg(target_os = "macos")]
@@ -587,20 +658,21 @@ pub fn decode_viewport_to_resizable_metal_textures_with_session(
     output: &mut MetalBatchTextureOutput,
     session: &MetalBackendSession,
 ) -> Result<MetalTextureTile, Error> {
-    if is_contiguous_viewport_workload(workload)
-        && validate_explicit_metal_viewport_request(decoder, workload).is_ok()
-    {
-        return decode_viewport_region_to_resizable_metal_textures_with_session(
-            decoder_bytes(decoder),
-            workload,
-            output,
-            session,
-        );
+    match choose_resizable_metal_viewport_strategy(decoder, workload)? {
+        ViewportResidentOutputStrategy::DirectContiguous => {
+            decode_viewport_region_to_resizable_metal_textures_with_session(
+                decoder_bytes(decoder),
+                workload,
+                output,
+                session,
+            )
+        }
+        ViewportResidentOutputStrategy::Composite => {
+            compose_viewport_to_resizable_metal_textures_with_session(
+                decoder, pool, workload, output, session,
+            )
+        }
     }
-
-    compose_viewport_to_resizable_metal_textures_with_session(
-        decoder, pool, workload, output, session,
-    )
 }
 
 #[cfg(target_os = "macos")]
