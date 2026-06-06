@@ -738,6 +738,8 @@ Current v1 scope is explicit:
 - `wsi_tile_batch_region_scaled_distinct_rgb_q4`
 - viewer/composite groups for contiguous and sparse viewport-shaped device
   output
+- `viewer_resident_viewport_rgb_buffer_warm`
+- `viewer_resident_viewport_rgba_texture_warm`
 
 Compile the Metal benches:
 
