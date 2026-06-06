@@ -713,9 +713,10 @@ Current v1 scope is explicit:
   assembly plus output projection. Initial 12-bit extended sequential
   grayscale `Gray16`/`Rgb16`/`Rgba16` full-image/ROI/scaled/region-scaled output is
   CPU-backed, including restart-coded grayscale streams, and initial 12-bit
-  progressive grayscale `Gray16`/`Rgb16`/`Rgba16` output is CPU-backed. Initial 12-bit
-  APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` output is CPU-backed,
-  including restart-coded color streams. Initial
+  progressive grayscale `Gray16`/`Rgb16`/`Rgba16` output is CPU-backed. Initial
+  12-bit APP14 RGB 4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
+  4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` output is CPU-backed, including
+  restart-coded extended three-component color streams. Initial
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled output, 8-bit APP14 RGB `Rgb8` output,
   8-bit APP14 RGB full/ROI/scaled/region-scaled `Rgba8` output, 8-bit YCbCr
@@ -726,10 +727,10 @@ Current v1 scope is explicit:
   grayscale, APP14 RGB, and YCbCr streams; 8-bit SOF3 grayscale/RGB/YCbCr row
   streaming and 16-bit SOF3 grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16`
   row streaming are also CPU-backed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
-  fixture coverage and initial 12-bit CMYK/YCCK 4:4:4/4:2:2/4:2:0
-  `Rgb16`/`Rgba16` coverage are CPU-backed, and one malformed non-leading-max
-  sampling fixture has structured rejection coverage; broader four-component
-  malformed coverage, restart-coded 12-bit CMYK/YCCK implementation, other
+  fixture coverage and initial 12-bit extended/progressive CMYK/YCCK
+  4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage are CPU-backed, and one
+  malformed non-leading-max sampling fixture has structured rejection coverage;
+  broader four-component malformed coverage, restart-coded 12-bit CMYK/YCCK implementation, other
   12-bit subsampled color support, stronger non-constant 12-bit oracle
   fixtures, and other SOF3 16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until

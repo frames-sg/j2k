@@ -46,8 +46,8 @@ Initial 12-bit
 progressive grayscale full-image/ROI/scaled/region-scaled decode to `Gray16` or
 expanded `Rgb16`/`Rgba16` is available, and initial 12-bit APP14 RGB 4:4:4
 plus YCbCr 4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available,
-including restart-coded color streams. Initial 12-bit extended CMYK/YCCK
-4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available for
+including restart-coded color streams. Initial 12-bit extended and progressive
+CMYK/YCCK 4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available for
 full-image/ROI/scaled/region-scaled output and session batches. Other 12-bit
 subsampled color, restart-coded 12-bit CMYK/YCCK, stronger non-constant 12-bit
 oracle fixtures, broader four-component malformed fixture coverage, and other

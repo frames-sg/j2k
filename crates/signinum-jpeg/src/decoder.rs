@@ -620,9 +620,7 @@ impl<'a> Decoder<'a> {
                 SofKind::Progressive8 | SofKind::Progressive12,
                 ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb,
             ) => {}
-            (SofKind::Progressive12, _) => {
-                return Err(JpegError::NotImplemented { sof: info.sof_kind });
-            }
+            (SofKind::Progressive12, ColorSpace::Cmyk | ColorSpace::Ycck) => {}
             (_, color_space) => return Err(JpegError::UnsupportedColorSpace { color_space }),
         }
         validate_sampling_factors(header, info)?;
@@ -3414,7 +3412,11 @@ impl Decoder<'_> {
         if self.info.sof_kind != SofKind::Progressive12
             || !matches!(
                 self.info.color_space,
-                ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb
+                ColorSpace::Grayscale
+                    | ColorSpace::YCbCr
+                    | ColorSpace::Rgb
+                    | ColorSpace::Cmyk
+                    | ColorSpace::Ycck
             )
         {
             return Err(JpegError::NotImplemented {
@@ -3456,7 +3458,13 @@ impl Decoder<'_> {
                             .decode_progressive12_ycbcr420_region_into(out, stride, roi, downscale),
                     };
                 }
-                _ => {}
+                ColorSpace::Cmyk | ColorSpace::Ycck => {
+                    let sampling = progressive_four_component_sampling(plan, self.info.sof_kind)?;
+                    return self.decode_progressive12_four_component_region_into(
+                        out, stride, roi, downscale, sampling,
+                    );
+                }
+                ColorSpace::Grayscale => {}
             }
         }
         if self.info.color_space != ColorSpace::Grayscale || plan.components.len() != 1 {
@@ -3653,6 +3661,49 @@ impl Decoder<'_> {
                 downscale,
                 output: Extended12Output::Rgb16,
             },
+            &planes,
+        );
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
+    fn decode_progressive12_four_component_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if progressive_four_component_sampling(plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let planes = render_progressive12_four_component_planes(plan, &dct_blocks.quantized)?;
+        write_extended12_four_component_planes_region(
+            out,
+            stride,
+            Extended12WriteRegion {
+                output_rect,
+                dimensions: self.info.dimensions,
+                downscale,
+                output: Extended12Output::Rgb16,
+            },
+            self.info.color_space,
+            sampling,
             &planes,
         );
 
@@ -4415,6 +4466,40 @@ fn render_progressive12_color_planes(
     Ok(planes)
 }
 
+fn render_progressive12_four_component_planes(
+    plan: &PreparedProgressivePlan,
+    coeffs: &[Vec<[i32; 64]>],
+) -> Result<[Extended12Plane; 4], JpegError> {
+    let mut planes = progressive12_four_component_planes(plan)?;
+    let mut dequant = [0i16; 64];
+    let mut pixels = [0u16; 64];
+    for (component_index, component) in plan.components.iter().enumerate() {
+        let output_index = component.output_index;
+        if output_index > 3 {
+            return Err(JpegError::NotImplemented {
+                sof: SofKind::Progressive12,
+            });
+        }
+        for by in 0..component.block_rows as usize {
+            for bx in 0..component.block_cols as usize {
+                let block_index = by * component.block_cols as usize + bx;
+                dequantize_progressive12_block(
+                    &coeffs[component_index][block_index],
+                    &component.quant,
+                    &mut dequant,
+                );
+                if dequant[1..].iter().all(|&coeff| coeff == 0) {
+                    pixels.fill(crate::idct::idct_islow_12bit_dc_only_sample(dequant[0]));
+                } else {
+                    crate::idct::idct_islow_12bit(&dequant, &mut pixels);
+                }
+                deposit_extended12_block(&mut planes[output_index], bx * 8, by * 8, &pixels);
+            }
+        }
+    }
+    Ok(planes)
+}
+
 fn progressive12_color_planes(
     plan: &PreparedProgressivePlan,
 ) -> Result<[Extended12Plane; 3], JpegError> {
@@ -4423,6 +4508,29 @@ fn progressive12_color_planes(
     let mut heights = [0usize; 3];
     for component in &plan.components {
         if component.output_index > 2 {
+            return Err(JpegError::NotImplemented {
+                sof: SofKind::Progressive12,
+            });
+        }
+        widths[component.output_index] = component.sample_width as usize;
+        strides[component.output_index] = component.block_cols as usize * 8;
+        heights[component.output_index] = component.block_rows as usize * 8;
+    }
+    Ok(core::array::from_fn(|index| Extended12Plane {
+        pixels: vec![0u16; strides[index] * heights[index]],
+        stride: strides[index],
+        width: widths[index],
+    }))
+}
+
+fn progressive12_four_component_planes(
+    plan: &PreparedProgressivePlan,
+) -> Result<[Extended12Plane; 4], JpegError> {
+    let mut widths = [0usize; 4];
+    let mut strides = [0usize; 4];
+    let mut heights = [0usize; 4];
+    for component in &plan.components {
+        if component.output_index > 3 {
             return Err(JpegError::NotImplemented {
                 sof: SofKind::Progressive12,
             });
@@ -4595,6 +4703,22 @@ fn progressive_color_sampling(
     color_sampling_from_components(plan.sampling.max_h, plan.sampling.max_v, components, sof)
 }
 
+fn progressive_four_component_sampling(
+    plan: &PreparedProgressivePlan,
+    sof: SofKind,
+) -> Result<Extended12ColorSampling, JpegError> {
+    if plan.components.len() != 4 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    let components = four_component_sampling_from_progressive(plan, sof)?;
+    four_component_sampling_from_components(
+        plan.sampling.max_h,
+        plan.sampling.max_v,
+        components,
+        sof,
+    )
+}
+
 fn color_component_sampling_from_progressive(
     plan: &PreparedProgressivePlan,
     sof: SofKind,
@@ -4603,6 +4727,25 @@ fn color_component_sampling_from_progressive(
     let mut seen = [false; 3];
     for component in &plan.components {
         if component.output_index > 2 || seen[component.output_index] {
+            return Err(JpegError::NotImplemented { sof });
+        }
+        seen[component.output_index] = true;
+        components[component.output_index] = (component.h, component.v);
+    }
+    if seen.iter().any(|&present| !present) {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    Ok(components)
+}
+
+fn four_component_sampling_from_progressive(
+    plan: &PreparedProgressivePlan,
+    sof: SofKind,
+) -> Result<[(u8, u8); 4], JpegError> {
+    let mut components = [(0u8, 0u8); 4];
+    let mut seen = [false; 4];
+    for component in &plan.components {
+        if component.output_index > 3 || seen[component.output_index] {
             return Err(JpegError::NotImplemented { sof });
         }
         seen[component.output_index] = true;

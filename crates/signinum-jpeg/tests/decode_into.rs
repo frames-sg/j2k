@@ -35,8 +35,11 @@ use fixtures::{
     extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16,
     extended_12bit_ycbcr_restart_16x8_jpeg, extended_12bit_ycbcr_restart_16x8_rgb16,
     extended_12bit_ycck_16x16_420_jpeg, extended_12bit_ycck_16x8_422_jpeg,
-    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
-    progressive_12bit_ycbcr_8x8_jpeg,
+    progressive_12bit_cmyk_16x16_420_jpeg, progressive_12bit_cmyk_16x8_422_jpeg,
+    progressive_12bit_cmyk_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
+    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg,
+    progressive_12bit_ycck_16x16_420_jpeg, progressive_12bit_ycck_16x8_422_jpeg,
+    progressive_12bit_ycck_8x8_jpeg,
 };
 
 #[test]
@@ -3083,6 +3086,48 @@ fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
             16,
             16,
             "12-bit YCCK 4:2:0",
+        ),
+        (
+            progressive_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+            8,
+            "progressive 12-bit CMYK 4:4:4",
+        ),
+        (
+            progressive_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+            8,
+            "progressive 12-bit YCCK 4:4:4",
+        ),
+        (
+            progressive_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+            8,
+            "progressive 12-bit CMYK 4:2:2",
+        ),
+        (
+            progressive_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+            8,
+            "progressive 12-bit YCCK 4:2:2",
+        ),
+        (
+            progressive_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+            16,
+            "progressive 12-bit CMYK 4:2:0",
+        ),
+        (
+            progressive_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+            16,
+            "progressive 12-bit YCCK 4:2:0",
         ),
     ] {
         let dec = Decoder::new(&bytes)

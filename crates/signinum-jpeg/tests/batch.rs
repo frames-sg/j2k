@@ -27,10 +27,13 @@ use fixtures::{
     lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
     lossless_restart_predictor_rgb_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
-    lossless_ycbcr_3x3_rgb8, progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    lossless_ycbcr_3x3_rgb8, progressive_12bit_cmyk_16x16_420_jpeg,
+    progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_8x8_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
     progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
-    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
-    ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_12bit_ycck_16x16_420_jpeg,
+    progressive_12bit_ycck_16x8_422_jpeg, progressive_12bit_ycck_8x8_jpeg, progressive_8x8_jpeg,
+    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
 };
 use std::num::NonZeroUsize;
 use std::thread;
@@ -798,6 +801,36 @@ fn session_batch_decode_12bit_cmyk_ycck_rgba16_matches_expected_pixels() {
         ),
         (
             extended_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            progressive_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            progressive_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_ycck_16x16_420_jpeg(),
             four_component_12bit_16x16_rgb16(),
             16,
         ),
