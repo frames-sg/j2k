@@ -638,6 +638,58 @@ fn generated_420_chunked_entropy_diagnostic_runs_when_runtime_required() {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
+fn generated_422_chunked_entropy_diagnostic_returns_diagnostic_420_only_error() {
+    let input = generated_rgb_jpeg(signinum_jpeg::JpegSubsampling::Ybr422, 256, 256);
+    let mut session = CudaSession::default();
+    let error = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
+        &input,
+        signinum_cuda_runtime::CudaJpegChunkedEntropyConfig {
+            subsequence_words: 64,
+            sequence_len: 32,
+            max_overflow_subsequences: 4,
+        },
+        &mut session,
+    )
+    .expect_err("4:2:2 input should be rejected before diagnostic runtime");
+
+    assert!(error.is_unsupported());
+    match error {
+        Error::UnsupportedCudaRequest { reason } => {
+            assert!(reason.contains("chunked entropy diagnostic"));
+            assert!(reason.contains("4:2:0"));
+        }
+        other => panic!("expected unsupported CUDA diagnostic error, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn generated_420_chunked_entropy_diagnostic_rejects_invalid_config_before_runtime() {
+    let input = generated_rgb_jpeg(signinum_jpeg::JpegSubsampling::Ybr420, 256, 256);
+    let mut session = CudaSession::default();
+    let error = Codec::diagnose_tile_rgb8_chunked_entropy_with_session(
+        &input,
+        signinum_cuda_runtime::CudaJpegChunkedEntropyConfig {
+            subsequence_words: 0,
+            sequence_len: 32,
+            max_overflow_subsequences: 4,
+        },
+        &mut session,
+    )
+    .expect_err("invalid diagnostic config should be rejected before runtime");
+
+    assert!(error.is_unsupported());
+    match error {
+        Error::UnsupportedCudaRequest { reason } => {
+            assert!(reason.contains("chunked entropy diagnostic"));
+            assert!(reason.contains("config"));
+        }
+        other => panic!("expected unsupported CUDA diagnostic config error, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
 fn explicit_cuda_session_batch_records_owned_packet_cache_when_required() {
     if !strict_cuda_jpeg_decode_required() {
         return;

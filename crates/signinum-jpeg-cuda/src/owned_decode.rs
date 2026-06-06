@@ -31,6 +31,14 @@ pub(crate) fn unsupported_owned_cuda_output_format() -> Error {
 }
 
 #[cfg(feature = "cuda-runtime")]
+const UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT: &str =
+    "Signinum CUDA JPEG chunked entropy diagnostic currently supports baseline 8-bit YCbCr 4:2:0 RGB8 inputs only";
+
+#[cfg(feature = "cuda-runtime")]
+const INVALID_CHUNKED_ENTROPY_DIAGNOSTIC_ARGUMENT: &str =
+    "Signinum CUDA JPEG chunked entropy diagnostic config or input is invalid";
+
+#[cfg(feature = "cuda-runtime")]
 pub(crate) fn decode_owned_cuda_rgb8(
     bytes: &[u8],
     dimensions: (u32, u32),
@@ -139,6 +147,10 @@ pub(crate) fn diagnose_owned_cuda_420_entropy(
     config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig,
     session: &mut CudaSession,
 ) -> Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
+    validate_chunked_entropy_diagnostic_input(bytes)?;
+    config
+        .validate()
+        .map_err(cuda_chunked_entropy_diagnostic_error)?;
     let packet = session.resolve_owned_fast420_packet(bytes)?;
     let plan = signinum_cuda_runtime::CudaJpegChunkedEntropyPlan {
         config,
@@ -153,7 +165,7 @@ pub(crate) fn diagnose_owned_cuda_420_entropy(
     session
         .cuda_context()?
         .diagnose_jpeg_420_entropy_self_sync(&plan)
-        .map_err(cuda_owned_decode_error)
+        .map_err(cuda_chunked_entropy_diagnostic_error)
 }
 
 #[cfg(not(feature = "cuda-runtime"))]
@@ -309,6 +321,23 @@ fn resolve_owned_rgb8_packet(
 }
 
 #[cfg(feature = "cuda-runtime")]
+fn validate_chunked_entropy_diagnostic_input(bytes: &[u8]) -> Result<(), Error> {
+    let report = JpegCapabilityReport::inspect(
+        bytes,
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+    )?;
+    if report.owned_cuda.eligible && report.device.matches_fast_420 {
+        return Ok(());
+    }
+    Err(Error::UnsupportedCudaRequest {
+        reason: UNSUPPORTED_CHUNKED_ENTROPY_DIAGNOSTIC_INPUT,
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
 fn cuda_decode_plan<'a>(
     sampling: CudaJpegRgb8Sampling,
     packet: &'a impl FastRgb8Packet,
@@ -357,6 +386,19 @@ fn cuda_owned_decode_error(error: CudaError) -> Error {
         CudaError::Unavailable { .. } => Error::CudaUnavailable,
         CudaError::InvalidArgument { .. } => Error::UnsupportedCudaRequest {
             reason: "Signinum CUDA JPEG owned decode cannot handle this image or runtime build",
+        },
+        other => Error::CudaRuntime {
+            message: other.to_string(),
+        },
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_chunked_entropy_diagnostic_error(error: CudaError) -> Error {
+    match error {
+        CudaError::Unavailable { .. } => Error::CudaUnavailable,
+        CudaError::InvalidArgument { .. } => Error::UnsupportedCudaRequest {
+            reason: INVALID_CHUNKED_ENTROPY_DIAGNOSTIC_ARGUMENT,
         },
         other => Error::CudaRuntime {
             message: other.to_string(),
