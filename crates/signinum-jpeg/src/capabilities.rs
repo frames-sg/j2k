@@ -209,14 +209,7 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     JpegBackendEligibility::eligible()
                 }
                 (ColorSpace::Cmyk | ColorSpace::Ycck, PixelFormat::Rgb16 | PixelFormat::Rgba16)
-                    if info.sampling.len() == 4
-                        && info.sampling.max_h == 1
-                        && info.sampling.max_v == 1
-                        && info
-                            .sampling
-                            .components()
-                            .iter()
-                            .all(|&(h, v)| h == 1 && v == 1) =>
+                    if is_supported_extended12_four_component_sampling(info) =>
                 {
                     JpegBackendEligibility::eligible()
                 }
@@ -227,10 +220,10 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4 sampling only",
                 ),
                 (ColorSpace::Cmyk | ColorSpace::Ycck, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended four-component CMYK/YCCK decode currently supports 4:4:4 sampling only",
+                    "JPEG CPU 12-bit extended four-component CMYK/YCCK decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, or CMYK/YCCK 4:4:4 Rgb16/Rgba16 only",
+                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16/Rgba16, APP14 RGB 4:4:4 Rgb16/Rgba16, YCbCr 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16, or CMYK/YCCK 4:4:4/4:2:2/4:2:0 Rgb16/Rgba16 only",
                 ),
             };
         }
@@ -360,6 +353,20 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
         }
         _ => JpegBackendEligibility::rejected("unsupported JPEG CPU output format"),
     }
+}
+
+fn is_supported_extended12_four_component_sampling(info: &Info) -> bool {
+    info.sampling.len() == 4
+        && matches!(
+            (
+                info.sampling.max_h,
+                info.sampling.max_v,
+                info.sampling.components()
+            ),
+            (1, 1, [(1, 1), (1, 1), (1, 1), (1, 1)])
+                | (2, 1, [(2, 1), (1, 1), (1, 1), (1, 1)])
+                | (2, 2, [(2, 2), (1, 1), (1, 1), (1, 1)])
+        )
 }
 
 fn owned_cuda_eligibility(

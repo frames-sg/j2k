@@ -8,7 +8,8 @@ mod fixtures;
 use fixtures::{
     cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
     extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
-    extended_12bit_ycck_8x8_jpeg, four_component_12bit_8x8_rgb16, four_component_16x16_rgb,
+    extended_12bit_ycck_8x8_jpeg, four_component_12bit_16x16_rgb16,
+    four_component_12bit_16x8_rgb16, four_component_12bit_8x8_rgb16, four_component_16x16_rgb,
     four_component_16x8_rgb, four_component_8x8_rgb, grayscale_8x8_jpeg,
     lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
     lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
@@ -24,6 +25,7 @@ use fixtures::{
     LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
+    extended_12bit_cmyk_16x16_420_jpeg, extended_12bit_cmyk_16x8_422_jpeg,
     extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
     extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_rgb_restart_16x8_rgb16,
     extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
@@ -32,6 +34,7 @@ use fixtures::{
     extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_422_restart_32x8_rgb16,
     extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16,
     extended_12bit_ycbcr_restart_16x8_jpeg, extended_12bit_ycbcr_restart_16x8_rgb16,
+    extended_12bit_ycck_16x16_420_jpeg, extended_12bit_ycck_16x8_422_jpeg,
     progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
     progressive_12bit_ycbcr_8x8_jpeg,
 };
@@ -3038,20 +3041,60 @@ fn decode_subsampled_cmyk_ycck_full_and_region_scaled_outputs() {
 
 #[test]
 fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
-    for (bytes, label) in [
-        (extended_12bit_cmyk_8x8_jpeg(), "12-bit CMYK"),
-        (extended_12bit_ycck_8x8_jpeg(), "12-bit YCCK"),
+    for (bytes, expected_full, width, height, label) in [
+        (
+            extended_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+            8,
+            "12-bit CMYK 4:4:4",
+        ),
+        (
+            extended_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+            8,
+            "12-bit YCCK 4:4:4",
+        ),
+        (
+            extended_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+            8,
+            "12-bit CMYK 4:2:2",
+        ),
+        (
+            extended_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+            8,
+            "12-bit YCCK 4:2:2",
+        ),
+        (
+            extended_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+            16,
+            "12-bit CMYK 4:2:0",
+        ),
+        (
+            extended_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+            16,
+            "12-bit YCCK 4:2:0",
+        ),
     ] {
         let dec = Decoder::new(&bytes)
             .unwrap_or_else(|err| panic!("{label} decoder should construct: {err}"));
-        let expected_full = four_component_12bit_8x8_rgb16();
-        let full_rect = Rect::full((8, 8));
+        let full_rect = Rect::full((width, height));
 
-        let mut full = vec![0u8; 8 * 8 * PixelFormat::Rgb16.bytes_per_pixel()];
+        let mut full =
+            vec![0u8; width as usize * height as usize * PixelFormat::Rgb16.bytes_per_pixel()];
         let outcome = dec
             .decode_into(
                 &mut full,
-                8 * PixelFormat::Rgb16.bytes_per_pixel(),
+                width as usize * PixelFormat::Rgb16.bytes_per_pixel(),
                 PixelFormat::Rgb16,
             )
             .unwrap_or_else(|err| panic!("{label} RGB16 full decode should succeed: {err}"));
@@ -3064,7 +3107,7 @@ fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
             w: 5,
             h: 4,
         };
-        let expected_roi = crop_rgb16_bytes(&expected_full, 8, roi);
+        let expected_roi = crop_rgb16_bytes(&expected_full, width as usize, roi);
         let mut roi_buf = vec![0u8; roi.w as usize * roi.h as usize * 6];
         let outcome = dec
             .decode_region_into(
@@ -3081,7 +3124,7 @@ fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
         let scaled_row_bytes = scaled_rect.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
         let scaled_stride = scaled_row_bytes + 8;
         let expected_scaled = rgb16_to_rgba16(
-            &expected_scaled_rgb16_pixels(&expected_full, 8, full_rect, 2),
+            &expected_scaled_rgb16_pixels(&expected_full, width as usize, full_rect, 2),
             u16::MAX,
         );
         let mut scaled = vec![0xaau8; scaled_stride * scaled_rect.h as usize];
@@ -3106,7 +3149,7 @@ fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
             region_scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
         let region_scaled_stride = region_scaled_row_bytes + 8;
         let expected_region_scaled = rgb16_to_rgba16(
-            &expected_scaled_rgb16_pixels(&expected_full, 8, roi, 2),
+            &expected_scaled_rgb16_pixels(&expected_full, width as usize, roi, 2),
             u16::MAX,
         );
         let mut region_scaled_buf = vec![0xaau8; region_scaled_stride * region_scaled.h as usize];

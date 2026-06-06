@@ -1598,6 +1598,16 @@ pub(crate) fn extended_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(0))
 }
 
+/// A 16x8 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:2 sampling.
+pub(crate) fn extended_12bit_cmyk_16x8_422_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 16x16 12-bit extended sequential Adobe APP14 CMYK JPEG with 4:2:0 sampling.
+pub(crate) fn extended_12bit_cmyk_16x16_420_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_jpeg(Some(0), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
+}
+
 /// A 16x8 Adobe APP14 CMYK JPEG with 4:2:2 sampling and all decoded channels 128.
 pub(crate) fn cmyk_16x8_422_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(0), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
@@ -1623,6 +1633,16 @@ pub(crate) fn extended_12bit_ycck_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(2))
 }
 
+/// A 16x8 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:2 sampling.
+pub(crate) fn extended_12bit_ycck_16x8_422_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// A 16x16 12-bit extended sequential Adobe APP14 YCCK JPEG with 4:2:0 sampling.
+pub(crate) fn extended_12bit_ycck_16x16_420_jpeg() -> Vec<u8> {
+    four_component_12bit_constant_jpeg(Some(2), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
+}
+
 /// A 16x8 Adobe APP14 YCCK JPEG with 4:2:2 sampling and all decoded channels 128.
 pub(crate) fn ycck_16x8_422_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
@@ -1641,6 +1661,16 @@ pub(crate) fn four_component_8x8_rgb() -> Vec<u8> {
 /// Reference native-range RGB16 pixels for 12-bit CMYK/YCCK 4:4:4 fixtures.
 pub(crate) fn four_component_12bit_8x8_rgb16() -> Vec<u8> {
     repeat_rgb16_pixels(8, 8, [1024, 1024, 1024])
+}
+
+/// Reference native-range RGB16 pixels for 16x8 12-bit CMYK/YCCK fixtures.
+pub(crate) fn four_component_12bit_16x8_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(16, 8, [1024, 1024, 1024])
+}
+
+/// Reference native-range RGB16 pixels for 16x16 12-bit CMYK/YCCK fixtures.
+pub(crate) fn four_component_12bit_16x16_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(16, 16, [1024, 1024, 1024])
 }
 
 /// Reference RGB pixels for 16x8 constant CMYK/YCCK fixtures.
@@ -1768,7 +1798,16 @@ fn four_component_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
 }
 
 fn four_component_12bit_8x8_jpeg(app14_transform: Option<u8>) -> Vec<u8> {
-    let mut bytes = four_component_8x8_jpeg(app14_transform);
+    four_component_12bit_constant_jpeg(app14_transform, 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+fn four_component_12bit_constant_jpeg(
+    app14_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    sampling: [(u8, u8); 4],
+) -> Vec<u8> {
+    let mut bytes = four_component_constant_jpeg(app14_transform, width, height, sampling);
     let sof = bytes
         .windows(2)
         .position(|window| window == [0xff, 0xc0])

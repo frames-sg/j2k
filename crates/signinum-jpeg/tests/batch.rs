@@ -13,20 +13,24 @@ use signinum_jpeg::{
 };
 mod fixtures;
 use fixtures::{
-    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
-    extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_16x16_420_jpeg,
+    extended_12bit_cmyk_16x8_422_jpeg, extended_12bit_cmyk_8x8_jpeg, extended_12bit_rgb_8x8_jpeg,
+    extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
     extended_12bit_ycbcr_420_32x32_rgb16, extended_12bit_ycbcr_420_restart_32x32_jpeg,
     extended_12bit_ycbcr_420_restart_32x32_rgb16, extended_12bit_ycbcr_422_32x8_jpeg,
     extended_12bit_ycbcr_422_32x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
-    extended_12bit_ycbcr_8x8_rgb16, extended_12bit_ycck_8x8_jpeg, four_component_12bit_8x8_rgb16,
-    four_component_16x16_rgb, four_component_16x8_rgb, four_component_8x8_rgb,
-    lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_predictor_ycbcr_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_3x3_jpeg,
-    lossless_ycbcr_16bit_3x3_rgb16, lossless_ycbcr_3x3_rgb8, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
-    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg,
-    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
+    extended_12bit_ycbcr_8x8_rgb16, extended_12bit_ycck_16x16_420_jpeg,
+    extended_12bit_ycck_16x8_422_jpeg, extended_12bit_ycck_8x8_jpeg,
+    four_component_12bit_16x16_rgb16, four_component_12bit_16x8_rgb16,
+    four_component_12bit_8x8_rgb16, four_component_16x16_rgb, four_component_16x8_rgb,
+    four_component_8x8_rgb, lossless_predictor_rgb_16bit_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_rgb_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_ycbcr_3x3_rgb8, progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
+    ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
 };
 use std::num::NonZeroUsize;
 use std::thread;
@@ -766,29 +770,58 @@ fn session_batch_decode_12bit_rgba16_matches_single_tile_decode() {
 
 #[test]
 fn session_batch_decode_12bit_cmyk_ycck_rgba16_matches_expected_pixels() {
-    let inputs = [
-        extended_12bit_cmyk_8x8_jpeg(),
-        extended_12bit_ycck_8x8_jpeg(),
+    let cases = [
+        (
+            extended_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            extended_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            extended_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
     ];
-    let expected_rgb = four_component_12bit_8x8_rgb16();
-    let expected = rgb16_to_rgba16(&expected_rgb, u16::MAX);
-    let stride = 8 * PixelFormat::Rgba16.bytes_per_pixel();
-    let mut outputs = inputs
+    let expected = cases
         .iter()
-        .map(|_| vec![0u8; expected.len()])
+        .map(|(_, expected_rgb, _)| rgb16_to_rgba16(expected_rgb, u16::MAX))
+        .collect::<Vec<_>>();
+    let mut outputs = expected
+        .iter()
+        .map(|expected| vec![0u8; expected.len()])
         .collect::<Vec<_>>();
     let mut session = JpegBatchSession::new(TileBatchOptions {
         workers: NonZeroUsize::new(2),
     });
 
     let outcomes = {
-        let mut jobs = inputs
+        let mut jobs = cases
             .iter()
             .zip(outputs.iter_mut())
-            .map(|(input, out)| TileDecodeJob {
-                input,
+            .map(|((input, _, width), out)| TileDecodeJob {
+                input: input.as_slice(),
                 out: out.as_mut_slice(),
-                stride,
+                stride: *width * PixelFormat::Rgba16.bytes_per_pixel(),
             })
             .collect::<Vec<_>>();
         session
@@ -796,8 +829,8 @@ fn session_batch_decode_12bit_cmyk_ycck_rgba16_matches_expected_pixels() {
             .expect("12-bit CMYK/YCCK RGBA16 session batch decode")
     };
 
-    assert_eq!(outcomes.len(), 2);
-    for output in outputs {
+    assert_eq!(outcomes.len(), cases.len());
+    for (output, expected) in outputs.iter().zip(expected.iter()) {
         assert_eq!(output, expected);
     }
 }

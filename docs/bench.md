@@ -726,9 +726,10 @@ Current v1 scope is explicit:
   grayscale, APP14 RGB, and YCbCr streams; 8-bit SOF3 grayscale/RGB/YCbCr row
   streaming and 16-bit SOF3 grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16`
   row streaming are also CPU-backed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
-  fixture coverage is CPU-backed, and one malformed non-leading-max sampling
-  fixture has structured rejection coverage; broader four-component malformed
-  coverage, subsampled/restart-coded 12-bit CMYK/YCCK implementation, other
+  fixture coverage and initial 12-bit CMYK/YCCK 4:4:4/4:2:2/4:2:0
+  `Rgb16`/`Rgba16` coverage are CPU-backed, and one malformed non-leading-max
+  sampling fixture has structured rejection coverage; broader four-component
+  malformed coverage, restart-coded 12-bit CMYK/YCCK implementation, other
   12-bit subsampled color support, stronger non-constant 12-bit oracle
   fixtures, and other SOF3 16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
