@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use signinum_core::{
     BackendRequest, DecoderContext, DeviceSubmission, Downscale, ImageDecodeSubmit, PixelFormat,
     Rect, TileBatchDecodeSubmit,
@@ -17,11 +18,15 @@ use signinum_jpeg_metal::viewport::{
     ViewportTile, ViewportWorkload,
 };
 use signinum_jpeg_metal::{Codec, Decoder, MetalSession, ScratchPool};
+#[cfg(target_os = "macos")]
+use signinum_jpeg_metal::{MetalBackendSession, MetalBatchTextureOutput};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const FULL_FRAME_MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+#[cfg(target_os = "macos")]
+const RESIDENT_TEXTURE_BATCH_SIZES: [usize; 3] = [16, 64, 256];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DecodeMode {
@@ -76,6 +81,20 @@ fn load_bench_inputs() -> Vec<BenchInput> {
             mode: DecodeMode::Gray,
             input_class: CorpusInputClass::BoundedFullFrame,
         },
+        BenchInput {
+            name: "generated/fast420_256x256".to_string(),
+            bytes: generated_rgb_jpeg(256, 256, None),
+            dimensions: (256, 256),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
+        BenchInput {
+            name: "generated/fast420_restart2_256x256".to_string(),
+            bytes: generated_rgb_jpeg(256, 256, Some(2)),
+            dimensions: (256, 256),
+            mode: DecodeMode::Rgb,
+            input_class: CorpusInputClass::BoundedFullFrame,
+        },
     ];
 
     let mut seen = inputs
@@ -89,6 +108,21 @@ fn load_bench_inputs() -> Vec<BenchInput> {
     }
     inputs.sort_by(|a, b| a.name.cmp(&b.name));
     inputs
+}
+
+fn generated_rgb_jpeg(width: u16, height: u16, restart_interval: Option<u16>) -> Vec<u8> {
+    let rgb = signinum_test_support::gpu_bench_rgb8(u32::from(width), u32::from(height));
+
+    let mut jpeg = Vec::new();
+    let mut encoder = Encoder::new(&mut jpeg, 90);
+    encoder.set_sampling_factor(SamplingFactor::F_2_2);
+    if let Some(interval) = restart_interval {
+        encoder.set_restart_interval(interval);
+    }
+    encoder
+        .encode(&rgb, width, height, ColorType::Rgb)
+        .expect("encode generated benchmark JPEG");
+    jpeg
 }
 
 fn collect_jpegs(path: &Path, inputs: &mut Vec<BenchInput>, seen: &mut Vec<String>) {
@@ -496,6 +530,54 @@ fn metal_decode_tile_batch(bytes: &[u8], batch_size: usize) {
     device_decode_tile_batch(bytes, batch_size, BackendRequest::Metal);
 }
 
+#[cfg(target_os = "macos")]
+fn supports_resident_texture_batch(input: &BenchInput) -> bool {
+    device_batch_key(input)
+        .is_some_and(|key| key.matches_fast_420 || key.matches_fast_422 || key.matches_fast_444)
+}
+
+#[cfg(target_os = "macos")]
+fn bench_resident_texture_batches(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
+    if !has_metal {
+        return;
+    }
+
+    let mut group = c.benchmark_group("wsi_tile_batch_rgba_textures");
+    for &batch_size in &RESIDENT_TEXTURE_BATCH_SIZES {
+        for input in inputs
+            .iter()
+            .filter(|input| input.mode == DecodeMode::Rgb && supports_resident_texture_batch(input))
+        {
+            let session = MetalBackendSession::system_default().expect("Metal backend session");
+            let output =
+                MetalBatchTextureOutput::new_rgba8_tiles(&session, input.dimensions, batch_size)
+                    .expect("texture output");
+            let repeated_inputs = vec![input.bytes.as_slice(); batch_size];
+            group.bench_function(
+                format!(
+                    "batch{batch_size}/warm_session_reused_textures/{}",
+                    input.name
+                ),
+                move |b| {
+                    b.iter(|| {
+                        let tiles = Codec::decode_rgb8_batch_into_metal_textures_with_session(
+                            &repeated_inputs,
+                            &output,
+                            &session,
+                        )
+                        .expect("resident texture batch decode");
+                        std::hint::black_box(tiles);
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bench_resident_texture_batches(_c: &mut Criterion, _inputs: &[BenchInput], _has_metal: bool) {}
+
 fn auto_decode_tile_batch(bytes: &[u8], batch_size: usize) {
     device_decode_tile_batch(bytes, batch_size, BackendRequest::Auto);
 }
@@ -820,6 +902,8 @@ fn bench_compare(c: &mut Criterion) {
         });
     }
     wsi_tile_batch_rgb.finish();
+
+    bench_resident_texture_batches(c, &inputs, has_metal);
 
     let mut wsi_region_rgb = c.benchmark_group("wsi_region_rgb");
     for input in inputs.iter().filter(|input| {
