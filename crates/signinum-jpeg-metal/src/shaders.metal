@@ -2199,6 +2199,45 @@ inline uchar h2v1_sample_thread(
     return uchar((3u * curr + next + 2u) >> 2);
 }
 
+inline uchar h2v1_sample_thread_local(
+    thread const uchar *row,
+    uint n,
+    uint x,
+    uint local_sample_base,
+    uchar left_sample
+) {
+    if (n == 0) {
+        return 0;
+    }
+    if (n == 1) {
+        return row[0];
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    const uint local_sample = sample - local_sample_base;
+    if (x == 0u) {
+        return row[0];
+    }
+    if (x == n * 2u - 1u) {
+        return row[local_sample];
+    }
+    if ((x & 1u) == 0u) {
+        const uint prev = local_sample == 0u ? uint(left_sample) : uint(row[local_sample - 1u]);
+        const uint curr = uint(row[local_sample]);
+        return uchar((3u * curr + prev + 2u) >> 2);
+    }
+    const uint curr = uint(row[local_sample]);
+    const uint next = uint(row[local_sample + 1u]);
+    return uchar((3u * curr + next + 2u) >> 2);
+}
+
+inline uint fast422_boundary_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast422_boundary_sample_base(uint record_index) {
+    return record_index * 48u;
+}
+
 inline void h2v2_sample_even_pair(
     device const uchar *near_row,
     device const uchar *curr_row,
@@ -3338,6 +3377,8 @@ kernel void jpeg_decode_fast422_rgba_texture_batch(
     device const uint *entropy_lens [[buffer(15)]],
     device JpegDecodeStatus *status [[buffer(16)]],
     device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    device uint *boundary_meta [[buffer(18)]],
+    device uchar *boundary_samples [[buffer(19)]],
     texture2d<float, access::write> out [[texture(0)]],
     uint gid [[thread_position_in_grid]]
 ) {
@@ -3352,6 +3393,11 @@ kernel void jpeg_decode_fast422_rgba_texture_batch(
     thread_status->detail = 0;
     thread_status->position = 0;
     thread_status->reserved = 0;
+    const uint boundary_meta_base = fast422_boundary_meta_base(status_index);
+    boundary_meta[boundary_meta_base] = 0u;
+    boundary_meta[boundary_meta_base + 1u] = 0u;
+    boundary_meta[boundary_meta_base + 2u] = 0u;
+    boundary_meta[boundary_meta_base + 3u] = 0u;
 
     const uint checkpoint_base = params.tile_index * params.segment_count;
     const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
@@ -3383,6 +3429,10 @@ kernel void jpeg_decode_fast422_rgba_texture_batch(
     thread uchar y_right_pixels[64];
     thread uchar cb_pixels[64];
     thread uchar cr_pixels[64];
+    thread uchar prev_y_right_pixels[64];
+    thread uchar prev_cb_pixels[64];
+    thread uchar prev_cr_pixels[64];
+    bool have_prev_horizontal = false;
 
     uint mx = 0u;
     uint my = 0u;
@@ -3430,23 +3480,146 @@ kernel void jpeg_decode_fast422_rgba_texture_batch(
 
         const uint copy_width = min(16u, params.width - min(y_x, params.width));
         const uint copy_height = min(8u, params.height - min(y_y, params.height));
+        const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
+        const bool ends_mid_row = mcu_index + 1u >= end_mcu && mx + 1u < params.mcus_per_row;
+        const uint boundary_sample_base = fast422_boundary_sample_base(status_index);
+        if (starts_mid_row) {
+            boundary_meta[boundary_meta_base] = y_x;
+            boundary_meta[boundary_meta_base + 1u] = y_y;
+            boundary_meta[boundary_meta_base + 2u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + by] = y_left_pixels[by * 8u];
+                boundary_samples[boundary_sample_base + 8u + by] = cb_pixels[by * 8u];
+                boundary_samples[boundary_sample_base + 16u + by] = cr_pixels[by * 8u];
+            }
+        }
+        if (ends_mid_row) {
+            boundary_meta[boundary_meta_base + 3u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + 24u + by] = y_right_pixels[by * 8u + 7u];
+                boundary_samples[boundary_sample_base + 32u + by] = cb_pixels[by * 8u + 7u];
+                boundary_samples[boundary_sample_base + 40u + by] = cr_pixels[by * 8u + 7u];
+            }
+        }
+        if (have_prev_horizontal && mx > 0u) {
+            const uint prev_x = y_x - 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                thread const uchar *cb_row = cb_pixels + by * 8u;
+                thread const uchar *cr_row = cr_pixels + by * 8u;
+                thread const uchar *prev_cb_row = prev_cb_pixels + by * 8u;
+                thread const uchar *prev_cr_row = prev_cr_pixels + by * 8u;
+                const uchar y_value = prev_y_right_pixels[by * 8u + 7u];
+                const uchar cb_value = uchar((3u * uint(prev_cb_row[7]) + uint(cb_row[0]) + 2u) >> 2);
+                const uchar cr_value = uchar((3u * uint(prev_cr_row[7]) + uint(cr_row[0]) + 2u) >> 2);
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(prev_x, y_y + by)
+                );
+            }
+        }
+
+        const uint local_sample_base = mx * 8u;
+        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
+        const uint last_chroma_x = params.chroma_width * 2u - 1u;
         for (uint by = 0u; by < copy_height; ++by) {
             thread const uchar *cb_row = cb_pixels + by * 8u;
             thread const uchar *cr_row = cr_pixels + by * 8u;
+            const uchar left_cb = mx == 0u || starts_mid_row
+                ? cb_row[0]
+                : prev_cb_pixels[by * 8u + 7u];
+            const uchar left_cr = mx == 0u || starts_mid_row
+                ? cr_row[0]
+                : prev_cr_pixels[by * 8u + 7u];
             for (uint bx = 0u; bx < copy_width; ++bx) {
                 const uint x = y_x + bx;
+                if (starts_mid_row && bx == 0u) {
+                    continue;
+                }
+                if (has_right_mcu && bx == 15u && (x & 1u) == 1u && x != last_chroma_x) {
+                    continue;
+                }
                 const uchar y_value = bx < 8u
                     ? y_left_pixels[by * 8u + bx]
                     : y_right_pixels[by * 8u + (bx - 8u)];
-                const uchar cb_value = h2v1_sample_thread(cb_row, params.chroma_width, x);
-                const uchar cr_value = h2v1_sample_thread(cr_row, params.chroma_width, x);
+                const uchar cb_value = h2v1_sample_thread_local(
+                    cb_row,
+                    params.chroma_width,
+                    x,
+                    local_sample_base,
+                    left_cb
+                );
+                const uchar cr_value = h2v1_sample_thread_local(
+                    cr_row,
+                    params.chroma_width,
+                    x,
+                    local_sample_base,
+                    left_cr
+                );
                 out.write(
                     rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
                     uint2(x, y_y + by)
                 );
             }
         }
+
+        for (uint i = 0u; i < 64u; ++i) {
+            prev_y_right_pixels[i] = y_right_pixels[i];
+            prev_cb_pixels[i] = cb_pixels[i];
+            prev_cr_pixels[i] = cr_pixels[i];
+        }
+        have_prev_horizontal = true;
         advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_resolve_fast422_rgba_texture_boundaries(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uchar *boundary_samples [[buffer(1)]],
+    constant JpegFast422TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid == 0u || gid >= params.segment_count) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * params.segment_count + gid;
+    const uint previous_record_index = record_index - 1u;
+    const uint meta_base = fast422_boundary_meta_base(record_index);
+    const uint previous_meta_base = fast422_boundary_meta_base(previous_record_index);
+    if (boundary_meta[meta_base + 2u] == 0u || boundary_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = boundary_meta[meta_base];
+    const uint y = boundary_meta[meta_base + 1u];
+    if (x == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast422_boundary_sample_base(record_index);
+    const uint previous_sample_base = fast422_boundary_sample_base(previous_record_index);
+    const uint copy_height = min(8u, params.height - y);
+    for (uint by = 0u; by < copy_height; ++by) {
+        const uchar left_y = boundary_samples[previous_sample_base + 24u + by];
+        const uchar left_cb = boundary_samples[previous_sample_base + 32u + by];
+        const uchar left_cr = boundary_samples[previous_sample_base + 40u + by];
+        const uchar right_y = boundary_samples[sample_base + by];
+        const uchar right_cb = boundary_samples[sample_base + 8u + by];
+        const uchar right_cr = boundary_samples[sample_base + 16u + by];
+        const uchar resolved_left_cb = uchar((3u * uint(left_cb) + uint(right_cb) + 2u) >> 2);
+        const uchar resolved_left_cr = uchar((3u * uint(left_cr) + uint(right_cr) + 2u) >> 2);
+        const uchar resolved_right_cb = uchar((3u * uint(right_cb) + uint(left_cb) + 2u) >> 2);
+        const uchar resolved_right_cr = uchar((3u * uint(right_cr) + uint(left_cr) + 2u) >> 2);
+        const uint row_y = y + by;
+        out.write(
+            rgba_float_ycbcr(left_y, resolved_left_cb, resolved_left_cr, params.alpha),
+            uint2(x - 1u, row_y)
+        );
+        out.write(
+            rgba_float_ycbcr(right_y, resolved_right_cb, resolved_right_cr, params.alpha),
+            uint2(x, row_y)
+        );
     }
 }
 

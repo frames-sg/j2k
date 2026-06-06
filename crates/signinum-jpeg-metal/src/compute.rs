@@ -518,6 +518,11 @@ struct JpegFast422TextureBatchParams {
 }
 
 #[cfg(target_os = "macos")]
+const FAST422_TEXTURE_BOUNDARY_META_WORDS: usize = 4;
+#[cfg(target_os = "macos")]
+const FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES: usize = 48;
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct JpegFast420TextureBatchParams {
@@ -753,6 +758,7 @@ pub(crate) struct MetalRuntime {
     fast422_batch_decode_pipeline: ComputePipelineState,
     fast422_scaled_region_batch_decode_pipeline: ComputePipelineState,
     fast422_rgba_texture_batch_decode_pipeline: ComputePipelineState,
+    fast422_rgba_texture_boundary_pipeline: ComputePipelineState,
     fast422_region_decode_pipeline: ComputePipelineState,
     fast422_scaled_decode_pipeline: ComputePipelineState,
     fast422_scaled_region_decode_pipeline: ComputePipelineState,
@@ -909,6 +915,10 @@ impl MetalRuntime {
             .new_compute_pipeline_state_with_function(
                 &fast422_rgba_texture_batch_decode_function,
             )?;
+        let fast422_rgba_texture_boundary_function =
+            library.get_function("jpeg_resolve_fast422_rgba_texture_boundaries", None)?;
+        let fast422_rgba_texture_boundary_pipeline = device
+            .new_compute_pipeline_state_with_function(&fast422_rgba_texture_boundary_function)?;
         let fast422_region_decode_function =
             library.get_function("jpeg_decode_fast422_region", None)?;
         let fast422_region_decode_pipeline =
@@ -998,6 +1008,7 @@ impl MetalRuntime {
             fast422_batch_decode_pipeline,
             fast422_scaled_region_batch_decode_pipeline,
             fast422_rgba_texture_batch_decode_pipeline,
+            fast422_rgba_texture_boundary_pipeline,
             fast422_region_decode_pipeline,
             fast422_scaled_decode_pipeline,
             fast422_scaled_region_decode_pipeline,
@@ -6742,14 +6753,29 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
         return Ok(None);
     };
 
-    // H2V1 reconstruction needs neighboring chroma samples at horizontal MCU boundaries.
-    // The fused path handles rows with a single MCU; wider rows keep using the staged pack path.
-    if segment_count == 1 && first.mcus_per_row == 1 {
+    // H2V1 reconstruction needs neighboring chroma samples at horizontal MCU boundaries. The
+    // fused path carries same-segment boundaries in-thread and resolves cross-segment boundaries
+    // from compact shared records before returning the caller-owned texture.
+    if segment_count > 0 {
         let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
         let status_buffer = batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             "fast422_texture_status",
             &statuses,
+        );
+        let boundary_meta =
+            vec![0u32; total_decode_threads as usize * FAST422_TEXTURE_BOUNDARY_META_WORDS];
+        let boundary_samples =
+            vec![0u8; total_decode_threads as usize * FAST422_TEXTURE_BOUNDARY_SAMPLE_BYTES];
+        let boundary_meta_buffer = batch_scratch.shared_buffer_with_slice(
+            &runtime.device,
+            "fast422_texture_boundary_meta",
+            &boundary_meta,
+        );
+        let boundary_samples_buffer = batch_scratch.shared_buffer_with_bytes(
+            &runtime.device,
+            "fast422_texture_boundary_samples",
+            &boundary_samples,
         );
         let dc_tables = [
             PreparedHuffmanHost::from(&first.y_dc_table),
@@ -6836,6 +6862,8 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
             decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
             decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
             decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+            decoder_encoder.set_buffer(18, Some(&boundary_meta_buffer), 0);
+            decoder_encoder.set_buffer(19, Some(&boundary_samples_buffer), 0);
             decoder_encoder.set_texture(0, Some(texture));
             dispatch_1d_pipeline(
                 decoder_encoder,
@@ -6843,6 +6871,41 @@ fn try_decode_fast422_full_rgba_batch_to_textures(
                 segment_count_u32,
             );
             decoder_encoder.end_encoding();
+        }
+        if segment_count > 1 {
+            for index in 0..tile_count {
+                let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+                    message: "JPEG Metal batch texture output slot was missing".to_string(),
+                })?;
+                let decode_params = JpegFast422TextureBatchParams {
+                    width,
+                    height,
+                    chroma_width,
+                    chroma_height,
+                    mcus_per_row: first.mcus_per_row,
+                    mcu_rows: first.mcu_rows,
+                    segment_count: segment_count_u32,
+                    tile_index: checked_u32(index, "fast422 texture batch tile index")?,
+                    alpha: u32::from(u8::MAX),
+                };
+                let boundary_encoder = command_buffer.new_compute_command_encoder();
+                boundary_encoder
+                    .set_compute_pipeline_state(&runtime.fast422_rgba_texture_boundary_pipeline);
+                boundary_encoder.set_buffer(0, Some(&boundary_meta_buffer), 0);
+                boundary_encoder.set_buffer(1, Some(&boundary_samples_buffer), 0);
+                boundary_encoder.set_bytes(
+                    2,
+                    size_of::<JpegFast422TextureBatchParams>() as u64,
+                    (&raw const decode_params).cast(),
+                );
+                boundary_encoder.set_texture(0, Some(texture));
+                dispatch_1d_pipeline(
+                    boundary_encoder,
+                    &runtime.fast422_rgba_texture_boundary_pipeline,
+                    segment_count_u32,
+                );
+                boundary_encoder.end_encoding();
+            }
         }
 
         command_buffer.commit();
