@@ -9,6 +9,7 @@ use std::{
     cell::RefCell,
     ffi::OsStr,
     mem::{size_of, size_of_val},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -109,6 +110,50 @@ fn new_decode_plane_buffer(device: &Device, bytes: usize, returned_publicly: boo
         new_shared_buffer(device, bytes)
     } else {
         new_private_buffer(device, bytes)
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct ReusablePrivateBuffer {
+    key: &'static str,
+    capacity: usize,
+    buffer: Buffer,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct MetalBatchScratch {
+    private_buffers: Vec<ReusablePrivateBuffer>,
+}
+
+#[cfg(target_os = "macos")]
+impl MetalBatchScratch {
+    fn private_buffer(&mut self, device: &Device, key: &'static str, bytes: usize) -> Buffer {
+        let bytes = bytes.max(1);
+        if let Some(entry) = self
+            .private_buffers
+            .iter()
+            .find(|entry| entry.key == key && entry.capacity >= bytes)
+        {
+            return entry.buffer.clone();
+        }
+
+        let buffer = new_private_buffer(device, bytes);
+        if let Some(entry) = self
+            .private_buffers
+            .iter_mut()
+            .find(|entry| entry.key == key)
+        {
+            entry.capacity = bytes;
+            entry.buffer = buffer.clone();
+        } else {
+            self.private_buffers.push(ReusablePrivateBuffer {
+                key,
+                capacity: bytes,
+                buffer: buffer.clone(),
+            });
+        }
+        buffer
     }
 }
 
@@ -548,6 +593,7 @@ pub(crate) struct MetalRuntime {
     fast444_scaled_decode_pipeline: ComputePipelineState,
     fast444_scaled_region_decode_pipeline: ComputePipelineState,
     fast444_scaled_region_batch_decode_pipeline: ComputePipelineState,
+    batch_scratch: Mutex<MetalBatchScratch>,
 }
 
 #[cfg(target_os = "macos")]
@@ -746,6 +792,7 @@ impl MetalRuntime {
             fast444_scaled_decode_pipeline,
             fast444_scaled_region_decode_pipeline,
             fast444_scaled_region_batch_decode_pipeline,
+            batch_scratch: Mutex::new(MetalBatchScratch::default()),
         })
     }
 }
@@ -5085,9 +5132,13 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
     }
 
     let timing_buffer_start = timing_enabled.then(Instant::now);
-    let y_plane = new_private_buffer(&runtime.device, y_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast420_full_y", y_len * tile_count);
+    let cb_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast420_full_cb", chroma_len * tile_count);
+    let cr_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast420_full_cr", chroma_len * tile_count);
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -5355,6 +5406,7 @@ fn try_decode_fast420_full_rgb_batch_to_surfaces_with_mode_and_output(
     } else {
         command_buffer.wait_until_completed();
     }
+    drop(batch_scratch);
 
     if let Some(status) = first_decode_error_status(&status_buffer, total_decode_threads) {
         let mut results = Vec::with_capacity(requests.len());
@@ -5540,9 +5592,13 @@ fn try_decode_fast422_full_rgb_batch_to_surfaces_with_output(
         entropy_checkpoints.extend(packet.entropy_checkpoints.iter().copied());
     }
 
-    let y_plane = new_private_buffer(&runtime.device, y_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, chroma_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast422_full_y", y_len * tile_count);
+    let cb_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast422_full_cb", chroma_len * tile_count);
+    let cr_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast422_full_cr", chroma_len * tile_count);
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -5662,6 +5718,7 @@ fn try_decode_fast422_full_rgb_batch_to_surfaces_with_output(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    drop(batch_scratch);
 
     if let Some(status) = first_decode_error_status(&status_buffer, total_decode_threads) {
         let mut results = Vec::with_capacity(requests.len());
@@ -5829,9 +5886,13 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let y_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast444_full_y", plane_len * tile_count);
+    let cb_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast444_full_cb", plane_len * tile_count);
+    let cr_plane =
+        batch_scratch.private_buffer(&runtime.device, "fast444_full_cr", plane_len * tile_count);
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -5941,6 +6002,7 @@ fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    drop(batch_scratch);
 
     if let Some(results) =
         region_scaled_batch_error_results(requests, &status_buffer, total_decode_threads)?
@@ -6122,9 +6184,22 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let y_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_region_scaled_y",
+        plane_len * tile_count,
+    );
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_region_scaled_cb",
+        plane_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast444_region_scaled_cr",
+        plane_len * tile_count,
+    );
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -6241,6 +6316,7 @@ fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces_with_output(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    drop(batch_scratch);
 
     if let Some(results) =
         region_scaled_batch_error_results(requests, &status_buffer, total_decode_threads)?
@@ -6383,9 +6459,22 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let y_plane = new_private_buffer(&runtime.device, first_plan.y_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_y",
+        first_plan.y_len * tile_count,
+    );
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_cb",
+        first_plan.chroma_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast420_region_scaled_cr",
+        first_plan.chroma_len * tile_count,
+    );
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -6495,6 +6584,7 @@ fn try_decode_fast420_region_scaled_rgb_batch_to_surfaces_with_output(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    drop(batch_scratch);
 
     if let Some(results) =
         region_scaled_batch_error_results(requests, &status_buffer, total_decode_threads)?
@@ -6634,9 +6724,22 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
         return Ok(None);
     };
 
-    let y_plane = new_private_buffer(&runtime.device, first_plan.y_len * tile_count);
-    let cb_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
-    let cr_plane = new_private_buffer(&runtime.device, first_plan.chroma_len * tile_count);
+    let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
+    let y_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_y",
+        first_plan.y_len * tile_count,
+    );
+    let cb_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_cb",
+        first_plan.chroma_len * tile_count,
+    );
+    let cr_plane = batch_scratch.private_buffer(
+        &runtime.device,
+        "fast422_region_scaled_cr",
+        first_plan.chroma_len * tile_count,
+    );
     let out_buffer = batch_output_buffer_or_new(
         runtime,
         output,
@@ -6746,6 +6849,7 @@ fn try_decode_fast422_region_scaled_rgb_batch_to_surfaces_with_output(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    drop(batch_scratch);
 
     if let Some(results) =
         region_scaled_batch_error_results(requests, &status_buffer, total_decode_threads)?

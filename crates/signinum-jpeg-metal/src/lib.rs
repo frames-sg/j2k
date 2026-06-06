@@ -2285,6 +2285,47 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn warm_session_reuses_private_intermediate_buffers_for_reusable_output_batches() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (16, 16), 2).expect("output buffer");
+        let inputs = [BASELINE_420, BASELINE_420];
+
+        compute::reset_jpeg_private_buffer_allocations_for_test();
+        let first =
+            Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+                .expect("first decode");
+        for surface in first {
+            assert_eq!(
+                surface.expect("surface").residency(),
+                SurfaceResidency::MetalResidentDecode
+            );
+        }
+        let allocations_after_first = compute::jpeg_private_buffer_allocations_for_test();
+
+        let second =
+            Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+                .expect("second decode");
+        for surface in second {
+            assert_eq!(
+                surface.expect("surface").residency(),
+                SurfaceResidency::MetalResidentDecode
+            );
+        }
+
+        assert!(
+            allocations_after_first > 0,
+            "first batch should allocate private intermediate buffers"
+        );
+        assert_eq!(
+            compute::jpeg_private_buffer_allocations_for_test(),
+            allocations_after_first,
+            "warm session batch should reuse private intermediate buffers"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn jpeg_device_decode_uses_private_internal_planes() {
         let session = MetalBackendSession::system_default().expect("Metal backend session");
         let mut decoder = Decoder::new(BASELINE_420).expect("decoder");
