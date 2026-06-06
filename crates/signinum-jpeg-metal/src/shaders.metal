@@ -2888,16 +2888,6 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     thread_status->detail = 0;
     thread_status->position = 0;
     thread_status->reserved = 0;
-    const uint boundary_meta_base = fast420_boundary_meta_base(status_index);
-    boundary_meta[boundary_meta_base] = 0u;
-    boundary_meta[boundary_meta_base + 1u] = 0u;
-    boundary_meta[boundary_meta_base + 2u] = 0u;
-    boundary_meta[boundary_meta_base + 3u] = 0u;
-    const uint vertical_meta_base = fast420_vertical_meta_base(status_index);
-    vertical_meta[vertical_meta_base] = 0u;
-    vertical_meta[vertical_meta_base + 1u] = 0u;
-    vertical_meta[vertical_meta_base + 2u] = 0u;
-    vertical_meta[vertical_meta_base + 3u] = 0u;
 
     const uint checkpoint_base = params.tile_index * params.segment_count;
     const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
@@ -3009,13 +2999,25 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
         const uint chroma_y_base = my * 8u;
         const uint copy_chroma_height = min(8u, params.chroma_height - min(chroma_y_base, params.chroma_height));
         const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
-        const bool ends_mid_row = mcu_index + 1u >= end_mcu && mx + 1u < params.mcus_per_row;
+        const bool has_left_mcu = mx > 0u;
+        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
         const bool has_top_mcu = my > 0u;
         const bool has_bottom_mcu = my + 1u < params.mcu_rows;
-        const uint boundary_sample_base = fast420_boundary_sample_base(status_index);
-        const uint vertical_sample_base = fast420_vertical_sample_base(status_index);
+        const uint repair_record_index = params.tile_index * total_mcus + mcu_index;
+        const uint boundary_meta_base = fast420_boundary_meta_base(repair_record_index);
+        boundary_meta[boundary_meta_base] = 0u;
+        boundary_meta[boundary_meta_base + 1u] = 0u;
+        boundary_meta[boundary_meta_base + 2u] = 0u;
+        boundary_meta[boundary_meta_base + 3u] = 0u;
+        const uint vertical_meta_base = fast420_vertical_meta_base(repair_record_index);
+        vertical_meta[vertical_meta_base] = 0u;
+        vertical_meta[vertical_meta_base + 1u] = 0u;
+        vertical_meta[vertical_meta_base + 2u] = 0u;
+        vertical_meta[vertical_meta_base + 3u] = 0u;
+        const uint boundary_sample_base = fast420_boundary_sample_base(repair_record_index);
+        const uint vertical_sample_base = fast420_vertical_sample_base(repair_record_index);
         const uint local_sample_base = mx * 8u;
-        if (starts_mid_row) {
+        if (has_left_mcu) {
             boundary_meta[boundary_meta_base] = y_x;
             boundary_meta[boundary_meta_base + 1u] = y_y;
             boundary_meta[boundary_meta_base + 2u] = 1u;
@@ -3029,7 +3031,7 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                 boundary_samples[boundary_sample_base + 24u + cy] = cr_pixels[cy * 8u];
             }
         }
-        if (ends_mid_row) {
+        if (has_right_mcu) {
             boundary_meta[boundary_meta_base + 3u] = 1u;
             for (uint by = 0u; by < copy_height; ++by) {
                 boundary_samples[boundary_sample_base + 32u + by] = by < 8u
@@ -3041,7 +3043,7 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                 boundary_samples[boundary_sample_base + 56u + cy] = cr_pixels[cy * 8u + 7u];
             }
         }
-        if (mcu_index == start_mcu && has_top_mcu) {
+        if (has_top_mcu) {
             vertical_meta[vertical_meta_base] = y_x;
             vertical_meta[vertical_meta_base + 1u] = y_y;
             vertical_meta[vertical_meta_base + 2u] = 1u;
@@ -3055,7 +3057,7 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
                 vertical_samples[vertical_sample_base + 24u + cx] = cr_pixels[cx];
             }
         }
-        if (mcu_index + 1u >= end_mcu && has_bottom_mcu) {
+        if (has_bottom_mcu) {
             vertical_meta[vertical_meta_base + 3u] = 1u;
             for (uint bx = 0u; bx < copy_width; ++bx) {
                 vertical_samples[vertical_sample_base + 32u + bx] = bx < 8u
@@ -3179,7 +3181,6 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
             }
         }
 
-        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
         const uint last_chroma_x = params.chroma_width * 2u - 1u;
         for (uint by = 0u; by < copy_height; ++by) {
             const uint out_y = y_y + by;
@@ -3277,11 +3278,16 @@ kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
     texture2d<float, access::write> out [[texture(0)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid == 0u || gid >= params.segment_count) {
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus || params.mcus_per_row <= 1u) {
+        return;
+    }
+    const uint mx = gid % params.mcus_per_row;
+    if (mx == 0u) {
         return;
     }
 
-    const uint record_index = params.tile_index * params.segment_count + gid;
+    const uint record_index = params.tile_index * total_mcus + gid;
     const uint previous_record_index = record_index - 1u;
     const uint meta_base = fast420_boundary_meta_base(record_index);
     const uint previous_meta_base = fast420_boundary_meta_base(previous_record_index);
@@ -3353,19 +3359,17 @@ kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
     texture2d<float, access::write> out [[texture(0)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid == 0u || gid >= params.segment_count) {
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus || params.mcu_rows <= 1u) {
         return;
     }
-    if (params.mcus_per_row > 1u) {
-        if (params.segment_count != params.mcus_per_row * params.mcu_rows || gid < params.mcus_per_row) {
-            return;
-        }
+    const uint my = gid / params.mcus_per_row;
+    if (my == 0u) {
+        return;
     }
 
-    const uint record_index = params.tile_index * params.segment_count + gid;
-    const uint previous_record_index = params.mcus_per_row == 1u
-        ? record_index - 1u
-        : record_index - params.mcus_per_row;
+    const uint record_index = params.tile_index * total_mcus + gid;
+    const uint previous_record_index = record_index - params.mcus_per_row;
     const uint meta_base = fast420_vertical_meta_base(record_index);
     const uint previous_meta_base = fast420_vertical_meta_base(previous_record_index);
     if (vertical_meta[meta_base + 2u] == 0u || vertical_meta[previous_meta_base + 3u] == 0u) {
@@ -3430,7 +3434,8 @@ kernel void jpeg_resolve_fast420_rgba_texture_corners(
     if (params.mcus_per_row <= 1u || params.mcu_rows <= 1u) {
         return;
     }
-    if (params.segment_count != params.mcus_per_row * params.mcu_rows || gid >= params.segment_count) {
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus) {
         return;
     }
     const uint mx = gid % params.mcus_per_row;
@@ -3439,7 +3444,7 @@ kernel void jpeg_resolve_fast420_rgba_texture_corners(
         return;
     }
 
-    const uint br_record = params.tile_index * params.segment_count + gid;
+    const uint br_record = params.tile_index * total_mcus + gid;
     const uint bl_record = br_record - 1u;
     const uint tr_record = br_record - params.mcus_per_row;
     const uint tl_record = tr_record - 1u;

@@ -5943,6 +5943,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
     validate_rgba_texture_batch_output(output, first.dimensions, tile_count, out_tile_len)?;
 
     let total_mcus = first.mcus_per_row as usize * first.mcu_rows as usize;
+    let total_mcus_u32 = checked_u32(total_mcus, "fast420 texture batch MCU count")?;
     let blocks_per_tile = total_mcus
         .checked_mul(6)
         .ok_or_else(|| Error::MetalKernel {
@@ -5993,22 +5994,25 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
     };
 
     // H2V2 reconstruction needs neighboring chroma samples at horizontal and vertical MCU
-    // boundaries. Multi-axis direct texture fusion is enabled when every MCU has its own entropy
-    // segment; that gives the repair kernels one edge record per MCU and a stable row-major lookup
-    // for corner samples.
-    let multi_axis_per_mcu_segments =
-        first.mcu_rows > 1 && first.mcus_per_row > 1 && segment_count == total_mcus;
-    if first.mcu_rows == 1 || first.mcus_per_row == 1 || multi_axis_per_mcu_segments {
+    // boundaries. Decode status is per entropy segment, but texture repair records are per MCU so
+    // multi-axis tiles remain resident even when one entropy segment covers several MCUs.
+    if decode_mode == Fast420BatchDecodeMode::Fused {
         let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
         let status_buffer = batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             "fast420_texture_status",
             &statuses,
         );
-        let boundary_meta =
-            vec![0u32; total_decode_threads as usize * FAST420_TEXTURE_BOUNDARY_META_WORDS];
+        let total_repair_records =
+            tile_count
+                .checked_mul(total_mcus)
+                .ok_or_else(|| Error::MetalKernel {
+                    message: "JPEG Metal fast420 texture repair record count overflowed"
+                        .to_string(),
+                })?;
+        let boundary_meta = vec![0u32; total_repair_records * FAST420_TEXTURE_BOUNDARY_META_WORDS];
         let boundary_samples =
-            vec![0u8; total_decode_threads as usize * FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES];
+            vec![0u8; total_repair_records * FAST420_TEXTURE_BOUNDARY_SAMPLE_BYTES];
         let boundary_meta_buffer = batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             "fast420_texture_boundary_meta",
@@ -6019,10 +6023,9 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
             "fast420_texture_boundary_samples",
             &boundary_samples,
         );
-        let vertical_meta =
-            vec![0u32; total_decode_threads as usize * FAST420_TEXTURE_VERTICAL_META_WORDS];
+        let vertical_meta = vec![0u32; total_repair_records * FAST420_TEXTURE_VERTICAL_META_WORDS];
         let vertical_samples =
-            vec![0u8; total_decode_threads as usize * FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES];
+            vec![0u8; total_repair_records * FAST420_TEXTURE_VERTICAL_SAMPLE_BYTES];
         let vertical_meta_buffer = batch_scratch.shared_buffer_with_slice(
             &runtime.device,
             "fast420_texture_vertical_meta",
@@ -6130,7 +6133,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
             );
             decoder_encoder.end_encoding();
         }
-        if segment_count > 1 && (first.mcu_rows == 1 || multi_axis_per_mcu_segments) {
+        if first.mcus_per_row > 1 {
             for index in 0..tile_count {
                 let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
                     message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -6160,12 +6163,12 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
                 dispatch_1d_pipeline(
                     boundary_encoder,
                     &runtime.fast420_rgba_texture_boundary_pipeline,
-                    segment_count_u32,
+                    total_mcus_u32,
                 );
                 boundary_encoder.end_encoding();
             }
         }
-        if segment_count > 1 && (first.mcus_per_row == 1 || multi_axis_per_mcu_segments) {
+        if first.mcu_rows > 1 {
             for index in 0..tile_count {
                 let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
                     message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -6196,12 +6199,12 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
                 dispatch_1d_pipeline(
                     boundary_encoder,
                     &runtime.fast420_rgba_texture_vertical_boundary_pipeline,
-                    segment_count_u32,
+                    total_mcus_u32,
                 );
                 boundary_encoder.end_encoding();
             }
         }
-        if multi_axis_per_mcu_segments {
+        if first.mcus_per_row > 1 && first.mcu_rows > 1 {
             for index in 0..tile_count {
                 let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
                     message: "JPEG Metal batch texture output slot was missing".to_string(),
@@ -6232,7 +6235,7 @@ fn try_decode_fast420_full_rgba_batch_to_textures(
                 dispatch_1d_pipeline(
                     corner_encoder,
                     &runtime.fast420_rgba_texture_corner_pipeline,
-                    segment_count_u32,
+                    total_mcus_u32,
                 );
                 corner_encoder.end_encoding();
             }
