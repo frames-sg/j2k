@@ -337,6 +337,80 @@ __device__ bool signinum_jpeg_decode_block(
     return true;
 }
 
+__device__ bool signinum_jpeg_entropy_scan_one_symbol420(
+    const unsigned char *entropy,
+    SigninumJpegEntropyChunkParams params,
+    const SigninumJpegHuffmanTable *y_dc,
+    const SigninumJpegHuffmanTable *y_ac,
+    const SigninumJpegHuffmanTable *cb_dc,
+    const SigninumJpegHuffmanTable *cb_ac,
+    const SigninumJpegHuffmanTable *cr_dc,
+    const SigninumJpegHuffmanTable *cr_ac,
+    SigninumJpegEntropySyncState &state,
+    SigninumJpegBitReader &reader,
+    SigninumJpegDecodeStatus &status
+) {
+    const bool dc = state.zigzag_index == 0u;
+    const SigninumJpegHuffmanTable *table =
+        state.block_phase < 4u
+            ? (dc ? y_dc : y_ac)
+            : (state.block_phase == 4u ? (dc ? cb_dc : cb_ac) : (dc ? cr_dc : cr_ac));
+    unsigned char symbol = 0u;
+    const unsigned int before_pos = reader.pos;
+    const unsigned int before_bits = reader.bits;
+    if (!signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)) {
+        return false;
+    }
+    const unsigned int run = symbol >> 4u;
+    const unsigned int ssss = symbol & 0x0Fu;
+    if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + 16u, reader.pos);
+        return false;
+    }
+    if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
+        return false;
+    }
+    if (!dc && ssss == 0u && run != 0u && run != 15u) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, symbol, reader.pos);
+        return false;
+    }
+    unsigned int coeff_bits = dc ? symbol : (symbol & 0x0Fu);
+    if (coeff_bits > 15u) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, coeff_bits, reader.pos);
+        return false;
+    }
+    if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits)) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, coeff_bits, reader.pos);
+        return false;
+    }
+    signinum_jpeg_consume_bits(reader, coeff_bits);
+    unsigned int consumed = 0u;
+    if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed)) {
+        signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, 0u, reader.pos);
+        return false;
+    }
+    state.bit_pos += consumed;
+    if (dc) {
+        state.zigzag_index = 1u;
+        state.symbol_count += 1u;
+        return true;
+    }
+    if (ssss == 0u && run != 15u) {
+        state.symbol_count += 64u - state.zigzag_index;
+        state.zigzag_index = 0u;
+        state.block_phase = (state.block_phase + 1u) % 6u;
+        return true;
+    }
+    state.zigzag_index += run + 1u;
+    state.symbol_count += run + 1u;
+    if (state.zigzag_index >= 64u) {
+        state.zigzag_index = 0u;
+        state.block_phase = (state.block_phase + 1u) % 6u;
+    }
+    return true;
+}
+
 extern "C" __global__ void signinum_jpeg_entropy_sync420(
     const unsigned char *entropy,
     SigninumJpegEntropyChunkParams params,
@@ -377,63 +451,20 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
     status.reserved = 0u;
 
     while (state.bit_pos < state.end_bit && status.code == JPEG_STATUS_OK) {
-        const bool dc = state.zigzag_index == 0u;
-        const SigninumJpegHuffmanTable *table =
-            state.block_phase < 4u
-                ? (dc ? y_dc : y_ac)
-                : (state.block_phase == 4u ? (dc ? cb_dc : cb_ac) : (dc ? cr_dc : cr_ac));
-        unsigned char symbol = 0u;
-        const unsigned int before_pos = reader.pos;
-        const unsigned int before_bits = reader.bits;
-        if (!signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)) {
+        if (!signinum_jpeg_entropy_scan_one_symbol420(
+                entropy,
+                params,
+                y_dc,
+                y_ac,
+                cb_dc,
+                cb_ac,
+                cr_dc,
+                cr_ac,
+                state,
+                reader,
+                status
+            )) {
             break;
-        }
-        const unsigned int run = symbol >> 4u;
-        const unsigned int ssss = symbol & 0x0Fu;
-        if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + 16u, reader.pos);
-            break;
-        }
-        if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, state.zigzag_index + run, reader.pos);
-            break;
-        }
-        if (!dc && ssss == 0u && run != 0u && run != 15u) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, symbol, reader.pos);
-            break;
-        }
-        unsigned int coeff_bits = dc ? symbol : (symbol & 0x0Fu);
-        if (coeff_bits > 15u) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_HUFFMAN, coeff_bits, reader.pos);
-            break;
-        }
-        if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits)) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, coeff_bits, reader.pos);
-            break;
-        }
-        signinum_jpeg_consume_bits(reader, coeff_bits);
-        unsigned int consumed = 0u;
-        if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed)) {
-            signinum_jpeg_set_error(&status, JPEG_STATUS_TRUNCATED, 0u, reader.pos);
-            break;
-        }
-        state.bit_pos += consumed;
-        if (dc) {
-            state.zigzag_index = 1u;
-            state.symbol_count += 1u;
-            continue;
-        }
-        if (ssss == 0u && run != 15u) {
-            state.symbol_count += 64u - state.zigzag_index;
-            state.zigzag_index = 0u;
-            state.block_phase = (state.block_phase + 1u) % 6u;
-            continue;
-        }
-        state.zigzag_index += run + 1u;
-        state.symbol_count += run + 1u;
-        if (state.zigzag_index >= 64u) {
-            state.zigzag_index = 0u;
-            state.block_phase = (state.block_phase + 1u) % 6u;
         }
     }
     state.code = status.code;
@@ -441,20 +472,101 @@ extern "C" __global__ void signinum_jpeg_entropy_sync420(
 }
 
 extern "C" __global__ void signinum_jpeg_entropy_overflow420(
+    const unsigned char *entropy,
     SigninumJpegEntropyChunkParams params,
+    const SigninumJpegHuffmanTable *y_dc,
+    const SigninumJpegHuffmanTable *y_ac,
+    const SigninumJpegHuffmanTable *cb_dc,
+    const SigninumJpegHuffmanTable *cb_ac,
+    const SigninumJpegHuffmanTable *cr_dc,
+    const SigninumJpegHuffmanTable *cr_ac,
     const SigninumJpegEntropySyncState *states,
     SigninumJpegEntropyOverflowState *overflows
 ) {
     const unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (params.subsequence_count <= 1u || params.max_overflow_subsequences == 0u) {
+    if (params.subsequence_count <= 1u) {
         return;
     }
     const unsigned int overflow_count = params.subsequence_count - 1u;
     if (gid >= overflow_count) {
         return;
     }
-    (void)states;
-    (void)overflows;
+
+    SigninumJpegEntropyOverflowState out;
+    out.code = JPEG_STATUS_OK;
+    out.from_subsequence = gid;
+    out.to_subsequence = gid + 1u;
+    out.overflow_bits = 0u;
+    out.synchronized = 0u;
+    out.reserved[0] = 0u;
+    out.reserved[1] = 0u;
+    out.reserved[2] = 0u;
+
+    const SigninumJpegEntropySyncState source = states[gid];
+    const SigninumJpegEntropySyncState target = states[gid + 1u];
+    if (source.code != JPEG_STATUS_OK || target.code != JPEG_STATUS_OK) {
+        out.code = source.code != JPEG_STATUS_OK ? source.code : target.code;
+        overflows[gid] = out;
+        return;
+    }
+
+    SigninumJpegEntropySyncState state = source;
+    SigninumJpegBitReader reader =
+        signinum_jpeg_bit_reader_at_bit(entropy, params.entropy_len, state.bit_pos);
+    SigninumJpegDecodeStatus status;
+    status.code = JPEG_STATUS_OK;
+    status.detail = 0u;
+    status.position = 0u;
+    status.reserved = 0u;
+
+    unsigned int stop_bit = state.bit_pos;
+    if (params.max_overflow_subsequences != 0u
+        && params.subsequence_bits != 0u
+        && state.bit_pos < params.entropy_bits) {
+        const unsigned int remaining_bits = params.entropy_bits - state.bit_pos;
+        unsigned int overflow_limit = remaining_bits;
+        if (params.max_overflow_subsequences <= remaining_bits / params.subsequence_bits) {
+            overflow_limit = params.max_overflow_subsequences * params.subsequence_bits;
+        }
+        stop_bit = state.bit_pos + min(overflow_limit, remaining_bits);
+    }
+
+    if (state.bit_pos == target.bit_pos
+        && state.block_phase == target.block_phase
+        && state.zigzag_index == target.zigzag_index) {
+        out.synchronized = 1u;
+        out.overflow_bits = state.bit_pos > target.start_bit ? state.bit_pos - target.start_bit : 0u;
+    } else {
+        while (state.bit_pos < stop_bit && status.code == JPEG_STATUS_OK) {
+            if (!signinum_jpeg_entropy_scan_one_symbol420(
+                    entropy,
+                    params,
+                    y_dc,
+                    y_ac,
+                    cb_dc,
+                    cb_ac,
+                    cr_dc,
+                    cr_ac,
+                    state,
+                    reader,
+                    status
+                )) {
+                break;
+            }
+            if (state.bit_pos == target.bit_pos
+                && state.block_phase == target.block_phase
+                && state.zigzag_index == target.zigzag_index) {
+                out.synchronized = 1u;
+                out.overflow_bits = state.bit_pos > target.start_bit ? state.bit_pos - target.start_bit : 0u;
+                break;
+            }
+        }
+    }
+
+    if (status.code != JPEG_STATUS_OK && out.synchronized == 0u) {
+        out.code = status.code;
+    }
+    overflows[gid] = out;
 }
 
 static constexpr int JPEG_CONST_BITS = 13;

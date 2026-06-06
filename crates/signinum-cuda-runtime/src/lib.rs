@@ -367,6 +367,11 @@ impl CudaJpegChunkedEntropyConfig {
     }
 }
 
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn jpeg_entropy_overflow_count(subsequence_count: usize) -> usize {
+    subsequence_count.saturating_sub(1)
+}
+
 /// Device-written state for one entropy subsequence self-sync diagnostic.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2654,13 +2659,37 @@ impl CudaContext {
         )?;
         states_buffer.copy_to_host(cuda_jpeg_entropy_sync_states_as_bytes_mut(&mut states))?;
 
+        let mut overflows = vec![
+            CudaJpegEntropyOverflowState::default();
+            jpeg_entropy_overflow_count(subsequences)
+        ];
+        if !overflows.is_empty() {
+            let overflow_buffer =
+                self.upload(cuda_jpeg_entropy_overflow_states_as_bytes(&overflows))?;
+            self.launch_jpeg_entropy_overflow420(
+                &entropy,
+                params,
+                &y_dc,
+                &y_ac,
+                &cb_dc,
+                &cb_ac,
+                &cr_dc,
+                &cr_ac,
+                &states_buffer,
+                &overflow_buffer,
+            )?;
+            overflow_buffer.copy_to_host(cuda_jpeg_entropy_overflow_states_as_bytes_mut(
+                &mut overflows,
+            ))?;
+        }
+
         Ok(CudaJpegChunkedEntropyReport {
             config: plan.config,
             entropy_bytes: plan.entropy_bytes.len(),
             states,
-            overflows: Vec::new(),
+            overflows,
             execution: CudaExecutionStats {
-                kernel_dispatches: 1,
+                kernel_dispatches: 1 + usize::from(subsequences > 1),
                 copy_kernel_dispatches: 0,
                 decode_kernel_dispatches: 0,
                 hardware_decode: false,
@@ -2762,6 +2791,57 @@ impl CudaContext {
         ];
         let geometry = CudaLaunchGeometry {
             grid: (params.subsequence_count.div_ceil(128), 1, 1),
+            block: (128, 1, 1),
+        };
+
+        self.launch_kernel(function, geometry, &mut kernel_params)
+    }
+
+    #[cfg(signinum_cuda_jpeg_decode_ptx_built)]
+    #[allow(clippy::similar_names, clippy::too_many_arguments)]
+    fn launch_jpeg_entropy_overflow420(
+        &self,
+        entropy: &CudaDeviceBuffer,
+        mut params: CudaJpegEntropyChunkParams,
+        y_dc: &CudaDeviceBuffer,
+        y_ac: &CudaDeviceBuffer,
+        cb_dc: &CudaDeviceBuffer,
+        cb_ac: &CudaDeviceBuffer,
+        cr_dc: &CudaDeviceBuffer,
+        cr_ac: &CudaDeviceBuffer,
+        states: &CudaDeviceBuffer,
+        overflows: &CudaDeviceBuffer,
+    ) -> Result<(), CudaError> {
+        let function = self
+            .inner
+            .kernel_function(CudaKernel::JpegEntropyOverflow420)?;
+        let mut entropy_ptr = entropy.device_ptr();
+        let mut y_dc_ptr = y_dc.device_ptr();
+        let mut y_ac_ptr = y_ac.device_ptr();
+        let mut cb_dc_ptr = cb_dc.device_ptr();
+        let mut cb_ac_ptr = cb_ac.device_ptr();
+        let mut cr_dc_ptr = cr_dc.device_ptr();
+        let mut cr_ac_ptr = cr_ac.device_ptr();
+        let mut states_ptr = states.device_ptr();
+        let mut overflows_ptr = overflows.device_ptr();
+        let mut kernel_params = [
+            (&raw mut entropy_ptr).cast::<c_void>(),
+            (&raw mut params).cast::<c_void>(),
+            (&raw mut y_dc_ptr).cast::<c_void>(),
+            (&raw mut y_ac_ptr).cast::<c_void>(),
+            (&raw mut cb_dc_ptr).cast::<c_void>(),
+            (&raw mut cb_ac_ptr).cast::<c_void>(),
+            (&raw mut cr_dc_ptr).cast::<c_void>(),
+            (&raw mut cr_ac_ptr).cast::<c_void>(),
+            (&raw mut states_ptr).cast::<c_void>(),
+            (&raw mut overflows_ptr).cast::<c_void>(),
+        ];
+        let geometry = CudaLaunchGeometry {
+            grid: (
+                (params.subsequence_count.saturating_sub(1)).div_ceil(128),
+                1,
+                1,
+            ),
             block: (128, 1, 1),
         };
 
@@ -12562,6 +12642,27 @@ fn cuda_jpeg_entropy_sync_states_as_bytes_mut(
     }
 }
 
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_entropy_overflow_states_as_bytes(states: &[CudaJpegEntropyOverflowState]) -> &[u8] {
+    // SAFETY: CudaJpegEntropyOverflowState is repr(C), plain integer data copied to CUDA.
+    unsafe {
+        std::slice::from_raw_parts(states.as_ptr().cast::<u8>(), std::mem::size_of_val(states))
+    }
+}
+
+#[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+fn cuda_jpeg_entropy_overflow_states_as_bytes_mut(
+    states: &mut [CudaJpegEntropyOverflowState],
+) -> &mut [u8] {
+    // SAFETY: the returned byte slice covers exactly the same initialized overflow storage.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            states.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(states),
+        )
+    }
+}
+
 fn htj2k_encode_params_as_bytes(params: &CudaHtj2kEncodeParams) -> &[u8] {
     // SAFETY: CudaHtj2kEncodeParams is repr(C) POD data copied directly to CUDA.
     unsafe {
@@ -12914,15 +13015,16 @@ fn checked_image_words(width: u32, height: u32, channels: usize) -> Result<usize
 mod tests {
     use super::{
         f32_slice_as_bytes_mut, format_idwt_batch_trace_row, idwt_batch_kernel_mode,
-        idwt_batch_trace_row, idwt_batch_uses_cooperative_53, pool_fit_buffer_index_by_len,
-        CudaContext, CudaError, CudaExecutionStats, CudaHtj2kCleanupMultiKernelJob,
-        CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables,
-        CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
-        CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables, CudaJ2kIdwtBatchKernelMode,
-        CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget, CudaJ2kQuantizeJob,
-        CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect, CudaJpegChunkedEntropyConfig,
-        CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport, CudaJpegEntropyOverflowState,
-        CudaJpegEntropySyncState, CudaJpegHuffmanTable, CudaKernelName, CudaQueuedHtj2kCleanup,
+        idwt_batch_trace_row, idwt_batch_uses_cooperative_53, jpeg_entropy_overflow_count,
+        pool_fit_buffer_index_by_len, CudaContext, CudaError, CudaExecutionStats,
+        CudaHtj2kCleanupMultiKernelJob, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob,
+        CudaHtj2kDecodeTables, CudaHtj2kDequantizeTarget, CudaHtj2kEncodeCodeBlockJob,
+        CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResidentTarget, CudaHtj2kEncodeTables,
+        CudaJ2kIdwtBatchKernelMode, CudaJ2kIdwtJob, CudaJ2kIdwtMultiKernelJob, CudaJ2kIdwtTarget,
+        CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob, CudaJ2kRect,
+        CudaJpegChunkedEntropyConfig, CudaJpegChunkedEntropyPlan, CudaJpegChunkedEntropyReport,
+        CudaJpegEntropyOverflowState, CudaJpegEntropySyncState, CudaJpegHuffmanTable,
+        CudaKernelName, CudaQueuedHtj2kCleanup,
     };
 
     fn cuda_runtime_required() -> bool {
@@ -12942,6 +13044,20 @@ mod tests {
         assert_eq!(config.subsequence_count_for_entropy_bytes(1).unwrap(), 1);
         assert_eq!(config.subsequence_count_for_entropy_bytes(16).unwrap(), 1);
         assert_eq!(config.subsequence_count_for_entropy_bytes(17).unwrap(), 2);
+    }
+
+    #[test]
+    fn jpeg_chunked_entropy_report_has_one_less_overflow_than_subsequence_count() {
+        let config = CudaJpegChunkedEntropyConfig {
+            subsequence_words: 1,
+            sequence_len: 8,
+            max_overflow_subsequences: 2,
+        };
+        let subsequences = config.subsequence_count_for_entropy_bytes(16).unwrap();
+
+        assert_eq!(subsequences, 4);
+        assert_eq!(jpeg_entropy_overflow_count(subsequences), 3);
+        assert_eq!(jpeg_entropy_overflow_count(0), 0);
     }
 
     #[test]

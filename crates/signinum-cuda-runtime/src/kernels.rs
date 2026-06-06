@@ -490,17 +490,31 @@ mod tests {
         assert!(cuda_source.contains(
             "const unsigned int remaining_bits = params.entropy_bits - state.start_bit;"
         ));
+        let scanner_source = cuda_source
+            .split("__device__ bool signinum_jpeg_entropy_scan_one_symbol420(")
+            .nth(1)
+            .expect("entropy scanner source")
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_sync420(")
+            .next()
+            .expect("entropy scanner source before sync kernel");
         let sync_source = cuda_source
             .split("extern \"C\" __global__ void signinum_jpeg_entropy_sync420(")
             .nth(1)
             .expect("entropy sync source")
             .split("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
             .next()
-            .expect("entropy sync source before overflow stub");
-        let ac_overflow_guard = sync_source
+            .expect("entropy sync source before overflow kernel");
+        let overflow_source = cuda_source
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+            .nth(1)
+            .expect("entropy overflow source");
+        assert!(sync_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
+        assert!(overflow_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
+        assert!(overflow_source.contains("const unsigned char *entropy,"));
+        let ac_overflow_guard = scanner_source
             .find("if (!dc && ssss != 0u && state.zigzag_index + run >= 64u) {")
             .expect("AC run overflow guard");
-        let amplitude_read = sync_source
+        let amplitude_read = scanner_source
             .find(
                 "if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits))",
             )
@@ -508,32 +522,34 @@ mod tests {
         assert!(ac_overflow_guard < amplitude_read);
         assert!(cuda_source.contains("__device__ bool signinum_jpeg_decode_symbol_real("));
         assert!(cuda_source.contains("__device__ bool signinum_jpeg_real_bits_consumed("));
-        assert!(sync_source.contains(
+        assert!(scanner_source.contains(
             "signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)"
         ));
-        let no_progress_guard = sync_source
+        let no_progress_guard = scanner_source
             .find(
                 "if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed))",
             )
             .expect("real-bit progress guard");
-        let bit_pos_advance = sync_source
+        let bit_pos_advance = scanner_source
             .find("state.bit_pos += consumed;")
             .expect("bit position advance");
         assert!(no_progress_guard < bit_pos_advance);
-        let zrl_overflow_guard = sync_source
+        let zrl_overflow_guard = scanner_source
             .find("if (!dc && ssss == 0u && run == 15u && state.zigzag_index + 16u > 64u) {")
             .expect("ZRL overflow guard");
-        let coefficient_advance = sync_source
+        let coefficient_advance = scanner_source
             .find("state.zigzag_index += run + 1u;")
             .expect("AC coefficient advance");
         assert!(zrl_overflow_guard < coefficient_advance);
-        let malformed_zero_ac_guard = sync_source
+        let malformed_zero_ac_guard = scanner_source
             .find("if (!dc && ssss == 0u && run != 0u && run != 15u) {")
             .expect("malformed zero-amplitude AC guard");
-        let eob_branch = sync_source
+        let eob_branch = scanner_source
             .find("if (ssss == 0u && run != 15u) {")
             .expect("EOB branch");
         assert!(malformed_zero_ac_guard < eob_branch);
+        assert!(overflow_source
+            .contains("stop_bit = state.bit_pos + min(overflow_limit, remaining_bits);"));
     }
 
     #[test]
