@@ -142,6 +142,45 @@ pub(crate) fn extended_12bit_ycbcr_422_32x8_rgb16() -> Vec<u8> {
     out
 }
 
+/// A 32x32 12-bit extended sequential YCbCr 4:2:0 JPEG.
+pub(crate) fn extended_12bit_ycbcr_420_32x32_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc1, 0x00, 17, 12, 0, 32, 0, 32, 3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 21, 0x00, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
+    ]);
+    bytes.extend(dc_ycbcr420_entropy(false));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+/// Reference Rgb16 pixels for [`extended_12bit_ycbcr_420_32x32_jpeg`].
+pub(crate) fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 * 32 * 6);
+    let cb_plane = ycbcr420_chroma_plane_for_fixture(2072, 2056, 2040, 2064);
+    let cr_plane = ycbcr420_chroma_plane_for_fixture(2032, 2048, 2072, 2056);
+    for y in 0..32 {
+        for x in 0..32 {
+            let cb = upsample_h2v2_12bit_for_fixture(&cb_plane, x, y);
+            let cr = upsample_h2v2_12bit_for_fixture(&cr_plane, x, y);
+            let (r, g, b) = ycbcr12_to_rgb16_for_fixture(2064, cb, cr);
+            append_rgb16_pixel(&mut out, [r, g, b]);
+        }
+    }
+    out
+}
+
 /// An 8x8 12-bit progressive grayscale JPEG with one DC-only scan.
 pub(crate) fn progressive_12bit_grayscale_8x8_jpeg() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -222,6 +261,26 @@ pub(crate) fn progressive_12bit_ycbcr_422_32x8_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 32x32 12-bit progressive YCbCr 4:2:0 JPEG with one DC-only scan.
+pub(crate) fn progressive_12bit_ycbcr_420_32x32_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff, 0xc2, 0x00, 17, 12, 0, 32, 0, 32, 3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 21, 0x00, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 0, 0,
+    ]);
+    bytes.extend(dc_ycbcr420_entropy(true));
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 fn dc_category4_rgb_entropy() -> Vec<u8> {
     let mut bits = Vec::new();
     for magnitude in [0b1000, 0b1100, 0b0111] {
@@ -267,12 +326,111 @@ fn dc_ycbcr422_entropy(progressive: bool) -> Vec<u8> {
     pack_entropy_bits(bits)
 }
 
-fn append_rgb16_run(out: &mut Vec<u8>, len: usize, rgb: [u16; 3]) {
-    for _ in 0..len {
-        for sample in rgb {
-            out.extend_from_slice(&sample.to_le_bytes());
+fn dc_ycbcr420_entropy(progressive: bool) -> Vec<u8> {
+    let mut bits = Vec::new();
+    let mcu_blocks = [
+        [Some(0b1000), None, None, None, Some(0b1100), Some(0b0111)],
+        [None, None, None, None, Some(0b0111), Some(0b1000)],
+        [None, None, None, None, Some(0b0111), Some(0b1100)],
+        [None, None, None, None, Some(0b1100), Some(0b0111)],
+    ];
+    for mcu in mcu_blocks {
+        for magnitude in mcu {
+            match magnitude {
+                Some(value) => {
+                    push_bits(&mut bits, 1, 1);
+                    push_bits(&mut bits, value, 4);
+                }
+                None => push_bits(&mut bits, 0, 1),
+            }
+            if !progressive {
+                push_bits(&mut bits, 0, 1);
+            }
         }
     }
+    pack_entropy_bits(bits)
+}
+
+fn append_rgb16_run(out: &mut Vec<u8>, len: usize, rgb: [u16; 3]) {
+    for _ in 0..len {
+        append_rgb16_pixel(out, rgb);
+    }
+}
+
+fn append_rgb16_pixel(out: &mut Vec<u8>, rgb: [u16; 3]) {
+    for sample in rgb {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+}
+
+fn ycbcr420_chroma_row_for_fixture(left: u16, right: u16) -> [u16; 16] {
+    let mut row = [0u16; 16];
+    row[..8].fill(left);
+    row[8..].fill(right);
+    row
+}
+
+fn ycbcr420_chroma_plane_for_fixture(
+    top_left: u16,
+    top_right: u16,
+    bottom_left: u16,
+    bottom_right: u16,
+) -> [[u16; 16]; 16] {
+    let top = ycbcr420_chroma_row_for_fixture(top_left, top_right);
+    let bottom = ycbcr420_chroma_row_for_fixture(bottom_left, bottom_right);
+    core::array::from_fn(|y| if y < 8 { top } else { bottom })
+}
+
+fn upsample_h2v2_12bit_for_fixture(
+    plane: &[[u16; 16]; 16],
+    output_x: usize,
+    output_y: usize,
+) -> u16 {
+    let chroma_y = output_y / 2;
+    let current = &plane[chroma_y];
+    let near_y = if output_y.is_multiple_of(2) {
+        chroma_y.saturating_sub(1)
+    } else {
+        (chroma_y + 1).min(15)
+    };
+    let near = &plane[near_y];
+    let sample = output_x / 2;
+    let colsum =
+        |row: &[u16; 16], index: usize| 3 * u32::from(current[index]) + u32::from(row[index]);
+    let this = colsum(near, sample);
+    match output_x {
+        0 => ((this * 4 + 8) >> 4) as u16,
+        31 => ((this * 4 + 7) >> 4) as u16,
+        _ if output_x.is_multiple_of(2) => {
+            let last = colsum(near, sample - 1);
+            ((this * 3 + last + 8) >> 4) as u16
+        }
+        _ => {
+            let next = colsum(near, sample + 1);
+            ((this * 3 + next + 7) >> 4) as u16
+        }
+    }
+}
+
+fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
+    const FIX_1_40200: i32 = 91_881;
+    const FIX_0_34414: i32 = 22_554;
+    const FIX_0_71414: i32 = 46_802;
+    const FIX_1_77200: i32 = 116_130;
+    const ROUND: i32 = 1 << 15;
+
+    let y = i32::from(y);
+    let cb_centered = i32::from(cb) - 2048;
+    let cr_centered = i32::from(cr) - 2048;
+    let r = y + ((FIX_1_40200 * cr_centered + ROUND) >> 16);
+    let g = y - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> 16);
+    let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
+
+    (
+        r.clamp(0, 4095) as u16,
+        g.clamp(0, 4095) as u16,
+        b.clamp(0, 4095) as u16,
+    )
 }
 
 pub(crate) const LOSSLESS_GRAYSCALE_3X3_PIXELS: [u8; 9] =

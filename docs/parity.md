@@ -17,8 +17,8 @@ on a single visual smoke test.
   ROI/scaled/region-scaled CPU coverage have landed. Initial
   full-image/ROI/scaled/region-scaled 12-bit extended sequential and
   progressive grayscale `Gray16`/`Rgb16` coverage and initial 12-bit APP14 RGB
-  4:4:4 and YCbCr 4:4:4/4:2:2 `Rgb16` coverage have landed, but expanded
-  four-component fixtures, 12-bit 4:2:0/other subsampled color output,
+  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` coverage have landed, but
+  expanded four-component fixtures, other 12-bit subsampled color output,
   stronger non-constant 12-bit oracle fixtures, and broader lossless SOF3
   color/restart/row support must land CPU parity fixtures and reference
   outputs before any Metal route is promoted.

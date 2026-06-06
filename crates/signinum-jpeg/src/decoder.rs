@@ -2288,6 +2288,8 @@ impl Decoder<'_> {
                             ),
                         Extended12ColorSampling::S422 => self
                             .decode_progressive12_ycbcr422_region_into(out, stride, roi, downscale),
+                        Extended12ColorSampling::S420 => self
+                            .decode_progressive12_ycbcr420_region_into(out, stride, roi, downscale),
                     };
                 }
                 _ => {}
@@ -2460,6 +2462,42 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_progressive12_ycbcr420_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .progressive_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        validate_progressive_ycbcr420_plan(plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
+        let planes = render_progressive12_color_planes(plan, &dct_blocks.quantized)?;
+        write_extended12_ycbcr420_planes_region(
+            out,
+            stride,
+            Extended12WriteRegion {
+                output_rect,
+                dimensions: self.info.dimensions,
+                downscale,
+                output: Extended12Output::Rgb16,
+            },
+            &planes,
+        );
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: self.warnings.to_vec(),
+        })
+    }
+
     fn decode_extended12_gray16_into(
         &self,
         out: &mut [u8],
@@ -2582,6 +2620,9 @@ impl Decoder<'_> {
                             ),
                         Extended12ColorSampling::S422 => {
                             self.decode_extended12_ycbcr422_region_into(out, stride, roi, downscale)
+                        }
+                        Extended12ColorSampling::S420 => {
+                            self.decode_extended12_ycbcr420_region_into(out, stride, roi, downscale)
                         }
                     };
                 }
@@ -2724,6 +2765,37 @@ impl Decoder<'_> {
             warnings: merged_warnings(&self.warnings, scan_warnings),
         })
     }
+
+    fn decode_extended12_ycbcr420_region_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        roi: Rect,
+        downscale: DownscaleFactor,
+    ) -> Result<DecodeOutcome, JpegError> {
+        validate_extended12_ycbcr420_plan(&self.plan, self.info.sof_kind)?;
+
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let scan_bytes = &self.bytes[self.plan.scan_offset..];
+        let (planes, scan_warnings) =
+            decode_extended12_color_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
+        write_extended12_ycbcr420_planes_region(
+            out,
+            stride,
+            Extended12WriteRegion {
+                output_rect,
+                dimensions: self.info.dimensions,
+                downscale,
+                output: Extended12Output::Rgb16,
+            },
+            &planes,
+        );
+
+        Ok(DecodeOutcome {
+            decoded: roi,
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2736,6 +2808,7 @@ enum Extended12Output {
 enum Extended12ColorSampling {
     S444,
     S422,
+    S420,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2972,6 +3045,16 @@ fn validate_extended12_ycbcr422_plan(
     Ok(())
 }
 
+fn validate_extended12_ycbcr420_plan(
+    plan: &PreparedDecodePlan,
+    sof: SofKind,
+) -> Result<(), JpegError> {
+    if extended12_color_sampling(plan, sof)? != Extended12ColorSampling::S420 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    Ok(())
+}
+
 fn extended12_color_sampling(
     plan: &PreparedDecodePlan,
     sof: SofKind,
@@ -3007,6 +3090,16 @@ fn validate_progressive_ycbcr422_plan(
     sof: SofKind,
 ) -> Result<(), JpegError> {
     if progressive_color_sampling(plan, sof)? != Extended12ColorSampling::S422 {
+        return Err(JpegError::NotImplemented { sof });
+    }
+    Ok(())
+}
+
+fn validate_progressive_ycbcr420_plan(
+    plan: &PreparedProgressivePlan,
+    sof: SofKind,
+) -> Result<(), JpegError> {
+    if progressive_color_sampling(plan, sof)? != Extended12ColorSampling::S420 {
         return Err(JpegError::NotImplemented { sof });
     }
     Ok(())
@@ -3051,6 +3144,7 @@ fn color_sampling_from_components(
     match (max_h, max_v, components) {
         (1, 1, [(1, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S444),
         (2, 1, [(2, 1), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S422),
+        (2, 2, [(2, 2), (1, 1), (1, 1)]) => Ok(Extended12ColorSampling::S420),
         _ => Err(JpegError::NotImplemented { sof }),
     }
 }
@@ -3169,6 +3263,55 @@ fn write_extended12_ycbcr422_planes_region(
     }
 }
 
+fn write_extended12_ycbcr420_planes_region(
+    out: &mut [u8],
+    stride: usize,
+    region: Extended12WriteRegion,
+    planes: &[Extended12Plane; 3],
+) {
+    let (width, height) = region.dimensions;
+    let denom = region.downscale.denominator();
+    let output_rect = region.output_rect;
+    for output_y in output_rect.y..output_rect.y + output_rect.h {
+        let source_y = output_y.saturating_mul(denom).min(height - 1) as usize;
+        let dst_row = (output_y - output_rect.y) as usize;
+        for output_x in output_rect.x..output_rect.x + output_rect.w {
+            let source_x = output_x.saturating_mul(denom).min(width - 1) as usize;
+            let y = planes[0].pixels[source_y * planes[0].stride + source_x];
+            let chroma_height = planes[1].pixels.len() / planes[1].stride;
+            let chroma_y = (source_y / 2).min(chroma_height - 1);
+            let prev_y = chroma_y.saturating_sub(1);
+            let next_y = (chroma_y + 1).min(chroma_height - 1);
+            let cb = upsample_h2v2_12bit_at(
+                extended12_plane_row(&planes[1], prev_y),
+                extended12_plane_row(&planes[1], chroma_y),
+                extended12_plane_row(&planes[1], next_y),
+                source_x,
+                !source_y.is_multiple_of(2),
+            );
+            let cr = upsample_h2v2_12bit_at(
+                extended12_plane_row(&planes[2], prev_y),
+                extended12_plane_row(&planes[2], chroma_y),
+                extended12_plane_row(&planes[2], next_y),
+                source_x,
+                !source_y.is_multiple_of(2),
+            );
+            let (r, g, b) = crate::color::ycbcr::ycbcr12_to_rgb16(y, cb, cr);
+            let dst_col = (output_x - output_rect.x) as usize;
+            let dst_start = dst_row * stride + dst_col * 6;
+            let dst = &mut out[dst_start..dst_start + 6];
+            dst[0..2].copy_from_slice(&r.to_le_bytes());
+            dst[2..4].copy_from_slice(&g.to_le_bytes());
+            dst[4..6].copy_from_slice(&b.to_le_bytes());
+        }
+    }
+}
+
+fn extended12_plane_row(plane: &Extended12Plane, y: usize) -> &[u16] {
+    let row_start = y * plane.stride;
+    &plane.pixels[row_start..row_start + plane.width]
+}
+
 fn upsample_h2v1_12bit_at(row: &[u16], output_x: usize) -> u16 {
     debug_assert!(!row.is_empty());
     if row.len() == 1 {
@@ -3183,6 +3326,38 @@ fn upsample_h2v1_12bit_at(row: &[u16], output_x: usize) -> u16 {
         ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u16
     } else {
         ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u16
+    }
+}
+
+fn upsample_h2v2_12bit_at(
+    prev: &[u16],
+    curr: &[u16],
+    next: &[u16],
+    output_x: usize,
+    output_is_bottom: bool,
+) -> u16 {
+    debug_assert!(!curr.is_empty());
+    debug_assert_eq!(prev.len(), curr.len());
+    debug_assert_eq!(next.len(), curr.len());
+    let near = if output_is_bottom { next } else { prev };
+    let colsum = |index: usize| 3 * u32::from(curr[index]) + u32::from(near[index]);
+    if curr.len() == 1 {
+        return ((4 * colsum(0) + 8) >> 4) as u16;
+    }
+
+    let sample = output_x / 2;
+    let this = colsum(sample);
+    match output_x {
+        0 => ((this * 4 + 8) >> 4) as u16,
+        _ if output_x == curr.len() * 2 - 1 => ((this * 4 + 7) >> 4) as u16,
+        _ if output_x.is_multiple_of(2) => {
+            let last = colsum(sample - 1);
+            ((this * 3 + last + 8) >> 4) as u16
+        }
+        _ => {
+            let next = colsum(sample + 1);
+            ((this * 3 + next + 7) >> 4) as u16
+        }
     }
 }
 
@@ -4537,12 +4712,13 @@ mod tests {
     }
 
     #[test]
-    fn decode_into_rejects_subsampled_extended12_ycbcr_with_not_implemented() {
+    fn decode_into_rejects_unsupported_extended12_ycbcr_sampling_with_not_implemented() {
         let mut bytes = minimal_baseline_jpeg();
         let p = bytes.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
         bytes[p + 1] = 0xC1;
         bytes[p + 4] = 12;
-        let dec = Decoder::new(&bytes).expect("subsampled Extended12 YCbCr metadata should parse");
+        bytes[p + 11] = (1 << 4) | 2;
+        let dec = Decoder::new(&bytes).expect("unsupported Extended12 YCbCr sampling should parse");
         let stride = dec.info().dimensions.0 as usize * PixelFormat::Rgb16.bytes_per_pixel();
         let mut out = vec![0u8; stride * dec.info().dimensions.1 as usize];
 

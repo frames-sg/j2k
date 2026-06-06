@@ -176,14 +176,22 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
+                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                    if info.sampling.len() == 3
+                        && info.sampling.max_h == 2
+                        && info.sampling.max_v == 2
+                        && matches!(info.sampling.components(), [(2, 2), (1, 1), (1, 1)]) =>
+                {
+                    JpegBackendEligibility::eligible()
+                }
                 (ColorSpace::YCbCr, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended YCbCr decode currently supports 4:4:4 or 4:2:2 sampling only",
+                    "JPEG CPU 12-bit extended YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
                 ),
                 (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit extended RGB decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2 Rgb16 only",
+                    "JPEG CPU 12-bit extended decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16 only",
                 ),
             };
         }
@@ -214,14 +222,22 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 {
                     JpegBackendEligibility::eligible()
                 }
+                (ColorSpace::YCbCr, PixelFormat::Rgb16)
+                    if info.sampling.len() == 3
+                        && info.sampling.max_h == 2
+                        && info.sampling.max_v == 2
+                        && matches!(info.sampling.components(), [(2, 2), (1, 1), (1, 1)]) =>
+                {
+                    JpegBackendEligibility::eligible()
+                }
                 (ColorSpace::YCbCr, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit progressive YCbCr decode currently supports 4:4:4 or 4:2:2 sampling only",
+                    "JPEG CPU 12-bit progressive YCbCr decode currently supports 4:4:4, 4:2:2, or 4:2:0 sampling only",
                 ),
                 (ColorSpace::Rgb, PixelFormat::Rgb16) => JpegBackendEligibility::rejected(
                     "JPEG CPU 12-bit progressive RGB decode currently supports 4:4:4 sampling only",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2 Rgb16 only",
+                    "JPEG CPU 12-bit progressive decode currently supports grayscale Gray16/Rgb16, APP14 RGB 4:4:4 Rgb16, or YCbCr 4:4:4/4:2:2/4:2:0 Rgb16 only",
                 ),
             };
         }
