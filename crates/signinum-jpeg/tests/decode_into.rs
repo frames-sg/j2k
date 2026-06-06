@@ -287,6 +287,91 @@ fn decode_progressive8_rgb8_matches_jpeg_decoder_reference() {
 }
 
 #[test]
+fn decode_region_into_rgb8_crops_progressive8_pixels() {
+    let bytes = progressive_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("progressive 8-bit JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * 3;
+    let mut full = vec![0u8; stride * h as usize];
+    dec.decode_into(&mut full, stride, PixelFormat::Rgb8)
+        .expect("full progressive decode must succeed");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 5,
+        h: 4,
+    };
+    let mut actual = vec![0u8; roi.w as usize * roi.h as usize * 3];
+
+    let outcome = dec
+        .decode_region_into(&mut actual, roi.w as usize * 3, PixelFormat::Rgb8, roi)
+        .expect("progressive ROI decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    assert_eq!(actual, crop_rgb(&full, w, roi));
+}
+
+#[test]
+fn decode_scaled_into_rgb8_projects_progressive8_pixels() {
+    let bytes = progressive_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("progressive 8-bit JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * 3;
+    let mut full = vec![0u8; stride * h as usize];
+    dec.decode_into(&mut full, stride, PixelFormat::Rgb8)
+        .expect("full progressive decode must succeed");
+    let scale = Downscale::Half;
+    let scaled_w = w.div_ceil(2);
+    let scaled_h = h.div_ceil(2);
+    let scaled_rect = Rect {
+        x: 0,
+        y: 0,
+        w: scaled_w,
+        h: scaled_h,
+    };
+    let mut actual = vec![0u8; scaled_w as usize * scaled_h as usize * 3];
+
+    let outcome = dec
+        .decode_scaled_into(&mut actual, scaled_w as usize * 3, PixelFormat::Rgb8, scale)
+        .expect("progressive scaled decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(actual, project_scaled_rgb(&full, w, h, scaled_rect, 2));
+}
+
+#[test]
+fn decode_region_scaled_into_rgb8_projects_progressive8_pixels() {
+    let bytes = progressive_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("progressive 8-bit JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * 3;
+    let mut full = vec![0u8; stride * h as usize];
+    dec.decode_into(&mut full, stride, PixelFormat::Rgb8)
+        .expect("full progressive decode must succeed");
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let mut actual = vec![0u8; scaled_roi.w as usize * scaled_roi.h as usize * 3];
+
+    let outcome = dec
+        .decode_region_scaled_into(
+            &mut actual,
+            scaled_roi.w as usize * 3,
+            PixelFormat::Rgb8,
+            roi,
+            Downscale::Half,
+        )
+        .expect("progressive region-scaled decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    assert_eq!(actual, project_scaled_rgb(&full, w, h, scaled_roi, 2));
+}
+
+#[test]
 fn decode_region_into_rgb8_crops_constant_app14_rgb_pixels() {
     let bytes = rgb_app14_8x8_jpeg();
     let dec = Decoder::new(&bytes).unwrap();
@@ -306,6 +391,47 @@ fn decode_region_into_rgb8_crops_constant_app14_rgb_pixels() {
         expected.extend_from_slice(&[200, 20, 10]);
     }
     assert_eq!(buf, expected);
+}
+
+fn crop_rgb(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(roi.w as usize * roi.h as usize * 3);
+    for y in roi.y..roi.y + roi.h {
+        let row = y as usize * width as usize * 3;
+        let start = row + roi.x as usize * 3;
+        let end = start + roi.w as usize * 3;
+        out.extend_from_slice(&full[start..end]);
+    }
+    out
+}
+
+fn project_scaled_rgb(
+    full: &[u8],
+    width: u32,
+    height: u32,
+    output_rect: Rect,
+    denom: u32,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(output_rect.w as usize * output_rect.h as usize * 3);
+    for sy in output_rect.y..output_rect.y + output_rect.h {
+        let src_y = (sy * denom).min(height - 1);
+        for sx in output_rect.x..output_rect.x + output_rect.w {
+            let src_x = (sx * denom).min(width - 1);
+            let offset = (src_y as usize * width as usize + src_x as usize) * 3;
+            out.extend_from_slice(&full[offset..offset + 3]);
+        }
+    }
+    out
+}
+
+fn scaled_rect_covering_for_test(rect: Rect, denom: u32) -> Rect {
+    let x1 = (rect.x + rect.w).div_ceil(denom);
+    let y1 = (rect.y + rect.h).div_ceil(denom);
+    Rect {
+        x: rect.x / denom,
+        y: rect.y / denom,
+        w: x1 - rect.x / denom,
+        h: y1 - rect.y / denom,
+    }
 }
 
 #[test]

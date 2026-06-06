@@ -113,7 +113,7 @@ fn capability_report_marks_cmyk_and_ycck_cpu_rgb8_eligible() {
 }
 
 #[test]
-fn capability_report_rejects_progressive_roi_and_scaled_cpu_until_parity_lands() {
+fn capability_report_marks_progressive_roi_and_scaled_cpu_eligible() {
     let input = progressive_8x8_jpeg();
     let full = JpegCapabilityReport::inspect(
         &input,
@@ -142,12 +142,7 @@ fn capability_report_rejects_progressive_roi_and_scaled_cpu_until_parity_lands()
 
     assert_eq!(full.info.sof_kind, SofKind::Progressive8);
     assert!(full.cpu.eligible);
-    assert!(!roi_scaled.cpu.eligible);
-    assert!(roi_scaled
-        .cpu
-        .reason
-        .expect("progressive ROI/scaled rejection")
-        .contains("full-image unscaled"));
+    assert!(roi_scaled.cpu.eligible);
     assert!(!roi_scaled.owned_cuda.eligible);
     assert!(!roi_scaled.metal_fast.eligible);
 }

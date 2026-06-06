@@ -21,7 +21,8 @@ unsupported errors until a separate entropy and conformance plan exists.
 - initial 8-bit sequential CMYK/YCCK CPU conversion to `Rgb8`/`Rgba8`
 - ROI, scaled, region-scaled, tile-batch, batch-session, and reusable host
   output paths for sequential WSI-shaped work
-- progressive 8-bit full-image CPU decode
+- progressive 8-bit full-image, ROI, scaled, and region-scaled CPU decode via
+  full progressive coefficient assembly and output projection
 - parser metadata for 12-bit extended/progressive and lossless SOF3, with
   decode still returning `NotImplemented`
 
@@ -62,8 +63,8 @@ Required work:
 - Update support docs to state current JPEG limits and link to this roadmap.
 - Add or extend capability tests for current support and rejection reasons:
   initial CMYK/YCCK CPU support, `Extended12`, `Progressive12`, `Lossless`,
-  progressive ROI/scaled, arithmetic SOFs, hierarchical SOFs, and differential
-  SOFs.
+  progressive ROI/scaled CPU support, arithmetic SOFs, hierarchical SOFs, and
+  differential SOFs.
 - Build or import small conformance fixtures for A/B/C:
   - CMYK baseline and YCCK baseline
   - progressive 8-bit with ROI/scaled reference output
@@ -124,14 +125,22 @@ access patterns.
 Implementation requirements:
 
 - Reuse existing progressive coefficient assembly as the correctness path.
+  Status: landed for 8-bit progressive RGB8 output.
 - Add ROI, scaled, and region-scaled output from assembled progressive
   coefficients.
+  Status: landed as output projection after full progressive coefficient
+  assembly; this is not entropy-stage ROI skipping or reduced-IDCT scaling.
 - Avoid pretending the entropy stage is ROI-skip capable unless restart or scan
   structure makes that demonstrably correct.
+  Status: current implementation decodes the full progressive entropy stream.
 - Add batch-session coverage for progressive inputs where output jobs are
   independent.
+  Status: landed for scaled and region-scaled session jobs against single-tile
+  decode.
 - Expose capability metadata so higher layers know progressive ROI/scaled is
   CPU-supported but not yet Metal-resident.
+  Status: landed for supported 8-bit progressive RGB8 CPU shapes while Metal
+  remains rejected until a measured resident path is implemented.
 
 Metal follow-up candidate:
 
@@ -142,7 +151,8 @@ Metal follow-up candidate:
 
 Exit criteria:
 
-- Progressive full, ROI, scaled, and region-scaled CPU output match the oracle.
+- Progressive full, ROI, scaled, and region-scaled CPU output match the oracle
+  for committed fixtures.
 - Existing progressive full-image tests still pass.
 
 ## Phase B1: 12-Bit Extended Sequential CPU Decode

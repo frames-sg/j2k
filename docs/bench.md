@@ -707,10 +707,12 @@ Current v1 scope is explicit:
 - JPEG: selected 8-bit YCbCr sequential RGB8 WSI tile shapes can run Metal
   kernel paths for full, region, scaled, region+scaled, and batched
   device-output decode; compatible queued region+scaled requests use a real
-  `BatchOp::RegionScaled` path. Initial CMYK/YCCK support is CPU-backed;
-  expanded four-component coverage, progressive ROI/scaled, 12-bit, and
-  lossless SOF3 stay CPU-backed or structured unsupported until CPU parity and
-  benchmark-approved resident Metal wins land. The coalesced benchmark
+  `BatchOp::RegionScaled` path. Initial CMYK/YCCK support is CPU-backed, and
+  progressive 8-bit ROI/scaled support is CPU-backed through full coefficient
+  assembly plus output projection. Expanded four-component coverage, 12-bit,
+  and lossless SOF3 stay structured unsupported until CPU parity lands; all
+  new Metal routes stay disabled until benchmark-approved resident wins land.
+  The coalesced benchmark
   intentionally queues 64 identical requests and can collapse them to one
   immutable Metal surface; the distinct benchmark queues 64 different JPEG byte
   streams so it measures cold-pan batch throughput instead of duplicate-input

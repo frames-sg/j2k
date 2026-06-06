@@ -279,7 +279,7 @@ impl<'a> Decoder<'a> {
     /// # Errors
     /// - Any parse error encountered before SOS (see [`Self::inspect`]).
     /// - [`JpegError::NotImplemented`] for SOFs that parse but are not yet
-    ///   decodable (Extended12, Progressive12, Lossless — all land in M3).
+    ///   decodable (Extended12, Progressive12, Lossless).
     /// - [`JpegError::MissingHuffmanTable`] if the scan references a DC/AC
     ///   table slot that was never defined by a DHT segment.
     pub fn new(input: &'a [u8]) -> Result<Self, JpegError> {
@@ -1063,6 +1063,7 @@ impl<'a> Decoder<'a> {
             OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => {
                 if fmt == OutputFormat::Rgb8
                     && downscale == DownscaleFactor::Full
+                    && self.progressive_plan.is_none()
                     && self.plan.matches_fast_tile_shape()
                 {
                     let mut writer = Rgb8Writer::new(out, stride, scaled_roi.w);
@@ -1085,6 +1086,7 @@ impl<'a> Decoder<'a> {
                         warnings: merged_warnings(&self.warnings, scan_warnings),
                     })
                 } else if matches!(fmt, OutputFormat::Rgb8Scaled { .. })
+                    && self.progressive_plan.is_none()
                     && self.plan.matches_fast_tile_shape()
                 {
                     let mut writer = Rgb8Writer::new(out, stride, scaled_roi.w);
@@ -1664,6 +1666,9 @@ impl Decoder<'_> {
         downscale: DownscaleFactor,
         output_rect: Rect,
     ) -> (u32, u32) {
+        if self.progressive_plan.is_some() {
+            return (0, scaled_dimensions(self.info.dimensions, downscale).0);
+        }
         let layout = stripe_region_layout(&self.plan, downscale, output_rect);
         (layout.source_x0, layout.source_width)
     }
@@ -1678,13 +1683,14 @@ impl Decoder<'_> {
         let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
         let profile_enabled = jpeg_profile_stages_enabled();
         if let Some(plan) = &self.progressive_plan {
-            if downscale != DownscaleFactor::Full || decoded != Rect::full(self.info.dimensions) {
-                return Err(JpegError::NotImplemented {
-                    sof: self.info.sof_kind,
-                });
-            }
             let scan_start = profile_enabled.then(Instant::now);
-            let scan_warnings = decode_progressive(plan, self.backend, self.bytes, writer)?;
+            let scan_warnings = if downscale == DownscaleFactor::Full {
+                decode_progressive(plan, self.backend, self.bytes, writer)?
+            } else {
+                let mut scaled =
+                    ProgressiveDownscaleWriter::new(writer, downscale, self.info.dimensions);
+                decode_progressive(plan, self.backend, self.bytes, &mut scaled)?
+            };
             if let Some(start) = scan_start {
                 emit_decode_scan_profile(
                     "progressive",
@@ -1736,13 +1742,14 @@ impl Decoder<'_> {
         let _ = self.decode_scratch_bytes(DEFAULT_MAX_DECODE_BYTES)?;
         let profile_enabled = jpeg_profile_stages_enabled();
         if let Some(plan) = &self.progressive_plan {
-            if downscale != DownscaleFactor::Full || decoded != Rect::full(self.info.dimensions) {
-                return Err(JpegError::NotImplemented {
-                    sof: self.info.sof_kind,
-                });
-            }
             let scan_start = profile_enabled.then(Instant::now);
-            let scan_warnings = decode_progressive(plan, self.backend, self.bytes, writer)?;
+            let scan_warnings = if downscale == DownscaleFactor::Full {
+                decode_progressive(plan, self.backend, self.bytes, writer)?
+            } else {
+                let mut scaled =
+                    ProgressiveDownscaleWriter::new(writer, downscale, self.info.dimensions);
+                decode_progressive(plan, self.backend, self.bytes, &mut scaled)?
+            };
             if let Some(start) = scan_start {
                 emit_decode_scan_profile(
                     "progressive_rgb",
@@ -2272,6 +2279,88 @@ struct CroppedWriter<W> {
     source_width: u32,
     top_row: Vec<u8>,
     bottom_row: Vec<u8>,
+}
+
+struct ProgressiveDownscaleWriter<'a, W> {
+    inner: &'a mut W,
+    denom: u32,
+    scaled_width: usize,
+    r: Vec<u8>,
+    g: Vec<u8>,
+    b: Vec<u8>,
+}
+
+impl<'a, W> ProgressiveDownscaleWriter<'a, W> {
+    fn new(inner: &'a mut W, downscale: DownscaleFactor, dimensions: (u32, u32)) -> Self {
+        let denom = downscale.denominator();
+        let scaled_width = dimensions.0.div_ceil(denom) as usize;
+        Self {
+            inner,
+            denom,
+            scaled_width,
+            r: Vec::new(),
+            g: Vec::new(),
+            b: Vec::new(),
+        }
+    }
+
+    fn should_emit(&self, y: u32) -> bool {
+        y.is_multiple_of(self.denom)
+    }
+
+    fn sample_row(src: &[u8], denom: u32, width: usize, dst: &mut Vec<u8>) {
+        dst.resize(width, 0);
+        for (x, out) in dst.iter_mut().enumerate() {
+            let src_x = (x as u32)
+                .saturating_mul(denom)
+                .min(src.len().saturating_sub(1) as u32);
+            *out = src[src_x as usize];
+        }
+    }
+}
+
+impl<W: OutputWriter> OutputWriter for ProgressiveDownscaleWriter<'_, W> {
+    fn write_rgb_row(
+        &mut self,
+        y: u32,
+        r_row: &[u8],
+        g_row: &[u8],
+        b_row: &[u8],
+    ) -> Result<(), JpegError> {
+        if !self.should_emit(y) {
+            return Ok(());
+        }
+        Self::sample_row(r_row, self.denom, self.scaled_width, &mut self.r);
+        Self::sample_row(g_row, self.denom, self.scaled_width, &mut self.g);
+        Self::sample_row(b_row, self.denom, self.scaled_width, &mut self.b);
+        self.inner
+            .write_rgb_row(y / self.denom, &self.r, &self.g, &self.b)
+    }
+
+    fn write_ycbcr_row(
+        &mut self,
+        y: u32,
+        y_row: &[u8],
+        cb_row: &[u8],
+        cr_row: &[u8],
+    ) -> Result<(), JpegError> {
+        if !self.should_emit(y) {
+            return Ok(());
+        }
+        Self::sample_row(y_row, self.denom, self.scaled_width, &mut self.r);
+        Self::sample_row(cb_row, self.denom, self.scaled_width, &mut self.g);
+        Self::sample_row(cr_row, self.denom, self.scaled_width, &mut self.b);
+        self.inner
+            .write_ycbcr_row(y / self.denom, &self.r, &self.g, &self.b)
+    }
+
+    fn write_gray_row(&mut self, y: u32, gray_row: &[u8]) -> Result<(), JpegError> {
+        if !self.should_emit(y) {
+            return Ok(());
+        }
+        Self::sample_row(gray_row, self.denom, self.scaled_width, &mut self.r);
+        self.inner.write_gray_row(y / self.denom, &self.r)
+    }
 }
 
 struct ComponentWriterAdapter<'a, W> {

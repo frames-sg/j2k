@@ -156,11 +156,6 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                 "JPEG CPU decode does not yet support lossless SOF3 JPEG",
             )
         }
-        SofKind::Progressive8 if !is_full_image_unscaled_op(info, request.op) => {
-            return JpegBackendEligibility::rejected(
-                "JPEG CPU progressive decode currently supports full-image unscaled output only",
-            )
-        }
         SofKind::Baseline8 | SofKind::Extended8 | SofKind::Progressive8 => {}
     }
 
@@ -291,18 +286,5 @@ fn unavailable_device_summary(info: &Info) -> DeviceBatchSummary {
         matches_fast_420: false,
         matches_fast_422: false,
         matches_fast_444: false,
-    }
-}
-
-fn is_full_image_unscaled_op(info: &Info, op: JpegDecodeOp) -> bool {
-    match op {
-        JpegDecodeOp::Full => true,
-        JpegDecodeOp::Scaled(Downscale::None) => true,
-        JpegDecodeOp::Region(rect) => rect == Rect::full(info.dimensions),
-        JpegDecodeOp::RegionScaled {
-            roi,
-            scale: Downscale::None,
-        } => roi == Rect::full(info.dimensions),
-        JpegDecodeOp::Scaled(_) | JpegDecodeOp::RegionScaled { .. } => false,
     }
 }

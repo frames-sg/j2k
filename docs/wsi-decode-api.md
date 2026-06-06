@@ -34,11 +34,11 @@ Common shapes:
   resolution grid.
 
 These are API shapes, not universal JPEG coverage claims. Current JPEG CPU
-ROI/scaled/tile-batch support is for supported 8-bit baseline or extended
-sequential inputs, while progressive 8-bit is currently full-image/full-scale
-only. Initial 8-bit sequential CMYK/YCCK CPU conversion to RGB/RGBA is
-available, while expanded four-component fixture coverage, progressive
-ROI/scaled, 12-bit extended/progressive, and lossless SOF3 remain structured
+ROI/scaled/tile-batch support covers supported 8-bit baseline or extended
+sequential inputs, plus progressive 8-bit full/ROI/scaled/region-scaled output
+from full progressive coefficient assembly. Initial 8-bit sequential CMYK/YCCK
+CPU conversion to RGB/RGBA is available, while expanded four-component fixture
+coverage, 12-bit extended/progressive, and lossless SOF3 remain structured
 unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 
@@ -164,9 +164,8 @@ For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
-CMYK/YCCK coverage, progressive ROI/scaled, 12-bit extended/progressive, and
-lossless SOF3 CPU parity must land before any Metal acceleration for those
-classes is promoted.
+CMYK/YCCK coverage, 12-bit extended/progressive, and lossless SOF3 CPU parity
+must land before any Metal acceleration for those classes is promoted.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable

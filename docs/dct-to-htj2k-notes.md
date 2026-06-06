@@ -33,8 +33,8 @@ JPEG bytes
   expose final quantized/dequantized DCT blocks to the same transcode path as
   baseline JPEG. No progressive IDCT, RGB conversion, or chroma upsample is
   performed before HTJ2K wavelet generation. This is coefficient-domain
-  transcode behavior only; it does not imply progressive ROI/scaled pixel
-  decode support.
+  transcode behavior only; progressive ROI/scaled pixel decode is handled by
+  the normal `signinum-jpeg` output path, not by this transcode path.
 - The corpus report aggregates integer-reference coefficient metrics:
   sample count, exact-match count, maximum absolute error, and absolute-error
   histogram buckets. Aggregate and per-fixture reports now also carry the same
