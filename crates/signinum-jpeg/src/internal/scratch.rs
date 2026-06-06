@@ -90,6 +90,8 @@ pub struct ScratchPool {
     pub(crate) ycbcr_420_rows: YCbCr420Rows,
     pub(crate) ycbcr_generic_rows: YCbCrGenericRows,
     pub(crate) rgb_generic_rows: RgbGenericRows,
+    pub(crate) lossless_prev_row: Vec<u8>,
+    pub(crate) lossless_curr_row: Vec<u8>,
     sink_rows: SinkRows,
 }
 
@@ -171,6 +173,8 @@ impl CoreScratchPool for ScratchPool {
             .saturating_add(vec_bytes(&self.rgb_generic_rows.g))
             .saturating_add(vec_bytes(&self.rgb_generic_rows.b))
             .saturating_add(vec_bytes(&self.rgb_generic_rows.k))
+            .saturating_add(vec_bytes(&self.lossless_prev_row))
+            .saturating_add(vec_bytes(&self.lossless_curr_row))
             .saturating_add(vec_bytes(&self.sink_rows.top_row))
             .saturating_add(vec_bytes(&self.sink_rows.bottom_row));
         total
@@ -199,6 +203,8 @@ impl CoreScratchPool for ScratchPool {
         self.rgb_generic_rows.g.clear();
         self.rgb_generic_rows.b.clear();
         self.rgb_generic_rows.k.clear();
+        self.lossless_prev_row.clear();
+        self.lossless_curr_row.clear();
         self.sink_rows.top_row.clear();
         self.sink_rows.bottom_row.clear();
     }

@@ -717,10 +717,11 @@ Current v1 scope is explicit:
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled output and 8-bit APP14 RGB `Rgb8`
   output for predictors 1-7 are CPU-backed, including restart-coded grayscale
-  and APP14 RGB streams. Expanded four-component subsampled/malformed
+  and APP14 RGB streams; 8-bit SOF3 grayscale/RGB row streaming is also
+  CPU-backed. Expanded four-component subsampled/malformed
   coverage, other 12-bit
   subsampled color support, stronger non-constant 12-bit oracle fixtures, and
-  broader SOF3 YCbCr/16-bit color and row support stay structured
+  broader SOF3 YCbCr/16-bit color plus 16-bit row support stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
   The coalesced benchmark

@@ -21,7 +21,7 @@ on a single visual smoke test.
   4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` coverage have landed, but
   expanded four-component subsampled/malformed fixtures, other 12-bit subsampled color output,
   stronger non-constant 12-bit oracle fixtures, and broader lossless SOF3
-  YCbCr/16-bit color and row support must land CPU parity fixtures and
+  YCbCr/16-bit color plus 16-bit row support must land CPU parity fixtures and
   reference outputs before any Metal route is promoted.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a

@@ -260,10 +260,11 @@ assembly followed by output projection. Initial 12-bit extended sequential
 and progressive grayscale full-image/ROI/scaled/region-scaled decode writes
 native `Gray16` samples or expanded `Rgb16` samples; initial 12-bit APP14 RGB
 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled
-decode writes native `Rgb16` samples. Expanded four-component coverage,
+decode writes native `Rgb16` samples. Initial SOF3 8-bit grayscale/RGB row
+streaming has landed. Expanded four-component subsampled/malformed coverage,
 other 12-bit subsampled color support, stronger non-constant 12-bit oracle
-fixtures, and broader lossless SOF3 YCbCr/16-bit color and row support remain separate
-CPU parity work.
+fixtures, and broader lossless SOF3 YCbCr/16-bit color plus 16-bit row support
+remain separate CPU parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
 full-image/ROI/scaled/region-scaled decode for predictors 1-7, including
 restart-coded grayscale streams, plus 8-bit APP14 RGB `Rgb8` decode for
@@ -484,7 +485,7 @@ provisional and check the most recent commits before relying on it.
   12-bit APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` decode have
   landed, while expanded four-component subsampled/malformed coverage, other 12-bit subsampled
   color support, stronger non-constant 12-bit oracle fixtures, and broader
-  lossless SOF3 YCbCr/16-bit color and row support remain active parity work.
+  lossless SOF3 YCbCr/16-bit color plus 16-bit row support remain active parity work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled decode for predictors 1-7, including

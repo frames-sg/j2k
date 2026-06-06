@@ -9,7 +9,10 @@ use signinum_jpeg::{
 
 mod fixtures;
 use fixtures::{
-    cmyk_8x8_jpeg, grayscale_8x8_jpeg, minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg, ycck_8x8_jpeg,
+    cmyk_8x8_jpeg, grayscale_8x8_jpeg, lossless_predictor_grayscale_3x3_jpeg,
+    lossless_predictor_rgb_3x3_jpeg, lossless_restart_predictor_grayscale_3x3_jpeg,
+    lossless_restart_predictor_rgb_3x3_jpeg, minimal_baseline_420_jpeg, rgb_app14_8x8_jpeg,
+    ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 
 #[derive(Default)]
@@ -203,6 +206,49 @@ fn decode_rows_matches_decode_into_rgb8_for_cmyk_and_ycck() {
 }
 
 #[test]
+fn decode_rows_expands_lossless_gray8_common_predictors() {
+    let expected = expand_gray_to_rgb(&LOSSLESS_GRAYSCALE_3X3_PIXELS);
+    for predictor in 1..=7 {
+        for bytes in [
+            lossless_predictor_grayscale_3x3_jpeg(predictor),
+            lossless_restart_predictor_grayscale_3x3_jpeg(predictor),
+        ] {
+            let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+                panic!("SOF3 grayscale predictor-{predictor} decoder must construct: {err}")
+            });
+            let mut sink = CollectRows::default();
+
+            dec.decode_rows(&mut sink).unwrap_or_else(|err| {
+                panic!("SOF3 grayscale predictor-{predictor} decode_rows must succeed: {err}")
+            });
+
+            assert_eq!(flatten_rows(&sink.rows, 3 * 3), expected);
+        }
+    }
+}
+
+#[test]
+fn decode_rows_matches_lossless_app14_rgb_common_predictors() {
+    for predictor in 1..=7 {
+        for bytes in [
+            lossless_predictor_rgb_3x3_jpeg(predictor),
+            lossless_restart_predictor_rgb_3x3_jpeg(predictor),
+        ] {
+            let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+                panic!("SOF3 APP14 RGB predictor-{predictor} decoder must construct: {err}")
+            });
+            let mut sink = CollectRows::default();
+
+            dec.decode_rows(&mut sink).unwrap_or_else(|err| {
+                panic!("SOF3 APP14 RGB predictor-{predictor} decode_rows must succeed: {err}")
+            });
+
+            assert_eq!(flatten_rows(&sink.rows, 3 * 3), LOSSLESS_RGB_3X3_PIXELS);
+        }
+    }
+}
+
+#[test]
 fn decode_rows_matches_decode_into_rgb8_for_restart_coded_grayscale_wsi_shape() {
     let bytes = restart_coded_grayscale_jpeg(24, 24);
     let dec = Decoder::new(&bytes).expect("restart-coded grayscale fixture must parse");
@@ -226,6 +272,24 @@ fn decode_rows_matches_decode_into_rgb8_for_restart_coded_grayscale_wsi_shape() 
             &expected[row_idx * stride..(row_idx + 1) * stride]
         );
     }
+}
+
+fn flatten_rows(rows: &[(u32, Vec<u8>)], stride: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rows.len() * stride);
+    for (row_idx, (y, row)) in rows.iter().enumerate() {
+        assert_eq!(*y as usize, row_idx);
+        assert_eq!(row.len(), stride);
+        out.extend_from_slice(row);
+    }
+    out
+}
+
+fn expand_gray_to_rgb(gray: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(gray.len() * 3);
+    for &sample in gray {
+        out.extend_from_slice(&[sample, sample, sample]);
+    }
+    out
 }
 
 #[test]
