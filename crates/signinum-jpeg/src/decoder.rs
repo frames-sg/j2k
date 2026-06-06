@@ -1135,8 +1135,9 @@ impl<'a> Decoder<'a> {
 
     /// Decode the full image into rows delivered to `sink`.
     ///
-    /// DCT-backed and 8-bit lossless paths emit interleaved RGB8 rows. Lossless
-    /// 16-bit grayscale SOF3 emits little-endian Gray16 rows.
+    /// DCT-backed and 8-bit lossless color paths emit interleaved RGB8 rows.
+    /// Lossless 16-bit grayscale SOF3 emits little-endian Gray16 rows, and
+    /// supported lossless 16-bit color SOF3 emits little-endian Rgb16 rows.
     pub fn decode_rows<S>(&self, sink: &mut S) -> Result<DecodeOutcome, JpegError>
     where
         S: RowSink<u8, Error = JpegError>,
@@ -1208,11 +1209,45 @@ impl<'a> Decoder<'a> {
                 &mut pool.lossless_prev_row,
                 &mut pool.lossless_curr_row,
             ),
-            (ColorSpace::Rgb, 8) => self.decode_lossless_rgb8_rows(
+            (ColorSpace::Rgb, 8) => self.decode_lossless_color8_rows(
                 sink,
                 &mut pool.lossless_prev_row,
                 &mut pool.lossless_curr_row,
+                None,
+                ColorSpace::Rgb,
             ),
+            (ColorSpace::YCbCr, 8) => {
+                let mut rows = pool.take_sink_rows(width);
+                let result = self.decode_lossless_color8_rows(
+                    sink,
+                    &mut pool.lossless_prev_row,
+                    &mut pool.lossless_curr_row,
+                    Some(&mut rows.top_row),
+                    ColorSpace::YCbCr,
+                );
+                pool.restore_sink_rows(rows);
+                result
+            }
+            (ColorSpace::Rgb, 16) => self.decode_lossless_color16_rows(
+                sink,
+                &mut pool.lossless_prev_row,
+                &mut pool.lossless_curr_row,
+                None,
+                ColorSpace::Rgb,
+            ),
+            (ColorSpace::YCbCr, 16) => {
+                let mut rows = pool.take_sink_rows(width);
+                rows.top_row.resize(width.saturating_mul(6), 0);
+                let result = self.decode_lossless_color16_rows(
+                    sink,
+                    &mut pool.lossless_prev_row,
+                    &mut pool.lossless_curr_row,
+                    Some(&mut rows.top_row),
+                    ColorSpace::YCbCr,
+                );
+                pool.restore_sink_rows(rows);
+                result
+            }
             (_, depth) if depth != 8 && depth != 16 => {
                 Err(JpegError::UnsupportedBitDepth { depth })
             }
@@ -2564,11 +2599,13 @@ impl Decoder<'_> {
         Ok(outcome)
     }
 
-    fn decode_lossless_rgb8_rows<S>(
+    fn decode_lossless_color8_rows<S>(
         &self,
         sink: &mut S,
         prev_row: &mut Vec<u8>,
         curr_row: &mut Vec<u8>,
+        conversion_row: Option<&mut [u8]>,
+        color_space: ColorSpace,
     ) -> Result<DecodeOutcome, JpegError>
     where
         S: RowSink<u8, Error = JpegError>,
@@ -2584,7 +2621,7 @@ impl Decoder<'_> {
                 depth: plan.bit_depth,
             });
         }
-        if self.info.color_space != ColorSpace::Rgb {
+        if self.info.color_space != color_space {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -2612,6 +2649,7 @@ impl Decoder<'_> {
         let total_pixels = plan.dimensions.0.saturating_mul(height);
         let mut pixels_since_restart = 0u32;
         let mut expected_rst = 0u8;
+        let mut conversion_row = conversion_row;
         for y in 0..height as usize {
             for x in 0..width {
                 let pixel_index = y as u32 * plan.dimensions.0 + x as u32;
@@ -2654,7 +2692,25 @@ impl Decoder<'_> {
                 }
                 pixels_since_restart += 1;
             }
-            sink.write_row(y as u32, &curr_row[..row_len])?;
+            let row = if color_space == ColorSpace::YCbCr {
+                let row = conversion_row
+                    .as_deref_mut()
+                    .ok_or(JpegError::OutputBufferTooSmall {
+                        required: row_len,
+                        provided: 0,
+                    })?;
+                if row.len() < row_len {
+                    return Err(JpegError::OutputBufferTooSmall {
+                        required: row_len,
+                        provided: row.len(),
+                    });
+                }
+                copy_ycbcr8_row_to_rgb8(&curr_row[..row_len], &mut row[..row_len]);
+                &row[..row_len]
+            } else {
+                &curr_row[..row_len]
+            };
+            sink.write_row(y as u32, row)?;
             core::mem::swap(prev_row, curr_row);
         }
 
@@ -2738,6 +2794,130 @@ impl Decoder<'_> {
                 samples_since_restart += 1;
             }
             sink.write_row(y as u32, &curr_row[..row_len])?;
+            core::mem::swap(prev_row, curr_row);
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
+    fn decode_lossless_color16_rows<S>(
+        &self,
+        sink: &mut S,
+        prev_row: &mut Vec<u8>,
+        curr_row: &mut Vec<u8>,
+        conversion_row: Option<&mut [u8]>,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError>
+    where
+        S: RowSink<u8, Error = JpegError>,
+    {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.bit_depth != 16 {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            });
+        }
+        if self.info.color_space != color_space {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if self.plan.components.len() != 3 {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: self.plan.components.len() as u8,
+            });
+        }
+        if !(1..=7).contains(&plan.predictor) {
+            return Err(JpegError::UnsupportedPredictor {
+                predictor: plan.predictor,
+            });
+        }
+
+        let (width, height) = plan.dimensions;
+        let width = width as usize;
+        let row_len = width.saturating_mul(6);
+        prev_row.resize(row_len, 0);
+        curr_row.resize(row_len, 0);
+
+        let scan_bytes = &self.bytes[plan.scan_offset..];
+        let mut br = BitReader::new(scan_bytes);
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let total_pixels = plan.dimensions.0.saturating_mul(height);
+        let mut pixels_since_restart = 0u32;
+        let mut expected_rst = 0u8;
+        let mut conversion_row = conversion_row;
+        for y in 0..height as usize {
+            for x in 0..width {
+                let pixel_index = y as u32 * plan.dimensions.0 + x as u32;
+                if restart > 0 && pixels_since_restart == restart {
+                    consume_lossless_restart(
+                        &mut br,
+                        pixel_index,
+                        total_pixels,
+                        &mut expected_rst,
+                    )?;
+                    pixels_since_restart = 0;
+                }
+                for component in &self.plan.components {
+                    if component.output_index >= 3 {
+                        return Err(JpegError::UnsupportedComponentCount {
+                            count: self.plan.components.len() as u8,
+                        });
+                    }
+                    let predictor = if restart > 0 && pixels_since_restart == 0 {
+                        32768
+                    } else {
+                        lossless_predictor_rgb16_rows(
+                            plan.predictor,
+                            curr_row,
+                            prev_row,
+                            x,
+                            y,
+                            component.output_index,
+                        )
+                    };
+                    let diff = component.dc_table.decode_fast_dc(&mut br)?;
+                    let sample = predictor + diff;
+                    if !(0..=u16::MAX as i32).contains(&sample) {
+                        return Err(JpegError::HuffmanDecode {
+                            mcu: 0,
+                            reason: HuffmanFailure::InvalidSymbol,
+                        });
+                    }
+                    let offset = x * 6 + component.output_index * 2;
+                    curr_row[offset..offset + 2].copy_from_slice(&(sample as u16).to_le_bytes());
+                }
+                pixels_since_restart += 1;
+            }
+
+            let row = if color_space == ColorSpace::YCbCr {
+                let row = conversion_row
+                    .as_deref_mut()
+                    .ok_or(JpegError::OutputBufferTooSmall {
+                        required: row_len,
+                        provided: 0,
+                    })?;
+                if row.len() < row_len {
+                    return Err(JpegError::OutputBufferTooSmall {
+                        required: row_len,
+                        provided: row.len(),
+                    });
+                }
+                copy_ycbcr16_row_to_rgb16(&curr_row[..row_len], &mut row[..row_len]);
+                &row[..row_len]
+            } else {
+                &curr_row[..row_len]
+            };
+            sink.write_row(y as u32, row)?;
             core::mem::swap(prev_row, curr_row);
         }
 
@@ -4666,6 +4846,40 @@ fn lossless_predictor_gray16_rows(
     }
 }
 
+fn lossless_predictor_rgb16_rows(
+    predictor: u8,
+    curr_row: &[u8],
+    prev_row: &[u8],
+    x: usize,
+    y: usize,
+    component: usize,
+) -> i32 {
+    let component_offset = component * 2;
+    if x == 0 && y == 0 {
+        return 32768;
+    }
+    if y == 0 {
+        return i32::from(read_gray16_sample(curr_row, (x - 1) * 6 + component_offset));
+    }
+    if x == 0 {
+        return i32::from(read_gray16_sample(prev_row, component_offset));
+    }
+
+    let ra = i32::from(read_gray16_sample(curr_row, (x - 1) * 6 + component_offset));
+    let rb = i32::from(read_gray16_sample(prev_row, x * 6 + component_offset));
+    let rc = i32::from(read_gray16_sample(prev_row, (x - 1) * 6 + component_offset));
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 32768,
+    }
+}
+
 fn lossless_predictor_value_u16(
     predictor: u8,
     out: &[u8],
@@ -4772,6 +4986,14 @@ fn convert_ycbcr8_to_rgb8_in_place(out: &mut [u8], stride: usize, dimensions: (u
     }
 }
 
+fn copy_ycbcr8_row_to_rgb8(src: &[u8], dst: &mut [u8]) {
+    debug_assert_eq!(src.len(), dst.len());
+    for (source, target) in src.chunks_exact(3).zip(dst.chunks_exact_mut(3)) {
+        let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(source[0], source[1], source[2]);
+        target.copy_from_slice(&[r, g, b]);
+    }
+}
+
 fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: (u32, u32)) {
     let (width, height) = dimensions;
     let row_bytes = width as usize * 6;
@@ -4786,6 +5008,19 @@ fn convert_ycbcr16_to_rgb16_in_place(out: &mut [u8], stride: usize, dimensions: 
             pixel[2..4].copy_from_slice(&g.to_le_bytes());
             pixel[4..6].copy_from_slice(&b.to_le_bytes());
         }
+    }
+}
+
+fn copy_ycbcr16_row_to_rgb16(src: &[u8], dst: &mut [u8]) {
+    debug_assert_eq!(src.len(), dst.len());
+    for (source, target) in src.chunks_exact(6).zip(dst.chunks_exact_mut(6)) {
+        let y = u16::from_le_bytes([source[0], source[1]]);
+        let cb = u16::from_le_bytes([source[2], source[3]]);
+        let cr = u16::from_le_bytes([source[4], source[5]]);
+        let (r, g, b) = crate::color::ycbcr::ycbcr16_to_rgb16(y, cb, cr);
+        target[0..2].copy_from_slice(&r.to_le_bytes());
+        target[2..4].copy_from_slice(&g.to_le_bytes());
+        target[4..6].copy_from_slice(&b.to_le_bytes());
     }
 }
 

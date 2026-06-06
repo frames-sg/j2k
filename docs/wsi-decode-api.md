@@ -56,8 +56,9 @@ grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
 predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16` for 16-bit
 streams, plus 8-bit and 16-bit YCbCr 4:4:4 predictors 1-7 decoded to
 `Rgb8`/`Rgb16`, including restart-coded APP14 RGB and YCbCr streams. The SOF3
-row path supports RGB8 rows for 8-bit grayscale/RGB streams and little-endian
-`Gray16` rows for 16-bit grayscale streams.
+row path supports RGB8 rows for 8-bit grayscale/RGB/YCbCr streams,
+little-endian `Gray16` rows for 16-bit grayscale streams, and little-endian
+`Rgb16` rows for 16-bit APP14 RGB/YCbCr streams.
 
 ROI coordinates are always expressed in source-image pixels. For
 `decode_region_scaled_into`, the output buffer covers the floor-start /

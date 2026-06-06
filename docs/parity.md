@@ -20,9 +20,10 @@ on a single visual smoke test.
   `Gray16`/`Rgb16` coverage, including restart-coded grayscale streams, initial
   12-bit progressive grayscale `Gray16`/`Rgb16` coverage, and initial 12-bit
   APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16` coverage, including
-  restart-coded color streams, have landed. Initial lossless SOF3 16-bit
-  grayscale row streaming, 16-bit APP14 RGB `Rgb16` output, and 8-bit plus
-  16-bit YCbCr 4:4:4 `Rgb8`/`Rgb16` output have also landed, but expanded
+  restart-coded color streams, have landed. Initial lossless SOF3 8-bit
+  grayscale/RGB/YCbCr row streaming, 16-bit grayscale row streaming, 16-bit
+  APP14 RGB `Rgb16` output/row streaming, and 8-bit plus 16-bit YCbCr 4:4:4
+  `Rgb8`/`Rgb16` output/row streaming have also landed, but expanded
   four-component subsampled/malformed fixtures, other 12-bit subsampled color
   output, stronger non-constant 12-bit oracle fixtures, and remaining lossless
   SOF3 16-bit color layouts must land CPU parity fixtures and reference
