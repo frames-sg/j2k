@@ -2185,6 +2185,46 @@ inline uint fast420_boundary_sample_base(uint record_index) {
     return record_index * 64u;
 }
 
+inline uint fast420_vertical_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast420_vertical_sample_base(uint record_index) {
+    return record_index * 64u;
+}
+
+inline uchar h2v2_sample_device_local(
+    device const uchar *near_row,
+    device const uchar *curr_row,
+    uint n,
+    uint x,
+    uint local_sample_base
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    const uint local_sample = sample - local_sample_base;
+    const uint this_sum = 3u * uint(curr_row[local_sample]) + uint(near_row[local_sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0u) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = 3u * uint(curr_row[local_sample - 1u])
+            + uint(near_row[local_sample - 1u]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[local_sample + 1u])
+        + uint(near_row[local_sample + 1u]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
 inline uchar h2v1_sample(
     device const uchar *row,
     uint n,
@@ -2805,6 +2845,8 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
     device uint *boundary_meta [[buffer(18)]],
     device uchar *boundary_samples [[buffer(19)]],
+    device uint *vertical_meta [[buffer(20)]],
+    device uchar *vertical_samples [[buffer(21)]],
     texture2d<float, access::write> out [[texture(0)]],
     uint gid [[thread_position_in_grid]]
 ) {
@@ -2824,6 +2866,11 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     boundary_meta[boundary_meta_base + 1u] = 0u;
     boundary_meta[boundary_meta_base + 2u] = 0u;
     boundary_meta[boundary_meta_base + 3u] = 0u;
+    const uint vertical_meta_base = fast420_vertical_meta_base(status_index);
+    vertical_meta[vertical_meta_base] = 0u;
+    vertical_meta[vertical_meta_base + 1u] = 0u;
+    vertical_meta[vertical_meta_base + 2u] = 0u;
+    vertical_meta[vertical_meta_base + 3u] = 0u;
 
     const uint checkpoint_base = params.tile_index * params.segment_count;
     const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
@@ -2862,6 +2909,11 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
     thread uchar prev_cb_pixels[64];
     thread uchar prev_cr_pixels[64];
     bool have_prev_horizontal = false;
+    thread uchar prev_vertical_y01_pixels[64];
+    thread uchar prev_vertical_y11_pixels[64];
+    thread uchar prev_vertical_cb_pixels[64];
+    thread uchar prev_vertical_cr_pixels[64];
+    bool have_prev_vertical = false;
 
     uint mx = 0u;
     uint my = 0u;
@@ -2931,7 +2983,11 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
         const uint copy_chroma_height = min(8u, params.chroma_height - min(chroma_y_base, params.chroma_height));
         const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
         const bool ends_mid_row = mcu_index + 1u >= end_mcu && mx + 1u < params.mcus_per_row;
+        const bool has_top_mcu = my > 0u;
+        const bool has_bottom_mcu = my + 1u < params.mcu_rows;
         const uint boundary_sample_base = fast420_boundary_sample_base(status_index);
+        const uint vertical_sample_base = fast420_vertical_sample_base(status_index);
+        const uint local_sample_base = mx * 8u;
         if (starts_mid_row) {
             boundary_meta[boundary_meta_base] = y_x;
             boundary_meta[boundary_meta_base + 1u] = y_y;
@@ -2956,6 +3012,93 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
             for (uint cy = 0u; cy < copy_chroma_height; ++cy) {
                 boundary_samples[boundary_sample_base + 48u + cy] = cb_pixels[cy * 8u + 7u];
                 boundary_samples[boundary_sample_base + 56u + cy] = cr_pixels[cy * 8u + 7u];
+            }
+        }
+        if (mcu_index == start_mcu && has_top_mcu) {
+            vertical_meta[vertical_meta_base] = y_x;
+            vertical_meta[vertical_meta_base + 1u] = y_y;
+            vertical_meta[vertical_meta_base + 2u] = 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                vertical_samples[vertical_sample_base + bx] = bx < 8u
+                    ? y00_pixels[bx]
+                    : y10_pixels[bx - 8u];
+            }
+            for (uint cx = 0u; cx < min(8u, params.chroma_width - min(mx * 8u, params.chroma_width)); ++cx) {
+                vertical_samples[vertical_sample_base + 16u + cx] = cb_pixels[cx];
+                vertical_samples[vertical_sample_base + 24u + cx] = cr_pixels[cx];
+            }
+        }
+        if (mcu_index + 1u >= end_mcu && has_bottom_mcu) {
+            vertical_meta[vertical_meta_base + 3u] = 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                vertical_samples[vertical_sample_base + 32u + bx] = bx < 8u
+                    ? y01_pixels[7u * 8u + bx]
+                    : y11_pixels[7u * 8u + (bx - 8u)];
+            }
+            for (uint cx = 0u; cx < min(8u, params.chroma_width - min(mx * 8u, params.chroma_width)); ++cx) {
+                vertical_samples[vertical_sample_base + 48u + cx] = cb_pixels[7u * 8u + cx];
+                vertical_samples[vertical_sample_base + 56u + cx] = cr_pixels[7u * 8u + cx];
+            }
+        }
+        if (have_prev_vertical && params.mcus_per_row == 1u && has_top_mcu) {
+            const uint top_y = y_y;
+            const uint bottom_y = y_y - 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint out_x = y_x + bx;
+                const uchar top_y_value = bx < 8u ? y00_pixels[bx] : y10_pixels[bx - 8u];
+                const uchar bottom_y_value = bx < 8u
+                    ? prev_vertical_y01_pixels[7u * 8u + bx]
+                    : prev_vertical_y11_pixels[7u * 8u + (bx - 8u)];
+                out.write(
+                    rgba_float_ycbcr(
+                        bottom_y_value,
+                        h2v2_sample_thread_local(
+                            cb_pixels,
+                            prev_vertical_cb_pixels + 7u * 8u,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            cb_pixels[0],
+                            prev_vertical_cb_pixels[7u * 8u]
+                        ),
+                        h2v2_sample_thread_local(
+                            cr_pixels,
+                            prev_vertical_cr_pixels + 7u * 8u,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            cr_pixels[0],
+                            prev_vertical_cr_pixels[7u * 8u]
+                        ),
+                        params.alpha
+                    ),
+                    uint2(out_x, bottom_y)
+                );
+                out.write(
+                    rgba_float_ycbcr(
+                        top_y_value,
+                        h2v2_sample_thread_local(
+                            prev_vertical_cb_pixels + 7u * 8u,
+                            cb_pixels,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            prev_vertical_cb_pixels[7u * 8u],
+                            cb_pixels[0]
+                        ),
+                        h2v2_sample_thread_local(
+                            prev_vertical_cr_pixels + 7u * 8u,
+                            cr_pixels,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            prev_vertical_cr_pixels[7u * 8u],
+                            cr_pixels[0]
+                        ),
+                        params.alpha
+                    ),
+                    uint2(out_x, top_y)
+                );
             }
         }
         if (have_prev_horizontal && mx > 0u) {
@@ -3003,11 +3146,16 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
             }
         }
 
-        const uint local_sample_base = mx * 8u;
         const bool has_right_mcu = mx + 1u < params.mcus_per_row;
         const uint last_chroma_x = params.chroma_width * 2u - 1u;
         for (uint by = 0u; by < copy_height; ++by) {
             const uint out_y = y_y + by;
+            if (has_top_mcu && by == 0u) {
+                continue;
+            }
+            if (has_bottom_mcu && by + 1u == copy_height) {
+                continue;
+            }
             const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
             const uint near_y = (out_y & 1u) == 0u
                 ? (chroma_y == 0u ? 0u : chroma_y - 1u)
@@ -3078,8 +3226,13 @@ kernel void jpeg_decode_fast420_rgba_texture_batch(
             prev_y11_pixels[i] = y11_pixels[i];
             prev_cb_pixels[i] = cb_pixels[i];
             prev_cr_pixels[i] = cr_pixels[i];
+            prev_vertical_y01_pixels[i] = y01_pixels[i];
+            prev_vertical_y11_pixels[i] = y11_pixels[i];
+            prev_vertical_cb_pixels[i] = cb_pixels[i];
+            prev_vertical_cr_pixels[i] = cr_pixels[i];
         }
         have_prev_horizontal = true;
+        have_prev_vertical = true;
         advance_mcu_cursor(mx, my, params.mcus_per_row);
     }
 }
@@ -3148,6 +3301,64 @@ kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
                 params.alpha
             ),
             uint2(x, out_y)
+        );
+    }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
+    device const uint *vertical_meta [[buffer(0)]],
+    device const uchar *vertical_samples [[buffer(1)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid == 0u || gid >= params.segment_count) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * params.segment_count + gid;
+    const uint previous_record_index = record_index - 1u;
+    const uint meta_base = fast420_vertical_meta_base(record_index);
+    const uint previous_meta_base = fast420_vertical_meta_base(previous_record_index);
+    if (vertical_meta[meta_base + 2u] == 0u || vertical_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = vertical_meta[meta_base];
+    const uint y = vertical_meta[meta_base + 1u];
+    if (x >= params.width || y == 0u || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast420_vertical_sample_base(record_index);
+    const uint previous_sample_base = fast420_vertical_sample_base(previous_record_index);
+    const uint copy_width = min(16u, params.width - x);
+    const uint local_sample_base = x / 2u;
+    device const uchar *top_cb = vertical_samples + sample_base + 16u;
+    device const uchar *top_cr = vertical_samples + sample_base + 24u;
+    device const uchar *bottom_cb = vertical_samples + previous_sample_base + 48u;
+    device const uchar *bottom_cr = vertical_samples + previous_sample_base + 56u;
+    for (uint bx = 0u; bx < copy_width; ++bx) {
+        const uint out_x = x + bx;
+        const uchar bottom_y = vertical_samples[previous_sample_base + 32u + bx];
+        const uchar top_y = vertical_samples[sample_base + bx];
+        out.write(
+            rgba_float_ycbcr(
+                bottom_y,
+                h2v2_sample_device_local(top_cb, bottom_cb, params.chroma_width, out_x, local_sample_base),
+                h2v2_sample_device_local(top_cr, bottom_cr, params.chroma_width, out_x, local_sample_base),
+                params.alpha
+            ),
+            uint2(out_x, y - 1u)
+        );
+        out.write(
+            rgba_float_ycbcr(
+                top_y,
+                h2v2_sample_device_local(bottom_cb, top_cb, params.chroma_width, out_x, local_sample_base),
+                h2v2_sample_device_local(bottom_cr, top_cr, params.chroma_width, out_x, local_sample_base),
+                params.alpha
+            ),
+            uint2(out_x, y)
         );
     }
 }
