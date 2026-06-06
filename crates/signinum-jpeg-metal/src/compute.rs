@@ -490,6 +490,20 @@ struct JpegFastRegionScaledBatchParams {
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct JpegFast444TextureBatchParams {
+    width: u32,
+    height: u32,
+    mcus_per_row: u32,
+    mcu_rows: u32,
+    segment_count: u32,
+    tile_index: u32,
+    alpha: u32,
+    mode: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct JpegWindowedPackBatchParams {
     src_width: u32,
@@ -718,6 +732,7 @@ pub(crate) struct MetalRuntime {
     fast444_scaled_decode_pipeline: ComputePipelineState,
     fast444_scaled_region_decode_pipeline: ComputePipelineState,
     fast444_scaled_region_batch_decode_pipeline: ComputePipelineState,
+    fast444_rgba_texture_batch_decode_pipeline: ComputePipelineState,
     batch_scratch: Mutex<MetalBatchScratch>,
 }
 
@@ -895,6 +910,12 @@ impl MetalRuntime {
             .new_compute_pipeline_state_with_function(
                 &fast444_scaled_region_batch_decode_function,
             )?;
+        let fast444_rgba_texture_batch_decode_function =
+            library.get_function("jpeg_decode_fast444_rgba_texture_batch", None)?;
+        let fast444_rgba_texture_batch_decode_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fast444_rgba_texture_batch_decode_function,
+            )?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
@@ -942,6 +963,7 @@ impl MetalRuntime {
             fast444_scaled_decode_pipeline,
             fast444_scaled_region_decode_pipeline,
             fast444_scaled_region_batch_decode_pipeline,
+            fast444_rgba_texture_batch_decode_pipeline,
             batch_scratch: Mutex::new(MetalBatchScratch::default()),
         })
     }
@@ -7021,7 +7043,6 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
     let out_tile_len = out_stride * height as usize;
     validate_rgba_texture_batch_output(output, first.dimensions, tile_count, out_tile_len)?;
 
-    let tile_count_u32 = checked_u32(tile_count, "fast444 batch tile count")?;
     let segment_count_u32 = checked_u32(segment_count, "fast444 batch segment count")?;
     let total_decode_threads = checked_u32(
         tile_count
@@ -7033,20 +7054,6 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         "fast444 texture batch decode thread count",
     )?;
 
-    let plane_len = width as usize * height as usize;
-    let decode_params = JpegFastRegionScaledBatchParams {
-        scaled_width: width,
-        scaled_height: height,
-        chroma_width: width,
-        chroma_height: height,
-        mcus_per_row: first.mcus_per_row,
-        mcu_rows: first.mcu_rows,
-        segment_count: segment_count_u32,
-        tile_count: tile_count_u32,
-        scale_shift: 0,
-        origin_x: 0,
-        origin_y: 0,
-    };
     let mut batch_scratch = runtime.batch_scratch.lock().expect("Metal batch scratch");
     let Some(entropy_buffers) = batch_entropy_buffers(
         runtime,
@@ -7070,18 +7077,6 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
         return Ok(None);
     };
 
-    let y_plane =
-        batch_scratch.private_buffer(&runtime.device, "fast444_texture_y", plane_len * tile_count);
-    let cb_plane = batch_scratch.private_buffer(
-        &runtime.device,
-        "fast444_texture_cb",
-        plane_len * tile_count,
-    );
-    let cr_plane = batch_scratch.private_buffer(
-        &runtime.device,
-        "fast444_texture_cr",
-        plane_len * tile_count,
-    );
     let statuses = vec![JpegDecodeStatus::default(); total_decode_threads as usize];
     let status_buffer = batch_scratch.shared_buffer_with_slice(
         &runtime.device,
@@ -7100,92 +7095,86 @@ fn try_decode_fast444_full_rgba_batch_to_textures(
     ];
 
     let command_buffer = runtime.queue.new_command_buffer();
-    let decoder_encoder = command_buffer.new_compute_command_encoder();
-    decoder_encoder
-        .set_compute_pipeline_state(&runtime.fast444_scaled_region_batch_decode_pipeline);
-    decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
-    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
-    decoder_encoder.set_buffer(2, Some(&cb_plane), 0);
-    decoder_encoder.set_buffer(3, Some(&cr_plane), 0);
-    decoder_encoder.set_bytes(
-        4,
-        size_of::<JpegFastRegionScaledBatchParams>() as u64,
-        (&raw const decode_params).cast(),
-    );
-    decoder_encoder.set_bytes(
-        5,
-        size_of::<[u16; 64]>() as u64,
-        first.y_quant.as_ptr().cast(),
-    );
-    decoder_encoder.set_bytes(
-        6,
-        size_of::<[u16; 64]>() as u64,
-        first.cb_quant.as_ptr().cast(),
-    );
-    decoder_encoder.set_bytes(
-        7,
-        size_of::<[u16; 64]>() as u64,
-        first.cr_quant.as_ptr().cast(),
-    );
-    decoder_encoder.set_bytes(
-        8,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[0]).cast(),
-    );
-    decoder_encoder.set_bytes(
-        9,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[0]).cast(),
-    );
-    decoder_encoder.set_bytes(
-        10,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[1]).cast(),
-    );
-    decoder_encoder.set_bytes(
-        11,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[1]).cast(),
-    );
-    decoder_encoder.set_bytes(
-        12,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const dc_tables[2]).cast(),
-    );
-    decoder_encoder.set_bytes(
-        13,
-        size_of::<PreparedHuffmanHost>() as u64,
-        (&raw const ac_tables[2]).cast(),
-    );
-    decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
-    decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
-    decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
-    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
-    dispatch_1d_pipeline(
-        decoder_encoder,
-        &runtime.fast444_scaled_region_batch_decode_pipeline,
-        total_decode_threads,
-    );
-    decoder_encoder.end_encoding();
-
-    let pack_params = JpegTexturePackBatchParams {
-        width,
-        height,
-        chroma_width: width,
-        chroma_height: height,
-        tile_index: 0,
-        alpha: u32::from(u8::MAX),
-        mode: plane_mode_to_u32(first_mode),
-    };
-    dispatch_rgba_texture_pack(
-        command_buffer,
-        &runtime.pack_444_rgba_texture_pipeline,
-        (&y_plane, &cb_plane, &cr_plane),
-        output,
-        pack_params,
-        tile_count,
-        (width, height),
-    )?;
+    for index in 0..tile_count {
+        let texture = output.texture(index).ok_or_else(|| Error::MetalKernel {
+            message: "JPEG Metal batch texture output slot was missing".to_string(),
+        })?;
+        let decode_params = JpegFast444TextureBatchParams {
+            width,
+            height,
+            mcus_per_row: first.mcus_per_row,
+            mcu_rows: first.mcu_rows,
+            segment_count: segment_count_u32,
+            tile_index: checked_u32(index, "fast444 texture batch tile index")?,
+            alpha: u32::from(u8::MAX),
+            mode: plane_mode_to_u32(first_mode),
+        };
+        let decoder_encoder = command_buffer.new_compute_command_encoder();
+        decoder_encoder
+            .set_compute_pipeline_state(&runtime.fast444_rgba_texture_batch_decode_pipeline);
+        decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
+        decoder_encoder.set_bytes(
+            4,
+            size_of::<JpegFast444TextureBatchParams>() as u64,
+            (&raw const decode_params).cast(),
+        );
+        decoder_encoder.set_bytes(
+            5,
+            size_of::<[u16; 64]>() as u64,
+            first.y_quant.as_ptr().cast(),
+        );
+        decoder_encoder.set_bytes(
+            6,
+            size_of::<[u16; 64]>() as u64,
+            first.cb_quant.as_ptr().cast(),
+        );
+        decoder_encoder.set_bytes(
+            7,
+            size_of::<[u16; 64]>() as u64,
+            first.cr_quant.as_ptr().cast(),
+        );
+        decoder_encoder.set_bytes(
+            8,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const dc_tables[0]).cast(),
+        );
+        decoder_encoder.set_bytes(
+            9,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const ac_tables[0]).cast(),
+        );
+        decoder_encoder.set_bytes(
+            10,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const dc_tables[1]).cast(),
+        );
+        decoder_encoder.set_bytes(
+            11,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const ac_tables[1]).cast(),
+        );
+        decoder_encoder.set_bytes(
+            12,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const dc_tables[2]).cast(),
+        );
+        decoder_encoder.set_bytes(
+            13,
+            size_of::<PreparedHuffmanHost>() as u64,
+            (&raw const ac_tables[2]).cast(),
+        );
+        decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
+        decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
+        decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
+        decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+        decoder_encoder.set_texture(0, Some(texture));
+        dispatch_1d_pipeline(
+            decoder_encoder,
+            &runtime.fast444_rgba_texture_batch_decode_pipeline,
+            segment_count_u32,
+        );
+        decoder_encoder.end_encoding();
+    }
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
