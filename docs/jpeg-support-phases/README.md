@@ -35,8 +35,9 @@ unsupported errors until a separate entropy and conformance plan exists.
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
-  to `Rgb8` plus full/ROI `Rgba8`, 8-bit YCbCr 4:4:4 decode to `Rgb8` plus
-  full/ROI `Rgba8`, and 16-bit APP14 RGB plus YCbCr 4:4:4 decode to `Rgb16`,
+  to `Rgb8` plus full/ROI/scaled/region-scaled `Rgba8`, 8-bit YCbCr 4:4:4
+  decode to `Rgb8` plus full/ROI/scaled/region-scaled `Rgba8`, and 16-bit
+  APP14 RGB plus YCbCr 4:4:4 decode to `Rgb16`,
   including restart-coded APP14 RGB and YCbCr streams; 8-bit
   grayscale/RGB/YCbCr row streaming and 16-bit grayscale `Gray16` plus APP14
   RGB/YCbCr `Rgb16` row streaming have landed, while other lossless 16-bit
@@ -366,7 +367,8 @@ Exit criteria:
 - SOF3 CPU decode matches oracle output for committed predictor fixtures.
   Status: partially met for the committed predictors 1-7 8-bit and 16-bit
   grayscale fixtures across full-image/ROI/scaled/region-scaled output, 8-bit
-  APP14 RGB/YCbCr `Rgba8` fixtures across full-image/ROI output, 8-bit and
+  APP14 RGB/YCbCr `Rgba8` fixtures across full-image/ROI/scaled/region-scaled
+  output, 8-bit and
   16-bit APP14 RGB fixtures across full-image/ROI/scaled/region-scaled output,
   8-bit and 16-bit YCbCr 4:4:4 fixtures across full-image/ROI/scaled/
   region-scaled output, plus 8-bit grayscale/RGB/YCbCr row streaming and

@@ -1267,6 +1267,93 @@ fn decode_region_into_rgba8_crops_restart_coded_lossless_color() {
 }
 
 #[test]
+fn decode_scaled_into_rgba8_projects_lossless_color() {
+    let scaled = Rect {
+        x: 0,
+        y: 0,
+        w: 2,
+        h: 2,
+    };
+
+    for (bytes, expected_rgb, label) in [
+        (
+            lossless_predictor_rgb_3x3_jpeg(5),
+            LOSSLESS_RGB_3X3_PIXELS.to_vec(),
+            "APP14 RGB",
+        ),
+        (
+            lossless_predictor_ycbcr_3x3_jpeg(5),
+            lossless_ycbcr_3x3_rgb8(),
+            "YCbCr",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("lossless {label} JPEG must construct: {err}"));
+        let stride = scaled.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let mut buf = vec![0u8; stride * scaled.h as usize];
+        let expected = rgb8_to_rgba8(&project_scaled_rgb(&expected_rgb, 3, 3, scaled, 2), 255);
+
+        let outcome = dec
+            .decode_scaled_into(&mut buf, stride, PixelFormat::Rgba8, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!("lossless {label} RGBA8 scaled decode must succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, Rect::full((3, 3)));
+        assert_eq!(buf, expected);
+    }
+}
+
+#[test]
+fn decode_region_scaled_into_rgba8_projects_restart_coded_lossless_color() {
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let stride = row_bytes + 4;
+
+    for (bytes, expected_rgb, label) in [
+        (
+            lossless_restart_predictor_rgb_3x3_jpeg(5),
+            LOSSLESS_RGB_3X3_PIXELS.to_vec(),
+            "APP14 RGB",
+        ),
+        (
+            lossless_restart_predictor_ycbcr_3x3_jpeg(5),
+            lossless_ycbcr_3x3_rgb8(),
+            "YCbCr",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("restart-coded lossless {label} JPEG must construct: {err}")
+        });
+        let expected = rgb8_to_rgba8(&project_scaled_rgb(&expected_rgb, 3, 3, scaled_roi, 2), 255);
+        let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgba8, roi, Downscale::Half)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "restart-coded lossless {label} RGBA8 region-scaled decode must succeed: {err}"
+                )
+            });
+
+        assert_eq!(outcome.decoded, roi);
+        for (row, expected_row) in buf
+            .chunks_exact(stride)
+            .zip(expected.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row);
+            assert_eq!(&row[row_bytes..], &[0xaa; 4]);
+        }
+    }
+}
+
+#[test]
 fn decode_into_rgb16_accepts_lossless_app14_rgb16_common_predictors() {
     let expected = rgb16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS);
     for predictor in 1..=7 {

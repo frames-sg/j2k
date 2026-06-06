@@ -1076,7 +1076,7 @@ fn capability_report_marks_lossless_app14_rgb8_cpu_eligible() {
 }
 
 #[test]
-fn capability_report_marks_lossless_app14_rgb8_rgba8_cpu_eligible_for_unscaled_output() {
+fn capability_report_marks_lossless_app14_rgb8_rgba8_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_predictor_rgb_3x3_jpeg(predictor);
         for op in [
@@ -1087,6 +1087,16 @@ fn capability_report_marks_lossless_app14_rgb8_rgba8_cpu_eligible_for_unscaled_o
                 w: 2,
                 h: 2,
             }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
         ] {
             let report = JpegCapabilityReport::inspect(
                 &input,
@@ -1239,7 +1249,7 @@ fn capability_report_marks_lossless_ycbcr_rgb8_cpu_eligible() {
 }
 
 #[test]
-fn capability_report_marks_lossless_ycbcr_rgb8_rgba8_cpu_eligible_for_unscaled_output() {
+fn capability_report_marks_lossless_ycbcr_rgb8_rgba8_cpu_eligible() {
     for predictor in 1..=7 {
         let input = lossless_predictor_ycbcr_3x3_jpeg(predictor);
         for op in [
@@ -1250,6 +1260,16 @@ fn capability_report_marks_lossless_ycbcr_rgb8_rgba8_cpu_eligible_for_unscaled_o
                 w: 2,
                 h: 2,
             }),
+            JpegDecodeOp::Scaled(Downscale::Half),
+            JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 1,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
         ] {
             let report = JpegCapabilityReport::inspect(
                 &input,

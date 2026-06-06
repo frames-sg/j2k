@@ -949,12 +949,13 @@ impl<'a> Decoder<'a> {
                     Rect::full(self.info.dimensions),
                 )
             }
-            OutputFormat::Rgba8 { alpha } => {
+            OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
                 if self.lossless_plan.is_some() {
                     return self.decode_lossless_rgba8_region_into(
                         out,
                         stride,
                         Rect::full(self.info.dimensions),
+                        downscale,
                         alpha,
                     );
                 }
@@ -1495,9 +1496,10 @@ impl<'a> Decoder<'a> {
                     self.decode_rgb_with_writer(pool, &mut writer, downscale, roi)
                 }
             }
-            OutputFormat::Rgba8 { alpha } => {
+            OutputFormat::Rgba8 { alpha } | OutputFormat::Rgba8Scaled { alpha, .. } => {
                 if self.lossless_plan.is_some() {
-                    return self.decode_lossless_rgba8_region_into(out, stride, roi, alpha);
+                    return self
+                        .decode_lossless_rgba8_region_into(out, stride, roi, downscale, alpha);
                 }
                 let base = Rgba8Writer::new(out, stride, scaled_roi.w, alpha);
                 let (source_x0, source_width) =
@@ -2615,25 +2617,27 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
         roi: Rect,
+        downscale: DownscaleFactor,
         alpha: u8,
     ) -> Result<DecodeOutcome, JpegError> {
-        let rgb_stride = roi.w as usize * 3;
-        let mut rgb = allocate_output_buffer(rgb_stride * roi.h as usize);
+        let output_rect = scaled_rect_covering(roi, downscale)?;
+        let rgb_stride = output_rect.w as usize * 3;
+        let mut rgb = allocate_output_buffer(rgb_stride * output_rect.h as usize);
         let outcome = match self.info.color_space {
-            ColorSpace::YCbCr => self.decode_lossless_ycbcr8_region_scaled_into(
-                &mut rgb,
-                rgb_stride,
-                roi,
-                DownscaleFactor::Full,
-            ),
-            _ => self.decode_lossless_rgb8_region_scaled_into(
-                &mut rgb,
-                rgb_stride,
-                roi,
-                DownscaleFactor::Full,
-            ),
+            ColorSpace::YCbCr => {
+                self.decode_lossless_ycbcr8_region_scaled_into(&mut rgb, rgb_stride, roi, downscale)
+            }
+            _ => self.decode_lossless_rgb8_region_scaled_into(&mut rgb, rgb_stride, roi, downscale),
         }?;
-        copy_rgb8_to_rgba8(&rgb, rgb_stride, roi.w, roi.h, out, stride, alpha);
+        copy_rgb8_to_rgba8(
+            &rgb,
+            rgb_stride,
+            output_rect.w,
+            output_rect.h,
+            out,
+            stride,
+            alpha,
+        );
         Ok(outcome)
     }
 
@@ -4586,7 +4590,7 @@ fn restart_index_for_stream(
 fn output_format_profile_name(fmt: OutputFormat) -> &'static str {
     match fmt {
         OutputFormat::Rgb8 | OutputFormat::Rgb8Scaled { .. } => "Rgb8",
-        OutputFormat::Rgba8 { .. } => "Rgba8",
+        OutputFormat::Rgba8 { .. } | OutputFormat::Rgba8Scaled { .. } => "Rgba8",
         OutputFormat::Gray8 | OutputFormat::Gray8Scaled { .. } => "Gray8",
         OutputFormat::Gray16 | OutputFormat::Gray16Scaled { .. } => "Gray16",
         OutputFormat::Rgb16 | OutputFormat::Rgb16Scaled { .. } => "Rgb16",
@@ -5202,7 +5206,10 @@ fn output_format_from_parts(
                 factor: jpeg_downscale(scale),
             }),
             (PixelFormat::Rgba8, Downscale::None) => Ok(OutputFormat::Rgba8 { alpha: 255 }),
-            (PixelFormat::Rgba8, _) => Err(JpegError::DownscaleUnsupported { sof: sof_kind }),
+            (PixelFormat::Rgba8, scale) => Ok(OutputFormat::Rgba8Scaled {
+                alpha: 255,
+                factor: jpeg_downscale(scale),
+            }),
             (PixelFormat::Rgb16, Downscale::None) => Ok(OutputFormat::Rgb16),
             (PixelFormat::Rgb16, scale) => Ok(OutputFormat::Rgb16Scaled {
                 factor: jpeg_downscale(scale),

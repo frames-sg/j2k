@@ -216,6 +216,7 @@ pub(crate) enum OutputFormat {
     Rgb8,
     Rgb8Scaled { factor: DownscaleFactor },
     Rgba8 { alpha: u8 },
+    Rgba8Scaled { alpha: u8, factor: DownscaleFactor },
     Gray8,
     Gray8Scaled { factor: DownscaleFactor },
     Gray16,
@@ -228,7 +229,7 @@ impl OutputFormat {
     pub(crate) fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Rgb8 | Self::Rgb8Scaled { .. } => 3,
-            Self::Rgba8 { .. } => 4,
+            Self::Rgba8 { .. } | Self::Rgba8Scaled { .. } => 4,
             Self::Gray8 | Self::Gray8Scaled { .. } => 1,
             Self::Gray16 | Self::Gray16Scaled { .. } => 2,
             Self::Rgb16 | Self::Rgb16Scaled { .. } => 6,
@@ -241,6 +242,7 @@ impl OutputFormat {
                 DownscaleFactor::Full
             }
             Self::Rgb8Scaled { factor }
+            | Self::Rgba8Scaled { factor, .. }
             | Self::Gray8Scaled { factor }
             | Self::Gray16Scaled { factor }
             | Self::Rgb16Scaled { factor } => factor,
@@ -451,6 +453,14 @@ mod tests {
             3
         );
         assert_eq!(OutputFormat::Rgba8 { alpha: 255 }.bytes_per_pixel(), 4);
+        assert_eq!(
+            OutputFormat::Rgba8Scaled {
+                alpha: 255,
+                factor: DownscaleFactor::Half,
+            }
+            .bytes_per_pixel(),
+            4
+        );
         assert_eq!(OutputFormat::Gray8.bytes_per_pixel(), 1);
         assert_eq!(
             OutputFormat::Gray8Scaled {

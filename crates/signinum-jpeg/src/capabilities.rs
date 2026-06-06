@@ -251,11 +251,6 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     | PixelFormat::Rgb16
             ) =>
         {
-            if request.fmt == PixelFormat::Rgba8 && request.op.scale() != Downscale::None {
-                return JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 RGBA8 decode supports unscaled output only",
-                );
-            }
             return match (info.color_space, info.bit_depth, request.fmt) {
                 (ColorSpace::Grayscale, 8, PixelFormat::Gray8)
                 | (ColorSpace::Grayscale, 16, PixelFormat::Gray16) => {

@@ -264,8 +264,9 @@ writes native `Gray16` samples or expanded `Rgb16` samples; initial 12-bit
 APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/
 region-scaled decode writes native `Rgb16` samples, including restart-coded
 color streams. Initial SOF3 8-bit grayscale/RGB/YCbCr row streaming, 8-bit
-APP14 RGB/YCbCr full/ROI `Rgba8`, 16-bit grayscale `Gray16` row streaming,
-8-bit YCbCr 4:4:4 `Rgb8` output, and 16-bit APP14 RGB plus YCbCr 4:4:4
+APP14 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba8`,
+16-bit grayscale `Gray16` row streaming, 8-bit YCbCr 4:4:4 `Rgb8` output,
+and 16-bit APP14 RGB plus YCbCr 4:4:4
 `Rgb16` output/row streaming have landed. Expanded
 four-component subsampled/malformed coverage, other 12-bit subsampled color
 support, stronger non-constant 12-bit oracle fixtures, and remaining lossless
