@@ -948,7 +948,7 @@ impl Codec {
 
         compute::decode_full_rgb8_batch_into_output_with_session(&requests, output, session)?
             .ok_or(Error::UnsupportedMetalRequest {
-                reason: "JPEG Metal reusable batch output currently supports batchable full-tile RGB8 fast 4:2:0 or 4:2:2 inputs",
+                reason: "JPEG Metal reusable batch output currently supports batchable full-tile RGB8 fast 4:2:0, 4:2:2, or 4:4:4 inputs",
             })
     }
 
@@ -2103,6 +2103,35 @@ mod tests {
             let surface = result.expect("surface");
             assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
             assert_eq!(surface.dimensions(), (16, 16));
+            assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+            let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+            assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+            assert_eq!(offset, index * output.tile_stride_bytes());
+            assert_eq!(surface.as_bytes(), expected.as_slice());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rgb8_fast444_batch_decode_can_write_into_reusable_metal_output_buffer() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let output =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (8, 8), 2).expect("output buffer");
+        let inputs = [BASELINE_444, BASELINE_444];
+        let (expected, _) = CpuDecoder::new(BASELINE_444)
+            .expect("cpu decoder")
+            .decode(PixelFormat::Rgb8)
+            .expect("cpu decode");
+
+        let surfaces =
+            Codec::decode_rgb8_batch_into_metal_buffer_with_session(&inputs, &output, &session)
+                .expect("decode into reusable output");
+
+        assert_eq!(surfaces.len(), 2);
+        for (index, result) in surfaces.into_iter().enumerate() {
+            let surface = result.expect("surface");
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(surface.dimensions(), (8, 8));
             assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
             let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
             assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));

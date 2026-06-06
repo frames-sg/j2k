@@ -1989,7 +1989,15 @@ inline void deposit_scaled_block_region(
     thread const short coeffs[64],
     bool dc_only
 ) {
-    if (scale_shift == 1u) {
+    if (scale_shift == 0u) {
+        thread uchar pixels8[64];
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], pixels8);
+        } else {
+            idct_islow(coeffs, pixels8);
+        }
+        deposit_block_region(plane, stride, width, height, origin_x, origin_y, x, y, pixels8);
+    } else if (scale_shift == 1u) {
         thread uchar pixels4[16];
         if (dc_only) {
             const uchar pixel = idct_islow_1x1(coeffs);

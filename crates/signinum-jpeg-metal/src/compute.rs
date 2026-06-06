@@ -5707,6 +5707,260 @@ fn fast444_packets_share_region_scaled_batch_shape(
 }
 
 #[cfg(target_os = "macos")]
+fn try_decode_fast444_full_rgb_batch_to_surfaces(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast444_full_rgb_batch_to_surfaces_with_output(runtime, requests, packets, None)
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast444_full_rgb_batch_to_surfaces_into_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: &crate::MetalBatchOutputBuffer,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
+        runtime,
+        requests,
+        packets,
+        Some(output),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn try_decode_fast444_full_rgb_batch_to_surfaces_with_output(
+    runtime: &MetalRuntime,
+    requests: &[batch::QueuedRequest],
+    packets: &[BatchedFastPacket<'_>],
+    output: Option<&crate::MetalBatchOutputBuffer>,
+) -> Result<Option<Vec<Result<Surface, Error>>>, Error> {
+    if requests.len() < 2
+        || requests
+            .iter()
+            .any(|request| request.op != batch::BatchOp::Full || request.fmt != PixelFormat::Rgb8)
+    {
+        return Ok(None);
+    }
+
+    let mut fast444_packets = Vec::with_capacity(packets.len());
+    for packet in packets {
+        let BatchedFastPacket::Fast444(packet, mode) = packet else {
+            return Ok(None);
+        };
+        fast444_packets.push((*packet, *mode));
+    }
+
+    let Some((first, first_mode)) = fast444_packets.first().copied() else {
+        return Ok(None);
+    };
+    if first.restart_interval_mcus != 0 || first.entropy_checkpoints.is_empty() {
+        return Ok(None);
+    }
+
+    let segment_count = first.entropy_checkpoints.len();
+    if !fast444_packets.iter().all(|(packet, mode)| {
+        *mode == first_mode
+            && fast444_packets_share_region_scaled_batch_shape(first, packet, segment_count)
+    }) {
+        return Ok(None);
+    }
+
+    let tile_count = fast444_packets.len();
+    let tile_count_u32 = checked_u32(tile_count, "fast444 batch tile count")?;
+    let segment_count_u32 = checked_u32(segment_count, "fast444 batch segment count")?;
+    let total_decode_threads = checked_u32(
+        tile_count
+            .checked_mul(segment_count)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "JPEG Metal fast444 batch decode thread count overflowed".to_string(),
+            })?,
+        "fast444 batch decode thread count",
+    )?;
+
+    let width = first.dimensions.0;
+    let height = first.dimensions.1;
+    let out_stride = width as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let out_tile_len = out_stride * height as usize;
+    let plane_len = width as usize * height as usize;
+    let decode_params = JpegFastRegionScaledBatchParams {
+        scaled_width: width,
+        scaled_height: height,
+        chroma_width: width,
+        chroma_height: height,
+        mcus_per_row: first.mcus_per_row,
+        mcu_rows: first.mcu_rows,
+        segment_count: segment_count_u32,
+        tile_count: tile_count_u32,
+        scale_shift: 0,
+        origin_x: 0,
+        origin_y: 0,
+    };
+    let pack_params = JpegWindowedPackBatchParams {
+        src_width: width,
+        src_height: height,
+        chroma_width: width,
+        chroma_height: height,
+        src_x: 0,
+        src_y: 0,
+        width,
+        height,
+        tile_count: tile_count_u32,
+        out_stride: checked_u32(out_stride, "fast444 batch output stride")?,
+        alpha: u32::from(u8::MAX),
+        mode: plane_mode_to_u32(first_mode),
+        out_format: OUT_RGB,
+    };
+
+    let Some(entropy_buffers) = batch_entropy_buffers(
+        runtime,
+        fast444_packets
+            .iter()
+            .map(|(packet, _)| packet.entropy_bytes.as_slice()),
+        fast444_packets
+            .iter()
+            .map(|(packet, _)| packet.entropy_checkpoints.as_slice()),
+        tile_count,
+        segment_count,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let y_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
+    let cb_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
+    let cr_plane = new_private_buffer(&runtime.device, plane_len * tile_count);
+    let out_buffer = batch_output_buffer_or_new(
+        runtime,
+        output,
+        first.dimensions,
+        tile_count,
+        out_stride,
+        out_tile_len,
+    )?;
+    let status_buffer = decode_status_buffer(&runtime.device, total_decode_threads);
+    let dc_tables = [
+        PreparedHuffmanHost::from(&first.y_dc_table),
+        PreparedHuffmanHost::from(&first.cb_dc_table),
+        PreparedHuffmanHost::from(&first.cr_dc_table),
+    ];
+    let ac_tables = [
+        PreparedHuffmanHost::from(&first.y_ac_table),
+        PreparedHuffmanHost::from(&first.cb_ac_table),
+        PreparedHuffmanHost::from(&first.cr_ac_table),
+    ];
+
+    let command_buffer = runtime.queue.new_command_buffer();
+    let decoder_encoder = command_buffer.new_compute_command_encoder();
+    decoder_encoder
+        .set_compute_pipeline_state(&runtime.fast444_scaled_region_batch_decode_pipeline);
+    decoder_encoder.set_buffer(0, Some(&entropy_buffers.payload), 0);
+    decoder_encoder.set_buffer(1, Some(&y_plane), 0);
+    decoder_encoder.set_buffer(2, Some(&cb_plane), 0);
+    decoder_encoder.set_buffer(3, Some(&cr_plane), 0);
+    decoder_encoder.set_bytes(
+        4,
+        size_of::<JpegFastRegionScaledBatchParams>() as u64,
+        (&raw const decode_params).cast(),
+    );
+    decoder_encoder.set_bytes(
+        5,
+        size_of::<[u16; 64]>() as u64,
+        first.y_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        6,
+        size_of::<[u16; 64]>() as u64,
+        first.cb_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        7,
+        size_of::<[u16; 64]>() as u64,
+        first.cr_quant.as_ptr().cast(),
+    );
+    decoder_encoder.set_bytes(
+        8,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        9,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[0]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        10,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        11,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[1]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        12,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const dc_tables[2]).cast(),
+    );
+    decoder_encoder.set_bytes(
+        13,
+        size_of::<PreparedHuffmanHost>() as u64,
+        (&raw const ac_tables[2]).cast(),
+    );
+    decoder_encoder.set_buffer(14, Some(&entropy_buffers.offsets), 0);
+    decoder_encoder.set_buffer(15, Some(&entropy_buffers.lens), 0);
+    decoder_encoder.set_buffer(16, Some(&status_buffer), 0);
+    decoder_encoder.set_buffer(17, Some(&entropy_buffers.checkpoints), 0);
+    dispatch_1d_pipeline(
+        decoder_encoder,
+        &runtime.fast444_scaled_region_batch_decode_pipeline,
+        total_decode_threads,
+    );
+    decoder_encoder.end_encoding();
+
+    let pack_encoder = command_buffer.new_compute_command_encoder();
+    pack_encoder.set_compute_pipeline_state(&runtime.pack_444_rgb_batch_pipeline);
+    pack_encoder.set_buffer(0, Some(&y_plane), 0);
+    pack_encoder.set_buffer(1, Some(&cb_plane), 0);
+    pack_encoder.set_buffer(2, Some(&cr_plane), 0);
+    pack_encoder.set_buffer(3, Some(&out_buffer), 0);
+    pack_encoder.set_bytes(
+        4,
+        size_of::<JpegWindowedPackBatchParams>() as u64,
+        (&raw const pack_params).cast(),
+    );
+    dispatch_3d_pipeline(
+        pack_encoder,
+        &runtime.pack_444_rgb_batch_pipeline,
+        (width, height, tile_count_u32),
+    );
+    pack_encoder.end_encoding();
+
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    if let Some(results) =
+        region_scaled_batch_error_results(requests, &status_buffer, total_decode_threads)?
+    {
+        return Ok(Some(results));
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
+    for index in 0..requests.len() {
+        results.push(Ok(Surface::from_metal_buffer_offset(
+            out_buffer.clone(),
+            first.dimensions,
+            PixelFormat::Rgb8,
+            index * out_tile_len,
+        )));
+    }
+    Ok(Some(results))
+}
+
+#[cfg(target_os = "macos")]
 fn try_decode_fast444_region_scaled_rgb_batch_to_surfaces(
     runtime: &MetalRuntime,
     requests: &[batch::QueuedRequest],
@@ -6596,6 +6850,11 @@ fn decode_full_rgb8_batch_into_output_with_runtime(
     )? {
         return Ok(Some(results));
     }
+    if let Some(results) = try_decode_fast444_full_rgb_batch_to_surfaces_into_output(
+        runtime, requests, packets, output,
+    )? {
+        return Ok(Some(results));
+    }
 
     Ok(None)
 }
@@ -6613,6 +6872,11 @@ fn decode_full_batch_to_surfaces_with_runtime(
     }
     if let Some(results) =
         try_decode_fast422_full_rgb_batch_to_surfaces(runtime, requests, packets)?
+    {
+        return Ok(Some(results));
+    }
+    if let Some(results) =
+        try_decode_fast444_full_rgb_batch_to_surfaces(runtime, requests, packets)?
     {
         return Ok(Some(results));
     }
