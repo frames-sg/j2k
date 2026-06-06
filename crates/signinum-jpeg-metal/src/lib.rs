@@ -338,6 +338,21 @@ impl MetalBatchOutputBuffer {
         self.ensure_rgb8_tiles(session, (scaled.w, scaled.h), tile_capacity)
     }
 
+    /// Ensure this output buffer fits a preflighted RGB8 Metal resident batch.
+    ///
+    /// Ineligible reports return an error without replacing the existing
+    /// allocation. Eligible empty reports are a no-op.
+    pub fn ensure_rgb8_batch_report(
+        &mut self,
+        session: &MetalBackendSession,
+        report: &JpegMetalResidentBatchReport,
+    ) -> Result<(), Error> {
+        let Some(dimensions) = report_required_output_dimensions(report)? else {
+            return Ok(());
+        };
+        self.ensure_rgb8_tiles(session, dimensions, report.required_tile_capacity())
+    }
+
     fn new_tiles(
         session: &MetalBackendSession,
         dimensions: (u32, u32),
@@ -520,6 +535,21 @@ impl MetalBatchTextureOutput {
     ) -> Result<(), Error> {
         let scaled = roi.scaled_covering(scale);
         self.ensure_rgba8_tiles(session, (scaled.w, scaled.h), tile_capacity)
+    }
+
+    /// Ensure this texture set fits a preflighted RGB8 Metal resident batch.
+    ///
+    /// Ineligible reports return an error without replacing the existing
+    /// textures. Eligible empty reports are a no-op.
+    pub fn ensure_rgba8_batch_report(
+        &mut self,
+        session: &MetalBackendSession,
+        report: &JpegMetalResidentBatchReport,
+    ) -> Result<(), Error> {
+        let Some(dimensions) = report_required_output_dimensions(report)? else {
+            return Ok(());
+        };
+        self.ensure_rgba8_tiles(session, dimensions, report.required_tile_capacity())
     }
 
     /// Tile dimensions for this output allocation.
@@ -1201,6 +1231,29 @@ impl JpegMetalResidentBatchReport {
     pub fn required_tile_capacity(&self) -> usize {
         self.tile_count
     }
+}
+
+#[cfg(target_os = "macos")]
+fn report_required_output_dimensions(
+    report: &JpegMetalResidentBatchReport,
+) -> Result<Option<(u32, u32)>, Error> {
+    if !report.eligibility.eligible {
+        return Err(Error::UnsupportedMetalRequest {
+            reason: report
+                .eligibility
+                .reason
+                .unwrap_or("JPEG Metal resident batch report is not eligible"),
+        });
+    }
+    if report.tile_count == 0 {
+        return Ok(None);
+    }
+    report
+        .output_dimensions
+        .ok_or(Error::UnsupportedMetalRequest {
+            reason: "JPEG Metal resident batch report is missing output dimensions",
+        })
+        .map(Some)
 }
 
 #[cfg(target_os = "macos")]
@@ -4599,6 +4652,83 @@ mod tests {
         assert_eq!(output.dimensions(), (4, 4));
         assert_eq!(output.tile_capacity(), 2);
         assert_eq!(output.pixel_format(), PixelFormat::Rgba8);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_outputs_can_ensure_from_resident_batch_report() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_420).expect("second decoder");
+        let decoders = [&first, &second];
+        let report = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Scaled(Downscale::Quarter),
+        );
+        assert!(report.eligibility.eligible);
+
+        let mut buffer =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+        let mut textures =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+
+        buffer
+            .ensure_rgb8_batch_report(&session, &report)
+            .expect("ensure buffer from report");
+        textures
+            .ensure_rgba8_batch_report(&session, &report)
+            .expect("ensure textures from report");
+
+        assert_eq!(buffer.dimensions(), (4, 4));
+        assert_eq!(buffer.tile_capacity(), 2);
+        assert_eq!(
+            buffer.tile_stride_bytes(),
+            4 * 4 * PixelFormat::Rgb8.bytes_per_pixel()
+        );
+        assert_eq!(textures.dimensions(), (4, 4));
+        assert_eq!(textures.tile_capacity(), 2);
+        assert_eq!(textures.pixel_format(), PixelFormat::Rgba8);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_batch_outputs_reject_ineligible_report_without_resizing() {
+        let session = MetalBackendSession::system_default().expect("Metal backend session");
+        let first = Decoder::new(BASELINE_420).expect("first decoder");
+        let second = Decoder::new(BASELINE_444).expect("second decoder");
+        let decoders = [&first, &second];
+        let report = Codec::inspect_rgb8_decoder_batch_metal_output(
+            &decoders,
+            signinum_jpeg::JpegDecodeOp::Full,
+        );
+        assert!(!report.eligibility.eligible);
+
+        let mut buffer =
+            MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+        let mut textures =
+            MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+
+        let buffer_err = buffer
+            .ensure_rgb8_batch_report(&session, &report)
+            .expect_err("ineligible report should reject buffer ensure");
+        let texture_err = textures
+            .ensure_rgba8_batch_report(&session, &report)
+            .expect_err("ineligible report should reject texture ensure");
+
+        assert!(matches!(
+            buffer_err,
+            Error::UnsupportedMetalRequest { reason }
+                if reason.contains("matching output dimensions")
+        ));
+        assert!(matches!(
+            texture_err,
+            Error::UnsupportedMetalRequest { reason }
+                if reason.contains("matching output dimensions")
+        ));
+        assert_eq!(buffer.dimensions(), (1, 1));
+        assert_eq!(buffer.tile_capacity(), 1);
+        assert_eq!(textures.dimensions(), (1, 1));
+        assert_eq!(textures.tile_capacity(), 1);
     }
 
     #[cfg(target_os = "macos")]

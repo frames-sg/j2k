@@ -171,6 +171,9 @@ or output shapes. For warm WSI batches that already keep parsed
 `Codec::inspect_rgb8_decoder_batch_metal_output` reports reusable resident
 batch eligibility, required output dimensions, and required tile capacity
 without reparsing, allocating, or launching Metal work.
+`MetalBatchOutputBuffer::ensure_rgb8_batch_report` and
+`MetalBatchTextureOutput::ensure_rgba8_batch_report` apply that report directly
+to caller-owned output and reject ineligible reports without resizing.
 `Codec::decode_rgb8_decoder_*_batch_into_metal_{buffer,textures}_with_session`
 submits full, scaled, or region-scaled resident batches from cached fast-packet
 state into exact caller-owned outputs instead of reparsing the JPEG byte

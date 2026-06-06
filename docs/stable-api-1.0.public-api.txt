@@ -3714,6 +3714,7 @@ impl signinum_jpeg_metal::MetalBatchOutputBuffer
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::buffer(&self) -> &metal::buffer::BufferRef
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::byte_len(&self) -> usize
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::ensure_rgb8_batch_report(&mut self, &signinum_jpeg_metal::MetalBackendSession, &signinum_jpeg_metal::JpegMetalResidentBatchReport) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::ensure_rgb8_region_scaled_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, signinum_core::types::Rect, signinum_core::scale::Downscale, usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::ensure_rgb8_scaled_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, (u32, u32), signinum_core::scale::Downscale, usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::ensure_rgb8_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
@@ -3725,6 +3726,7 @@ pub fn signinum_jpeg_metal::MetalBatchOutputBuffer::tile_stride_bytes(&self) -> 
 pub struct signinum_jpeg_metal::MetalBatchTextureOutput
 impl signinum_jpeg_metal::MetalBatchTextureOutput
 pub fn signinum_jpeg_metal::MetalBatchTextureOutput::dimensions(&self) -> (u32, u32)
+pub fn signinum_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_batch_report(&mut self, &signinum_jpeg_metal::MetalBackendSession, &signinum_jpeg_metal::JpegMetalResidentBatchReport) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_region_scaled_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, signinum_core::types::Rect, signinum_core::scale::Downscale, usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_scaled_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, (u32, u32), signinum_core::scale::Downscale, usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
 pub fn signinum_jpeg_metal::MetalBatchTextureOutput::ensure_rgba8_tiles(&mut self, &signinum_jpeg_metal::MetalBackendSession, (u32, u32), usize) -> core::result::Result<(), signinum_jpeg_metal::Error>
