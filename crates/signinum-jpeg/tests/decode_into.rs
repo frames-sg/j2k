@@ -13,8 +13,10 @@ use fixtures::{
     ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
 };
 use fixtures::{
-    extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
-    extended_12bit_ycbcr_8x8_rgb16, progressive_12bit_ycbcr_8x8_jpeg,
+    extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16, extended_12bit_ycbcr_422_32x8_jpeg,
+    extended_12bit_ycbcr_422_32x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
+    extended_12bit_ycbcr_8x8_rgb16, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg,
 };
 
 #[test]
@@ -473,6 +475,46 @@ fn decode_region_scaled_into_rgb16_converts_progressive12_ycbcr444_samples() {
 }
 
 #[test]
+fn decode_into_rgb16_converts_progressive12_ycbcr422_samples() {
+    let bytes = progressive_12bit_ycbcr_422_32x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit progressive YCbCr 4:2:2 JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit progressive YCbCr 4:2:2 Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(buf, extended_12bit_ycbcr_422_32x8_rgb16());
+}
+
+#[test]
+fn decode_region_scaled_into_rgb16_converts_progressive12_ycbcr422_samples() {
+    let bytes = progressive_12bit_ycbcr_422_32x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit progressive YCbCr 4:2:2 JPEG must construct");
+    let roi = Rect {
+        x: 13,
+        y: 0,
+        w: 8,
+        h: 4,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+    let full = extended_12bit_ycbcr_422_32x8_rgb16();
+    let expected_pixels = expected_scaled_rgb16_pixels(&full, 32, roi, 2);
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
+        .expect("12-bit progressive YCbCr 4:2:2 region-scaled Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
+}
+
+#[test]
 fn decode_into_rgb16_expands_extended12_grayscale_samples() {
     let bytes = extended_12bit_grayscale_8x8_jpeg();
     let dec = Decoder::new(&bytes).expect("12-bit extended grayscale JPEG must construct");
@@ -650,6 +692,46 @@ fn decode_region_scaled_into_rgb16_converts_extended12_ycbcr444_samples() {
         }
         assert_eq!(&row[scaled_roi.w as usize * 6..], &[0xaa; 6]);
     }
+}
+
+#[test]
+fn decode_into_rgb16_converts_extended12_ycbcr422_samples() {
+    let bytes = extended_12bit_ycbcr_422_32x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended YCbCr 4:2:2 JPEG must construct");
+    let (w, h) = dec.info().dimensions;
+    let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut buf = vec![0u8; stride * h as usize];
+
+    let outcome = dec
+        .decode_into(&mut buf, stride, PixelFormat::Rgb16)
+        .expect("12-bit YCbCr 4:2:2 Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, Rect::full((w, h)));
+    assert_eq!(buf, extended_12bit_ycbcr_422_32x8_rgb16());
+}
+
+#[test]
+fn decode_region_scaled_into_rgb16_converts_extended12_ycbcr422_samples() {
+    let bytes = extended_12bit_ycbcr_422_32x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit extended YCbCr 4:2:2 JPEG must construct");
+    let roi = Rect {
+        x: 13,
+        y: 0,
+        w: 8,
+        h: 4,
+    };
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 6;
+    let mut buf = vec![0xaau8; stride * scaled_roi.h as usize];
+    let full = extended_12bit_ycbcr_422_32x8_rgb16();
+    let expected_pixels = expected_scaled_rgb16_pixels(&full, 32, roi, 2);
+
+    let outcome = dec
+        .decode_region_scaled_into(&mut buf, stride, PixelFormat::Rgb16, roi, Downscale::Half)
+        .expect("12-bit YCbCr 4:2:2 region-scaled Rgb16 decode must succeed");
+
+    assert_eq!(outcome.decoded, roi);
+    assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
 }
 
 #[test]
@@ -1298,6 +1380,29 @@ fn scaled_rect_covering_for_test(rect: Rect, denom: u32) -> Rect {
         y: rect.y / denom,
         w: x1 - rect.x / denom,
         h: y1 - rect.y / denom,
+    }
+}
+
+fn expected_scaled_rgb16_pixels(full: &[u8], full_width: usize, roi: Rect, denom: u32) -> Vec<u8> {
+    let scaled = scaled_rect_covering_for_test(roi, denom);
+    let mut expected = Vec::with_capacity(scaled.w as usize * scaled.h as usize * 6);
+    for out_y in scaled.y..scaled.y + scaled.h {
+        let src_y = out_y.saturating_mul(denom).min(roi.y + roi.h - 1);
+        for out_x in scaled.x..scaled.x + scaled.w {
+            let src_x = out_x.saturating_mul(denom).min(roi.x + roi.w - 1);
+            let start = (src_y as usize * full_width + src_x as usize) * 6;
+            expected.extend_from_slice(&full[start..start + 6]);
+        }
+    }
+    expected
+}
+
+fn assert_padded_rgb16_rows(buf: &[u8], stride: usize, width: usize, expected: &[u8]) {
+    let row_bytes = width * PixelFormat::Rgb16.bytes_per_pixel();
+    for (row_index, row) in buf.chunks_exact(stride).enumerate() {
+        let start = row_index * row_bytes;
+        assert_eq!(&row[..row_bytes], &expected[start..start + row_bytes]);
+        assert_eq!(&row[row_bytes..], &[0xaa; 6]);
     }
 }
 
