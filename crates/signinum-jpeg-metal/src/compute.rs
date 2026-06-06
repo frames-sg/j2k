@@ -1571,6 +1571,51 @@ impl PlaneStage {
         surface_from_plane_buffer(out_buffer, self.dims, fmt, residency)
     }
 
+    fn finish_rgb8_into_output_with_runtime(
+        self,
+        runtime: &MetalRuntime,
+        output: &crate::MetalBatchOutputBuffer,
+    ) -> Result<Surface, Error> {
+        let fmt = PixelFormat::Rgb8;
+        let pitch_bytes = self.dims.0 as usize * fmt.bytes_per_pixel();
+        let tile_len = pitch_bytes * self.dims.1 as usize;
+        let out_buffer =
+            batch_output_buffer_or_new(runtime, Some(output), self.dims, 1, pitch_bytes, tile_len)?;
+        let params = JpegPackParams {
+            width: self.dims.0,
+            height: self.dims.1,
+            out_stride: u32::try_from(pitch_bytes).expect("JPEG Metal output stride fits in u32"),
+            alpha: u32::from(u8::MAX),
+            mode: match self.mode {
+                PlaneMode::Gray => MODE_GRAY,
+                PlaneMode::YCbCr => MODE_YCBCR,
+                PlaneMode::Rgb => MODE_RGB,
+            },
+            out_format: OUT_RGB,
+        };
+
+        let command_buffer = runtime.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&runtime.pack_pipeline);
+        encoder.set_buffer(0, Some(&self.plane0), 0);
+        encoder.set_buffer(1, self.plane1.as_ref().map(std::convert::AsRef::as_ref), 0);
+        encoder.set_buffer(2, self.plane2.as_ref().map(std::convert::AsRef::as_ref), 0);
+        encoder.set_buffer(3, Some(&out_buffer), 0);
+        encoder.set_bytes(
+            4,
+            size_of::<JpegPackParams>() as u64,
+            (&raw const params).cast(),
+        );
+        dispatch_2d_pipeline(encoder, &runtime.pack_pipeline, self.dims);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(Surface::from_metal_buffer_offset(
+            out_buffer, self.dims, fmt, 0,
+        ))
+    }
+
     fn dispatch_private_rgb8_with_runtime(
         self,
         runtime: &MetalRuntime,
@@ -1720,8 +1765,13 @@ fn plane_mode_for_color_space(color_space: JpegColorSpace) -> Result<PlaneMode, 
 
 #[cfg(target_os = "macos")]
 fn clear_buffer(buffer: &Buffer, len: usize) {
+    fill_buffer(buffer, len, 0);
+}
+
+#[cfg(target_os = "macos")]
+fn fill_buffer(buffer: &Buffer, len: usize, value: u8) {
     unsafe {
-        core::ptr::write_bytes(buffer.contents().cast::<u8>(), 0, len);
+        core::ptr::write_bytes(buffer.contents().cast::<u8>(), value, len);
     }
 }
 
@@ -1765,11 +1815,24 @@ fn cached_plane_stage(
             plane2: cached.plane2.clone(),
         };
         clear_buffer(&stage.plane0, len);
-        if let Some(plane1) = &stage.plane1 {
-            clear_buffer(plane1, len);
-        }
-        if let Some(plane2) = &stage.plane2 {
-            clear_buffer(plane2, len);
+        match stage.mode {
+            PlaneMode::Gray => {}
+            PlaneMode::YCbCr => {
+                if let Some(plane1) = &stage.plane1 {
+                    fill_buffer(plane1, len, 128);
+                }
+                if let Some(plane2) = &stage.plane2 {
+                    fill_buffer(plane2, len, 128);
+                }
+            }
+            PlaneMode::Rgb => {
+                if let Some(plane1) = &stage.plane1 {
+                    clear_buffer(plane1, len);
+                }
+                if let Some(plane2) = &stage.plane2 {
+                    clear_buffer(plane2, len);
+                }
+            }
         }
         Ok(stage)
     })
@@ -14259,6 +14322,50 @@ pub(crate) fn compose_rgb_viewport_from_regions(
             )?;
         }
         stage.finish_with_runtime(runtime, PixelFormat::Rgb8)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn compose_rgb_viewport_from_regions_into_output_with_session(
+    decoder: &CpuDecoder<'_>,
+    pool: &mut signinum_jpeg::ScratchPool,
+    scale: signinum_core::Downscale,
+    viewport_dims: (u32, u32),
+    tiles: &[ViewportTile],
+    output: &crate::MetalBatchOutputBuffer,
+    session: &crate::MetalBackendSession,
+) -> Result<Surface, Error> {
+    with_runtime_for_session(session, |runtime| {
+        let mut stage =
+            cached_plane_stage(&runtime.device, decoder.info().color_space, viewport_dims)?;
+        for tile in tiles {
+            let dims = tile.source_roi.scaled_covering(scale);
+            if (dims.w, dims.h) != (tile.dest.w, tile.dest.h) {
+                return Err(Error::MetalKernel {
+                    message: format!(
+                        "viewport tile dims {:?} do not match destination rect {:?}",
+                        (dims.w, dims.h),
+                        tile.dest
+                    ),
+                });
+            }
+            let mut writer = ViewportPlaneWriter {
+                stage: &mut stage,
+                dest: tile.dest,
+            };
+            decoder.decode_region_component_rows_with_scratch(
+                pool,
+                &mut writer,
+                signinum_jpeg::Rect {
+                    x: tile.source_roi.x,
+                    y: tile.source_roi.y,
+                    w: tile.source_roi.w,
+                    h: tile.source_roi.h,
+                },
+                scale,
+            )?;
+        }
+        stage.finish_rgb8_into_output_with_runtime(runtime, output)
     })
 }
 

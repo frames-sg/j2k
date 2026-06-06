@@ -9,8 +9,8 @@ use signinum_jpeg_metal::viewport::{
 };
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::viewport::{
-    compose_viewport_hybrid, decode_viewport_region_hybrid,
-    decode_viewport_region_to_resizable_metal_buffer_with_session,
+    compose_viewport_hybrid, compose_viewport_to_resizable_metal_buffer_with_session,
+    decode_viewport_region_hybrid, decode_viewport_region_to_resizable_metal_buffer_with_session,
     decode_viewport_region_to_resizable_metal_textures_with_session,
 };
 #[cfg(target_os = "macos")]
@@ -385,6 +385,80 @@ fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport() {
             .expect("hybrid viewport");
 
     assert_eq!(actual.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+    assert!(!is_contiguous_viewport_workload(&workload));
+    let expected = compose_viewport_cpu(
+        &decoder,
+        &mut cpu_pool,
+        PixelFormat::Rgb8,
+        workload.scale,
+        workload.viewport_dims,
+        &workload.tiles,
+    )
+    .expect("cpu viewport");
+
+    let surface = compose_viewport_to_resizable_metal_buffer_with_session(
+        &decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident sparse viewport");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
 }
 
 #[cfg(target_os = "macos")]

@@ -318,6 +318,7 @@ full-tile JPEG Metal batches,
 `compose_viewport_cpu`, `decode_viewport_region_cpu`,
 `decode_viewport_to_surface`, `decode_viewport_region_cpu_to_surface`,
 `compose_viewport_cpu_to_surface`, `compose_viewport_hybrid`,
+`compose_viewport_to_resizable_metal_buffer_with_session`,
 `decode_viewport_region_hybrid`,
 `decode_viewport_region_to_resizable_metal_buffer_with_session`, and
 `decode_viewport_region_to_resizable_metal_textures_with_session`.
