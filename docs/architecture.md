@@ -504,7 +504,8 @@ provisional and check the most recent commits before relying on it.
   three-component color streams and restart-coded extended/progressive
   CMYK/YCCK streams, while broader four-component malformed coverage, other
   nonstandard 12-bit color sampling layouts, stronger non-constant 12-bit
-  oracle fixtures, and other lossless SOF3 16-bit color layouts remain active parity
+  oracle fixtures, and SOF3 sampled color restart/other 16-bit color layouts
+  remain active parity
   work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`

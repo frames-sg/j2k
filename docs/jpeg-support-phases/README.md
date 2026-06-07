@@ -362,7 +362,8 @@ Implementation requirements:
   model is understood.
   Status: `Gray8` is supported for the initial 8-bit grayscale shape and
   `Gray16` is supported for the initial 16-bit grayscale shape; `Rgb8` is
-  supported for the initial 8-bit APP14 RGB 4:4:4 shape.
+  supported for the initial 8-bit APP14 RGB 4:4:4 shape, and even-width
+  non-restart 16-bit APP14 RGB/YCbCr 4:2:2 `Rgb16`/`Rgba16` output has landed.
 - Add predictor-specific tests, restart-marker tests, malformed-stream tests,
   and row behavior where the predictor dependencies allow it.
   Status: predictor-specific positive coverage has landed for predictors 1-7,
@@ -372,10 +373,11 @@ Implementation requirements:
   `Rgb8`/`Rgba8`/`Rgb16`/`Rgba16`
   coverage have landed. 8-bit
   grayscale/RGB/YCbCr row streaming and 16-bit grayscale `Gray16` plus APP14
-  RGB/YCbCr `Rgb16` row streaming have landed. Recognized 16-bit APP14
-  RGB/YCbCr 4:2:2 SOF3 shapes now report rejected capability metadata instead
-  of a vague planner failure. Malformed streams, other lossless 16-bit color
-  layouts, and broader precision coverage remain open.
+  RGB/YCbCr `Rgb16` row streaming have landed for 4:4:4 streams. Even-width non-restart
+  16-bit APP14 RGB/YCbCr 4:2:2 full/ROI/scaled/region-scaled output and
+  session-batch coverage have landed. Malformed streams, SOF3 sampled color
+  restart/other lossless 16-bit color layouts, and broader precision coverage
+  remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
@@ -398,7 +400,9 @@ Exit criteria:
   16-bit APP14 RGB fixtures across full-image/ROI/scaled/region-scaled output,
   16-bit APP14 RGB/YCbCr `Rgba16` fixtures across full-image/ROI/scaled/
   region-scaled output, 8-bit and 16-bit YCbCr 4:4:4 fixtures across
-  full-image/ROI/scaled/region-scaled output, plus 8-bit grayscale/RGB/YCbCr row streaming and
+  full-image/ROI/scaled/region-scaled output, even-width non-restart 16-bit APP14
+  RGB/YCbCr 4:2:2 full-image/ROI/scaled/region-scaled and session-batch output,
+  plus 8-bit grayscale/RGB/YCbCr row streaming and
   16-bit grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16` row streaming.
 - DCT decode code remains isolated from lossless predictor logic.
   Status: met for the initial predictors 1-7 path.

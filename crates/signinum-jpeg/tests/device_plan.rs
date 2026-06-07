@@ -25,19 +25,19 @@ use fixtures::{
     lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_3x3_jpeg,
-    lossless_ycbcr_16bit_422_3x3_jpeg, malformed_cmyk_nonleading_max_sampling_jpeg,
-    progressive_12bit_cmyk_16x16_420_jpeg, progressive_12bit_cmyk_16x8_422_jpeg,
-    progressive_12bit_cmyk_420_restart_32x16_jpeg, progressive_12bit_cmyk_422_restart_32x8_jpeg,
-    progressive_12bit_cmyk_8x8_jpeg, progressive_12bit_cmyk_restart_16x8_jpeg,
-    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_420_32x32_jpeg,
-    progressive_12bit_rgb_422_32x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
-    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
-    progressive_12bit_ycbcr_8x8_jpeg, progressive_12bit_ycck_16x16_420_jpeg,
-    progressive_12bit_ycck_16x8_422_jpeg, progressive_12bit_ycck_420_restart_32x16_jpeg,
-    progressive_12bit_ycck_422_restart_32x8_jpeg, progressive_12bit_ycck_8x8_jpeg,
-    progressive_12bit_ycck_restart_16x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
-    ycck_16x8_422_jpeg, ycck_8x8_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
+    lossless_ycbcr_16bit_422_3x3_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
+    malformed_cmyk_nonleading_max_sampling_jpeg, progressive_12bit_cmyk_16x16_420_jpeg,
+    progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_420_restart_32x16_jpeg,
+    progressive_12bit_cmyk_422_restart_32x8_jpeg, progressive_12bit_cmyk_8x8_jpeg,
+    progressive_12bit_cmyk_restart_16x8_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_12bit_rgb_420_32x32_jpeg, progressive_12bit_rgb_422_32x8_jpeg,
+    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
+    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg,
+    progressive_12bit_ycck_16x16_420_jpeg, progressive_12bit_ycck_16x8_422_jpeg,
+    progressive_12bit_ycck_420_restart_32x16_jpeg, progressive_12bit_ycck_422_restart_32x8_jpeg,
+    progressive_12bit_ycck_8x8_jpeg, progressive_12bit_ycck_restart_16x8_jpeg,
+    progressive_8x8_jpeg, ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
 };
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
@@ -2252,43 +2252,74 @@ fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallb
 }
 
 #[test]
-fn capability_report_rejects_lossless_subsampled_color_shapes_with_metadata() {
-    for (input, color_space, reason) in [
+fn capability_report_marks_lossless_16bit_422_color_cpu_eligible() {
+    let requests = [
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb16,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 0,
+                w: 2,
+                h: 2,
+            }),
+            fmt: PixelFormat::Rgb16,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Scaled(Downscale::Half),
+            fmt: PixelFormat::Rgba16,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 0,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+            fmt: PixelFormat::Rgba16,
+        },
+    ];
+
+    for (input, color_space, label) in [
         (
-            lossless_rgb_16bit_422_3x3_jpeg(),
+            lossless_rgb_16bit_422_4x2_jpeg(4),
             ColorSpace::Rgb,
-            "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
+            "APP14 RGB",
         ),
         (
-            lossless_ycbcr_16bit_422_3x3_jpeg(),
+            lossless_ycbcr_16bit_422_4x2_jpeg(4),
             ColorSpace::YCbCr,
-            "JPEG CPU lossless SOF3 YCbCr decode currently supports 4:4:4 sampling only",
+            "YCbCr",
         ),
     ] {
-        let report = JpegCapabilityReport::inspect(
-            &input,
-            JpegCapabilityRequest {
-                op: JpegDecodeOp::Full,
-                fmt: PixelFormat::Rgb16,
-            },
-        )
-        .unwrap_or_else(|err| {
-            panic!(
-                "subsampled lossless SOF3 {color_space:?} should report unsupported capability metadata, got {err}"
-            )
-        });
+        for request in requests {
+            let report = JpegCapabilityReport::inspect(&input, request).unwrap_or_else(|err| {
+                panic!(
+                    "lossless SOF3 16-bit 4:2:2 {label} should report CPU-eligible capability metadata, got {err}"
+                )
+            });
 
-        assert_eq!(report.info.sof_kind, SofKind::Lossless);
-        assert_eq!(report.info.bit_depth, 16);
-        assert_eq!(report.info.dimensions, (3, 3));
-        assert_eq!(report.info.color_space, color_space);
-        assert_eq!(report.info.sampling.max_h, 2);
-        assert_eq!(report.info.sampling.max_v, 1);
-        assert_eq!(report.info.sampling.components(), &[(2, 1), (1, 1), (1, 1)]);
-        assert_eq!(report.cpu.reason, Some(reason));
-        assert!(!report.cpu.eligible);
-        assert!(!report.owned_cuda.eligible);
-        assert!(!report.metal_fast.eligible);
+            assert_eq!(report.info.sof_kind, SofKind::Lossless, "{label}");
+            assert_eq!(report.info.bit_depth, 16, "{label}");
+            assert_eq!(report.info.dimensions, (4, 2), "{label}");
+            assert_eq!(report.info.color_space, color_space, "{label}");
+            assert_eq!(report.info.sampling.max_h, 2, "{label}");
+            assert_eq!(report.info.sampling.max_v, 1, "{label}");
+            assert_eq!(
+                report.info.sampling.components(),
+                &[(2, 1), (1, 1), (1, 1)],
+                "{label}"
+            );
+            assert!(report.cpu.eligible, "{label} {request:?}");
+            assert_eq!(report.cpu.reason, None, "{label} {request:?}");
+            assert!(!report.owned_cuda.eligible, "{label}");
+            assert!(!report.metal_fast.eligible, "{label}");
+        }
     }
 }
 

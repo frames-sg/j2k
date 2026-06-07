@@ -272,27 +272,20 @@ fn cpu_eligibility(info: &Info, request: JpegCapabilityRequest) -> JpegBackendEl
                     16,
                     PixelFormat::Rgb16 | PixelFormat::Rgba16,
                 )
-                    if info.sampling.len() == 3
-                        && info.sampling.max_h == 1
-                        && info.sampling.max_v == 1
-                        && info
-                            .sampling
-                            .components()
-                            .iter()
-                            .all(|&(h, v)| h == 1 && v == 1) =>
+                    if is_supported_lossless_color_sampling(info) =>
                 {
                     JpegBackendEligibility::eligible()
                 }
                 (ColorSpace::Rgb, 8, PixelFormat::Rgb8 | PixelFormat::Rgba8)
                 | (ColorSpace::Rgb, 16, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling only",
+                    "JPEG CPU lossless SOF3 APP14 RGB decode currently supports 4:4:4 sampling or even-width 16-bit 4:2:2 sampling without restart markers",
                 ),
                 (ColorSpace::YCbCr, 8, PixelFormat::Rgb8 | PixelFormat::Rgba8)
                 | (ColorSpace::YCbCr, 16, PixelFormat::Rgb16 | PixelFormat::Rgba16) => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 YCbCr decode currently supports 4:4:4 sampling only",
+                    "JPEG CPU lossless SOF3 YCbCr decode currently supports 4:4:4 sampling or even-width 16-bit 4:2:2 sampling without restart markers",
                 ),
                 _ => JpegBackendEligibility::rejected(
-                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, 8-bit YCbCr Rgb8/Rgba8, 16-bit YCbCr Rgb16/Rgba16, 8-bit APP14 RGB Rgb8/Rgba8, or 16-bit APP14 RGB Rgb16/Rgba16 output only",
+                    "JPEG CPU lossless SOF3 decode currently supports 8-bit Gray8, 16-bit Gray16, 8-bit YCbCr Rgb8/Rgba8, 16-bit YCbCr Rgb16/Rgba16 including even-width 4:2:2 without restart markers, 8-bit APP14 RGB Rgb8/Rgba8, or 16-bit APP14 RGB Rgb16/Rgba16 including even-width 4:2:2 without restart markers output only",
                 ),
             };
         }
@@ -339,6 +332,22 @@ fn is_supported_12bit_three_component_sampling(info: &Info) -> bool {
             (1, 1, [(1, 1), (1, 1), (1, 1)])
                 | (2, 1, [(2, 1), (1, 1), (1, 1)])
                 | (2, 2, [(2, 2), (1, 1), (1, 1)])
+        )
+}
+
+fn is_supported_lossless_color_sampling(info: &Info) -> bool {
+    info.sampling.len() == 3
+        && matches!(
+            (
+                info.bit_depth,
+                info.restart_interval,
+                info.dimensions.0.is_multiple_of(2),
+                info.sampling.max_h,
+                info.sampling.max_v,
+                info.sampling.components()
+            ),
+            (_, _, _, 1, 1, [(1, 1), (1, 1), (1, 1)])
+                | (16, None, true, 2, 1, [(2, 1), (1, 1), (1, 1)])
         )
 }
 

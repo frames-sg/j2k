@@ -288,6 +288,12 @@ struct PreparedLosslessPlan {
     scan_offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LosslessColorSampling {
+    S444,
+    S422,
+}
+
 impl<'a> Decoder<'a> {
     /// Parse the headers without decoding pixels. The parser walks headers up
     /// to the first SOS and then performs a lightweight marker scan so
@@ -559,10 +565,6 @@ impl<'a> Decoder<'a> {
                     .ok_or(JpegError::MissingMarker {
                         marker: MarkerKind::Sof,
                     })?;
-            if matches!(info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr) && (h != 1 || v != 1)
-            {
-                return Err(JpegError::NotImplemented { sof: info.sof_kind });
-            }
             let raw_dc = header.huffman_tables.dc[scan_component.dc_table as usize]
                 .as_ref()
                 .ok_or(JpegError::MissingHuffmanTable {
@@ -580,6 +582,11 @@ impl<'a> Decoder<'a> {
                 dc_table,
                 ac_table: Arc::clone(&empty_huffman),
             });
+        }
+        if matches!(info.color_space, ColorSpace::Rgb | ColorSpace::YCbCr)
+            && lossless_color_sampling(info).is_none()
+        {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         let plan = PreparedDecodePlan {
             components,
@@ -3055,7 +3062,17 @@ impl Decoder<'_> {
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
-        self.decode_lossless_color16_components_into(out, stride, ColorSpace::Rgb)
+        match lossless_color_sampling(&self.info) {
+            Some(LosslessColorSampling::S444) => {
+                self.decode_lossless_color16_components_into(out, stride, ColorSpace::Rgb)
+            }
+            Some(LosslessColorSampling::S422) => {
+                self.decode_lossless_color16_422_into(out, stride, ColorSpace::Rgb)
+            }
+            None => Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            }),
+        }
     }
 
     fn decode_lossless_color16_components_into(
@@ -3150,15 +3167,123 @@ impl Decoder<'_> {
         })
     }
 
+    fn decode_lossless_color16_422_into(
+        &self,
+        out: &mut [u8],
+        stride: usize,
+        color_space: ColorSpace,
+    ) -> Result<DecodeOutcome, JpegError> {
+        let plan = self
+            .lossless_plan
+            .as_ref()
+            .ok_or(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            })?;
+        if plan.bit_depth != 16 {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: plan.bit_depth,
+            });
+        }
+        if self.info.color_space != color_space {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if lossless_color_sampling(&self.info) != Some(LosslessColorSampling::S422) {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
+        if self.plan.components.len() != 3 {
+            return Err(JpegError::UnsupportedComponentCount {
+                count: self.plan.components.len() as u8,
+            });
+        }
+        if !(1..=7).contains(&plan.predictor) {
+            return Err(JpegError::UnsupportedPredictor {
+                predictor: plan.predictor,
+            });
+        }
+
+        let (width, height) = plan.dimensions;
+        let width = width as usize;
+        let height = height as usize;
+        let chroma_width = width.div_ceil(2);
+        let mut c0 = vec![0u16; width * height];
+        let mut c1 = vec![0u16; chroma_width * height];
+        let mut c2 = vec![0u16; chroma_width * height];
+
+        let scan_bytes = &self.bytes[plan.scan_offset..];
+        let mut br = BitReader::new(scan_bytes);
+        for y in 0..height {
+            for mcu_x in 0..chroma_width {
+                for component in &self.plan.components {
+                    let (plane, plane_width) = match component.output_index {
+                        0 => (&mut c0, width),
+                        1 => (&mut c1, chroma_width),
+                        2 => (&mut c2, chroma_width),
+                        _ => {
+                            return Err(JpegError::UnsupportedComponentCount {
+                                count: self.plan.components.len() as u8,
+                            });
+                        }
+                    };
+                    for local_x in 0..component.h as usize {
+                        let x = mcu_x * component.h as usize + local_x;
+                        if x >= plane_width {
+                            continue;
+                        }
+                        decode_lossless_plane16_sample(
+                            &mut br,
+                            &component.dc_table,
+                            plan.predictor,
+                            plane,
+                            plane_width,
+                            x,
+                            y,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        let scan_warnings = finish_scan(&mut br, true)?;
+        write_lossless_color16_422_output(
+            out,
+            stride,
+            color_space,
+            (width, height),
+            LosslessColor16Planes {
+                c0: &c0,
+                c1: &c1,
+                c2: &c2,
+            },
+        );
+        Ok(DecodeOutcome {
+            decoded: Rect::full(self.info.dimensions),
+            warnings: merged_warnings(&self.warnings, scan_warnings),
+        })
+    }
+
     fn decode_lossless_ycbcr16_into(
         &self,
         out: &mut [u8],
         stride: usize,
     ) -> Result<DecodeOutcome, JpegError> {
-        let outcome =
-            self.decode_lossless_color16_components_into(out, stride, ColorSpace::YCbCr)?;
-        convert_ycbcr16_to_rgb16_in_place(out, stride, self.info.dimensions);
-        Ok(outcome)
+        match lossless_color_sampling(&self.info) {
+            Some(LosslessColorSampling::S444) => {
+                let outcome =
+                    self.decode_lossless_color16_components_into(out, stride, ColorSpace::YCbCr)?;
+                convert_ycbcr16_to_rgb16_in_place(out, stride, self.info.dimensions);
+                Ok(outcome)
+            }
+            Some(LosslessColorSampling::S422) => {
+                self.decode_lossless_color16_422_into(out, stride, ColorSpace::YCbCr)
+            }
+            None => Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            }),
+        }
     }
 
     fn decode_lossless_rgb16_region_scaled_into(
@@ -3203,12 +3328,7 @@ impl Decoder<'_> {
         let (width, height) = self.info.dimensions;
         let full_stride = width as usize * 6;
         let mut full = allocate_output_buffer(full_stride * height as usize);
-        let mut outcome = self.decode_lossless_color16_components_into(
-            &mut full,
-            full_stride,
-            ColorSpace::YCbCr,
-        )?;
-        convert_ycbcr16_to_rgb16_in_place(&mut full, full_stride, self.info.dimensions);
+        let mut outcome = self.decode_lossless_ycbcr16_into(&mut full, full_stride)?;
         let output_rect = scaled_rect_covering(roi, downscale)?;
         copy_rgb16_scaled_rect(
             &full,
@@ -4195,6 +4315,27 @@ enum Extended12ColorSampling {
     S444,
     S422,
     S420,
+}
+
+fn lossless_color_sampling(info: &Info) -> Option<LosslessColorSampling> {
+    if info.sampling.len() != 3 {
+        return None;
+    }
+    match (
+        info.sampling.max_h,
+        info.sampling.max_v,
+        info.sampling.components(),
+    ) {
+        (1, 1, &[(1, 1), (1, 1), (1, 1)]) => Some(LosslessColorSampling::S444),
+        (2, 1, &[(2, 1), (1, 1), (1, 1)])
+            if info.bit_depth == 16
+                && info.restart_interval.is_none()
+                && info.dimensions.0.is_multiple_of(2) =>
+        {
+            Some(LosslessColorSampling::S422)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5605,6 +5746,115 @@ fn lossless_predictor_rgb16_rows(
         6 => rb + ((ra - rc) >> 1),
         7 => (ra + rb) >> 1,
         _ => 32768,
+    }
+}
+
+fn decode_lossless_plane16_sample(
+    br: &mut BitReader<'_>,
+    table: &HuffmanTable,
+    predictor: u8,
+    plane: &mut [u16],
+    width: usize,
+    x: usize,
+    y: usize,
+) -> Result<(), JpegError> {
+    let predicted = lossless_predictor_plane16(predictor, plane, width, x, y);
+    let diff = table.decode_fast_dc(br)?;
+    let sample = predicted + diff;
+    if !(0..=u16::MAX as i32).contains(&sample) {
+        return Err(JpegError::HuffmanDecode {
+            mcu: 0,
+            reason: HuffmanFailure::InvalidSymbol,
+        });
+    }
+    plane[y * width + x] = sample as u16;
+    Ok(())
+}
+
+fn lossless_predictor_plane16(
+    predictor: u8,
+    plane: &[u16],
+    width: usize,
+    x: usize,
+    y: usize,
+) -> i32 {
+    let idx = y * width + x;
+    if x == 0 && y == 0 {
+        return 32768;
+    }
+    if y == 0 {
+        return i32::from(plane[idx - 1]);
+    }
+    if x == 0 {
+        return i32::from(plane[idx - width]);
+    }
+
+    let ra = i32::from(plane[idx - 1]);
+    let rb = i32::from(plane[idx - width]);
+    let rc = i32::from(plane[idx - width - 1]);
+    match predictor {
+        1 => ra,
+        2 => rb,
+        3 => rc,
+        4 => ra + rb - rc,
+        5 => ra + ((rb - rc) >> 1),
+        6 => rb + ((ra - rc) >> 1),
+        7 => (ra + rb) >> 1,
+        _ => 32768,
+    }
+}
+
+struct LosslessColor16Planes<'a> {
+    c0: &'a [u16],
+    c1: &'a [u16],
+    c2: &'a [u16],
+}
+
+fn write_lossless_color16_422_output(
+    out: &mut [u8],
+    stride: usize,
+    color_space: ColorSpace,
+    dimensions: (usize, usize),
+    planes: LosslessColor16Planes<'_>,
+) {
+    let (width, height) = dimensions;
+    let chroma_width = width.div_ceil(2);
+    for y in 0..height {
+        let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
+        let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
+        for x in 0..width {
+            let c0_sample = planes.c0[y * width + x];
+            let c1_sample = upsample_h2v1_u16_at(c1_row, x);
+            let c2_sample = upsample_h2v1_u16_at(c2_row, x);
+            let (r, g, b) = match color_space {
+                ColorSpace::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpace::YCbCr => {
+                    crate::color::ycbcr::ycbcr16_to_rgb16(c0_sample, c1_sample, c2_sample)
+                }
+                _ => unreachable!("lossless 4:2:2 color path only accepts RGB/YCbCr"),
+            };
+            let dst = y * stride + x * 6;
+            out[dst..dst + 2].copy_from_slice(&r.to_le_bytes());
+            out[dst + 2..dst + 4].copy_from_slice(&g.to_le_bytes());
+            out[dst + 4..dst + 6].copy_from_slice(&b.to_le_bytes());
+        }
+    }
+}
+
+fn upsample_h2v1_u16_at(row: &[u16], output_x: usize) -> u16 {
+    debug_assert!(!row.is_empty());
+    if row.len() == 1 {
+        return row[0];
+    }
+    let sample = output_x / 2;
+    if output_x == 0 {
+        row[0]
+    } else if output_x == row.len() * 2 - 1 {
+        row[row.len() - 1]
+    } else if output_x.is_multiple_of(2) {
+        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u16
+    } else {
+        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u16
     }
 }
 
