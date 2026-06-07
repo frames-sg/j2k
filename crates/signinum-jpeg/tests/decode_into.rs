@@ -19,13 +19,14 @@ use fixtures::{
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
-    lossless_rgb_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_3x3_rgb16,
-    lossless_ycbcr_16bit_422_4x2_jpeg, lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_3x3_rgb8,
-    malformed_cmyk_nonleading_max_sampling_jpeg, minimal_baseline_420_jpeg,
-    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
-    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
-    LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
-    LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
+    lossless_rgb_16bit_422_4x2_rgb16, lossless_rgb_16bit_422_restart_4x2_jpeg,
+    lossless_ycbcr_16bit_3x3_rgb16, lossless_ycbcr_16bit_422_4x2_jpeg,
+    lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
+    lossless_ycbcr_3x3_rgb8, malformed_cmyk_nonleading_max_sampling_jpeg,
+    minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
+    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
+    LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
     extended_12bit_cmyk_16x16_420_jpeg, extended_12bit_cmyk_16x8_422_jpeg,
@@ -1762,8 +1763,18 @@ fn decode_16bit_lossless_422_color_full_roi_scaled_and_region_scaled_outputs() {
             lossless_rgb_16bit_422_4x2_rgb16(),
         ),
         (
+            "APP14 RGB restart",
+            lossless_rgb_16bit_422_restart_4x2_jpeg(4),
+            lossless_rgb_16bit_422_4x2_rgb16(),
+        ),
+        (
             "YCbCr",
             lossless_ycbcr_16bit_422_4x2_jpeg(4),
+            lossless_ycbcr_16bit_422_4x2_rgb16(),
+        ),
+        (
+            "YCbCr restart",
+            lossless_ycbcr_16bit_422_restart_4x2_jpeg(4),
             lossless_ycbcr_16bit_422_4x2_rgb16(),
         ),
     ];

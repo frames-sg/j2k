@@ -828,6 +828,13 @@ const LOSSLESS_YCBCR_16BIT_422_4X2_C0: [u16; 8] =
 const LOSSLESS_YCBCR_16BIT_422_4X2_C1: [u16; 4] = [35000, 34600, 35200, 34720];
 const LOSSLESS_YCBCR_16BIT_422_4X2_C2: [u16; 4] = [40000, 39250, 40250, 39440];
 
+#[derive(Clone, Copy)]
+struct Lossless422Planes<'a> {
+    c0: &'a [u16],
+    c1: &'a [u16],
+    c2: &'a [u16],
+}
+
 /// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
 pub(crate) fn lossless_predictor_grayscale_3x3_jpeg(predictor: u8) -> Vec<u8> {
     lossless_grayscale_jpeg(3, 3, predictor, &LOSSLESS_GRAYSCALE_3X3_PIXELS)
@@ -877,9 +884,27 @@ pub(crate) fn lossless_rgb_16bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
         4,
         2,
         predictor,
-        &LOSSLESS_RGB_16BIT_422_4X2_C0,
-        &LOSSLESS_RGB_16BIT_422_4X2_C1,
-        &LOSSLESS_RGB_16BIT_422_4X2_C2,
+        Lossless422Planes {
+            c0: &LOSSLESS_RGB_16BIT_422_4X2_C0,
+            c1: &LOSSLESS_RGB_16BIT_422_4X2_C1,
+            c2: &LOSSLESS_RGB_16BIT_422_4X2_C2,
+        },
+    )
+}
+
+/// A 4x2 16-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:2 sampling and restart markers.
+pub(crate) fn lossless_rgb_16bit_422_restart_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_16bit_422_restart_jpeg(
+        Some(0),
+        4,
+        2,
+        predictor,
+        Lossless422Planes {
+            c0: &LOSSLESS_RGB_16BIT_422_4X2_C0,
+            c1: &LOSSLESS_RGB_16BIT_422_4X2_C1,
+            c2: &LOSSLESS_RGB_16BIT_422_4X2_C2,
+        },
+        2,
     )
 }
 
@@ -932,9 +957,27 @@ pub(crate) fn lossless_ycbcr_16bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
         4,
         2,
         predictor,
-        &LOSSLESS_YCBCR_16BIT_422_4X2_C0,
-        &LOSSLESS_YCBCR_16BIT_422_4X2_C1,
-        &LOSSLESS_YCBCR_16BIT_422_4X2_C2,
+        Lossless422Planes {
+            c0: &LOSSLESS_YCBCR_16BIT_422_4X2_C0,
+            c1: &LOSSLESS_YCBCR_16BIT_422_4X2_C1,
+            c2: &LOSSLESS_YCBCR_16BIT_422_4X2_C2,
+        },
+    )
+}
+
+/// A 4x2 16-bit SOF3 lossless YCbCr JPEG with valid 4:2:2 sampling and restart markers.
+pub(crate) fn lossless_ycbcr_16bit_422_restart_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_16bit_422_restart_jpeg(
+        None,
+        4,
+        2,
+        predictor,
+        Lossless422Planes {
+            c0: &LOSSLESS_YCBCR_16BIT_422_4X2_C0,
+            c1: &LOSSLESS_YCBCR_16BIT_422_4X2_C1,
+            c2: &LOSSLESS_YCBCR_16BIT_422_4X2_C2,
+        },
+        2,
     )
 }
 
@@ -1338,16 +1381,43 @@ fn lossless_color_16bit_422_jpeg(
     width: u16,
     height: u16,
     predictor: u8,
-    c0: &[u16],
-    c1: &[u16],
-    c2: &[u16],
+    planes: Lossless422Planes<'_>,
+) -> Vec<u8> {
+    lossless_color_16bit_422_jpeg_impl(adobe_transform, width, height, predictor, planes, None)
+}
+
+fn lossless_color_16bit_422_restart_jpeg(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless422Planes<'_>,
+    restart_interval: u16,
+) -> Vec<u8> {
+    lossless_color_16bit_422_jpeg_impl(
+        adobe_transform,
+        width,
+        height,
+        predictor,
+        planes,
+        Some(restart_interval),
+    )
+}
+
+fn lossless_color_16bit_422_jpeg_impl(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless422Planes<'_>,
+    restart_interval: Option<u16>,
 ) -> Vec<u8> {
     let width_usize = usize::from(width);
     let height_usize = usize::from(height);
     let chroma_width = width_usize.div_ceil(2);
-    assert_eq!(c0.len(), width_usize * height_usize);
-    assert_eq!(c1.len(), chroma_width * height_usize);
-    assert_eq!(c2.len(), chroma_width * height_usize);
+    assert_eq!(planes.c0.len(), width_usize * height_usize);
+    assert_eq!(planes.c1.len(), chroma_width * height_usize);
+    assert_eq!(planes.c2.len(), chroma_width * height_usize);
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0xff, 0xd8]);
@@ -1368,12 +1438,27 @@ fn lossless_color_16bit_422_jpeg(
     bytes.extend_from_slice(&[0xff, 0xc4]);
     bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
     bytes.extend(dht);
+    if let Some(restart_interval) = restart_interval {
+        bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+        bytes.extend_from_slice(&restart_interval.to_be_bytes());
+    }
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
     ]);
-    bytes.extend(lossless_422_entropy_16bit(
-        width, height, predictor, c0, c1, c2,
-    ));
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_422_entropy_16bit_with_restarts(
+            width,
+            height,
+            predictor,
+            planes.c0,
+            planes.c1,
+            planes.c2,
+            restart_interval,
+        )
+    } else {
+        lossless_422_entropy_16bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
+    };
+    bytes.extend(entropy);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }
@@ -1554,6 +1639,70 @@ fn lossless_422_entropy_16bit(
     pack_entropy_bits(bits)
 }
 
+fn lossless_422_entropy_16bit_with_restarts(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    c0: &[u16],
+    c1: &[u16],
+    c2: &[u16],
+    restart_interval: u16,
+) -> Vec<u8> {
+    assert!(restart_interval > 0);
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let chroma_width = width.div_ceil(2);
+    let total_mcus = chroma_width * height;
+    let restart_interval = usize::from(restart_interval);
+    let mut out = Vec::new();
+    let mut expected_rst = 0u8;
+    for segment_start in (0..total_mcus).step_by(restart_interval) {
+        let segment_end = (segment_start + restart_interval).min(total_mcus);
+        let mut bits = Vec::new();
+        for (segment_offset, mcu) in (segment_start..segment_end).enumerate() {
+            let y = mcu / chroma_width;
+            let mcu_x = mcu % chroma_width;
+            let x0 = mcu_x * 2;
+            encode_lossless_component_sample_16bit_with_restart(
+                &mut bits,
+                c0,
+                width,
+                x0,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+            if x0 + 1 < width {
+                encode_lossless_component_sample_16bit(&mut bits, c0, width, x0 + 1, y, predictor);
+            }
+            encode_lossless_component_sample_16bit_with_restart(
+                &mut bits,
+                c1,
+                chroma_width,
+                mcu_x,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+            encode_lossless_component_sample_16bit_with_restart(
+                &mut bits,
+                c2,
+                chroma_width,
+                mcu_x,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+        }
+        out.extend(pack_entropy_bits(bits));
+        if segment_end < total_mcus {
+            out.extend_from_slice(&[0xff, 0xd0 + expected_rst]);
+            expected_rst = (expected_rst + 1) & 0x07;
+        }
+    }
+    out
+}
+
 fn encode_lossless_component_sample_16bit(
     bits: &mut Vec<bool>,
     samples: &[u16],
@@ -1562,8 +1711,26 @@ fn encode_lossless_component_sample_16bit(
     y: usize,
     predictor: u8,
 ) {
+    encode_lossless_component_sample_16bit_with_restart(
+        bits, samples, width, x, y, predictor, false,
+    );
+}
+
+fn encode_lossless_component_sample_16bit_with_restart(
+    bits: &mut Vec<bool>,
+    samples: &[u16],
+    width: usize,
+    x: usize,
+    y: usize,
+    predictor: u8,
+    restart_first_sample: bool,
+) {
     let sample = samples[y * width + x];
-    let predicted = lossless_predicted_value_16bit(samples, width, x, y, predictor);
+    let predicted = if restart_first_sample {
+        32768
+    } else {
+        lossless_predicted_value_16bit(samples, width, x, y, predictor)
+    };
     let diff = i32::from(sample) - predicted;
     let category = lossless_diff_category(diff);
     push_bits(bits, u32::from(category), 4);

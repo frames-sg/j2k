@@ -26,7 +26,8 @@ use fixtures::{
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
-    lossless_ycbcr_16bit_422_3x3_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_422_3x3_jpeg,
+    lossless_ycbcr_16bit_422_4x2_jpeg, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
     malformed_cmyk_nonleading_max_sampling_jpeg, progressive_12bit_cmyk_16x16_420_jpeg,
     progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_420_restart_32x16_jpeg,
     progressive_12bit_cmyk_422_restart_32x8_jpeg, progressive_12bit_cmyk_8x8_jpeg,
@@ -2292,9 +2293,19 @@ fn capability_report_marks_lossless_16bit_422_color_cpu_eligible() {
             "APP14 RGB",
         ),
         (
+            lossless_rgb_16bit_422_restart_4x2_jpeg(4),
+            ColorSpace::Rgb,
+            "APP14 RGB restart",
+        ),
+        (
             lossless_ycbcr_16bit_422_4x2_jpeg(4),
             ColorSpace::YCbCr,
             "YCbCr",
+        ),
+        (
+            lossless_ycbcr_16bit_422_restart_4x2_jpeg(4),
+            ColorSpace::YCbCr,
+            "YCbCr restart",
         ),
     ] {
         for request in requests {
@@ -2307,6 +2318,10 @@ fn capability_report_marks_lossless_16bit_422_color_cpu_eligible() {
             assert_eq!(report.info.sof_kind, SofKind::Lossless, "{label}");
             assert_eq!(report.info.bit_depth, 16, "{label}");
             assert_eq!(report.info.dimensions, (4, 2), "{label}");
+            assert!(
+                matches!(report.info.restart_interval, None | Some(2)),
+                "{label}"
+            );
             assert_eq!(report.info.color_space, color_space, "{label}");
             assert_eq!(report.info.sampling.max_h, 2, "{label}");
             assert_eq!(report.info.sampling.max_v, 1, "{label}");

@@ -3215,8 +3215,17 @@ impl Decoder<'_> {
 
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
+        let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
+        let total_mcus = (chroma_width * height) as u32;
+        let mut mcus_since_restart = 0u32;
+        let mut expected_rst = 0u8;
         for y in 0..height {
             for mcu_x in 0..chroma_width {
+                let mcu_index = (y * chroma_width + mcu_x) as u32;
+                if restart > 0 && mcus_since_restart == restart {
+                    consume_lossless_restart(&mut br, mcu_index, total_mcus, &mut expected_rst)?;
+                    mcus_since_restart = 0;
+                }
                 for component in &self.plan.components {
                     let (plane, plane_width) = match component.output_index {
                         0 => (&mut c0, width),
@@ -3239,11 +3248,17 @@ impl Decoder<'_> {
                             plan.predictor,
                             plane,
                             plane_width,
-                            x,
-                            y,
+                            LosslessPlane16Sample {
+                                x,
+                                y,
+                                restart_first_sample: restart > 0
+                                    && mcus_since_restart == 0
+                                    && local_x == 0,
+                            },
                         )?;
                     }
                 }
+                mcus_since_restart += 1;
             }
         }
 
@@ -4328,9 +4343,7 @@ fn lossless_color_sampling(info: &Info) -> Option<LosslessColorSampling> {
     ) {
         (1, 1, &[(1, 1), (1, 1), (1, 1)]) => Some(LosslessColorSampling::S444),
         (2, 1, &[(2, 1), (1, 1), (1, 1)])
-            if info.bit_depth == 16
-                && info.restart_interval.is_none()
-                && info.dimensions.0.is_multiple_of(2) =>
+            if info.bit_depth == 16 && info.dimensions.0.is_multiple_of(2) =>
         {
             Some(LosslessColorSampling::S422)
         }
@@ -5749,25 +5762,35 @@ fn lossless_predictor_rgb16_rows(
     }
 }
 
+#[derive(Clone, Copy)]
+struct LosslessPlane16Sample {
+    x: usize,
+    y: usize,
+    restart_first_sample: bool,
+}
+
 fn decode_lossless_plane16_sample(
     br: &mut BitReader<'_>,
     table: &HuffmanTable,
     predictor: u8,
     plane: &mut [u16],
     width: usize,
-    x: usize,
-    y: usize,
+    sample: LosslessPlane16Sample,
 ) -> Result<(), JpegError> {
-    let predicted = lossless_predictor_plane16(predictor, plane, width, x, y);
+    let predicted = if sample.restart_first_sample {
+        32768
+    } else {
+        lossless_predictor_plane16(predictor, plane, width, sample.x, sample.y)
+    };
     let diff = table.decode_fast_dc(br)?;
-    let sample = predicted + diff;
-    if !(0..=u16::MAX as i32).contains(&sample) {
+    let value = predicted + diff;
+    if !(0..=u16::MAX as i32).contains(&value) {
         return Err(JpegError::HuffmanDecode {
             mcu: 0,
             reason: HuffmanFailure::InvalidSymbol,
         });
     }
-    plane[y * width + x] = sample as u16;
+    plane[sample.y * width + sample.x] = value as u16;
     Ok(())
 }
 
