@@ -19,7 +19,7 @@ on a single visual smoke test.
   full-image/ROI/scaled/region-scaled 12-bit extended sequential grayscale
   `Gray16`/`Rgb16`/`Rgba16` coverage, including restart-coded grayscale streams,
   initial 12-bit progressive grayscale `Gray16`/`Rgb16`/`Rgba16` coverage, and
-  initial 12-bit APP14 RGB 4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
+  initial 12-bit APP14 RGB 4:4:4/4:2:2/4:2:0, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
   4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage, including restart-coded
   extended three-component color streams and restart-coded extended/progressive
   CMYK/YCCK streams, have landed. Initial lossless SOF3 8-bit
@@ -31,9 +31,9 @@ on a single visual smoke test.
   output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
   4:2:2/4:2:0 fixture coverage and structured rejection for one malformed
   non-leading-max sampling fixture. Broader malformed four-component fixtures,
-  other 12-bit subsampled color output, stronger non-constant 12-bit oracle
-  fixtures, and other lossless SOF3 16-bit color layouts must land CPU parity
-  fixtures and reference
+  nonstandard 12-bit color sampling layouts outside 4:4:4/4:2:2/4:2:0,
+  stronger non-constant 12-bit oracle fixtures, and other lossless SOF3 16-bit
+  color layouts must land CPU parity fixtures and reference
   outputs before any Metal route is promoted. Initial 12-bit extended and
   progressive CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`
   full/ROI/scaled/region-scaled decode and session-batch coverage have landed;

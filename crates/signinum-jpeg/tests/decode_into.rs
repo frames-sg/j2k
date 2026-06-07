@@ -28,25 +28,27 @@ use fixtures::{
 use fixtures::{
     extended_12bit_cmyk_16x16_420_jpeg, extended_12bit_cmyk_16x8_422_jpeg,
     extended_12bit_cmyk_420_restart_32x16_jpeg, extended_12bit_cmyk_422_restart_32x8_jpeg,
-    extended_12bit_cmyk_restart_16x8_jpeg, extended_12bit_rgb_8x8_jpeg,
-    extended_12bit_rgb_8x8_rgb16, extended_12bit_rgb_restart_16x8_jpeg,
-    extended_12bit_rgb_restart_16x8_rgb16, extended_12bit_ycbcr_420_32x32_jpeg,
-    extended_12bit_ycbcr_420_32x32_rgb16, extended_12bit_ycbcr_420_restart_32x32_jpeg,
-    extended_12bit_ycbcr_420_restart_32x32_rgb16, extended_12bit_ycbcr_422_32x8_jpeg,
-    extended_12bit_ycbcr_422_32x8_rgb16, extended_12bit_ycbcr_422_restart_32x8_jpeg,
-    extended_12bit_ycbcr_422_restart_32x8_rgb16, extended_12bit_ycbcr_8x8_jpeg,
-    extended_12bit_ycbcr_8x8_rgb16, extended_12bit_ycbcr_restart_16x8_jpeg,
-    extended_12bit_ycbcr_restart_16x8_rgb16, extended_12bit_ycck_16x16_420_jpeg,
-    extended_12bit_ycck_16x8_422_jpeg, extended_12bit_ycck_420_restart_32x16_jpeg,
-    extended_12bit_ycck_422_restart_32x8_jpeg, extended_12bit_ycck_restart_16x8_jpeg,
-    progressive_12bit_cmyk_16x16_420_jpeg, progressive_12bit_cmyk_16x8_422_jpeg,
-    progressive_12bit_cmyk_420_restart_32x16_jpeg, progressive_12bit_cmyk_422_restart_32x8_jpeg,
-    progressive_12bit_cmyk_8x8_jpeg, progressive_12bit_cmyk_restart_16x8_jpeg,
-    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
-    progressive_12bit_ycbcr_8x8_jpeg, progressive_12bit_ycck_16x16_420_jpeg,
-    progressive_12bit_ycck_16x8_422_jpeg, progressive_12bit_ycck_420_restart_32x16_jpeg,
-    progressive_12bit_ycck_422_restart_32x8_jpeg, progressive_12bit_ycck_8x8_jpeg,
-    progressive_12bit_ycck_restart_16x8_jpeg,
+    extended_12bit_cmyk_restart_16x8_jpeg, extended_12bit_rgb_32x32_rgb16,
+    extended_12bit_rgb_32x8_rgb16, extended_12bit_rgb_420_32x32_jpeg,
+    extended_12bit_rgb_422_32x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
+    extended_12bit_rgb_restart_16x8_jpeg, extended_12bit_rgb_restart_16x8_rgb16,
+    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
+    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_420_restart_32x32_rgb16,
+    extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_422_32x8_rgb16,
+    extended_12bit_ycbcr_422_restart_32x8_jpeg, extended_12bit_ycbcr_422_restart_32x8_rgb16,
+    extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16,
+    extended_12bit_ycbcr_restart_16x8_jpeg, extended_12bit_ycbcr_restart_16x8_rgb16,
+    extended_12bit_ycck_16x16_420_jpeg, extended_12bit_ycck_16x8_422_jpeg,
+    extended_12bit_ycck_420_restart_32x16_jpeg, extended_12bit_ycck_422_restart_32x8_jpeg,
+    extended_12bit_ycck_restart_16x8_jpeg, progressive_12bit_cmyk_16x16_420_jpeg,
+    progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_420_restart_32x16_jpeg,
+    progressive_12bit_cmyk_422_restart_32x8_jpeg, progressive_12bit_cmyk_8x8_jpeg,
+    progressive_12bit_cmyk_restart_16x8_jpeg, progressive_12bit_rgb_420_32x32_jpeg,
+    progressive_12bit_rgb_422_32x8_jpeg, progressive_12bit_ycbcr_420_32x32_jpeg,
+    progressive_12bit_ycbcr_422_32x8_jpeg, progressive_12bit_ycbcr_8x8_jpeg,
+    progressive_12bit_ycck_16x16_420_jpeg, progressive_12bit_ycck_16x8_422_jpeg,
+    progressive_12bit_ycck_420_restart_32x16_jpeg, progressive_12bit_ycck_422_restart_32x8_jpeg,
+    progressive_12bit_ycck_8x8_jpeg, progressive_12bit_ycck_restart_16x8_jpeg,
 };
 
 #[test]
@@ -1021,6 +1023,127 @@ fn decode_region_scaled_into_rgb16_projects_extended12_restart_app14_rgb_samples
     assert_eq!(dec.info().restart_interval, Some(1));
     assert_eq!(outcome.decoded, roi);
     assert_padded_rgb16_rows(&buf, stride, scaled_roi.w as usize, &expected_pixels);
+}
+
+#[test]
+fn decode_12bit_app14_rgb_subsampled_full_roi_scaled_and_region_scaled_outputs() {
+    for (bytes, expected_full, width, height, label) in [
+        (
+            extended_12bit_rgb_422_32x8_jpeg(),
+            extended_12bit_rgb_32x8_rgb16(),
+            32,
+            8,
+            "12-bit extended APP14 RGB 4:2:2",
+        ),
+        (
+            extended_12bit_rgb_420_32x32_jpeg(),
+            extended_12bit_rgb_32x32_rgb16(),
+            32,
+            32,
+            "12-bit extended APP14 RGB 4:2:0",
+        ),
+        (
+            progressive_12bit_rgb_422_32x8_jpeg(),
+            extended_12bit_rgb_32x8_rgb16(),
+            32,
+            8,
+            "12-bit progressive APP14 RGB 4:2:2",
+        ),
+        (
+            progressive_12bit_rgb_420_32x32_jpeg(),
+            extended_12bit_rgb_32x32_rgb16(),
+            32,
+            32,
+            "12-bit progressive APP14 RGB 4:2:0",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} decoder should construct: {err}"));
+        let full_rect = Rect::full((width, height));
+
+        let mut full =
+            vec![0u8; width as usize * height as usize * PixelFormat::Rgb16.bytes_per_pixel()];
+        let outcome = dec
+            .decode_into(
+                &mut full,
+                width as usize * PixelFormat::Rgb16.bytes_per_pixel(),
+                PixelFormat::Rgb16,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGB16 full decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, full_rect, "{label}");
+        assert_eq!(full, expected_full, "{label}");
+
+        let roi = Rect {
+            x: 3,
+            y: 1,
+            w: 11,
+            h: 6,
+        };
+        let expected_roi = crop_rgb16_bytes(&expected_full, width as usize, roi);
+        let mut roi_buf = vec![0u8; roi.w as usize * roi.h as usize * 6];
+        let outcome = dec
+            .decode_region_into(
+                &mut roi_buf,
+                roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel(),
+                PixelFormat::Rgb16,
+                roi,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGB16 ROI decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, roi, "{label}");
+        assert_eq!(roi_buf, expected_roi, "{label}");
+
+        let scaled_rect = scaled_rect_covering_for_test(full_rect, 2);
+        let scaled_row_bytes = scaled_rect.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let scaled_stride = scaled_row_bytes + 8;
+        let expected_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, width as usize, full_rect, 2),
+            u16::MAX,
+        );
+        let mut scaled = vec![0xaau8; scaled_stride * scaled_rect.h as usize];
+        let outcome = dec
+            .decode_scaled_into(
+                &mut scaled,
+                scaled_stride,
+                PixelFormat::Rgba16,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| panic!("{label} RGBA16 scaled decode should succeed: {err}"));
+        assert_eq!(outcome.decoded, full_rect, "{label}");
+        assert_padded_rgba16_rows(
+            &scaled,
+            scaled_stride,
+            scaled_rect.w as usize,
+            &expected_scaled,
+        );
+
+        let region_scaled = scaled_rect_covering_for_test(roi, 2);
+        let region_scaled_row_bytes =
+            region_scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let region_scaled_stride = region_scaled_row_bytes + 8;
+        let expected_region_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, width as usize, roi, 2),
+            u16::MAX,
+        );
+        let mut region_scaled_buf = vec![0xaau8; region_scaled_stride * region_scaled.h as usize];
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut region_scaled_buf,
+                region_scaled_stride,
+                PixelFormat::Rgba16,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{label} RGBA16 region-scaled decode should succeed: {err}")
+            });
+        assert_eq!(outcome.decoded, roi, "{label}");
+        assert_padded_rgba16_rows(
+            &region_scaled_buf,
+            region_scaled_stride,
+            region_scaled.w as usize,
+            &expected_region_scaled,
+        );
+    }
 }
 
 #[test]

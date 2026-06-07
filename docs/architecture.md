@@ -262,7 +262,7 @@ samples or expanded `Rgb16`/`Rgba16` samples, including restart-coded
 grayscale streams.
 Initial 12-bit progressive grayscale full-image/ROI/scaled/region-scaled decode
 writes native `Gray16` samples or expanded `Rgb16`/`Rgba16` samples; initial
-12-bit APP14 RGB 4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
+12-bit APP14 RGB 4:4:4/4:2:2/4:2:0, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled decode writes native
 `Rgb16`/`Rgba16` samples, including restart-coded extended three-component
 color streams. Initial SOF3 8-bit grayscale/RGB/YCbCr row streaming, 8-bit
@@ -275,7 +275,7 @@ fixture coverage and initial 12-bit extended/progressive CMYK/YCCK
 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage have landed, including
 restart-coded extended/progressive four-component streams, along with structured
 rejection for one malformed non-leading-max sampling fixture; broader
-four-component malformed coverage, other 12-bit subsampled color support,
+four-component malformed coverage, nonstandard 12-bit color sampling layouts,
 stronger non-constant 12-bit oracle fixtures, and other lossless SOF3 16-bit
 color layouts remain separate CPU parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
@@ -503,8 +503,8 @@ provisional and check the most recent commits before relying on it.
   `Rgb16`/`Rgba16` decode have landed, including restart-coded extended
   three-component color streams and restart-coded extended/progressive
   CMYK/YCCK streams, while broader four-component malformed coverage, other
-  12-bit subsampled color support, stronger non-constant 12-bit oracle
-  fixtures, and other lossless SOF3 16-bit color layouts remain active parity
+  nonstandard 12-bit color sampling layouts, stronger non-constant 12-bit
+  oracle fixtures, and other lossless SOF3 16-bit color layouts remain active parity
   work.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`

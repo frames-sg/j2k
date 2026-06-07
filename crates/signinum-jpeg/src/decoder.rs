@@ -3433,13 +3433,26 @@ impl Decoder<'_> {
         if matches!(output, Extended12Output::Rgb16) {
             match self.info.color_space {
                 ColorSpace::Rgb => {
-                    return self.decode_progressive12_color444_region_into(
-                        out,
-                        stride,
-                        roi,
-                        downscale,
-                        Extended12RgbProjection::Identity,
-                    );
+                    let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_progressive12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::Identity,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_progressive12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::Identity,
+                            ),
+                    };
                 }
                 ColorSpace::YCbCr => {
                     let sampling = progressive_color_sampling(plan, self.info.sof_kind)?;
@@ -3452,10 +3465,15 @@ impl Decoder<'_> {
                                 downscale,
                                 Extended12RgbProjection::YCbCr,
                             ),
-                        Extended12ColorSampling::S422 => self
-                            .decode_progressive12_ycbcr422_region_into(out, stride, roi, downscale),
-                        Extended12ColorSampling::S420 => self
-                            .decode_progressive12_ycbcr420_region_into(out, stride, roi, downscale),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_progressive12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::YCbCr,
+                            ),
                     };
                 }
                 ColorSpace::Cmyk | ColorSpace::Ycck => {
@@ -3598,12 +3616,14 @@ impl Decoder<'_> {
         })
     }
 
-    fn decode_progressive12_ycbcr422_region_into(
+    fn decode_progressive12_color_subsampled_region_into(
         &self,
         out: &mut [u8],
         stride: usize,
         roi: Rect,
         downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+        projection: Extended12RgbProjection,
     ) -> Result<DecodeOutcome, JpegError> {
         let plan = self
             .progressive_plan
@@ -3611,58 +3631,42 @@ impl Decoder<'_> {
             .ok_or(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             })?;
-        validate_progressive_ycbcr422_plan(plan, self.info.sof_kind)?;
-
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
-        let planes = render_progressive12_color_planes(plan, &dct_blocks.quantized)?;
-        write_extended12_ycbcr422_planes_region(
-            out,
-            stride,
-            Extended12WriteRegion {
-                output_rect,
-                dimensions: self.info.dimensions,
-                downscale,
-                output: Extended12Output::Rgb16,
-            },
-            &planes,
-        );
-
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: self.warnings.to_vec(),
-        })
-    }
-
-    fn decode_progressive12_ycbcr420_region_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        let plan = self
-            .progressive_plan
-            .as_ref()
-            .ok_or(JpegError::NotImplemented {
+        debug_assert!(matches!(
+            sampling,
+            Extended12ColorSampling::S422 | Extended12ColorSampling::S420
+        ));
+        if progressive_color_sampling(plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
-            })?;
-        validate_progressive_ycbcr420_plan(plan, self.info.sof_kind)?;
+            });
+        }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let dct_blocks = decode_progressive_dct_blocks(plan, self.bytes)?;
         let planes = render_progressive12_color_planes(plan, &dct_blocks.quantized)?;
-        write_extended12_ycbcr420_planes_region(
-            out,
-            stride,
-            Extended12WriteRegion {
-                output_rect,
-                dimensions: self.info.dimensions,
-                downscale,
-                output: Extended12Output::Rgb16,
-            },
-            &planes,
-        );
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: self.info.dimensions,
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+        match sampling {
+            Extended12ColorSampling::S444 => unreachable!("4:4:4 path is handled directly"),
+            Extended12ColorSampling::S422 => write_extended12_color422_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+            Extended12ColorSampling::S420 => write_extended12_color420_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+        }
 
         Ok(DecodeOutcome {
             decoded: roi,
@@ -3814,13 +3818,26 @@ impl Decoder<'_> {
         if matches!(output, Extended12Output::Rgb16) {
             match self.info.color_space {
                 ColorSpace::Rgb => {
-                    return self.decode_extended12_color444_region_into(
-                        out,
-                        stride,
-                        roi,
-                        downscale,
-                        Extended12RgbProjection::Identity,
-                    );
+                    let sampling = extended12_color_sampling(&self.plan, self.info.sof_kind)?;
+                    return match sampling {
+                        Extended12ColorSampling::S444 => self
+                            .decode_extended12_color444_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                Extended12RgbProjection::Identity,
+                            ),
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_extended12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::Identity,
+                            ),
+                    };
                 }
                 ColorSpace::YCbCr => {
                     let sampling = extended12_color_sampling(&self.plan, self.info.sof_kind)?;
@@ -3833,12 +3850,15 @@ impl Decoder<'_> {
                                 downscale,
                                 Extended12RgbProjection::YCbCr,
                             ),
-                        Extended12ColorSampling::S422 => {
-                            self.decode_extended12_ycbcr422_region_into(out, stride, roi, downscale)
-                        }
-                        Extended12ColorSampling::S420 => {
-                            self.decode_extended12_ycbcr420_region_into(out, stride, roi, downscale)
-                        }
+                        Extended12ColorSampling::S422 | Extended12ColorSampling::S420 => self
+                            .decode_extended12_color_subsampled_region_into(
+                                out,
+                                stride,
+                                roi,
+                                downscale,
+                                sampling,
+                                Extended12RgbProjection::YCbCr,
+                            ),
                     };
                 }
                 ColorSpace::Cmyk | ColorSpace::Ycck => {
@@ -3996,61 +4016,52 @@ impl Decoder<'_> {
         })
     }
 
-    fn decode_extended12_ycbcr422_region_into(
+    fn decode_extended12_color_subsampled_region_into(
         &self,
         out: &mut [u8],
         stride: usize,
         roi: Rect,
         downscale: DownscaleFactor,
+        sampling: Extended12ColorSampling,
+        projection: Extended12RgbProjection,
     ) -> Result<DecodeOutcome, JpegError> {
-        validate_extended12_ycbcr422_plan(&self.plan, self.info.sof_kind)?;
+        debug_assert!(matches!(
+            sampling,
+            Extended12ColorSampling::S422 | Extended12ColorSampling::S420
+        ));
+        if extended12_color_sampling(&self.plan, self.info.sof_kind)? != sampling {
+            return Err(JpegError::NotImplemented {
+                sof: self.info.sof_kind,
+            });
+        }
 
         let output_rect = scaled_rect_covering(roi, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
         let (planes, scan_warnings) =
             decode_extended12_color_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
-        write_extended12_ycbcr422_planes_region(
-            out,
-            stride,
-            Extended12WriteRegion {
-                output_rect,
-                dimensions: self.info.dimensions,
-                downscale,
-                output: Extended12Output::Rgb16,
-            },
-            &planes,
-        );
-
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings),
-        })
-    }
-
-    fn decode_extended12_ycbcr420_region_into(
-        &self,
-        out: &mut [u8],
-        stride: usize,
-        roi: Rect,
-        downscale: DownscaleFactor,
-    ) -> Result<DecodeOutcome, JpegError> {
-        validate_extended12_ycbcr420_plan(&self.plan, self.info.sof_kind)?;
-
-        let output_rect = scaled_rect_covering(roi, downscale)?;
-        let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let (planes, scan_warnings) =
-            decode_extended12_color_planes(&self.plan, scan_bytes, self.info.sof_kind)?;
-        write_extended12_ycbcr420_planes_region(
-            out,
-            stride,
-            Extended12WriteRegion {
-                output_rect,
-                dimensions: self.info.dimensions,
-                downscale,
-                output: Extended12Output::Rgb16,
-            },
-            &planes,
-        );
+        let write_region = Extended12WriteRegion {
+            output_rect,
+            dimensions: self.info.dimensions,
+            downscale,
+            output: Extended12Output::Rgb16,
+        };
+        match sampling {
+            Extended12ColorSampling::S444 => unreachable!("4:4:4 path is handled directly"),
+            Extended12ColorSampling::S422 => write_extended12_color422_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+            Extended12ColorSampling::S420 => write_extended12_color420_planes_region(
+                out,
+                stride,
+                write_region,
+                projection,
+                &planes,
+            ),
+        }
 
         Ok(DecodeOutcome {
             decoded: roi,
@@ -4587,26 +4598,6 @@ fn validate_extended12_four_component444_plan(
     Ok(())
 }
 
-fn validate_extended12_ycbcr422_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if extended12_color_sampling(plan, sof)? != Extended12ColorSampling::S422 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
-}
-
-fn validate_extended12_ycbcr420_plan(
-    plan: &PreparedDecodePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if extended12_color_sampling(plan, sof)? != Extended12ColorSampling::S420 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
-}
-
 fn extended12_color_sampling(
     plan: &PreparedDecodePlan,
     sof: SofKind,
@@ -4670,26 +4661,6 @@ fn four_component_sampling_from_sequential(
         return Err(JpegError::NotImplemented { sof });
     }
     Ok(components)
-}
-
-fn validate_progressive_ycbcr422_plan(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if progressive_color_sampling(plan, sof)? != Extended12ColorSampling::S422 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
-}
-
-fn validate_progressive_ycbcr420_plan(
-    plan: &PreparedProgressivePlan,
-    sof: SofKind,
-) -> Result<(), JpegError> {
-    if progressive_color_sampling(plan, sof)? != Extended12ColorSampling::S420 {
-        return Err(JpegError::NotImplemented { sof });
-    }
-    Ok(())
 }
 
 fn progressive_color_sampling(
@@ -4919,10 +4890,11 @@ fn write_extended12_four_component_block_region(
     }
 }
 
-fn write_extended12_ycbcr422_planes_region(
+fn write_extended12_color422_planes_region(
     out: &mut [u8],
     stride: usize,
     region: Extended12WriteRegion,
+    projection: Extended12RgbProjection,
     planes: &[Extended12Plane; 3],
 ) {
     let (width, height) = region.dimensions;
@@ -4939,9 +4911,12 @@ fn write_extended12_ycbcr422_planes_region(
                 [chroma_y * planes[1].stride..chroma_y * planes[1].stride + planes[1].width];
             let cr_row = &planes[2].pixels
                 [chroma_y * planes[2].stride..chroma_y * planes[2].stride + planes[2].width];
-            let cb = upsample_h2v1_12bit_at(cb_row, source_x);
-            let cr = upsample_h2v1_12bit_at(cr_row, source_x);
-            let (r, g, b) = crate::color::ycbcr::ycbcr12_to_rgb16(y, cb, cr);
+            let c1 = upsample_h2v1_12bit_at(cb_row, source_x);
+            let c2 = upsample_h2v1_12bit_at(cr_row, source_x);
+            let (r, g, b) = match projection {
+                Extended12RgbProjection::Identity => (y, c1, c2),
+                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(y, c1, c2),
+            };
             let dst_col = (output_x - output_rect.x) as usize;
             let dst_start = dst_row * stride + dst_col * 6;
             let dst = &mut out[dst_start..dst_start + 6];
@@ -4952,10 +4927,11 @@ fn write_extended12_ycbcr422_planes_region(
     }
 }
 
-fn write_extended12_ycbcr420_planes_region(
+fn write_extended12_color420_planes_region(
     out: &mut [u8],
     stride: usize,
     region: Extended12WriteRegion,
+    projection: Extended12RgbProjection,
     planes: &[Extended12Plane; 3],
 ) {
     let (width, height) = region.dimensions;
@@ -4971,21 +4947,24 @@ fn write_extended12_ycbcr420_planes_region(
             let chroma_y = (source_y / 2).min(chroma_height - 1);
             let prev_y = chroma_y.saturating_sub(1);
             let next_y = (chroma_y + 1).min(chroma_height - 1);
-            let cb = upsample_h2v2_12bit_at(
+            let c1 = upsample_h2v2_12bit_at(
                 extended12_plane_row(&planes[1], prev_y),
                 extended12_plane_row(&planes[1], chroma_y),
                 extended12_plane_row(&planes[1], next_y),
                 source_x,
                 !source_y.is_multiple_of(2),
             );
-            let cr = upsample_h2v2_12bit_at(
+            let c2 = upsample_h2v2_12bit_at(
                 extended12_plane_row(&planes[2], prev_y),
                 extended12_plane_row(&planes[2], chroma_y),
                 extended12_plane_row(&planes[2], next_y),
                 source_x,
                 !source_y.is_multiple_of(2),
             );
-            let (r, g, b) = crate::color::ycbcr::ycbcr12_to_rgb16(y, cb, cr);
+            let (r, g, b) = match projection {
+                Extended12RgbProjection::Identity => (y, c1, c2),
+                Extended12RgbProjection::YCbCr => crate::color::ycbcr::ycbcr12_to_rgb16(y, c1, c2),
+            };
             let dst_col = (output_x - output_rect.x) as usize;
             let dst_start = dst_row * stride + dst_col * 6;
             let dst = &mut out[dst_start..dst_start + 6];

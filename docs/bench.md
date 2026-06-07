@@ -714,7 +714,7 @@ Current v1 scope is explicit:
   grayscale `Gray16`/`Rgb16`/`Rgba16` full-image/ROI/scaled/region-scaled output is
   CPU-backed, including restart-coded grayscale streams, and initial 12-bit
   progressive grayscale `Gray16`/`Rgb16`/`Rgba16` output is CPU-backed. Initial
-  12-bit APP14 RGB 4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
+  12-bit APP14 RGB 4:4:4/4:2:2/4:2:0, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK
   4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` output is CPU-backed, including
   restart-coded extended three-component color streams. Initial
   lossless SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
@@ -731,8 +731,8 @@ Current v1 scope is explicit:
   4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage are CPU-backed, including
   restart-coded extended/progressive four-component streams, and one
   malformed non-leading-max sampling fixture has structured rejection coverage;
-  broader four-component malformed coverage, other 12-bit subsampled color
-  support, stronger non-constant 12-bit oracle
+  broader four-component malformed coverage, nonstandard 12-bit color sampling
+  layouts, stronger non-constant 12-bit oracle
   fixtures, and other SOF3 16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.

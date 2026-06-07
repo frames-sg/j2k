@@ -29,14 +29,15 @@ unsupported errors until a separate entropy and conformance plan exists.
   region-scaled CPU decode to `Gray16` or expanded `Rgb16`/`Rgba16`, including
   restart-coded grayscale streams; initial 12-bit progressive grayscale
   full-image/ROI/scaled/region-scaled CPU decode to `Gray16` or expanded
-  `Rgb16`/`Rgba16`; plus initial 12-bit extended sequential APP14 RGB 4:4:4
-  and YCbCr 4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled CPU
+  `Rgb16`/`Rgba16`; plus initial 12-bit extended sequential APP14 RGB
+  4:4:4/4:2:2/4:2:0 and YCbCr 4:4:4/4:2:2/4:2:0
+  full-image/ROI/scaled/region-scaled CPU
   decode to `Rgb16`/`Rgba16`, including restart-coded three-component color
   streams; initial 12-bit extended sequential and progressive CMYK/YCCK
   4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled CPU decode to
   `Rgb16`/`Rgba16`, including restart-coded extended/progressive
-  four-component streams; other 12-bit subsampled color support and stronger
-  non-constant 12-bit oracle fixtures remain
+  four-component streams; nonstandard 12-bit color sampling layouts outside
+  4:4:4/4:2:2/4:2:0 and stronger non-constant 12-bit oracle fixtures remain
   open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
@@ -255,18 +256,19 @@ Implementation requirements:
   internal precision.
   Status: initial scalar full-image/ROI/scaled/region-scaled grayscale
   `Gray16`/`Rgb16`/`Rgba16`, including restart-coded grayscale streams, plus
-  APP14 RGB 4:4:4 `Rgb16`/`Rgba16` and YCbCr 4:4:4/4:2:2/4:2:0
+  APP14 RGB 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` and YCbCr 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` paths, plus initial CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` paths have landed for SOF1 12-bit streams, including
   restart-coded three-component and four-component streams.
 - Prefer `Gray16`, `Rgb16`, and `Rgba16` output for native precision.
   Status: `Gray16` and expanded grayscale `Rgb16`/`Rgba16` are available for
   the initial grayscale path, including restart-coded streams, and direct
-  APP14 RGB 4:4:4 plus YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` is available
-  for the initial three-component color path, including restart-coded color
-  streams; CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` is available for the
-  initial four-component color path, including restart-coded streams. Other
-  12-bit subsampled color and stronger non-constant CMYK/YCCK oracle fixtures
+  APP14 RGB 4:4:4/4:2:2/4:2:0 plus YCbCr 4:4:4/4:2:2/4:2:0
+  `Rgb16`/`Rgba16` is available for the initial three-component color path,
+  including restart-coded color streams; CMYK/YCCK 4:4:4/4:2:2/4:2:0
+  `Rgb16`/`Rgba16` is available for the initial four-component color path,
+  including restart-coded streams. Nonstandard 12-bit color sampling layouts
+  outside 4:4:4/4:2:2/4:2:0 and stronger non-constant CMYK/YCCK oracle fixtures
   remain open.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
@@ -274,14 +276,14 @@ Implementation requirements:
 - Add ROI, scaled, region-scaled, and batch coverage after full-image parity.
   Status: ROI, scaled, and region-scaled output have landed for the initial
   grayscale path, including restart-coded grayscale streams, and for APP14 RGB
-  4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 paths, including restart-coded color
-  streams; ROI/scaled/region-scaled and session-batch coverage has landed for
+  4:4:4/4:2:2/4:2:0 and YCbCr 4:4:4/4:2:2/4:2:0 paths, including
+  restart-coded color streams; ROI/scaled/region-scaled and session-batch coverage has landed for
   12-bit CMYK/YCCK 4:4:4/4:2:2/4:2:0, including restart-coded streams.
 - Update `JpegOutputBuffer` and capability reporting for 16-bit output formats.
   Status: capability reporting marks full-image/ROI/scaled/region-scaled
   `Extended12` grayscale `Gray16`/`Rgb16`/`Rgba16`, including restart-coded
-  grayscale streams, APP14 RGB 4:4:4 `Rgb16`/`Rgba16`, including restart-coded
-  APP14 RGB streams, and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`, including
+  grayscale streams, APP14 RGB 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`,
+  including restart-coded APP14 RGB streams, and YCbCr 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`, including
   restart-coded YCbCr streams, plus CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16`, including restart-coded streams, CPU-eligible.
 
@@ -296,7 +298,7 @@ Exit criteria:
 - 12-bit extended sequential CPU decode matches the reference oracle for
   full-image and API-shaped outputs.
   Status: partially met for the committed all-zero grayscale fixture, the
-  restart-coded all-zero grayscale fixture, channel-distinct APP14 RGB 4:4:4
+  restart-coded all-zero grayscale fixture, APP14 RGB 4:4:4/4:2:2/4:2:0
   and YCbCr 4:4:4/4:2:2/4:2:0 fixtures, and restart-coded APP14 RGB/YCbCr
   color fixtures covering full-image/ROI/scaled/region-scaled
   `Gray16`/`Rgb16`/`Rgba16` output as applicable.
@@ -310,23 +312,23 @@ Implementation requirements:
 
 - Extend progressive coefficient assembly to 12-bit precision.
   Status: landed for initial grayscale SOF2 coefficient assembly to native
-  `Gray16` or expanded `Rgb16`/`Rgba16` output, APP14 RGB 4:4:4
-  `Rgb16`/`Rgba16` output, and YCbCr 4:4:4/4:2:2/4:2:0
+  `Gray16` or expanded `Rgb16`/`Rgba16` output, APP14 RGB
+  4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` output, and YCbCr 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` output, plus CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` output.
 - Support full-image first, then ROI/scaled through the same output machinery
   used by Phase A2 and B1.
   Status: full-image, ROI, scaled, and region-scaled output have landed for
-  the initial grayscale, APP14 RGB 4:4:4, and YCbCr 4:4:4/4:2:2/4:2:0 paths
+  the initial grayscale, APP14 RGB 4:4:4/4:2:2/4:2:0, and YCbCr 4:4:4/4:2:2/4:2:0 paths
   plus CMYK/YCCK 4:4:4/4:2:2/4:2:0 paths through full progressive
   coefficient assembly and 12-bit block projection.
 - Keep capability reasons separate for unsupported progressive 12-bit shapes
   during partial implementation.
   Status: capability reporting marks grayscale `Progressive12`
-  `Gray16`/`Rgb16`/`Rgba16`, APP14 RGB 4:4:4 `Rgb16`/`Rgba16`, and YCbCr
+  `Gray16`/`Rgb16`/`Rgba16`, APP14 RGB 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`, and YCbCr
   4:4:4/4:2:2/4:2:0 plus CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`
-  CPU-eligible while keeping Metal/CUDA rejected; other 12-bit progressive
-  subsampled color output remains unsupported.
+  CPU-eligible while keeping Metal/CUDA rejected; nonstandard 12-bit progressive
+  color sampling layouts outside 4:4:4/4:2:2/4:2:0 remain unsupported.
 
 Metal follow-up candidate:
 
@@ -337,11 +339,11 @@ Exit criteria:
 
 - 12-bit progressive full and viewport-shaped CPU outputs match oracle data.
   Status: partially met for the committed all-zero grayscale SOF2 fixture and
-  channel-distinct APP14 RGB 4:4:4 and YCbCr 4:4:4/4:2:2/4:2:0 fixtures
+  APP14 RGB 4:4:4/4:2:2/4:2:0 and YCbCr 4:4:4/4:2:2/4:2:0 fixtures
   plus initial CMYK/YCCK 4:4:4/4:2:2/4:2:0 fixtures covering
   full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16`/`Rgba16` output as
-  applicable. Non-constant external-oracle fixtures and other 12-bit
-  subsampled color remain open.
+  applicable. Non-constant external-oracle fixtures and nonstandard 12-bit
+  color sampling layouts remain open.
 
 ## Phase C1: Lossless SOF3 CPU Decode
 
