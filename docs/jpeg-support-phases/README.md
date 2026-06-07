@@ -8,9 +8,9 @@ CPU-first tranche:
 - B: 12-bit extended/progressive JPEG decode
 - C: lossless SOF3 decode
 
-Arithmetic-coded, hierarchical, and differential JPEG remain explicit future
-work outside this tranche. They should continue to report structured
-unsupported errors until a separate entropy and conformance plan exists.
+Arithmetic-coded, hierarchical, and differential JPEG are outside the current
+WSI/medical decode target. They should continue to report structured
+unsupported errors rather than being treated as required parity work.
 
 ## Current Baseline
 
@@ -45,11 +45,13 @@ unsupported errors until a separate entropy and conformance plan exists.
   to `Rgb8` plus full/ROI/scaled/region-scaled `Rgba8`, 8-bit YCbCr 4:4:4
   decode to `Rgb8` plus full/ROI/scaled/region-scaled `Rgba8`, and 16-bit
   APP14 RGB plus YCbCr 4:4:4 decode to `Rgb16` plus full/ROI/scaled/
-  region-scaled `Rgba16`,
+  region-scaled `Rgba16`, plus even-width 8-bit APP14 RGB/YCbCr 4:2:2
+  and even-dimension 8-bit APP14 RGB/YCbCr 4:2:0 `Rgb8`/`Rgba8`
+  full/ROI/scaled/region-scaled and session-batch decode,
   including restart-coded APP14 RGB and YCbCr streams; 8-bit
   grayscale/RGB/YCbCr row streaming and 16-bit grayscale `Gray16` plus APP14
-  RGB/YCbCr `Rgb16` row streaming have landed, while other lossless 16-bit
-  color layouts remain open
+  RGB/YCbCr `Rgb16` row streaming have landed, while nonstandard lossless
+  sampled color layouts remain open
 
 `signinum-jpeg-metal` currently accelerates selected 8-bit YCbCr fast packet
 shapes:
@@ -76,8 +78,8 @@ measured acceleration work.
    - CPU decode support
    - Metal resident support
    - benchmark-approved Auto eligibility
-6. Docs must avoid saying "all JPEGs" until arithmetic, hierarchical, and
-   differential JPEG have a separate accepted plan and implementation.
+6. Docs must avoid saying "all JPEGs"; arithmetic-coded, hierarchical, and
+   differential JPEG are explicit structured-rejection cases for this target.
 
 ## Completion Phase Map
 
@@ -97,9 +99,9 @@ This includes Phase A1/A2, B1/B2, C1, and D below:
 - Capability reporting that lets Statumen and other callers route without
   duplicating JPEG marker, sampling, precision, or output-format logic.
 
-Phase 1 is not complete until unsupported arithmetic, hierarchical, differential,
-and remaining color/precision shapes have explicit structured rejection tests or
-their own accepted implementation plan.
+Phase 1 is not complete until out-of-scope arithmetic, hierarchical, and
+differential SOF markers plus remaining in-scope color/precision shapes have
+explicit structured rejection tests or CPU support.
 Status: arithmetic, differential sequential, hierarchical/differential
 progressive/lossless, and differential arithmetic SOF markers now have typed
 `UnsupportedSof` inspection and capability-routing tests. Remaining
@@ -361,10 +363,11 @@ Implementation requirements:
 - Support `Gray8`/`Gray16` and RGB variants only when the component and sample
   model is understood.
   Status: `Gray8` is supported for the initial 8-bit grayscale shape and
-  `Gray16` is supported for the initial 16-bit grayscale shape; `Rgb8` is
-  supported for the initial 8-bit APP14 RGB 4:4:4 shape, and even-width
-  16-bit APP14 RGB/YCbCr 4:2:2 plus even-dimension 16-bit APP14 RGB/YCbCr
-  4:2:0 `Rgb16`/`Rgba16` output has landed, including restart-coded streams.
+  `Gray16` is supported for the initial 16-bit grayscale shape; `Rgb8`/`Rgba8`
+  is supported for 8-bit APP14 RGB/YCbCr 4:4:4 plus even-width 4:2:2 and
+  even-dimension 4:2:0 sampled color shapes, and even-width 16-bit APP14
+  RGB/YCbCr 4:2:2 plus even-dimension 16-bit APP14 RGB/YCbCr 4:2:0
+  `Rgb16`/`Rgba16` output has landed, including restart-coded streams.
 - Add predictor-specific tests, restart-marker tests, malformed-stream tests,
   and row behavior where the predictor dependencies allow it.
   Status: predictor-specific positive coverage has landed for predictors 1-7,
@@ -375,11 +378,11 @@ Implementation requirements:
   coverage have landed. 8-bit
   grayscale/RGB/YCbCr row streaming and 16-bit grayscale `Gray16` plus APP14
   RGB/YCbCr `Rgb16` row streaming have landed for 4:4:4 streams. Even-width
-  16-bit APP14 RGB/YCbCr 4:2:2 plus even-dimension 16-bit APP14 RGB/YCbCr
-  4:2:0 full/ROI/scaled/region-scaled output and session-batch coverage have
-  landed, including restart-coded streams. Malformed streams, SOF3 sampled
-  color layouts beyond those 16-bit 4:2:2/4:2:0 shapes, and broader precision
-  coverage remain open.
+  8-bit and 16-bit APP14 RGB/YCbCr 4:2:2 plus even-dimension 8-bit and 16-bit
+  APP14 RGB/YCbCr 4:2:0 full/ROI/scaled/region-scaled output and
+  session-batch coverage have landed, including restart-coded streams.
+  Malformed streams, nonstandard SOF3 sampled color layouts beyond those
+  4:2:2/4:2:0 shapes, and broader precision coverage remain open.
 - Keep unsupported predictors as `UnsupportedPredictor` or a more specific
   structured error.
   Status: unsupported predictor values return `UnsupportedPredictor` during
@@ -402,11 +405,12 @@ Exit criteria:
   16-bit APP14 RGB fixtures across full-image/ROI/scaled/region-scaled output,
   16-bit APP14 RGB/YCbCr `Rgba16` fixtures across full-image/ROI/scaled/
   region-scaled output, 8-bit and 16-bit YCbCr 4:4:4 fixtures across
-  full-image/ROI/scaled/region-scaled output, even-width 16-bit APP14
-  RGB/YCbCr 4:2:2 plus even-dimension 16-bit APP14 RGB/YCbCr 4:2:0
-  full-image/ROI/scaled/region-scaled and session-batch output including
-  restart-coded streams, plus 8-bit grayscale/RGB/YCbCr row streaming and
-  16-bit grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16` row streaming.
+  full-image/ROI/scaled/region-scaled output, even-width 8-bit and 16-bit
+  APP14 RGB/YCbCr 4:2:2 plus even-dimension 8-bit and 16-bit APP14
+  RGB/YCbCr 4:2:0 full-image/ROI/scaled/region-scaled and session-batch
+  output including restart-coded streams, plus 8-bit grayscale/RGB/YCbCr row
+  streaming and 16-bit grayscale `Gray16` plus APP14 RGB/YCbCr `Rgb16` row
+  streaming.
 - DCT decode code remains isolated from lossless predictor logic.
   Status: met for the initial predictors 1-7 path.
 

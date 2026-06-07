@@ -25,21 +25,24 @@ on a single visual smoke test.
   CMYK/YCCK streams, have landed. Initial lossless SOF3 8-bit
   grayscale/RGB/YCbCr row streaming, 16-bit grayscale row streaming, 16-bit
   APP14 RGB `Rgb16` output/row streaming, 8-bit APP14 RGB/YCbCr
-  full/ROI/scaled/region-scaled `Rgba8`, 16-bit APP14 RGB/YCbCr
-  full/ROI/scaled/region-scaled `Rgba16`, and 8-bit plus 16-bit YCbCr 4:4:4
+  full/ROI/scaled/region-scaled `Rgba8`, including even-width 4:2:2 and
+  even-dimension 4:2:0 sampled color plus session-batch coverage, 16-bit
+  APP14 RGB/YCbCr full/ROI/scaled/region-scaled `Rgba16`, and 8-bit plus
+  16-bit YCbCr 4:4:4
   `Rgb8`/`Rgb16`
   output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
   4:2:2/4:2:0 fixture coverage and structured rejection for one malformed
   non-leading-max sampling fixture. Broader malformed four-component fixtures,
   nonstandard 12-bit color sampling layouts outside 4:4:4/4:2:2/4:2:0,
-  stronger non-constant 12-bit oracle fixtures, and SOF3 sampled color layouts
-  beyond even-width 16-bit 4:2:2 and even-dimension 16-bit 4:2:0 must land CPU
+  stronger non-constant 12-bit oracle fixtures, and nonstandard SOF3 sampled
+  color layouts beyond even-width 8/16-bit 4:2:2 and even-dimension 8/16-bit 4:2:0 must land CPU
   parity fixtures and reference outputs before any Metal route is promoted. Initial 12-bit extended and
   progressive CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`
   full/ROI/scaled/region-scaled decode and session-batch coverage have landed;
-  even-width lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 and even-dimension
-  lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:0 full/ROI/scaled/region-scaled
-  decode and session-batch coverage, including restart-coded streams, have landed.
+  even-width lossless SOF3 8-bit and 16-bit APP14 RGB/YCbCr 4:2:2 and
+  even-dimension lossless SOF3 8-bit and 16-bit APP14 RGB/YCbCr 4:2:0
+  full/ROI/scaled/region-scaled decode and session-batch coverage, including
+  restart-coded streams, have landed.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.

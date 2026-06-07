@@ -21,15 +21,21 @@ use fixtures::{
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_420_4x4_jpeg,
     lossless_rgb_16bit_420_4x4_rgb16, lossless_rgb_16bit_420_restart_4x4_jpeg,
     lossless_rgb_16bit_422_4x2_jpeg, lossless_rgb_16bit_422_4x2_rgb16,
-    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_rgb_8bit_420_4x4_jpeg,
+    lossless_rgb_8bit_420_4x4_rgb8, lossless_rgb_8bit_420_restart_4x4_jpeg,
+    lossless_rgb_8bit_422_4x2_jpeg, lossless_rgb_8bit_422_4x2_rgb8,
+    lossless_rgb_8bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
     lossless_ycbcr_16bit_420_4x4_jpeg, lossless_ycbcr_16bit_420_4x4_rgb16,
     lossless_ycbcr_16bit_420_restart_4x4_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
     lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
-    lossless_ycbcr_3x3_rgb8, malformed_cmyk_nonleading_max_sampling_jpeg,
-    minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
-    progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb,
-    ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS,
-    LOSSLESS_GRAYSCALE_3X3_PIXELS, LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
+    lossless_ycbcr_3x3_rgb8, lossless_ycbcr_8bit_420_4x4_jpeg, lossless_ycbcr_8bit_420_4x4_rgb8,
+    lossless_ycbcr_8bit_420_restart_4x4_jpeg, lossless_ycbcr_8bit_422_4x2_jpeg,
+    lossless_ycbcr_8bit_422_4x2_rgb8, lossless_ycbcr_8bit_422_restart_4x2_jpeg,
+    malformed_cmyk_nonleading_max_sampling_jpeg, minimal_baseline_420_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
+    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
+    LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
+    LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
 use fixtures::{
     extended_12bit_cmyk_16x16_420_jpeg, extended_12bit_cmyk_16x8_422_jpeg,
@@ -1754,6 +1760,168 @@ fn decode_into_rgb16_converts_lossless_ycbcr16_common_predictors() {
 
         assert_eq!(outcome.decoded, Rect::full((w, h)));
         assert_rgb16_image_eq(&buf, &expected, w as usize);
+    }
+}
+
+#[test]
+fn decode_8bit_lossless_422_color_full_roi_scaled_and_region_scaled_outputs() {
+    let cases = [
+        (
+            "APP14 RGB",
+            lossless_rgb_8bit_422_4x2_jpeg(4),
+            lossless_rgb_8bit_422_4x2_rgb8(),
+        ),
+        (
+            "APP14 RGB restart",
+            lossless_rgb_8bit_422_restart_4x2_jpeg(4),
+            lossless_rgb_8bit_422_4x2_rgb8(),
+        ),
+        (
+            "YCbCr",
+            lossless_ycbcr_8bit_422_4x2_jpeg(4),
+            lossless_ycbcr_8bit_422_4x2_rgb8(),
+        ),
+        (
+            "YCbCr restart",
+            lossless_ycbcr_8bit_422_restart_4x2_jpeg(4),
+            lossless_ycbcr_8bit_422_4x2_rgb8(),
+        ),
+    ];
+
+    for (label, bytes, expected_full) in cases {
+        assert_8bit_lossless_sampled_color_decode(
+            label,
+            &bytes,
+            &expected_full,
+            (4, 2),
+            &[(2, 1), (1, 1), (1, 1)],
+            Rect {
+                x: 1,
+                y: 0,
+                w: 2,
+                h: 2,
+            },
+        );
+    }
+}
+
+#[test]
+fn decode_8bit_lossless_420_color_full_roi_scaled_and_region_scaled_outputs() {
+    let cases = [
+        (
+            "APP14 RGB",
+            lossless_rgb_8bit_420_4x4_jpeg(4),
+            lossless_rgb_8bit_420_4x4_rgb8(),
+        ),
+        (
+            "APP14 RGB restart",
+            lossless_rgb_8bit_420_restart_4x4_jpeg(4),
+            lossless_rgb_8bit_420_4x4_rgb8(),
+        ),
+        (
+            "YCbCr",
+            lossless_ycbcr_8bit_420_4x4_jpeg(4),
+            lossless_ycbcr_8bit_420_4x4_rgb8(),
+        ),
+        (
+            "YCbCr restart",
+            lossless_ycbcr_8bit_420_restart_4x4_jpeg(4),
+            lossless_ycbcr_8bit_420_4x4_rgb8(),
+        ),
+    ];
+
+    for (label, bytes, expected_full) in cases {
+        assert_8bit_lossless_sampled_color_decode(
+            label,
+            &bytes,
+            &expected_full,
+            (4, 4),
+            &[(2, 2), (1, 1), (1, 1)],
+            Rect {
+                x: 1,
+                y: 1,
+                w: 2,
+                h: 2,
+            },
+        );
+    }
+}
+
+fn assert_8bit_lossless_sampled_color_decode(
+    label: &str,
+    bytes: &[u8],
+    expected_full: &[u8],
+    dimensions: (u32, u32),
+    sampling: &[(u8, u8)],
+    roi: Rect,
+) {
+    let dec = Decoder::new(bytes)
+        .unwrap_or_else(|err| panic!("8-bit lossless sampled {label} JPEG must construct: {err}"));
+    let (w, h) = dec.info().dimensions;
+    assert_eq!((w, h), dimensions, "{label}");
+    assert_eq!(dec.info().sampling.components(), sampling, "{label}");
+
+    let stride = w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut full = vec![0u8; stride * h as usize];
+    let outcome = dec
+        .decode_into(&mut full, stride, PixelFormat::Rgb8)
+        .unwrap_or_else(|err| panic!("8-bit lossless sampled {label} full decode: {err}"));
+    assert_eq!(outcome.decoded, Rect::full((w, h)), "{label}");
+    assert_eq!(full, expected_full, "{label}");
+
+    let roi_stride = roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel() + 3;
+    let mut roi_buf = vec![0xaau8; roi_stride * roi.h as usize];
+    let expected_roi = crop_rgb(expected_full, w, roi);
+    let outcome = dec
+        .decode_region_into(&mut roi_buf, roi_stride, PixelFormat::Rgb8, roi)
+        .unwrap_or_else(|err| panic!("8-bit lossless sampled {label} ROI decode: {err}"));
+    assert_eq!(outcome.decoded, roi, "{label}");
+    let roi_row_bytes = roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    for (row, expected_row) in roi_buf
+        .chunks_exact(roi_stride)
+        .zip(expected_roi.chunks_exact(roi_row_bytes))
+    {
+        assert_eq!(&row[..roi_row_bytes], expected_row, "{label}");
+        assert_eq!(&row[roi_row_bytes..], &[0xaa; 3], "{label}");
+    }
+
+    let scaled = scaled_rect_covering_for_test(Rect::full((w, h)), 2);
+    let scaled_stride = scaled.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let mut scaled_buf = vec![0u8; scaled_stride * scaled.h as usize];
+    let expected_scaled = rgb8_to_rgba8(&project_scaled_rgb(expected_full, w, h, scaled, 2), 255);
+    let outcome = dec
+        .decode_scaled_into(
+            &mut scaled_buf,
+            scaled_stride,
+            PixelFormat::Rgba8,
+            Downscale::Half,
+        )
+        .unwrap_or_else(|err| panic!("8-bit lossless sampled {label} scaled decode: {err}"));
+    assert_eq!(outcome.decoded, Rect::full((w, h)), "{label}");
+    assert_eq!(scaled_buf, expected_scaled, "{label}");
+
+    let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+    let scaled_roi_stride = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel() + 4;
+    let scaled_roi_row_bytes = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let mut scaled_roi_buf = vec![0xaau8; scaled_roi_stride * scaled_roi.h as usize];
+    let expected_scaled_roi =
+        rgb8_to_rgba8(&project_scaled_rgb(expected_full, w, h, scaled_roi, 2), 255);
+    let outcome = dec
+        .decode_region_scaled_into(
+            &mut scaled_roi_buf,
+            scaled_roi_stride,
+            PixelFormat::Rgba8,
+            roi,
+            Downscale::Half,
+        )
+        .unwrap_or_else(|err| panic!("8-bit lossless sampled {label} region-scaled decode: {err}"));
+    assert_eq!(outcome.decoded, roi, "{label}");
+    for (row, expected_row) in scaled_roi_buf
+        .chunks_exact(scaled_roi_stride)
+        .zip(expected_scaled_roi.chunks_exact(scaled_roi_row_bytes))
+    {
+        assert_eq!(&row[..scaled_roi_row_bytes], expected_row, "{label}");
+        assert_eq!(&row[scaled_roi_row_bytes..], &[0xaa; 4], "{label}");
     }
 }
 

@@ -818,6 +818,26 @@ pub(crate) const LOSSLESS_YCBCR_16BIT_3X3_PIXELS: [u16; 27] = [
     39680,
 ];
 
+const LOSSLESS_RGB_8BIT_422_4X2_C0: [u8; 8] = [130, 132, 136, 140, 128, 135, 142, 150];
+const LOSSLESS_RGB_8BIT_422_4X2_C1: [u8; 4] = [50, 55, 54, 60];
+const LOSSLESS_RGB_8BIT_422_4X2_C2: [u8; 4] = [200, 195, 202, 198];
+
+const LOSSLESS_YCBCR_8BIT_422_4X2_C0: [u8; 8] = [100, 104, 110, 116, 96, 102, 108, 114];
+const LOSSLESS_YCBCR_8BIT_422_4X2_C1: [u8; 4] = [150, 140, 155, 144];
+const LOSSLESS_YCBCR_8BIT_422_4X2_C2: [u8; 4] = [200, 190, 202, 193];
+
+const LOSSLESS_RGB_8BIT_420_4X4_C0: [u8; 16] = [
+    130, 132, 136, 140, 128, 135, 142, 150, 126, 133, 139, 146, 124, 131, 137, 144,
+];
+const LOSSLESS_RGB_8BIT_420_4X4_C1: [u8; 4] = [50, 55, 54, 60];
+const LOSSLESS_RGB_8BIT_420_4X4_C2: [u8; 4] = [200, 195, 202, 198];
+
+const LOSSLESS_YCBCR_8BIT_420_4X4_C0: [u8; 16] = [
+    100, 104, 110, 116, 96, 102, 108, 114, 92, 101, 109, 117, 90, 99, 107, 115,
+];
+const LOSSLESS_YCBCR_8BIT_420_4X4_C1: [u8; 4] = [150, 140, 155, 144];
+const LOSSLESS_YCBCR_8BIT_420_4X4_C2: [u8; 4] = [200, 190, 202, 193];
+
 const LOSSLESS_RGB_16BIT_422_4X2_C0: [u16; 8] =
     [33000, 33012, 33025, 33045, 32990, 33020, 33044, 33070];
 const LOSSLESS_RGB_16BIT_422_4X2_C1: [u16; 4] = [16000, 16100, 16055, 16140];
@@ -854,6 +874,20 @@ struct Lossless420Planes<'a> {
     c0: &'a [u16],
     c1: &'a [u16],
     c2: &'a [u16],
+}
+
+#[derive(Clone, Copy)]
+struct Lossless422Planes8<'a> {
+    c0: &'a [u8],
+    c1: &'a [u8],
+    c2: &'a [u8],
+}
+
+#[derive(Clone, Copy)]
+struct Lossless420Planes8<'a> {
+    c0: &'a [u8],
+    c1: &'a [u8],
+    c2: &'a [u8],
 }
 
 /// A 3x3 SOF3 lossless grayscale JPEG using predictor 1..=7.
@@ -898,6 +932,48 @@ pub(crate) fn lossless_rgb_16bit_422_3x3_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// A 4x2 8-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:2 sampling.
+pub(crate) fn lossless_rgb_8bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_422_jpeg(
+        Some(0),
+        4,
+        2,
+        predictor,
+        Lossless422Planes8 {
+            c0: &LOSSLESS_RGB_8BIT_422_4X2_C0,
+            c1: &LOSSLESS_RGB_8BIT_422_4X2_C1,
+            c2: &LOSSLESS_RGB_8BIT_422_4X2_C2,
+        },
+    )
+}
+
+/// A 4x2 8-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:2 sampling and restart markers.
+pub(crate) fn lossless_rgb_8bit_422_restart_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_422_restart_jpeg(
+        Some(0),
+        4,
+        2,
+        predictor,
+        Lossless422Planes8 {
+            c0: &LOSSLESS_RGB_8BIT_422_4X2_C0,
+            c1: &LOSSLESS_RGB_8BIT_422_4X2_C1,
+            c2: &LOSSLESS_RGB_8BIT_422_4X2_C2,
+        },
+        2,
+    )
+}
+
+pub(crate) fn lossless_rgb_8bit_422_4x2_rgb8() -> Vec<u8> {
+    lossless_422_planes_to_rgb8(
+        ColorSpaceFixture::Rgb,
+        4,
+        2,
+        &LOSSLESS_RGB_8BIT_422_4X2_C0,
+        &LOSSLESS_RGB_8BIT_422_4X2_C1,
+        &LOSSLESS_RGB_8BIT_422_4X2_C2,
+    )
+}
+
 /// A 4x2 16-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:2 sampling.
 pub(crate) fn lossless_rgb_16bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
     lossless_color_16bit_422_jpeg(
@@ -937,6 +1013,48 @@ pub(crate) fn lossless_rgb_16bit_422_4x2_rgb16() -> Vec<u8> {
         &LOSSLESS_RGB_16BIT_422_4X2_C0,
         &LOSSLESS_RGB_16BIT_422_4X2_C1,
         &LOSSLESS_RGB_16BIT_422_4X2_C2,
+    )
+}
+
+/// A 4x4 8-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:0 sampling.
+pub(crate) fn lossless_rgb_8bit_420_4x4_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_420_jpeg(
+        Some(0),
+        4,
+        4,
+        predictor,
+        Lossless420Planes8 {
+            c0: &LOSSLESS_RGB_8BIT_420_4X4_C0,
+            c1: &LOSSLESS_RGB_8BIT_420_4X4_C1,
+            c2: &LOSSLESS_RGB_8BIT_420_4X4_C2,
+        },
+    )
+}
+
+/// A 4x4 8-bit SOF3 lossless APP14 RGB JPEG with valid 4:2:0 sampling and restart markers.
+pub(crate) fn lossless_rgb_8bit_420_restart_4x4_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_420_restart_jpeg(
+        Some(0),
+        4,
+        4,
+        predictor,
+        Lossless420Planes8 {
+            c0: &LOSSLESS_RGB_8BIT_420_4X4_C0,
+            c1: &LOSSLESS_RGB_8BIT_420_4X4_C1,
+            c2: &LOSSLESS_RGB_8BIT_420_4X4_C2,
+        },
+        2,
+    )
+}
+
+pub(crate) fn lossless_rgb_8bit_420_4x4_rgb8() -> Vec<u8> {
+    lossless_420_planes_to_rgb8(
+        ColorSpaceFixture::Rgb,
+        4,
+        4,
+        &LOSSLESS_RGB_8BIT_420_4X4_C0,
+        &LOSSLESS_RGB_8BIT_420_4X4_C1,
+        &LOSSLESS_RGB_8BIT_420_4X4_C2,
     )
 }
 
@@ -1006,6 +1124,48 @@ pub(crate) fn lossless_predictor_ycbcr_16bit_3x3_jpeg(predictor: u8) -> Vec<u8> 
     lossless_ycbcr_16bit_jpeg(3, 3, predictor, &LOSSLESS_YCBCR_16BIT_3X3_PIXELS)
 }
 
+/// A 4x2 8-bit SOF3 lossless YCbCr JPEG with valid 4:2:2 sampling.
+pub(crate) fn lossless_ycbcr_8bit_422_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_422_jpeg(
+        None,
+        4,
+        2,
+        predictor,
+        Lossless422Planes8 {
+            c0: &LOSSLESS_YCBCR_8BIT_422_4X2_C0,
+            c1: &LOSSLESS_YCBCR_8BIT_422_4X2_C1,
+            c2: &LOSSLESS_YCBCR_8BIT_422_4X2_C2,
+        },
+    )
+}
+
+/// A 4x2 8-bit SOF3 lossless YCbCr JPEG with valid 4:2:2 sampling and restart markers.
+pub(crate) fn lossless_ycbcr_8bit_422_restart_4x2_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_422_restart_jpeg(
+        None,
+        4,
+        2,
+        predictor,
+        Lossless422Planes8 {
+            c0: &LOSSLESS_YCBCR_8BIT_422_4X2_C0,
+            c1: &LOSSLESS_YCBCR_8BIT_422_4X2_C1,
+            c2: &LOSSLESS_YCBCR_8BIT_422_4X2_C2,
+        },
+        2,
+    )
+}
+
+pub(crate) fn lossless_ycbcr_8bit_422_4x2_rgb8() -> Vec<u8> {
+    lossless_422_planes_to_rgb8(
+        ColorSpaceFixture::YCbCr,
+        4,
+        2,
+        &LOSSLESS_YCBCR_8BIT_422_4X2_C0,
+        &LOSSLESS_YCBCR_8BIT_422_4X2_C1,
+        &LOSSLESS_YCBCR_8BIT_422_4X2_C2,
+    )
+}
+
 /// A 3x3 16-bit SOF3 lossless YCbCr JPEG with unsupported 4:2:2 sampling.
 pub(crate) fn lossless_ycbcr_16bit_422_3x3_jpeg() -> Vec<u8> {
     let mut bytes = lossless_predictor_ycbcr_16bit_3x3_jpeg(1);
@@ -1052,6 +1212,48 @@ pub(crate) fn lossless_ycbcr_16bit_422_4x2_rgb16() -> Vec<u8> {
         &LOSSLESS_YCBCR_16BIT_422_4X2_C0,
         &LOSSLESS_YCBCR_16BIT_422_4X2_C1,
         &LOSSLESS_YCBCR_16BIT_422_4X2_C2,
+    )
+}
+
+/// A 4x4 8-bit SOF3 lossless YCbCr JPEG with valid 4:2:0 sampling.
+pub(crate) fn lossless_ycbcr_8bit_420_4x4_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_420_jpeg(
+        None,
+        4,
+        4,
+        predictor,
+        Lossless420Planes8 {
+            c0: &LOSSLESS_YCBCR_8BIT_420_4X4_C0,
+            c1: &LOSSLESS_YCBCR_8BIT_420_4X4_C1,
+            c2: &LOSSLESS_YCBCR_8BIT_420_4X4_C2,
+        },
+    )
+}
+
+/// A 4x4 8-bit SOF3 lossless YCbCr JPEG with valid 4:2:0 sampling and restart markers.
+pub(crate) fn lossless_ycbcr_8bit_420_restart_4x4_jpeg(predictor: u8) -> Vec<u8> {
+    lossless_color_8bit_420_restart_jpeg(
+        None,
+        4,
+        4,
+        predictor,
+        Lossless420Planes8 {
+            c0: &LOSSLESS_YCBCR_8BIT_420_4X4_C0,
+            c1: &LOSSLESS_YCBCR_8BIT_420_4X4_C1,
+            c2: &LOSSLESS_YCBCR_8BIT_420_4X4_C2,
+        },
+        2,
+    )
+}
+
+pub(crate) fn lossless_ycbcr_8bit_420_4x4_rgb8() -> Vec<u8> {
+    lossless_420_planes_to_rgb8(
+        ColorSpaceFixture::YCbCr,
+        4,
+        4,
+        &LOSSLESS_YCBCR_8BIT_420_4X4_C0,
+        &LOSSLESS_YCBCR_8BIT_420_4X4_C1,
+        &LOSSLESS_YCBCR_8BIT_420_4X4_C2,
     )
 }
 
@@ -1481,6 +1683,173 @@ fn lossless_ycbcr_16bit_restart_jpeg(
     bytes
 }
 
+fn lossless_color_8bit_422_jpeg(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless422Planes8<'_>,
+) -> Vec<u8> {
+    lossless_color_8bit_422_jpeg_impl(adobe_transform, width, height, predictor, planes, None)
+}
+
+fn lossless_color_8bit_422_restart_jpeg(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless422Planes8<'_>,
+    restart_interval: u16,
+) -> Vec<u8> {
+    lossless_color_8bit_422_jpeg_impl(
+        adobe_transform,
+        width,
+        height,
+        predictor,
+        planes,
+        Some(restart_interval),
+    )
+}
+
+fn lossless_color_8bit_422_jpeg_impl(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless422Planes8<'_>,
+    restart_interval: Option<u16>,
+) -> Vec<u8> {
+    let width_usize = usize::from(width);
+    let height_usize = usize::from(height);
+    let chroma_width = width_usize.div_ceil(2);
+    assert_eq!(planes.c0.len(), width_usize * height_usize);
+    assert_eq!(planes.c1.len(), chroma_width * height_usize);
+    assert_eq!(planes.c2.len(), chroma_width * height_usize);
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    if let Some(transform) = adobe_transform {
+        bytes.extend_from_slice(&[
+            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, transform,
+        ]);
+    }
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x21, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    if let Some(restart_interval) = restart_interval {
+        bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+        bytes.extend_from_slice(&restart_interval.to_be_bytes());
+    }
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+    ]);
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_422_entropy_8bit_with_restarts(
+            width,
+            height,
+            predictor,
+            planes.c0,
+            planes.c1,
+            planes.c2,
+            restart_interval,
+        )
+    } else {
+        lossless_422_entropy_8bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
+    };
+    bytes.extend(entropy);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn lossless_color_8bit_420_jpeg(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+) -> Vec<u8> {
+    lossless_color_8bit_420_jpeg_impl(adobe_transform, width, height, predictor, planes, None)
+}
+
+fn lossless_color_8bit_420_restart_jpeg(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+    restart_interval: u16,
+) -> Vec<u8> {
+    lossless_color_8bit_420_jpeg_impl(
+        adobe_transform,
+        width,
+        height,
+        predictor,
+        planes,
+        Some(restart_interval),
+    )
+}
+
+fn lossless_color_8bit_420_jpeg_impl(
+    adobe_transform: Option<u8>,
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+    restart_interval: Option<u16>,
+) -> Vec<u8> {
+    let width_usize = usize::from(width);
+    let height_usize = usize::from(height);
+    let chroma_width = width_usize.div_ceil(2);
+    let chroma_height = height_usize.div_ceil(2);
+    assert_eq!(planes.c0.len(), width_usize * height_usize);
+    assert_eq!(planes.c1.len(), chroma_width * chroma_height);
+    assert_eq!(planes.c2.len(), chroma_width * chroma_height);
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    if let Some(transform) = adobe_transform {
+        bytes.extend_from_slice(&[
+            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, transform,
+        ]);
+    }
+    bytes.extend_from_slice(&[0xff, 0xc3, 0x00, 17, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    let mut dht = Vec::new();
+    dht.push(0x00);
+    dht.extend_from_slice(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    dht.extend(0..=8);
+    bytes.extend_from_slice(&[0xff, 0xc4]);
+    bytes.extend_from_slice(&(dht.len() as u16 + 2).to_be_bytes());
+    bytes.extend(dht);
+    if let Some(restart_interval) = restart_interval {
+        bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04]);
+        bytes.extend_from_slice(&restart_interval.to_be_bytes());
+    }
+    bytes.extend_from_slice(&[
+        0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+    ]);
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_420_entropy_8bit_with_restarts(width, height, predictor, planes, restart_interval)
+    } else {
+        lossless_420_entropy_8bit(width, height, predictor, planes)
+    };
+    bytes.extend(entropy);
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
 fn lossless_color_16bit_422_jpeg(
     adobe_transform: Option<u8>,
     width: u16,
@@ -1767,6 +2136,172 @@ fn lossless_entropy_with_restarts(
     out
 }
 
+fn lossless_422_entropy_8bit(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    c0: &[u8],
+    c1: &[u8],
+    c2: &[u8],
+) -> Vec<u8> {
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let chroma_width = width.div_ceil(2);
+    let mut bits = Vec::new();
+    for y in 0..height {
+        for mcu_x in 0..chroma_width {
+            let x0 = mcu_x * 2;
+            encode_lossless_component_sample_8bit(&mut bits, c0, width, x0, y, predictor);
+            if x0 + 1 < width {
+                encode_lossless_component_sample_8bit(&mut bits, c0, width, x0 + 1, y, predictor);
+            }
+            encode_lossless_component_sample_8bit(&mut bits, c1, chroma_width, mcu_x, y, predictor);
+            encode_lossless_component_sample_8bit(&mut bits, c2, chroma_width, mcu_x, y, predictor);
+        }
+    }
+    pack_entropy_bits(bits)
+}
+
+fn lossless_422_entropy_8bit_with_restarts(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    c0: &[u8],
+    c1: &[u8],
+    c2: &[u8],
+    restart_interval: u16,
+) -> Vec<u8> {
+    assert!(restart_interval > 0);
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let chroma_width = width.div_ceil(2);
+    let total_mcus = chroma_width * height;
+    let restart_interval = usize::from(restart_interval);
+    let mut out = Vec::new();
+    let mut expected_rst = 0u8;
+    for segment_start in (0..total_mcus).step_by(restart_interval) {
+        let segment_end = (segment_start + restart_interval).min(total_mcus);
+        let mut bits = Vec::new();
+        for (segment_offset, mcu) in (segment_start..segment_end).enumerate() {
+            let y = mcu / chroma_width;
+            let mcu_x = mcu % chroma_width;
+            let x0 = mcu_x * 2;
+            encode_lossless_component_sample_8bit_with_restart(
+                &mut bits,
+                c0,
+                width,
+                x0,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+            if x0 + 1 < width {
+                encode_lossless_component_sample_8bit(&mut bits, c0, width, x0 + 1, y, predictor);
+            }
+            encode_lossless_component_sample_8bit_with_restart(
+                &mut bits,
+                c1,
+                chroma_width,
+                mcu_x,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+            encode_lossless_component_sample_8bit_with_restart(
+                &mut bits,
+                c2,
+                chroma_width,
+                mcu_x,
+                y,
+                predictor,
+                segment_offset == 0,
+            );
+        }
+        out.extend(pack_entropy_bits(bits));
+        if segment_end < total_mcus {
+            out.extend_from_slice(&[0xff, 0xd0 + expected_rst]);
+            expected_rst = (expected_rst + 1) & 0x07;
+        }
+    }
+    out
+}
+
+fn lossless_420_entropy_8bit(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+) -> Vec<u8> {
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    let mut bits = Vec::new();
+    for mcu_y in 0..chroma_height {
+        for mcu_x in 0..chroma_width {
+            encode_lossless_420_mcu_8bit(
+                &mut bits,
+                predictor,
+                planes,
+                Lossless420Mcu {
+                    image_width: width,
+                    image_height: height,
+                    chroma_width,
+                    mcu_x,
+                    mcu_y,
+                    restart_first_mcu: false,
+                },
+            );
+        }
+    }
+    pack_entropy_bits(bits)
+}
+
+fn lossless_420_entropy_8bit_with_restarts(
+    width: u16,
+    height: u16,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+    restart_interval: u16,
+) -> Vec<u8> {
+    assert!(restart_interval > 0);
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    let total_mcus = chroma_width * chroma_height;
+    let restart_interval = usize::from(restart_interval);
+    let mut out = Vec::new();
+    let mut expected_rst = 0u8;
+    for segment_start in (0..total_mcus).step_by(restart_interval) {
+        let segment_end = (segment_start + restart_interval).min(total_mcus);
+        let mut bits = Vec::new();
+        for (segment_offset, mcu) in (segment_start..segment_end).enumerate() {
+            let mcu_y = mcu / chroma_width;
+            let mcu_x = mcu % chroma_width;
+            encode_lossless_420_mcu_8bit(
+                &mut bits,
+                predictor,
+                planes,
+                Lossless420Mcu {
+                    image_width: width,
+                    image_height: height,
+                    chroma_width,
+                    mcu_x,
+                    mcu_y,
+                    restart_first_mcu: segment_offset == 0,
+                },
+            );
+        }
+        out.extend(pack_entropy_bits(bits));
+        if segment_end < total_mcus {
+            out.extend_from_slice(&[0xff, 0xd0 + expected_rst]);
+            expected_rst = (expected_rst + 1) & 0x07;
+        }
+    }
+    out
+}
+
 fn lossless_entropy_16bit(width: u16, predictor: u8, samples: &[u16]) -> Vec<u8> {
     let width = usize::from(width);
     let mut bits = Vec::new();
@@ -1972,6 +2507,87 @@ struct Lossless420Mcu {
     mcu_x: usize,
     mcu_y: usize,
     restart_first_mcu: bool,
+}
+
+fn encode_lossless_420_mcu_8bit(
+    bits: &mut Vec<bool>,
+    predictor: u8,
+    planes: Lossless420Planes8<'_>,
+    mcu: Lossless420Mcu,
+) {
+    let x0 = mcu.mcu_x * 2;
+    let y0 = mcu.mcu_y * 2;
+    for local_y in 0..2 {
+        for local_x in 0..2 {
+            let x = x0 + local_x;
+            let y = y0 + local_y;
+            if x < mcu.image_width && y < mcu.image_height {
+                encode_lossless_component_sample_8bit_with_restart(
+                    bits,
+                    planes.c0,
+                    mcu.image_width,
+                    x,
+                    y,
+                    predictor,
+                    mcu.restart_first_mcu && local_x == 0 && local_y == 0,
+                );
+            }
+        }
+    }
+    encode_lossless_component_sample_8bit_with_restart(
+        bits,
+        planes.c1,
+        mcu.chroma_width,
+        mcu.mcu_x,
+        mcu.mcu_y,
+        predictor,
+        mcu.restart_first_mcu,
+    );
+    encode_lossless_component_sample_8bit_with_restart(
+        bits,
+        planes.c2,
+        mcu.chroma_width,
+        mcu.mcu_x,
+        mcu.mcu_y,
+        predictor,
+        mcu.restart_first_mcu,
+    );
+}
+
+fn encode_lossless_component_sample_8bit(
+    bits: &mut Vec<bool>,
+    samples: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    predictor: u8,
+) {
+    encode_lossless_component_sample_8bit_with_restart(
+        bits, samples, width, x, y, predictor, false,
+    );
+}
+
+fn encode_lossless_component_sample_8bit_with_restart(
+    bits: &mut Vec<bool>,
+    samples: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    predictor: u8,
+    restart_first_sample: bool,
+) {
+    let sample = samples[y * width + x];
+    let predicted = if restart_first_sample {
+        128
+    } else {
+        lossless_predicted_value(samples, width, x, y, predictor)
+    };
+    let diff = i32::from(sample) - predicted;
+    let category = lossless_diff_category(diff);
+    push_bits(bits, u32::from(category), 4);
+    if category != 0 {
+        push_bits(bits, lossless_magnitude_bits(diff, category), category);
+    }
 }
 
 fn encode_lossless_420_mcu_16bit(
@@ -2358,6 +2974,65 @@ enum ColorSpaceFixture {
     YCbCr,
 }
 
+fn lossless_422_planes_to_rgb8(
+    color_space: ColorSpaceFixture,
+    width: usize,
+    height: usize,
+    c0: &[u8],
+    c1: &[u8],
+    c2: &[u8],
+) -> Vec<u8> {
+    let chroma_width = width.div_ceil(2);
+    let mut out = Vec::with_capacity(width * height * 3);
+    for y in 0..height {
+        let c1_row = &c1[y * chroma_width..(y + 1) * chroma_width];
+        let c2_row = &c2[y * chroma_width..(y + 1) * chroma_width];
+        for x in 0..width {
+            let c0_sample = c0[y * width + x];
+            let c1_sample = upsample_h2v1_8bit_for_fixture(c1_row, x);
+            let c2_sample = upsample_h2v1_8bit_for_fixture(c2_row, x);
+            let (r, g, b) = match color_space {
+                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::YCbCr => {
+                    ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
+                }
+            };
+            out.extend_from_slice(&[r, g, b]);
+        }
+    }
+    out
+}
+
+fn lossless_420_planes_to_rgb8(
+    color_space: ColorSpaceFixture,
+    width: usize,
+    height: usize,
+    c0: &[u8],
+    c1: &[u8],
+    c2: &[u8],
+) -> Vec<u8> {
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    let mut out = Vec::with_capacity(width * height * 3);
+    for y in 0..height {
+        for x in 0..width {
+            let c0_sample = c0[y * width + x];
+            let c1_sample =
+                upsample_h2v2_8bit_for_fixture(c1, chroma_width, chroma_height, width, x, y);
+            let c2_sample =
+                upsample_h2v2_8bit_for_fixture(c2, chroma_width, chroma_height, width, x, y);
+            let (r, g, b) = match color_space {
+                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::YCbCr => {
+                    ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
+                }
+            };
+            out.extend_from_slice(&[r, g, b]);
+        }
+    }
+    out
+}
+
 fn lossless_422_planes_to_rgb16(
     color_space: ColorSpaceFixture,
     width: usize,
@@ -2415,6 +3090,59 @@ fn lossless_420_planes_to_rgb16(
         }
     }
     out
+}
+
+fn upsample_h2v1_8bit_for_fixture(row: &[u8], output_x: usize) -> u8 {
+    if row.len() == 1 {
+        return row[0];
+    }
+    let sample = output_x / 2;
+    if output_x == 0 {
+        row[0]
+    } else if output_x == row.len() * 2 - 1 {
+        row[row.len() - 1]
+    } else if output_x.is_multiple_of(2) {
+        ((3 * u32::from(row[sample]) + u32::from(row[sample - 1]) + 2) / 4) as u8
+    } else {
+        ((3 * u32::from(row[sample]) + u32::from(row[sample + 1]) + 2) / 4) as u8
+    }
+}
+
+fn upsample_h2v2_8bit_for_fixture(
+    plane: &[u8],
+    chroma_width: usize,
+    chroma_height: usize,
+    output_width: usize,
+    output_x: usize,
+    output_y: usize,
+) -> u8 {
+    let chroma_y = output_y / 2;
+    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
+    let near_y = if output_y.is_multiple_of(2) {
+        chroma_y.saturating_sub(1)
+    } else {
+        (chroma_y + 1).min(chroma_height - 1)
+    };
+    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
+    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
+    if chroma_width == 1 {
+        return ((4 * colsum(0) + 8) >> 4) as u8;
+    }
+
+    let sample = output_x / 2;
+    let this = colsum(sample);
+    match output_x {
+        0 => ((this * 4 + 8) >> 4) as u8,
+        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u8,
+        _ if output_x.is_multiple_of(2) => {
+            let last = colsum(sample - 1);
+            ((this * 3 + last + 8) >> 4) as u8
+        }
+        _ => {
+            let next = colsum(sample + 1);
+            ((this * 3 + next + 7) >> 4) as u8
+        }
+    }
 }
 
 fn upsample_h2v1_16bit_for_fixture(row: &[u16], output_x: usize) -> u16 {

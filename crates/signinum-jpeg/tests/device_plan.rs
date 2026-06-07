@@ -27,9 +27,13 @@ use fixtures::{
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
     lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_420_4x4_jpeg,
     lossless_rgb_16bit_420_restart_4x4_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
-    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_420_4x4_jpeg,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_rgb_8bit_420_4x4_jpeg,
+    lossless_rgb_8bit_420_restart_4x4_jpeg, lossless_rgb_8bit_422_4x2_jpeg,
+    lossless_rgb_8bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_420_4x4_jpeg,
     lossless_ycbcr_16bit_420_restart_4x4_jpeg, lossless_ycbcr_16bit_422_3x3_jpeg,
     lossless_ycbcr_16bit_422_4x2_jpeg, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
+    lossless_ycbcr_8bit_420_4x4_jpeg, lossless_ycbcr_8bit_420_restart_4x4_jpeg,
+    lossless_ycbcr_8bit_422_4x2_jpeg, lossless_ycbcr_8bit_422_restart_4x2_jpeg,
     malformed_cmyk_nonleading_max_sampling_jpeg, progressive_12bit_cmyk_16x16_420_jpeg,
     progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_420_restart_32x16_jpeg,
     progressive_12bit_cmyk_422_restart_32x8_jpeg, progressive_12bit_cmyk_8x8_jpeg,
@@ -2252,6 +2256,122 @@ fn capability_report_rejects_unsupported_lossless_scan_shapes_without_info_fallb
             sof: SofKind::Lossless
         }
     ));
+}
+
+#[test]
+fn capability_report_marks_lossless_8bit_sampled_color_cpu_eligible() {
+    let requests = [
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Full,
+            fmt: PixelFormat::Rgb8,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Region(Rect {
+                x: 1,
+                y: 0,
+                w: 2,
+                h: 2,
+            }),
+            fmt: PixelFormat::Rgb8,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::Scaled(Downscale::Half),
+            fmt: PixelFormat::Rgba8,
+        },
+        JpegCapabilityRequest {
+            op: JpegDecodeOp::RegionScaled {
+                roi: Rect {
+                    x: 1,
+                    y: 0,
+                    w: 2,
+                    h: 2,
+                },
+                scale: Downscale::Half,
+            },
+            fmt: PixelFormat::Rgba8,
+        },
+    ];
+
+    for (input, color_space, dimensions, sampling, label) in [
+        (
+            lossless_rgb_8bit_422_4x2_jpeg(4),
+            ColorSpace::Rgb,
+            (4, 2),
+            [(2, 1), (1, 1), (1, 1)],
+            "4:2:2 APP14 RGB",
+        ),
+        (
+            lossless_rgb_8bit_422_restart_4x2_jpeg(4),
+            ColorSpace::Rgb,
+            (4, 2),
+            [(2, 1), (1, 1), (1, 1)],
+            "4:2:2 APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_8bit_422_4x2_jpeg(4),
+            ColorSpace::YCbCr,
+            (4, 2),
+            [(2, 1), (1, 1), (1, 1)],
+            "4:2:2 YCbCr",
+        ),
+        (
+            lossless_ycbcr_8bit_422_restart_4x2_jpeg(4),
+            ColorSpace::YCbCr,
+            (4, 2),
+            [(2, 1), (1, 1), (1, 1)],
+            "4:2:2 YCbCr restart",
+        ),
+        (
+            lossless_rgb_8bit_420_4x4_jpeg(4),
+            ColorSpace::Rgb,
+            (4, 4),
+            [(2, 2), (1, 1), (1, 1)],
+            "4:2:0 APP14 RGB",
+        ),
+        (
+            lossless_rgb_8bit_420_restart_4x4_jpeg(4),
+            ColorSpace::Rgb,
+            (4, 4),
+            [(2, 2), (1, 1), (1, 1)],
+            "4:2:0 APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_8bit_420_4x4_jpeg(4),
+            ColorSpace::YCbCr,
+            (4, 4),
+            [(2, 2), (1, 1), (1, 1)],
+            "4:2:0 YCbCr",
+        ),
+        (
+            lossless_ycbcr_8bit_420_restart_4x4_jpeg(4),
+            ColorSpace::YCbCr,
+            (4, 4),
+            [(2, 2), (1, 1), (1, 1)],
+            "4:2:0 YCbCr restart",
+        ),
+    ] {
+        for request in requests {
+            let report = JpegCapabilityReport::inspect(&input, request).unwrap_or_else(|err| {
+                panic!(
+                    "lossless SOF3 8-bit sampled {label} should report CPU-eligible capability metadata, got {err}"
+                )
+            });
+
+            assert_eq!(report.info.sof_kind, SofKind::Lossless, "{label}");
+            assert_eq!(report.info.bit_depth, 8, "{label}");
+            assert_eq!(report.info.dimensions, dimensions, "{label}");
+            assert!(
+                matches!(report.info.restart_interval, None | Some(2)),
+                "{label}"
+            );
+            assert_eq!(report.info.color_space, color_space, "{label}");
+            assert_eq!(report.info.sampling.components(), &sampling, "{label}");
+            assert!(report.cpu.eligible, "{label} {request:?}");
+            assert_eq!(report.cpu.reason, None, "{label} {request:?}");
+            assert!(!report.owned_cuda.eligible, "{label}");
+            assert!(!report.metal_fast.eligible, "{label}");
+        }
+    }
 }
 
 #[test]
