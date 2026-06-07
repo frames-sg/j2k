@@ -136,6 +136,57 @@ pub enum JpegError {
         length: u16,
     },
 
+    #[error("conflicting duplicate JPEG table {table:?} id={id} at offset {offset}")]
+    /// Duplicate DQT/DHT table has different bytes from an earlier definition.
+    ConflictingDuplicateTable {
+        /// Byte offset of the conflicting table segment.
+        offset: usize,
+        /// Table class.
+        table: TableKind,
+        /// Table id.
+        id: u8,
+    },
+
+    #[error("expected dimensions are required to repair zero SOF dimensions at offset {offset}")]
+    /// TIFF/NDPI metadata did not provide dimensions needed to repair a zero SOF.
+    ExpectedDimensionsRequired {
+        /// Byte offset of the SOF marker.
+        offset: usize,
+    },
+
+    #[error(
+        "expected dimensions {expected:?} conflict with SOF dimensions {actual:?} at offset {offset}"
+    )]
+    /// Container-provided dimensions conflict with non-zero SOF dimensions.
+    ConflictingExpectedDimensions {
+        /// Byte offset of the SOF marker.
+        offset: usize,
+        /// Expected dimensions supplied by the caller.
+        expected: (u16, u16),
+        /// Dimensions declared by the SOF marker.
+        actual: (u16, u16),
+    },
+
+    #[error("invalid TIFF JPEG assembly at offset {offset}: {reason}")]
+    /// TIFF/JPEGTables assembly cannot produce a valid JPEG interchange stream.
+    InvalidJpegAssembly {
+        /// Byte offset of the assembly problem.
+        offset: usize,
+        /// Static diagnostic reason.
+        reason: &'static str,
+    },
+
+    #[error("conflicting DRI values at offset {offset}: existing {existing}, new {new}")]
+    /// Duplicate DRI marker conflicts with an earlier DRI value.
+    ConflictingDri {
+        /// Byte offset of the conflicting DRI segment.
+        offset: usize,
+        /// Existing non-zero restart interval.
+        existing: u16,
+        /// New non-zero restart interval.
+        new: u16,
+    },
+
     /// Unsupported SOF variant. Carries the raw marker byte (e.g. `0xC9` for
     /// arithmetic extended-sequential) so callers routing to a fallback
     /// decoder can distinguish FFC5 from FFC9 without relying on `reason`.

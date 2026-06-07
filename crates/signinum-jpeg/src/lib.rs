@@ -43,7 +43,8 @@ pub use output_buffer::JpegOutputBuffer;
 pub mod segment;
 pub use segment::{
     find_scan_ranges, is_sof_marker, iter_segments, parse_dri, parse_sof_info,
-    rewrite_sof_dimensions, JpegScanRanges, JpegSegment, JpegSegmentIter, JpegSofInfo,
+    prepare_tiff_jpeg_tile, rewrite_sof_dimensions, DuplicateTablePolicy, JpegScanRanges,
+    JpegSegment, JpegSegmentIter, JpegSofInfo, JpegTilePrepareOptions, PreparedJpeg,
 };
 
 pub mod adapter;

@@ -4,8 +4,9 @@
 
 use signinum_jpeg::{
     find_scan_ranges, is_sof_marker, iter_segments, parse_dri, parse_sof_info,
-    rewrite_sof_dimensions, ColorSpace, ColorTransform, DecodeOptions, Decoder, JpegError,
-    JpegView, McuGeometry, RestartSegment, SofKind, UnsupportedReason,
+    prepare_tiff_jpeg_tile, rewrite_sof_dimensions, ColorSpace, ColorTransform, DecodeOptions,
+    Decoder, DuplicateTablePolicy, JpegError, JpegTilePrepareOptions, JpegView, McuGeometry,
+    PreparedJpeg, RestartSegment, SofKind, UnsupportedReason,
 };
 use signinum_jpeg::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughDecision, PassthroughRequirements,
@@ -146,6 +147,28 @@ fn restart_marker_offsets(bytes: &[u8]) -> Vec<usize> {
         .collect()
 }
 
+fn prepare_options() -> JpegTilePrepareOptions {
+    JpegTilePrepareOptions {
+        expected_dimensions: None,
+        duplicate_table_policy: DuplicateTablePolicy::RejectConflicting,
+        repair_zero_sof_dimensions: false,
+        validate_restart_markers: false,
+    }
+}
+
+fn zero_sof_jpeg() -> Vec<u8> {
+    let mut bytes = minimal_baseline_jpeg();
+    let sof = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .expect("SOF");
+    bytes[sof + 5] = 0;
+    bytes[sof + 6] = 0;
+    bytes[sof + 7] = 0;
+    bytes[sof + 8] = 0;
+    bytes
+}
+
 fn segment_payload(bytes: &[u8], marker: u8) -> &[u8] {
     iter_segments(bytes)
         .find_map(|segment| {
@@ -207,6 +230,52 @@ fn public_scan_ranges_and_sof_rewrite_helpers_use_absolute_offsets() {
     let sof = parse_sof_info(0xc0, segment_payload(&rewritten, 0xc0)).expect("SOF parses");
     assert_eq!(sof.dimensions, (32, 24));
     assert_eq!(rewritten.len(), bytes.len());
+}
+
+#[test]
+fn complete_tiff_jpeg_tile_preparation_returns_borrowed_bytes() {
+    let bytes = minimal_baseline_jpeg();
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options()).expect("prepared");
+
+    match prepared {
+        PreparedJpeg::Borrowed(slice) => assert!(std::ptr::eq(slice.as_ptr(), bytes.as_ptr())),
+        PreparedJpeg::Owned(_) => panic!("complete JPEG tile should stay borrowed"),
+    }
+}
+
+#[test]
+fn prepared_tiff_jpeg_bytes_decode_complete_tile() {
+    let bytes = minimal_baseline_jpeg();
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options()).expect("prepared");
+    let info = Decoder::inspect(prepared.as_bytes()).expect("inspect prepared");
+
+    assert_eq!(info.dimensions, (16, 16));
+}
+
+#[test]
+fn zero_sof_tiff_jpeg_dimensions_without_expected_dimensions_are_rejected() {
+    let err = prepare_tiff_jpeg_tile(&zero_sof_jpeg(), None, prepare_options()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        JpegError::ZeroDimension {
+            width: 0,
+            height: 0
+        } | JpegError::ExpectedDimensionsRequired { .. }
+    ));
+}
+
+#[test]
+fn tiff_jpeg_preparation_rejects_scan_without_sof() {
+    let tile = [
+        0xff, 0xd8, 0xff, 0xda, 0x00, 0x08, 1, 1, 0, 0, 63, 0, 0, 0xff, 0xd9,
+    ];
+    let err = prepare_tiff_jpeg_tile(&tile, None, prepare_options()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        JpegError::MissingMarker { .. } | JpegError::InvalidJpegAssembly { .. }
+    ));
 }
 
 #[test]

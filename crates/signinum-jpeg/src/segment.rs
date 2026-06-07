@@ -63,6 +63,65 @@ pub struct JpegScanRanges {
     pub eoi_marker_offset: Option<usize>,
 }
 
+/// Options for preparing TIFF/WSI JPEG tile payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JpegTilePrepareOptions {
+    /// Container-derived expected tile dimensions.
+    pub expected_dimensions: Option<(u16, u16)>,
+    /// Duplicate DQT/DHT handling policy.
+    pub duplicate_table_policy: DuplicateTablePolicy,
+    /// Repair zero SOF dimensions using `expected_dimensions`.
+    pub repair_zero_sof_dimensions: bool,
+    /// Validate restart marker order in scan data.
+    pub validate_restart_markers: bool,
+}
+
+impl Default for JpegTilePrepareOptions {
+    fn default() -> Self {
+        Self {
+            expected_dimensions: None,
+            duplicate_table_policy: DuplicateTablePolicy::RejectConflicting,
+            repair_zero_sof_dimensions: false,
+            validate_restart_markers: false,
+        }
+    }
+}
+
+/// Duplicate JPEG table handling policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicateTablePolicy {
+    /// Accept byte-identical duplicate table definitions.
+    AllowIdentical,
+    /// Reject conflicting duplicate table definitions.
+    RejectConflicting,
+}
+
+/// Prepared JPEG bytes, borrowed when unchanged and owned when normalized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedJpeg<'a> {
+    /// Original tile bytes can be decoded directly.
+    Borrowed(&'a [u8]),
+    /// Preparation changed the byte stream.
+    Owned(Vec<u8>),
+}
+
+impl PreparedJpeg<'_> {
+    /// Return decode-ready JPEG bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+impl AsRef<[u8]> for PreparedJpeg<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 /// Iterate over JPEG marker segments.
 #[must_use]
 pub fn iter_segments(input: &[u8]) -> JpegSegmentIter<'_> {
@@ -180,6 +239,74 @@ pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Ve
     }
     Err(JpegError::MissingMarker {
         marker: MarkerKind::Sof,
+    })
+}
+
+/// Prepare a TIFF/WSI JPEG tile for decode.
+pub fn prepare_tiff_jpeg_tile<'a>(
+    tile: &'a [u8],
+    tables: Option<&'a [u8]>,
+    opts: JpegTilePrepareOptions,
+) -> Result<PreparedJpeg<'a>, JpegError> {
+    if is_complete_jpeg(tile) {
+        validate_complete_tile(tile, opts)
+    } else {
+        assemble_abbreviated_tile(tile, tables, opts)
+    }
+}
+
+fn is_complete_jpeg(input: &[u8]) -> bool {
+    input.len() >= 4
+        && input[0] == 0xff
+        && input[1] == 0xd8
+        && input[input.len() - 2] == 0xff
+        && input[input.len() - 1] == 0xd9
+}
+
+fn validate_complete_tile<'a>(
+    tile: &'a [u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<PreparedJpeg<'a>, JpegError> {
+    let mut saw_sof = false;
+    for segment in iter_segments(tile) {
+        let segment = segment?;
+        if is_sof_marker(segment.marker) {
+            saw_sof = true;
+            let sof = parse_sof_info(segment.marker, segment.payload)?;
+            if let Some(expected) = opts.expected_dimensions {
+                if expected != sof.dimensions {
+                    return Err(JpegError::ConflictingExpectedDimensions {
+                        offset: segment.marker_offset,
+                        expected,
+                        actual: sof.dimensions,
+                    });
+                }
+            }
+        }
+    }
+    if !saw_sof {
+        return Err(JpegError::MissingMarker {
+            marker: MarkerKind::Sof,
+        });
+    }
+    let _ = find_scan_ranges(tile)?;
+    Ok(PreparedJpeg::Borrowed(tile))
+}
+
+fn assemble_abbreviated_tile<'a>(
+    _tile: &'a [u8],
+    tables: Option<&'a [u8]>,
+    _opts: JpegTilePrepareOptions,
+) -> Result<PreparedJpeg<'a>, JpegError> {
+    let Some(_tables) = tables else {
+        return Err(JpegError::InvalidJpegAssembly {
+            offset: 0,
+            reason: "abbreviated JPEG tile requires JPEGTables",
+        });
+    };
+    Err(JpegError::InvalidJpegAssembly {
+        offset: 0,
+        reason: "abbreviated JPEG tile requires normalized JPEGTables assembly",
     })
 }
 
