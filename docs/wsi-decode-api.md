@@ -148,6 +148,35 @@ Tile-batch helpers exist for full, ROI, scaled, and ROI+scaled decode. The
 same source-coordinate ROI and reduced-grid coverage rules apply to tile-batch
 ROI+scaled decode.
 
+## TIFF JPEG Tile Preparation
+
+TIFF, NDPI, and other WSI container readers should not assemble JPEG tile bytes
+themselves. Container code owns IFD/tag parsing, tile offsets, byte counts, and
+metadata such as expected tile dimensions; `signinum-jpeg` owns JPEG marker
+normalization and validation.
+
+Use `prepare_tiff_jpeg_tile(tile, tables, opts)` before decode when a TIFF tile
+may be an abbreviated JPEG scan or when container metadata must repair known
+WSI irregularities:
+
+- `JPEGTables` plus tile scan assembly into one interchange stream
+- SOI/EOI normalization
+- duplicate DQT/DHT handling
+- DRI and restart-marker validation
+- NDPI zero-SOF dimension repair from expected container dimensions
+
+The result is `PreparedJpeg`, which borrows the original complete tile when no
+rewrite is needed and owns bytes only when assembly or repair changed the
+stream. Marker-level helpers are public for callers that need diagnostics:
+`iter_segments`, `is_sof_marker`, `parse_sof_info`, `parse_dri`,
+`find_scan_ranges`, and `rewrite_sof_dimensions`.
+
+For WSI batches that have already prepared tiles, use
+`decode_prepared_jpeg_tiles_rgb8(&mut jobs)`. Each `PreparedJpegTileJob` carries
+its own prepared bytes, output buffer, stride, and `DecodeOptions`; the returned
+`Vec<Result<DecodedTile, JpegError>>` preserves input order and keeps per-tile
+errors instead of failing the whole batch at the first bad tile.
+
 ## Device Surfaces
 
 Use `ImageDecodeDevice`, `ImageDecodeSubmit`, `TileBatchDecodeDevice`,

@@ -83,6 +83,37 @@ fn facade_exports_adaptive_j2k_route_types() {
 }
 
 #[test]
+fn facade_exports_tiff_jpeg_preparation_contracts() {
+    use signinum::jpeg::{
+        decode_prepared_jpeg_tiles_rgb8, prepare_tiff_jpeg_tile, DecodeOptions,
+        DuplicateTablePolicy, JpegError, JpegTilePrepareOptions, PreparedJpeg, PreparedJpegTileJob,
+    };
+
+    let opts = JpegTilePrepareOptions {
+        expected_dimensions: Some((16, 16)),
+        duplicate_table_policy: DuplicateTablePolicy::RejectConflicting,
+        repair_zero_sof_dimensions: true,
+        validate_restart_markers: true,
+    };
+    assert_eq!(
+        opts.duplicate_table_policy,
+        DuplicateTablePolicy::RejectConflicting
+    );
+
+    let empty_prepared = PreparedJpeg::Borrowed(&[]);
+    assert!(empty_prepared.as_bytes().is_empty());
+
+    let bytes = [0xff, 0xd8, 0xff, 0xd9];
+    let err = prepare_tiff_jpeg_tile(&bytes, None, JpegTilePrepareOptions::default())
+        .expect_err("SOI/EOI without SOF is not decode-ready");
+    assert!(matches!(err, JpegError::MissingMarker { .. }));
+
+    let mut jobs: Vec<PreparedJpegTileJob<'static, 'static>> = Vec::new();
+    assert!(decode_prepared_jpeg_tiles_rgb8(&mut jobs).is_empty());
+    let _options = DecodeOptions::default();
+}
+
+#[test]
 fn facade_auto_j2k_lossless_encode_keeps_ungated_small_workloads_on_cpu() {
     let pixels: Vec<u8> = (0..4 * 4 * 3)
         .map(|value| u8::try_from((value * 11) & 0xFF).expect("masked sample fits"))
