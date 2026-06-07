@@ -18,9 +18,12 @@ use fixtures::{
     lossless_restart_predictor_grayscale_16bit_3x3_jpeg,
     lossless_restart_predictor_grayscale_3x3_jpeg, lossless_restart_predictor_rgb_16bit_3x3_jpeg,
     lossless_restart_predictor_rgb_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
-    lossless_rgb_16bit_422_4x2_rgb16, lossless_rgb_16bit_422_restart_4x2_jpeg,
-    lossless_ycbcr_16bit_3x3_rgb16, lossless_ycbcr_16bit_422_4x2_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_420_4x4_jpeg,
+    lossless_rgb_16bit_420_4x4_rgb16, lossless_rgb_16bit_420_restart_4x4_jpeg,
+    lossless_rgb_16bit_422_4x2_jpeg, lossless_rgb_16bit_422_4x2_rgb16,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_ycbcr_16bit_420_4x4_jpeg, lossless_ycbcr_16bit_420_4x4_rgb16,
+    lossless_ycbcr_16bit_420_restart_4x4_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
     lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
     lossless_ycbcr_3x3_rgb8, malformed_cmyk_nonleading_max_sampling_jpeg,
     minimal_baseline_420_jpeg, progressive_12bit_grayscale_8x8_jpeg,
@@ -1861,6 +1864,125 @@ fn decode_16bit_lossless_422_color_full_roi_scaled_and_region_scaled_outputs() {
             )
             .unwrap_or_else(|err| {
                 panic!("16-bit lossless 4:2:2 {label} region-scaled RGBA16 decode: {err}")
+            });
+        assert_eq!(outcome.decoded, roi, "{label}");
+        for (row, expected_row) in scaled_roi_buf
+            .chunks_exact(scaled_roi_stride)
+            .zip(expected_scaled_roi.chunks_exact(scaled_roi_row_bytes))
+        {
+            assert_eq!(&row[..scaled_roi_row_bytes], expected_row, "{label}");
+            assert_eq!(&row[scaled_roi_row_bytes..], &[0xaa; 8], "{label}");
+        }
+    }
+}
+
+#[test]
+fn decode_16bit_lossless_420_color_full_roi_scaled_and_region_scaled_outputs() {
+    let cases = [
+        (
+            "APP14 RGB",
+            lossless_rgb_16bit_420_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+        ),
+        (
+            "APP14 RGB restart",
+            lossless_rgb_16bit_420_restart_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+        ),
+        (
+            "YCbCr",
+            lossless_ycbcr_16bit_420_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+        ),
+        (
+            "YCbCr restart",
+            lossless_ycbcr_16bit_420_restart_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+        ),
+    ];
+
+    for (label, bytes, expected_full) in cases {
+        let dec = Decoder::new(&bytes).unwrap_or_else(|err| {
+            panic!("16-bit lossless 4:2:0 {label} JPEG must construct: {err}")
+        });
+        let (w, h) = dec.info().dimensions;
+        assert_eq!((w, h), (4, 4), "{label}");
+        assert_eq!(dec.info().sampling.max_h, 2, "{label}");
+        assert_eq!(dec.info().sampling.max_v, 2, "{label}");
+        assert_eq!(
+            dec.info().sampling.components(),
+            &[(2, 2), (1, 1), (1, 1)],
+            "{label}"
+        );
+
+        let stride = w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+        let mut full = vec![0u8; stride * h as usize];
+        let outcome = dec
+            .decode_into(&mut full, stride, PixelFormat::Rgb16)
+            .unwrap_or_else(|err| panic!("16-bit lossless 4:2:0 {label} full decode: {err}"));
+        assert_eq!(outcome.decoded, Rect::full((w, h)), "{label}");
+        assert_rgb16_image_eq(&full, &expected_full, w as usize);
+
+        let roi = Rect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 2,
+        };
+        let roi_stride = roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel() + 4;
+        let mut roi_buf = vec![0xaau8; roi_stride * roi.h as usize];
+        let expected_roi = crop_rgb16_bytes(&expected_full, w as usize, roi);
+        let outcome = dec
+            .decode_region_into(&mut roi_buf, roi_stride, PixelFormat::Rgb16, roi)
+            .unwrap_or_else(|err| panic!("16-bit lossless 4:2:0 {label} ROI decode: {err}"));
+        assert_eq!(outcome.decoded, roi, "{label}");
+        let roi_row_bytes = roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+        for (row, expected_row) in roi_buf
+            .chunks_exact(roi_stride)
+            .zip(expected_roi.chunks_exact(roi_row_bytes))
+        {
+            assert_eq!(&row[..roi_row_bytes], expected_row, "{label}");
+            assert_eq!(&row[roi_row_bytes..], &[0xaa; 4], "{label}");
+        }
+
+        let scaled = scaled_rect_covering_for_test(Rect::full((w, h)), 2);
+        let scaled_stride = scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let mut scaled_buf = vec![0u8; scaled_stride * scaled.h as usize];
+        let expected_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, w as usize, Rect::full((w, h)), 2),
+            u16::MAX,
+        );
+        let outcome = dec
+            .decode_scaled_into(
+                &mut scaled_buf,
+                scaled_stride,
+                PixelFormat::Rgba16,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("16-bit lossless 4:2:0 {label} scaled RGBA16 decode: {err}")
+            });
+        assert_eq!(outcome.decoded, Rect::full((w, h)), "{label}");
+        assert_eq!(scaled_buf, expected_scaled, "{label}");
+
+        let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+        let scaled_roi_stride = scaled_roi.w as usize * PixelFormat::Rgba16.bytes_per_pixel() + 8;
+        let scaled_roi_row_bytes = scaled_roi.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let mut scaled_roi_buf = vec![0xaau8; scaled_roi_stride * scaled_roi.h as usize];
+        let expected_scaled_roi = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, w as usize, roi, 2),
+            u16::MAX,
+        );
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut scaled_roi_buf,
+                scaled_roi_stride,
+                PixelFormat::Rgba16,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("16-bit lossless 4:2:0 {label} region-scaled RGBA16 decode: {err}")
             });
         assert_eq!(outcome.decoded, roi, "{label}");
         for (row, expected_row) in scaled_roi_buf

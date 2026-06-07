@@ -292,6 +292,7 @@ struct PreparedLosslessPlan {
 enum LosslessColorSampling {
     S444,
     S422,
+    S420,
 }
 
 impl<'a> Decoder<'a> {
@@ -3067,7 +3068,10 @@ impl Decoder<'_> {
                 self.decode_lossless_color16_components_into(out, stride, ColorSpace::Rgb)
             }
             Some(LosslessColorSampling::S422) => {
-                self.decode_lossless_color16_422_into(out, stride, ColorSpace::Rgb)
+                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::Rgb)
+            }
+            Some(LosslessColorSampling::S420) => {
+                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::Rgb)
             }
             None => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
@@ -3167,7 +3171,7 @@ impl Decoder<'_> {
         })
     }
 
-    fn decode_lossless_color16_422_into(
+    fn decode_lossless_color16_sampled_into(
         &self,
         out: &mut [u8],
         stride: usize,
@@ -3189,7 +3193,13 @@ impl Decoder<'_> {
                 sof: self.info.sof_kind,
             });
         }
-        if lossless_color_sampling(&self.info) != Some(LosslessColorSampling::S422) {
+        let sampling = lossless_color_sampling(&self.info).ok_or(JpegError::NotImplemented {
+            sof: self.info.sof_kind,
+        })?;
+        if !matches!(
+            sampling,
+            LosslessColorSampling::S422 | LosslessColorSampling::S420
+        ) {
             return Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
             });
@@ -3208,54 +3218,59 @@ impl Decoder<'_> {
         let (width, height) = plan.dimensions;
         let width = width as usize;
         let height = height as usize;
-        let chroma_width = width.div_ceil(2);
+        let chroma_width = width.div_ceil(self.info.sampling.max_h as usize);
+        let chroma_height = height.div_ceil(self.info.sampling.max_v as usize);
         let mut c0 = vec![0u16; width * height];
-        let mut c1 = vec![0u16; chroma_width * height];
-        let mut c2 = vec![0u16; chroma_width * height];
+        let mut c1 = vec![0u16; chroma_width * chroma_height];
+        let mut c2 = vec![0u16; chroma_width * chroma_height];
 
         let scan_bytes = &self.bytes[plan.scan_offset..];
         let mut br = BitReader::new(scan_bytes);
         let restart = u32::from(self.plan.restart_interval.unwrap_or(0));
-        let total_mcus = (chroma_width * height) as u32;
+        let total_mcus = (chroma_width * chroma_height) as u32;
         let mut mcus_since_restart = 0u32;
         let mut expected_rst = 0u8;
-        for y in 0..height {
+        for mcu_y in 0..chroma_height {
             for mcu_x in 0..chroma_width {
-                let mcu_index = (y * chroma_width + mcu_x) as u32;
+                let mcu_index = (mcu_y * chroma_width + mcu_x) as u32;
                 if restart > 0 && mcus_since_restart == restart {
                     consume_lossless_restart(&mut br, mcu_index, total_mcus, &mut expected_rst)?;
                     mcus_since_restart = 0;
                 }
                 for component in &self.plan.components {
-                    let (plane, plane_width) = match component.output_index {
-                        0 => (&mut c0, width),
-                        1 => (&mut c1, chroma_width),
-                        2 => (&mut c2, chroma_width),
+                    let (plane, plane_width, plane_height) = match component.output_index {
+                        0 => (&mut c0, width, height),
+                        1 => (&mut c1, chroma_width, chroma_height),
+                        2 => (&mut c2, chroma_width, chroma_height),
                         _ => {
                             return Err(JpegError::UnsupportedComponentCount {
                                 count: self.plan.components.len() as u8,
                             });
                         }
                     };
-                    for local_x in 0..component.h as usize {
-                        let x = mcu_x * component.h as usize + local_x;
-                        if x >= plane_width {
-                            continue;
+                    for local_y in 0..component.v as usize {
+                        for local_x in 0..component.h as usize {
+                            let x = mcu_x * component.h as usize + local_x;
+                            let y = mcu_y * component.v as usize + local_y;
+                            if x >= plane_width || y >= plane_height {
+                                continue;
+                            }
+                            decode_lossless_plane16_sample(
+                                &mut br,
+                                &component.dc_table,
+                                plan.predictor,
+                                plane,
+                                plane_width,
+                                LosslessPlane16Sample {
+                                    x,
+                                    y,
+                                    restart_first_sample: restart > 0
+                                        && mcus_since_restart == 0
+                                        && local_x == 0
+                                        && local_y == 0,
+                                },
+                            )?;
                         }
-                        decode_lossless_plane16_sample(
-                            &mut br,
-                            &component.dc_table,
-                            plan.predictor,
-                            plane,
-                            plane_width,
-                            LosslessPlane16Sample {
-                                x,
-                                y,
-                                restart_first_sample: restart > 0
-                                    && mcus_since_restart == 0
-                                    && local_x == 0,
-                            },
-                        )?;
                     }
                 }
                 mcus_since_restart += 1;
@@ -3263,10 +3278,11 @@ impl Decoder<'_> {
         }
 
         let scan_warnings = finish_scan(&mut br, true)?;
-        write_lossless_color16_422_output(
+        write_lossless_color16_sampled_output(
             out,
             stride,
             color_space,
+            sampling,
             (width, height),
             LosslessColor16Planes {
                 c0: &c0,
@@ -3293,7 +3309,10 @@ impl Decoder<'_> {
                 Ok(outcome)
             }
             Some(LosslessColorSampling::S422) => {
-                self.decode_lossless_color16_422_into(out, stride, ColorSpace::YCbCr)
+                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::YCbCr)
+            }
+            Some(LosslessColorSampling::S420) => {
+                self.decode_lossless_color16_sampled_into(out, stride, ColorSpace::YCbCr)
             }
             None => Err(JpegError::NotImplemented {
                 sof: self.info.sof_kind,
@@ -4346,6 +4365,13 @@ fn lossless_color_sampling(info: &Info) -> Option<LosslessColorSampling> {
             if info.bit_depth == 16 && info.dimensions.0.is_multiple_of(2) =>
         {
             Some(LosslessColorSampling::S422)
+        }
+        (2, 2, &[(2, 2), (1, 1), (1, 1)])
+            if info.bit_depth == 16
+                && info.dimensions.0.is_multiple_of(2)
+                && info.dimensions.1.is_multiple_of(2) =>
+        {
+            Some(LosslessColorSampling::S420)
         }
         _ => None,
     }
@@ -5833,22 +5859,39 @@ struct LosslessColor16Planes<'a> {
     c2: &'a [u16],
 }
 
-fn write_lossless_color16_422_output(
+fn write_lossless_color16_sampled_output(
     out: &mut [u8],
     stride: usize,
     color_space: ColorSpace,
+    sampling: LosslessColorSampling,
     dimensions: (usize, usize),
     planes: LosslessColor16Planes<'_>,
 ) {
     let (width, height) = dimensions;
     let chroma_width = width.div_ceil(2);
+    let chroma_height = match sampling {
+        LosslessColorSampling::S422 => height,
+        LosslessColorSampling::S420 => height.div_ceil(2),
+        LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
+    };
     for y in 0..height {
-        let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
-        let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
         for x in 0..width {
             let c0_sample = planes.c0[y * width + x];
-            let c1_sample = upsample_h2v1_u16_at(c1_row, x);
-            let c2_sample = upsample_h2v1_u16_at(c2_row, x);
+            let (c1_sample, c2_sample) = match sampling {
+                LosslessColorSampling::S422 => {
+                    let c1_row = &planes.c1[y * chroma_width..(y + 1) * chroma_width];
+                    let c2_row = &planes.c2[y * chroma_width..(y + 1) * chroma_width];
+                    (
+                        upsample_h2v1_u16_at(c1_row, x),
+                        upsample_h2v1_u16_at(c2_row, x),
+                    )
+                }
+                LosslessColorSampling::S420 => (
+                    upsample_h2v2_u16_at(planes.c1, chroma_width, chroma_height, width, x, y),
+                    upsample_h2v2_u16_at(planes.c2, chroma_width, chroma_height, width, x, y),
+                ),
+                LosslessColorSampling::S444 => unreachable!("sampled writer is not used for 4:4:4"),
+            };
             let (r, g, b) = match color_space {
                 ColorSpace::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpace::YCbCr => {
@@ -5860,6 +5903,46 @@ fn write_lossless_color16_422_output(
             out[dst..dst + 2].copy_from_slice(&r.to_le_bytes());
             out[dst + 2..dst + 4].copy_from_slice(&g.to_le_bytes());
             out[dst + 4..dst + 6].copy_from_slice(&b.to_le_bytes());
+        }
+    }
+}
+
+fn upsample_h2v2_u16_at(
+    plane: &[u16],
+    chroma_width: usize,
+    chroma_height: usize,
+    output_width: usize,
+    output_x: usize,
+    output_y: usize,
+) -> u16 {
+    debug_assert!(!plane.is_empty());
+    debug_assert!(chroma_width > 0);
+    debug_assert!(chroma_height > 0);
+    let chroma_y = output_y / 2;
+    let current = &plane[chroma_y * chroma_width..(chroma_y + 1) * chroma_width];
+    let near_y = if output_y.is_multiple_of(2) {
+        chroma_y.saturating_sub(1)
+    } else {
+        (chroma_y + 1).min(chroma_height - 1)
+    };
+    let near = &plane[near_y * chroma_width..(near_y + 1) * chroma_width];
+    let colsum = |index: usize| 3 * u32::from(current[index]) + u32::from(near[index]);
+    if chroma_width == 1 {
+        return ((4 * colsum(0) + 8) >> 4) as u16;
+    }
+
+    let sample = output_x / 2;
+    let this = colsum(sample);
+    match output_x {
+        0 => ((this * 4 + 8) >> 4) as u16,
+        _ if output_x == output_width - 1 => ((this * 4 + 7) >> 4) as u16,
+        _ if output_x.is_multiple_of(2) => {
+            let last = colsum(sample - 1);
+            ((this * 3 + last + 8) >> 4) as u16
+        }
+        _ => {
+            let next = colsum(sample + 1);
+            ((this * 3 + next + 7) >> 4) as u16
         }
     }
 }

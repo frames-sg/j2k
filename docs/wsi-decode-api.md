@@ -52,13 +52,14 @@ full-image/ROI/scaled/region-scaled output and session batches, including
 restart-coded extended/progressive four-component streams. Nonstandard 12-bit
 color sampling layouts outside 4:4:4/4:2:2/4:2:0, stronger non-constant 12-bit
 oracle fixtures, broader four-component malformed fixture coverage, and SOF3
-sampled color layouts beyond even-width 16-bit 4:2:2 remain structured
-unsupported or not-implemented cases until the CPU parity phases in
+sampled color layouts beyond even-width 16-bit 4:2:2 and even-dimension 16-bit
+4:2:0 remain structured unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
 Even-width lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 streams, including
-restart-coded streams, now decode through full-image/ROI/scaled/region-scaled
-and session-batch `Rgb16`/`Rgba16` CPU paths. Malformed SOF3 scan parameters
-continue to surface as decode-planner errors.
+restart-coded streams, and even-dimension lossless SOF3 16-bit APP14
+RGB/YCbCr 4:2:0 streams, including restart-coded streams, now decode through
+full-image/ROI/scaled/region-scaled and session-batch `Rgb16`/`Rgba16` CPU
+paths. Malformed SOF3 scan parameters continue to surface as decode-planner errors.
 The current SOF3 CPU path is limited to full-image/ROI/scaled/region-scaled
 grayscale predictors 1-7 decoded to `Gray8` for 8-bit streams or `Gray16` for
 16-bit streams, including restart-coded grayscale streams, plus APP14 RGB
@@ -67,8 +68,9 @@ predictors 1-7 decoded to `Rgb8` for 8-bit streams or `Rgb16`/`Rgba16` for
 RGB, plus 8-bit and 16-bit YCbCr 4:4:4 predictors 1-7 decoded to
 `Rgb8`/`Rgb16`, with full/ROI/scaled/region-scaled `Rgba8` for 8-bit YCbCr and
 `Rgba16` for 16-bit YCbCr, including restart-coded APP14 RGB and YCbCr
-streams, plus even-width 16-bit APP14 RGB/YCbCr 4:2:2 `Rgb16`/`Rgba16`
-output including restart-coded streams. The SOF3 row path supports RGB8 rows for 8-bit
+streams, plus even-width 16-bit APP14 RGB/YCbCr 4:2:2 and even-dimension
+16-bit APP14 RGB/YCbCr 4:2:0 `Rgb16`/`Rgba16` output including restart-coded
+streams. The SOF3 row path supports RGB8 rows for 8-bit
 grayscale/RGB/YCbCr streams, little-endian `Gray16` rows for 16-bit grayscale
 streams, and little-endian `Rgb16` rows for 16-bit APP14 RGB/YCbCr 4:4:4
 streams.

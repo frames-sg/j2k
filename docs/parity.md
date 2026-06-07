@@ -33,13 +33,13 @@ on a single visual smoke test.
   non-leading-max sampling fixture. Broader malformed four-component fixtures,
   nonstandard 12-bit color sampling layouts outside 4:4:4/4:2:2/4:2:0,
   stronger non-constant 12-bit oracle fixtures, and SOF3 sampled color layouts
-  beyond even-width 16-bit 4:2:2 must land CPU parity fixtures and reference
-  outputs before any Metal route is promoted. Initial 12-bit extended and
+  beyond even-width 16-bit 4:2:2 and even-dimension 16-bit 4:2:0 must land CPU
+  parity fixtures and reference outputs before any Metal route is promoted. Initial 12-bit extended and
   progressive CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`
   full/ROI/scaled/region-scaled decode and session-batch coverage have landed;
-  even-width lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 full/ROI/scaled/
-  region-scaled decode and session-batch coverage, including restart-coded
-  streams, have landed.
+  even-width lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:2 and even-dimension
+  lossless SOF3 16-bit APP14 RGB/YCbCr 4:2:0 full/ROI/scaled/region-scaled
+  decode and session-batch coverage, including restart-coded streams, have landed.
 - A/B/C fixture entries must record the oracle source and version, output
   pixel format, and accepted tolerance. If libjpeg-turbo does not support a
   class, the alternative oracle must be recorded with the exact command used.

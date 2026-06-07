@@ -32,9 +32,12 @@ use fixtures::{
     four_component_8x8_rgb, lossless_predictor_rgb_16bit_3x3_jpeg,
     lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
     lossless_restart_predictor_rgb_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
-    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_422_4x2_jpeg,
-    lossless_rgb_16bit_422_4x2_rgb16, lossless_rgb_16bit_422_restart_4x2_jpeg,
-    lossless_ycbcr_16bit_3x3_rgb16, lossless_ycbcr_16bit_422_4x2_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_420_4x4_jpeg,
+    lossless_rgb_16bit_420_4x4_rgb16, lossless_rgb_16bit_420_restart_4x4_jpeg,
+    lossless_rgb_16bit_422_4x2_jpeg, lossless_rgb_16bit_422_4x2_rgb16,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_ycbcr_16bit_420_4x4_jpeg, lossless_ycbcr_16bit_420_4x4_rgb16,
+    lossless_ycbcr_16bit_420_restart_4x4_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
     lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
     lossless_ycbcr_3x3_rgb8, progressive_12bit_cmyk_16x16_420_jpeg,
     progressive_12bit_cmyk_16x8_422_jpeg, progressive_12bit_cmyk_420_restart_32x16_jpeg,
@@ -641,6 +644,59 @@ fn session_batch_decode_progressive12_ycbcr444_matches_single_tile_decode() {
     assert_eq!(outcomes.len(), 2);
     for output in outputs {
         assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_420_rgb16_matches_single_tile_decode() {
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for (bytes, expected, label) in [
+        (
+            lossless_rgb_16bit_420_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+            "APP14 RGB",
+        ),
+        (
+            lossless_rgb_16bit_420_restart_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+            "APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_16bit_420_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+            "YCbCr",
+        ),
+        (
+            lossless_ycbcr_16bit_420_restart_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+            "YCbCr restart",
+        ),
+    ] {
+        let stride = 4 * PixelFormat::Rgb16.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+                .unwrap_or_else(|err| {
+                    panic!("lossless SOF3 16-bit 4:2:0 {label} session batch decode: {err}")
+                })
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
     }
 }
 
