@@ -20,6 +20,8 @@ design notes that an agent can reach without leaving the repo.
 - [`docs/release.md`](release.md) — release staging notes.
 - [`docs/support-matrix.md`](support-matrix.md) — stable surfaces, backend limits,
   MSRV, and benchmark-publication gates.
+- [`docs/jpeg-roadmap.md`](jpeg-roadmap.md) — next JPEG parity, batch-runtime,
+  and Metal promotion work.
 - [`docs/wsi-decode-api.md`](wsi-decode-api.md) — public WSI decode API guide.
 - [`docs/jpeg-support-phases/`](jpeg-support-phases/README.md) — CPU-first JPEG
   compatibility expansion plan and Metal promotion gates.

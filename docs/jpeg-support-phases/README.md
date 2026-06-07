@@ -478,6 +478,7 @@ Metal work starts only after the matching CPU phase exits.
 
 When changing JPEG support, update these documents in the same branch:
 
+- `docs/jpeg-roadmap.md`: active next-work scope and promotion gates
 - `docs/support-matrix.md`: public support scope and backend limits
 - `docs/wsi-decode-api.md`: route/capability behavior
 - `docs/parity.md`: fixture and oracle requirements

@@ -350,6 +350,7 @@ collected on self-hosted runners with the target device stack installed.
 
 - [docs/architecture.md](docs/architecture.md) - workspace map and dependency rules
 - [docs/support-matrix.md](docs/support-matrix.md) - stable surfaces, backend limits, MSRV, and benchmark-publication gates
+- [docs/jpeg-roadmap.md](docs/jpeg-roadmap.md) - next JPEG parity, batch-runtime, and Metal promotion work
 - [docs/wsi-decode-api.md](docs/wsi-decode-api.md) - public WSI decode API guide
 - [docs/wsi-dicom-passthrough.md](docs/wsi-dicom-passthrough.md) - passthrough-first conversion policy
 - [docs/bench.md](docs/bench.md) - benchmark methodology
