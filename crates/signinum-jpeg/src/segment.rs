@@ -2,7 +2,7 @@
 
 //! Public JPEG marker-level utilities.
 
-use crate::error::{JpegError, MarkerKind, UnsupportedReason};
+use crate::error::{JpegError, MarkerKind, TableKind, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -103,6 +103,21 @@ pub enum PreparedJpeg<'a> {
     Borrowed(&'a [u8]),
     /// Preparation changed the byte stream.
     Owned(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableKey {
+    Quant(u8),
+    HuffmanDc(u8),
+    HuffmanAc(u8),
+    Dri,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentBytes {
+    offset: usize,
+    bytes: Vec<u8>,
+    key: Option<TableKey>,
 }
 
 impl PreparedJpeg<'_> {
@@ -267,8 +282,13 @@ fn validate_complete_tile<'a>(
     tile: &'a [u8],
     opts: JpegTilePrepareOptions,
 ) -> Result<PreparedJpeg<'a>, JpegError> {
+    validate_prepared_stream(tile, opts)?;
+    Ok(PreparedJpeg::Borrowed(tile))
+}
+
+fn validate_prepared_stream(bytes: &[u8], opts: JpegTilePrepareOptions) -> Result<(), JpegError> {
     let mut saw_sof = false;
-    for segment in iter_segments(tile) {
+    for segment in iter_segments(bytes) {
         let segment = segment?;
         if is_sof_marker(segment.marker) {
             saw_sof = true;
@@ -289,25 +309,161 @@ fn validate_complete_tile<'a>(
             marker: MarkerKind::Sof,
         });
     }
-    let _ = find_scan_ranges(tile)?;
-    Ok(PreparedJpeg::Borrowed(tile))
+    let _ = find_scan_ranges(bytes)?;
+    Ok(())
 }
 
 fn assemble_abbreviated_tile<'a>(
-    _tile: &'a [u8],
+    tile: &'a [u8],
     tables: Option<&'a [u8]>,
-    _opts: JpegTilePrepareOptions,
+    opts: JpegTilePrepareOptions,
 ) -> Result<PreparedJpeg<'a>, JpegError> {
-    let Some(_tables) = tables else {
+    let Some(tables) = tables else {
         return Err(JpegError::InvalidJpegAssembly {
             offset: 0,
             reason: "abbreviated JPEG tile requires JPEGTables",
         });
     };
-    Err(JpegError::InvalidJpegAssembly {
-        offset: 0,
-        reason: "abbreviated JPEG tile requires normalized JPEGTables assembly",
-    })
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0xff, 0xd8]);
+    let mut keyed_segments = Vec::<(TableKey, Vec<u8>)>::new();
+    for segment in collect_normalized_segments(tables)? {
+        push_segment_dedup(&mut out, &mut keyed_segments, segment)?;
+    }
+
+    let tile_body = normalized_abbreviated_tile_body(tile)?;
+    out.extend_from_slice(tile_body);
+    if !out.ends_with(&[0xff, 0xd9]) {
+        out.extend_from_slice(&[0xff, 0xd9]);
+    }
+    validate_prepared_stream(&out, opts)?;
+    Ok(PreparedJpeg::Owned(out))
+}
+
+fn collect_normalized_segments(input: &[u8]) -> Result<Vec<SegmentBytes>, JpegError> {
+    let mut segments = Vec::new();
+    for segment in iter_segments(input) {
+        let segment = segment?;
+        if matches!(segment.marker, 0xd8 | 0xd9) {
+            continue;
+        }
+        let total_end = segment.payload_offset + segment.payload.len();
+        let key = table_key(segment.marker, segment.payload)?;
+        segments.push(SegmentBytes {
+            offset: segment.marker_offset,
+            bytes: input[segment.marker_offset..total_end].to_vec(),
+            key,
+        });
+    }
+    Ok(segments)
+}
+
+fn table_key(marker: u8, payload: &[u8]) -> Result<Option<TableKey>, JpegError> {
+    match marker {
+        0xdb => {
+            let Some(first) = payload.first() else {
+                return Err(JpegError::InvalidSegmentLength {
+                    offset: 0,
+                    marker,
+                    length: 2,
+                });
+            };
+            Ok(Some(TableKey::Quant(first & 0x0f)))
+        }
+        0xc4 => {
+            let Some(first) = payload.first() else {
+                return Err(JpegError::InvalidSegmentLength {
+                    offset: 0,
+                    marker,
+                    length: 2,
+                });
+            };
+            let class = first >> 4;
+            let id = first & 0x0f;
+            Ok(Some(if class == 0 {
+                TableKey::HuffmanDc(id)
+            } else {
+                TableKey::HuffmanAc(id)
+            }))
+        }
+        0xdd => Ok(Some(TableKey::Dri)),
+        _ => Ok(None),
+    }
+}
+
+fn push_segment_dedup(
+    out: &mut Vec<u8>,
+    keyed_segments: &mut Vec<(TableKey, Vec<u8>)>,
+    segment: SegmentBytes,
+) -> Result<(), JpegError> {
+    let Some(key) = segment.key else {
+        out.extend_from_slice(&segment.bytes);
+        return Ok(());
+    };
+    if let Some((_, existing)) = keyed_segments
+        .iter()
+        .find(|(existing_key, _)| *existing_key == key)
+    {
+        if existing == &segment.bytes {
+            return Ok(());
+        }
+        return match key {
+            TableKey::Quant(id) => Err(JpegError::ConflictingDuplicateTable {
+                offset: segment.offset,
+                table: TableKind::Quant,
+                id,
+            }),
+            TableKey::HuffmanDc(id) => Err(JpegError::ConflictingDuplicateTable {
+                offset: segment.offset,
+                table: TableKind::HuffmanDc,
+                id,
+            }),
+            TableKey::HuffmanAc(id) => Err(JpegError::ConflictingDuplicateTable {
+                offset: segment.offset,
+                table: TableKind::HuffmanAc,
+                id,
+            }),
+            TableKey::Dri => {
+                let existing = parse_dri_payload_from_segment(existing).unwrap_or(0);
+                let new = parse_dri_payload_from_segment(&segment.bytes).unwrap_or(0);
+                Err(JpegError::ConflictingDri {
+                    offset: segment.offset,
+                    existing,
+                    new,
+                })
+            }
+        };
+    }
+    keyed_segments.push((key, segment.bytes.clone()));
+    out.extend_from_slice(&segment.bytes);
+    Ok(())
+}
+
+fn parse_dri_payload_from_segment(segment: &[u8]) -> Option<u16> {
+    if segment.len() < 6 || segment[0] != 0xff || segment[1] != 0xdd {
+        return None;
+    }
+    Some(u16::from_be_bytes([segment[4], segment[5]]))
+}
+
+fn normalized_abbreviated_tile_body(tile: &[u8]) -> Result<&[u8], JpegError> {
+    let start = if tile.starts_with(&[0xff, 0xd8]) {
+        2
+    } else {
+        0
+    };
+    let end = if tile.len() >= start + 2 && tile[tile.len() - 2..] == [0xff, 0xd9] {
+        tile.len() - 2
+    } else {
+        tile.len()
+    };
+    if start >= end {
+        return Err(JpegError::InvalidJpegAssembly {
+            offset: 0,
+            reason: "abbreviated JPEG tile is empty",
+        });
+    }
+    Ok(&tile[start..end])
 }
 
 impl<'a> Iterator for JpegSegmentIter<'a> {

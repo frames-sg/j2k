@@ -169,6 +169,28 @@ fn zero_sof_jpeg() -> Vec<u8> {
     bytes
 }
 
+fn split_tables_and_scan(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let ranges = find_scan_ranges(bytes).expect("scan ranges");
+    let mut tables = Vec::new();
+    tables.extend_from_slice(&[0xff, 0xd8]);
+    tables.extend_from_slice(&bytes[2..ranges.sos_marker_offset]);
+    tables.extend_from_slice(&[0xff, 0xd9]);
+
+    let mut tile = Vec::new();
+    tile.extend_from_slice(&bytes[ranges.sos_marker_offset..]);
+    (tables, tile)
+}
+
+fn mutate_first_dqt_value(tables: &[u8]) -> Vec<u8> {
+    let mut out = tables.to_vec();
+    let dqt = out
+        .windows(2)
+        .position(|window| window == [0xff, 0xdb])
+        .expect("DQT");
+    out[dqt + 5] ^= 0x7f;
+    out
+}
+
 fn segment_payload(bytes: &[u8], marker: u8) -> &[u8] {
     iter_segments(bytes)
         .find_map(|segment| {
@@ -276,6 +298,81 @@ fn tiff_jpeg_preparation_rejects_scan_without_sof() {
         err,
         JpegError::MissingMarker { .. } | JpegError::InvalidJpegAssembly { .. }
     ));
+}
+
+#[test]
+fn abbreviated_tiff_jpeg_tile_with_jpeg_tables_assembles_decode_ready_stream() {
+    let full = minimal_baseline_jpeg();
+    let (tables, tile) = split_tables_and_scan(&full);
+    let prepared =
+        prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options()).expect("prepared");
+
+    assert!(matches!(prepared, PreparedJpeg::Owned(_)));
+    let info = Decoder::inspect(prepared.as_bytes()).expect("assembled inspect");
+    assert_eq!(info.dimensions, (16, 16));
+    assert!(prepared.as_bytes().starts_with(&[0xff, 0xd8]));
+    assert!(prepared.as_bytes().ends_with(&[0xff, 0xd9]));
+}
+
+#[test]
+fn jpeg_tables_soi_and_eoi_are_normalized_to_one_interchange_stream() {
+    let full = minimal_baseline_jpeg();
+    let (tables, tile) = split_tables_and_scan(&full);
+    let prepared =
+        prepare_tiff_jpeg_tile(&tile, Some(&tables), prepare_options()).expect("prepared");
+    let soi_count = prepared
+        .as_bytes()
+        .windows(2)
+        .filter(|window| *window == [0xff, 0xd8])
+        .count();
+    let eoi_count = prepared
+        .as_bytes()
+        .windows(2)
+        .filter(|window| *window == [0xff, 0xd9])
+        .count();
+
+    assert_eq!(soi_count, 1);
+    assert_eq!(eoi_count, 1);
+}
+
+#[test]
+fn identical_duplicate_jpeg_tables_are_deduplicated_under_allow_identical() {
+    let full = minimal_baseline_jpeg();
+    let (mut tables, tile) = split_tables_and_scan(&full);
+    let dqt = tables
+        .windows(2)
+        .position(|window| window == [0xff, 0xdb])
+        .expect("DQT");
+    let dqt_len = u16::from_be_bytes([tables[dqt + 2], tables[dqt + 3]]) as usize + 2;
+    let duplicate = tables[dqt..dqt + dqt_len].to_vec();
+    tables.splice(dqt..dqt, duplicate);
+    let mut opts = prepare_options();
+    opts.duplicate_table_policy = DuplicateTablePolicy::AllowIdentical;
+
+    let prepared = prepare_tiff_jpeg_tile(&tile, Some(&tables), opts).expect("prepared");
+    let dqt_count = prepared
+        .as_bytes()
+        .windows(2)
+        .filter(|window| *window == [0xff, 0xdb])
+        .count();
+
+    assert_eq!(dqt_count, 1);
+}
+
+#[test]
+fn conflicting_duplicate_jpeg_tables_are_rejected() {
+    let full = minimal_baseline_jpeg();
+    let (tables, tile) = split_tables_and_scan(&full);
+    let mut conflicting = mutate_first_dqt_value(&tables);
+    let dqt = tables
+        .windows(2)
+        .position(|window| window == [0xff, 0xdb])
+        .expect("DQT");
+    let dqt_len = u16::from_be_bytes([tables[dqt + 2], tables[dqt + 3]]) as usize + 2;
+    conflicting.splice(2..2, tables[dqt..dqt + dqt_len].iter().copied());
+
+    let err = prepare_tiff_jpeg_tile(&tile, Some(&conflicting), prepare_options()).unwrap_err();
+    assert!(matches!(err, JpegError::ConflictingDuplicateTable { .. }));
 }
 
 #[test]
