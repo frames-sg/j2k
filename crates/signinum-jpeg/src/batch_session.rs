@@ -13,10 +13,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::context::DecoderContext;
 use crate::decoder::{
-    decode_tile_into_in_context_with_options,
+    decode_prepared_jpeg_tile_rgb8_in_context, decode_tile_into_in_context_with_options,
     decode_tile_region_scaled_into_in_context_with_options,
-    decode_tile_scaled_into_in_context_with_options, DecodeOutcome, TileBatchError, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tile_scaled_into_in_context_with_options, DecodeOutcome, DecodedTile,
+    PreparedJpegTileJob, TileBatchError, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 use crate::error::JpegError;
 use crate::info::DecodeOptions;
@@ -46,6 +47,26 @@ impl WorkerSlot {
                 job.stride,
                 fmt,
                 options,
+            );
+            results.push((start_index + local_index, outcome));
+        }
+        results
+    }
+
+    fn decode_prepared_tile_job_chunk(
+        &mut self,
+        start_index: usize,
+        jobs: &mut [PreparedJpegTileJob<'_, '_>],
+    ) -> Vec<IndexedBatchResult<DecodedTile, JpegError>> {
+        let mut results = Vec::with_capacity(jobs.len());
+        for (local_index, job) in jobs.iter_mut().enumerate() {
+            let outcome = decode_prepared_jpeg_tile_rgb8_in_context(
+                &job.input,
+                &mut self.ctx,
+                &mut self.pool,
+                job.out,
+                job.stride,
+                job.options,
             );
             results.push((start_index + local_index, outcome));
         }
@@ -202,6 +223,28 @@ impl JpegBatchSession {
         collect_results(job_count, results)
     }
 
+    /// Decode prepared TIFF/WSI JPEG tiles into caller-owned RGB8 buffers.
+    ///
+    /// Results preserve the caller's input order and retain each tile's error
+    /// independently instead of collapsing the batch to the first failure.
+    #[must_use]
+    pub fn decode_prepared_jpeg_tiles_rgb8(
+        &mut self,
+        jobs: &mut [PreparedJpegTileJob<'_, '_>],
+    ) -> Vec<Result<DecodedTile, JpegError>> {
+        if jobs.is_empty() {
+            return Vec::new();
+        }
+        let job_count = jobs.len();
+        let chunk_size = self.prepare_chunks(job_count);
+        let results = if self.options.workers.is_some() {
+            self.decode_prepared_tile_job_chunks_scoped(jobs, chunk_size)
+        } else {
+            self.decode_prepared_tile_job_chunks_rayon(jobs, chunk_size)
+        };
+        collect_per_tile_results(job_count, results)
+    }
+
     /// Decode scaled JPEG tiles into caller-owned output buffers.
     ///
     /// # Errors
@@ -331,6 +374,43 @@ impl JpegBatchSession {
         })
     }
 
+    fn decode_prepared_tile_job_chunks_rayon(
+        &self,
+        jobs: &mut [PreparedJpegTileJob<'_, '_>],
+        chunk_size: usize,
+    ) -> Vec<IndexedBatchResult<DecodedTile, JpegError>> {
+        jobs.par_chunks_mut(chunk_size)
+            .enumerate()
+            .flat_map_iter(|(chunk_index, chunk)| {
+                let start_index = chunk_index * chunk_size;
+                lock_worker(&self.workers[chunk_index])
+                    .decode_prepared_tile_job_chunk(start_index, chunk)
+            })
+            .collect()
+    }
+
+    fn decode_prepared_tile_job_chunks_scoped(
+        &self,
+        jobs: &mut [PreparedJpegTileJob<'_, '_>],
+        chunk_size: usize,
+    ) -> Vec<IndexedBatchResult<DecodedTile, JpegError>> {
+        if jobs.len() <= chunk_size {
+            return lock_worker(&self.workers[0]).decode_prepared_tile_job_chunk(0, jobs);
+        }
+
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+                let start_index = chunk_index * chunk_size;
+                let worker = &self.workers[chunk_index];
+                handles.push(scope.spawn(move || {
+                    lock_worker(worker).decode_prepared_tile_job_chunk(start_index, chunk)
+                }));
+            }
+            collect_joined_batch_results(handles)
+        })
+    }
+
     fn decode_tile_scaled_job_chunks_rayon(
         &self,
         jobs: &mut [TileScaledDecodeJob<'_, '_>],
@@ -450,6 +530,22 @@ fn collect_results(
         index,
         source,
     })
+}
+
+fn collect_per_tile_results<T>(
+    job_count: usize,
+    results: Vec<IndexedBatchResult<T, JpegError>>,
+) -> Vec<Result<T, JpegError>> {
+    let mut ordered = core::iter::repeat_with(|| None)
+        .take(job_count)
+        .collect::<Vec<_>>();
+    for (index, result) in results {
+        ordered[index] = Some(result);
+    }
+    ordered
+        .into_iter()
+        .map(|slot| slot.expect("JPEG prepared batch worker omitted a tile result"))
+        .collect()
 }
 
 fn collect_joined_batch_results<T>(

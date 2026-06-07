@@ -5,11 +5,14 @@
 //! Phase 5 tile primitive under `std::thread::scope`.
 
 use signinum_jpeg::{
-    decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
-    decode_tiles_into_with_options, decode_tiles_region_scaled_into, decode_tiles_scaled_into,
-    decode_tiles_scaled_into_with_options, ColorTransform, DecodeOptions, Decoder, DecoderContext,
-    Downscale, JpegBatchSession, JpegOutputBuffer, PixelFormat, Rect, RowSink, ScratchPool,
-    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_prepared_jpeg_tiles_rgb8, decode_tile_into_in_context,
+    decode_tile_into_in_context_with_options, decode_tile_region_scaled_into_in_context,
+    decode_tiles_into, decode_tiles_into_with_options, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, decode_tiles_scaled_into_with_options, prepare_tiff_jpeg_tile,
+    ColorTransform, DecodeOptions, Decoder, DecoderContext, Downscale, JpegBatchSession, JpegError,
+    JpegOutputBuffer, JpegTilePrepareOptions, PixelFormat, PreparedJpeg, PreparedJpegTileJob, Rect,
+    RowSink, ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 mod fixtures;
 use fixtures::{
@@ -118,6 +121,117 @@ fn rgb16_to_rgba16(rgb: &[u8], alpha: u16) -> Vec<u8> {
         out.extend_from_slice(&alpha);
     }
     out
+}
+
+#[test]
+fn prepared_jpeg_batch_decode_returns_ordered_per_tile_results() {
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let prepared_a = prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+        .expect("prepared A");
+    let prepared_c = prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+        .expect("prepared C");
+    let mut out_a = vec![0u8; expected.len()];
+    let mut out_bad = vec![0u8; expected.len()];
+    let mut out_c = vec![0u8; expected.len()];
+
+    let results = {
+        let mut jobs = vec![
+            PreparedJpegTileJob {
+                input: prepared_a,
+                out: out_a.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+            PreparedJpegTileJob {
+                input: PreparedJpeg::Borrowed(&[]),
+                out: out_bad.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+            PreparedJpegTileJob {
+                input: prepared_c,
+                out: out_c.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+        ];
+        decode_prepared_jpeg_tiles_rgb8(&mut jobs)
+    };
+
+    assert_eq!(results.len(), 3);
+    assert!(results[0].is_ok());
+    assert!(matches!(results[1], Err(JpegError::Truncated { .. })));
+    assert!(results[2].is_ok());
+    assert_eq!(
+        results[0].as_ref().expect("first result").dimensions,
+        (16, 16)
+    );
+    assert_eq!(
+        results[2].as_ref().expect("third result").dimensions,
+        (16, 16)
+    );
+    assert_eq!(out_a, expected);
+    assert_eq!(out_c, expected);
+}
+
+#[test]
+fn prepared_jpeg_batch_decode_applies_per_job_decode_options() {
+    let prepared_rgb =
+        prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+            .expect("prepared RGB");
+    let prepared_ycbcr =
+        prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+            .expect("prepared YCbCr");
+    let stride = 16 * 3;
+    let mut expected_rgb = vec![0u8; stride * 16];
+    let mut expected_ycbcr = vec![0u8; stride * 16];
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    decode_tile_into_in_context_with_options(
+        BASELINE_420,
+        &mut ctx,
+        &mut pool,
+        &mut expected_rgb,
+        stride,
+        PixelFormat::Rgb8,
+        DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
+    )
+    .expect("force RGB reference");
+    decode_tile_into_in_context_with_options(
+        BASELINE_420,
+        &mut ctx,
+        &mut pool,
+        &mut expected_ycbcr,
+        stride,
+        PixelFormat::Rgb8,
+        DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
+    )
+    .expect("force YCbCr reference");
+    assert_ne!(expected_rgb, expected_ycbcr);
+
+    let mut out_rgb = vec![0u8; expected_rgb.len()];
+    let mut out_ycbcr = vec![0u8; expected_ycbcr.len()];
+    {
+        let mut jobs = vec![
+            PreparedJpegTileJob {
+                input: prepared_rgb,
+                out: out_rgb.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
+            },
+            PreparedJpegTileJob {
+                input: prepared_ycbcr,
+                out: out_ycbcr.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
+            },
+        ];
+        let results = decode_prepared_jpeg_tiles_rgb8(&mut jobs);
+        assert!(results.iter().all(Result::is_ok));
+    }
+
+    assert_eq!(out_rgb, expected_rgb);
+    assert_eq!(out_ycbcr, expected_ycbcr);
 }
 
 #[test]

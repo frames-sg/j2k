@@ -31,6 +31,7 @@ use crate::output::{
 use crate::parse::header::{parse_header, parse_info, ParsedHeader};
 use crate::parse::tables::{HuffmanValues, RawHuffmanTable};
 use crate::profile::{duration_us_string, emit_jpeg_profile_row, jpeg_profile_stages_enabled};
+use crate::segment::PreparedJpeg;
 use crate::JpegCodec;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -86,6 +87,30 @@ pub struct TileDecodeJob<'i, 'o> {
     pub out: &'o mut [u8],
     /// Distance in bytes between output rows.
     pub stride: usize,
+}
+
+/// One decode request for a JPEG tile already normalized by
+/// [`prepare_tiff_jpeg_tile`](crate::prepare_tiff_jpeg_tile).
+pub struct PreparedJpegTileJob<'i, 'o> {
+    /// Decode-ready prepared JPEG bytes.
+    pub input: PreparedJpeg<'i>,
+    /// Caller-owned RGB8 output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Per-job JPEG decode options.
+    pub options: DecodeOptions,
+}
+
+/// Result for one successful prepared JPEG tile decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedTile {
+    /// Tile dimensions reported by the prepared JPEG header.
+    pub dimensions: (u32, u32),
+    /// Rectangle written into the output buffer.
+    pub decoded: Rect,
+    /// Non-fatal warnings emitted during parse or decode.
+    pub warnings: Vec<Warning>,
 }
 
 /// One scaled tile decode request for [`decode_tiles_scaled_into`].
@@ -1892,6 +1917,37 @@ pub fn decode_tile_into_in_context_with_options(
 ) -> Result<DecodeOutcome, JpegError> {
     let dec = Decoder::from_view_in_context(JpegView::parse_with_options(bytes, options)?, ctx)?;
     dec.decode_into_with_scratch(pool, out, stride, fmt)
+}
+
+pub(crate) fn decode_prepared_jpeg_tile_rgb8_in_context(
+    input: &PreparedJpeg<'_>,
+    ctx: &mut DecoderContext,
+    pool: &mut ScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    options: DecodeOptions,
+) -> Result<DecodedTile, JpegError> {
+    let view = JpegView::parse_with_options(input.as_bytes(), options)?;
+    let dimensions = view.info().dimensions;
+    let dec = Decoder::from_view_in_context(view, ctx)?;
+    let outcome = dec.decode_into_with_scratch(pool, out, stride, PixelFormat::Rgb8)?;
+    Ok(DecodedTile {
+        dimensions,
+        decoded: outcome.decoded,
+        warnings: outcome.warnings,
+    })
+}
+
+/// Decode prepared TIFF/WSI JPEG tiles into caller-owned RGB8 output buffers.
+///
+/// Returned results preserve the caller's input order. Each job carries its
+/// own [`DecodeOptions`], allowing container metadata to resolve RGB/YCbCr
+/// interpretation independently per tile.
+#[must_use]
+pub fn decode_prepared_jpeg_tiles_rgb8(
+    jobs: &mut [PreparedJpegTileJob<'_, '_>],
+) -> Vec<Result<DecodedTile, JpegError>> {
+    crate::JpegBatchSession::default().decode_prepared_jpeg_tiles_rgb8(jobs)
 }
 
 /// Decode independent JPEG tiles into caller-owned output buffers using a
