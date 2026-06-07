@@ -273,6 +273,16 @@ fn public_scan_ranges_and_sof_rewrite_helpers_use_absolute_offsets() {
 }
 
 #[test]
+fn public_scan_ranges_accepts_multiscan_progressive_entropy_boundaries() {
+    let bytes = progressive_8x8_jpeg();
+    let ranges = find_scan_ranges(&bytes).expect("progressive scan ranges");
+
+    assert_eq!(ranges.sos_marker_offset, 223);
+    assert_eq!(ranges.entropy_range, 237..241);
+    assert_eq!(ranges.eoi_marker_offset, None);
+}
+
+#[test]
 fn complete_tiff_jpeg_tile_preparation_returns_borrowed_bytes() {
     let bytes = minimal_baseline_jpeg();
     let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options()).expect("prepared");
@@ -290,6 +300,17 @@ fn prepared_tiff_jpeg_bytes_decode_complete_tile() {
     let info = Decoder::inspect(prepared.as_bytes()).expect("inspect prepared");
 
     assert_eq!(info.dimensions, (16, 16));
+}
+
+#[test]
+fn prepared_tiff_jpeg_bytes_accept_multiscan_progressive_complete_tile() {
+    let bytes = progressive_8x8_jpeg();
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, prepare_options()).expect("prepared");
+    let info = Decoder::inspect(prepared.as_bytes()).expect("progressive inspect");
+
+    assert_eq!(info.sof_kind, SofKind::Progressive8);
+    assert_eq!(info.scan_count, 10);
+    assert!(matches!(prepared, PreparedJpeg::Borrowed(_)));
 }
 
 #[test]

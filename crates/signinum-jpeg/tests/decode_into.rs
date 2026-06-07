@@ -3973,9 +3973,8 @@ fn decode_nonleading_max_four_component_sampling_uses_generic_upsample() {
 #[test]
 fn decoder_new_rejects_malformed_four_component_sampling_shape() {
     let input = malformed_cmyk_nondivisible_sampling_jpeg();
-    let err = match Decoder::new(&input) {
-        Ok(_) => panic!("malformed four-component sampling should reject construction"),
-        Err(err) => err,
+    let Err(err) = Decoder::new(&input) else {
+        panic!("malformed four-component sampling should reject construction");
     };
 
     assert!(

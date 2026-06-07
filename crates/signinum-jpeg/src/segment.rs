@@ -186,38 +186,23 @@ pub fn parse_dri(payload: &[u8]) -> Result<Option<u16>, JpegError> {
 
 /// Find the first SOS header and scan data ranges.
 pub fn find_scan_ranges(input: &[u8]) -> Result<JpegScanRanges, JpegError> {
-    let mut saw_sos = None::<(usize, Range<usize>, usize)>;
     for segment in iter_segments(input) {
         let segment = segment?;
-        match segment.marker {
-            0xda => {
-                let entropy_start = segment.payload_offset + segment.payload.len();
-                saw_sos = Some((
-                    segment.marker_offset,
-                    segment.payload_offset..entropy_start,
-                    entropy_start,
-                ));
-            }
-            0xd9 => {
-                if let Some((sos_marker_offset, sos_payload_range, entropy_start)) = saw_sos {
-                    return Ok(JpegScanRanges {
-                        sos_marker_offset,
-                        sos_payload_range,
-                        entropy_range: entropy_start..segment.marker_offset,
-                        eoi_marker_offset: Some(segment.marker_offset),
-                    });
-                }
-            }
-            _ => {}
+        if segment.marker == 0xda {
+            let entropy_start = segment.payload_offset + segment.payload.len();
+            let next_marker = next_marker_after_entropy(input, entropy_start);
+            let (entropy_end, eoi_marker_offset) = match next_marker {
+                Some((marker_offset, 0xd9)) => (marker_offset, Some(marker_offset)),
+                Some((marker_offset, _)) => (marker_offset, None),
+                None => (input.len(), None),
+            };
+            return Ok(JpegScanRanges {
+                sos_marker_offset: segment.marker_offset,
+                sos_payload_range: segment.payload_offset..entropy_start,
+                entropy_range: entropy_start..entropy_end,
+                eoi_marker_offset,
+            });
         }
-    }
-    if let Some((sos_marker_offset, sos_payload_range, entropy_start)) = saw_sos {
-        return Ok(JpegScanRanges {
-            sos_marker_offset,
-            sos_payload_range,
-            entropy_range: entropy_start..input.len(),
-            eoi_marker_offset: None,
-        });
     }
     Err(JpegError::MissingMarker {
         marker: MarkerKind::Sos,
@@ -307,6 +292,9 @@ fn repair_or_validate_dimensions(
     let mut saw_sof = false;
     for segment in iter_segments(bytes) {
         let segment = segment?;
+        if segment.marker == 0xda {
+            break;
+        }
         if is_sof_marker(segment.marker) {
             saw_sof = true;
             let sof = parse_sof_info_allowing_zero_dimensions(

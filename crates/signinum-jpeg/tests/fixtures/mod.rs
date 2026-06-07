@@ -3232,7 +3232,7 @@ fn push_bits(bits: &mut Vec<bool>, value: u32, count: u8) {
 }
 
 fn pack_entropy_bits(mut bits: Vec<bool>) -> Vec<u8> {
-    while bits.len() % 8 != 0 {
+    while !bits.len().is_multiple_of(8) {
         bits.push(true);
     }
     let mut out = Vec::new();
