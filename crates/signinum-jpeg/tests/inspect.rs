@@ -191,6 +191,24 @@ fn mutate_first_dqt_value(tables: &[u8]) -> Vec<u8> {
     out
 }
 
+fn restart_jpeg() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[0xff, 0xc0, 0x00, 11, 8, 0, 8, 0, 16, 1, 1, 0x11, 0]);
+    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
+    bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
+    bytes
+}
+
 fn segment_payload(bytes: &[u8], marker: u8) -> &[u8] {
     iter_segments(bytes)
         .find_map(|segment| {
@@ -373,6 +391,58 @@ fn conflicting_duplicate_jpeg_tables_are_rejected() {
 
     let err = prepare_tiff_jpeg_tile(&tile, Some(&conflicting), prepare_options()).unwrap_err();
     assert!(matches!(err, JpegError::ConflictingDuplicateTable { .. }));
+}
+
+#[test]
+fn zero_sof_dimensions_are_repaired_with_expected_dimensions() {
+    let bytes = zero_sof_jpeg();
+    let mut opts = prepare_options();
+    opts.expected_dimensions = Some((16, 16));
+    opts.repair_zero_sof_dimensions = true;
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, opts).expect("prepared");
+    let info = Decoder::inspect(prepared.as_bytes()).expect("inspect repaired");
+
+    assert_eq!(info.dimensions, (16, 16));
+    assert!(matches!(prepared, PreparedJpeg::Owned(_)));
+}
+
+#[test]
+fn nonzero_sof_dimensions_conflicting_with_expected_dimensions_are_rejected() {
+    let bytes = minimal_baseline_jpeg();
+    let mut opts = prepare_options();
+    opts.expected_dimensions = Some((32, 16));
+
+    let err = prepare_tiff_jpeg_tile(&bytes, None, opts).unwrap_err();
+    assert!(matches!(
+        err,
+        JpegError::ConflictingExpectedDimensions { .. }
+    ));
+}
+
+#[test]
+fn dri_survives_preparation_and_restart_validation_accepts_ordered_rst_markers() {
+    let bytes = restart_jpeg();
+    let mut opts = prepare_options();
+    opts.validate_restart_markers = true;
+    let prepared = prepare_tiff_jpeg_tile(&bytes, None, opts).expect("prepared");
+    let info = Decoder::inspect(prepared.as_bytes()).expect("inspect");
+
+    assert_eq!(info.restart_interval, Some(1));
+}
+
+#[test]
+fn restart_validation_rejects_out_of_order_rst_marker() {
+    let mut bytes = restart_jpeg();
+    let rst = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xd0])
+        .expect("RST0");
+    bytes[rst + 1] = 0xd3;
+    let mut opts = prepare_options();
+    opts.validate_restart_markers = true;
+
+    let err = prepare_tiff_jpeg_tile(&bytes, None, opts).unwrap_err();
+    assert!(matches!(err, JpegError::RestartMismatch { .. }));
 }
 
 #[test]

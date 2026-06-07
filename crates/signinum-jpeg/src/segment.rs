@@ -163,7 +163,6 @@ pub fn parse_sof_info(marker: u8, payload: &[u8]) -> Result<JpegSofInfo, JpegErr
     parse_sof_info_at(marker, payload, 0, false)
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_sof_info_allowing_zero_dimensions(
     marker: u8,
     payload: &[u8],
@@ -282,11 +281,78 @@ fn validate_complete_tile<'a>(
     tile: &'a [u8],
     opts: JpegTilePrepareOptions,
 ) -> Result<PreparedJpeg<'a>, JpegError> {
-    validate_prepared_stream(tile, opts)?;
+    if let Some(repaired) = finalize_prepared_bytes(tile, opts)? {
+        return Ok(PreparedJpeg::Owned(repaired));
+    }
     Ok(PreparedJpeg::Borrowed(tile))
 }
 
-fn validate_prepared_stream(bytes: &[u8], opts: JpegTilePrepareOptions) -> Result<(), JpegError> {
+fn finalize_prepared_bytes(
+    bytes: &[u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<Option<Vec<u8>>, JpegError> {
+    let repaired = repair_or_validate_dimensions(bytes, opts)?;
+    let validation_input = repaired.as_deref().unwrap_or(bytes);
+    let _ = find_scan_ranges(validation_input)?;
+    if opts.validate_restart_markers {
+        validate_restart_markers(validation_input)?;
+    }
+    Ok(repaired)
+}
+
+fn repair_or_validate_dimensions(
+    bytes: &[u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<Option<Vec<u8>>, JpegError> {
+    let mut saw_sof = false;
+    for segment in iter_segments(bytes) {
+        let segment = segment?;
+        if is_sof_marker(segment.marker) {
+            saw_sof = true;
+            let sof = parse_sof_info_allowing_zero_dimensions(
+                segment.marker,
+                segment.payload,
+                segment.payload_offset,
+            )?;
+            if sof.dimensions.0 == 0 || sof.dimensions.1 == 0 {
+                let Some(expected) = opts.expected_dimensions else {
+                    return Err(JpegError::ExpectedDimensionsRequired {
+                        offset: segment.marker_offset,
+                    });
+                };
+                if !opts.repair_zero_sof_dimensions {
+                    return Err(JpegError::ZeroDimension {
+                        width: sof.dimensions.0,
+                        height: sof.dimensions.1,
+                    });
+                }
+                let repaired = rewrite_sof_dimensions(bytes, expected)?;
+                validate_nonzero_sof_dimensions(&repaired, opts)?;
+                return Ok(Some(repaired));
+            }
+            if let Some(expected) = opts.expected_dimensions {
+                if expected != sof.dimensions {
+                    return Err(JpegError::ConflictingExpectedDimensions {
+                        offset: segment.marker_offset,
+                        expected,
+                        actual: sof.dimensions,
+                    });
+                }
+            }
+        }
+    }
+    if !saw_sof {
+        return Err(JpegError::MissingMarker {
+            marker: MarkerKind::Sof,
+        });
+    }
+    Ok(None)
+}
+
+fn validate_nonzero_sof_dimensions(
+    bytes: &[u8],
+    opts: JpegTilePrepareOptions,
+) -> Result<(), JpegError> {
     let mut saw_sof = false;
     for segment in iter_segments(bytes) {
         let segment = segment?;
@@ -309,7 +375,53 @@ fn validate_prepared_stream(bytes: &[u8], opts: JpegTilePrepareOptions) -> Resul
             marker: MarkerKind::Sof,
         });
     }
-    let _ = find_scan_ranges(bytes)?;
+    Ok(())
+}
+
+fn validate_restart_markers(bytes: &[u8]) -> Result<(), JpegError> {
+    let ranges = find_scan_ranges(bytes)?;
+    let mut expected = 0u8;
+    let mut pos = ranges.entropy_range.start;
+    while pos < ranges.entropy_range.end {
+        let Some(relative) = memchr(0xff, &bytes[pos..ranges.entropy_range.end]) else {
+            break;
+        };
+        let prefix = pos + relative;
+        let mut marker_pos = prefix + 1;
+        while marker_pos < ranges.entropy_range.end && bytes[marker_pos] == 0xff {
+            marker_pos += 1;
+        }
+        if marker_pos >= ranges.entropy_range.end {
+            return Err(JpegError::Truncated {
+                offset: prefix,
+                expected: 1,
+            });
+        }
+        let marker = bytes[marker_pos];
+        match marker {
+            0x00 => pos = marker_pos + 1,
+            0xd0..=0xd7 => {
+                let found = marker & 0x07;
+                if found != expected {
+                    return Err(JpegError::RestartMismatch {
+                        offset: marker_pos - 1,
+                        expected,
+                        found: marker,
+                    });
+                }
+                expected = (expected + 1) & 0x07;
+                pos = marker_pos + 1;
+            }
+            0xd9 => break,
+            _ => {
+                return Err(JpegError::UnexpectedMarker {
+                    offset: marker_pos - 1,
+                    expected: MarkerKind::Eoi,
+                    found: marker,
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -336,7 +448,9 @@ fn assemble_abbreviated_tile<'a>(
     if !out.ends_with(&[0xff, 0xd9]) {
         out.extend_from_slice(&[0xff, 0xd9]);
     }
-    validate_prepared_stream(&out, opts)?;
+    if let Some(repaired) = finalize_prepared_bytes(&out, opts)? {
+        out = repaired;
+    }
     Ok(PreparedJpeg::Owned(out))
 }
 
