@@ -277,10 +277,10 @@ fn is_complete_jpeg(input: &[u8]) -> bool {
         && input[input.len() - 1] == 0xd9
 }
 
-fn validate_complete_tile<'a>(
-    tile: &'a [u8],
+fn validate_complete_tile(
+    tile: &[u8],
     opts: JpegTilePrepareOptions,
-) -> Result<PreparedJpeg<'a>, JpegError> {
+) -> Result<PreparedJpeg<'_>, JpegError> {
     if let Some(repaired) = finalize_prepared_bytes(tile, opts)? {
         return Ok(PreparedJpeg::Owned(repaired));
     }
@@ -592,18 +592,15 @@ impl<'a> Iterator for JpegSegmentIter<'a> {
             return Some(self.read_soi());
         }
         if self.scan_entropy {
-            match next_marker_after_entropy(self.input, self.pos) {
-                Some((marker_offset, marker)) => {
-                    self.pos = marker_offset;
-                    self.scan_entropy = false;
-                    if marker == 0xd9 {
-                        return Some(self.read_standalone_marker());
-                    }
+            if let Some((marker_offset, marker)) = next_marker_after_entropy(self.input, self.pos) {
+                self.pos = marker_offset;
+                self.scan_entropy = false;
+                if marker == 0xd9 {
+                    return Some(self.read_standalone_marker());
                 }
-                None => {
-                    self.finished = true;
-                    return None;
-                }
+            } else {
+                self.finished = true;
+                return None;
             }
         }
         Some(self.read_segment())
