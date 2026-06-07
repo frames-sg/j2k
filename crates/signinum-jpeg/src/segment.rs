@@ -1,3 +1,475 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! segment module — see lib.rs.
+//! Public JPEG marker-level utilities.
+
+use crate::error::{JpegError, MarkerKind, UnsupportedReason};
+use crate::info::{SamplingFactors, SofKind};
+use alloc::vec::Vec;
+use core::ops::Range;
+use memchr::memchr;
+
+/// One marker segment in a JPEG byte stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JpegSegment<'a> {
+    /// Raw marker byte after the `0xff` prefix.
+    pub marker: u8,
+    /// Offset of the marker prefix byte.
+    pub marker_offset: usize,
+    /// Offset of the segment payload. Standalone markers use the byte after the marker.
+    pub payload_offset: usize,
+    /// Segment payload excluding marker and length bytes.
+    pub payload: &'a [u8],
+}
+
+/// Iterator over marker segments in a JPEG byte stream.
+#[derive(Debug)]
+pub struct JpegSegmentIter<'a> {
+    input: &'a [u8],
+    pos: usize,
+    started: bool,
+    finished: bool,
+    scan_entropy: bool,
+}
+
+/// Parsed Start-of-Frame facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegSofInfo {
+    /// Raw SOF marker byte.
+    pub marker: u8,
+    /// Supported SOF kind classification.
+    pub sof_kind: SofKind,
+    /// Component sample precision.
+    pub bit_depth: u8,
+    /// Width and height from the SOF payload.
+    pub dimensions: (u16, u16),
+    /// Component identifiers in declaration order.
+    pub component_ids: Vec<u8>,
+    /// Component sampling factors in declaration order.
+    pub sampling: SamplingFactors,
+    /// Quantization-table selectors in declaration order.
+    pub quant_table_ids: Vec<u8>,
+}
+
+/// Byte ranges around the first Start-of-Scan marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegScanRanges {
+    /// Offset of the SOS marker prefix byte.
+    pub sos_marker_offset: usize,
+    /// Payload range of the SOS segment, excluding marker and length bytes.
+    pub sos_payload_range: Range<usize>,
+    /// Entropy-coded scan data range after SOS and before EOI or the next marker.
+    pub entropy_range: Range<usize>,
+    /// Offset of EOI when present.
+    pub eoi_marker_offset: Option<usize>,
+}
+
+/// Iterate over JPEG marker segments.
+#[must_use]
+pub fn iter_segments(input: &[u8]) -> JpegSegmentIter<'_> {
+    JpegSegmentIter {
+        input,
+        pos: 0,
+        started: false,
+        finished: false,
+        scan_entropy: false,
+    }
+}
+
+/// Return true for JPEG SOF marker classes.
+#[must_use]
+pub const fn is_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf
+    )
+}
+
+/// Parse a Start-of-Frame payload.
+pub fn parse_sof_info(marker: u8, payload: &[u8]) -> Result<JpegSofInfo, JpegError> {
+    parse_sof_info_at(marker, payload, 0, false)
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_sof_info_allowing_zero_dimensions(
+    marker: u8,
+    payload: &[u8],
+    payload_offset: usize,
+) -> Result<JpegSofInfo, JpegError> {
+    parse_sof_info_at(marker, payload, payload_offset, true)
+}
+
+/// Parse a Define Restart Interval payload.
+pub fn parse_dri(payload: &[u8]) -> Result<Option<u16>, JpegError> {
+    if payload.len() != 2 {
+        return Err(JpegError::InvalidSegmentLength {
+            offset: 0,
+            marker: 0xdd,
+            length: (payload.len() + 2) as u16,
+        });
+    }
+    let interval = u16::from_be_bytes([payload[0], payload[1]]);
+    Ok((interval > 0).then_some(interval))
+}
+
+/// Find the first SOS header and scan data ranges.
+pub fn find_scan_ranges(input: &[u8]) -> Result<JpegScanRanges, JpegError> {
+    let mut saw_sos = None::<(usize, Range<usize>, usize)>;
+    for segment in iter_segments(input) {
+        let segment = segment?;
+        match segment.marker {
+            0xda => {
+                let entropy_start = segment.payload_offset + segment.payload.len();
+                saw_sos = Some((
+                    segment.marker_offset,
+                    segment.payload_offset..entropy_start,
+                    entropy_start,
+                ));
+            }
+            0xd9 => {
+                if let Some((sos_marker_offset, sos_payload_range, entropy_start)) = saw_sos {
+                    return Ok(JpegScanRanges {
+                        sos_marker_offset,
+                        sos_payload_range,
+                        entropy_range: entropy_start..segment.marker_offset,
+                        eoi_marker_offset: Some(segment.marker_offset),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((sos_marker_offset, sos_payload_range, entropy_start)) = saw_sos {
+        return Ok(JpegScanRanges {
+            sos_marker_offset,
+            sos_payload_range,
+            entropy_range: entropy_start..input.len(),
+            eoi_marker_offset: None,
+        });
+    }
+    Err(JpegError::MissingMarker {
+        marker: MarkerKind::Sos,
+    })
+}
+
+/// Return a copy of `input` with the first SOF dimensions rewritten.
+pub fn rewrite_sof_dimensions(input: &[u8], dimensions: (u16, u16)) -> Result<Vec<u8>, JpegError> {
+    if dimensions.0 == 0 || dimensions.1 == 0 {
+        return Err(JpegError::ZeroDimension {
+            width: dimensions.0,
+            height: dimensions.1,
+        });
+    }
+    for segment in iter_segments(input) {
+        let segment = segment?;
+        if is_sof_marker(segment.marker) {
+            if segment.payload.len() < 5 {
+                return Err(JpegError::Truncated {
+                    offset: segment.payload_offset + segment.payload.len(),
+                    expected: 5 - segment.payload.len(),
+                });
+            }
+            let mut out = input.to_vec();
+            let width = dimensions.0.to_be_bytes();
+            let height = dimensions.1.to_be_bytes();
+            out[segment.payload_offset + 1] = height[0];
+            out[segment.payload_offset + 2] = height[1];
+            out[segment.payload_offset + 3] = width[0];
+            out[segment.payload_offset + 4] = width[1];
+            return Ok(out);
+        }
+    }
+    Err(JpegError::MissingMarker {
+        marker: MarkerKind::Sof,
+    })
+}
+
+impl<'a> Iterator for JpegSegmentIter<'a> {
+    type Item = Result<JpegSegment<'a>, JpegError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        if !self.started {
+            self.started = true;
+            return Some(self.read_soi());
+        }
+        if self.scan_entropy {
+            match next_marker_after_entropy(self.input, self.pos) {
+                Some((marker_offset, marker)) => {
+                    self.pos = marker_offset;
+                    self.scan_entropy = false;
+                    if marker == 0xd9 {
+                        return Some(self.read_standalone_marker());
+                    }
+                }
+                None => {
+                    self.finished = true;
+                    return None;
+                }
+            }
+        }
+        Some(self.read_segment())
+    }
+}
+
+impl<'a> JpegSegmentIter<'a> {
+    fn read_soi(&mut self) -> Result<JpegSegment<'a>, JpegError> {
+        if self.input.len() < 2 {
+            return Err(JpegError::Truncated {
+                offset: 0,
+                expected: 2 - self.input.len(),
+            });
+        }
+        if self.input[0] != 0xff || self.input[1] != 0xd8 {
+            return Err(JpegError::UnexpectedMarker {
+                offset: 0,
+                expected: MarkerKind::Soi,
+                found: self.input.get(1).copied().unwrap_or(0),
+            });
+        }
+        self.pos = 2;
+        Ok(JpegSegment {
+            marker: 0xd8,
+            marker_offset: 0,
+            payload_offset: 2,
+            payload: &[],
+        })
+    }
+
+    fn read_segment(&mut self) -> Result<JpegSegment<'a>, JpegError> {
+        if self.pos >= self.input.len() {
+            return Err(JpegError::Truncated {
+                offset: self.pos,
+                expected: 2,
+            });
+        }
+        if self.input[self.pos] != 0xff {
+            return Err(JpegError::InvalidMarker {
+                offset: self.pos,
+                marker: self.input[self.pos],
+            });
+        }
+        while self.pos < self.input.len() && self.input[self.pos] == 0xff {
+            self.pos += 1;
+        }
+        if self.pos >= self.input.len() {
+            return Err(JpegError::Truncated {
+                offset: self.pos,
+                expected: 1,
+            });
+        }
+        let marker = self.input[self.pos];
+        let marker_offset = self.pos - 1;
+        self.pos += 1;
+
+        match marker {
+            0x01 | 0xd0..=0xd9 => {
+                if marker == 0xd9 {
+                    self.finished = true;
+                }
+                Ok(JpegSegment {
+                    marker,
+                    marker_offset,
+                    payload_offset: self.pos,
+                    payload: &[],
+                })
+            }
+            0x00 => Err(JpegError::InvalidMarker {
+                offset: marker_offset,
+                marker,
+            }),
+            _ => {
+                if self.pos + 2 > self.input.len() {
+                    return Err(JpegError::Truncated {
+                        offset: self.pos,
+                        expected: self.pos + 2 - self.input.len(),
+                    });
+                }
+                let length = u16::from_be_bytes([self.input[self.pos], self.input[self.pos + 1]]);
+                if length < 2 {
+                    return Err(JpegError::InvalidSegmentLength {
+                        offset: self.pos,
+                        marker,
+                        length,
+                    });
+                }
+                let payload_offset = self.pos + 2;
+                let payload_end = self.pos.checked_add(usize::from(length)).ok_or(
+                    JpegError::InvalidSegmentLength {
+                        offset: self.pos,
+                        marker,
+                        length,
+                    },
+                )?;
+                if payload_end > self.input.len() {
+                    return Err(JpegError::Truncated {
+                        offset: payload_offset,
+                        expected: payload_end - self.input.len(),
+                    });
+                }
+                self.pos = payload_end;
+                if marker == 0xda {
+                    self.scan_entropy = true;
+                }
+                Ok(JpegSegment {
+                    marker,
+                    marker_offset,
+                    payload_offset,
+                    payload: &self.input[payload_offset..payload_end],
+                })
+            }
+        }
+    }
+
+    fn read_standalone_marker(&mut self) -> Result<JpegSegment<'a>, JpegError> {
+        let marker_offset = self.pos;
+        if self.pos + 1 >= self.input.len() {
+            return Err(JpegError::Truncated {
+                offset: self.pos,
+                expected: self.pos + 2 - self.input.len(),
+            });
+        }
+        let marker = self.input[self.pos + 1];
+        self.pos += 2;
+        if marker == 0xd9 {
+            self.finished = true;
+        }
+        Ok(JpegSegment {
+            marker,
+            marker_offset,
+            payload_offset: self.pos,
+            payload: &[],
+        })
+    }
+}
+
+fn parse_sof_info_at(
+    marker: u8,
+    payload: &[u8],
+    payload_offset: usize,
+    allow_zero_dimensions: bool,
+) -> Result<JpegSofInfo, JpegError> {
+    if payload.len() < 8 {
+        return Err(JpegError::Truncated {
+            offset: payload_offset + payload.len(),
+            expected: 8 - payload.len(),
+        });
+    }
+
+    let bit_depth = payload[0];
+    let height = u16::from_be_bytes([payload[1], payload[2]]);
+    let width = u16::from_be_bytes([payload[3], payload[4]]);
+    let component_count = payload[5];
+    let expected_len = 6 + usize::from(component_count) * 3;
+    if payload.len() < expected_len {
+        return Err(JpegError::Truncated {
+            offset: payload_offset + payload.len(),
+            expected: expected_len - payload.len(),
+        });
+    }
+
+    let sof_kind = match (marker, bit_depth) {
+        (0xc0, 8) => SofKind::Baseline8,
+        (0xc1, 8) => SofKind::Extended8,
+        (0xc1, 12) => SofKind::Extended12,
+        (0xc2, 8) => SofKind::Progressive8,
+        (0xc2, 12) => SofKind::Progressive12,
+        (0xc3, 2..=16) => SofKind::Lossless,
+        (0xc5, _) => {
+            return Err(JpegError::UnsupportedSof {
+                marker,
+                reason: UnsupportedReason::DifferentialBaseline,
+            });
+        }
+        (0xc6 | 0xc7, _) => {
+            return Err(JpegError::UnsupportedSof {
+                marker,
+                reason: UnsupportedReason::Hierarchical,
+            });
+        }
+        (0xc9 | 0xca | 0xcb, _) => {
+            return Err(JpegError::UnsupportedSof {
+                marker,
+                reason: UnsupportedReason::ArithmeticCoding,
+            });
+        }
+        (0xcd | 0xce | 0xcf, _) => {
+            return Err(JpegError::UnsupportedSof {
+                marker,
+                reason: UnsupportedReason::ArithmeticAndHierarchical,
+            });
+        }
+        (_, bad_precision) => {
+            return Err(JpegError::UnsupportedBitDepth {
+                depth: bad_precision,
+            })
+        }
+    };
+
+    if !allow_zero_dimensions && (width == 0 || height == 0) {
+        return Err(JpegError::ZeroDimension { width, height });
+    }
+    if width > 65_500 || height > 65_500 {
+        return Err(JpegError::DimensionOverflow {
+            width: u32::from(width),
+            height: u32::from(height),
+        });
+    }
+    if !matches!(component_count, 1 | 3 | 4) {
+        return Err(JpegError::UnsupportedComponentCount {
+            count: component_count,
+        });
+    }
+
+    let mut sampling = Vec::with_capacity(usize::from(component_count));
+    let mut component_ids = Vec::with_capacity(usize::from(component_count));
+    let mut quant_table_ids = Vec::with_capacity(usize::from(component_count));
+    for i in 0..usize::from(component_count) {
+        let base = 6 + i * 3;
+        let component_id = payload[base];
+        let sampling_byte = payload[base + 1];
+        let h = sampling_byte >> 4;
+        let v = sampling_byte & 0x0f;
+        if !(1..=4).contains(&h) || !(1..=4).contains(&v) {
+            return Err(JpegError::InvalidSampling {
+                component: i as u8,
+                h,
+                v,
+            });
+        }
+        component_ids.push(component_id);
+        sampling.push((h, v));
+        quant_table_ids.push(payload[base + 2]);
+    }
+
+    Ok(JpegSofInfo {
+        marker,
+        sof_kind,
+        bit_depth,
+        dimensions: (width, height),
+        component_ids,
+        sampling: SamplingFactors::from_components(&sampling),
+        quant_table_ids,
+    })
+}
+
+fn next_marker_after_entropy(bytes: &[u8], mut pos: usize) -> Option<(usize, u8)> {
+    while pos < bytes.len() {
+        let ff_rel = memchr(0xff, &bytes[pos..])?;
+        let marker_prefix = pos + ff_rel;
+        let mut code_pos = marker_prefix + 1;
+        while code_pos < bytes.len() && bytes[code_pos] == 0xff {
+            code_pos += 1;
+        }
+        if code_pos >= bytes.len() {
+            return None;
+        }
+        let code = bytes[code_pos];
+        match code {
+            0x00 | 0xd0..=0xd7 => pos = code_pos + 1,
+            _ => return Some((code_pos - 1, code)),
+        }
+    }
+    None
+}

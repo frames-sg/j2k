@@ -3,8 +3,9 @@
 //! Integration tests for `Decoder::inspect`.
 
 use signinum_jpeg::{
-    ColorSpace, ColorTransform, DecodeOptions, Decoder, JpegError, JpegView, McuGeometry,
-    RestartSegment, SofKind, UnsupportedReason,
+    find_scan_ranges, is_sof_marker, iter_segments, parse_dri, parse_sof_info,
+    rewrite_sof_dimensions, ColorSpace, ColorTransform, DecodeOptions, Decoder, JpegError,
+    JpegView, McuGeometry, RestartSegment, SofKind, UnsupportedReason,
 };
 use signinum_jpeg::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughDecision, PassthroughRequirements,
@@ -143,6 +144,69 @@ fn restart_marker_offsets(bytes: &[u8]) -> Vec<usize> {
             (window[0] == 0xff && (0xd0..=0xd7).contains(&window[1])).then_some(offset)
         })
         .collect()
+}
+
+fn segment_payload(bytes: &[u8], marker: u8) -> &[u8] {
+    iter_segments(bytes)
+        .find_map(|segment| {
+            let segment = segment.expect("segment parses");
+            (segment.marker == marker).then_some(segment.payload)
+        })
+        .expect("marker present")
+}
+
+#[test]
+fn public_segment_iterator_reports_header_markers_without_stuffed_entropy_markers() {
+    let mut bytes = minimal_baseline_jpeg();
+    let eoi = bytes.len() - 2;
+    bytes.splice(eoi..eoi, [0xff, 0x00, 0x7f]);
+    let markers = iter_segments(&bytes)
+        .map(|segment| segment.expect("segment parses").marker)
+        .collect::<Vec<_>>();
+
+    assert_eq!(markers, vec![0xd8, 0xdb, 0xc0, 0xc4, 0xc4, 0xda, 0xd9]);
+}
+
+#[test]
+fn public_sof_and_dri_helpers_report_marker_facts() {
+    for marker in [
+        0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+    ] {
+        assert!(is_sof_marker(marker), "FF{marker:02X}");
+    }
+    for marker in [0xc4, 0xd8, 0xd9, 0xda, 0xdb, 0xdd, 0xee] {
+        assert!(!is_sof_marker(marker), "FF{marker:02X}");
+    }
+
+    let bytes = minimal_baseline_jpeg();
+    let sof = parse_sof_info(0xc0, segment_payload(&bytes, 0xc0)).expect("SOF parses");
+    assert_eq!(sof.sof_kind, SofKind::Baseline8);
+    assert_eq!(sof.dimensions, (16, 16));
+    assert_eq!(sof.sampling.components(), &[(2, 2), (1, 1), (1, 1)]);
+    assert_eq!(sof.component_ids, vec![1, 2, 3]);
+    assert_eq!(sof.quant_table_ids, vec![0, 0, 0]);
+
+    assert_eq!(parse_dri(&[0x00, 0x00]).expect("zero DRI"), None);
+    assert_eq!(parse_dri(&[0x00, 0x08]).expect("nonzero DRI"), Some(8));
+}
+
+#[test]
+fn public_scan_ranges_and_sof_rewrite_helpers_use_absolute_offsets() {
+    let bytes = minimal_baseline_jpeg();
+    let ranges = find_scan_ranges(&bytes).expect("scan ranges");
+    let sos = bytes
+        .windows(2)
+        .position(|window| window == [0xff, 0xda])
+        .expect("SOS");
+    assert_eq!(ranges.sos_marker_offset, sos);
+    assert_eq!(ranges.sos_payload_range, sos + 4..sos + 14);
+    assert_eq!(ranges.entropy_range, sos + 14..bytes.len() - 2);
+    assert_eq!(ranges.eoi_marker_offset, Some(bytes.len() - 2));
+
+    let rewritten = rewrite_sof_dimensions(&bytes, (32, 24)).expect("rewrite");
+    let sof = parse_sof_info(0xc0, segment_payload(&rewritten, 0xc0)).expect("SOF parses");
+    assert_eq!(sof.dimensions, (32, 24));
+    assert_eq!(rewritten.len(), bytes.len());
 }
 
 #[test]
