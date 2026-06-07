@@ -31,14 +31,17 @@ on a single visual smoke test.
   16-bit YCbCr 4:4:4
   `Rgb8`/`Rgb16`
   output/row streaming have also landed, along with initial 8-bit CMYK/YCCK
-  4:2:2/4:2:0 fixture coverage and structured rejection for one malformed
-  non-leading-max sampling fixture. Broader malformed four-component fixtures,
+  4:2:2/4:2:0 fixture coverage, non-leading-max CMYK/YCCK generic upsample
+  coverage, and structured rejection for one malformed non-divisible sampling
+  fixture. Broader malformed four-component fixtures,
   nonstandard 12-bit color sampling layouts outside 4:4:4/4:2:2/4:2:0,
-  stronger non-constant 12-bit oracle fixtures, and nonstandard SOF3 sampled
+  broader external-oracle 12-bit fixtures, and nonstandard SOF3 sampled
   color layouts beyond even-width 8/16-bit 4:2:2 and even-dimension 8/16-bit 4:2:0 must land CPU
   parity fixtures and reference outputs before any Metal route is promoted. Initial 12-bit extended and
   progressive CMYK/YCCK 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16`
   full/ROI/scaled/region-scaled decode and session-batch coverage have landed;
+  non-constant synthetic 12-bit CMYK/YCCK 4:4:4 SOF1/SOF2 full and
+  region-scaled oracle coverage has landed;
   even-width lossless SOF3 8-bit and 16-bit APP14 RGB/YCbCr 4:2:2 and
   even-dimension lossless SOF3 8-bit and 16-bit APP14 RGB/YCbCr 4:2:0
   full/ROI/scaled/region-scaled decode and session-batch coverage, including

@@ -50,8 +50,8 @@ including restart-coded color streams. Initial 12-bit extended and progressive
 CMYK/YCCK 4:4:4/4:2:2/4:2:0 decode to `Rgb16`/`Rgba16` is available for
 full-image/ROI/scaled/region-scaled output and session batches, including
 restart-coded extended/progressive four-component streams. Nonstandard 12-bit
-color sampling layouts outside 4:4:4/4:2:2/4:2:0, stronger non-constant 12-bit
-oracle fixtures, broader four-component malformed fixture coverage, and
+color sampling layouts outside 4:4:4/4:2:2/4:2:0, broader external-oracle
+12-bit fixtures, broader four-component malformed fixture coverage, and
 nonstandard SOF3 sampled color layouts beyond even-width 8/16-bit 4:2:2 and
 even-dimension 8/16-bit 4:2:0 remain structured unsupported or not-implemented cases until the CPU parity phases in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md) land.
@@ -199,10 +199,11 @@ For JPEG routing, `JpegCapabilityReport` exposes parser-owned metadata and
 backend eligibility without duplicating marker/table logic in higher layers.
 The current universal-compatibility expansion is tracked in
 [`docs/jpeg-support-phases`](jpeg-support-phases/README.md): expanded
-CMYK/YCCK malformed coverage beyond the current non-leading-max fixture,
-nonstandard 12-bit color sampling layouts, stronger non-constant 12-bit oracle
+CMYK/YCCK malformed coverage beyond current non-divisible sampling rejection,
+nonstandard 12-bit color sampling layouts, broader external-oracle 12-bit
 fixtures, and other SOF3 16-bit color CPU parity must land before any Metal
-acceleration for those classes is promoted.
+acceleration for those classes is promoted. Non-constant synthetic 12-bit
+CMYK/YCCK 4:4:4 SOF1/SOF2 full and region-scaled coverage is available on CPU.
 Use `metal_fast` for broad support within the current 8-bit YCbCr 4:2:0,
 4:2:2, and 4:4:4 Metal fast-packet shapes and
 `metal_resident_rgb8_batch_output()` when routing to the current reusable

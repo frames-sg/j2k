@@ -465,14 +465,7 @@ impl<'a> Decoder<'a> {
                 count: header.scan_count,
             });
         }
-        // M1b requires the first component (Y for 3-component, single for
-        // grayscale) to be the maximally-sampled component. Non-luma-leading
-        // layouts are pathological; real baselines always satisfy this.
-        if let Some((h, v)) = header.sampling.component(0) {
-            if h != header.sampling.max_h || v != header.sampling.max_v {
-                return Err(JpegError::NotImplemented { sof: info.sof_kind });
-            }
-        }
+        validate_leading_component_sampling(header, info)?;
         // Every component must declare H,V in 1..=4 per T.81 §B.2.2, and max_h
         // must actually divide every component's H (same for V). Malformed
         // streams can set H=0 (div-by-zero in upsample ratio), non-divisors
@@ -7217,16 +7210,27 @@ fn build_decode_plan(
 }
 
 fn validate_sampling_factors(header: &ParsedHeader, info: &Info) -> Result<(), JpegError> {
-    if let Some((h, v)) = header.sampling.component(0) {
-        if h != header.sampling.max_h || v != header.sampling.max_v {
-            return Err(JpegError::NotImplemented { sof: info.sof_kind });
-        }
-    }
+    validate_leading_component_sampling(header, info)?;
     for (h, v) in header.sampling.iter() {
         if h == 0 || v == 0 || h > 4 || v > 4 {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
         if !header.sampling.max_h.is_multiple_of(h) || !header.sampling.max_v.is_multiple_of(v) {
+            return Err(JpegError::NotImplemented { sof: info.sof_kind });
+        }
+    }
+    Ok(())
+}
+
+fn validate_leading_component_sampling(
+    header: &ParsedHeader,
+    info: &Info,
+) -> Result<(), JpegError> {
+    if !matches!(info.color_space, ColorSpace::YCbCr) {
+        return Ok(());
+    }
+    if let Some((h, v)) = header.sampling.component(0) {
+        if h != header.sampling.max_h || v != header.sampling.max_v {
             return Err(JpegError::NotImplemented { sof: info.sof_kind });
         }
     }

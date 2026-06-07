@@ -275,9 +275,10 @@ and 16-bit APP14 RGB plus YCbCr 4:4:4
 fixture coverage and initial 12-bit extended/progressive CMYK/YCCK
 4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage have landed, including
 restart-coded extended/progressive four-component streams, along with structured
-rejection for one malformed non-leading-max sampling fixture; broader
-four-component malformed coverage, nonstandard 12-bit color sampling layouts,
-stronger non-constant 12-bit oracle fixtures, and nonstandard lossless SOF3
+rejection for one malformed non-divisible sampling fixture plus non-leading-max
+CMYK/YCCK generic upsample coverage; broader four-component malformed coverage,
+nonstandard 12-bit color sampling layouts,
+broader external-oracle 12-bit fixtures, and nonstandard lossless SOF3
 sampled color layouts beyond the even 8/16-bit 4:2:2 and 4:2:0 shapes remain
 separate CPU parity work.
 Initial SOF3 8-bit grayscale `Gray8` and 16-bit grayscale `Gray16`
@@ -505,12 +506,15 @@ provisional and check the most recent commits before relying on it.
   4:4:4, YCbCr 4:4:4/4:2:2/4:2:0, and CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` decode have landed, including restart-coded extended
   three-component color streams and restart-coded extended/progressive
-  CMYK/YCCK streams, while broader four-component malformed coverage, other
-  nonstandard 12-bit color sampling layouts, stronger non-constant 12-bit
-  oracle fixtures, and nonstandard SOF3 sampled color layouts beyond
+  CMYK/YCCK streams, including non-leading-max CMYK/YCCK generic upsample,
+  while broader four-component malformed coverage, other nonstandard 12-bit
+  color sampling layouts, broader external-oracle 12-bit
+  fixtures, and nonstandard SOF3 sampled color layouts beyond
   even-width 8/16-bit 4:2:2 and even-dimension 8/16-bit 4:2:0
   remain active parity
   work.
+  Non-constant synthetic CMYK/YCCK 4:4:4 SOF1/SOF2 full and region-scaled
+  oracle coverage has landed.
   Initial SOF3 8-bit
   grayscale `Gray8` and 16-bit grayscale `Gray16`
   full-image/ROI/scaled/region-scaled decode for predictors 1-7, including

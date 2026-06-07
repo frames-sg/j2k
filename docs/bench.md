@@ -729,13 +729,16 @@ Current v1 scope is explicit:
   row streaming are also CPU-backed. Initial 8-bit CMYK/YCCK 4:2:2/4:2:0
   fixture coverage and initial 12-bit extended/progressive CMYK/YCCK
   4:4:4/4:2:2/4:2:0 `Rgb16`/`Rgba16` coverage are CPU-backed, including
-  restart-coded extended/progressive four-component streams, and one
-  malformed non-leading-max sampling fixture has structured rejection coverage;
-  broader four-component malformed coverage, nonstandard 12-bit color sampling
-  layouts, stronger non-constant 12-bit oracle
+  restart-coded extended/progressive four-component streams, non-leading-max
+  CMYK/YCCK generic upsample coverage, and one malformed non-divisible sampling
+  fixture with structured rejection coverage; broader four-component malformed
+  coverage, nonstandard 12-bit color sampling
+  layouts, broader external-oracle 12-bit
   fixtures, and other SOF3 16-bit color layouts stay structured
   unsupported until CPU parity lands; all new Metal routes stay disabled until
   benchmark-approved resident wins land.
+  Non-constant synthetic CMYK/YCCK 4:4:4 SOF1/SOF2 full and region-scaled
+  oracle coverage is CPU-backed.
   The coalesced benchmark
   intentionally queues 64 identical requests and can collapse them to one
   immutable Metal surface; the distinct benchmark queues 64 different JPEG byte

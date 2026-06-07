@@ -6,11 +6,14 @@ use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, Rect, SofKind};
 
 mod fixtures;
 use fixtures::{
-    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_16x8_nonleading_max_422_jpeg, cmyk_8x8_jpeg,
+    extended_12bit_cmyk_8x8_jpeg, extended_12bit_cmyk_nonconstant_8x8_jpeg,
     extended_12bit_grayscale_8x8_jpeg, extended_12bit_grayscale_restart_16x8_jpeg,
-    extended_12bit_ycck_8x8_jpeg, four_component_12bit_16x16_rgb16,
-    four_component_12bit_16x8_rgb16, four_component_12bit_32x16_rgb16,
-    four_component_12bit_32x8_rgb16, four_component_12bit_8x8_rgb16, four_component_16x16_rgb,
+    extended_12bit_ycck_8x8_jpeg, extended_12bit_ycck_nonconstant_8x8_jpeg,
+    four_component_12bit_16x16_rgb16, four_component_12bit_16x8_rgb16,
+    four_component_12bit_32x16_rgb16, four_component_12bit_32x8_rgb16,
+    four_component_12bit_8x8_cmyk_nonconstant_rgb16, four_component_12bit_8x8_rgb16,
+    four_component_12bit_8x8_ycck_nonconstant_rgb16, four_component_16x16_rgb,
     four_component_16x8_rgb, four_component_8x8_rgb, grayscale_8x8_jpeg,
     lossless_predictor_grayscale_16bit_3x3_jpeg, lossless_predictor_grayscale_3x3_jpeg,
     lossless_predictor_rgb_16bit_3x3_jpeg, lossless_predictor_rgb_3x3_jpeg,
@@ -31,9 +34,11 @@ use fixtures::{
     lossless_ycbcr_3x3_rgb8, lossless_ycbcr_8bit_420_4x4_jpeg, lossless_ycbcr_8bit_420_4x4_rgb8,
     lossless_ycbcr_8bit_420_restart_4x4_jpeg, lossless_ycbcr_8bit_422_4x2_jpeg,
     lossless_ycbcr_8bit_422_4x2_rgb8, lossless_ycbcr_8bit_422_restart_4x2_jpeg,
-    malformed_cmyk_nonleading_max_sampling_jpeg, minimal_baseline_420_jpeg,
-    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_8x8_jpeg, progressive_8x8_jpeg,
-    rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_16x16_420_jpeg, ycck_16x8_422_jpeg, ycck_8x8_jpeg,
+    malformed_cmyk_nondivisible_sampling_jpeg, minimal_baseline_420_jpeg,
+    progressive_12bit_cmyk_nonconstant_8x8_jpeg, progressive_12bit_grayscale_8x8_jpeg,
+    progressive_12bit_rgb_8x8_jpeg, progressive_12bit_ycck_nonconstant_8x8_jpeg,
+    progressive_8x8_jpeg, rgb_app14_8x8_jpeg, rgb_app14_8x8_rgb, ycck_16x16_420_jpeg,
+    ycck_16x8_422_jpeg, ycck_16x8_nonleading_max_422_jpeg, ycck_8x8_jpeg,
     LOSSLESS_GRAYSCALE_16BIT_3X3_PIXELS, LOSSLESS_GRAYSCALE_3X3_PIXELS,
     LOSSLESS_RGB_16BIT_3X3_PIXELS, LOSSLESS_RGB_3X3_PIXELS,
 };
@@ -3846,8 +3851,128 @@ fn decode_12bit_cmyk_ycck_full_roi_scaled_and_region_scaled_outputs() {
 }
 
 #[test]
+fn decode_12bit_cmyk_ycck_nonconstant_full_and_region_scaled_outputs() {
+    for (bytes, expected_full, label) in [
+        (
+            extended_12bit_cmyk_nonconstant_8x8_jpeg(),
+            four_component_12bit_8x8_cmyk_nonconstant_rgb16(),
+            "12-bit extended CMYK non-constant",
+        ),
+        (
+            extended_12bit_ycck_nonconstant_8x8_jpeg(),
+            four_component_12bit_8x8_ycck_nonconstant_rgb16(),
+            "12-bit extended YCCK non-constant",
+        ),
+        (
+            progressive_12bit_cmyk_nonconstant_8x8_jpeg(),
+            four_component_12bit_8x8_cmyk_nonconstant_rgb16(),
+            "12-bit progressive CMYK non-constant",
+        ),
+        (
+            progressive_12bit_ycck_nonconstant_8x8_jpeg(),
+            four_component_12bit_8x8_ycck_nonconstant_rgb16(),
+            "12-bit progressive YCCK non-constant",
+        ),
+    ] {
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} decoder should construct: {err}"));
+        let mut full = vec![0u8; expected_full.len()];
+
+        dec.decode_into(&mut full, 8 * 6, PixelFormat::Rgb16)
+            .unwrap_or_else(|err| panic!("{label} full RGB16 decode should succeed: {err}"));
+
+        assert_eq!(full, expected_full, "{label}");
+
+        let roi = Rect {
+            x: 1,
+            y: 1,
+            w: 6,
+            h: 6,
+        };
+        let region_scaled = scaled_rect_covering_for_test(roi, 2);
+        let row_bytes = region_scaled.w as usize * PixelFormat::Rgba16.bytes_per_pixel();
+        let stride = row_bytes + 8;
+        let expected_region_scaled = rgb16_to_rgba16(
+            &expected_scaled_rgb16_pixels(&expected_full, 8, roi, 2),
+            u16::MAX,
+        );
+        let mut region_scaled_buf = vec![0xaau8; stride * region_scaled.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut region_scaled_buf,
+                stride,
+                PixelFormat::Rgba16,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{label} region-scaled RGBA16 decode should succeed: {err}")
+            });
+
+        assert_eq!(outcome.decoded, roi, "{label}");
+        assert_padded_rgba16_rows(
+            &region_scaled_buf,
+            stride,
+            region_scaled.w as usize,
+            &expected_region_scaled,
+        );
+    }
+}
+
+#[test]
+fn decode_nonleading_max_four_component_sampling_uses_generic_upsample() {
+    for (bytes, label) in [
+        (cmyk_16x8_nonleading_max_422_jpeg(), "non-leading-max CMYK"),
+        (ycck_16x8_nonleading_max_422_jpeg(), "non-leading-max YCCK"),
+    ] {
+        let expected = four_component_16x8_rgb();
+        let dec = Decoder::new(&bytes)
+            .unwrap_or_else(|err| panic!("{label} sampling should use generic upsample: {err}"));
+        let mut full = vec![0u8; expected.len()];
+
+        dec.decode_into(&mut full, 16 * 3, PixelFormat::Rgb8)
+            .unwrap_or_else(|err| panic!("{label} full decode should succeed: {err}"));
+
+        assert_eq!(full, expected, "{label}");
+
+        let roi = Rect {
+            x: 4,
+            y: 2,
+            w: 8,
+            h: 4,
+        };
+        let scaled_roi = scaled_rect_covering_for_test(roi, 2);
+        let row_bytes = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+        let stride = row_bytes + 4;
+        let expected_rgba =
+            rgb8_to_rgba8(&project_scaled_rgb(&expected, 16, 8, scaled_roi, 2), 255);
+        let mut region = vec![0xaau8; stride * scaled_roi.h as usize];
+
+        let outcome = dec
+            .decode_region_scaled_into(
+                &mut region,
+                stride,
+                PixelFormat::Rgba8,
+                roi,
+                Downscale::Half,
+            )
+            .unwrap_or_else(|err| panic!("{label} region-scaled decode should succeed: {err}"));
+
+        assert_eq!(outcome.decoded, roi, "{label}");
+        for (row, expected_row) in region
+            .chunks_exact(stride)
+            .zip(expected_rgba.chunks_exact(row_bytes))
+        {
+            assert_eq!(&row[..row_bytes], expected_row, "{label}");
+            assert_eq!(&row[row_bytes..], &[0xaa; 4], "{label}");
+        }
+    }
+}
+
+#[test]
 fn decoder_new_rejects_malformed_four_component_sampling_shape() {
-    let input = malformed_cmyk_nonleading_max_sampling_jpeg();
+    let input = malformed_cmyk_nondivisible_sampling_jpeg();
     let err = match Decoder::new(&input) {
         Ok(_) => panic!("malformed four-component sampling should reject construction"),
         Err(err) => err,

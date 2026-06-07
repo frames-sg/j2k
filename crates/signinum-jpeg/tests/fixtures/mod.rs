@@ -563,6 +563,18 @@ fn dc_category4_rgb_progressive_entropy() -> Vec<u8> {
     pack_entropy_bits(dc_category4_rgb_mcu_bits(true))
 }
 
+fn dc_category4_cmyk_mcu_bits(progressive: bool) -> Vec<bool> {
+    let mut bits = Vec::new();
+    for magnitude in [0b1000, 0b1100, 0b1010, 0b0111] {
+        push_bits(&mut bits, 0, 1);
+        push_bits(&mut bits, magnitude, 4);
+        if !progressive {
+            push_bits(&mut bits, 0, 1);
+        }
+    }
+    bits
+}
+
 fn dc_ycbcr422_entropy(progressive: bool) -> Vec<u8> {
     let mut bits = Vec::new();
     for magnitude in [
@@ -3247,6 +3259,11 @@ pub(crate) fn extended_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(0))
 }
 
+/// An 8x8 12-bit extended sequential Adobe APP14 CMYK JPEG with non-neutral DC coefficients.
+pub(crate) fn extended_12bit_cmyk_nonconstant_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_nonconstant_8x8_jpeg(Some(0), false)
+}
+
 /// A 16x8 12-bit extended sequential Adobe APP14 CMYK JPEG with restart coding.
 pub(crate) fn extended_12bit_cmyk_restart_16x8_jpeg() -> Vec<u8> {
     four_component_12bit_constant_restart_jpeg(Some(0), 16, 8, [(1, 1), (1, 1), (1, 1), (1, 1)], 1)
@@ -3275,6 +3292,11 @@ pub(crate) fn extended_12bit_cmyk_420_restart_32x16_jpeg() -> Vec<u8> {
 /// An 8x8 12-bit progressive Adobe APP14 CMYK JPEG with 4:4:4 sampling.
 pub(crate) fn progressive_12bit_cmyk_8x8_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(0), 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// An 8x8 12-bit progressive Adobe APP14 CMYK JPEG with non-neutral DC coefficients.
+pub(crate) fn progressive_12bit_cmyk_nonconstant_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_nonconstant_8x8_jpeg(Some(0), true)
 }
 
 /// A 16x8 12-bit progressive Adobe APP14 CMYK JPEG with restart coding.
@@ -3335,9 +3357,14 @@ pub(crate) fn cmyk_16x16_420_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(0), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
 }
 
-/// A malformed CMYK JPEG where component 0 is not the maximally sampled plane.
-pub(crate) fn malformed_cmyk_nonleading_max_sampling_jpeg() -> Vec<u8> {
+/// A legal but unusual 16x8 CMYK JPEG where component 0 is not the maximally sampled plane.
+pub(crate) fn cmyk_16x8_nonleading_max_422_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(0), 16, 8, [(1, 1), (2, 1), (1, 1), (1, 1)])
+}
+
+/// A malformed CMYK JPEG whose component sampling factors require a non-integer upsample ratio.
+pub(crate) fn malformed_cmyk_nondivisible_sampling_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(0), 24, 8, [(3, 1), (2, 1), (1, 1), (1, 1)])
 }
 
 /// An 8x8 Adobe APP14 YCCK JPEG whose four decoded channels are all 128.
@@ -3348,6 +3375,11 @@ pub(crate) fn ycck_8x8_jpeg() -> Vec<u8> {
 /// An 8x8 12-bit extended sequential Adobe APP14 YCCK JPEG.
 pub(crate) fn extended_12bit_ycck_8x8_jpeg() -> Vec<u8> {
     four_component_12bit_8x8_jpeg(Some(2))
+}
+
+/// An 8x8 12-bit extended sequential Adobe APP14 YCCK JPEG with non-neutral DC coefficients.
+pub(crate) fn extended_12bit_ycck_nonconstant_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_nonconstant_8x8_jpeg(Some(2), false)
 }
 
 /// A 16x8 12-bit extended sequential Adobe APP14 YCCK JPEG with restart coding.
@@ -3378,6 +3410,11 @@ pub(crate) fn extended_12bit_ycck_420_restart_32x16_jpeg() -> Vec<u8> {
 /// An 8x8 12-bit progressive Adobe APP14 YCCK JPEG with 4:4:4 sampling.
 pub(crate) fn progressive_12bit_ycck_8x8_jpeg() -> Vec<u8> {
     progressive_12bit_four_component_constant_jpeg(Some(2), 8, 8, [(1, 1), (1, 1), (1, 1), (1, 1)])
+}
+
+/// An 8x8 12-bit progressive Adobe APP14 YCCK JPEG with non-neutral DC coefficients.
+pub(crate) fn progressive_12bit_ycck_nonconstant_8x8_jpeg() -> Vec<u8> {
+    four_component_12bit_nonconstant_8x8_jpeg(Some(2), true)
 }
 
 /// A 16x8 12-bit progressive Adobe APP14 YCCK JPEG with restart coding.
@@ -3433,6 +3470,11 @@ pub(crate) fn ycck_16x8_422_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(2), 16, 8, [(2, 1), (1, 1), (1, 1), (1, 1)])
 }
 
+/// A legal but unusual 16x8 YCCK JPEG where component 0 is not the maximally sampled plane.
+pub(crate) fn ycck_16x8_nonleading_max_422_jpeg() -> Vec<u8> {
+    four_component_constant_jpeg(Some(2), 16, 8, [(1, 1), (2, 1), (1, 1), (1, 1)])
+}
+
 /// A 16x16 Adobe APP14 YCCK JPEG with 4:2:0 sampling and all decoded channels 128.
 pub(crate) fn ycck_16x16_420_jpeg() -> Vec<u8> {
     four_component_constant_jpeg(Some(2), 16, 16, [(2, 2), (1, 1), (1, 1), (1, 1)])
@@ -3446,6 +3488,16 @@ pub(crate) fn four_component_8x8_rgb() -> Vec<u8> {
 /// Reference native-range RGB16 pixels for 12-bit CMYK/YCCK 4:4:4 fixtures.
 pub(crate) fn four_component_12bit_8x8_rgb16() -> Vec<u8> {
     repeat_rgb16_pixels(8, 8, [1024, 1024, 1024])
+}
+
+/// Reference native-range RGB16 pixels for non-constant 12-bit CMYK fixtures.
+pub(crate) fn four_component_12bit_8x8_cmyk_nonconstant_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(8, 8, [1024, 1028, 1026])
+}
+
+/// Reference native-range RGB16 pixels for non-constant 12-bit YCCK fixtures.
+pub(crate) fn four_component_12bit_8x8_ycck_nonconstant_rgb16() -> Vec<u8> {
+    repeat_rgb16_pixels(8, 8, [1038, 1013, 1046])
 }
 
 /// Reference native-range RGB16 pixels for 16x8 12-bit CMYK/YCCK fixtures.
@@ -3728,6 +3780,75 @@ fn progressive_12bit_four_component_constant_jpeg_with_restart(
         let bits = vec![false; mcu_count * blocks_per_mcu as usize];
         bytes.extend(pack_entropy_bits(bits));
     }
+    bytes.extend_from_slice(&[0xff, 0xd9]);
+    bytes
+}
+
+fn four_component_12bit_nonconstant_8x8_jpeg(
+    app14_transform: Option<u8>,
+    progressive: bool,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0xd8]);
+    if let Some(transform) = app14_transform {
+        bytes.extend_from_slice(&[
+            0xff, 0xee, 0x00, 0x0e, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, transform,
+        ]);
+    }
+    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
+    bytes.extend(std::iter::repeat_n(16u8, 64));
+    bytes.extend_from_slice(&[
+        0xff,
+        if progressive { 0xc2 } else { 0xc1 },
+        0x00,
+        20,
+        12,
+        0,
+        8,
+        0,
+        8,
+        4,
+        1,
+        0x11,
+        0,
+        2,
+        0x11,
+        0,
+        3,
+        0x11,
+        0,
+        4,
+        0x11,
+        0,
+    ]);
+    bytes.extend_from_slice(&[
+        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+    ]);
+    if !progressive {
+        bytes.extend_from_slice(&[
+            0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+    }
+    bytes.extend_from_slice(&[
+        0xff,
+        0xda,
+        0x00,
+        0x0e,
+        4,
+        1,
+        0x00,
+        2,
+        0x00,
+        3,
+        0x00,
+        4,
+        0x00,
+        0,
+        if progressive { 0 } else { 63 },
+        0,
+    ]);
+    bytes.extend(pack_entropy_bits(dc_category4_cmyk_mcu_bits(progressive)));
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }

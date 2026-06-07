@@ -37,8 +37,9 @@ unsupported errors rather than being treated as required parity work.
   4:4:4/4:2:2/4:2:0 full-image/ROI/scaled/region-scaled CPU decode to
   `Rgb16`/`Rgba16`, including restart-coded extended/progressive
   four-component streams; nonstandard 12-bit color sampling layouts outside
-  4:4:4/4:2:2/4:2:0 and stronger non-constant 12-bit oracle fixtures remain
-  open
+  4:4:4/4:2:2/4:2:0 remain open, while non-constant synthetic CMYK/YCCK
+  SOF1/SOF2 oracle fixtures have landed. Broader external-oracle 12-bit
+  fixtures remain open
 - initial lossless SOF3 8-bit grayscale full-image/ROI/scaled/region-scaled CPU
   decode to `Gray8` and 16-bit grayscale decode to `Gray16` for predictors
   1-7, including restart-coded grayscale streams, plus 8-bit APP14 RGB decode
@@ -190,9 +191,10 @@ Implementation requirements:
   Status: full-image, ROI, scaled, region-scaled, and batch-session coverage
   has landed for the supported RGB/RGBA output shapes. Row output has landed
   for the supported RGB row surfaces. Initial 4:2:2/4:2:0 four-component
-  fixtures have landed; malformed non-leading-max sampling now has structured
-  decode and capability rejection coverage. Broader four-component malformed
-  coverage remains open.
+  fixtures have landed; non-leading-max CMYK/YCCK sampling now decodes through
+  the generic upsample path with capability eligibility, while non-divisible
+  four-component sampling has structured decode and capability rejection
+  coverage. Broader four-component malformed coverage remains open.
 - Add capability reasons that distinguish "recognized but CPU unsupported"
   from "supported on CPU but not Metal resident".
   Status: capability reports now mark supported CMYK/YCCK CPU RGB8/RGBA8
@@ -269,9 +271,10 @@ Implementation requirements:
   `Rgb16`/`Rgba16` is available for the initial three-component color path,
   including restart-coded color streams; CMYK/YCCK 4:4:4/4:2:2/4:2:0
   `Rgb16`/`Rgba16` is available for the initial four-component color path,
-  including restart-coded streams. Nonstandard 12-bit color sampling layouts
-  outside 4:4:4/4:2:2/4:2:0 and stronger non-constant CMYK/YCCK oracle fixtures
-  remain open.
+  including restart-coded streams. Non-constant synthetic CMYK/YCCK 4:4:4
+  SOF1 fixtures have landed for full and region-scaled output. Nonstandard
+  12-bit color sampling layouts outside 4:4:4/4:2:2/4:2:0 and broader
+  external-oracle 12-bit fixtures remain open.
 - Make any 12-bit-to-8-bit output an explicit documented conversion path, not
   an implicit default.
   Status: 12-bit-to-8-bit output stays unsupported.
@@ -301,9 +304,10 @@ Exit criteria:
   full-image and API-shaped outputs.
   Status: partially met for the committed all-zero grayscale fixture, the
   restart-coded all-zero grayscale fixture, APP14 RGB 4:4:4/4:2:2/4:2:0
-  and YCbCr 4:4:4/4:2:2/4:2:0 fixtures, and restart-coded APP14 RGB/YCbCr
-  color fixtures covering full-image/ROI/scaled/region-scaled
-  `Gray16`/`Rgb16`/`Rgba16` output as applicable.
+  and YCbCr 4:4:4/4:2:2/4:2:0 fixtures, restart-coded APP14 RGB/YCbCr
+  color fixtures, and non-constant synthetic CMYK/YCCK 4:4:4 fixtures covering
+  full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16`/`Rgba16` output as
+  applicable.
 - 8-bit paths do not share precision state that can corrupt current behavior.
 
 ## Phase B2: 12-Bit Progressive CPU Decode
@@ -344,8 +348,9 @@ Exit criteria:
   APP14 RGB 4:4:4/4:2:2/4:2:0 and YCbCr 4:4:4/4:2:2/4:2:0 fixtures
   plus initial CMYK/YCCK 4:4:4/4:2:2/4:2:0 fixtures covering
   full-image/ROI/scaled/region-scaled `Gray16`/`Rgb16`/`Rgba16` output as
-  applicable. Non-constant external-oracle fixtures and nonstandard 12-bit
-  color sampling layouts remain open.
+  applicable, including non-constant synthetic CMYK/YCCK 4:4:4 fixtures.
+  Non-constant external-oracle fixtures and nonstandard 12-bit color sampling
+  layouts remain open.
 
 ## Phase C1: Lossless SOF3 CPU Decode
 
