@@ -14,8 +14,13 @@
 // The NVIDIA columns show "n/a (not built)" unless this crate was compiled with
 // --features nvjpeg2000 on a host with nvcc + libnvjpeg + libnvjpeg2k.
 
+mod report_format;
+
 use std::{path::PathBuf, time::Instant};
 
+use report_format::{
+    csv_f64_or_blank, escape_csv as csv_escape, escape_json as json_escape, json_f64_or_null,
+};
 use signinum_j2k::IrreversibleQuantizationSubbandScales;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use signinum_j2k_cuda::CudaEncodeStageAccelerator;
@@ -2013,42 +2018,11 @@ fn append_json_signinum_result(
 }
 
 fn json_optional_f64(value: Option<f64>) -> String {
-    value
-        .filter(|value| value.is_finite())
-        .map_or_else(|| "null".to_string(), |value| format!("{value:.8}"))
+    json_f64_or_null(value, 8)
 }
 
 fn csv_optional_f64(value: Option<f64>) -> String {
-    value
-        .filter(|value| value.is_finite())
-        .map_or_else(String::new, |value| format!("{value:.6}"))
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch < ' ' => {
-                use std::fmt::Write as _;
-                let _ = write!(escaped, "\\u{:04x}", ch as u32);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-fn csv_escape(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
+    csv_f64_or_blank(value, 6)
 }
 
 #[cfg(test)]
