@@ -483,17 +483,7 @@ impl J2kEncodeDispatchReport {
     }
 
     pub(crate) const fn to_native(self) -> signinum_j2k_native::J2kEncodeDispatchReport {
-        signinum_j2k_native::J2kEncodeDispatchReport {
-            deinterleave: self.deinterleave,
-            forward_rct: self.forward_rct,
-            forward_ict: self.forward_ict,
-            forward_dwt53: self.forward_dwt53,
-            forward_dwt97: self.forward_dwt97,
-            quantize_subband: self.quantize_subband,
-            tier1_code_block: self.tier1_code_block,
-            ht_code_block: self.ht_code_block,
-            packetization: self.packetization,
-        }
+        crate::native_bridge::dispatch_report_to_native(self)
     }
 }
 
@@ -904,62 +894,4 @@ pub struct PreencodedHtj2k97CompactCodeBlock {
     pub num_coding_passes: u8,
     /// Number of missing most-significant bitplanes.
     pub num_zero_bitplanes: u8,
-}
-
-pub(crate) const fn subband_from_native(
-    subband: signinum_j2k_native::J2kSubBandType,
-) -> J2kSubBandType {
-    match subband {
-        signinum_j2k_native::J2kSubBandType::LowLow => J2kSubBandType::LowLow,
-        signinum_j2k_native::J2kSubBandType::HighLow => J2kSubBandType::HighLow,
-        signinum_j2k_native::J2kSubBandType::LowHigh => J2kSubBandType::LowHigh,
-        signinum_j2k_native::J2kSubBandType::HighHigh => J2kSubBandType::HighHigh,
-    }
-}
-
-pub(crate) const fn style_from_native(
-    style: signinum_j2k_native::J2kCodeBlockStyle,
-) -> J2kCodeBlockStyle {
-    J2kCodeBlockStyle {
-        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
-        reset_context_probabilities: style.reset_context_probabilities,
-        termination_on_each_pass: style.termination_on_each_pass,
-        vertically_causal_context: style.vertically_causal_context,
-        segmentation_symbols: style.segmentation_symbols,
-    }
-}
-
-pub(crate) const fn segment_to_native(
-    segment: J2kCodeBlockSegment,
-) -> signinum_j2k_native::J2kCodeBlockSegment {
-    signinum_j2k_native::J2kCodeBlockSegment {
-        data_offset: segment.data_offset,
-        data_length: segment.data_length,
-        start_coding_pass: segment.start_coding_pass,
-        end_coding_pass: segment.end_coding_pass,
-        use_arithmetic: segment.use_arithmetic,
-    }
-}
-
-pub(crate) fn encoded_j2k_to_native(
-    block: EncodedJ2kCodeBlock,
-) -> signinum_j2k_native::EncodedJ2kCodeBlock {
-    signinum_j2k_native::EncodedJ2kCodeBlock {
-        data: block.data,
-        segments: block.segments.into_iter().map(segment_to_native).collect(),
-        number_of_coding_passes: block.number_of_coding_passes,
-        missing_bit_planes: block.missing_bit_planes,
-    }
-}
-
-pub(crate) fn encoded_ht_to_native(
-    block: EncodedHtJ2kCodeBlock,
-) -> signinum_j2k_native::EncodedHtJ2kCodeBlock {
-    signinum_j2k_native::EncodedHtJ2kCodeBlock {
-        data: block.data,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        num_coding_passes: block.num_coding_passes,
-        num_zero_bitplanes: block.num_zero_bitplanes,
-    }
 }

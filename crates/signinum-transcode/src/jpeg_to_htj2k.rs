@@ -8,20 +8,25 @@ use std::time::Instant;
 use crate::dwt53::{floor_div_i32, reversible_lift_53_i32};
 use rayon::prelude::*;
 use signinum_j2k::{
-    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
-    IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment, J2kCodeBlockStyle,
+    native_bridge::{
+        dispatch_report_to_native, dwt53_output_to_native, dwt97_output_to_native,
+        encoded_ht_to_native, encoded_j2k_to_native, ht_job_from_native,
+        packet_descriptor_from_native, packet_progression_from_native,
+        packet_resolution_from_native, progression_order_to_native, quantization_scales_to_native,
+        subband_to_native, tier1_job_from_native,
+    },
+    CpuOnlyJ2kEncodeStageAccelerator, IrreversibleQuantizationSubbandScales,
     J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
     J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
     J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
-    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband, J2kProgressionOrder, J2kQuantizeSubbandJob, J2kSubBandType,
-    J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kProgressionOrder,
+    J2kQuantizeSubbandJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
     PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent,
     PreencodedHtj2k97CompactImage, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
     PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
 };
+#[cfg(test)]
+use signinum_j2k::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
 use signinum_j2k_native::{
     encode_precomputed_htj2k_53_with_accelerator,
     encode_precomputed_htj2k_97_batch_with_accelerator,
@@ -145,7 +150,7 @@ impl JpegToHtj2kEncodeOptions {
             code_block_height_exp: self.code_block_height_exp,
             guard_bits: self.guard_bits,
             use_ht_block_coding: self.use_ht_block_coding,
-            progression_order: native_progression_order(self.progression_order),
+            progression_order: progression_order_to_native(self.progression_order),
             write_tlm: self.write_tlm,
             write_plt: self.write_plt,
             write_plm: self.write_plm,
@@ -156,7 +161,7 @@ impl JpegToHtj2kEncodeOptions {
             quality_layer_byte_targets: self.quality_layer_byte_targets.clone(),
             validate_high_throughput_codestream: self.validate_high_throughput_codestream,
             irreversible_quantization_scale: self.irreversible_quantization_scale,
-            irreversible_quantization_subband_scales: native_quantization_scales(
+            irreversible_quantization_subband_scales: quantization_scales_to_native(
                 self.irreversible_quantization_subband_scales,
             ),
             component_sampling: self.component_sampling.clone(),
@@ -1863,7 +1868,7 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
     for NativeEncodeStageAdapter<'_, A>
 {
     fn dispatch_report(&self) -> signinum_j2k_native::J2kEncodeDispatchReport {
-        native_dispatch_report(self.inner.dispatch_report())
+        dispatch_report_to_native(self.inner.dispatch_report())
     }
 
     fn encode_deinterleave(
@@ -1912,7 +1917,7 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
                 height: job.height,
                 num_levels: job.num_levels,
             })
-            .map(|output| output.map(native_dwt53_output))
+            .map(|output| output.map(dwt53_output_to_native))
     }
 
     fn encode_forward_dwt97(
@@ -1926,7 +1931,7 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
                 height: job.height,
                 num_levels: job.num_levels,
             })
-            .map(|output| output.map(native_dwt97_output))
+            .map(|output| output.map(dwt97_output_to_native))
     }
 
     fn encode_quantize_subband(
@@ -1947,8 +1952,8 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
         job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
     ) -> Result<Option<signinum_j2k_native::EncodedJ2kCodeBlock>, &'static str> {
         self.inner
-            .encode_tier1_code_block(public_tier1_job(job))
-            .map(|block| block.map(native_encoded_j2k))
+            .encode_tier1_code_block(tier1_job_from_native(job))
+            .map(|block| block.map(encoded_j2k_to_native))
     }
 
     fn encode_tier1_code_blocks(
@@ -1958,11 +1963,13 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
         let public_jobs = jobs
             .iter()
             .copied()
-            .map(public_tier1_job)
+            .map(tier1_job_from_native)
             .collect::<Vec<_>>();
         self.inner
             .encode_tier1_code_blocks(&public_jobs)
-            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_j2k).collect()))
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_j2k_to_native).collect())
+            })
     }
 
     fn encode_ht_code_block(
@@ -1970,18 +1977,24 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
         job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
     ) -> Result<Option<signinum_j2k_native::EncodedHtJ2kCodeBlock>, &'static str> {
         self.inner
-            .encode_ht_code_block(public_ht_job(job))
-            .map(|block| block.map(native_encoded_ht))
+            .encode_ht_code_block(ht_job_from_native(job))
+            .map(|block| block.map(encoded_ht_to_native))
     }
 
     fn encode_ht_code_blocks(
         &mut self,
         jobs: &[signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>],
     ) -> Result<Option<Vec<signinum_j2k_native::EncodedHtJ2kCodeBlock>>, &'static str> {
-        let public_jobs = jobs.iter().copied().map(public_ht_job).collect::<Vec<_>>();
+        let public_jobs = jobs
+            .iter()
+            .copied()
+            .map(ht_job_from_native)
+            .collect::<Vec<_>>();
         self.inner
             .encode_ht_code_blocks(&public_jobs)
-            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_ht).collect()))
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_ht_to_native).collect())
+            })
     }
 
     fn encode_ht_subband(
@@ -2001,7 +2014,9 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
                 code_block_height: job.code_block_height,
                 total_bitplanes: job.total_bitplanes,
             })
-            .map(|blocks| blocks.map(|blocks| blocks.into_iter().map(native_encoded_ht).collect()))
+            .map(|blocks| {
+                blocks.map(|blocks| blocks.into_iter().map(encoded_ht_to_native).collect())
+            })
     }
 
     fn encode_htj2k_tile(
@@ -2021,7 +2036,7 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
             guard_bits: job.guard_bits,
             code_block_width: job.code_block_width,
             code_block_height: job.code_block_height,
-            progression_order: public_packet_progression(job.progression_order),
+            progression_order: packet_progression_from_native(job.progression_order),
             component_sampling: job.component_sampling,
             quantization_steps: job.quantization_steps,
         })
@@ -2043,277 +2058,22 @@ impl<A: J2kEncodeStageAccelerator + ?Sized> signinum_j2k_native::J2kEncodeStageA
             .packet_descriptors
             .iter()
             .copied()
-            .map(public_packet_descriptor)
+            .map(packet_descriptor_from_native)
             .collect::<Vec<_>>();
         let resolutions = job
             .resolutions
             .iter()
-            .map(public_packet_resolution)
+            .map(packet_resolution_from_native)
             .collect::<Vec<_>>();
         self.inner.encode_packetization(J2kPacketizationEncodeJob {
             resolution_count: job.resolution_count,
             num_layers: job.num_layers,
             num_components: job.num_components,
             code_block_count: job.code_block_count,
-            progression_order: public_packet_progression(job.progression_order),
+            progression_order: packet_progression_from_native(job.progression_order),
             packet_descriptors: &packet_descriptors,
             resolutions: &resolutions,
         })
-    }
-}
-
-fn native_quantization_scales(
-    scales: IrreversibleQuantizationSubbandScales,
-) -> signinum_j2k_native::IrreversibleQuantizationSubbandScales {
-    signinum_j2k_native::IrreversibleQuantizationSubbandScales {
-        low_low: scales.low_low,
-        high_low: scales.high_low,
-        low_high: scales.low_high,
-        high_high: scales.high_high,
-    }
-}
-
-fn native_progression_order(
-    progression: J2kProgressionOrder,
-) -> signinum_j2k_native::EncodeProgressionOrder {
-    match progression {
-        J2kProgressionOrder::Lrcp => signinum_j2k_native::EncodeProgressionOrder::Lrcp,
-        J2kProgressionOrder::Rlcp => signinum_j2k_native::EncodeProgressionOrder::Rlcp,
-        J2kProgressionOrder::Rpcl => signinum_j2k_native::EncodeProgressionOrder::Rpcl,
-        J2kProgressionOrder::Pcrl => signinum_j2k_native::EncodeProgressionOrder::Pcrl,
-        J2kProgressionOrder::Cprl => signinum_j2k_native::EncodeProgressionOrder::Cprl,
-    }
-}
-
-fn native_dispatch_report(
-    report: J2kEncodeDispatchReport,
-) -> signinum_j2k_native::J2kEncodeDispatchReport {
-    signinum_j2k_native::J2kEncodeDispatchReport {
-        deinterleave: report.deinterleave,
-        forward_rct: report.forward_rct,
-        forward_ict: report.forward_ict,
-        forward_dwt53: report.forward_dwt53,
-        forward_dwt97: report.forward_dwt97,
-        quantize_subband: report.quantize_subband,
-        tier1_code_block: report.tier1_code_block,
-        ht_code_block: report.ht_code_block,
-        packetization: report.packetization,
-    }
-}
-
-fn public_subband(subband: signinum_j2k_native::J2kSubBandType) -> J2kSubBandType {
-    match subband {
-        signinum_j2k_native::J2kSubBandType::LowLow => J2kSubBandType::LowLow,
-        signinum_j2k_native::J2kSubBandType::HighLow => J2kSubBandType::HighLow,
-        signinum_j2k_native::J2kSubBandType::LowHigh => J2kSubBandType::LowHigh,
-        signinum_j2k_native::J2kSubBandType::HighHigh => J2kSubBandType::HighHigh,
-    }
-}
-
-fn native_subband(subband: J2kSubBandType) -> signinum_j2k_native::J2kSubBandType {
-    match subband {
-        J2kSubBandType::LowLow => signinum_j2k_native::J2kSubBandType::LowLow,
-        J2kSubBandType::HighLow => signinum_j2k_native::J2kSubBandType::HighLow,
-        J2kSubBandType::LowHigh => signinum_j2k_native::J2kSubBandType::LowHigh,
-        J2kSubBandType::HighHigh => signinum_j2k_native::J2kSubBandType::HighHigh,
-    }
-}
-
-fn public_style(style: signinum_j2k_native::J2kCodeBlockStyle) -> J2kCodeBlockStyle {
-    J2kCodeBlockStyle {
-        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
-        reset_context_probabilities: style.reset_context_probabilities,
-        termination_on_each_pass: style.termination_on_each_pass,
-        vertically_causal_context: style.vertically_causal_context,
-        segmentation_symbols: style.segmentation_symbols,
-    }
-}
-
-fn native_segment(segment: J2kCodeBlockSegment) -> signinum_j2k_native::J2kCodeBlockSegment {
-    signinum_j2k_native::J2kCodeBlockSegment {
-        data_offset: segment.data_offset,
-        data_length: segment.data_length,
-        start_coding_pass: segment.start_coding_pass,
-        end_coding_pass: segment.end_coding_pass,
-        use_arithmetic: segment.use_arithmetic,
-    }
-}
-
-fn native_encoded_j2k(block: EncodedJ2kCodeBlock) -> signinum_j2k_native::EncodedJ2kCodeBlock {
-    signinum_j2k_native::EncodedJ2kCodeBlock {
-        data: block.data,
-        segments: block.segments.into_iter().map(native_segment).collect(),
-        number_of_coding_passes: block.number_of_coding_passes,
-        missing_bit_planes: block.missing_bit_planes,
-    }
-}
-
-fn native_encoded_ht(block: EncodedHtJ2kCodeBlock) -> signinum_j2k_native::EncodedHtJ2kCodeBlock {
-    signinum_j2k_native::EncodedHtJ2kCodeBlock {
-        data: block.data,
-        cleanup_length: block.cleanup_length,
-        refinement_length: block.refinement_length,
-        num_coding_passes: block.num_coding_passes,
-        num_zero_bitplanes: block.num_zero_bitplanes,
-    }
-}
-
-fn public_tier1_job(
-    job: signinum_j2k_native::J2kTier1CodeBlockEncodeJob<'_>,
-) -> J2kTier1CodeBlockEncodeJob<'_> {
-    J2kTier1CodeBlockEncodeJob {
-        coefficients: job.coefficients,
-        width: job.width,
-        height: job.height,
-        sub_band_type: public_subband(job.sub_band_type),
-        total_bitplanes: job.total_bitplanes,
-        style: public_style(job.style),
-    }
-}
-
-fn public_ht_job(
-    job: signinum_j2k_native::J2kHtCodeBlockEncodeJob<'_>,
-) -> J2kHtCodeBlockEncodeJob<'_> {
-    J2kHtCodeBlockEncodeJob {
-        coefficients: job.coefficients,
-        width: job.width,
-        height: job.height,
-        total_bitplanes: job.total_bitplanes,
-        target_coding_passes: job.target_coding_passes,
-    }
-}
-
-fn native_dwt53_output(
-    output: J2kForwardDwt53Output,
-) -> signinum_j2k_native::J2kForwardDwt53Output {
-    signinum_j2k_native::J2kForwardDwt53Output {
-        ll: output.ll,
-        ll_width: output.ll_width,
-        ll_height: output.ll_height,
-        levels: output
-            .levels
-            .into_iter()
-            .map(|level| signinum_j2k_native::J2kForwardDwt53Level {
-                hl: level.hl,
-                lh: level.lh,
-                hh: level.hh,
-                width: level.width,
-                height: level.height,
-                low_width: level.low_width,
-                low_height: level.low_height,
-                high_width: level.high_width,
-                high_height: level.high_height,
-            })
-            .collect(),
-    }
-}
-
-fn native_dwt97_output(
-    output: J2kForwardDwt97Output,
-) -> signinum_j2k_native::J2kForwardDwt97Output {
-    signinum_j2k_native::J2kForwardDwt97Output {
-        ll: output.ll,
-        ll_width: output.ll_width,
-        ll_height: output.ll_height,
-        levels: output
-            .levels
-            .into_iter()
-            .map(|level| signinum_j2k_native::J2kForwardDwt97Level {
-                hl: level.hl,
-                lh: level.lh,
-                hh: level.hh,
-                width: level.width,
-                height: level.height,
-                low_width: level.low_width,
-                low_height: level.low_height,
-                high_width: level.high_width,
-                high_height: level.high_height,
-            })
-            .collect(),
-    }
-}
-
-fn public_packet_descriptor(
-    descriptor: signinum_j2k_native::J2kPacketizationPacketDescriptor,
-) -> J2kPacketizationPacketDescriptor {
-    J2kPacketizationPacketDescriptor {
-        packet_index: descriptor.packet_index,
-        state_index: descriptor.state_index,
-        layer: descriptor.layer,
-        resolution: descriptor.resolution,
-        component: descriptor.component,
-        precinct: descriptor.precinct,
-    }
-}
-
-fn public_packet_resolution<'a>(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'a>,
-) -> J2kPacketizationResolution<'a> {
-    J2kPacketizationResolution {
-        subbands: resolution
-            .subbands
-            .iter()
-            .map(|subband| J2kPacketizationSubband {
-                code_blocks: subband
-                    .code_blocks
-                    .iter()
-                    .copied()
-                    .map(public_packet_code_block)
-                    .collect(),
-                num_cbs_x: subband.num_cbs_x,
-                num_cbs_y: subband.num_cbs_y,
-            })
-            .collect(),
-    }
-}
-
-fn public_packet_code_block(
-    code_block: signinum_j2k_native::J2kPacketizationCodeBlock<'_>,
-) -> J2kPacketizationCodeBlock<'_> {
-    J2kPacketizationCodeBlock {
-        data: code_block.data,
-        ht_cleanup_length: code_block.ht_cleanup_length,
-        ht_refinement_length: code_block.ht_refinement_length,
-        num_coding_passes: code_block.num_coding_passes,
-        num_zero_bitplanes: code_block.num_zero_bitplanes,
-        previously_included: code_block.previously_included,
-        l_block: code_block.l_block,
-        block_coding_mode: public_packet_block_mode(code_block.block_coding_mode),
-    }
-}
-
-fn public_packet_block_mode(
-    mode: signinum_j2k_native::J2kPacketizationBlockCodingMode,
-) -> J2kPacketizationBlockCodingMode {
-    match mode {
-        signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic => {
-            J2kPacketizationBlockCodingMode::Classic
-        }
-        signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput => {
-            J2kPacketizationBlockCodingMode::HighThroughput
-        }
-    }
-}
-
-fn public_packet_progression(
-    progression: signinum_j2k_native::J2kPacketizationProgressionOrder,
-) -> J2kPacketizationProgressionOrder {
-    match progression {
-        signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp => {
-            J2kPacketizationProgressionOrder::Lrcp
-        }
-        signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp => {
-            J2kPacketizationProgressionOrder::Rlcp
-        }
-        signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl => {
-            J2kPacketizationProgressionOrder::Rpcl
-        }
-        signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl => {
-            J2kPacketizationProgressionOrder::Pcrl
-        }
-        signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl => {
-            J2kPacketizationProgressionOrder::Cprl
-        }
     }
 }
 
@@ -2332,7 +2092,7 @@ fn native_precomputed53_image(
                 |component| signinum_j2k_native::PrecomputedHtj2k53Component {
                     x_rsiz: component.x_rsiz,
                     y_rsiz: component.y_rsiz,
-                    dwt: native_dwt53_output(component.dwt),
+                    dwt: dwt53_output_to_native(component.dwt),
                 },
             )
             .collect(),
@@ -2354,7 +2114,7 @@ fn native_precomputed97_image(
                 |component| signinum_j2k_native::PrecomputedHtj2k97Component {
                     x_rsiz: component.x_rsiz,
                     y_rsiz: component.y_rsiz,
-                    dwt: native_dwt97_output(component.dwt),
+                    dwt: dwt97_output_to_native(component.dwt),
                 },
             )
             .collect(),
@@ -2386,7 +2146,7 @@ fn native_prequantized_image(
                                     .into_iter()
                                     .map(|subband| {
                                         signinum_j2k_native::PrequantizedHtj2k97Subband {
-                                    sub_band_type: native_subband(subband.sub_band_type),
+                                    sub_band_type: subband_to_native(subband.sub_band_type),
                                     num_cbs_x: subband.num_cbs_x,
                                     num_cbs_y: subband.num_cbs_y,
                                     total_bitplanes: subband.total_bitplanes,
@@ -2437,7 +2197,7 @@ fn native_preencoded_image(
                                     .subbands
                                     .into_iter()
                                     .map(|subband| signinum_j2k_native::PreencodedHtj2k97Subband {
-                                        sub_band_type: native_subband(subband.sub_band_type),
+                                        sub_band_type: subband_to_native(subband.sub_band_type),
                                         num_cbs_x: subband.num_cbs_x,
                                         num_cbs_y: subband.num_cbs_y,
                                         total_bitplanes: subband.total_bitplanes,
@@ -2448,7 +2208,7 @@ fn native_preencoded_image(
                                                 signinum_j2k_native::PreencodedHtj2k97CodeBlock {
                                                     width: block.width,
                                                     height: block.height,
-                                                    encoded: native_encoded_ht(block.encoded),
+                                                    encoded: encoded_ht_to_native(block.encoded),
                                                 }
                                             })
                                             .collect(),
@@ -2489,7 +2249,7 @@ fn native_compact_preencoded_image(
                                     .into_iter()
                                     .map(|subband| {
                                         signinum_j2k_native::PreencodedHtj2k97CompactSubband {
-                                    sub_band_type: native_subband(subband.sub_band_type),
+                                    sub_band_type: subband_to_native(subband.sub_band_type),
                                     num_cbs_x: subband.num_cbs_x,
                                     num_cbs_y: subband.num_cbs_y,
                                     total_bitplanes: subband.total_bitplanes,

@@ -10,6 +10,8 @@ mod backend;
 mod batch;
 mod decode;
 mod encode;
+#[doc(hidden)]
+pub mod native_bridge;
 mod parallelism;
 mod recode;
 

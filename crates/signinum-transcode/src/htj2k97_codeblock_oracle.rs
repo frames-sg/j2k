@@ -14,6 +14,7 @@
 use crate::accelerator::Htj2k97CodeBlockOptions;
 use crate::dct97_2d::Dwt97TwoDimensional;
 use signinum_j2k::{
+    native_bridge::{quantization_scales_to_native, subband_to_native},
     J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
@@ -181,30 +182,10 @@ fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType)
         options.bit_depth,
         options.guard_bits,
         options.irreversible_quantization_scale,
-        native_quantization_scales(options.irreversible_quantization_subband_scales),
-        native_subband(sub_band_type),
+        quantization_scales_to_native(options.irreversible_quantization_subband_scales),
+        subband_to_native(sub_band_type),
     );
     (step.exponent, step.mantissa)
-}
-
-fn native_quantization_scales(
-    scales: signinum_j2k::IrreversibleQuantizationSubbandScales,
-) -> signinum_j2k_native::IrreversibleQuantizationSubbandScales {
-    signinum_j2k_native::IrreversibleQuantizationSubbandScales {
-        low_low: scales.low_low,
-        high_low: scales.high_low,
-        low_high: scales.low_high,
-        high_high: scales.high_high,
-    }
-}
-
-fn native_subband(subband: J2kSubBandType) -> signinum_j2k_native::J2kSubBandType {
-    match subband {
-        J2kSubBandType::LowLow => signinum_j2k_native::J2kSubBandType::LowLow,
-        J2kSubBandType::HighLow => signinum_j2k_native::J2kSubBandType::HighLow,
-        J2kSubBandType::LowHigh => signinum_j2k_native::J2kSubBandType::LowHigh,
-        J2kSubBandType::HighHigh => signinum_j2k_native::J2kSubBandType::HighHigh,
-    }
 }
 
 fn pow2i_f64(exp: i32) -> f64 {
@@ -384,7 +365,7 @@ mod tests {
                                             .into_iter()
                                             .map(|subband| {
                                                 signinum_j2k_native::PrequantizedHtj2k97Subband {
-                                                    sub_band_type: native_subband(
+                                                    sub_band_type: subband_to_native(
                                                         subband.sub_band_type,
                                                     ),
                                                     num_cbs_x: subband.num_cbs_x,
