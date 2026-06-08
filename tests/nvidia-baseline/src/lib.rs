@@ -549,3 +549,69 @@ pub fn psnr_u8(a: &[u8], b: &[u8]) -> Option<f64> {
     }
     Some(10.0 * (255.0f64 * 255.0 / mse).log10())
 }
+
+/// JFIF full-range YCbCr to interleaved RGB, rounded to the nearest channel value.
+#[must_use]
+pub fn ycbcr_to_rgb_round_nearest(ycbcr: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(ycbcr.len());
+    for px in ycbcr.chunks_exact(3) {
+        let y = f32::from(px[0]);
+        let cb = f32::from(px[1]) - 128.0;
+        let cr = f32::from(px[2]) - 128.0;
+        rgb.push(round_rgb_channel(y + 1.402 * cr));
+        rgb.push(round_rgb_channel(y - 0.344_136 * cb - 0.714_136 * cr));
+        rgb.push(round_rgb_channel(y + 1.772 * cb));
+    }
+    rgb
+}
+
+fn round_rgb_channel(value: f32) -> u8 {
+    value.clamp(0.0, 255.0).round() as u8
+}
+
+/// Writes a text artifact and creates parent directories when needed.
+///
+/// This keeps benchmark binaries consistent when output paths include nested
+/// artifact directories.
+pub fn write_text_artifact(
+    path: &std::path::Path,
+    contents: impl AsRef<str>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_text_artifact, ycbcr_to_rgb_round_nearest};
+
+    #[test]
+    fn ycbcr_to_rgb_rounds_to_nearest_channel_value() {
+        let rgb = ycbcr_to_rgb_round_nearest(&[100, 129, 128]);
+
+        assert_eq!(rgb, vec![100, 100, 102]);
+    }
+
+    #[test]
+    fn write_text_artifact_creates_parent_directories() {
+        let path = std::env::temp_dir()
+            .join(format!("signinum-nvb-artifact-{}", std::process::id()))
+            .join("nested")
+            .join("report.json");
+
+        if let Some(root) = path.parent().and_then(std::path::Path::parent) {
+            if root.exists() {
+                std::fs::remove_dir_all(root).expect("remove stale test artifact dir");
+            }
+        }
+
+        write_text_artifact(&path, "report").expect("write artifact");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read artifact"),
+            "report"
+        );
+    }
+}

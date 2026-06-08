@@ -6,6 +6,7 @@ use signinum_j2k::{
     TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
+use signinum_test_support::wrap_codestream_jp2;
 use std::num::NonZeroUsize;
 
 fn encode_codestream(
@@ -58,39 +59,6 @@ fn ht_rgb_fixture() -> Vec<u8> {
 
 fn ht_rgb_jp2_fixture() -> Vec<u8> {
     wrap_codestream_jp2(&ht_rgb_fixture(), 16, 16, 3, 8, 16)
-}
-
-fn wrap_codestream_jp2(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u16,
-    bit_depth: u8,
-    colorspace_enum: u32,
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
-        b' ',
-    ]);
-
-    let bpc = bit_depth.saturating_sub(1);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-    ]);
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&components.to_be_bytes());
-    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
-    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
-
-    let len = (8 + codestream.len()) as u32;
-    bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(b"jp2c");
-    bytes.extend_from_slice(codestream);
-    bytes
 }
 
 fn decode_rgb8_reference(bytes: &[u8]) -> (Vec<u8>, usize) {

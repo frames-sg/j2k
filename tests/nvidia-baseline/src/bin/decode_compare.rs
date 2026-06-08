@@ -22,7 +22,8 @@ use std::{
 use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
 use signinum_j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
 use signinum_nvidia_baseline::{
-    nvidia_j2k_decode_available, psnr_u8, NvBaselineError, NvBaselineSession, NvJ2kDecodeFormat,
+    nvidia_j2k_decode_available, psnr_u8, write_text_artifact, NvBaselineError, NvBaselineSession,
+    NvJ2kDecodeFormat,
 };
 
 const DEFAULT_FIXTURE_DIM: u32 = 512;
@@ -1424,16 +1425,10 @@ fn fmt_optional(value: Option<f64>) -> String {
 
 fn write_artifacts(report: &DecodeReport, config: &Config) -> std::io::Result<()> {
     if let Some(path) = &config.json {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, json_report(report, config))?;
+        write_text_artifact(path, json_report(report, config))?;
     }
     if let Some(path) = &config.csv {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, csv_report(report))?;
+        write_text_artifact(path, csv_report(report))?;
     }
     Ok(())
 }

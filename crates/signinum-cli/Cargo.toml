@@ -21,6 +21,9 @@ doc = false
 signinum-j2k  = { path = "../signinum-j2k", version = "=0.5.0" }
 signinum-jpeg = { path = "../signinum-jpeg", version = "=0.5.0" }
 
+[dev-dependencies]
+signinum-test-support = { path = "../signinum-test-support", version = "=0.5.0" }
+
 # NOTE: `[profile.*]` blocks in package-level manifests are silently ignored
 # inside a workspace (see https://doc.rust-lang.org/cargo/reference/profiles.html#overrides).
 # Any codegen tweaks for the CLI must go in the root workspace `Cargo.toml`.

@@ -310,6 +310,7 @@ name = "signinum-nvidia-baseline"
 version = "0.5.0"
 dependencies = [
  "signinum-core",
+ "signinum-j2k",
  "signinum-j2k-cuda",
  "signinum-j2k-native",
  "signinum-jpeg",

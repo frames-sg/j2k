@@ -7,7 +7,7 @@ use signinum_j2k::{
     ReversibleTransform,
 };
 use signinum_j2k_native::{DecodeSettings, EncodeOptions, Image};
-use signinum_test_support::{patterned_gray8, patterned_rgb8};
+use signinum_test_support::{patterned_gray8, patterned_rgb8, wrap_codestream_jp2};
 
 fn decode_native(codestream: &[u8]) -> signinum_j2k_native::RawBitmap {
     Image::new(codestream, &DecodeSettings::default())
@@ -31,39 +31,6 @@ fn native_encode_options(reversible: bool, use_mct: bool) -> EncodeOptions {
         validate_high_throughput_codestream: false,
         ..EncodeOptions::default()
     }
-}
-
-fn wrap_codestream_jp2(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u16,
-    bit_depth: u8,
-    colorspace_enum: u32,
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
-        b' ',
-    ]);
-
-    let bpc = bit_depth.saturating_sub(1);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-    ]);
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&components.to_be_bytes());
-    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
-    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
-
-    let len = (8 + codestream.len()) as u32;
-    bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(b"jp2c");
-    bytes.extend_from_slice(codestream);
-    bytes
 }
 
 #[test]

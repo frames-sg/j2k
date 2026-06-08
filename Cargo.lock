@@ -896,6 +896,7 @@ version = "0.5.0"
 dependencies = [
  "signinum-j2k",
  "signinum-jpeg",
+ "signinum-test-support",
 ]
 
 [[package]]

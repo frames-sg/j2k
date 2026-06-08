@@ -71,3 +71,112 @@ pub fn patterned_rgb8_tiles(width: u32, height: u32, tile_count: usize) -> Vec<u
     }
     rgb
 }
+
+/// Builds a minimal JPEG 2000 codestream header for inspect/parser tests.
+pub fn minimal_j2k_codestream() -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0x4F];
+    let mut siz = Vec::new();
+    push_u16(&mut siz, 0);
+    push_u32(&mut siz, 128);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 64);
+    push_u32(&mut siz, 0);
+    push_u32(&mut siz, 0);
+    push_u16(&mut siz, 3);
+    for _ in 0..3 {
+        siz.extend_from_slice(&[0x07, 0x01, 0x01]);
+    }
+    bytes.extend_from_slice(&[0xFF, 0x51]);
+    push_u16(&mut bytes, (siz.len() + 2) as u16);
+    bytes.extend_from_slice(&siz);
+
+    let cod = [0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x04, 0x04, 0x00, 0x01];
+    bytes.extend_from_slice(&[0xFF, 0x52]);
+    push_u16(&mut bytes, (cod.len() + 2) as u16);
+    bytes.extend_from_slice(&cod);
+    bytes.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    bytes
+}
+
+/// Wraps [`minimal_j2k_codestream`] in a minimal JP2 container.
+pub fn minimal_jp2() -> Vec<u8> {
+    let codestream = minimal_j2k_codestream();
+    wrap_codestream_jp2(&codestream, 128, 64, 3, 8, 16)
+}
+
+/// Wraps a JPEG 2000 codestream in a minimal JP2 container.
+pub fn wrap_codestream_jp2(
+    codestream: &[u8],
+    width: u32,
+    height: u32,
+    components: u16,
+    bit_depth: u8,
+    colorspace_enum: u32,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
+        b' ',
+    ]);
+
+    let bpc = bit_depth.saturating_sub(1);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
+    ]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&components.to_be_bytes());
+    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
+    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
+    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
+
+    let len = (8 + codestream.len()) as u32;
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(b"jp2c");
+    bytes.extend_from_slice(codestream);
+    bytes
+}
+
+fn push_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{minimal_j2k_codestream, minimal_jp2, wrap_codestream_jp2};
+
+    #[test]
+    fn minimal_j2k_codestream_has_j2k_magic_and_siz_marker() {
+        let codestream = minimal_j2k_codestream();
+
+        assert!(codestream.starts_with(&[0xFF, 0x4F]));
+        assert!(codestream.windows(2).any(|marker| marker == [0xFF, 0x51]));
+    }
+
+    #[test]
+    fn minimal_jp2_wraps_the_minimal_codestream() {
+        let jp2 = minimal_jp2();
+
+        assert!(jp2.starts_with(&[0, 0, 0, 12, b'j', b'P', b' ', b' ']));
+        assert!(jp2.windows(4).any(|box_type| box_type == b"jp2c"));
+        assert!(jp2.windows(2).any(|marker| marker == [0xFF, 0x4F]));
+    }
+
+    #[test]
+    fn jp2_wrapper_writes_image_header_dimensions_and_colorspace() {
+        let jp2 = wrap_codestream_jp2(&[0xFF, 0x4F], 320, 240, 3, 8, 16);
+
+        assert!(jp2.windows(4).any(|box_type| box_type == b"jp2h"));
+        assert!(jp2.windows(4).any(|value| value == 240u32.to_be_bytes()));
+        assert!(jp2.windows(4).any(|value| value == 320u32.to_be_bytes()));
+        assert!(jp2.windows(4).any(|value| value == 16u32.to_be_bytes()));
+    }
+}
