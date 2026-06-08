@@ -10573,6 +10573,14 @@ pub struct CudaHtj2k97QuantizeParams {
     pub cb_height: usize,
 }
 
+#[derive(Clone, Copy)]
+struct Dwt97CodeblockBandBuffers<'a> {
+    ll: &'a CudaDeviceBuffer,
+    hl: &'a CudaDeviceBuffer,
+    lh: &'a CudaDeviceBuffer,
+    hh: &'a CudaDeviceBuffer,
+}
+
 /// Per-item raw code-block-major quantized 9/7 bands from the fused batch.
 ///
 /// Each band concatenates `item_count` per-item subband buffers in code-block
@@ -11056,24 +11064,12 @@ impl CudaContext {
             .transcode_dwt97_batch_to_device(
                 blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
-        let Dwt97BatchDeviceBands {
-            ll,
-            lh,
-            hl,
-            hh,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        } = bands;
-
-        let to_i32 = |value: usize| -> Result<i32, CudaError> {
-            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
-        };
+        let low_width = bands.low_width;
+        let low_height = bands.low_height;
+        let high_width = bands.high_width;
+        let high_height = bands.high_height;
         let items =
             u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
-        let cb_w = to_i32(params.cb_width)?;
-        let cb_h = to_i32(params.cb_height)?;
 
         let alloc_i32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
             let bytes = count
@@ -11092,48 +11088,17 @@ impl CudaContext {
         let hh_q = alloc_i32(item_count * hh_size)?;
 
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
-            // One launch per subband, each with its own dims and inverse delta.
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&ll)?,
-                pooled_device_buffer(&ll_q)?,
-                to_i32(low_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_ll,
+            self.launch_transcode_dwt97_quantize_codeblock_bands(
+                &bands,
+                Dwt97CodeblockBandBuffers {
+                    ll: pooled_device_buffer(&ll_q)?,
+                    hl: pooled_device_buffer(&hl_q)?,
+                    lh: pooled_device_buffer(&lh_q)?,
+                    hh: pooled_device_buffer(&hh_q)?,
+                },
+                params,
                 items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hl)?,
-                pooled_device_buffer(&hl_q)?,
-                to_i32(high_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hl,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&lh)?,
-                pooled_device_buffer(&lh_q)?,
-                to_i32(low_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_lh,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hh)?,
-                pooled_device_buffer(&hh_q)?,
-                to_i32(high_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hh,
-                items,
-            )?;
-            Ok(())
+            )
         })?;
 
         Ok((
@@ -11189,24 +11154,12 @@ impl CudaContext {
             .transcode_dwt97_i16_batch_to_device(
                 blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
-        let Dwt97BatchDeviceBands {
-            ll,
-            lh,
-            hl,
-            hh,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        } = bands;
-
-        let to_i32 = |value: usize| -> Result<i32, CudaError> {
-            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
-        };
+        let low_width = bands.low_width;
+        let low_height = bands.low_height;
+        let high_width = bands.high_width;
+        let high_height = bands.high_height;
         let items =
             u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
-        let cb_w = to_i32(params.cb_width)?;
-        let cb_h = to_i32(params.cb_height)?;
 
         let alloc_i32 = |count: usize| -> Result<CudaPooledDeviceBuffer, CudaError> {
             let bytes = count
@@ -11225,47 +11178,17 @@ impl CudaContext {
         let hh_q = alloc_i32(item_count * hh_size)?;
 
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&ll)?,
-                pooled_device_buffer(&ll_q)?,
-                to_i32(low_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_ll,
+            self.launch_transcode_dwt97_quantize_codeblock_bands(
+                &bands,
+                Dwt97CodeblockBandBuffers {
+                    ll: pooled_device_buffer(&ll_q)?,
+                    hl: pooled_device_buffer(&hl_q)?,
+                    lh: pooled_device_buffer(&lh_q)?,
+                    hh: pooled_device_buffer(&hh_q)?,
+                },
+                params,
                 items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hl)?,
-                pooled_device_buffer(&hl_q)?,
-                to_i32(high_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hl,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&lh)?,
-                pooled_device_buffer(&lh_q)?,
-                to_i32(low_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_lh,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hh)?,
-                pooled_device_buffer(&hh_q)?,
-                to_i32(high_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hh,
-                items,
-            )?;
-            Ok(())
+            )
         })?;
 
         Ok((
@@ -11528,24 +11451,12 @@ impl CudaContext {
             .transcode_dwt97_batch_to_device(
                 blocks, item_count, block_cols, block_rows, width, height, pool,
             )?;
-        let Dwt97BatchDeviceBands {
-            ll,
-            lh,
-            hl,
-            hh,
-            low_width,
-            low_height,
-            high_width,
-            high_height,
-        } = bands;
-
-        let to_i32 = |value: usize| -> Result<i32, CudaError> {
-            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
-        };
+        let low_width = bands.low_width;
+        let low_height = bands.low_height;
+        let high_width = bands.high_width;
+        let high_height = bands.high_height;
         let items =
             u32::try_from(item_count).map_err(|_| CudaError::LengthTooLarge { len: item_count })?;
-        let cb_w = to_i32(params.cb_width)?;
-        let cb_h = to_i32(params.cb_height)?;
 
         let alloc_i32 = |count: usize| -> Result<CudaDeviceBuffer, CudaError> {
             let bytes = count
@@ -11564,48 +11475,17 @@ impl CudaContext {
         let hh_q = alloc_i32(item_count * hh_size)?;
 
         let ((), quantize_codeblock_us) = self.time_default_stream_us(|| {
-            // One launch per subband, each with its own dims and inverse delta.
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&ll)?,
-                &ll_q,
-                to_i32(low_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_ll,
+            self.launch_transcode_dwt97_quantize_codeblock_bands(
+                &bands,
+                Dwt97CodeblockBandBuffers {
+                    ll: &ll_q,
+                    hl: &hl_q,
+                    lh: &lh_q,
+                    hh: &hh_q,
+                },
+                params,
                 items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hl)?,
-                &hl_q,
-                to_i32(high_width)?,
-                to_i32(low_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hl,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&lh)?,
-                &lh_q,
-                to_i32(low_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_lh,
-                items,
-            )?;
-            self.launch_transcode_dwt97_quantize_codeblocks(
-                pooled_device_buffer(&hh)?,
-                &hh_q,
-                to_i32(high_width)?,
-                to_i32(high_height)?,
-                cb_w,
-                cb_h,
-                params.inv_delta_hh,
-                items,
-            )?;
-            Ok(())
+            )
         })?;
 
         let (codeblocks, readback_us) = self.time_default_stream_us(|| {
@@ -12056,6 +11936,66 @@ impl CudaContext {
             copy_u8_launch_geometry(columns).ok_or(CudaError::LengthTooLarge { len: columns })?;
         let geometry = with_grid_y(base, items);
         self.launch_kernel_async(function, geometry, &mut params)
+    }
+
+    fn launch_transcode_dwt97_quantize_codeblock_bands(
+        &self,
+        bands: &Dwt97BatchDeviceBands,
+        outputs: Dwt97CodeblockBandBuffers<'_>,
+        params: CudaHtj2k97QuantizeParams,
+        items: u32,
+    ) -> Result<(), CudaError> {
+        let to_i32 = |value: usize| -> Result<i32, CudaError> {
+            i32::try_from(value).map_err(|_| CudaError::LengthTooLarge { len: value })
+        };
+        let low_width = to_i32(bands.low_width)?;
+        let low_height = to_i32(bands.low_height)?;
+        let high_width = to_i32(bands.high_width)?;
+        let high_height = to_i32(bands.high_height)?;
+        let cb_width = to_i32(params.cb_width)?;
+        let cb_height = to_i32(params.cb_height)?;
+
+        self.launch_transcode_dwt97_quantize_codeblocks(
+            pooled_device_buffer(&bands.ll)?,
+            outputs.ll,
+            low_width,
+            low_height,
+            cb_width,
+            cb_height,
+            params.inv_delta_ll,
+            items,
+        )?;
+        self.launch_transcode_dwt97_quantize_codeblocks(
+            pooled_device_buffer(&bands.hl)?,
+            outputs.hl,
+            high_width,
+            low_height,
+            cb_width,
+            cb_height,
+            params.inv_delta_hl,
+            items,
+        )?;
+        self.launch_transcode_dwt97_quantize_codeblocks(
+            pooled_device_buffer(&bands.lh)?,
+            outputs.lh,
+            low_width,
+            high_height,
+            cb_width,
+            cb_height,
+            params.inv_delta_lh,
+            items,
+        )?;
+        self.launch_transcode_dwt97_quantize_codeblocks(
+            pooled_device_buffer(&bands.hh)?,
+            outputs.hh,
+            high_width,
+            high_height,
+            cb_width,
+            cb_height,
+            params.inv_delta_hh,
+            items,
+        )?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
