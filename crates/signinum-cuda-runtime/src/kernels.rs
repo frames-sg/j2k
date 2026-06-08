@@ -404,6 +404,20 @@ fn x_blocks_launch_geometry(
     })
 }
 
+pub(crate) fn with_grid_y(base: CudaLaunchGeometry, grid_y: c_uint) -> CudaLaunchGeometry {
+    CudaLaunchGeometry {
+        grid: (base.grid.0, grid_y, base.grid.2),
+        block: base.block,
+    }
+}
+
+pub(crate) fn with_grid_z(base: CudaLaunchGeometry, grid_z: c_uint) -> CudaLaunchGeometry {
+    CudaLaunchGeometry {
+        grid: (base.grid.0, base.grid.1, grid_z),
+        block: base.block,
+    }
+}
+
 pub(crate) fn htj2k_encode_codeblock_launch_geometry(
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
@@ -1011,6 +1025,32 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn x_blocks_launch_geometry_rejects_grid_dimensions_above_cuda_uint() {
         assert_eq!(x_blocks_launch_geometry(usize::MAX, usize::MAX, 1), None);
+    }
+
+    #[test]
+    fn with_grid_y_preserves_block_and_other_grid_axes() {
+        let base = CudaLaunchGeometry {
+            grid: (2, 3, 4),
+            block: (16, 8, 1),
+        };
+
+        let geometry = with_grid_y(base, 9);
+
+        assert_eq!(geometry.grid, (2, 9, 4));
+        assert_eq!(geometry.block, base.block);
+    }
+
+    #[test]
+    fn with_grid_z_preserves_block_and_other_grid_axes() {
+        let base = CudaLaunchGeometry {
+            grid: (2, 3, 4),
+            block: (16, 8, 1),
+        };
+
+        let geometry = with_grid_z(base, 11);
+
+        assert_eq!(geometry.grid, (2, 3, 11));
+        assert_eq!(geometry.block, base.block);
     }
 
     #[test]
