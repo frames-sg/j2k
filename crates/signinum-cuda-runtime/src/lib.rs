@@ -11401,7 +11401,8 @@ impl CudaContext {
         let hh_q = alloc_i32(item_count * hh_size)?;
 
         let ((), idct_row_lift_us) = self.time_default_stream_us(|| {
-            self.launch_transcode_dwt97_idct_i16_batch(
+            self.launch_transcode_dwt97_idct_batch_kernel(
+                CudaKernel::TranscodeDwt97IdctI16Batch,
                 dims,
                 blocks_per_item,
                 items,
@@ -11777,22 +11778,18 @@ impl CudaContext {
 
         // Stage: batched separable IDCT then horizontal 9/7 row lift.
         let ((), idct_row_lift_us) = self.time_default_stream_us(|| {
-            match input {
-                Dwt97BatchInput::F32(_) => self.launch_transcode_dwt97_idct_batch(
-                    dims,
-                    blocks_per_item,
-                    items,
-                    pooled_device_buffer(&blocks_dev)?,
-                    pooled_device_buffer(&spatial)?,
-                )?,
-                Dwt97BatchInput::I16(_) => self.launch_transcode_dwt97_idct_i16_batch(
-                    dims,
-                    blocks_per_item,
-                    items,
-                    pooled_device_buffer(&blocks_dev)?,
-                    pooled_device_buffer(&spatial)?,
-                )?,
-            }
+            let idct_kernel = match input {
+                Dwt97BatchInput::F32(_) => CudaKernel::TranscodeDwt97IdctBatch,
+                Dwt97BatchInput::I16(_) => CudaKernel::TranscodeDwt97IdctI16Batch,
+            };
+            self.launch_transcode_dwt97_idct_batch_kernel(
+                idct_kernel,
+                dims,
+                blocks_per_item,
+                items,
+                pooled_device_buffer(&blocks_dev)?,
+                pooled_device_buffer(&spatial)?,
+            )?;
             self.launch_transcode_dwt97_row_lift_batch(
                 dims,
                 items,
@@ -11849,51 +11846,16 @@ impl CudaContext {
         ))
     }
 
-    fn launch_transcode_dwt97_idct_batch(
+    fn launch_transcode_dwt97_idct_batch_kernel(
         &self,
+        kernel: CudaKernel,
         dims: Reversible53Dims,
         blocks_per_item: i32,
         items: u32,
         blocks: &CudaDeviceBuffer,
         spatial: &CudaDeviceBuffer,
     ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97IdctBatch)?;
-        let mut blocks_ptr = blocks.device_ptr();
-        let mut block_cols = dims.block_cols;
-        let mut width = dims.width;
-        let mut height = dims.height;
-        let mut blocks_per_item = blocks_per_item;
-        let mut spatial_ptr = spatial.device_ptr();
-        let mut params = [
-            (&raw mut blocks_ptr).cast::<c_void>(),
-            (&raw mut block_cols).cast::<c_void>(),
-            (&raw mut width).cast::<c_void>(),
-            (&raw mut height).cast::<c_void>(),
-            (&raw mut blocks_per_item).cast::<c_void>(),
-            (&raw mut spatial_ptr).cast::<c_void>(),
-        ];
-        let grid_w = u32::try_from(dims.width).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
-        let grid_h =
-            u32::try_from(dims.height).map_err(|_| CudaError::LengthTooLarge { len: 0 })?;
-        let base = j2k_dwt53_launch_geometry(grid_w, grid_h)
-            .ok_or(CudaError::LengthTooLarge { len: 0 })?;
-        let geometry = with_grid_z(base, items);
-        self.launch_kernel_async(function, geometry, &mut params)
-    }
-
-    fn launch_transcode_dwt97_idct_i16_batch(
-        &self,
-        dims: Reversible53Dims,
-        blocks_per_item: i32,
-        items: u32,
-        blocks: &CudaDeviceBuffer,
-        spatial: &CudaDeviceBuffer,
-    ) -> Result<(), CudaError> {
-        let function = self
-            .inner
-            .kernel_function(CudaKernel::TranscodeDwt97IdctI16Batch)?;
+        let function = self.inner.kernel_function(kernel)?;
         let mut blocks_ptr = blocks.device_ptr();
         let mut block_cols = dims.block_cols;
         let mut width = dims.width;
