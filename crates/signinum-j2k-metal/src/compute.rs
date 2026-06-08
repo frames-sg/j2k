@@ -3454,6 +3454,31 @@ fn two_d_threads_per_group(simd_width: u64, max_threads: u64) -> MTLSize {
 }
 
 #[cfg(target_os = "macos")]
+fn one_d_threads_per_group(simd_width: u64) -> MTLSize {
+    MTLSize {
+        width: simd_width.max(1),
+        height: 1,
+        depth: 1,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_1d_pipeline(
+    encoder: &ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    width: u64,
+) {
+    encoder.dispatch_threads(
+        MTLSize {
+            width,
+            height: 1,
+            depth: 1,
+        },
+        one_d_threads_per_group(pipeline.thread_execution_width()),
+    );
+}
+
+#[cfg(target_os = "macos")]
 fn dispatch_2d_pipeline(
     encoder: &ComputeCommandEncoderRef,
     pipeline: &ComputePipelineState,
@@ -11143,18 +11168,7 @@ fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
         (&raw const token_segment_stride).cast(),
     );
     encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: emit_pipeline.thread_execution_width().max(1),
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_1d_pipeline(encoder, emit_pipeline, u64::from(job_count));
     encoder.end_encoding();
 
     Ok(J2kResidentClassicTier1SplitTokenBuffers {
@@ -16773,19 +16787,7 @@ fn dispatch_zero_u32_buffer_in_encoder(
     encoder.set_compute_pipeline_state(&runtime.zero_u32_buffer);
     encoder.set_buffer(0, Some(buffer), 0);
     encoder.set_bytes(1, size_of::<u32>() as u64, (&raw const word_count).cast());
-    let width = runtime.zero_u32_buffer.thread_execution_width().max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(word_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_1d_pipeline(encoder, &runtime.zero_u32_buffer, u64::from(word_count));
     Ok(())
 }
 
@@ -17186,18 +17188,7 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(job_count),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: classic_encode_pipeline.thread_execution_width().max(1),
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -18347,18 +18338,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(job_count),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: classic_encode_pipeline.thread_execution_width().max(1),
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -18489,7 +18469,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-        dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
+        dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -18823,26 +18803,6 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
 }
 
 #[cfg(target_os = "macos")]
-fn dispatch_ht_encode_code_blocks(
-    encoder: &ComputeCommandEncoderRef,
-    pipeline: &ComputePipelineState,
-    job_count: u32,
-) {
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: pipeline.thread_execution_width().max(1),
-            height: 1,
-            depth: 1,
-        },
-    );
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn encode_ht_cleanup_code_blocks(
     jobs: &[J2kHtCodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
@@ -18953,7 +18913,7 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
     encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
+    dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
@@ -20877,7 +20837,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 size_of::<u32>() as u64,
                 (&raw const tier1_job_count).cast(),
             );
-            dispatch_ht_encode_code_blocks(encoder, pipeline, tier1_job_count);
+            dispatch_1d_pipeline(encoder, pipeline, u64::from(tier1_job_count));
             encoder.end_encoding();
             drop(signpost);
             if let Some(started) = command_encode_started {
@@ -22235,18 +22195,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     size_of::<u32>() as u64,
                     (&raw const tier1_job_count).cast(),
                 );
-                encoder.dispatch_threads(
-                    MTLSize {
-                        width: u64::from(tier1_job_count),
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: classic_encode_pipeline.thread_execution_width().max(1),
-                        height: 1,
-                        depth: 1,
-                    },
-                );
+                dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(tier1_job_count));
                 encoder.end_encoding();
                 drop(signpost);
                 if let Some(started) = command_encode_started {
@@ -23937,7 +23886,7 @@ mod tests {
         flattened_hybrid_cpu_decode_batches_for_test, hybrid_cpu_decode_inputs_for_test,
         hybrid_cpu_decode_worker_count, hybrid_cpu_decode_worker_inits_for_test,
         hybrid_repeated_output_blits_for_test, hybrid_stacked_component_batches_for_test,
-        j2k_pack_kernel_name_for, j2k_pack_scale_arrays, output_shape_for,
+        j2k_pack_kernel_name_for, j2k_pack_scale_arrays, one_d_threads_per_group, output_shape_for,
         prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
         prepare_direct_grayscale_plan, prepared_direct_color_tier1_input_count,
         prepared_direct_grayscale_plan_compute_encoder_count, prepared_idwt_output_len,
@@ -24024,6 +23973,13 @@ mod tests {
     #[test]
     fn two_d_threads_per_group_clamps_empty_pipeline_limits() {
         let threads = two_d_threads_per_group(0, 0);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (1, 1, 1));
+    }
+
+    #[test]
+    fn one_d_threads_per_group_clamps_empty_pipeline_width() {
+        let threads = one_d_threads_per_group(0);
 
         assert_eq!((threads.width, threads.height, threads.depth), (1, 1, 1));
     }
