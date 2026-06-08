@@ -150,7 +150,7 @@ signinum-transcode-metal -> signinum-transcode
 signinum              -> signinum-core, signinum-jpeg, signinum-j2k, signinum-tilecodec, signinum-jpeg-metal, signinum-j2k-metal, signinum-jpeg-cuda, signinum-j2k-cuda
 signinum-cli          -> signinum-jpeg, signinum-j2k
 
-signinum-j2k-compare  -> signinum-core, signinum-j2k (test/bench reference only)
+signinum-j2k-compare  -> signinum-core, signinum-j2k, signinum-test-support (test/bench reference only)
 ```
 
 ## Core abstractions
