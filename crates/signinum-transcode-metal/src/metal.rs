@@ -990,6 +990,30 @@ fn dispatch_projection_threads(
     encoder.dispatch_threads(threads, threads_per_group);
 }
 
+#[inline]
+fn bind_projection_input_buffers(
+    encoder: &ComputeCommandEncoderRef,
+    blocks: &Buffer,
+    idct_basis: &Buffer,
+) {
+    encoder.set_buffer(0, Some(blocks), 0);
+    encoder.set_buffer(5, Some(idct_basis), 0);
+}
+
+#[inline]
+fn bind_projection_band_buffers(
+    encoder: &ComputeCommandEncoderRef,
+    x_weights: (&Buffer, &Buffer),
+    y_weights: (&Buffer, &Buffer),
+    output: &Buffer,
+) {
+    encoder.set_buffer(1, Some(x_weights.0), 0);
+    encoder.set_buffer(2, Some(x_weights.1), 0);
+    encoder.set_buffer(3, Some(y_weights.0), 0);
+    encoder.set_buffer(4, Some(y_weights.1), 0);
+    encoder.set_buffer(6, Some(output), 0);
+}
+
 #[derive(Clone, Copy)]
 struct ProjectionJob<'a> {
     blocks: &'a [[[f64; 8]; 8]],
@@ -1141,8 +1165,7 @@ fn dispatch_projected_bands_with_runtime(
     command_buffer.set_label(job.label);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct_project_band);
-    encoder.set_buffer(0, Some(&blocks), 0);
-    encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
+    bind_projection_input_buffers(encoder, &blocks, &runtime.idct_basis);
 
     dispatch_band(
         encoder,
@@ -1391,8 +1414,7 @@ fn dispatch_projection_batch_bands(
     command_buffer.set_label(job.label);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct_project_band_batch);
-    encoder.set_buffer(0, Some(blocks), 0);
-    encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
+    bind_projection_input_buffers(encoder, blocks, &runtime.idct_basis);
 
     dispatch_band_batch(
         encoder,
@@ -1785,11 +1807,7 @@ fn dispatch_band(
         band_width: geometry.band_width,
         band_height: geometry.band_height,
     };
-    encoder.set_buffer(1, Some(x_weights.0), 0);
-    encoder.set_buffer(2, Some(x_weights.1), 0);
-    encoder.set_buffer(3, Some(y_weights.0), 0);
-    encoder.set_buffer(4, Some(y_weights.1), 0);
-    encoder.set_buffer(6, Some(output), 0);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
     encoder.set_bytes(
         7,
         size_of::<DctProjectionParams>() as u64,
@@ -1823,11 +1841,7 @@ fn dispatch_band_batch(
         band_height: geometry.band_height,
         output_stride: geometry.output_stride,
     };
-    encoder.set_buffer(1, Some(x_weights.0), 0);
-    encoder.set_buffer(2, Some(x_weights.1), 0);
-    encoder.set_buffer(3, Some(y_weights.0), 0);
-    encoder.set_buffer(4, Some(y_weights.1), 0);
-    encoder.set_buffer(6, Some(output), 0);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
     encoder.set_bytes(
         7,
         size_of::<DctBatchProjectionParams>() as u64,
