@@ -2,6 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use std::{
+    fs,
+    io::{self, ErrorKind},
+    path::Path,
+};
+
 /// Generates deterministic RGB8 pixels for tests and benches.
 pub fn patterned_rgb8(width: u32, height: u32) -> Vec<u8> {
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
@@ -141,6 +147,127 @@ pub fn wrap_codestream_jp2(
     bytes
 }
 
+/// Builds a binary PGM (`P5`) or PPM (`P6`) fixture from raw 8-bit pixels.
+///
+/// # Errors
+///
+/// Returns an error when `channels` is not `1` or `3`, when the dimensions
+/// overflow, or when `pixels.len()` does not match the requested image shape.
+pub fn pnm_bytes(pixels: &[u8], width: u32, height: u32, channels: usize) -> io::Result<Vec<u8>> {
+    let magic = match channels {
+        1 => "P5",
+        3 => "P6",
+        _ => {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "PNM fixtures support only 1 or 3 channels",
+            ));
+        }
+    };
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "PNM dimensions overflow"))?;
+    if pixels.len() != expected_len {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "PNM pixel length {} does not match expected {expected_len}",
+                pixels.len()
+            ),
+        ));
+    }
+
+    let mut bytes = format!("{magic}\n{width} {height}\n255\n").into_bytes();
+    bytes.extend_from_slice(pixels);
+    Ok(bytes)
+}
+
+/// Writes a binary PGM (`P5`) or PPM (`P6`) fixture.
+///
+/// # Errors
+///
+/// Returns an error when [`pnm_bytes`] rejects the image shape or when the file
+/// cannot be written.
+pub fn write_pnm(
+    path: impl AsRef<Path>,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    channels: usize,
+) -> io::Result<()> {
+    fs::write(path, pnm_bytes(pixels, width, height, channels)?)
+}
+
+/// Reads pixel payload bytes from a binary PGM (`P5`) or PPM (`P6`) fixture.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or the PNM header is missing
+/// the expected `P5`/`P6` magic, dimensions, or max-value fields.
+pub fn read_pnm_pixels(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    let bytes = fs::read(path)?;
+    let mut cursor = 0;
+
+    let magic = read_pnm_token(&bytes, &mut cursor)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing magic"))?;
+    if magic != b"P5" && magic != b"P6" {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "PNM magic must be P5 or P6",
+        ));
+    }
+
+    read_pnm_token(&bytes, &mut cursor)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing width"))?;
+    read_pnm_token(&bytes, &mut cursor)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing height"))?;
+    read_pnm_token(&bytes, &mut cursor)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "PNM missing max value"))?;
+
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+
+    Ok(bytes[cursor..].to_vec())
+}
+
+fn read_pnm_token<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    skip_pnm_separators(bytes, cursor);
+    if *cursor >= bytes.len() {
+        return None;
+    }
+
+    let start = *cursor;
+    while *cursor < bytes.len() {
+        let byte = bytes[*cursor];
+        if byte.is_ascii_whitespace() || byte == b'#' {
+            break;
+        }
+        *cursor += 1;
+    }
+
+    (start != *cursor).then_some(&bytes[start..*cursor])
+}
+
+fn skip_pnm_separators(bytes: &[u8], cursor: &mut usize) {
+    while *cursor < bytes.len() {
+        let byte = bytes[*cursor];
+        if byte.is_ascii_whitespace() {
+            *cursor += 1;
+            continue;
+        }
+        if byte == b'#' {
+            *cursor += 1;
+            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
+                *cursor += 1;
+            }
+            continue;
+        }
+        break;
+    }
+}
+
 fn push_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_be_bytes());
 }
@@ -151,7 +278,10 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{minimal_j2k_codestream, minimal_jp2, wrap_codestream_jp2};
+    use super::{
+        minimal_j2k_codestream, minimal_jp2, pnm_bytes, read_pnm_pixels, wrap_codestream_jp2,
+        write_pnm,
+    };
 
     #[test]
     fn minimal_j2k_codestream_has_j2k_magic_and_siz_marker() {
@@ -178,5 +308,42 @@ mod tests {
         assert!(jp2.windows(4).any(|value| value == 240u32.to_be_bytes()));
         assert!(jp2.windows(4).any(|value| value == 320u32.to_be_bytes()));
         assert!(jp2.windows(4).any(|value| value == 16u32.to_be_bytes()));
+    }
+
+    #[test]
+    fn pnm_bytes_writes_p5_and_p6_headers() {
+        assert_eq!(
+            pnm_bytes(&[1, 2], 2, 1, 1).unwrap(),
+            b"P5\n2 1\n255\n\x01\x02"
+        );
+        assert_eq!(
+            pnm_bytes(&[1, 2, 3, 4, 5, 6], 1, 2, 3).unwrap(),
+            b"P6\n1 2\n255\n\x01\x02\x03\x04\x05\x06"
+        );
+    }
+
+    #[test]
+    fn pnm_bytes_rejects_unsupported_shape() {
+        assert!(pnm_bytes(&[1, 2], 1, 1, 2).is_err());
+        assert!(pnm_bytes(&[1, 2], 2, 2, 1).is_err());
+    }
+
+    #[test]
+    fn write_and_read_pnm_round_trips_pixels_with_comments() {
+        let path = std::env::temp_dir().join(format!(
+            "signinum-test-support-pnm-{}.ppm",
+            std::process::id()
+        ));
+        let bytes = b"P6\n# generated by test\n2 1\n255\n\x01\x02\x03\x04\x05\x06";
+        std::fs::write(&path, bytes).expect("write commented pnm fixture");
+
+        assert_eq!(
+            read_pnm_pixels(&path).expect("read pnm pixels"),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+
+        write_pnm(&path, &[7, 8], 2, 1, 1).expect("write pnm");
+        assert_eq!(read_pnm_pixels(&path).expect("read pnm pixels"), vec![7, 8]);
+        let _ = std::fs::remove_file(path);
     }
 }

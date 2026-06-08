@@ -824,6 +824,7 @@ fn is_unsupported_direct_color_plan_error(error: NativeDecodeError) -> bool {
 mod tests {
     use super::*;
     use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
+    use signinum_test_support::wrap_codestream_jp2;
 
     fn encode_rgb_codestream(htj2k: bool) -> Vec<u8> {
         let pixels = (0..16 * 16 * 3)
@@ -841,36 +842,12 @@ mod tests {
         }
     }
 
-    fn wrap_codestream_jp2(codestream: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p',
-            b'2', b' ',
-        ]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-        ]);
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-        bytes.extend_from_slice(&3_u16.to_be_bytes());
-        bytes.extend_from_slice(&[7, 7, 0, 0]);
-        bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-
-        let len = (8 + codestream.len()) as u32;
-        bytes.extend_from_slice(&len.to_be_bytes());
-        bytes.extend_from_slice(b"jp2c");
-        bytes.extend_from_slice(codestream);
-        bytes
-    }
-
     #[test]
     fn htj2k_eligibility_accepts_raw_and_jp2_wrapped_inputs() {
         let raw_htj2k = encode_rgb_codestream(true);
-        let jp2_htj2k = wrap_codestream_jp2(&raw_htj2k);
+        let jp2_htj2k = wrap_codestream_jp2(&raw_htj2k, 16, 16, 3, 8, 16);
         let raw_classic = encode_rgb_codestream(false);
-        let jp2_classic = wrap_codestream_jp2(&raw_classic);
+        let jp2_classic = wrap_codestream_jp2(&raw_classic, 16, 16, 3, 8, 16);
 
         assert!(input_declares_htj2k(&raw_htj2k));
         assert!(input_declares_htj2k(&jp2_htj2k));
