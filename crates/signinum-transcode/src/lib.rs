@@ -11,6 +11,8 @@ pub mod dct53_1d;
 pub mod dct53_2d;
 pub mod dct53_multilevel;
 pub mod dct97_2d;
+mod dct_grid;
+mod dwt53;
 pub mod htj2k97_codeblock_oracle;
 pub mod htj2k_wavelet;
 mod jpeg_to_htj2k;

@@ -8,6 +8,8 @@
 
 use crate::dct53_2d::Dwt53TwoDimensional;
 use crate::dct97_2d::Dwt97TwoDimensional;
+use crate::dct_grid::validate_dct_block_grid;
+use crate::dwt53::{floor_div_i32, reversible_lift_53_i32};
 use rayon::prelude::*;
 pub use signinum_j2k::{
     EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kSubBandType,
@@ -569,25 +571,8 @@ fn validate_reversible_grid(
     width: usize,
     height: usize,
 ) -> Result<(), &'static str> {
-    let expected_blocks = block_cols
-        .checked_mul(block_rows)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-    let covered_width = block_cols
-        .checked_mul(8)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-    let covered_height = block_rows
-        .checked_mul(8)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(REVERSIBLE_DWT53_UNSUPPORTED_GRID);
-    }
-    Ok(())
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
+        .map_err(|()| REVERSIBLE_DWT53_UNSUPPORTED_GRID)
 }
 
 fn vertical_low_53_i32_at(
@@ -670,41 +655,6 @@ fn component_sample_i32(
     let block_idx = block_y * block_cols + block_x;
     let local_idx = (y % 8) * 8 + (x % 8);
     block_samples[block_idx][local_idx]
-}
-
-fn reversible_lift_53_i32(values: &mut [i32]) {
-    let n = values.len();
-    if n < 2 {
-        return;
-    }
-
-    if n.is_multiple_of(2) {
-        for i in (1..n - 1).step_by(2) {
-            values[i] -= floor_div_i32(values[i - 1] + values[i + 1], 2);
-        }
-        values[n - 1] -= values[n - 2];
-
-        values[0] += floor_div_i32(values[1] + 1, 2);
-        for i in (2..n).step_by(2) {
-            values[i] += floor_div_i32(values[i - 1] + values[i + 1] + 2, 4);
-        }
-        return;
-    }
-
-    let last_even = n - 1;
-    for i in (1..n).step_by(2) {
-        let right = values.get(i + 1).copied().unwrap_or(values[last_even]);
-        values[i] -= floor_div_i32(values[i - 1] + right, 2);
-    }
-    for i in (0..n).step_by(2) {
-        let left = if i > 0 { values[i - 1] } else { values[1] };
-        let right = values.get(i + 1).copied().unwrap_or(left);
-        values[i] += floor_div_i32(left + right + 2, 4);
-    }
-}
-
-fn floor_div_i32(numerator: i32, denominator: i32) -> i32 {
-    numerator.div_euclid(denominator)
 }
 
 #[cfg(test)]

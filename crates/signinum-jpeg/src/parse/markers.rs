@@ -11,6 +11,7 @@
 //! next non-RST marker; progressive streams resume marker enumeration there.
 
 use crate::error::{JpegError, MarkerKind};
+use memchr::memchr;
 
 /// One parsed marker plus a borrow of its payload bytes. For stand-alone
 /// markers (SOI, EOI, RSTn, TEM) the payload slice is empty.
@@ -26,6 +27,26 @@ pub(crate) struct MarkerWalker<'a> {
     bytes: &'a [u8],
     pos: usize,
     soi_seen: bool,
+}
+
+pub(crate) fn next_marker_after_entropy(bytes: &[u8], mut pos: usize) -> Option<(usize, u8)> {
+    while pos < bytes.len() {
+        let ff_rel = memchr(0xFF, &bytes[pos..])?;
+        let marker_prefix = pos + ff_rel;
+        let mut code_pos = marker_prefix + 1;
+        while code_pos < bytes.len() && bytes[code_pos] == 0xFF {
+            code_pos += 1;
+        }
+        if code_pos >= bytes.len() {
+            return None;
+        }
+        let code = bytes[code_pos];
+        match code {
+            0x00 | 0xD0..=0xD7 => pos = code_pos + 1,
+            _ => return Some((code_pos - 1, code)),
+        }
+    }
+    None
 }
 
 impl<'a> MarkerWalker<'a> {
@@ -264,6 +285,27 @@ mod tests {
         let m = w.next_marker().unwrap().unwrap();
         assert_eq!(m.code, 0xD0);
         assert!(m.payload.is_empty());
+    }
+
+    #[test]
+    fn entropy_marker_scan_skips_stuffed_bytes_and_restart_markers() {
+        let bytes = &[0x11, 0xFF, 0x00, 0x22, 0xFF, 0xD3, 0x33, 0xFF, 0xD9];
+
+        assert_eq!(next_marker_after_entropy(bytes, 0), Some((7, 0xD9)));
+    }
+
+    #[test]
+    fn entropy_marker_scan_skips_fill_bytes_before_marker() {
+        let bytes = &[0x11, 0xFF, 0xFF, 0xFF, 0xDA];
+
+        assert_eq!(next_marker_after_entropy(bytes, 0), Some((3, 0xDA)));
+    }
+
+    #[test]
+    fn entropy_marker_scan_returns_none_for_trailing_fill() {
+        let bytes = &[0x11, 0x22, 0xFF, 0xFF];
+
+        assert_eq!(next_marker_after_entropy(bytes, 0), None);
     }
 
     #[test]

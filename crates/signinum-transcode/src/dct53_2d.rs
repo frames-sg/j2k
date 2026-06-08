@@ -9,6 +9,8 @@
 use core::f64::consts::PI;
 use core::fmt;
 
+use crate::dct_grid::validate_dct_block_grid;
+
 /// One separable single-level 2D 5/3 transform result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dwt53TwoDimensional<T> {
@@ -526,25 +528,15 @@ fn validate_grid(
     width: usize,
     height: usize,
 ) -> Result<(), Dct53GridError> {
-    let expected_blocks = block_cols.saturating_mul(block_rows);
-    let covered_width = block_cols.saturating_mul(8);
-    let covered_height = block_rows.saturating_mul(8);
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(Dct53GridError {
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height).map_err(|()| {
+        Dct53GridError {
             block_count,
             block_cols,
             block_rows,
             width,
             height,
-        });
-    }
-
-    Ok(())
+        }
+    })
 }
 
 #[derive(Debug, Default)]

@@ -4,6 +4,7 @@
 
 use crate::error::{JpegError, MarkerKind, TableKind, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
+use crate::parse::markers::next_marker_after_entropy;
 use alloc::vec::Vec;
 use core::ops::Range;
 use memchr::memchr;
@@ -834,24 +835,4 @@ fn parse_sof_info_at(
         sampling: SamplingFactors::from_components(&sampling),
         quant_table_ids,
     })
-}
-
-fn next_marker_after_entropy(bytes: &[u8], mut pos: usize) -> Option<(usize, u8)> {
-    while pos < bytes.len() {
-        let ff_rel = memchr(0xff, &bytes[pos..])?;
-        let marker_prefix = pos + ff_rel;
-        let mut code_pos = marker_prefix + 1;
-        while code_pos < bytes.len() && bytes[code_pos] == 0xff {
-            code_pos += 1;
-        }
-        if code_pos >= bytes.len() {
-            return None;
-        }
-        let code = bytes[code_pos];
-        match code {
-            0x00 | 0xd0..=0xd7 => pos = code_pos + 1,
-            _ => return Some((code_pos - 1, code)),
-        }
-    }
-    None
 }

@@ -11,6 +11,8 @@ use std::sync::LazyLock;
 
 use rayon::prelude::*;
 
+use crate::dct_grid::validate_dct_block_grid;
+
 const ALPHA: f64 = -1.586_134_342_059_924;
 const BETA: f64 = -0.052_980_118_572_961;
 const GAMMA: f64 = 0.882_911_075_530_934;
@@ -517,25 +519,15 @@ fn validate_grid(
     width: usize,
     height: usize,
 ) -> Result<(), Dct97GridError> {
-    let expected_blocks = block_cols.saturating_mul(block_rows);
-    let covered_width = block_cols.saturating_mul(8);
-    let covered_height = block_rows.saturating_mul(8);
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(Dct97GridError {
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height).map_err(|()| {
+        Dct97GridError {
             block_count,
             block_cols,
             block_rows,
             width,
             height,
-        });
-    }
-
-    Ok(())
+        }
+    })
 }
 
 #[cfg(test)]
