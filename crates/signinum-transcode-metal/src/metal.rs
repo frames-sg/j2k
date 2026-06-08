@@ -940,13 +940,11 @@ fn dispatch_dwt97_quantize_codeblock_band(
         size_of::<Dct97QuantizeCodeblocksParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        projection_thread_grid(
-            band.width as u64,
-            band.height as u64,
-            u64::from(band.batch_count),
-        ),
-        projection_threads_per_group(),
+    dispatch_projection_threads(
+        encoder,
+        band.width as u64,
+        band.height as u64,
+        u64::from(band.batch_count),
     );
     Ok(())
 }
@@ -959,6 +957,7 @@ fn staged_threads_per_group() -> MTLSize {
     }
 }
 
+#[inline]
 fn projection_thread_grid(width: u64, height: u64, depth: u64) -> MTLSize {
     MTLSize {
         width,
@@ -967,8 +966,28 @@ fn projection_thread_grid(width: u64, height: u64, depth: u64) -> MTLSize {
     }
 }
 
+#[inline]
 fn projection_threads_per_group() -> MTLSize {
     projection_thread_grid(16, 8, 1)
+}
+
+#[inline]
+fn projection_dispatch_sizes(width: u64, height: u64, depth: u64) -> (MTLSize, MTLSize) {
+    (
+        projection_thread_grid(width, height, depth),
+        projection_threads_per_group(),
+    )
+}
+
+#[inline]
+fn dispatch_projection_threads(
+    encoder: &ComputeCommandEncoderRef,
+    width: u64,
+    height: u64,
+    depth: u64,
+) {
+    let (threads, threads_per_group) = projection_dispatch_sizes(width, height, depth);
+    encoder.dispatch_threads(threads, threads_per_group);
 }
 
 #[derive(Clone, Copy)]
@@ -1740,13 +1759,11 @@ fn dispatch_reversible_band(
         size_of::<Reversible53ProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        projection_thread_grid(
-            u64::from(geometry.band_width),
-            u64::from(geometry.band_height),
-            u64::from(geometry.batch_count),
-        ),
-        projection_threads_per_group(),
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        u64::from(geometry.batch_count),
     );
 }
 
@@ -1778,13 +1795,11 @@ fn dispatch_band(
         size_of::<DctProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        projection_thread_grid(
-            u64::from(geometry.band_width),
-            u64::from(geometry.band_height),
-            1,
-        ),
-        projection_threads_per_group(),
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        1,
     );
 }
 
@@ -1818,13 +1833,11 @@ fn dispatch_band_batch(
         size_of::<DctBatchProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        projection_thread_grid(
-            u64::from(geometry.band_width),
-            u64::from(geometry.band_height),
-            u64::from(geometry.batch_count),
-        ),
-        projection_threads_per_group(),
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        u64::from(geometry.batch_count),
     );
 }
 
@@ -2180,8 +2193,7 @@ mod tests {
 
     #[test]
     fn projection_dispatch_sizes_use_16_by_8_threadgroups() {
-        let threads = projection_thread_grid(5, 6, 7);
-        let threadgroup = projection_threads_per_group();
+        let (threads, threadgroup) = projection_dispatch_sizes(5, 6, 7);
 
         assert_eq!((threads.width, threads.height, threads.depth), (5, 6, 7));
         assert_eq!(
