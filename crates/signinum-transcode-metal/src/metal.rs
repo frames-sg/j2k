@@ -941,16 +941,12 @@ fn dispatch_dwt97_quantize_codeblock_band(
         (&raw const params).cast(),
     );
     encoder.dispatch_threads(
-        MTLSize {
-            width: band.width as u64,
-            height: band.height as u64,
-            depth: u64::from(band.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+        projection_thread_grid(
+            band.width as u64,
+            band.height as u64,
+            u64::from(band.batch_count),
+        ),
+        projection_threads_per_group(),
     );
     Ok(())
 }
@@ -961,6 +957,18 @@ fn staged_threads_per_group() -> MTLSize {
         height: 1,
         depth: 1,
     }
+}
+
+fn projection_thread_grid(width: u64, height: u64, depth: u64) -> MTLSize {
+    MTLSize {
+        width,
+        height,
+        depth,
+    }
+}
+
+fn projection_threads_per_group() -> MTLSize {
+    projection_thread_grid(16, 8, 1)
 }
 
 #[derive(Clone, Copy)]
@@ -1733,16 +1741,12 @@ fn dispatch_reversible_band(
         (&raw const params).cast(),
     );
     encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: u64::from(geometry.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+        projection_thread_grid(
+            u64::from(geometry.band_width),
+            u64::from(geometry.band_height),
+            u64::from(geometry.batch_count),
+        ),
+        projection_threads_per_group(),
     );
 }
 
@@ -1775,16 +1779,12 @@ fn dispatch_band(
         (&raw const params).cast(),
     );
     encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: 1,
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+        projection_thread_grid(
+            u64::from(geometry.band_width),
+            u64::from(geometry.band_height),
+            1,
+        ),
+        projection_threads_per_group(),
     );
 }
 
@@ -1819,16 +1819,12 @@ fn dispatch_band_batch(
         (&raw const params).cast(),
     );
     encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: u64::from(geometry.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+        projection_thread_grid(
+            u64::from(geometry.band_width),
+            u64::from(geometry.band_height),
+            u64::from(geometry.batch_count),
+        ),
+        projection_threads_per_group(),
     );
 }
 
@@ -2176,4 +2172,21 @@ fn idct8_basis(sample_idx: usize, freq: usize) -> f32 {
         (2.0_f32 / 8.0).sqrt()
     };
     scale * (((sample_idx as f32 + 0.5) * freq as f32 * PI) / 8.0).cos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_dispatch_sizes_use_16_by_8_threadgroups() {
+        let threads = projection_thread_grid(5, 6, 7);
+        let threadgroup = projection_threads_per_group();
+
+        assert_eq!((threads.width, threads.height, threads.depth), (5, 6, 7));
+        assert_eq!(
+            (threadgroup.width, threadgroup.height, threadgroup.depth),
+            (16, 8, 1)
+        );
+    }
 }

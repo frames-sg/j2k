@@ -257,11 +257,7 @@ impl CudaKernel {
 }
 
 pub(crate) fn copy_u8_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, 1, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(len, 1, COPY_U8_THREADS)
 }
 
 const COPY_U8_THREADS: usize = 256;
@@ -285,11 +281,7 @@ const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
 const HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA: c_uint = 128;
 
 pub(crate) fn j2k_forward_rct_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, 1, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(len, 1, COPY_U8_THREADS)
 }
 
 pub(crate) fn j2k_dwt53_launch_geometry(width: u32, height: u32) -> Option<CudaLaunchGeometry> {
@@ -305,12 +297,7 @@ pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
     max_len: usize,
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(max_len.div_ceil(COPY_U8_THREADS)).ok()?;
-    let jobs = c_uint::try_from(job_count).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(max_len, job_count, COPY_U8_THREADS)
 }
 
 pub(crate) fn j2k_idwt_multi_coop_launch_geometry(
@@ -397,11 +384,23 @@ pub(crate) fn j2k_store_batch_launch_geometry(
     max_pixels: usize,
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(max_pixels.div_ceil(COPY_U8_THREADS)).ok()?;
-    let jobs = c_uint::try_from(job_count).ok()?;
+    x_blocks_launch_geometry(max_pixels, job_count, COPY_U8_THREADS)
+}
+
+fn x_blocks_launch_geometry(
+    work_items: usize,
+    grid_y: usize,
+    threads_per_block: usize,
+) -> Option<CudaLaunchGeometry> {
+    if threads_per_block == 0 {
+        return None;
+    }
+    let blocks = c_uint::try_from(work_items.div_ceil(threads_per_block)).ok()?;
+    let grid_y = c_uint::try_from(grid_y).ok()?;
+    let block_x = c_uint::try_from(threads_per_block).ok()?;
     Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
+        grid: (blocks, grid_y, 1),
+        block: (block_x, 1, 1),
     })
 }
 
@@ -993,6 +992,25 @@ mod tests {
         assert_eq!(copy_u8_launch_geometry(1).unwrap().grid, (1, 1, 1));
         assert_eq!(copy_u8_launch_geometry(256).unwrap().grid, (1, 1, 1));
         assert_eq!(copy_u8_launch_geometry(257).unwrap().grid, (2, 1, 1));
+    }
+
+    #[test]
+    fn x_blocks_launch_geometry_rounds_work_items_and_preserves_y_grid() {
+        let geometry = x_blocks_launch_geometry(513, 7, COPY_U8_THREADS).unwrap();
+
+        assert_eq!(geometry.grid, (3, 7, 1));
+        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+    }
+
+    #[test]
+    fn x_blocks_launch_geometry_rejects_zero_threads() {
+        assert_eq!(x_blocks_launch_geometry(513, 7, 0), None);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn x_blocks_launch_geometry_rejects_grid_dimensions_above_cuda_uint() {
+        assert_eq!(x_blocks_launch_geometry(usize::MAX, usize::MAX, 1), None);
     }
 
     #[test]
