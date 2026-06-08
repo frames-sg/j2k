@@ -2731,18 +2731,7 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -2814,18 +2803,7 @@ pub(crate) fn validate_metal_buffers_match(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -3475,6 +3453,22 @@ fn dispatch_1d_pipeline(
             depth: 1,
         },
         one_d_threads_per_group(pipeline.thread_execution_width()),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_single_thread(encoder: &ComputeCommandEncoderRef) {
+    encoder.dispatch_threads(
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
     );
 }
 
@@ -15239,18 +15233,7 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
             (&raw const params).cast(),
         );
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -15380,18 +15363,7 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
         (&raw const params).cast(),
     );
     encoder.set_buffer(6, Some(status_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_single_thread(encoder);
 }
 
 #[cfg(target_os = "macos")]
@@ -18560,18 +18532,7 @@ pub(crate) fn encode_classic_tier1_code_block(
         );
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -19004,18 +18965,7 @@ pub(crate) fn encode_ht_cleanup_code_block(
         encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -19547,18 +19497,7 @@ pub(crate) fn encode_tier2_packetization(
         encoder.set_buffer(8, Some(&status_buffer), 0);
         encoder.set_buffer(9, Some(&descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -20017,18 +19956,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_classic_tier1(
         encoder.set_buffer(8, Some(&status_buffer), 0);
         encoder.set_buffer(9, Some(&descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
 
         let encoder = command_buffer.new_compute_command_encoder();
@@ -20042,18 +19970,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_classic_tier1(
             (&raw const codestream_params).cast(),
         );
         encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -20528,18 +20445,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         encoder.set_buffer(8, Some(&status_buffer), 0);
         encoder.set_buffer(9, Some(&descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
 
         let encoder = command_buffer.new_compute_command_encoder();
@@ -20553,18 +20459,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             (&raw const codestream_params).cast(),
         );
         encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -23301,18 +23196,7 @@ fn dispatch_ht_cleanup(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_single_thread(encoder);
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
