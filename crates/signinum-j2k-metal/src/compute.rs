@@ -2913,26 +2913,10 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
             size_of::<J2kCopyInterleavedParams>() as u64,
             (&raw const params).cast(),
         );
-        let width = runtime
-            .copy_interleaved_padded
-            .thread_execution_width()
-            .max(1);
-        let max_threads = runtime
-            .copy_interleaved_padded
-            .max_total_threads_per_threadgroup()
-            .max(width);
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(dst_width),
-                height: u64::from(dst_height),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.copy_interleaved_padded,
+            (dst_width, dst_height),
         );
         encoder.end_encoding();
         command_buffer.commit();
@@ -3459,6 +3443,55 @@ impl PlaneStage {
 }
 
 #[cfg(target_os = "macos")]
+fn two_d_threads_per_group(simd_width: u64, max_threads: u64) -> MTLSize {
+    let width = simd_width.max(1);
+    let max_threads = max_threads.max(width);
+    MTLSize {
+        width,
+        height: (max_threads / width).max(1),
+        depth: 1,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_2d_pipeline(
+    encoder: &ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    dims: (u32, u32),
+) {
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(dims.0),
+            height: u64::from(dims.1),
+            depth: 1,
+        },
+        two_d_threads_per_group(
+            pipeline.thread_execution_width(),
+            pipeline.max_total_threads_per_threadgroup(),
+        ),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_3d_pipeline(
+    encoder: &ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    dims: (u32, u32, u32),
+) {
+    encoder.dispatch_threads(
+        MTLSize {
+            width: u64::from(dims.0),
+            height: u64::from(dims.1),
+            depth: u64::from(dims.2),
+        },
+        two_d_threads_per_group(
+            pipeline.thread_execution_width(),
+            pipeline.max_total_threads_per_threadgroup(),
+        ),
+    );
+}
+
+#[cfg(target_os = "macos")]
 fn encode_plane_stage_to_surface_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -3519,22 +3552,7 @@ fn encode_plane_stage_to_surface_in_command_buffer(
         size_of::<J2kPackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(stage.dims.0),
-            height: u64::from(stage.dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, stage.dims);
     encoder.end_encoding();
 
     Ok(Surface::from_metal_buffer(out_buffer, stage.dims, fmt))
@@ -3587,25 +3605,7 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
         size_of::<J2kMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime.pack_mct_rgb8.thread_execution_width().max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8, dims);
     encoder.end_encoding();
     drop(signpost);
 
@@ -3684,27 +3684,10 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         size_of::<J2kBatchedMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime
-        .pack_mct_rgb8_batched
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8_batched
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: u64::from(count_u32),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.pack_mct_rgb8_batched,
+        (dims.0, dims.1, count_u32),
     );
     encoder.end_encoding();
     drop(signpost);
@@ -3793,28 +3776,7 @@ fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
         size_of::<J2kBatchedMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime
-        .pack_mct_rgb8_batched
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8_batched
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8_batched, dims);
     encoder.end_encoding();
     drop(signpost);
 
@@ -9294,21 +9256,7 @@ fn encode_gray_plane_to_surface_in_encoder_with_offset(
         size_of::<J2kPackParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, dims);
 
     Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
 }
@@ -9370,21 +9318,7 @@ fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         size_of::<J2kRepeatedGrayPackParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: u64::from(count_u32),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_3d_pipeline(encoder, pipeline, (dims.0, dims.1, count_u32));
     encoder.end_encoding();
 
     let mut surfaces = Vec::with_capacity(count);
@@ -9830,20 +9764,10 @@ fn dispatch_forward_dwt53_pass(
         size_of::<J2kForwardDwt53Params>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.current_width),
-            height: u64::from(params.current_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        pipeline,
+        (params.current_width, params.current_height),
     );
     encoder.end_encoding();
 }
@@ -9881,20 +9805,14 @@ fn dispatch_forward_dwt53_batched_pass(
         size_of::<J2kForwardDwt53BatchedParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.current_width),
-            height: u64::from(params.current_height),
-            depth: u64::from(params.component_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        pipeline,
+        (
+            params.current_width,
+            params.current_height,
+            params.component_count,
+        ),
     );
     encoder.end_encoding();
 }
@@ -13366,26 +13284,10 @@ fn dispatch_lossless_deinterleave(
         size_of::<J2kLosslessDeinterleaveParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime
-        .lossless_deinterleave_to_planes
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_deinterleave_to_planes
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job.output_width),
-            height: u64::from(job.output_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.lossless_deinterleave_to_planes,
+        (job.output_width, job.output_height),
     );
     encoder.end_encoding();
     Ok(())
@@ -13438,26 +13340,10 @@ fn dispatch_lossless_deinterleave_rct_rgb8(
         (&raw const params).cast(),
     );
     encoder.set_buffer(5, Some(status_buffer), 0);
-    let width = runtime
-        .lossless_deinterleave_rct_rgb8_to_planes
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_deinterleave_rct_rgb8_to_planes
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job.output_width),
-            height: u64::from(job.output_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.lossless_deinterleave_rct_rgb8_to_planes,
+        (job.output_width, job.output_height),
     );
     encoder.end_encoding();
     #[cfg(test)]
@@ -13880,26 +13766,10 @@ fn dispatch_lossless_extract_coefficients(
     encoder.set_buffer(3, Some(coefficient_buffer), 0);
     encoder.set_buffer(4, Some(&coefficient_job_buffer), 0);
     encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-    let width = runtime
-        .lossless_extract_coefficients
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_extract_coefficients
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(max_block_width),
-            height: u64::from(max_block_height),
-            depth: u64::from(job_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.lossless_extract_coefficients,
+        (max_block_width, max_block_height, job_count),
     );
     encoder.end_encoding();
     let _ = output_width;
@@ -14734,24 +14604,7 @@ pub(crate) fn decode_store_component_and_capture(
             size_of::<J2kStoreParams>() as u64,
             (&raw const params).cast(),
         );
-        let width = runtime.store_component.thread_execution_width().max(1);
-        let max_threads = runtime
-            .store_component
-            .max_total_threads_per_threadgroup()
-            .max(width);
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(copy_width),
-                height: u64::from(copy_height),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
-        );
+        dispatch_2d_pipeline(encoder, &runtime.store_component, (copy_width, copy_height));
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -14802,23 +14655,10 @@ fn dispatch_store_component_buffer_in_encoder_with_offsets(
         size_of::<J2kStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime.store_component.thread_execution_width().max(1);
-    let max_threads = runtime
-        .store_component
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.store_component,
+        (params.copy_width, params.copy_height),
     );
 }
 
@@ -14841,26 +14681,10 @@ fn dispatch_store_component_repeated_in_command_buffer(
         size_of::<J2kRepeatedStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime
-        .store_component_repeated
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .store_component_repeated
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: u64::from(params.batch_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.store_component_repeated,
+        (params.copy_width, params.copy_height, params.batch_count),
     );
     encoder.end_encoding();
 }
@@ -14946,18 +14770,10 @@ fn encode_repeated_gray_store_to_surfaces_in_command_buffer(
             },
         );
     } else {
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(params.copy_width),
-                height: u64::from(params.copy_height),
-                depth: u64::from(params.batch_count),
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
+        dispatch_3d_pipeline(
+            encoder,
+            pipeline,
+            (params.copy_width, params.copy_height, params.batch_count),
         );
     }
     encoder.end_encoding();
@@ -15007,21 +14823,7 @@ fn encode_gray_store_to_surface_in_encoder(
         size_of::<J2kGrayStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
 
     Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
 }
@@ -15084,24 +14886,10 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             size_of::<J2kIdwtSingleDecompositionParams>() as u64,
             (&raw const params).cast(),
         );
-        let interleave_width = runtime.idwt_interleave.thread_execution_width().max(1);
-        let interleave_height = (runtime
-            .idwt_interleave
-            .max_total_threads_per_threadgroup()
-            .max(interleave_width)
-            / interleave_width)
-            .max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(params.width),
-                height: u64::from(params.height),
-                depth: 1,
-            },
-            MTLSize {
-                width: interleave_width,
-                height: interleave_height,
-                depth: 1,
-            },
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.idwt_interleave,
+            (params.width, params.height),
         );
         encoder.end_encoding();
 
@@ -15228,24 +15016,10 @@ fn dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(
         size_of::<J2kIdwtSingleDecompositionParams>() as u64,
         (&raw const params).cast(),
     );
-    let interleave_width = runtime.idwt_interleave.thread_execution_width().max(1);
-    let interleave_height = (runtime
-        .idwt_interleave
-        .max_total_threads_per_threadgroup()
-        .max(interleave_width)
-        / interleave_width)
-        .max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.width),
-            height: u64::from(params.height),
-            depth: 1,
-        },
-        MTLSize {
-            width: interleave_width,
-            height: interleave_height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.idwt_interleave,
+        (params.width, params.height),
     );
 
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal);
@@ -15327,27 +15101,10 @@ fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
         size_of::<J2kRepeatedIdwtSingleDecompositionParams>() as u64,
         (&raw const params).cast(),
     );
-    let interleave_width = runtime
-        .idwt_interleave_batched
-        .thread_execution_width()
-        .max(1);
-    let interleave_height = (runtime
-        .idwt_interleave_batched
-        .max_total_threads_per_threadgroup()
-        .max(interleave_width)
-        / interleave_width)
-        .max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.width),
-            height: u64::from(params.height),
-            depth: u64::from(params.batch_count),
-        },
-        MTLSize {
-            width: interleave_width,
-            height: interleave_height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.idwt_interleave_batched,
+        (params.width, params.height, params.batch_count),
     );
     encoder.end_encoding();
 
@@ -24193,9 +23950,9 @@ mod tests {
         reset_hybrid_stacked_component_batches_for_test, reset_shared_buffer_pool_misses_for_test,
         runtime_initialization_error, shared_buffer_pool_misses_for_test,
         should_flatten_hybrid_cpu_tier1_color_batch, supports_stacked_direct_component_plane_batch,
-        with_runtime_for_device, J2kClassicCleanupBatchJob, J2kClassicSegment,
-        J2kRepeatedGrayStoreParams, MetalRuntime, PreparedClassicSubBand, PreparedDirectColorPlan,
-        PreparedDirectGrayscaleStep,
+        two_d_threads_per_group, with_runtime_for_device, J2kClassicCleanupBatchJob,
+        J2kClassicSegment, J2kRepeatedGrayStoreParams, MetalRuntime, PreparedClassicSubBand,
+        PreparedDirectColorPlan, PreparedDirectGrayscaleStep,
     };
     use metal::Device;
     use signinum_core::PixelFormat;
@@ -24262,6 +24019,20 @@ mod tests {
             ),
             46
         );
+    }
+
+    #[test]
+    fn two_d_threads_per_group_clamps_empty_pipeline_limits() {
+        let threads = two_d_threads_per_group(0, 0);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (1, 1, 1));
+    }
+
+    #[test]
+    fn two_d_threads_per_group_preserves_simd_width_and_derives_height() {
+        let threads = two_d_threads_per_group(32, 1024);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (32, 32, 1));
     }
 
     #[test]
