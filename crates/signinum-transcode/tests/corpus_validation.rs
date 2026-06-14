@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use signinum_test_support::{
+    JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
+};
 use signinum_transcode::corpus_validation::{
     load_external_wsi_fixtures, validate_transcode_corpus, CorpusFixture, CorpusValidationError,
     CorpusValidationOptions,
@@ -77,19 +80,19 @@ fn conformance_fixtures() -> Vec<CorpusFixture<'static>> {
     vec![
         CorpusFixture {
             name: "grayscale_8x8",
-            bytes: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
+            bytes: JPEG_GRAYSCALE_8X8,
         },
         CorpusFixture {
             name: "baseline_444_8x8",
-            bytes: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
+            bytes: JPEG_BASELINE_444_8X8,
         },
         CorpusFixture {
             name: "baseline_422_16x8",
-            bytes: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
+            bytes: JPEG_BASELINE_422_16X8,
         },
         CorpusFixture {
             name: "baseline_420_16x16",
-            bytes: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
+            bytes: JPEG_BASELINE_420_16X16,
         },
     ]
 }

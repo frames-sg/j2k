@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use signinum_core::PixelFormat;
 use signinum_j2k_native::{
-    idwt_band_index, J2kDirectBandId, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kDirectIdwtStep, J2kDirectStoreStep, J2kRect, J2kWaveletTransform,
+    idwt_band_index, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep,
+    J2kDirectStoreStep, J2kRect, J2kWaveletTransform,
 };
 
 use crate::Error;
@@ -30,8 +30,11 @@ pub enum CudaHtj2kTransform {
     Irreversible97,
 }
 
-impl From<J2kWaveletTransform> for CudaHtj2kTransform {
-    fn from(value: J2kWaveletTransform) -> Self {
+/// Stable CUDA-side identifier for a direct-plan coefficient band.
+pub type CudaHtj2kBandId = u32;
+
+impl CudaHtj2kTransform {
+    pub(crate) fn from_native(value: J2kWaveletTransform) -> Self {
         match value {
             J2kWaveletTransform::Reversible53 => Self::Reversible53,
             J2kWaveletTransform::Irreversible97 => Self::Irreversible97,
@@ -79,8 +82,8 @@ pub struct CudaHtj2kCodeBlock {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct CudaHtj2kSubband {
-    /// Stable native band id.
-    pub band_id: J2kDirectBandId,
+    /// Stable CUDA direct-plan band id.
+    pub band_id: CudaHtj2kBandId,
     /// Absolute x0 coordinate in component space.
     pub x0: u32,
     /// Absolute y0 coordinate in component space.
@@ -104,25 +107,25 @@ pub struct CudaHtj2kSubband {
 #[repr(C)]
 pub struct CudaHtj2kIdwtStep {
     /// Stable identifier of the output coefficient band produced by this step.
-    pub output_band_id: J2kDirectBandId,
+    pub output_band_id: CudaHtj2kBandId,
     /// DWT transform to apply.
     pub transform: CudaHtj2kTransform,
     /// Output rectangle.
     pub rect: CudaHtj2kRect,
     /// LL input band id.
-    pub ll_band_id: J2kDirectBandId,
+    pub ll_band_id: CudaHtj2kBandId,
     /// LL input rectangle.
     pub ll_rect: CudaHtj2kRect,
     /// HL input band id.
-    pub hl_band_id: J2kDirectBandId,
+    pub hl_band_id: CudaHtj2kBandId,
     /// HL input rectangle.
     pub hl_rect: CudaHtj2kRect,
     /// LH input band id.
-    pub lh_band_id: J2kDirectBandId,
+    pub lh_band_id: CudaHtj2kBandId,
     /// LH input rectangle.
     pub lh_rect: CudaHtj2kRect,
     /// HH input band id.
-    pub hh_band_id: J2kDirectBandId,
+    pub hh_band_id: CudaHtj2kBandId,
     /// HH input rectangle.
     pub hh_rect: CudaHtj2kRect,
 }
@@ -132,7 +135,7 @@ pub struct CudaHtj2kIdwtStep {
 #[repr(C)]
 pub struct CudaHtj2kStoreStep {
     /// Stable identifier of the input coefficient band.
-    pub input_band_id: J2kDirectBandId,
+    pub input_band_id: CudaHtj2kBandId,
     /// Source rectangle.
     pub input_rect: CudaHtj2kRect,
     /// Source x offset.
@@ -185,8 +188,7 @@ pub struct CudaHtj2kDecodePlan {
 }
 
 impl CudaHtj2kDecodePlan {
-    /// Build a flat CUDA plan from a native grayscale direct device plan.
-    pub fn from_grayscale_direct_plan(
+    pub(crate) fn from_grayscale_direct_plan(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,
         output_origin: (u32, u32),
@@ -194,9 +196,7 @@ impl CudaHtj2kDecodePlan {
         Self::from_grayscale_direct_plan_region(plan, output_format, output_origin, plan.dimensions)
     }
 
-    /// Build a flat CUDA plan from a native grayscale direct device plan,
-    /// compacting stores into a caller-visible output rectangle.
-    pub fn from_grayscale_direct_plan_region(
+    pub(crate) fn from_grayscale_direct_plan_region(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,
         output_origin: (u32, u32),
@@ -315,7 +315,7 @@ impl CudaHtj2kDecodePlan {
                 }
                 J2kDirectGrayscaleStep::ClassicSubBand(_) => saw_classic = true,
                 J2kDirectGrayscaleStep::Idwt(step) => {
-                    let step_transform = CudaHtj2kTransform::from(step.transform);
+                    let step_transform = CudaHtj2kTransform::from_native(step.transform);
                     match transform {
                         Some(existing) if existing != step_transform => {
                             return Err(Error::UnsupportedCudaRequest {
@@ -498,7 +498,7 @@ fn cuda_plan_capacity_hint(plan: &J2kDirectGrayscalePlan) -> Result<CudaPlanCapa
 fn convert_idwt_step(step: J2kDirectIdwtStep) -> CudaHtj2kIdwtStep {
     CudaHtj2kIdwtStep {
         output_band_id: step.output_band_id,
-        transform: CudaHtj2kTransform::from(step.transform),
+        transform: CudaHtj2kTransform::from_native(step.transform),
         rect: convert_rect(step.rect),
         ll_band_id: step.ll_band_id,
         ll_rect: convert_rect(step.ll),
@@ -567,8 +567,8 @@ impl RequiredBandRegion {
 
 fn required_regions_for_direct_plan(
     plan: &J2kDirectGrayscalePlan,
-) -> Result<HashMap<J2kDirectBandId, RequiredBandRegion>, Error> {
-    let mut required = HashMap::<J2kDirectBandId, RequiredBandRegion>::new();
+) -> Result<HashMap<CudaHtj2kBandId, RequiredBandRegion>, Error> {
+    let mut required = HashMap::<CudaHtj2kBandId, RequiredBandRegion>::new();
     for step in &plan.steps {
         let J2kDirectGrayscaleStep::Store(store) = step else {
             continue;
@@ -612,8 +612,8 @@ fn required_regions_for_direct_plan(
 }
 
 fn add_required_region(
-    required: &mut HashMap<J2kDirectBandId, RequiredBandRegion>,
-    band_id: J2kDirectBandId,
+    required: &mut HashMap<CudaHtj2kBandId, RequiredBandRegion>,
+    band_id: CudaHtj2kBandId,
     region: RequiredBandRegion,
 ) {
     required
@@ -630,7 +630,7 @@ const fn idwt_required_output_margin(transform: J2kWaveletTransform) -> u32 {
 }
 
 fn add_idwt_input_required_regions(
-    required: &mut HashMap<J2kDirectBandId, RequiredBandRegion>,
+    required: &mut HashMap<CudaHtj2kBandId, RequiredBandRegion>,
     idwt: &J2kDirectIdwtStep,
     output_region: RequiredBandRegion,
 ) {
@@ -794,11 +794,16 @@ fn convert_rect(rect: J2kRect) -> CudaHtj2kRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use signinum_core::CodecError;
     use signinum_j2k_native::{HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan};
 
-    fn one_block_plan(data: Vec<u8>) -> CudaHtj2kDecodePlan {
-        let payload_len = u32::try_from(data.len()).expect("fixture payload length");
-        let direct = J2kDirectGrayscalePlan {
+    fn one_block_direct_plan(
+        cleanup_length: u32,
+        refinement_length: u32,
+        data: Vec<u8>,
+        output_stride: usize,
+    ) -> J2kDirectGrayscalePlan {
+        J2kDirectGrayscalePlan {
             dimensions: (1, 1),
             bit_depth: 8,
             steps: vec![
@@ -816,11 +821,11 @@ mod tests {
                         output_x: 0,
                         output_y: 0,
                         data,
-                        cleanup_length: payload_len,
-                        refinement_length: 0,
+                        cleanup_length,
+                        refinement_length,
                         width: 1,
                         height: 1,
-                        output_stride: 1,
+                        output_stride,
                         missing_bit_planes: 0,
                         number_of_coding_passes: 1,
                         num_bitplanes: 8,
@@ -849,7 +854,12 @@ mod tests {
                     addend: 128.0,
                 }),
             ],
-        };
+        }
+    }
+
+    fn one_block_plan(data: Vec<u8>) -> CudaHtj2kDecodePlan {
+        let payload_len = u32::try_from(data.len()).expect("fixture payload length");
+        let direct = one_block_direct_plan(payload_len, 0, data, 1);
         CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
             .expect("CUDA plan")
     }
@@ -985,5 +995,126 @@ mod tests {
         assert_eq!(full.code_blocks().len(), 2);
         assert_eq!(region.code_blocks().len(), 1);
         assert_eq!(region.code_blocks()[0].output_x, 1);
+    }
+
+    #[test]
+    fn rejects_block_length_mismatch() {
+        let direct = one_block_direct_plan(1, 2, vec![0xAA, 0xBB], 1);
+
+        let error =
+            CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+                .expect_err("mismatched cleanup/refinement lengths must be rejected");
+
+        assert!(error.is_unsupported());
+        assert!(
+            error
+                .to_string()
+                .contains("block lengths do not match payload bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_roi_maxshift_jobs() {
+        let mut direct = one_block_direct_plan(1, 0, vec![0xAA], 1);
+        let J2kDirectGrayscaleStep::HtSubBand(subband) = &mut direct.steps[0] else {
+            panic!("fixture starts with one HT sub-band");
+        };
+        subband.jobs[0].roi_shift = 7;
+
+        let error =
+            CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+                .expect_err("ROI maxshift jobs must be rejected");
+
+        assert!(error.is_unsupported());
+        assert!(
+            error.to_string().contains("ROI maxshift decode"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_output_stride_overflow() {
+        let direct = one_block_direct_plan(1, 0, vec![0xAA], usize::MAX);
+
+        let error =
+            CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+                .expect_err("unrepresentable output stride must be rejected");
+
+        assert!(error.is_unsupported());
+    }
+
+    #[test]
+    fn rejects_mixed_idwt_transforms() {
+        let mut direct = one_block_direct_plan(1, 0, vec![0xAA], 1);
+        let rect = J2kRect {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        direct.steps.insert(
+            1,
+            J2kDirectGrayscaleStep::Idwt(J2kDirectIdwtStep {
+                output_band_id: 4,
+                rect,
+                transform: J2kWaveletTransform::Reversible53,
+                ll_band_id: 0,
+                ll: rect,
+                hl_band_id: 1,
+                hl: rect,
+                lh_band_id: 2,
+                lh: rect,
+                hh_band_id: 3,
+                hh: rect,
+            }),
+        );
+        direct.steps.insert(
+            2,
+            J2kDirectGrayscaleStep::Idwt(J2kDirectIdwtStep {
+                output_band_id: 8,
+                rect,
+                transform: J2kWaveletTransform::Irreversible97,
+                ll_band_id: 4,
+                ll: rect,
+                hl_band_id: 5,
+                hl: rect,
+                lh_band_id: 6,
+                lh: rect,
+                hh_band_id: 7,
+                hh: rect,
+            }),
+        );
+
+        let error =
+            CudaHtj2kDecodePlan::from_grayscale_direct_plan(&direct, PixelFormat::Gray8, (0, 0))
+                .expect_err("mixed transforms must be rejected");
+
+        assert!(error.is_unsupported());
+        assert!(
+            error.to_string().contains("mixed DWT transforms"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn region_plan_rejects_store_outside_output_rect() {
+        let direct = one_block_direct_plan(1, 0, vec![0xAA], 1);
+
+        let error = CudaHtj2kDecodePlan::from_grayscale_direct_plan_region(
+            &direct,
+            PixelFormat::Gray8,
+            (1, 1),
+            (0, 0),
+        )
+        .expect_err("store outside compact output rectangle must be rejected");
+
+        assert!(error.is_unsupported());
+        assert!(
+            error
+                .to_string()
+                .contains("store does not fit the requested output rectangle"),
+            "unexpected error: {error}"
+        );
     }
 }

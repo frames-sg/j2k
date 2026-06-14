@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_jpeg::transcode::{extract_dct_blocks, DctExtractOptions};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
+};
+use signinum_test_support::{
+    JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_RESTART_32X16, JPEG_BASELINE_422_16X8,
+    JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
 };
 use signinum_transcode::dct53_1d::{
     dct8_blocks_to_dwt53_float_linear, dct8_to_dwt53_float_linear, idct8_blocks_then_dwt53_float,
@@ -21,6 +25,7 @@ use signinum_transcode::dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch, Dct97GridScratch,
 };
 use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
+use std::hint::black_box;
 
 fn bench_dct53_math(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
@@ -172,8 +177,8 @@ fn bench_layout_candidates(c: &mut Criterion) {
 }
 
 fn bench_jpeg_paths(c: &mut Criterion) {
-    let jpeg_420 = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let jpeg_restart = include_bytes!("../fixtures/conformance/baseline_420_restart_32x16.jpg");
+    let jpeg_420 = JPEG_BASELINE_420_16X16;
+    let jpeg_restart = JPEG_BASELINE_420_RESTART_32X16;
 
     let mut jpeg_extract = c.benchmark_group("jpeg_dct_extract");
     jpeg_extract.bench_function("baseline_420_16x16", |b| {
@@ -190,10 +195,10 @@ fn bench_jpeg_paths(c: &mut Criterion) {
     });
     jpeg_extract.finish();
 
-    let jpeg_gray = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let jpeg_444 = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
-    let jpeg_422 = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
-    let jpeg_420 = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg_gray = JPEG_GRAYSCALE_8X8;
+    let jpeg_444 = JPEG_BASELINE_444_8X8;
+    let jpeg_422 = JPEG_BASELINE_422_16X8;
+    let jpeg_420 = JPEG_BASELINE_420_16X16;
     let transcode_options = JpegToHtj2kOptions::default();
     let transcode_97_options = JpegToHtj2kOptions::lossy_97();
     let mut jpeg_to_htj2k_group = c.benchmark_group("jpeg_to_htj2k");

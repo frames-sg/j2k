@@ -8,8 +8,10 @@
 //! path is bit-exact against the rounded-IDCT reference, but it is piecewise
 //! integer arithmetic rather than a single linear matrix.
 
-use core::f64::consts::PI;
 use core::fmt;
+
+use crate::dct_grid::{high_len, idct8_basis, low_len};
+use crate::reversible53::reversible_lift_53_i32;
 
 /// One single-level 5/3 transform result for an 8-sample 1D signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,29 +171,11 @@ pub fn idct8_blocks_then_dwt53_float_with_len(
 /// image buffer.
 #[must_use]
 pub fn dct8_to_dwt53_reversible_i16(coefficients: [i16; 8]) -> Dwt53OneLevel<i32> {
-    let x0 = rounded_idct8_sample(&coefficients, 0);
-    let x1 = rounded_idct8_sample(&coefficients, 1);
-    let x2 = rounded_idct8_sample(&coefficients, 2);
-    let x3 = rounded_idct8_sample(&coefficients, 3);
-    let x4 = rounded_idct8_sample(&coefficients, 4);
-    let x5 = rounded_idct8_sample(&coefficients, 5);
-    let x6 = rounded_idct8_sample(&coefficients, 6);
-    let x7 = rounded_idct8_sample(&coefficients, 7);
-
-    let h0 = x1 - floor_div(x0 + x2, 2);
-    let h1 = x3 - floor_div(x2 + x4, 2);
-    let h2 = x5 - floor_div(x4 + x6, 2);
-    let h3 = x7 - x6;
-
-    let l0 = x0 + floor_div(h0 + 1, 2);
-    let l1 = x2 + floor_div(h0 + h1 + 2, 4);
-    let l2 = x4 + floor_div(h1 + h2 + 2, 4);
-    let l3 = x6 + floor_div(h2 + h3 + 2, 4);
-
-    Dwt53OneLevel {
-        low: [l0, l1, l2, l3],
-        high: [h0, h1, h2, h3],
+    let mut samples = [0; 8];
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        *sample = rounded_idct8_sample(&coefficients, idx);
     }
+    reversible_53_from_samples(samples)
 }
 
 /// Reference path for the reversible 1D experiment:
@@ -274,18 +258,6 @@ fn linearized_53_sample_weight(
     }
 }
 
-fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
-    debug_assert!(sample_idx < 8);
-    debug_assert!(freq < 8);
-
-    let scale = if freq == 0 {
-        (1.0_f64 / 8.0).sqrt()
-    } else {
-        (2.0_f64 / 8.0).sqrt()
-    };
-    scale * (((sample_idx as f64 + 0.5) * freq as f64 * PI) / 8.0).cos()
-}
-
 fn linearized_53_from_samples(samples: [f64; 8]) -> Dwt53OneLevel<f64> {
     let row = linearized_53_from_sample_slice(&samples);
     Dwt53OneLevel {
@@ -327,24 +299,11 @@ fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53Row<f64> {
 }
 
 fn reversible_53_from_samples(mut samples: [i32; 8]) -> Dwt53OneLevel<i32> {
-    samples[1] -= floor_div(samples[0] + samples[2], 2);
-    samples[3] -= floor_div(samples[2] + samples[4], 2);
-    samples[5] -= floor_div(samples[4] + samples[6], 2);
-    samples[7] -= samples[6];
-
-    samples[0] += floor_div(samples[1] + 1, 2);
-    samples[2] += floor_div(samples[1] + samples[3] + 2, 4);
-    samples[4] += floor_div(samples[3] + samples[5] + 2, 4);
-    samples[6] += floor_div(samples[5] + samples[7] + 2, 4);
-
+    reversible_lift_53_i32(&mut samples);
     Dwt53OneLevel {
         low: [samples[0], samples[2], samples[4], samples[6]],
         high: [samples[1], samples[3], samples[5], samples[7]],
     }
-}
-
-fn floor_div(numerator: i32, denominator: i32) -> i32 {
-    numerator.div_euclid(denominator)
 }
 
 fn validate_sample_len(blocks: &[[f64; 8]], sample_len: usize) -> Result<(), Dct53RowLengthError> {
@@ -357,14 +316,6 @@ fn validate_sample_len(blocks: &[[f64; 8]], sample_len: usize) -> Result<(), Dct
     }
 
     Ok(())
-}
-
-fn low_len(sample_len: usize) -> usize {
-    sample_len.div_ceil(2)
-}
-
-fn high_len(sample_len: usize) -> usize {
-    sample_len / 2
 }
 
 fn linearized_53_rows() -> [[f64; 8]; 8] {

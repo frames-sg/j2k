@@ -7,14 +7,11 @@
 // (SIGNINUM_REQUIRE_CUDA_RUNTIME set), matching the HTJ2K encode parity gate.
 #![cfg(feature = "cuda-runtime")]
 
+use signinum_test_support::cuda_runtime_required;
 use signinum_transcode::accelerator::{
     DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, RayonReversibleDwt53Accelerator,
 };
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
-
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
 
 /// Deterministic small signed "DCT" coefficients (the transcode does an exact
 /// integer IDCT, so any integer input exercises the bit-exact path).
@@ -30,7 +27,7 @@ fn make_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
 
 #[test]
 fn cuda_reversible_dwt53_matches_scalar_oracle_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 

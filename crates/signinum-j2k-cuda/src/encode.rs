@@ -2,30 +2,40 @@
 
 use signinum_core::BackendKind;
 #[cfg(feature = "cuda-runtime")]
+use signinum_core::{DeviceSubmission, DeviceSubmitSession, PixelFormat, ReadySubmission};
+#[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::{
     CudaContext, CudaDeviceBuffer, CudaDwt53LevelShape, CudaDwt53Output, CudaDwt97Output,
     CudaError, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
     CudaHtj2kEncodeResources, CudaHtj2kEncodeTables, CudaHtj2kPacketizationBlock,
     CudaHtj2kPacketizationPacket, CudaHtj2kPacketizationSubband,
     CudaHtj2kPacketizationSubbandTagState, CudaHtj2kPacketizationTagNodeState, CudaJ2kQuantizeJob,
-    CudaJ2kQuantizeSubbandRegionJob,
+    CudaJ2kQuantizeSubbandRegionJob, CudaJ2kResidentComponents, CudaJ2kStridedInterleavedPixels,
 };
-use signinum_j2k_native::{
+use signinum_j2k::{
     EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardDwt97Job,
     J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
     J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationResolution,
+    J2kQuantizeSubbandJob, J2kTier1CodeBlockEncodeJob,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_native::{
-    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
+use signinum_j2k::{
+    J2kForwardDwt53Level, J2kForwardDwt97Level, J2kPacketizationPacketDescriptor,
+    J2kPacketizationSubband,
 };
 #[cfg(feature = "cuda-runtime")]
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use signinum_j2k_native::packet_math;
 
 use crate::profile;
+#[cfg(feature = "cuda-runtime")]
+use crate::{runtime::cuda_error, session::CudaSession};
 
 /// Encode lossless JPEG 2000/HTJ2K samples through the CUDA encode-stage adapter.
 ///
@@ -100,6 +110,402 @@ fn reject_non_cuda_encode_backend(encoded: &signinum_j2k::EncodedJ2k) -> Result<
         Err(crate::Error::UnsupportedCudaRequest {
             reason: "strict CUDA HTJ2K encode did not dispatch all required stages",
         })
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// CUDA-resident lossless J2K/HTJ2K encode input tile.
+#[derive(Debug, Clone, Copy)]
+pub struct CudaLosslessEncodeTile<'a> {
+    /// Source CUDA buffer containing interleaved Gray/RGB/RGBA pixels.
+    pub buffer: &'a CudaDeviceBuffer,
+    /// Byte offset of the first source pixel in `buffer`.
+    pub byte_offset: usize,
+    /// Width of the valid input region in pixels.
+    pub width: u32,
+    /// Height of the valid input region in pixels.
+    pub height: u32,
+    /// Number of bytes between consecutive input rows.
+    pub pitch_bytes: usize,
+    /// Encoded image width in pixels.
+    pub output_width: u32,
+    /// Encoded image height in pixels.
+    pub output_height: u32,
+    /// Pixel format of the source buffer.
+    pub format: PixelFormat,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Residency decisions used by a lossless CUDA device-buffer encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaLosslessEncodeResidency {
+    /// Whether coefficient preparation ran on CUDA.
+    pub coefficient_prep_used: bool,
+    /// Whether packetization ran on CUDA.
+    pub packetization_used: bool,
+    /// Whether final codestream assembly stayed resident on CUDA.
+    pub codestream_assembly_used: bool,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Lossless CUDA device-buffer encode output with host codestream bytes and timings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaLosslessEncodeOutcome {
+    /// Encoded J2K codestream.
+    pub encoded: signinum_j2k::EncodedJ2k,
+    /// Whether the input buffer had to be copied or padded.
+    pub input_copy_used: bool,
+    /// Residency decisions for encode stages.
+    pub resident: CudaLosslessEncodeResidency,
+    /// Time spent copying or padding input.
+    pub input_copy_duration: Duration,
+    /// End-to-end encode duration for this tile.
+    pub encode_duration: Duration,
+    /// GPU-only duration when timestamp data is available.
+    pub gpu_duration: Option<Duration>,
+    /// Time spent validating encoded output.
+    pub validation_duration: Duration,
+    /// Time spent materializing CUDA output into host codestream bytes.
+    pub host_readback_duration: Duration,
+    /// CUDA encode stage timing buckets collected for this tile.
+    pub stage_timings: CudaEncodeStageTimings,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submitted single-tile CUDA lossless encode.
+#[derive(Debug)]
+pub struct SubmittedJ2kLosslessCudaEncode {
+    inner: ReadySubmission<signinum_j2k::EncodedJ2k, crate::Error>,
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submitted multi-tile CUDA lossless encode.
+#[derive(Debug)]
+pub struct SubmittedJ2kLosslessCudaEncodeBatch {
+    inner: ReadySubmission<Vec<signinum_j2k::EncodedJ2k>, crate::Error>,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl DeviceSubmission for SubmittedJ2kLosslessCudaEncode {
+    type Output = signinum_j2k::EncodedJ2k;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        self.inner.wait()
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl DeviceSubmission for SubmittedJ2kLosslessCudaEncodeBatch {
+    type Output = Vec<signinum_j2k::EncodedJ2k>;
+    type Error = crate::Error;
+
+    fn wait(self) -> Result<Self::Output, Self::Error> {
+        self.inner.wait()
+    }
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode one CUDA-resident tile into host codestream bytes.
+pub fn encode_lossless_from_cuda_buffer(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<signinum_j2k::EncodedJ2k, crate::Error> {
+    submit_lossless_from_cuda_buffer(tile, options, session)?.wait()
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submit one CUDA-resident tile encode for later host-byte collection.
+pub fn submit_lossless_from_cuda_buffer(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<SubmittedJ2kLosslessCudaEncode, crate::Error> {
+    let result = encode_lossless_from_cuda_buffer_with_report(tile, options, session)
+        .map(|outcome| outcome.encoded);
+    Ok(SubmittedJ2kLosslessCudaEncode {
+        inner: ReadySubmission::from_result(result),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode one CUDA-resident tile and return a host-byte timing report.
+pub fn encode_lossless_from_cuda_buffer_with_report(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<CudaLosslessEncodeOutcome, crate::Error> {
+    validate_cuda_encode_options(*options)?;
+    validate_cuda_encode_tile(tile)?;
+    session.record_submit();
+    encode_lossless_cuda_tile_with_report(tile, *options)
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode multiple CUDA-resident tiles into host codestream bytes.
+pub fn encode_lossless_from_cuda_buffers(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<Vec<signinum_j2k::EncodedJ2k>, crate::Error> {
+    submit_lossless_from_cuda_buffers(tiles, options, session)?.wait()
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Submit multiple CUDA-resident tile encodes for later host-byte collection.
+pub fn submit_lossless_from_cuda_buffers(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<SubmittedJ2kLosslessCudaEncodeBatch, crate::Error> {
+    let result =
+        encode_lossless_from_cuda_buffers_with_report(tiles, options, session).map(|outcomes| {
+            outcomes
+                .into_iter()
+                .map(|outcome| outcome.encoded)
+                .collect()
+        });
+    Ok(SubmittedJ2kLosslessCudaEncodeBatch {
+        inner: ReadySubmission::from_result(result),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+/// Encode multiple CUDA-resident tiles and return host-byte timing reports.
+pub fn encode_lossless_from_cuda_buffers_with_report(
+    tiles: &[CudaLosslessEncodeTile<'_>],
+    options: &signinum_j2k::J2kLosslessEncodeOptions,
+    session: &mut CudaSession,
+) -> Result<Vec<CudaLosslessEncodeOutcome>, crate::Error> {
+    if tiles.is_empty() {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode received an empty tile batch",
+        });
+    }
+    validate_cuda_encode_options(*options)?;
+    tiles
+        .iter()
+        .copied()
+        .map(|tile| {
+            validate_cuda_encode_tile(tile)?;
+            session.record_submit();
+            encode_lossless_cuda_tile_with_report(tile, *options)
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_encode_options(
+    options: signinum_j2k::J2kLosslessEncodeOptions,
+) -> Result<(), crate::Error> {
+    if options.block_coding_mode != signinum_j2k::J2kBlockCodingMode::HighThroughput {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode currently requires HTJ2K block coding",
+        });
+    }
+    if options.validation != signinum_j2k::J2kEncodeValidation::External {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode requires external validation to avoid host input readback",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_encode_tile(tile: CudaLosslessEncodeTile<'_>) -> Result<(), crate::Error> {
+    if tile.width == 0 || tile.height == 0 || tile.output_width == 0 || tile.output_height == 0 {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode tile dimensions must be nonzero",
+        });
+    }
+    if tile.width != tile.output_width || tile.height != tile.output_height {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA device-buffer encode does not yet support input padding",
+        });
+    }
+    let format = cuda_encode_format(tile.format)?;
+    let row_bytes = (tile.width as usize)
+        .checked_mul(format.bytes_per_pixel)
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode row byte count overflow",
+        })?;
+    if tile.pitch_bytes < row_bytes {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode tile pitch is shorter than one row",
+        });
+    }
+    let required_end = tile
+        .byte_offset
+        .checked_add(
+            tile.pitch_bytes
+                .checked_mul(tile.height.saturating_sub(1) as usize)
+                .and_then(|prefix| prefix.checked_add(row_bytes))
+                .ok_or(crate::Error::UnsupportedCudaRequest {
+                    reason: "J2K CUDA encode input byte range overflow",
+                })?,
+        )
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode input byte range overflow",
+        })?;
+    if required_end > tile.buffer.byte_len() {
+        return Err(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode input byte range exceeds buffer length",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[derive(Debug, Clone, Copy)]
+struct CudaEncodeFormat {
+    components: u8,
+    bit_depth: u8,
+    bytes_per_pixel: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_format(format: PixelFormat) -> Result<CudaEncodeFormat, crate::Error> {
+    let components =
+        u8::try_from(format.channels()).map_err(|_| crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode received a pixel format with too many components",
+        })?;
+    let bit_depth = match format.bytes_per_sample() {
+        1 => 8,
+        2 => 16,
+        _ => {
+            return Err(crate::Error::UnsupportedCudaRequest {
+                reason: "J2K CUDA encode received an unsupported sample width",
+            });
+        }
+    };
+    Ok(CudaEncodeFormat {
+        components,
+        bit_depth,
+        bytes_per_pixel: format.bytes_per_pixel(),
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn encode_lossless_cuda_tile_with_report(
+    tile: CudaLosslessEncodeTile<'_>,
+    options: signinum_j2k::J2kLosslessEncodeOptions,
+) -> Result<CudaLosslessEncodeOutcome, crate::Error> {
+    let encode_started = Instant::now();
+    let format = cuda_encode_format(tile.format)?;
+    let dummy_len = (tile.output_width as usize)
+        .checked_mul(tile.output_height as usize)
+        .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel))
+        .ok_or(crate::Error::UnsupportedCudaRequest {
+            reason: "J2K CUDA encode sample descriptor length overflow",
+        })?;
+    let dummy = vec![0u8; dummy_len];
+    let samples = signinum_j2k::J2kLosslessSamples::new(
+        &dummy,
+        tile.output_width,
+        tile.output_height,
+        format.components,
+        format.bit_depth,
+        false,
+    )?;
+    let context = tile.buffer.context();
+    let resources = context
+        .upload_htj2k_encode_resources(cuda_htj2k_encode_tables())
+        .map_err(cuda_error)?;
+    let mut accelerator = CudaDeviceBufferEncodeAccelerator {
+        tile,
+        context,
+        resources,
+        dispatch: J2kEncodeDispatchReport::default(),
+        stage_timings: CudaEncodeStageTimings::default(),
+    };
+    let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
+        samples,
+        &strict_cuda_encode_options(options),
+        BackendKind::Cuda,
+        &mut accelerator,
+    )?;
+    reject_non_cuda_encode_backend(&encoded)?;
+    Ok(CudaLosslessEncodeOutcome {
+        encoded,
+        input_copy_used: false,
+        resident: CudaLosslessEncodeResidency {
+            coefficient_prep_used: accelerator.dispatch.deinterleave > 0,
+            packetization_used: accelerator.dispatch.packetization > 0,
+            codestream_assembly_used: false,
+        },
+        input_copy_duration: Duration::ZERO,
+        encode_duration: encode_started.elapsed(),
+        gpu_duration: None,
+        validation_duration: Duration::ZERO,
+        host_readback_duration: Duration::ZERO,
+        stage_timings: accelerator.stage_timings,
+    })
+}
+
+#[cfg(feature = "cuda-runtime")]
+struct CudaDeviceBufferEncodeAccelerator<'a> {
+    tile: CudaLosslessEncodeTile<'a>,
+    context: CudaContext,
+    resources: CudaHtj2kEncodeResources,
+    dispatch: J2kEncodeDispatchReport,
+    stage_timings: CudaEncodeStageTimings,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl J2kEncodeStageAccelerator for CudaDeviceBufferEncodeAccelerator<'_> {
+    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
+        self.dispatch
+    }
+
+    fn encode_htj2k_tile(
+        &mut self,
+        job: J2kHtj2kTileEncodeJob<'_>,
+    ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
+        let Some(encoded) = cuda_encode_htj2k_device_tile_body(
+            &self.context,
+            &self.resources,
+            self.tile,
+            job,
+            true,
+        )?
+        else {
+            return Ok(None);
+        };
+        self.dispatch.deinterleave = self
+            .dispatch
+            .deinterleave
+            .saturating_add(encoded.deinterleave_dispatches);
+        self.dispatch.forward_rct = self
+            .dispatch
+            .forward_rct
+            .saturating_add(encoded.forward_rct_dispatches);
+        self.dispatch.forward_ict = self
+            .dispatch
+            .forward_ict
+            .saturating_add(encoded.forward_ict_dispatches);
+        self.dispatch.forward_dwt53 = self
+            .dispatch
+            .forward_dwt53
+            .saturating_add(encoded.forward_dwt53_dispatches);
+        self.dispatch.forward_dwt97 = self
+            .dispatch
+            .forward_dwt97
+            .saturating_add(encoded.forward_dwt97_dispatches);
+        self.dispatch.quantize_subband = self
+            .dispatch
+            .quantize_subband
+            .saturating_add(encoded.quantize_dispatches);
+        self.dispatch.ht_code_block = self
+            .dispatch
+            .ht_code_block
+            .saturating_add(encoded.ht_code_block_dispatches);
+        self.dispatch.packetization = self
+            .dispatch
+            .packetization
+            .saturating_add(encoded.packetization_dispatches);
+        self.stage_timings = self.stage_timings.saturating_add(encoded.timings);
+        Ok(Some(encoded.tile_data))
     }
 }
 
@@ -237,7 +643,7 @@ impl CudaEncodeStageAccelerator {
     #[cfg(feature = "cuda-runtime")]
     fn cuda_context(&mut self) -> core::result::Result<Option<CudaContext>, &'static str> {
         if self.context.is_none() {
-            match shared_cuda_context() {
+            match CudaContext::system_default() {
                 Ok(context) => self.context = Some(context),
                 Err(_) if cuda_runtime_required() => return Err("CUDA encode stage unavailable"),
                 Err(_) => return Ok(None),
@@ -376,23 +782,6 @@ impl CudaEncodeStageAccelerator {
 }
 
 #[cfg(feature = "cuda-runtime")]
-fn shared_cuda_context() -> core::result::Result<CudaContext, CudaError> {
-    static SHARED: OnceLock<CudaContext> = OnceLock::new();
-    if let Some(context) = SHARED.get() {
-        return Ok(context.clone());
-    }
-
-    let context = CudaContext::system_default()?;
-    let _ = SHARED.set(context);
-    SHARED
-        .get()
-        .cloned()
-        .ok_or_else(|| CudaError::InvalidArgument {
-            message: "CUDA encode context cache was not initialized".to_string(),
-        })
-}
-
-#[cfg(feature = "cuda-runtime")]
 fn cuda_runtime_required() -> bool {
     std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
 }
@@ -432,6 +821,19 @@ pub struct CudaEncodeStageTimings {
 }
 
 impl CudaEncodeStageTimings {
+    /// Return field-wise saturating timing sums.
+    #[must_use]
+    pub const fn saturating_add(self, other: Self) -> Self {
+        Self {
+            deinterleave_us: self.deinterleave_us.saturating_add(other.deinterleave_us),
+            mct_us: self.mct_us.saturating_add(other.mct_us),
+            dwt_us: self.dwt_us.saturating_add(other.dwt_us),
+            quantize_us: self.quantize_us.saturating_add(other.quantize_us),
+            ht_encode_us: self.ht_encode_us.saturating_add(other.ht_encode_us),
+            packetize_us: self.packetize_us.saturating_add(other.packetize_us),
+        }
+    }
+
     /// Total collected CUDA encode-stage time.
     #[must_use]
     pub const fn total_us(self) -> u128 {
@@ -657,7 +1059,7 @@ fn flatten_cuda_htj2k_packetization_job(
 }
 
 fn seed_cuda_htj2k_packetization_state(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
 ) -> core::result::Result<CudaHtj2kPacketizationState, &'static str> {
     let mut subbands = Vec::with_capacity(resolution.subbands.len());
     for subband in &resolution.subbands {
@@ -699,7 +1101,7 @@ fn seed_cuda_htj2k_packetization_state(
 
 fn validate_cuda_htj2k_packetization_state_layout(
     state: &CudaHtj2kPacketizationState,
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
 ) -> core::result::Result<(), &'static str> {
     if state.subbands.len() != resolution.subbands.len() {
         return Err("CUDA HTJ2K packetization state layout mismatch");
@@ -851,7 +1253,7 @@ impl CudaHtj2kPacketizationTagTreeState {
 
 fn record_cuda_htj2k_packetization_first_inclusion_layers(
     state: &mut CudaHtj2kPacketizationState,
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
 ) -> core::result::Result<(), &'static str> {
     validate_cuda_htj2k_packetization_state_layout(state, resolution)?;
@@ -973,14 +1375,14 @@ fn update_cuda_htj2k_packetization_state_after_block(
 }
 
 fn flatten_cuda_htj2k_packet(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
 ) -> core::result::Result<(), &'static str> {
     flatten_cuda_htj2k_packet_inner(resolution, 0, None, sink)
 }
 
 fn flatten_cuda_htj2k_packet_with_state(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
     state: &mut CudaHtj2kPacketizationState,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
@@ -989,7 +1391,7 @@ fn flatten_cuda_htj2k_packet_with_state(
 }
 
 fn flatten_cuda_htj2k_packet_inner(
-    resolution: &signinum_j2k_native::J2kPacketizationResolution<'_>,
+    resolution: &J2kPacketizationResolution<'_>,
     layer: u8,
     mut state: Option<&mut CudaHtj2kPacketizationState>,
     sink: &mut CudaHtj2kPacketizationPlanSink<'_>,
@@ -1159,11 +1561,11 @@ fn updated_ht_l_block(
     cleanup_length: u32,
     refinement_length: u32,
 ) -> core::result::Result<u32, &'static str> {
-    let mut num_bits = ht_cleanup_length_bits(l_block, num_coding_passes);
+    let mut num_bits = packet_math::bits_for_ht_cleanup_length(l_block, num_coding_passes);
     let refinement_extra_bits = u32::from(num_coding_passes > 2);
-    while !value_fits_in_bits(cleanup_length, num_bits)
+    while !packet_math::value_fits_in_bits(cleanup_length, num_bits)
         || (num_coding_passes > 1
-            && !value_fits_in_bits(refinement_length, l_block + refinement_extra_bits))
+            && !packet_math::value_fits_in_bits(refinement_length, l_block + refinement_extra_bits))
     {
         l_block = l_block
             .checked_add(1)
@@ -1178,65 +1580,12 @@ fn updated_ht_l_block(
 fn cuda_ht_segment_lengths(
     code_block: &J2kPacketizationCodeBlock<'_>,
 ) -> core::result::Result<(u32, u32), &'static str> {
-    if code_block.num_coding_passes == 0 {
-        if code_block.data.is_empty()
-            && code_block.ht_cleanup_length == 0
-            && code_block.ht_refinement_length == 0
-        {
-            return Ok((0, 0));
-        }
-        return Err("CUDA HTJ2K packetization empty contributions must not carry payload");
-    }
-
-    let data_len = u32::try_from(code_block.data.len())
-        .map_err(|_| "CUDA HTJ2K packetization code-block payload exceeds u32")?;
-    if code_block.num_coding_passes == 1 {
-        if code_block.ht_refinement_length != 0 {
-            return Err("CUDA HTJ2K single-pass packet contribution has refinement bytes");
-        }
-        let cleanup_length = if code_block.ht_cleanup_length == 0 {
-            data_len
-        } else {
-            code_block.ht_cleanup_length
-        };
-        if cleanup_length != data_len {
-            return Err("CUDA HTJ2K single-pass packet contribution length mismatch");
-        }
-        return Ok((cleanup_length, 0));
-    }
-
-    if code_block.ht_cleanup_length == 0 || code_block.ht_refinement_length == 0 {
-        return Err("CUDA HTJ2K multi-pass packet contribution requires segment lengths");
-    }
-    if code_block
-        .ht_cleanup_length
-        .checked_add(code_block.ht_refinement_length)
-        .ok_or("CUDA HTJ2K multi-pass packet contribution length overflow")?
-        != data_len
-    {
-        return Err("CUDA HTJ2K multi-pass packet contribution length mismatch");
-    }
-    if !(2..65535).contains(&code_block.ht_cleanup_length) {
-        return Err("CUDA HTJ2K cleanup segment length is out of range");
-    }
-    if code_block.ht_refinement_length >= 2047 {
-        return Err("CUDA HTJ2K refinement segment length is out of range");
-    }
-
-    Ok((
+    packet_math::ht_segment_lengths(
+        code_block.num_coding_passes,
+        code_block.data.len(),
         code_block.ht_cleanup_length,
         code_block.ht_refinement_length,
-    ))
-}
-
-fn ht_cleanup_length_bits(l_block: u32, num_coding_passes: u8) -> u32 {
-    let placeholder_groups = u32::from(num_coding_passes.saturating_sub(1)) / 3;
-    let placeholder_passes = placeholder_groups * 3;
-    l_block + (placeholder_passes + 1).ilog2()
-}
-
-fn value_fits_in_bits(value: u32, bits: u32) -> bool {
-    bits >= u32::BITS || value < (1u32 << bits)
+    )
 }
 
 impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
@@ -1279,13 +1628,12 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             let dispatches = output.execution().kernel_dispatches();
             self.deinterleave_dispatches = self.deinterleave_dispatches.saturating_add(dispatches);
             self.deinterleave_us = self.deinterleave_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let pixels_s = job.num_pixels.to_string();
                 let components_s = job.num_components.to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_deinterleave"),
@@ -1300,10 +1648,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_deinterleave"),
@@ -1321,10 +1668,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if self.prefer_cpu_forward_rct {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_rct"),
@@ -1349,10 +1695,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 .forward_rct_dispatches
                 .saturating_add(execution.kernel_dispatches());
             self.mct_us = self.mct_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_rct"),
@@ -1365,10 +1710,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_forward_rct"),
@@ -1398,10 +1742,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 .forward_ict_dispatches
                 .saturating_add(execution.kernel_dispatches());
             self.mct_us = self.mct_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_ict"),
@@ -1414,10 +1757,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_forward_ict"),
@@ -1435,10 +1777,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_dwt53"),
@@ -1462,14 +1803,13 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             self.forward_dwt53_dispatches =
                 self.forward_dwt53_dispatches.saturating_add(dispatches);
             self.dwt_us = self.dwt_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let width_s = job.width.to_string();
                 let height_s = job.height.to_string();
                 let levels_s = job.num_levels.to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_dwt53"),
@@ -1485,10 +1825,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_forward_dwt53"),
@@ -1506,10 +1845,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<J2kForwardDwt97Output>, &'static str> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_dwt97"),
@@ -1533,14 +1871,13 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             self.forward_dwt97_dispatches =
                 self.forward_dwt97_dispatches.saturating_add(dispatches);
             self.dwt_us = self.dwt_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let width_s = job.width.to_string();
                 let height_s = job.height.to_string();
                 let levels_s = job.num_levels.to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_forward_dwt97"),
@@ -1556,10 +1893,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_forward_dwt97"),
@@ -1577,10 +1913,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<Vec<i32>>, &'static str> {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         if self.prefer_cpu_quantize_subband {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_quantize_subband"),
@@ -1615,12 +1950,11 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             self.quantize_subband_dispatches =
                 self.quantize_subband_dispatches.saturating_add(dispatches);
             self.quantize_us = self.quantize_us.saturating_add(elapsed_us);
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let samples_s = job.coefficients.len().to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_quantize_subband"),
@@ -1634,10 +1968,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_quantize_subband"),
@@ -1654,10 +1987,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         _job: J2kTier1CodeBlockEncodeJob<'_>,
     ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_tier1_code_block"),
@@ -1689,13 +2021,12 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             if self.collect_profile {
                 self.ht_encode_us = self.ht_encode_us.saturating_add(ht_encode_us);
             }
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let width_s = job.width.to_string();
                 let height_s = job.height.to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_ht_code_block"),
@@ -1710,10 +2041,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_ht_code_block"),
@@ -1742,12 +2072,11 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             if self.collect_profile {
                 self.ht_encode_us = self.ht_encode_us.saturating_add(ht_encode_us);
             }
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let jobs_s = jobs.len().to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_ht_code_blocks"),
@@ -1761,10 +2090,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = jobs;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_ht_code_blocks"),
@@ -1782,10 +2110,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.htj2k_tile_attempts = self.htj2k_tile_attempts.saturating_add(1);
         if self.prefer_cpu_forward_rct || self.prefer_cpu_packetization {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_htj2k_tile"),
@@ -1874,12 +2201,11 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                     .packetize_us
                     .saturating_add(encoded.timings.packetize_us);
             }
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let components_s = job.num_components.to_string();
                 let blocks_s = encoded.ht_code_block_jobs.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_htj2k_tile"),
@@ -1893,10 +2219,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_htj2k_tile"),
@@ -1917,10 +2242,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         self.quantize_subband_attempts = self.quantize_subband_attempts.saturating_add(1);
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(code_block_count);
         if self.prefer_cpu_ht_subband {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_ht_subband"),
@@ -1952,15 +2276,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                     .ht_encode_us
                     .saturating_add(encoded.timings.ht_encode_us);
             }
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let width_s = job.width.to_string();
                 let height_s = job.height.to_string();
                 let blocks_s = code_block_count.to_string();
                 let quantize_dispatches_s = quantize_dispatches.to_string();
                 let encode_dispatches_s = encode_dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_ht_subband"),
@@ -1977,10 +2300,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = job;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_ht_subband"),
@@ -1998,10 +2320,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         if self.prefer_cpu_packetization {
-            if profile::gpu_route_profile_enabled() {
-                profile::emit_gpu_route_profile(
+            if signinum_profile::gpu_route_profile_enabled() {
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_packetization"),
@@ -2016,10 +2337,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         let plan = match flatten_cuda_htj2k_packetization_job(job) {
             Ok(plan) => plan,
             Err(reason) => {
-                if profile::gpu_route_profile_enabled() {
-                    profile::emit_gpu_route_profile(
+                if signinum_profile::gpu_route_profile_enabled() {
+                    signinum_profile::emit_gpu_route_profile(
                         "j2k",
-                        "gpu_route",
                         "cuda",
                         &[
                             ("op", "encode_packetization"),
@@ -2055,12 +2375,11 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             if self.collect_profile {
                 self.packetize_us = self.packetize_us.saturating_add(packetize_us);
             }
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let packets_s = packets.len().to_string();
                 let dispatches_s = dispatches.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "j2k",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "encode_packetization"),
@@ -2074,10 +2393,9 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         let _ = plan;
-        if profile::gpu_route_profile_enabled() {
-            profile::emit_gpu_route_profile(
+        if signinum_profile::gpu_route_profile_enabled() {
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "encode_packetization"),
@@ -2307,6 +2625,39 @@ fn cuda_encode_htj2k_tile_body(
     job: J2kHtj2kTileEncodeJob<'_>,
     collect_profile: bool,
 ) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
+    validate_cuda_htj2k_tile_job(job)?;
+    let num_pixels = (job.width as usize)
+        .checked_mul(job.height as usize)
+        .ok_or("CUDA HTJ2K tile dimensions are too large")?;
+    let (components, deinterleave_us) = time_cuda_stage(
+        "signinum.htj2k.encode.tile.deinterleave",
+        context,
+        collect_profile,
+        || {
+            context.j2k_deinterleave_to_f32_resident(
+                job.pixels,
+                num_pixels,
+                job.num_components,
+                job.bit_depth,
+                job.signed,
+            )
+        },
+    )
+    .map_err(|_| "CUDA HTJ2K tile deinterleave failed")?;
+    cuda_encode_htj2k_resident_components_body(
+        context,
+        encode_resources,
+        job,
+        components,
+        deinterleave_us,
+        collect_profile,
+    )
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn validate_cuda_htj2k_tile_job(
+    job: J2kHtj2kTileEncodeJob<'_>,
+) -> core::result::Result<(), &'static str> {
     if job
         .component_sampling
         .iter()
@@ -2339,25 +2690,65 @@ fn cuda_encode_htj2k_tile_body(
     if job.quantization_steps.len() != expected_quantization_steps {
         return Err("CUDA HTJ2K tile quantization step count mismatch");
     }
+    Ok(())
+}
 
-    let num_pixels = (job.width as usize)
-        .checked_mul(job.height as usize)
-        .ok_or("CUDA HTJ2K tile dimensions are too large")?;
-    let (mut components, deinterleave_us) = time_cuda_stage(
-        "signinum.htj2k.encode.tile.deinterleave",
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_htj2k_device_tile_body(
+    context: &CudaContext,
+    encode_resources: &CudaHtj2kEncodeResources,
+    tile: CudaLosslessEncodeTile<'_>,
+    job: J2kHtj2kTileEncodeJob<'_>,
+    collect_profile: bool,
+) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
+    validate_cuda_htj2k_tile_job(job)?;
+    let format = cuda_encode_format(tile.format).map_err(|_| "CUDA HTJ2K tile format failed")?;
+    if job.width != tile.output_width || job.height != tile.output_height {
+        return Err("CUDA HTJ2K tile encode job dimensions do not match CUDA tile");
+    }
+    if tile.width != tile.output_width || tile.height != tile.output_height {
+        return Err("CUDA HTJ2K tile encode does not support input padding");
+    }
+    if job.num_components != format.components || job.bit_depth != format.bit_depth || job.signed {
+        return Err("CUDA HTJ2K tile encode job sample format does not match CUDA tile");
+    }
+    let (components, deinterleave_us) = time_cuda_stage(
+        "signinum.htj2k.encode.tile.device_deinterleave",
         context,
         collect_profile,
         || {
-            context.j2k_deinterleave_to_f32_resident(
-                job.pixels,
-                num_pixels,
-                job.num_components,
-                job.bit_depth,
-                job.signed,
-            )
+            context.j2k_deinterleave_strided_to_f32_resident(CudaJ2kStridedInterleavedPixels {
+                buffer: tile.buffer,
+                byte_offset: tile.byte_offset,
+                width: tile.width,
+                height: tile.height,
+                pitch_bytes: tile.pitch_bytes,
+                num_components: job.num_components,
+                bit_depth: job.bit_depth,
+                signed: job.signed,
+            })
         },
     )
-    .map_err(|_| "CUDA HTJ2K tile deinterleave failed")?;
+    .map_err(|_| "CUDA HTJ2K tile device deinterleave failed")?;
+    cuda_encode_htj2k_resident_components_body(
+        context,
+        encode_resources,
+        job,
+        components,
+        deinterleave_us,
+        collect_profile,
+    )
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn cuda_encode_htj2k_resident_components_body(
+    context: &CudaContext,
+    encode_resources: &CudaHtj2kEncodeResources,
+    job: J2kHtj2kTileEncodeJob<'_>,
+    mut components: CudaJ2kResidentComponents,
+    deinterleave_us: u128,
+    collect_profile: bool,
+) -> core::result::Result<Option<CudaEncodedHtj2kTile>, &'static str> {
     let mut stats = CudaHtj2kTileEncodeStats {
         collect_profile,
         deinterleave_dispatches: components.execution().kernel_dispatches(),
@@ -3005,30 +3396,8 @@ fn cuda_htj2k_encode_tables() -> CudaHtj2kEncodeTables<'static> {
     CudaHtj2kEncodeTables {
         vlc_table0: signinum_j2k_native::ht_vlc_encode_table0(),
         vlc_table1: signinum_j2k_native::ht_vlc_encode_table1(),
-        uvlc_table: ht_uvlc_encode_table_bytes(),
+        uvlc_table: signinum_j2k_native::ht_uvlc_encode_table_bytes(),
     }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn ht_uvlc_encode_table_bytes() -> &'static [u8] {
-    static TABLE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    TABLE
-        .get_or_init(|| {
-            signinum_j2k_native::ht_uvlc_encode_table()
-                .iter()
-                .flat_map(|entry| {
-                    [
-                        entry.pre,
-                        entry.pre_len,
-                        entry.suf,
-                        entry.suf_len,
-                        entry.ext,
-                        entry.ext_len,
-                    ]
-                })
-                .collect()
-        })
-        .as_slice()
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -3051,7 +3420,7 @@ fn cuda_dwt53_output_to_j2k(
 
     let mut levels = Vec::with_capacity(output.levels().len());
     for shape in output.levels() {
-        levels.push(signinum_j2k_native::J2kForwardDwt53Level {
+        levels.push(J2kForwardDwt53Level {
             hl: extract_cuda_subband(
                 transformed,
                 full_width,
@@ -3130,7 +3499,7 @@ fn cuda_dwt97_output_to_j2k(
 
     let mut levels = Vec::with_capacity(output.levels().len());
     for shape in output.levels() {
-        levels.push(signinum_j2k_native::J2kForwardDwt97Level {
+        levels.push(J2kForwardDwt97Level {
             hl: extract_cuda_subband(
                 transformed,
                 full_width,
@@ -3211,18 +3580,21 @@ mod tests {
         CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
         CudaJ2kQuantizeJob,
     };
+    use signinum_j2k::adapter::encode_stage::NativeEncodeStageAdapter;
     #[cfg(feature = "cuda-runtime")]
     use signinum_j2k::{encode_j2k_lossy_with_accelerator, J2kLossyEncodeOptions, J2kLossySamples};
     use signinum_j2k::{
         EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
         J2kLosslessSamples,
     };
-    use signinum_j2k_native::J2kEncodeStageAccelerator;
+    use signinum_j2k::{
+        J2kEncodeStageAccelerator, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
+        J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+        J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    };
     use signinum_j2k_native::{
-        encode_with_accelerator, DecodeSettings, EncodeOptions, Image,
-        J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-        J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder,
-        J2kPacketizationResolution, J2kPacketizationSubband,
+        encode_with_accelerator as encode_with_native_accelerator, DecodeSettings, EncodeOptions,
+        Image,
     };
 
     fn assert_strict_cuda_classic_tier1_error<E: CodecError + ?Sized>(err: &E, context: &str) {
@@ -3234,15 +3606,39 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn encode_with_cuda_test_accelerator(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        components: u8,
+        bit_depth: u8,
+        signed: bool,
+        options: &EncodeOptions,
+        accelerator: &mut CudaEncodeStageAccelerator,
+    ) -> core::result::Result<Vec<u8>, &'static str> {
+        let mut bridge = NativeEncodeStageAdapter::new(accelerator);
+        encode_with_native_accelerator(
+            pixels,
+            width,
+            height,
+            components,
+            bit_depth,
+            signed,
+            options,
+            &mut bridge,
+        )
+    }
+
     #[test]
-    fn cuda_lossless_encode_prefer_device_errors_for_unsupported_classic_tier1() {
+    fn cuda_lossless_encode_auto_errors_for_unsupported_classic_tier1() {
         let pixels: Vec<u8> = (0u32..128 * 128)
             .map(|value| u8::try_from((value * 17 + 5) & 0xFF).expect("masked value fits in u8"))
             .collect();
         let samples =
             J2kLosslessSamples::new(&pixels, 128, 128, 1, 8, false).expect("valid gray8 samples");
         let options = J2kLosslessEncodeOptions::default()
-            .with_backend(EncodeBackendPreference::PreferDevice)
+            .with_backend(EncodeBackendPreference::Auto)
             .with_block_coding_mode(J2kBlockCodingMode::Classic)
             .with_max_decomposition_levels(Some(0))
             .with_validation(J2kEncodeValidation::CpuRoundTrip);
@@ -3254,14 +3650,14 @@ mod tests {
     }
 
     #[test]
-    fn cuda_lossless_encode_profile_prefer_device_errors_for_unsupported_classic_tier1() {
+    fn cuda_lossless_encode_profile_auto_errors_for_unsupported_classic_tier1() {
         let pixels: Vec<u8> = (0u32..128 * 128)
             .map(|value| u8::try_from((value * 19 + 7) & 0xFF).expect("masked value fits in u8"))
             .collect();
         let samples =
             J2kLosslessSamples::new(&pixels, 128, 128, 1, 8, false).expect("valid gray8 samples");
         let options = J2kLosslessEncodeOptions::default()
-            .with_backend(EncodeBackendPreference::PreferDevice)
+            .with_backend(EncodeBackendPreference::Auto)
             .with_block_coding_mode(J2kBlockCodingMode::Classic)
             .with_max_decomposition_levels(Some(0))
             .with_validation(J2kEncodeValidation::External);
@@ -3486,10 +3882,7 @@ mod tests {
         let err = super::cuda_ht_segment_lengths(&code_block)
             .expect_err("overflowing CUDA HT segment lengths rejected");
 
-        assert_eq!(
-            err,
-            "CUDA HTJ2K multi-pass packet contribution length overflow"
-        );
+        assert_eq!(err, "multi-pass HTJ2K packet contribution length overflow");
     }
 
     #[test]
@@ -3895,7 +4288,7 @@ mod tests {
         let pixels = [0u8, 128, 255, 64, 32, 16];
         let mut accelerator = CudaEncodeStageAccelerator::default();
         let components = accelerator
-            .encode_deinterleave(signinum_j2k_native::J2kDeinterleaveToF32Job {
+            .encode_deinterleave(signinum_j2k::J2kDeinterleaveToF32Job {
                 pixels: &pixels,
                 num_pixels: 2,
                 num_components: 3,
@@ -3918,7 +4311,7 @@ mod tests {
             .prefer_cpu_ht_subband(true)
             .prefer_cpu_quantize_subband(true);
         let output = accelerator
-            .encode_ht_subband(signinum_j2k_native::J2kHtSubbandEncodeJob {
+            .encode_ht_subband(signinum_j2k::J2kHtSubbandEncodeJob {
                 coefficients: &[0.0; 16],
                 width: 4,
                 height: 4,
@@ -3939,7 +4332,7 @@ mod tests {
         assert_eq!(accelerator.dispatch_report().total(), 0);
 
         let quantized = accelerator
-            .encode_quantize_subband(signinum_j2k_native::J2kQuantizeSubbandJob {
+            .encode_quantize_subband(signinum_j2k::J2kQuantizeSubbandJob {
                 coefficients: &[0.0; 16],
                 step_exponent: 8,
                 step_mantissa: 0,
@@ -4132,9 +4525,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA stage accelerator");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA stage accelerator");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4191,9 +4592,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 7, 5, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward RCT");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            7,
+            5,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward RCT");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4222,9 +4631,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 3, 8, false, &options, &mut accelerator)
-                .expect("encode irreversible RGB with CUDA forward ICT");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode irreversible RGB with CUDA forward ICT");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4252,9 +4669,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward DWT 5/3");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward DWT 5/3");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4283,9 +4708,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA forward DWT 9/7");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA forward DWT 9/7");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4314,9 +4747,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with CUDA quantization");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode with CUDA quantization");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4347,9 +4788,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4389,9 +4838,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4433,9 +4890,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 3, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K RGB DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            3,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K RGB DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4477,9 +4942,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode irreversible HTJ2K DWT through CUDA tile-body hook");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode irreversible HTJ2K DWT through CUDA tile-body hook");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4521,9 +4994,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K with CUDA HT codeblock kernel");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            8,
+            8,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K with CUDA HT codeblock kernel");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
@@ -4550,7 +5031,7 @@ mod tests {
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
         let encoded = accelerator
-            .encode_ht_code_block(signinum_j2k_native::J2kHtCodeBlockEncodeJob {
+            .encode_ht_code_block(signinum_j2k::J2kHtCodeBlockEncodeJob {
                 coefficients: &coefficients,
                 width: 4,
                 height: 4,
@@ -4590,9 +5071,17 @@ mod tests {
         };
         let mut accelerator = CudaEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
-                .expect("encode HTJ2K with CUDA HT batch codeblock kernel");
+        let codestream = encode_with_cuda_test_accelerator(
+            &pixels,
+            32,
+            32,
+            1,
+            8,
+            false,
+            &options,
+            &mut accelerator,
+        )
+        .expect("encode HTJ2K with CUDA HT batch codeblock kernel");
         let decoded = Image::new(&codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()

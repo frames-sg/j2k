@@ -1,7 +1,7 @@
 [package]
 name = "signinum-cuda-runtime"
-description = "CUDA Driver API runtime helpers for signinum device adapters"
-version = "0.4.4"
+description = "CUDA codec engine and Driver API runtime for signinum device adapters"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ default = []
 cuda-profiling = []
 
 [dependencies]
+signinum-core = { path = "../signinum-core", version = "=0.5.0" }
 libloading = { workspace = true }
 thiserror = { workspace = true }
 

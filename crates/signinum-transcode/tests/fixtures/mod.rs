@@ -8,42 +8,42 @@
 
 /// A 16×16 baseline JPEG with 4:2:0 sampling.
 pub(crate) fn minimal_baseline_420_jpeg() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_420_16x16.jpg").to_vec()
+    signinum_test_support::jpeg_baseline_420_16x16()
 }
 
 /// An 8×8 grayscale (single-component) baseline JPEG.
 pub(crate) fn grayscale_8x8_jpeg() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/grayscale_8x8.jpg").to_vec()
+    signinum_test_support::jpeg_grayscale_8x8()
 }
 
 /// An 8×8 baseline JPEG with 4:4:4 sampling.
 pub(crate) fn baseline_444_8x8_jpeg() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_444_8x8.jpg").to_vec()
+    signinum_test_support::jpeg_baseline_444_8x8()
 }
 
 /// Reference pixels for [`baseline_444_8x8_jpeg`].
 pub(crate) fn baseline_444_8x8_rgb() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_444_8x8.rgb").to_vec()
+    signinum_test_support::jpeg_baseline_444_8x8_rgb()
 }
 
 /// A 16×8 baseline JPEG with 4:2:2 sampling.
 pub(crate) fn baseline_422_16x8_jpeg() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_422_16x8.jpg").to_vec()
+    signinum_test_support::jpeg_baseline_422_16x8()
 }
 
 /// Reference pixels for [`baseline_422_16x8_jpeg`].
 pub(crate) fn baseline_422_16x8_rgb() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_422_16x8.rgb").to_vec()
+    signinum_test_support::jpeg_baseline_422_16x8_rgb()
 }
 
 /// A 32×16 baseline JPEG with 4:2:0 sampling and restart coding.
 pub(crate) fn baseline_420_restart_32x16_jpeg() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_420_restart_32x16.jpg").to_vec()
+    signinum_test_support::jpeg_baseline_420_restart_32x16()
 }
 
 /// Reference pixels for [`baseline_420_restart_32x16_jpeg`].
 pub(crate) fn baseline_420_restart_32x16_rgb() -> Vec<u8> {
-    include_bytes!("../../fixtures/conformance/baseline_420_restart_32x16.rgb").to_vec()
+    signinum_test_support::jpeg_baseline_420_restart_32x16_rgb()
 }
 
 /// An 8×8 APP14 RGB JPEG with constant pixel value `(200, 20, 10)`.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use signinum_core::{
     BackendKind, BackendRequest, DecoderContext, DeviceSubmission, DeviceSurface, Downscale,
     ImageDecode, ImageDecodeSubmit, PixelFormat, Rect, TileBatchDecodeManyDevice,
@@ -75,14 +75,14 @@ fn bench_full_tile(c: &mut Criterion, cases: &[DecodeBenchCase]) {
         let cpu_id = cpu_benchmark_id(case);
         group.bench_with_input(BenchmarkId::new(cpu_id, TILE_DIM), case, |b, case| {
             b.iter(|| {
-                let mut decoder =
-                    J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                    .expect("decoder");
                 let stride = TILE_DIM as usize * case.fmt.bytes_per_pixel();
                 let mut out = vec![0u8; stride * TILE_DIM as usize];
                 decoder
                     .decode_into(&mut out, stride, case.fmt)
                     .expect("CPU HTJ2K decode");
-                black_box(out)
+                std::hint::black_box(out)
             });
         });
         if case.cuda_available {
@@ -91,14 +91,15 @@ fn bench_full_tile(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                 let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
-                        J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                        J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                            .expect("decoder");
                     let surface = decoder
                         .submit_to_device(&mut session, case.fmt, BackendRequest::Cuda)
                         .expect("strict CUDA HTJ2K decode submission")
                         .wait()
                         .expect("strict CUDA HTJ2K decode");
                     assert_cuda_resident_decode(&surface);
-                    black_box(surface)
+                    std::hint::black_box(surface)
                 });
             });
         }
@@ -112,15 +113,15 @@ fn bench_roi(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect) {
         let cpu_id = cpu_benchmark_id(case);
         group.bench_with_input(BenchmarkId::new(cpu_id, roi.w), case, |b, case| {
             b.iter(|| {
-                let mut decoder =
-                    J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                    .expect("decoder");
                 let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
                 let stride = roi.w as usize * case.fmt.bytes_per_pixel();
                 let mut out = vec![0u8; stride * roi.h as usize];
                 decoder
                     .decode_region_into(&mut pool, &mut out, stride, case.fmt, roi)
                     .expect("CPU HTJ2K ROI decode");
-                black_box(out)
+                std::hint::black_box(out)
             });
         });
         if case.cuda_available {
@@ -129,14 +130,15 @@ fn bench_roi(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect) {
                 let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
-                        J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                        J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                            .expect("decoder");
                     let surface = decoder
                         .submit_region_to_device(&mut session, case.fmt, roi, BackendRequest::Cuda)
                         .expect("strict CUDA HTJ2K ROI decode submission")
                         .wait()
                         .expect("strict CUDA HTJ2K ROI decode");
                     assert_cuda_resident_decode(&surface);
-                    black_box(surface)
+                    std::hint::black_box(surface)
                 });
             });
         }
@@ -151,15 +153,15 @@ fn bench_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downscale) 
         let cpu_id = cpu_benchmark_id(case);
         group.bench_with_input(BenchmarkId::new(cpu_id, scaled.w), case, |b, case| {
             b.iter(|| {
-                let mut decoder =
-                    J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                    .expect("decoder");
                 let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
                 let stride = scaled.w as usize * case.fmt.bytes_per_pixel();
                 let mut out = vec![0u8; stride * scaled.h as usize];
                 decoder
                     .decode_scaled_into(&mut pool, &mut out, stride, case.fmt, scale)
                     .expect("CPU HTJ2K scaled decode");
-                black_box(out)
+                std::hint::black_box(out)
             });
         });
         if case.cuda_available {
@@ -168,7 +170,8 @@ fn bench_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downscale) 
                 let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
-                        J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                        J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                            .expect("decoder");
                     let surface = decoder
                         .submit_scaled_to_device(
                             &mut session,
@@ -180,7 +183,7 @@ fn bench_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], scale: Downscale) 
                         .wait()
                         .expect("strict CUDA HTJ2K scaled decode");
                     assert_cuda_resident_decode(&surface);
-                    black_box(surface)
+                    std::hint::black_box(surface)
                 });
             });
         }
@@ -195,15 +198,15 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect, sca
         let cpu_id = cpu_benchmark_id(case);
         group.bench_with_input(BenchmarkId::new(cpu_id, scaled.w), case, |b, case| {
             b.iter(|| {
-                let mut decoder =
-                    J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                let mut decoder = J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                    .expect("decoder");
                 let mut pool = signinum_j2k_cuda::J2kScratchPool::new();
                 let stride = scaled.w as usize * case.fmt.bytes_per_pixel();
                 let mut out = vec![0u8; stride * scaled.h as usize];
                 decoder
                     .decode_region_scaled_into(&mut pool, &mut out, stride, case.fmt, roi, scale)
                     .expect("CPU HTJ2K ROI+scaled decode");
-                black_box(out)
+                std::hint::black_box(out)
             });
         });
         if case.cuda_available {
@@ -212,7 +215,8 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect, sca
                 let mut session = CudaSession::default();
                 b.iter(|| {
                     let mut decoder =
-                        J2kDecoder::new(black_box(case.fixture.as_slice())).expect("decoder");
+                        J2kDecoder::new(std::hint::black_box(case.fixture.as_slice()))
+                            .expect("decoder");
                     let surface = decoder
                         .submit_region_scaled_to_device(
                             &mut session,
@@ -225,7 +229,7 @@ fn bench_roi_scaled(c: &mut Criterion, cases: &[DecodeBenchCase], roi: Rect, sca
                         .wait()
                         .expect("strict CUDA HTJ2K ROI+scaled decode");
                     assert_cuda_resident_decode(&surface);
-                    black_box(surface)
+                    std::hint::black_box(surface)
                 });
             });
         }
@@ -252,12 +256,12 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                         let surfaces = Codec::decode_tiles_to_device(
                             &mut ctx,
                             &mut pool,
-                            black_box(inputs),
+                            std::hint::black_box(inputs),
                             fmt,
                             BackendRequest::Cpu,
                         )
                         .expect("CPU HTJ2K batch decode");
-                        black_box(surfaces)
+                        std::hint::black_box(surfaces)
                     });
                 },
             );
@@ -270,14 +274,14 @@ fn bench_tile_batch(c: &mut Criterion, cases: &[DecodeBenchCase]) {
                         let mut session = CudaSession::default();
                         b.iter(|| {
                             let surfaces = J2kDecoder::decode_batch_to_device_with_session(
-                                black_box(inputs),
+                                std::hint::black_box(inputs),
                                 fmt,
                                 &mut session,
                             )
                             .expect("strict CUDA HTJ2K real batch decode");
                             assert_eq!(surfaces.len(), inputs.len());
-                            surfaces.iter().for_each(assert_cuda_resident_decode);
-                            black_box(surfaces)
+                            assert_cuda_resident_batch_decode(&surfaces);
+                            std::hint::black_box(surfaces)
                         });
                     },
                 );
@@ -372,13 +376,30 @@ fn cuda_benchmark_id(case: &DecodeBenchCase) -> &'static str {
 }
 
 fn assert_cuda_resident_decode(surface: &signinum_j2k_cuda::Surface) {
+    let cuda = assert_cuda_resident_surface(surface);
+    assert!(cuda.stats().decode_kernel_dispatches() > 0);
+}
+
+fn assert_cuda_resident_batch_decode(surfaces: &[signinum_j2k_cuda::Surface]) {
+    assert!(!surfaces.is_empty());
+    let decode_dispatches = surfaces
+        .iter()
+        .map(assert_cuda_resident_surface)
+        .map(|cuda| cuda.stats().decode_kernel_dispatches())
+        .sum::<usize>();
+    assert!(decode_dispatches > 0);
+}
+
+fn assert_cuda_resident_surface(
+    surface: &signinum_j2k_cuda::Surface,
+) -> signinum_j2k_cuda::CudaSurface<'_> {
     assert_eq!(surface.backend_kind(), BackendKind::Cuda);
     assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
     assert!(surface.as_host_bytes().is_none());
     let cuda = surface.cuda_surface().expect("cuda surface");
     assert_ne!(cuda.device_ptr(), 0);
     assert_eq!(cuda.stats().copy_kernel_dispatches(), 0);
-    assert!(cuda.stats().decode_kernel_dispatches() > 0);
+    cuda
 }
 
 fn cuda_decode_available(label: &str, fixture: &[u8], fmt: PixelFormat) -> bool {

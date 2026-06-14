@@ -7,12 +7,9 @@
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]
 
+use signinum_test_support::cuda_runtime_required;
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
-
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
 fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 8]; 8]> {
@@ -29,7 +26,7 @@ fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 
 
 #[test]
 fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -92,7 +89,7 @@ fn cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required() {
 
 #[test]
 fn cuda_dwt97_batch_non_uniform_geometry_falls_back_to_per_job_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 

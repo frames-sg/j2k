@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_j2k_native::{
-    DecodeSettings, EncodedHtJ2kCodeBlock, Image, J2kEncodeStageAccelerator,
+use signinum_j2k::{
+    EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kEncodeStageAccelerator,
     J2kHtCodeBlockEncodeJob,
 };
+use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -14,6 +15,7 @@ use signinum_transcode::accelerator::{
     PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
     PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
     PrequantizedHtj2k97Subband, RayonReversibleDwt53Accelerator, ReversibleDwt53FirstLevel,
+    TranscodeStageError,
 };
 use signinum_transcode::dct53_2d::{
     dct8x8_blocks_to_dwt53_float_linear_with_scratch, Dct53GridScratch, Dwt53TwoDimensional,
@@ -35,10 +37,13 @@ use std::{
 
 #[path = "fixtures/mod.rs"]
 mod jpeg_fixtures;
+use signinum_test_support::{
+    JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
+};
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode grayscale JPEG to HTJ2K");
@@ -55,7 +60,7 @@ fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
 
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -77,7 +82,7 @@ fn grayscale_8x8_transcode_reports_opt_in_float_reference_metrics() {
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_lossy_97_htj2k() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -146,13 +151,13 @@ fn option_constructors_select_consistent_default_codec_modes() {
         lossy
             .encode_options
             .irreversible_quantization_subband_scales,
-        signinum_j2k_native::IrreversibleQuantizationSubbandScales::default()
+        IrreversibleQuantizationSubbandScales::default()
     );
 }
 
 #[test]
 fn transcode_rejects_inconsistent_codec_mode_options() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
         ..JpegToHtj2kOptions::default()
@@ -169,7 +174,7 @@ fn transcode_rejects_inconsistent_codec_mode_options() {
 
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = JPEG_BASELINE_420_16X16;
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -201,7 +206,7 @@ fn ycbcr_420_jpeg_transcodes_to_decodable_lossy_97_htj2k_with_native_sampling() 
 
 #[test]
 fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -231,7 +236,7 @@ fn grayscale_8x8_transcode_reports_opt_in_integer_reference_metrics() {
 
 #[test]
 fn default_transcode_uses_integer_direct_coefficients() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = JPEG_BASELINE_420_16X16;
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -256,7 +261,7 @@ fn default_transcode_uses_integer_direct_coefficients() {
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
     let options = JpegToHtj2kOptions {
@@ -287,7 +292,7 @@ fn grayscale_8x8_jpeg_transcodes_with_two_decomposition_levels() {
 
 #[test]
 fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut encode_options = JpegToHtj2kOptions::default().encode_options;
     encode_options.num_decomposition_levels = 2;
     let options = JpegToHtj2kOptions {
@@ -316,7 +321,7 @@ fn integer_direct_transcode_matches_integer_oracle_with_two_decomposition_levels
 
 #[test]
 fn generated_htj2k_is_accepted_by_available_external_decoder() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode grayscale JPEG to HTJ2K");
     let decoders = available_external_decoders();
@@ -427,7 +432,7 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_grayscale_
 
 #[test]
 fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = JPEG_BASELINE_420_16X16;
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::default()
@@ -455,7 +460,7 @@ fn integer_direct_transcode_with_rayon_accelerator_matches_scalar_for_ycbcr_420(
 
 #[test]
 fn ycbcr_444_jpeg_transcodes_to_decodable_htj2k_without_mct() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
+    let jpeg = JPEG_BASELINE_444_8X8;
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:4:4 YCbCr JPEG to HTJ2K");
@@ -473,7 +478,7 @@ fn ycbcr_444_jpeg_transcodes_to_decodable_htj2k_without_mct() {
 
 #[test]
 fn ycbcr_422_jpeg_transcodes_with_native_component_sampling() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg");
+    let jpeg = JPEG_BASELINE_422_16X8;
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:2:2 YCbCr JPEG to HTJ2K");
@@ -492,7 +497,7 @@ fn ycbcr_422_jpeg_transcodes_with_native_component_sampling() {
 
 #[test]
 fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = JPEG_BASELINE_420_16X16;
 
     let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::default())
         .expect("transcode 4:2:0 YCbCr JPEG to HTJ2K");
@@ -512,7 +517,7 @@ fn ycbcr_420_jpeg_transcodes_with_native_component_sampling() {
 
 #[test]
 fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = JPEG_BASELINE_420_16X16;
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -534,8 +539,8 @@ fn ycbcr_420_validation_metrics_cover_native_component_coefficients() {
 
 #[test]
 fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
-    let larger_jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let smaller_jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let larger_jpeg = JPEG_BASELINE_420_16X16;
+    let smaller_jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         ..JpegToHtj2kOptions::default()
@@ -565,7 +570,7 @@ fn stateful_transcoder_reuses_dct_block_scratch_across_tiles() {
 
 #[test]
 fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
@@ -598,7 +603,7 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
 
 #[test]
 fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut transcoder = JpegToHtj2kTranscoder::default();
 
     let encoded = transcoder
@@ -619,7 +624,7 @@ fn lossy_97_cpu_report_includes_transform_fallback_timing_breakdown() {
 
 #[test]
 fn integer_direct_transcode_path_uses_reversible_acceleration_hook_when_available() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CountingAccelerator::default();
 
@@ -642,22 +647,22 @@ fn integer_direct_transcode_batches_same_geometry_components_when_available() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: JPEG_GRAYSCALE_8X8,
             expected_batch_sizes: &[1],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: JPEG_BASELINE_444_8X8,
             expected_batch_sizes: &[3],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: JPEG_BASELINE_422_16X8,
             expected_batch_sizes: &[1, 2],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: JPEG_BASELINE_420_16X16,
             expected_batch_sizes: &[1, 2],
         },
     ] {
@@ -701,22 +706,22 @@ fn integer_direct_batch_transcode_groups_components_across_tiles() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: JPEG_GRAYSCALE_8X8,
             expected_batch_sizes: &[4],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: JPEG_BASELINE_444_8X8,
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: JPEG_BASELINE_422_16X8,
             expected_batch_sizes: &[4, 4, 4],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: JPEG_BASELINE_420_16X16,
             expected_batch_sizes: &[4, 4, 4],
         },
     ] {
@@ -787,22 +792,22 @@ fn float97_batch_transcode_groups_components_across_tiles() {
     for fixture in [
         BatchFixture {
             name: "grayscale",
-            jpeg: include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
+            jpeg: JPEG_GRAYSCALE_8X8,
             expected_batch_sizes: &[4],
         },
         BatchFixture {
             name: "ycbcr_444",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
+            jpeg: JPEG_BASELINE_444_8X8,
             expected_batch_sizes: &[12],
         },
         BatchFixture {
             name: "ycbcr_422",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
+            jpeg: JPEG_BASELINE_422_16X8,
             expected_batch_sizes: &[4, 8],
         },
         BatchFixture {
             name: "ycbcr_420",
-            jpeg: include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
+            jpeg: JPEG_BASELINE_420_16X16,
             expected_batch_sizes: &[4, 8],
         },
     ] {
@@ -863,7 +868,7 @@ fn float97_batch_transcode_groups_components_across_tiles() {
 
 #[test]
 fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -887,7 +892,7 @@ fn float97_batch_transcode_prefers_prequantized_codeblock_batches() {
 
 #[test]
 fn float97_prequantized_batch_receives_lossy_subband_profile() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let mut options = JpegToHtj2kOptions::lossy_97();
     options
         .encode_options
@@ -915,7 +920,7 @@ fn float97_prequantized_batch_receives_lossy_subband_profile() {
 
 #[test]
 fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::lossless_53();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -939,7 +944,7 @@ fn integer_direct_batch_transcode_offers_ht_blocks_to_encode_accelerator() {
 
 #[test]
 fn batch_transcode_preserves_encode_hooks_when_parallel_cpu_fallback_requested() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::lossless_53();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -966,7 +971,7 @@ fn batch_transcode_preserves_encode_hooks_when_parallel_cpu_fallback_requested()
 
 #[test]
 fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -991,7 +996,7 @@ fn float97_batch_transcode_offers_prequantized_ht_blocks_to_encode_accelerator()
 
 #[test]
 fn float97_preencoded_batch_skips_encode_codeblock_hooks() {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -1016,7 +1021,7 @@ fn float97_preencoded_batch_skips_encode_codeblock_hooks() {
 
 #[test]
 fn float97_preencoded_batch_groups_compatible_color_components() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg");
+    let jpeg = JPEG_BASELINE_444_8X8;
     let options = JpegToHtj2kOptions::lossy_97();
     let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
     let mut transcoder = JpegToHtj2kTranscoder::default();
@@ -1040,7 +1045,7 @@ fn float97_preencoded_batch_groups_compatible_color_components() {
 
 #[test]
 fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
-    let good = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let good = JPEG_GRAYSCALE_8X8;
     let inputs = [
         JpegTileBatchInput { bytes: good },
         JpegTileBatchInput {
@@ -1066,8 +1071,8 @@ fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
 
 #[test]
 fn stateful_transcoder_reuses_integer_idct_block_scratch_across_tiles() {
-    let larger_jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let smaller_jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+    let larger_jpeg = JPEG_BASELINE_420_16X16;
+    let smaller_jpeg = JPEG_GRAYSCALE_8X8;
     let options = JpegToHtj2kOptions::default();
     let mut transcoder = JpegToHtj2kTranscoder::default();
 
@@ -1113,7 +1118,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
-    ) -> Result<Option<ReversibleDwt53FirstLevel>, &'static str> {
+    ) -> Result<Option<ReversibleDwt53FirstLevel>, TranscodeStageError> {
         self.reversible_dwt53_calls += 1;
         Ok(Some(
             RayonReversibleDwt53Accelerator::default()
@@ -1125,7 +1130,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
     fn dct_grid_to_reversible_dwt53_batch(
         &mut self,
         jobs: &[DctGridToReversibleDwt53Job<'_>],
-    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
         self.reversible_dwt53_batch_calls += 1;
         self.reversible_dwt53_batch_sizes.push(jobs.len());
         let mut output = Vec::with_capacity(jobs.len());
@@ -1143,7 +1148,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
     fn dct_grid_to_dwt53(
         &mut self,
         job: DctGridToDwt53Job<'_>,
-    ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt53TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt53_calls += 1;
         let dwt = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
             job.blocks,
@@ -1160,7 +1165,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
     fn dct_grid_to_dwt97(
         &mut self,
         job: DctGridToDwt97Job<'_>,
-    ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt97TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt97_calls += 1;
         let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
             job.blocks,
@@ -1177,7 +1182,7 @@ impl DctToWaveletStageAccelerator for CountingAccelerator {
     fn dct_grid_to_dwt97_batch(
         &mut self,
         jobs: &[DctGridToDwt97Job<'_>],
-    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
         self.dwt97_batch_calls += 1;
         self.dwt97_batch_sizes.push(jobs.len());
         let mut output = Vec::with_capacity(jobs.len());
@@ -1257,7 +1262,7 @@ impl DctToWaveletStageAccelerator for Prequantized97Accelerator {
         &mut self,
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, TranscodeStageError> {
         self.prequantized_batch_sizes.push(jobs.len());
         self.last_options = Some(options);
         Ok(Some(
@@ -1270,7 +1275,7 @@ impl DctToWaveletStageAccelerator for Prequantized97Accelerator {
     fn dct_grid_to_dwt97_batch(
         &mut self,
         _jobs: &[DctGridToDwt97Job<'_>],
-    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
         self.dwt97_batch_calls += 1;
         Ok(None)
     }
@@ -1285,7 +1290,7 @@ impl DctToWaveletStageAccelerator for Preencoded97Accelerator {
         &mut self,
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
         self.preencoded_batch_sizes.push(jobs.len());
         self.last_timings = Some(Dwt97BatchStageTimings {
             ht_encode_us: 7,
@@ -1303,7 +1308,7 @@ impl DctToWaveletStageAccelerator for Preencoded97Accelerator {
         &mut self,
         _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, TranscodeStageError> {
         panic!("preencoded accelerator should be offered before prequantized fallback")
     }
 

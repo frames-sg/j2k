@@ -4,6 +4,7 @@ use std::os::raw::c_uint;
 pub(crate) enum CudaKernel {
     CopyU8,
     J2kDeinterleaveToF32,
+    J2kDeinterleaveStridedToF32,
     J2kForwardRct,
     J2kForwardIct,
     J2kForwardDwt53Horizontal,
@@ -40,6 +41,16 @@ pub(crate) enum CudaKernel {
     Htj2kEncodeCodeblocksMultiInputCleanup64,
     Htj2kCompactCodeblocks,
     Htj2kPacketizeCleanup,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegDecodeFast420Rgb8,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegDecodeFast422Rgb8,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegDecodeFast444Rgb8,
+    #[cfg_attr(not(signinum_cuda_jpeg_decode_ptx_built), allow(dead_code))]
+    JpegEntropySync420,
+    #[allow(dead_code)]
+    JpegEntropyOverflow420,
     J2kInverseDwtSingle,
     J2kInverseMct,
     J2kStoreGray16,
@@ -78,6 +89,7 @@ impl CudaKernel {
         match self {
             Self::CopyU8 => COPY_U8_PTX,
             Self::J2kDeinterleaveToF32
+            | Self::J2kDeinterleaveStridedToF32
             | Self::J2kForwardRct
             | Self::J2kForwardIct
             | Self::J2kForwardDwt53Horizontal
@@ -123,6 +135,11 @@ impl CudaKernel {
             | Self::Htj2kEncodeCodeblocksMultiInputCleanup64
             | Self::Htj2kCompactCodeblocks
             | Self::Htj2kPacketizeCleanup => HTJ2K_ENCODE_PTX,
+            Self::JpegDecodeFast420Rgb8
+            | Self::JpegDecodeFast422Rgb8
+            | Self::JpegDecodeFast444Rgb8
+            | Self::JpegEntropySync420
+            | Self::JpegEntropyOverflow420 => JPEG_DECODE_PTX,
             Self::TranscodeReversible53Idct
             | Self::TranscodeReversible53VerticalLow
             | Self::TranscodeReversible53VerticalHigh
@@ -145,6 +162,7 @@ impl CudaKernel {
         match self {
             Self::CopyU8 => b"signinum_copy_u8\0",
             Self::J2kDeinterleaveToF32 => b"signinum_j2k_deinterleave_to_f32\0",
+            Self::J2kDeinterleaveStridedToF32 => b"signinum_j2k_deinterleave_strided_to_f32\0",
             Self::J2kForwardRct => b"signinum_j2k_forward_rct\0",
             Self::J2kForwardIct => b"signinum_j2k_forward_ict\0",
             Self::J2kForwardDwt53Horizontal => b"signinum_j2k_forward_dwt53_horizontal\0",
@@ -201,6 +219,11 @@ impl CudaKernel {
             }
             Self::Htj2kCompactCodeblocks => b"signinum_htj2k_compact_codeblocks\0",
             Self::Htj2kPacketizeCleanup => b"signinum_htj2k_packetize_cleanup\0",
+            Self::JpegDecodeFast420Rgb8 => b"signinum_jpeg_decode_fast420_rgb8\0",
+            Self::JpegDecodeFast422Rgb8 => b"signinum_jpeg_decode_fast422_rgb8\0",
+            Self::JpegDecodeFast444Rgb8 => b"signinum_jpeg_decode_fast444_rgb8\0",
+            Self::JpegEntropySync420 => b"signinum_jpeg_entropy_sync420\0",
+            Self::JpegEntropyOverflow420 => b"signinum_jpeg_entropy_overflow420\0",
             Self::J2kInverseDwtSingle => b"signinum_j2k_inverse_dwt_single\0",
             Self::J2kInverseMct => b"signinum_j2k_inverse_mct\0",
             Self::J2kStoreGray16 => b"signinum_j2k_store_gray16\0",
@@ -234,11 +257,7 @@ impl CudaKernel {
 }
 
 pub(crate) fn copy_u8_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, 1, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(len, 1, COPY_U8_THREADS)
 }
 
 const COPY_U8_THREADS: usize = 256;
@@ -252,6 +271,7 @@ const HTJ2K_DECODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_decode_kernels.ptx"));
 const HTJ2K_ENCODE_PTX: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/htj2k_encode_kernels.ptx"));
+const JPEG_DECODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jpeg_decode_kernels.ptx"));
 // Always resolves: build.rs writes a placeholder empty module when nvcc is
 // absent (the dispatch checks `signinum_cuda_transcode_ptx_built` before load).
 const TRANSCODE_PTX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/transcode_kernels.ptx"));
@@ -261,11 +281,7 @@ const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
 const HTJ2K_ENCODE_CODEBLOCK_THREADS_CUDA: c_uint = 128;
 
 pub(crate) fn j2k_forward_rct_launch_geometry(len: usize) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(len.div_ceil(COPY_U8_THREADS)).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, 1, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(len, 1, COPY_U8_THREADS)
 }
 
 pub(crate) fn j2k_dwt53_launch_geometry(width: u32, height: u32) -> Option<CudaLaunchGeometry> {
@@ -281,12 +297,7 @@ pub(crate) fn j2k_idwt_multi_1d_launch_geometry(
     max_len: usize,
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(max_len.div_ceil(COPY_U8_THREADS)).ok()?;
-    let jobs = c_uint::try_from(job_count).ok()?;
-    Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
-    })
+    x_blocks_launch_geometry(max_len, job_count, COPY_U8_THREADS)
 }
 
 pub(crate) fn j2k_idwt_multi_coop_launch_geometry(
@@ -373,12 +384,38 @@ pub(crate) fn j2k_store_batch_launch_geometry(
     max_pixels: usize,
     job_count: usize,
 ) -> Option<CudaLaunchGeometry> {
-    let blocks = c_uint::try_from(max_pixels.div_ceil(COPY_U8_THREADS)).ok()?;
-    let jobs = c_uint::try_from(job_count).ok()?;
+    x_blocks_launch_geometry(max_pixels, job_count, COPY_U8_THREADS)
+}
+
+fn x_blocks_launch_geometry(
+    work_items: usize,
+    grid_y: usize,
+    threads_per_block: usize,
+) -> Option<CudaLaunchGeometry> {
+    if threads_per_block == 0 {
+        return None;
+    }
+    let blocks = c_uint::try_from(work_items.div_ceil(threads_per_block)).ok()?;
+    let grid_y = c_uint::try_from(grid_y).ok()?;
+    let block_x = c_uint::try_from(threads_per_block).ok()?;
     Some(CudaLaunchGeometry {
-        grid: (blocks, jobs, 1),
-        block: (COPY_U8_THREADS_CUDA, 1, 1),
+        grid: (blocks, grid_y, 1),
+        block: (block_x, 1, 1),
     })
+}
+
+pub(crate) fn with_grid_y(base: CudaLaunchGeometry, grid_y: c_uint) -> CudaLaunchGeometry {
+    CudaLaunchGeometry {
+        grid: (base.grid.0, grid_y, base.grid.2),
+        block: base.block,
+    }
+}
+
+pub(crate) fn with_grid_z(base: CudaLaunchGeometry, grid_z: c_uint) -> CudaLaunchGeometry {
+    CudaLaunchGeometry {
+        grid: (base.grid.0, base.grid.1, grid_z),
+        block: base.block,
+    }
 }
 
 pub(crate) fn htj2k_encode_codeblock_launch_geometry(
@@ -445,6 +482,90 @@ mod tests {
         let source = std::str::from_utf8(&ptx[..ptx.len() - 1]).expect("ptx utf8");
         assert!(source.contains(".visible .entry signinum_copy_u8("));
         assert_eq!(CudaKernel::CopyU8.entrypoint(), b"signinum_copy_u8\0");
+    }
+
+    #[test]
+    fn jpeg_decode_kernel_metadata_matches_source_entrypoints() {
+        assert_eq!(
+            CudaKernel::JpegEntropySync420.entrypoint(),
+            b"signinum_jpeg_entropy_sync420\0"
+        );
+        assert_eq!(
+            CudaKernel::JpegEntropyOverflow420.entrypoint(),
+            b"signinum_jpeg_entropy_overflow420\0"
+        );
+
+        let cuda_source = include_str!("jpeg_decode_kernels.cu");
+        assert!(cuda_source.contains("extern \"C\" __global__ void signinum_jpeg_entropy_sync420("));
+        assert!(
+            cuda_source.contains("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+        );
+        assert!(cuda_source.contains(
+            "const unsigned int remaining_bits = params.entropy_bits - state.start_bit;"
+        ));
+        let scanner_source = cuda_source
+            .split("__device__ bool signinum_jpeg_entropy_scan_one_symbol420(")
+            .nth(1)
+            .expect("entropy scanner source")
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_sync420(")
+            .next()
+            .expect("entropy scanner source before sync kernel");
+        let sync_source = cuda_source
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_sync420(")
+            .nth(1)
+            .expect("entropy sync source")
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+            .next()
+            .expect("entropy sync source before overflow kernel");
+        let overflow_source = cuda_source
+            .split("extern \"C\" __global__ void signinum_jpeg_entropy_overflow420(")
+            .nth(1)
+            .expect("entropy overflow source");
+        assert!(sync_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
+        assert!(overflow_source.contains("signinum_jpeg_entropy_scan_one_symbol420("));
+        assert!(overflow_source.contains("const unsigned char *entropy,"));
+        let huffman_recovery = scanner_source
+            .find("if (status.code == JPEG_STATUS_HUFFMAN) {")
+            .expect("self-sync Huffman recovery");
+        let one_bit_advance = scanner_source
+            .find("state.bit_pos += 1u;")
+            .expect("self-sync one-bit recovery advance");
+        assert!(huffman_recovery < one_bit_advance);
+        let truncated_recovery = scanner_source
+            .find("if (status.code == JPEG_STATUS_TRUNCATED) {")
+            .expect("self-sync truncated entropy recovery");
+        let amplitude_read = scanner_source
+            .find(
+                "if (!signinum_jpeg_ensure_bits(reader, entropy, params.entropy_len, coeff_bits))",
+            )
+            .expect("amplitude bit read");
+        assert!(truncated_recovery < amplitude_read);
+        assert!(!scanner_source.contains("state.zigzag_index + run >= 64u"));
+        assert!(!scanner_source.contains("run != 0u && run != 15u"));
+        assert!(cuda_source.contains("__device__ bool signinum_jpeg_decode_symbol_real("));
+        assert!(cuda_source.contains("__device__ bool signinum_jpeg_real_bits_consumed("));
+        assert!(scanner_source.contains(
+            "signinum_jpeg_decode_symbol_real(reader, entropy, params.entropy_len, table, &status, symbol)"
+        ));
+        let no_progress_guard = scanner_source
+            .find(
+                "if (!signinum_jpeg_real_bits_consumed(reader, before_pos, before_bits, consumed))",
+            )
+            .expect("real-bit progress guard");
+        let bit_pos_advance = scanner_source
+            .find("state.bit_pos += consumed;")
+            .expect("bit position advance");
+        assert!(no_progress_guard < bit_pos_advance);
+        let coefficient_advance = scanner_source
+            .find("state.zigzag_index += run + 1u;")
+            .expect("AC coefficient advance");
+        assert!(amplitude_read < coefficient_advance);
+        let eob_branch = scanner_source
+            .find("if (ssss == 0u && run != 15u) {")
+            .expect("EOB branch");
+        assert!(eob_branch < coefficient_advance);
+        assert!(overflow_source
+            .contains("stop_bit = state.bit_pos + min(overflow_limit, remaining_bits);"));
     }
 
     #[test]
@@ -885,6 +1006,51 @@ mod tests {
         assert_eq!(copy_u8_launch_geometry(1).unwrap().grid, (1, 1, 1));
         assert_eq!(copy_u8_launch_geometry(256).unwrap().grid, (1, 1, 1));
         assert_eq!(copy_u8_launch_geometry(257).unwrap().grid, (2, 1, 1));
+    }
+
+    #[test]
+    fn x_blocks_launch_geometry_rounds_work_items_and_preserves_y_grid() {
+        let geometry = x_blocks_launch_geometry(513, 7, COPY_U8_THREADS).unwrap();
+
+        assert_eq!(geometry.grid, (3, 7, 1));
+        assert_eq!(geometry.block, (COPY_U8_THREADS_CUDA, 1, 1));
+    }
+
+    #[test]
+    fn x_blocks_launch_geometry_rejects_zero_threads() {
+        assert_eq!(x_blocks_launch_geometry(513, 7, 0), None);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn x_blocks_launch_geometry_rejects_grid_dimensions_above_cuda_uint() {
+        assert_eq!(x_blocks_launch_geometry(usize::MAX, usize::MAX, 1), None);
+    }
+
+    #[test]
+    fn with_grid_y_preserves_block_and_other_grid_axes() {
+        let base = CudaLaunchGeometry {
+            grid: (2, 3, 4),
+            block: (16, 8, 1),
+        };
+
+        let geometry = with_grid_y(base, 9);
+
+        assert_eq!(geometry.grid, (2, 9, 4));
+        assert_eq!(geometry.block, base.block);
+    }
+
+    #[test]
+    fn with_grid_z_preserves_block_and_other_grid_axes() {
+        let base = CudaLaunchGeometry {
+            grid: (2, 3, 4),
+            block: (16, 8, 1),
+        };
+
+        let geometry = with_grid_z(base, 11);
+
+        assert_eq!(geometry.grid, (2, 3, 11));
+        assert_eq!(geometry.block, base.block);
     }
 
     #[test]

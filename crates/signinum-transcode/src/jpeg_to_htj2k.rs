@@ -6,19 +6,23 @@ use core::fmt;
 use std::time::Instant;
 
 use rayon::prelude::*;
+use signinum_j2k::adapter::encode_stage::NativeEncodeStageAdapter;
+use signinum_j2k::{
+    CpuOnlyJ2kEncodeStageAccelerator, IrreversibleQuantizationSubbandScales,
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kProgressionOrder,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image,
+};
 use signinum_j2k_native::{
     encode_precomputed_htj2k_53_with_accelerator,
     encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator,
     encode_preencoded_htj2k_97_owned_with_accelerator,
-    encode_prequantized_htj2k_97_with_accelerator, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
-    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
-    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image,
+    encode_prequantized_htj2k_97_with_accelerator,
 };
 use signinum_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent, JpegDctImage,
@@ -29,17 +33,21 @@ use crate::accelerator::{
     DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt53Job, DctGridToDwt97Job,
     DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator,
     Dwt97BatchStageTimings, Htj2k97CodeBlockOptions, ReversibleDwt53FirstLevel,
+    TranscodeStageError,
 };
 use crate::dct53_2d::{
     dct8x8_blocks_then_dwt53_float, dct8x8_blocks_to_dwt53_float_linear_with_scratch,
-    linearized_53_2d_from_plane, Dct53GridError, Dct53GridScratch, Dwt53TwoDimensional,
+    linearized_53_2d_from_plane, Dct53GridScratch, Dwt53TwoDimensional,
 };
 use crate::dct97_2d::{
     dct8x8_blocks_then_dwt97_float, dct8x8_blocks_then_dwt97_float_with_scratch,
-    linearized_97_2d_from_plane_with_scratch, Dct97GridError, Dct97GridScratch,
-    Dwt97TwoDimensional,
+    linearized_97_2d_from_plane_with_scratch, Dct97GridScratch, Dwt97TwoDimensional,
 };
 use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
+use crate::reversible53::{
+    reversible_lift_53_high_at_fallible, reversible_lift_53_i32, reversible_lift_53_low_at_fallible,
+};
+use crate::DctGridError;
 
 /// Default irreversible quantization multiplier for JPEG direct 9/7 HTJ2K.
 ///
@@ -49,11 +57,116 @@ use crate::metrics::{error_metrics_i32, ErrorMetrics, MetricsLengthError};
 /// default but overshoots the external baseline size for this transcode path.
 pub const JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE: f32 = 1.9;
 
+/// HTJ2K encode options used after JPEG coefficient-domain wavelet bands are produced.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct JpegToHtj2kEncodeOptions {
+    /// Number of wavelet decomposition levels.
+    pub num_decomposition_levels: u8,
+    /// Whether to emit reversible/lossless coding.
+    pub reversible: bool,
+    /// Code-block width exponent minus two.
+    pub code_block_width_exp: u8,
+    /// Code-block height exponent minus two.
+    pub code_block_height_exp: u8,
+    /// JPEG 2000 guard bits.
+    pub guard_bits: u8,
+    /// Whether to encode HTJ2K code blocks instead of classic EBCOT.
+    pub use_ht_block_coding: bool,
+    /// Packet progression order.
+    pub progression_order: J2kProgressionOrder,
+    /// Whether to write a TLM marker segment.
+    pub write_tlm: bool,
+    /// Whether to write PLT packet-length marker segments.
+    pub write_plt: bool,
+    /// Whether to write PLM packet-length marker segments.
+    pub write_plm: bool,
+    /// Whether to write SOP marker segments before packets.
+    pub write_sop: bool,
+    /// Whether to write EPH markers after packet headers.
+    pub write_eph: bool,
+    /// Whether to apply JPEG 2000 multi-component transform.
+    pub use_mct: bool,
+    /// Number of cumulative quality layers.
+    pub num_layers: u8,
+    /// Optional cumulative packet-body byte targets for each quality layer.
+    pub quality_layer_byte_targets: Vec<u64>,
+    /// Whether native HTJ2K validation is enabled after encode.
+    pub validate_high_throughput_codestream: bool,
+    /// Global irreversible 9/7 quantization scale.
+    pub irreversible_quantization_scale: f32,
+    /// Per-subband irreversible 9/7 quantization scales.
+    pub irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
+    pub component_sampling: Option<Vec<(u8, u8)>>,
+    /// Optional tile size for multi-tile codestreams.
+    pub tile_size: Option<(u32, u32)>,
+    /// Optional precinct exponents in COD order.
+    pub precinct_exponents: Vec<(u8, u8)>,
+}
+
+impl Default for JpegToHtj2kEncodeOptions {
+    fn default() -> Self {
+        Self {
+            num_decomposition_levels: 5,
+            reversible: true,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            guard_bits: 1,
+            use_ht_block_coding: false,
+            progression_order: J2kProgressionOrder::Lrcp,
+            write_tlm: false,
+            write_plt: false,
+            write_plm: false,
+            write_sop: false,
+            write_eph: false,
+            use_mct: true,
+            num_layers: 1,
+            quality_layer_byte_targets: Vec::new(),
+            validate_high_throughput_codestream: true,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+            component_sampling: None,
+            tile_size: None,
+            precinct_exponents: Vec::new(),
+        }
+    }
+}
+
+impl JpegToHtj2kEncodeOptions {
+    fn to_native(&self) -> signinum_j2k_native::EncodeOptions {
+        signinum_j2k_native::EncodeOptions {
+            num_decomposition_levels: self.num_decomposition_levels,
+            reversible: self.reversible,
+            code_block_width_exp: self.code_block_width_exp,
+            code_block_height_exp: self.code_block_height_exp,
+            guard_bits: self.guard_bits,
+            use_ht_block_coding: self.use_ht_block_coding,
+            progression_order: native_progression_order(self.progression_order),
+            write_tlm: self.write_tlm,
+            write_plt: self.write_plt,
+            write_plm: self.write_plm,
+            write_sop: self.write_sop,
+            write_eph: self.write_eph,
+            use_mct: self.use_mct,
+            num_layers: self.num_layers,
+            quality_layer_byte_targets: self.quality_layer_byte_targets.clone(),
+            validate_high_throughput_codestream: self.validate_high_throughput_codestream,
+            irreversible_quantization_scale: self.irreversible_quantization_scale,
+            irreversible_quantization_subband_scales: self.irreversible_quantization_subband_scales,
+            component_sampling: self.component_sampling.clone(),
+            tile_size: self.tile_size,
+            precinct_exponents: self.precinct_exponents.clone(),
+        }
+    }
+}
+
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
 pub struct JpegToHtj2kOptions {
-    /// Native HTJ2K encode options used after wavelet bands are produced.
-    pub encode_options: EncodeOptions,
+    /// HTJ2K encode options used after wavelet bands are produced.
+    pub encode_options: JpegToHtj2kEncodeOptions,
     /// Coefficient production path used for HTJ2K precomputed bands.
     pub coefficient_path: JpegToHtj2kCoefficientPath,
     /// Materialize the float IDCT-then-DWT oracle and report rounded
@@ -99,14 +212,14 @@ impl JpegToHtj2kOptions {
     }
 }
 
-fn transcode_encode_options(reversible: bool) -> EncodeOptions {
-    EncodeOptions {
+fn transcode_encode_options(reversible: bool) -> JpegToHtj2kEncodeOptions {
+    JpegToHtj2kEncodeOptions {
         num_decomposition_levels: 1,
         reversible,
         use_ht_block_coding: true,
         use_mct: false,
         validate_high_throughput_codestream: false,
-        ..EncodeOptions::default()
+        ..JpegToHtj2kEncodeOptions::default()
     }
 }
 
@@ -397,98 +510,52 @@ pub struct TranscodeTimingReport {
 
 impl TranscodeTimingReport {
     fn add_assign(&mut self, other: Self) {
-        self.source_raw_probe_us = self
-            .source_raw_probe_us
-            .saturating_add(other.source_raw_probe_us);
-        self.read_region_decode_us = self
-            .read_region_decode_us
-            .saturating_add(other.read_region_decode_us);
-        self.compose_pad_us = self.compose_pad_us.saturating_add(other.compose_pad_us);
-        self.generated_jpeg_encode_us = self
-            .generated_jpeg_encode_us
-            .saturating_add(other.generated_jpeg_encode_us);
-        self.jpeg_dct_extract_us = self
-            .jpeg_dct_extract_us
-            .saturating_add(other.jpeg_dct_extract_us);
-        self.jpeg_dct_repack_us = self
-            .jpeg_dct_repack_us
-            .saturating_add(other.jpeg_dct_repack_us);
-        self.dct_to_wavelet_total_us = self
-            .dct_to_wavelet_total_us
-            .saturating_add(other.dct_to_wavelet_total_us);
-        self.dct_to_wavelet_accelerator_us = self
-            .dct_to_wavelet_accelerator_us
-            .saturating_add(other.dct_to_wavelet_accelerator_us);
-        self.dct_to_wavelet_cpu_fallback_us = self
-            .dct_to_wavelet_cpu_fallback_us
-            .saturating_add(other.dct_to_wavelet_cpu_fallback_us);
-        self.dwt_decompose_us = self.dwt_decompose_us.saturating_add(other.dwt_decompose_us);
-        self.dwt97_batch_pack_upload_us = self
-            .dwt97_batch_pack_upload_us
-            .saturating_add(other.dwt97_batch_pack_upload_us);
-        self.dwt97_batch_idct_row_lift_us = self
-            .dwt97_batch_idct_row_lift_us
-            .saturating_add(other.dwt97_batch_idct_row_lift_us);
-        self.dwt97_batch_column_lift_us = self
-            .dwt97_batch_column_lift_us
-            .saturating_add(other.dwt97_batch_column_lift_us);
-        self.dwt97_batch_quantize_codeblock_us = self
-            .dwt97_batch_quantize_codeblock_us
-            .saturating_add(other.dwt97_batch_quantize_codeblock_us);
-        self.dwt97_batch_ht_encode_us = self
-            .dwt97_batch_ht_encode_us
-            .saturating_add(other.dwt97_batch_ht_encode_us);
-        self.dwt97_batch_ht_kernel_us = self
-            .dwt97_batch_ht_kernel_us
-            .saturating_add(other.dwt97_batch_ht_kernel_us);
-        self.dwt97_batch_ht_status_readback_us = self
-            .dwt97_batch_ht_status_readback_us
-            .saturating_add(other.dwt97_batch_ht_status_readback_us);
-        self.dwt97_batch_ht_compact_us = self
-            .dwt97_batch_ht_compact_us
-            .saturating_add(other.dwt97_batch_ht_compact_us);
-        self.dwt97_batch_ht_output_readback_us = self
-            .dwt97_batch_ht_output_readback_us
-            .saturating_add(other.dwt97_batch_ht_output_readback_us);
-        self.dwt97_batch_ht_codeblock_dispatches = self
-            .dwt97_batch_ht_codeblock_dispatches
-            .saturating_add(other.dwt97_batch_ht_codeblock_dispatches);
-        self.dwt97_batch_readback_us = self
-            .dwt97_batch_readback_us
-            .saturating_add(other.dwt97_batch_readback_us);
-        self.htj2k_encode_us = self.htj2k_encode_us.saturating_add(other.htj2k_encode_us);
-        self.htj2k_encode_accelerator_dispatches = self
-            .htj2k_encode_accelerator_dispatches
-            .saturating_add(other.htj2k_encode_accelerator_dispatches);
-        self.htj2k_encode_ht_code_block_dispatches = self
-            .htj2k_encode_ht_code_block_dispatches
-            .saturating_add(other.htj2k_encode_ht_code_block_dispatches);
-        self.htj2k_encode_packetization_dispatches = self
-            .htj2k_encode_packetization_dispatches
-            .saturating_add(other.htj2k_encode_packetization_dispatches);
-        self.dicom_spool_write_us = self
-            .dicom_spool_write_us
-            .saturating_add(other.dicom_spool_write_us);
-        self.dicom_final_write_us = self
-            .dicom_final_write_us
-            .saturating_add(other.dicom_final_write_us);
-        self.tile_count = self.tile_count.saturating_add(other.tile_count);
-        self.component_count = self.component_count.saturating_add(other.component_count);
-        self.batch_count = self.batch_count.saturating_add(other.batch_count);
-        self.batch_jobs = self.batch_jobs.saturating_add(other.batch_jobs);
-        self.accelerator_attempts = self
-            .accelerator_attempts
-            .saturating_add(other.accelerator_attempts);
-        self.accelerator_jobs = self.accelerator_jobs.saturating_add(other.accelerator_jobs);
-        self.accelerator_dispatches = self
-            .accelerator_dispatches
-            .saturating_add(other.accelerator_dispatches);
-        self.accelerator_dispatched_jobs = self
-            .accelerator_dispatched_jobs
-            .saturating_add(other.accelerator_dispatched_jobs);
-        self.cpu_fallback_jobs = self
-            .cpu_fallback_jobs
-            .saturating_add(other.cpu_fallback_jobs);
+        macro_rules! saturating_add_fields {
+            ($($field:ident),+ $(,)?) => {
+                $(
+                    self.$field = self.$field.saturating_add(other.$field);
+                )+
+            };
+        }
+
+        saturating_add_fields!(
+            source_raw_probe_us,
+            read_region_decode_us,
+            compose_pad_us,
+            generated_jpeg_encode_us,
+            jpeg_dct_extract_us,
+            jpeg_dct_repack_us,
+            dct_to_wavelet_total_us,
+            dct_to_wavelet_accelerator_us,
+            dct_to_wavelet_cpu_fallback_us,
+            dwt_decompose_us,
+            dwt97_batch_pack_upload_us,
+            dwt97_batch_idct_row_lift_us,
+            dwt97_batch_column_lift_us,
+            dwt97_batch_quantize_codeblock_us,
+            dwt97_batch_ht_encode_us,
+            dwt97_batch_ht_kernel_us,
+            dwt97_batch_ht_status_readback_us,
+            dwt97_batch_ht_compact_us,
+            dwt97_batch_ht_output_readback_us,
+            dwt97_batch_ht_codeblock_dispatches,
+            dwt97_batch_readback_us,
+            htj2k_encode_us,
+            htj2k_encode_accelerator_dispatches,
+            htj2k_encode_ht_code_block_dispatches,
+            htj2k_encode_packetization_dispatches,
+            dicom_spool_write_us,
+            dicom_final_write_us,
+            tile_count,
+            component_count,
+            batch_count,
+            batch_jobs,
+            accelerator_attempts,
+            accelerator_jobs,
+            accelerator_dispatches,
+            accelerator_dispatched_jobs,
+            cpu_fallback_jobs,
+        );
     }
 }
 
@@ -587,14 +654,14 @@ pub enum JpegToHtj2kError {
     /// Input is outside the currently implemented experimental slice.
     Unsupported(&'static str),
     /// DCT block grid metadata did not cover the component dimensions.
-    Grid(Dct53GridError),
+    Grid(String),
     /// DCT block grid metadata did not cover the component dimensions for the
     /// 9/7 path.
-    Grid97(Dct97GridError),
+    Grid97(String),
     /// Optional transform acceleration failed.
-    Accelerator(&'static str),
+    Accelerator(TranscodeStageError),
     /// Validation metric inputs were inconsistent.
-    Metrics(MetricsLengthError),
+    Metrics(String),
     /// Validation encountered an out-of-range or non-finite coefficient.
     Validation(&'static str),
     /// Native HTJ2K encode failed.
@@ -606,10 +673,11 @@ impl fmt::Display for JpegToHtj2kError {
         match self {
             Self::Jpeg(err) => write!(f, "JPEG extraction failed: {err}"),
             Self::Unsupported(reason) => write!(f, "unsupported transcode input: {reason}"),
-            Self::Grid(err) => write!(f, "DCT grid transform failed: {err}"),
-            Self::Grid97(err) => write!(f, "DCT grid transform failed: {err}"),
+            Self::Grid(reason) | Self::Grid97(reason) => {
+                write!(f, "DCT grid transform failed: {reason}")
+            }
             Self::Accelerator(reason) => write!(f, "transform accelerator failed: {reason}"),
-            Self::Metrics(err) => write!(f, "validation metrics failed: {err}"),
+            Self::Metrics(reason) => write!(f, "validation metrics failed: {reason}"),
             Self::Validation(reason) => write!(f, "validation failed: {reason}"),
             Self::Encode(reason) => write!(f, "HTJ2K encode failed: {reason}"),
         }
@@ -620,12 +688,13 @@ impl std::error::Error for JpegToHtj2kError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Jpeg(err) => Some(err),
-            Self::Grid(err) => Some(err),
-            Self::Grid97(err) => Some(err),
-            Self::Metrics(err) => Some(err),
-            Self::Unsupported(_) | Self::Accelerator(_) | Self::Validation(_) | Self::Encode(_) => {
-                None
-            }
+            Self::Unsupported(_)
+            | Self::Grid(_)
+            | Self::Grid97(_)
+            | Self::Accelerator(_)
+            | Self::Metrics(_)
+            | Self::Validation(_)
+            | Self::Encode(_) => None,
         }
     }
 }
@@ -636,21 +705,17 @@ impl From<signinum_jpeg::JpegError> for JpegToHtj2kError {
     }
 }
 
-impl From<Dct53GridError> for JpegToHtj2kError {
-    fn from(value: Dct53GridError) -> Self {
-        Self::Grid(value)
-    }
+fn dct53_grid_error(value: DctGridError) -> JpegToHtj2kError {
+    JpegToHtj2kError::Grid(value.to_string())
 }
 
-impl From<Dct97GridError> for JpegToHtj2kError {
-    fn from(value: Dct97GridError) -> Self {
-        Self::Grid97(value)
-    }
+fn dct97_grid_error(value: DctGridError) -> JpegToHtj2kError {
+    JpegToHtj2kError::Grid97(value.to_string())
 }
 
 impl From<MetricsLengthError> for JpegToHtj2kError {
     fn from(value: MetricsLengthError) -> Self {
-        Self::Metrics(value)
+        Self::Metrics(value.to_string())
     }
 }
 
@@ -1273,10 +1338,7 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    timings.batch_count = timings.batch_count.saturating_add(1);
-    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    record_batch_attempt(timings, group.len());
     let accelerator_start = Instant::now();
     let accelerated = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
@@ -1292,10 +1354,7 @@ fn integer_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
             ));
         }
         timings.component_count = timings.component_count.saturating_add(group.len());
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings
-            .accelerator_dispatched_jobs
-            .saturating_add(group.len());
+        record_accelerator_dispatch(timings, group.len());
         let decompose_start = Instant::now();
         let wavelets = first_levels
             .into_iter()
@@ -1386,10 +1445,6 @@ fn store_compact_preencoded_component(
     Ok(())
 }
 
-fn compact_preencoded_batch_disabled() -> bool {
-    std::env::var_os("SIGNINUM_CUDA_DISABLE_COMPACT_PREENCODED").is_some()
-}
-
 #[allow(clippy::too_many_lines)]
 fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelerator>(
     groups: &[Vec<BatchComponentRef>],
@@ -1425,8 +1480,7 @@ fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelera
         .iter()
         .map(|&index| groups[index].len())
         .sum::<usize>();
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(total_jobs);
+    record_accelerator_attempt(timings, total_jobs);
     let accelerator_start = Instant::now();
     let jobs_by_group = eligible_indices
         .iter()
@@ -1436,12 +1490,12 @@ fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelera
         .iter()
         .map(|jobs| DctGridI16ToHtj2k97CodeBlockBatch { jobs })
         .collect::<Vec<_>>();
-    let compact_grouped_components = if compact_preencoded_batch_disabled() {
-        None
-    } else {
+    let compact_grouped_components = if accelerator.supports_htj2k97_compact_preencoded_batch() {
         accelerator
             .dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&batches, codeblock_options)
             .map_err(JpegToHtj2kError::Accelerator)?
+    } else {
+        None
     };
     if let Some(stage_timings) = accelerator.last_dwt97_batch_stage_timings() {
         add_dwt97_batch_stage_timings(timings, stage_timings);
@@ -1465,13 +1519,8 @@ fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelera
                 ));
             }
 
-            timings.batch_count = timings.batch_count.saturating_add(1);
-            timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
             timings.component_count = timings.component_count.saturating_add(group.len());
-            timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-            timings.accelerator_dispatched_jobs = timings
-                .accelerator_dispatched_jobs
-                .saturating_add(group.len());
+            record_batch_dispatch(timings, group.len());
             for (component_ref, component) in group.iter().copied().zip(components) {
                 store_compact_preencoded_component(
                     &mut tiles[component_ref.tile_index],
@@ -1512,13 +1561,8 @@ fn try_store_grouped_i16_preencoded_float97_batches<A: DctToWaveletStageAccelera
             ));
         }
 
-        timings.batch_count = timings.batch_count.saturating_add(1);
-        timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
         timings.component_count = timings.component_count.saturating_add(group.len());
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings
-            .accelerator_dispatched_jobs
-            .saturating_add(group.len());
+        record_batch_dispatch(timings, group.len());
         for (component_ref, component) in group.iter().copied().zip(components) {
             tiles[component_ref.tile_index].preencoded_components[component_ref.component_index] =
                 Some(component);
@@ -1551,16 +1595,16 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
     if accelerator.supports_htj2k97_i16_preencoded_batch() {
         let jobs = i16_htj2k97_jobs_for_batch_group(group, tiles)?;
 
-        timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-        timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+        record_accelerator_attempt(timings, group.len());
         let accelerator_start = Instant::now();
-        let compact_preencoded_components = if compact_preencoded_batch_disabled() {
-            None
-        } else {
-            accelerator
-                .dct_grid_i16_to_htj2k97_compact_preencoded_batch(&jobs, codeblock_options)
-                .map_err(JpegToHtj2kError::Accelerator)?
-        };
+        let compact_preencoded_components =
+            if accelerator.supports_htj2k97_compact_preencoded_batch() {
+                accelerator
+                    .dct_grid_i16_to_htj2k97_compact_preencoded_batch(&jobs, codeblock_options)
+                    .map_err(JpegToHtj2kError::Accelerator)?
+            } else {
+                None
+            };
         if let Some(stage_timings) = accelerator.last_dwt97_batch_stage_timings() {
             add_dwt97_batch_stage_timings(timings, stage_timings);
         }
@@ -1574,13 +1618,8 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
                 ));
             }
 
-            timings.batch_count = timings.batch_count.saturating_add(1);
-            timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
             timings.component_count = timings.component_count.saturating_add(group.len());
-            timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-            timings.accelerator_dispatched_jobs = timings
-                .accelerator_dispatched_jobs
-                .saturating_add(group.len());
+            record_batch_dispatch(timings, group.len());
             for (component_ref, component) in group.iter().copied().zip(compact_batch.components) {
                 store_compact_preencoded_component(
                     &mut tiles[component_ref.tile_index],
@@ -1609,13 +1648,8 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
                 ));
             }
 
-            timings.batch_count = timings.batch_count.saturating_add(1);
-            timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
             timings.component_count = timings.component_count.saturating_add(group.len());
-            timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-            timings.accelerator_dispatched_jobs = timings
-                .accelerator_dispatched_jobs
-                .saturating_add(group.len());
+            record_batch_dispatch(timings, group.len());
             for (component_ref, component) in group.iter().copied().zip(components) {
                 tiles[component_ref.tile_index].preencoded_components
                     [component_ref.component_index] = Some(component);
@@ -1659,8 +1693,7 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
         })
         .collect::<Result<Vec<_>, JpegToHtj2kError>>()?;
 
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    record_accelerator_attempt(timings, group.len());
     let accelerator_start = Instant::now();
     let preencoded_components = accelerator
         .dct_grid_to_htj2k97_preencoded_batch(&jobs, codeblock_options)
@@ -1678,13 +1711,8 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
             ));
         }
 
-        timings.batch_count = timings.batch_count.saturating_add(1);
-        timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
         timings.component_count = timings.component_count.saturating_add(group.len());
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings
-            .accelerator_dispatched_jobs
-            .saturating_add(group.len());
+        record_batch_dispatch(timings, group.len());
         for (component_ref, component) in group.iter().copied().zip(components) {
             tiles[component_ref.tile_index].preencoded_components[component_ref.component_index] =
                 Some(component);
@@ -1712,13 +1740,8 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
         ));
     }
 
-    timings.batch_count = timings.batch_count.saturating_add(1);
-    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
     timings.component_count = timings.component_count.saturating_add(group.len());
-    timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-    timings.accelerator_dispatched_jobs = timings
-        .accelerator_dispatched_jobs
-        .saturating_add(group.len());
+    record_batch_dispatch(timings, group.len());
     for (component_ref, component) in group.iter().copied().zip(components) {
         tiles[component_ref.tile_index].prequantized_components[component_ref.component_index] =
             Some(component);
@@ -1727,7 +1750,7 @@ fn try_store_prequantized_float97_batch_group<A: DctToWaveletStageAccelerator>(
     Ok(true)
 }
 
-fn htj2k97_codeblock_options(options: &EncodeOptions) -> Htj2k97CodeBlockOptions {
+fn htj2k97_codeblock_options(options: &JpegToHtj2kEncodeOptions) -> Htj2k97CodeBlockOptions {
     Htj2k97CodeBlockOptions {
         bit_depth: 8,
         guard_bits: options.guard_bits.max(2),
@@ -1735,6 +1758,18 @@ fn htj2k97_codeblock_options(options: &EncodeOptions) -> Htj2k97CodeBlockOptions
         code_block_height_exp: options.code_block_height_exp,
         irreversible_quantization_scale: options.irreversible_quantization_scale,
         irreversible_quantization_subband_scales: options.irreversible_quantization_subband_scales,
+    }
+}
+
+fn native_progression_order(
+    progression: J2kProgressionOrder,
+) -> signinum_j2k_native::EncodeProgressionOrder {
+    match progression {
+        J2kProgressionOrder::Lrcp => signinum_j2k_native::EncodeProgressionOrder::Lrcp,
+        J2kProgressionOrder::Rlcp => signinum_j2k_native::EncodeProgressionOrder::Rlcp,
+        J2kProgressionOrder::Rpcl => signinum_j2k_native::EncodeProgressionOrder::Rpcl,
+        J2kProgressionOrder::Pcrl => signinum_j2k_native::EncodeProgressionOrder::Pcrl,
+        J2kProgressionOrder::Cprl => signinum_j2k_native::EncodeProgressionOrder::Cprl,
     }
 }
 
@@ -1776,10 +1811,7 @@ fn float97_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
         })
         .collect::<Result<Vec<_>, JpegToHtj2kError>>()?;
 
-    timings.batch_count = timings.batch_count.saturating_add(1);
-    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    record_batch_attempt(timings, group.len());
     let accelerator_start = Instant::now();
     let accelerated_first_levels = accelerator
         .dct_grid_to_dwt97_batch(&jobs)
@@ -1798,10 +1830,7 @@ fn float97_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
             ));
         }
         timings.component_count = timings.component_count.saturating_add(group.len());
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings
-            .accelerator_dispatched_jobs
-            .saturating_add(group.len());
+        record_accelerator_dispatch(timings, group.len());
         let decompose_start = Instant::now();
         let wavelets = first_levels
             .into_par_iter()
@@ -1870,6 +1899,34 @@ fn add_dwt97_batch_stage_timings(
     timings.dwt97_batch_readback_us = timings
         .dwt97_batch_readback_us
         .saturating_add(stage_timings.readback_us);
+}
+
+fn record_accelerator_attempt(timings: &mut TranscodeTimingReport, job_count: usize) {
+    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
+    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(job_count);
+}
+
+fn record_accelerator_dispatch(timings: &mut TranscodeTimingReport, job_count: usize) {
+    timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
+    timings.accelerator_dispatched_jobs = timings
+        .accelerator_dispatched_jobs
+        .saturating_add(job_count);
+}
+
+fn record_batch_attempt(timings: &mut TranscodeTimingReport, job_count: usize) {
+    timings.batch_count = timings.batch_count.saturating_add(1);
+    timings.batch_jobs = timings.batch_jobs.saturating_add(job_count);
+    record_accelerator_attempt(timings, job_count);
+}
+
+fn record_batch_dispatch(timings: &mut TranscodeTimingReport, job_count: usize) {
+    timings.batch_count = timings.batch_count.saturating_add(1);
+    timings.batch_jobs = timings.batch_jobs.saturating_add(job_count);
+    record_accelerator_dispatch(timings, job_count);
+}
+
+fn record_cpu_fallback(timings: &mut TranscodeTimingReport, job_count: usize) {
+    timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(job_count);
 }
 
 fn store_integer_batch_wavelet(
@@ -2067,6 +2124,7 @@ fn can_encode_float97_precomputed_tiles_batch(
         })
 }
 
+#[allow(clippy::too_many_lines)]
 fn encode_float97_precomputed_tiles_batch<E: J2kEncodeStageAccelerator>(
     prepared_tiles: Vec<Float97BatchTile>,
     options: &JpegToHtj2kOptions,
@@ -2125,17 +2183,22 @@ fn encode_float97_precomputed_tiles_batch<E: J2kEncodeStageAccelerator>(
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestreams = match encode_precomputed_htj2k_97_batch_with_accelerator(
-        &images,
-        &options.encode_options,
-        encode_accelerator,
-    ) {
-        Ok(codestreams) => codestreams,
-        Err(error) => {
-            return records
-                .into_iter()
-                .map(|record| (record.tile_index, Err(JpegToHtj2kError::Encode(error))))
-                .collect();
+    let native_images = images;
+    let codestreams = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter::new(encode_accelerator);
+        let native_encode_options = options.encode_options.to_native();
+        match encode_precomputed_htj2k_97_batch_with_accelerator(
+            &native_images,
+            &native_encode_options,
+            &mut native_encode_accelerator,
+        ) {
+            Ok(codestreams) => codestreams,
+            Err(error) => {
+                return records
+                    .into_iter()
+                    .map(|record| (record.tile_index, Err(JpegToHtj2kError::Encode(error))))
+                    .collect();
+            }
         }
     };
     let encode_dispatch_after = encode_accelerator.dispatch_report();
@@ -2257,12 +2320,17 @@ fn encode_integer_batch_tile<E: J2kEncodeStageAccelerator>(
         components,
     };
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestream = encode_precomputed_htj2k_53_with_accelerator(
-        &precomputed,
-        &options.encode_options,
-        encode_accelerator,
-    )
-    .map_err(JpegToHtj2kError::Encode)?;
+    let native_precomputed = precomputed;
+    let codestream = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter::new(encode_accelerator);
+        let native_encode_options = options.encode_options.to_native();
+        encode_precomputed_htj2k_53_with_accelerator(
+            &native_precomputed,
+            &native_encode_options,
+            &mut native_encode_accelerator,
+        )
+        .map_err(JpegToHtj2kError::Encode)?
+    };
     record_encode_dispatch_delta(
         &mut timings,
         encode_dispatch_before,
@@ -2337,95 +2405,101 @@ fn encode_float97_batch_tile<E: J2kEncodeStageAccelerator>(
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
-    let codestream = if preencoded_compact_components.iter().any(Option::is_some) {
-        let components = preencoded_compact_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 compact preencoded batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let preencoded = PreencodedHtj2k97CompactImage {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            payload: preencoded_compact_payload,
-            components,
-        };
-        encode_preencoded_htj2k_97_compact_owned_with_accelerator(
-            preencoded,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else if preencoded_components.iter().any(Option::is_some) {
-        let components = preencoded_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 preencoded batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let preencoded = PreencodedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_preencoded_htj2k_97_owned_with_accelerator(
-            preencoded,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else if prequantized_components.iter().any(Option::is_some) {
-        let components = prequantized_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 code-block batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prequantized = PrequantizedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_prequantized_htj2k_97_with_accelerator(
-            &prequantized,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
-    } else {
-        let components = precomputed_components
-            .into_iter()
-            .map(|component| {
-                component.ok_or(JpegToHtj2kError::Validation(
-                    "9/7 batch transcode did not produce all components",
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let precomputed = PrecomputedHtj2k97Image {
-            width: jpeg.width,
-            height: jpeg.height,
-            bit_depth: 8,
-            signed: false,
-            components,
-        };
-        encode_precomputed_htj2k_97_with_accelerator(
-            &precomputed,
-            &options.encode_options,
-            encode_accelerator,
-        )
-        .map_err(JpegToHtj2kError::Encode)?
+    let codestream = {
+        let mut native_encode_accelerator = NativeEncodeStageAdapter::new(encode_accelerator);
+        let native_encode_options = options.encode_options.to_native();
+        if preencoded_compact_components.iter().any(Option::is_some) {
+            let components = preencoded_compact_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 compact preencoded batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let preencoded = PreencodedHtj2k97CompactImage {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                payload: preencoded_compact_payload,
+                components,
+            };
+            encode_preencoded_htj2k_97_compact_owned_with_accelerator(
+                preencoded,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else if preencoded_components.iter().any(Option::is_some) {
+            let components = preencoded_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 preencoded batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let preencoded = PreencodedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            encode_preencoded_htj2k_97_owned_with_accelerator(
+                preencoded,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else if prequantized_components.iter().any(Option::is_some) {
+            let components = prequantized_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 code-block batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let prequantized = PrequantizedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            let native_prequantized = prequantized;
+            encode_prequantized_htj2k_97_with_accelerator(
+                &native_prequantized,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        } else {
+            let components = precomputed_components
+                .into_iter()
+                .map(|component| {
+                    component.ok_or(JpegToHtj2kError::Validation(
+                        "9/7 batch transcode did not produce all components",
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let precomputed = PrecomputedHtj2k97Image {
+                width: jpeg.width,
+                height: jpeg.height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            let native_precomputed = precomputed;
+            encode_precomputed_htj2k_97_with_accelerator(
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
+            )
+            .map_err(JpegToHtj2kError::Encode)?
+        }
     };
     record_encode_dispatch_delta(
         &mut timings,
@@ -2530,6 +2604,7 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
 
     let encode_start = Instant::now();
     let encode_dispatch_before = encode_accelerator.dispatch_report();
+    let native_encode_options = options.encode_options.to_native();
     let codestream = match component_batch.precomputed_components {
         PrecomputedComponentBatch::Dwt53(components) => {
             let precomputed = PrecomputedHtj2k53Image {
@@ -2539,10 +2614,12 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
                 signed: false,
                 components,
             };
+            let native_precomputed = precomputed;
+            let mut native_encode_accelerator = NativeEncodeStageAdapter::new(encode_accelerator);
             encode_precomputed_htj2k_53_with_accelerator(
-                &precomputed,
-                &options.encode_options,
-                encode_accelerator,
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
             )
             .map_err(JpegToHtj2kError::Encode)?
         }
@@ -2554,10 +2631,12 @@ fn jpeg_to_htj2k_with_scratch<A: DctToWaveletStageAccelerator, E: J2kEncodeStage
                 signed: false,
                 components,
             };
+            let native_precomputed = precomputed;
+            let mut native_encode_accelerator = NativeEncodeStageAdapter::new(encode_accelerator);
             encode_precomputed_htj2k_97_with_accelerator(
-                &precomputed,
-                &options.encode_options,
-                encode_accelerator,
+                &native_precomputed,
+                &native_encode_options,
+                &mut native_encode_accelerator,
             )
             .map_err(JpegToHtj2kError::Encode)?
         }
@@ -2883,10 +2962,7 @@ fn integer_wavelets_for_component_group(
         .iter()
         .map(|&component_index| integer_dct_job_for_component(&components[component_index]))
         .collect::<Result<Vec<_>, _>>()?;
-    timings.batch_count = timings.batch_count.saturating_add(1);
-    timings.batch_jobs = timings.batch_jobs.saturating_add(group.len());
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(group.len());
+    record_batch_attempt(timings, group.len());
     let accelerator_start = Instant::now();
     let accelerated_first_levels = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
@@ -2902,10 +2978,7 @@ fn integer_wavelets_for_component_group(
             ));
         }
         timings.component_count = timings.component_count.saturating_add(group.len());
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings
-            .accelerator_dispatched_jobs
-            .saturating_add(group.len());
+        record_accelerator_dispatch(timings, group.len());
         let decompose_start = Instant::now();
         let wavelets = first_levels
             .into_iter()
@@ -3125,8 +3198,7 @@ fn float_direct_wavelet_from_component(
         width: component.width as usize,
         height: component.height as usize,
     };
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    record_accelerator_attempt(timings, 1);
     let accelerator_start = Instant::now();
     let accelerated = accelerator
         .dct_grid_to_dwt53(job)
@@ -3135,11 +3207,10 @@ fn float_direct_wavelet_from_component(
         .dct_to_wavelet_accelerator_us
         .saturating_add(accelerator_start.elapsed().as_micros());
     let bands = if let Some(bands) = accelerated {
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        record_accelerator_dispatch(timings, 1);
         bands
     } else {
-        timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+        record_cpu_fallback(timings, 1);
         let fallback_start = Instant::now();
         let bands = dct8x8_blocks_to_dwt53_float_linear_with_scratch(
             blocks,
@@ -3148,7 +3219,8 @@ fn float_direct_wavelet_from_component(
             component.width as usize,
             component.height as usize,
             &mut scratch.dct53_grid,
-        )?;
+        )
+        .map_err(dct53_grid_error)?;
         timings.dct_to_wavelet_cpu_fallback_us = timings
             .dct_to_wavelet_cpu_fallback_us
             .saturating_add(fallback_start.elapsed().as_micros());
@@ -3183,8 +3255,7 @@ fn float_direct_97_wavelet_from_component(
         width: component.width as usize,
         height: component.height as usize,
     };
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    record_accelerator_attempt(timings, 1);
     let accelerator_start = Instant::now();
     let accelerated = accelerator
         .dct_grid_to_dwt97(job)
@@ -3193,11 +3264,10 @@ fn float_direct_97_wavelet_from_component(
         .dct_to_wavelet_accelerator_us
         .saturating_add(accelerator_start.elapsed().as_micros());
     let bands = if let Some(bands) = accelerated {
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        record_accelerator_dispatch(timings, 1);
         bands
     } else {
-        timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+        record_cpu_fallback(timings, 1);
         let fallback_start = Instant::now();
         let bands = dct8x8_blocks_then_dwt97_float_with_scratch(
             blocks,
@@ -3206,7 +3276,8 @@ fn float_direct_97_wavelet_from_component(
             component.width as usize,
             component.height as usize,
             &mut scratch.dct97_grid,
-        )?;
+        )
+        .map_err(dct97_grid_error)?;
         timings.dct_to_wavelet_cpu_fallback_us = timings
             .dct_to_wavelet_cpu_fallback_us
             .saturating_add(fallback_start.elapsed().as_micros());
@@ -3237,7 +3308,8 @@ fn float_reference_coefficients(
         component.block_rows as usize,
         component.width as usize,
         component.height as usize,
-    )?;
+    )
+    .map_err(dct53_grid_error)?;
     let reference =
         decompose_from_first_level(first_reference_level, usize::from(decomposition_levels));
     rounded_wavelet_i32(&reference)
@@ -3256,7 +3328,8 @@ fn float97_reference_coefficients(
         component.block_rows as usize,
         component.width as usize,
         component.height as usize,
-    )?;
+    )
+    .map_err(dct97_grid_error)?;
     let reference =
         decompose_97_from_first_level(first_reference_level, usize::from(decomposition_levels));
     rounded_wavelet97_i32(&reference)
@@ -3460,8 +3533,7 @@ fn integer_direct_wavelet_from_component(
 ) -> Result<IntegerWavelet, JpegToHtj2kError> {
     let job = integer_dct_job_for_component(component)?;
     timings.component_count = timings.component_count.saturating_add(1);
-    timings.accelerator_attempts = timings.accelerator_attempts.saturating_add(1);
-    timings.accelerator_jobs = timings.accelerator_jobs.saturating_add(1);
+    record_accelerator_attempt(timings, 1);
     let accelerator_start = Instant::now();
     let accelerated_first_level = accelerator
         .dct_grid_to_reversible_dwt53(job)
@@ -3470,8 +3542,7 @@ fn integer_direct_wavelet_from_component(
         .dct_to_wavelet_accelerator_us
         .saturating_add(accelerator_start.elapsed().as_micros());
     if let Some(first_level) = accelerated_first_level {
-        timings.accelerator_dispatches = timings.accelerator_dispatches.saturating_add(1);
-        timings.accelerator_dispatched_jobs = timings.accelerator_dispatched_jobs.saturating_add(1);
+        record_accelerator_dispatch(timings, 1);
         let decompose_start = Instant::now();
         let wavelet = integer_wavelet_from_first_level(first_level, decomposition_levels);
         timings.dwt_decompose_us = timings
@@ -3484,7 +3555,7 @@ fn integer_direct_wavelet_from_component(
     scratch
         .integer_idct_blocks
         .resize_with(component.dequantized_blocks.len(), || None);
-    timings.cpu_fallback_jobs = timings.cpu_fallback_jobs.saturating_add(1);
+    record_cpu_fallback(timings, 1);
     let fallback_start = Instant::now();
     let (final_ll, final_ll_width, final_ll_height, first_level) =
         integer_direct_first_level_from_component(
@@ -3662,36 +3733,9 @@ fn vertical_low_53_i32_at(
     low_idx: usize,
 ) -> Result<i32, JpegToHtj2kError> {
     let height = component.height as usize;
-    let even_idx = low_idx * 2;
-    let current = component_sample_i32(component, idct_blocks, x, even_idx)?;
-    if height < 2 {
-        return Ok(current);
-    }
-
-    if height.is_multiple_of(2) {
-        let right = vertical_high_53_i32_at(component, idct_blocks, x, low_idx)?;
-        if low_idx == 0 {
-            return Ok(current + floor_div_i32(right + 1, 2));
-        }
-        let left = vertical_high_53_i32_at(component, idct_blocks, x, low_idx - 1)?;
-        return Ok(current + floor_div_i32(left + right + 2, 4));
-    }
-
-    let high_len = height / 2;
-    if high_len == 0 {
-        return Ok(current);
-    }
-    let left = if low_idx > 0 {
-        vertical_high_53_i32_at(component, idct_blocks, x, low_idx - 1)?
-    } else {
-        vertical_high_53_i32_at(component, idct_blocks, x, 0)?
-    };
-    let right = if low_idx < high_len {
-        vertical_high_53_i32_at(component, idct_blocks, x, low_idx)?
-    } else {
-        left
-    };
-    Ok(current + floor_div_i32(left + right + 2, 4))
+    reversible_lift_53_low_at_fallible(height, low_idx, |y| {
+        component_sample_i32(component, idct_blocks, x, y)
+    })
 }
 
 fn vertical_high_53_i32_at(
@@ -3701,20 +3745,9 @@ fn vertical_high_53_i32_at(
     high_idx: usize,
 ) -> Result<i32, JpegToHtj2kError> {
     let height = component.height as usize;
-    let odd_idx = high_idx * 2 + 1;
-    let current = component_sample_i32(component, idct_blocks, x, odd_idx)?;
-    let left = component_sample_i32(component, idct_blocks, x, odd_idx - 1)?;
-    if height.is_multiple_of(2) && odd_idx + 1 == height {
-        return Ok(current - left);
-    }
-
-    let right_idx = if odd_idx + 1 < height {
-        odd_idx + 1
-    } else {
-        height - 1
-    };
-    let right = component_sample_i32(component, idct_blocks, x, right_idx)?;
-    Ok(current - floor_div_i32(left + right, 2))
+    reversible_lift_53_high_at_fallible(height, high_idx, |y| {
+        component_sample_i32(component, idct_blocks, x, y)
+    })
 }
 
 fn component_sample_i32(
@@ -3907,41 +3940,6 @@ fn reversible_dwt53_i32(
     }
 }
 
-fn reversible_lift_53_i32(values: &mut [i32]) {
-    let n = values.len();
-    if n < 2 {
-        return;
-    }
-
-    if n.is_multiple_of(2) {
-        for i in (1..n - 1).step_by(2) {
-            values[i] -= floor_div_i32(values[i - 1] + values[i + 1], 2);
-        }
-        values[n - 1] -= values[n - 2];
-
-        values[0] += floor_div_i32(values[1] + 1, 2);
-        for i in (2..n).step_by(2) {
-            values[i] += floor_div_i32(values[i - 1] + values[i + 1] + 2, 4);
-        }
-        return;
-    }
-
-    let last_even = n - 1;
-    for i in (1..n).step_by(2) {
-        let right = values.get(i + 1).copied().unwrap_or(values[last_even]);
-        values[i] -= floor_div_i32(values[i - 1] + right, 2);
-    }
-    for i in (0..n).step_by(2) {
-        let left = if i > 0 { values[i - 1] } else { values[1] };
-        let right = values.get(i + 1).copied().unwrap_or(left);
-        values[i] += floor_div_i32(left + right + 2, 4);
-    }
-}
-
-fn floor_div_i32(numerator: i32, denominator: i32) -> i32 {
-    numerator.div_euclid(denominator)
-}
-
 fn flatten_integer_wavelet(wavelet: &IntegerWavelet) -> Vec<i32> {
     let coefficient_count = wavelet.final_ll.len()
         + wavelet
@@ -4087,9 +4085,35 @@ mod tests {
         PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
         PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
     };
-    use signinum_j2k_native::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
+    use signinum_j2k::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
     use signinum_jpeg::transcode::JpegDctCodingMode;
     use signinum_jpeg::ColorSpace;
+
+    #[test]
+    fn timing_report_add_assign_saturates_and_adds_all_counter_kinds() {
+        let mut report = TranscodeTimingReport {
+            source_raw_probe_us: u128::MAX - 1,
+            dwt97_batch_ht_codeblock_dispatches: usize::MAX - 1,
+            tile_count: 2,
+            accelerator_jobs: 3,
+            cpu_fallback_jobs: 4,
+            ..TranscodeTimingReport::default()
+        };
+        report.add_assign(TranscodeTimingReport {
+            source_raw_probe_us: 10,
+            dwt97_batch_ht_codeblock_dispatches: 10,
+            tile_count: 5,
+            accelerator_jobs: 7,
+            cpu_fallback_jobs: 11,
+            ..TranscodeTimingReport::default()
+        });
+
+        assert_eq!(report.source_raw_probe_us, u128::MAX);
+        assert_eq!(report.dwt97_batch_ht_codeblock_dispatches, usize::MAX);
+        assert_eq!(report.tile_count, 7);
+        assert_eq!(report.accelerator_jobs, 10);
+        assert_eq!(report.cpu_fallback_jobs, 15);
+    }
 
     #[derive(Default)]
     struct GroupedI16Accelerator {
@@ -4107,7 +4131,7 @@ mod tests {
             &mut self,
             jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
             _options: Htj2k97CodeBlockOptions,
-        ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+        ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
             self.single_calls = self.single_calls.saturating_add(1);
             Ok(Some(
                 jobs.iter()
@@ -4120,7 +4144,7 @@ mod tests {
             &mut self,
             groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
             _options: Htj2k97CodeBlockOptions,
-        ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, &'static str> {
+        ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, TranscodeStageError> {
             self.grouped_calls = self.grouped_calls.saturating_add(1);
             self.grouped_lengths
                 .push(groups.iter().map(|group| group.jobs.len()).collect());

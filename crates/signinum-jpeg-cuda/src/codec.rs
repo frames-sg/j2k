@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(feature = "cuda-runtime")]
-use signinum_core::BackendKind;
 use signinum_core::{
-    BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect,
+    submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect,
     TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_cuda_runtime::CudaError;
+use signinum_cuda_runtime::CudaDeviceBuffer;
 use signinum_jpeg::{
     decode_tile_into_in_context, decode_tile_region_into_in_context,
     decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
-    Decoder as CpuDecoder, DecoderContext as CpuDecoderContext, ScratchPool as CpuScratchPool,
+    Decoder as CpuDecoder, DecoderContext as CpuDecoderContext, JpegDecodeOp, JpegDecodeRequest,
+    JpegResolvedDecode, JpegResolvedDecodePath, ScratchPool as CpuScratchPool,
     Warning as CpuWarning,
 };
 
+use crate::owned_decode::decode_owned_cuda_rgb8;
 #[cfg(feature = "cuda-runtime")]
-use crate::runtime::cuda_error;
+use crate::owned_decode::decode_owned_cuda_rgb8_into;
 use crate::runtime::{validate_surface_request, wrap_surface};
-#[cfg(feature = "cuda-runtime")]
-use crate::surface::{CudaSurfaceStats, Storage};
-use crate::{profile, CudaSession, Error, Surface};
+use crate::{CudaSession, Error, Surface};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// JPEG codec marker used by Signinum's generic CUDA decode traits.
@@ -32,7 +30,74 @@ impl ImageCodec for Codec {
     type Pool = CpuScratchPool;
 }
 
+fn rejected_decode_path_error(backend: BackendRequest, reason: &'static str) -> Error {
+    match backend {
+        BackendRequest::Cuda => Error::UnsupportedCudaRequest { reason },
+        other => Error::UnsupportedBackend { request: other },
+    }
+}
+
 impl Codec {
+    #[cfg(feature = "cuda-runtime")]
+    /// Run experimental chunked JPEG entropy self-sync diagnostics for a 4:2:0 RGB8 tile.
+    ///
+    /// This does not decode pixels and does not affect production CUDA routing.
+    pub fn diagnose_tile_rgb8_chunked_entropy_with_session(
+        input: &[u8],
+        config: signinum_cuda_runtime::CudaJpegChunkedEntropyConfig,
+        session: &mut CudaSession,
+    ) -> Result<signinum_cuda_runtime::CudaJpegChunkedEntropyReport, Error> {
+        crate::owned_decode::diagnose_owned_cuda_420_entropy(input, config, session)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    /// Decode one full JPEG tile to caller-owned CUDA RGB8 memory using a session.
+    ///
+    /// This is a strict Signinum-owned CUDA-kernel path and currently supports
+    /// full-tile RGB8 fast 4:2:0, 4:2:2, and 4:4:4 YCbCr JPEG inputs.
+    pub fn decode_tile_rgb8_into_cuda_buffer_with_session(
+        input: &[u8],
+        output: &CudaDeviceBuffer,
+        pitch_bytes: usize,
+        session: &mut CudaSession,
+    ) -> Result<crate::CudaSurfaceStats, Error> {
+        let dimensions = CpuDecoder::inspect(input)?.dimensions;
+        decode_owned_cuda_rgb8_into(input, dimensions, session, output, pitch_bytes)
+    }
+
+    /// Decode many JPEG tiles to Signinum surfaces using a caller-owned CUDA session.
+    pub fn decode_tiles_to_device_with_session(
+        inputs: &[&[u8]],
+        fmt: PixelFormat,
+        backend: BackendRequest,
+        session: &mut CudaSession,
+    ) -> Result<Vec<Surface>, Error> {
+        let mut ctx = signinum_core::DecoderContext::<CpuDecoderContext>::new();
+        let mut pool = CpuScratchPool::new();
+        Self::decode_tiles_to_device_with_session_in_context(
+            &mut ctx, &mut pool, inputs, fmt, backend, session,
+        )
+    }
+
+    fn decode_tiles_to_device_with_session_in_context(
+        ctx: &mut signinum_core::DecoderContext<CpuDecoderContext>,
+        pool: &mut CpuScratchPool,
+        inputs: &[&[u8]],
+        fmt: PixelFormat,
+        backend: BackendRequest,
+        session: &mut CudaSession,
+    ) -> Result<Vec<Surface>, Error> {
+        validate_surface_request(backend)?;
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        inputs
+            .iter()
+            .map(|input| Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend))
+            .collect()
+    }
+
     fn decode_tile_to_surface_impl(
         ctx: &mut signinum_core::DecoderContext<CpuDecoderContext>,
         session: &mut CudaSession,
@@ -42,7 +107,21 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        let dims = CpuDecoder::inspect(input)?.dimensions;
+        let resolved = JpegResolvedDecode::inspect(
+            input,
+            JpegDecodeRequest {
+                backend,
+                fmt,
+                op: JpegDecodeOp::Full,
+            },
+        )?;
+        if resolved.path == JpegResolvedDecodePath::OwnedCudaRgb8 {
+            return decode_owned_cuda_rgb8(input, resolved.capabilities.info.dimensions, session);
+        }
+        if let JpegResolvedDecodePath::Rejected { backend, reason } = resolved.path {
+            return Err(rejected_decode_path_error(backend, reason));
+        }
+        let dims = (resolved.output_rect.w, resolved.output_rect.h);
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
         decode_tile_into_in_context(input, ctx.codec_mut(), pool, &mut out, stride, fmt)?;
@@ -59,6 +138,11 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support region output",
+            });
+        }
         let dims = (roi.w, roi.h);
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
@@ -84,15 +168,15 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled output",
+            });
+        }
+        let source_dims = CpuDecoder::inspect(input)?.dimensions;
         let dims = (
-            CpuDecoder::inspect(input)?
-                .dimensions
-                .0
-                .div_ceil(scale.denominator()),
-            CpuDecoder::inspect(input)?
-                .dimensions
-                .1
-                .div_ceil(scale.denominator()),
+            source_dims.0.div_ceil(scale.denominator()),
+            source_dims.1.div_ceil(scale.denominator()),
         );
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
@@ -120,6 +204,11 @@ impl Codec {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
+        if backend == BackendRequest::Cuda {
+            return Err(Error::UnsupportedCudaRequest {
+                reason: "Signinum CUDA JPEG owned decode does not support scaled region output",
+            });
+        }
         let dims = {
             let scaled = roi.scaled_covering(scale);
             (scaled.w, scaled.h)
@@ -155,10 +244,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend)
+        }))
     }
 
     fn submit_tile_region_to_device(
@@ -171,10 +259,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_region_to_surface_impl(ctx, session, pool, input, fmt, roi, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_region_to_surface_impl(ctx, session, pool, input, fmt, roi, backend)
+        }))
     }
 
     fn submit_tile_scaled_to_device(
@@ -187,12 +274,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_scaled_to_surface_impl(
-                ctx, session, pool, input, fmt, scale, backend,
-            ),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_scaled_to_surface_impl(ctx, session, pool, input, fmt, scale, backend)
+        }))
     }
 
     fn submit_tile_region_scaled_to_device(
@@ -206,12 +290,11 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
+        Ok(submit_ready_device(session, |session| {
             Self::decode_tile_region_scaled_to_surface_impl(
                 ctx, session, pool, input, fmt, roi, scale, backend,
-            ),
-        ))
+            )
+        }))
     }
 }
 
@@ -231,172 +314,14 @@ impl TileBatchDecodeManyDevice for Codec {
         fmt: PixelFormat,
         backend: BackendRequest,
     ) -> Result<Vec<Self::DeviceSurface>, Self::Error> {
-        validate_surface_request(backend)?;
-        if inputs.is_empty() {
-            return Ok(Vec::new());
-        }
-
         let mut session = CudaSession::default();
-        if let Some(surfaces) = try_decode_tiles_nvjpeg_batch(inputs, fmt, backend, &mut session)? {
-            return Ok(surfaces);
-        }
-
-        inputs
-            .iter()
-            .map(|input| {
-                Self::decode_tile_to_surface_impl(ctx, &mut session, pool, input, fmt, backend)
-            })
-            .collect()
+        Self::decode_tiles_to_device_with_session_in_context(
+            ctx,
+            pool,
+            inputs,
+            fmt,
+            backend,
+            &mut session,
+        )
     }
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn try_decode_tiles_nvjpeg_batch(
-    inputs: &[&[u8]],
-    fmt: PixelFormat,
-    backend: BackendRequest,
-    session: &mut CudaSession,
-) -> Result<Option<Vec<Surface>>, Error> {
-    if fmt != PixelFormat::Rgb8 || !matches!(backend, BackendRequest::Auto | BackendRequest::Cuda) {
-        if profile::gpu_route_profile_enabled() {
-            let request_s = format!("{backend:?}");
-            let fmt_s = format!("{fmt:?}");
-            let tiles_s = inputs.len().to_string();
-            profile::emit_gpu_route_profile(
-                "jpeg",
-                "gpu_route",
-                "cuda",
-                &[
-                    ("op", "batch_full"),
-                    ("request", request_s.as_str()),
-                    ("fmt", fmt_s.as_str()),
-                    ("tiles", tiles_s.as_str()),
-                    ("decision", "nvjpeg_batch_ineligible"),
-                ],
-            );
-        }
-        return Ok(None);
-    }
-
-    let mut batch_inputs = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        let dimensions = CpuDecoder::inspect(input)?.dimensions;
-        batch_inputs.push((*input, dimensions));
-    }
-
-    let context = match session.cuda_context() {
-        Ok(context) => context,
-        Err(_) if backend == BackendRequest::Auto => {
-            if profile::gpu_route_profile_enabled() {
-                let tiles_s = inputs.len().to_string();
-                profile::emit_gpu_route_profile(
-                    "jpeg",
-                    "gpu_route",
-                    "cuda",
-                    &[
-                        ("op", "batch_full"),
-                        ("request", "Auto"),
-                        ("fmt", "Rgb8"),
-                        ("tiles", tiles_s.as_str()),
-                        ("decision", "nvjpeg_batch_fallback"),
-                        ("reason", "cuda_unavailable"),
-                    ],
-                );
-            }
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
-    };
-
-    match context.decode_jpeg_rgb8_batch_with_nvjpeg(&batch_inputs) {
-        Ok(outputs) => {
-            if profile::gpu_route_profile_enabled() {
-                let tiles_s = outputs.len().to_string();
-                profile::emit_gpu_route_profile(
-                    "jpeg",
-                    "gpu_route",
-                    "cuda",
-                    &[
-                        ("op", "batch_full"),
-                        ("request", "AutoOrCuda"),
-                        ("fmt", "Rgb8"),
-                        ("tiles", tiles_s.as_str()),
-                        ("decision", "nvjpeg_batch"),
-                    ],
-                );
-            }
-            let mut surfaces = Vec::with_capacity(outputs.len());
-            for (output, (_, dimensions)) in outputs.into_iter().zip(batch_inputs) {
-                let pitch_bytes = dimensions.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
-                let (buffer, stats) = output.into_parts();
-                surfaces.push(Surface {
-                    backend: BackendKind::Cuda,
-                    dimensions,
-                    fmt: PixelFormat::Rgb8,
-                    pitch_bytes,
-                    stats: CudaSurfaceStats {
-                        kernel_dispatches: stats.kernel_dispatches(),
-                        copy_kernel_dispatches: stats.copy_kernel_dispatches(),
-                        decode_kernel_dispatches: stats.decode_kernel_dispatches(),
-                        hardware_decode: stats.used_hardware_decode(),
-                    },
-                    storage: Storage::Cuda(buffer),
-                });
-            }
-            Ok(Some(surfaces))
-        }
-        Err(
-            CudaError::NvjpegUnavailable { .. }
-            | CudaError::Nvjpeg { .. }
-            | CudaError::NvjpegDimensions { .. },
-        ) => {
-            if profile::gpu_route_profile_enabled() {
-                let tiles_s = inputs.len().to_string();
-                profile::emit_gpu_route_profile(
-                    "jpeg",
-                    "gpu_route",
-                    "cuda",
-                    &[
-                        ("op", "batch_full"),
-                        ("request", "AutoOrCuda"),
-                        ("fmt", "Rgb8"),
-                        ("tiles", tiles_s.as_str()),
-                        ("decision", "nvjpeg_batch_fallback"),
-                        ("reason", "nvjpeg_unavailable_or_rejected"),
-                    ],
-                );
-            }
-            Ok(None)
-        }
-        Err(error) => Err(cuda_error(error)),
-    }
-}
-
-#[cfg(not(feature = "cuda-runtime"))]
-#[allow(clippy::unnecessary_wraps)]
-fn try_decode_tiles_nvjpeg_batch(
-    inputs: &[&[u8]],
-    fmt: PixelFormat,
-    backend: BackendRequest,
-    _session: &mut CudaSession,
-) -> Result<Option<Vec<Surface>>, Error> {
-    if profile::gpu_route_profile_enabled() {
-        let request_s = format!("{backend:?}");
-        let fmt_s = format!("{fmt:?}");
-        let tiles_s = inputs.len().to_string();
-        profile::emit_gpu_route_profile(
-            "jpeg",
-            "gpu_route",
-            "cuda",
-            &[
-                ("op", "batch_full"),
-                ("request", request_s.as_str()),
-                ("fmt", fmt_s.as_str()),
-                ("tiles", tiles_s.as_str()),
-                ("decision", "nvjpeg_batch_fallback"),
-                ("reason", "cuda_runtime_feature_disabled"),
-            ],
-        );
-    }
-    Ok(None)
 }

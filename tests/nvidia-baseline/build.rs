@@ -29,15 +29,15 @@ fn main() {
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
-    let nvcc = env::var_os("NVCC").unwrap_or_else(|| "nvcc".into());
     let strict = env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some();
+    let nvcc = configured_nvcc(strict);
 
     let object = out_dir.join("nv_baseline.o");
     let archive = out_dir.join("libnvbaseline.a");
 
     let include_dir = env::var_os("NVJPEG2K_INCLUDE_DIR");
     let stream_parse_define = match probe_nvjpeg2k_decode_api(
-        &nvcc,
+        nvcc.as_deref(),
         include_dir.as_deref(),
         &out_dir,
     ) {
@@ -51,7 +51,11 @@ fn main() {
         }
     };
 
-    let mut compile = Command::new(&nvcc);
+    let Some(nvcc) = nvcc.as_deref() else {
+        return;
+    };
+
+    let mut compile = Command::new(nvcc);
     compile
         .args(["-c", "-O3", "--std=c++14", "-Xcompiler", "-fPIC"])
         .arg("cuda/nv_baseline.cu")
@@ -99,10 +103,13 @@ fn main() {
 }
 
 fn probe_nvjpeg2k_decode_api(
-    nvcc: &OsStr,
+    nvcc: Option<&OsStr>,
     include_dir: Option<&OsStr>,
     out_dir: &std::path::Path,
 ) -> Result<Option<&'static str>, String> {
+    let Some(nvcc) = nvcc else {
+        return Err("NVCC not configured".to_string());
+    };
     let current = r"
 #include <cuda_runtime.h>
 #include <nvjpeg2k.h>
@@ -173,4 +180,19 @@ fn compile_probe(
         command.arg("-I").arg(include_dir);
     }
     command.status().is_ok_and(|status| status.success())
+}
+
+fn configured_nvcc(strict: bool) -> Option<std::ffi::OsString> {
+    let nvcc = env::var_os("NVCC");
+    if strict {
+        let nvcc = nvcc.expect("strict NVIDIA baseline build requires absolute NVCC");
+        assert!(
+            std::path::Path::new(&nvcc).is_absolute(),
+            "strict NVIDIA baseline build requires absolute NVCC, got {}",
+            std::path::Path::new(&nvcc).display()
+        );
+        Some(nvcc)
+    } else {
+        nvcc
+    }
 }

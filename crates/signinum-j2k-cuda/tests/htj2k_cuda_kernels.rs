@@ -9,21 +9,18 @@ use signinum_cuda_runtime::{
     CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
 };
 #[cfg(feature = "cuda-runtime")]
-use signinum_j2k_cuda::CudaHtj2kDecodePlan;
+use signinum_j2k_cuda::J2kDecoder;
 #[cfg(feature = "cuda-runtime")]
 use signinum_j2k_native::{
-    decode_ht_code_block_scalar, encode_ht_code_block_scalar, encode_htj2k, ht_uvlc_encode_table,
-    ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0, ht_vlc_encode_table1, ht_vlc_table0,
-    ht_vlc_table1, DecodeSettings, DecoderContext, EncodeOptions, HtCodeBlockDecodeJob, Image,
+    decode_ht_code_block_scalar, encode_ht_code_block_scalar, encode_htj2k,
+    ht_uvlc_encode_table_bytes, ht_uvlc_table0, ht_uvlc_table1, ht_vlc_encode_table0,
+    ht_vlc_encode_table1, ht_vlc_table0, ht_vlc_table1, EncodeOptions, HtCodeBlockDecodeJob,
     J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
     J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
     J2kPacketizationSubband,
 };
-
 #[cfg(feature = "cuda-runtime")]
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
+use signinum_test_support::cuda_runtime_required;
 
 #[cfg(feature = "cuda-runtime")]
 fn ht_gray8_fixture() -> Vec<u8> {
@@ -39,23 +36,6 @@ fn ht_gray8_fixture() -> Vec<u8> {
 #[cfg(feature = "cuda-runtime")]
 fn openhtj2k_refinement_fixture() -> &'static [u8] {
     include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
-}
-
-#[cfg(feature = "cuda-runtime")]
-fn uvlc_encode_table_bytes() -> Vec<u8> {
-    ht_uvlc_encode_table()
-        .iter()
-        .flat_map(|entry| {
-            [
-                entry.pre,
-                entry.pre_len,
-                entry.suf,
-                entry.suf_len,
-                entry.ext,
-                entry.ext_len,
-            ]
-        })
-        .collect()
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -84,19 +64,15 @@ fn push_u16_ne(out: &mut Vec<u8>, value: u16) {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
     let bytes = ht_gray8_fixture();
-    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse image");
-    let mut decoder_context = DecoderContext::default();
-    let native_plan = image
-        .build_direct_grayscale_plan_with_context(&mut decoder_context)
-        .expect("native direct plan");
-    let cuda_plan =
-        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, PixelFormat::Gray8, (0, 0))
-            .expect("CUDA flat plan");
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    let (cuda_plan, _) = decoder
+        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
+        .expect("CUDA flat plan");
     let block = cuda_plan
         .code_blocks()
         .first()
@@ -176,19 +152,14 @@ fn cuda_htj2k_entropy_kernel_matches_native_scalar_codeblock_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
-    let image = Image::new(openhtj2k_refinement_fixture(), &DecodeSettings::default())
-        .expect("parse image");
-    let mut decoder_context = DecoderContext::default();
-    let native_plan = image
-        .build_direct_grayscale_plan_with_context(&mut decoder_context)
-        .expect("native direct plan");
-    let cuda_plan =
-        CudaHtj2kDecodePlan::from_grayscale_direct_plan(&native_plan, PixelFormat::Gray8, (0, 0))
-            .expect("CUDA flat plan");
+    let mut decoder = J2kDecoder::new(openhtj2k_refinement_fixture()).expect("decoder");
+    let (cuda_plan, _) = decoder
+        .build_cuda_htj2k_grayscale_plan_with_profile(PixelFormat::Gray8)
+        .expect("CUDA flat plan");
     let block = cuda_plan
         .code_blocks()
         .iter()
@@ -270,7 +241,7 @@ fn cuda_htj2k_refinement_kernel_matches_native_scalar_codeblock_when_required() 
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -283,7 +254,7 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
         encode_ht_code_block_scalar(&coefficients, 8, 8, 8).expect("native scalar HT encode");
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblock(
             &coefficients,
@@ -293,7 +264,7 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA HT encode");
@@ -309,14 +280,14 @@ fn cuda_htj2k_encode_kernel_matches_native_scalar_codeblock_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
     let coefficients = [0, 3, -5, 3, 5, 0, -3, 3, 7, -3, 0, 3, 0, 0, 5, -5];
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblocks(
             &coefficients,
@@ -330,7 +301,7 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA two-pass HT encode");
@@ -380,14 +351,14 @@ fn cuda_htj2k_encode_target_two_passes_round_trips_with_sigprop_segment_when_req
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
     let coefficients = [5, -7, 9, -11];
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblocks(
             &coefficients,
@@ -401,7 +372,7 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_re
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA three-pass HT encode");
@@ -451,14 +422,14 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_with_magref_segment_when_re
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
     let coefficients = [7; 8];
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblocks(
             &coefficients,
@@ -472,7 +443,7 @@ fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_requir
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA three-pass HT encode with stuffed MagRef bytes");
@@ -522,14 +493,14 @@ fn cuda_htj2k_encode_target_three_passes_stuffs_magref_all_one_bytes_when_requir
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
     let coefficients = [0, 3, -5, 7];
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblocks(
             &coefficients,
@@ -543,7 +514,7 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_requir
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA three-pass HT encode with nonzero SigProp");
@@ -593,7 +564,7 @@ fn cuda_htj2k_encode_target_three_passes_round_trips_nonzero_sigprop_when_requir
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -614,7 +585,7 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
     coefficients.extend_from_slice(&block1);
 
     let context = CudaContext::system_default().expect("CUDA context");
-    let uvlc_table = uvlc_encode_table_bytes();
+    let uvlc_table = ht_uvlc_encode_table_bytes();
     let encoded = context
         .encode_htj2k_codeblocks(
             &coefficients,
@@ -637,7 +608,7 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
             CudaHtj2kEncodeTables {
                 vlc_table0: ht_vlc_encode_table0(),
                 vlc_table1: ht_vlc_encode_table1(),
-                uvlc_table: &uvlc_table,
+                uvlc_table,
             },
         )
         .expect("CUDA batch HT encode");
@@ -684,7 +655,7 @@ fn cuda_htj2k_batch_encode_kernel_matches_native_scalar_codeblocks_when_required
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -719,7 +690,7 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -804,7 +775,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_cleanup_packet_when_req
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -934,7 +905,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -1018,7 +989,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_refinement_pass_packet_
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_layer_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -1166,7 +1137,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_previously_included_lay
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -1311,7 +1282,7 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 #[test]
 fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusion_after_non_empty_packet_when_required(
 ) {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -1567,13 +1538,13 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_deferred_first_inclusio
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
-    let mut plane0 = [12.0f32, 25.0, 40.0, 60.0];
-    let mut plane1 = [-3.0f32, 6.0, -10.0, 12.0];
-    let mut plane2 = [5.0f32, -7.0, 11.0, -13.0];
+    let plane0 = [12.0f32, 25.0, 40.0, 60.0];
+    let plane1 = [-3.0f32, 6.0, -10.0, 12.0];
+    let plane2 = [5.0f32, -7.0, 11.0, -13.0];
     let mut expected = Vec::with_capacity(plane0.len() * 3);
     for ((y0, y1), y2) in plane0
         .iter()
@@ -1646,16 +1617,12 @@ fn cuda_mct_and_rgb_store_kernels_match_reversible_cpu_transform_when_required()
         .copy_to_host(&mut actual)
         .expect("download RGB pixels");
     assert_eq!(actual, expected);
-
-    plane0[0] = 0.0;
-    plane1[0] = 0.0;
-    plane2[0] = 0.0;
 }
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 

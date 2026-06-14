@@ -3,8 +3,8 @@
 use core::convert::Infallible;
 
 use signinum_core::{
-    BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect, TileBatchDecode,
-    TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+    submit_ready_device, BackendRequest, Downscale, ImageCodec, PixelFormat, ReadySubmission, Rect,
+    TileBatchDecode, TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
 };
 use signinum_j2k::{
     adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
@@ -164,10 +164,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_to_surface_impl(ctx, session, pool, input, fmt, backend)
+        }))
     }
 
     fn submit_tile_region_to_device(
@@ -180,10 +179,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_region_to_surface_impl(ctx, session, pool, input, fmt, roi, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_region_to_surface_impl(ctx, session, pool, input, fmt, roi, backend)
+        }))
     }
 
     fn submit_tile_scaled_to_device(
@@ -196,12 +194,9 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            Self::decode_tile_scaled_to_surface_impl(
-                ctx, session, pool, input, fmt, scale, backend,
-            ),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            Self::decode_tile_scaled_to_surface_impl(ctx, session, pool, input, fmt, scale, backend)
+        }))
     }
 
     fn submit_tile_region_scaled_to_device(
@@ -215,12 +210,11 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
+        Ok(submit_ready_device(session, |session| {
             Self::decode_tile_region_scaled_to_surface_impl(
                 ctx, session, pool, input, fmt, roi, scale, backend,
-            ),
-        ))
+            )
+        }))
     }
 }
 
@@ -262,7 +256,7 @@ impl TileBatchDecodeManyDevice for Codec {
 #[cfg(all(test, feature = "cuda-runtime"))]
 mod tests {
     use signinum_core::{BackendRequest, DecoderContext, PixelFormat, TileBatchDecodeManyDevice};
-    use signinum_j2k_native::{encode_htj2k, EncodeOptions};
+    use signinum_test_support::{cuda_runtime_required, htj2k_rgb8_pattern_fixture};
 
     use super::{Codec, CpuJ2kContext, CpuJ2kScratchPool};
     use crate::decoder::{
@@ -296,25 +290,13 @@ mod tests {
                 }
             }
             Err(Error::CudaUnavailable) => {
-                assert!(std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_none());
+                assert!(!cuda_runtime_required());
             }
             Err(error) => panic!("unexpected strict CUDA RGB batch error: {error}"),
         }
     }
 
     fn rgb8_htj2k_fixture(width: u32, height: u32) -> Vec<u8> {
-        let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
-        for idx in 0..width * height {
-            pixels.push(u8::try_from((idx * 17 + idx / 3) & 0xff).expect("red"));
-            pixels.push(u8::try_from((idx * 29 + 7) & 0xff).expect("green"));
-            pixels.push(u8::try_from((idx * 43 + 19) & 0xff).expect("blue"));
-        }
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
-        encode_htj2k(&pixels, width, height, 3, 8, false, &options)
-            .expect("encode RGB HTJ2K fixture")
+        htj2k_rgb8_pattern_fixture(width, height, 17)
     }
 }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use signinum_j2k_cuda::CudaEncodeStageAccelerator;
-use signinum_j2k_native::{
+use signinum_j2k::adapter::encode_stage::{
     J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kQuantizeSubbandJob,
 };
+use signinum_j2k_cuda::CudaEncodeStageAccelerator;
 
 const BENCH_DIMS: &[u32] = &[512, 1024, 2048];
 

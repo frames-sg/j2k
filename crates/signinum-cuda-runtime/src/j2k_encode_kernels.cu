@@ -47,6 +47,53 @@ extern "C" __global__ void signinum_j2k_deinterleave_to_f32(
     }
 }
 
+extern "C" __global__ void signinum_j2k_deinterleave_strided_to_f32(
+    const unsigned char *pixels,
+    float *components,
+    unsigned long long width,
+    unsigned long long height,
+    unsigned long long byte_offset,
+    unsigned long long pitch_bytes,
+    unsigned int num_components,
+    unsigned int bit_depth,
+    unsigned int is_signed
+) {
+    const unsigned long long idx =
+        static_cast<unsigned long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const unsigned long long num_pixels = width * height;
+    if (idx >= num_pixels || num_components == 0u || num_components > 4u) {
+        return;
+    }
+
+    const unsigned int bytes_per_sample = bit_depth <= 8u ? 1u : 2u;
+    const float unsigned_offset =
+        is_signed != 0u ? 0.0f : float(1u << (bit_depth - 1u));
+    const unsigned long long y = idx / width;
+    const unsigned long long x = idx - y * width;
+    const unsigned long long pixel_base =
+        byte_offset + y * pitch_bytes
+        + x * static_cast<unsigned long long>(num_components) * bytes_per_sample;
+    for (unsigned int component = 0u; component < num_components; ++component) {
+        const unsigned long long sample_base =
+            pixel_base + static_cast<unsigned long long>(component) * bytes_per_sample;
+        float sample;
+        if (bit_depth <= 8u) {
+            const unsigned char raw = pixels[sample_base];
+            sample = is_signed != 0u
+                ? float(static_cast<signed char>(raw))
+                : float(raw) - unsigned_offset;
+        } else {
+            const unsigned short raw =
+                static_cast<unsigned short>(pixels[sample_base])
+                | (static_cast<unsigned short>(pixels[sample_base + 1u]) << 8u);
+            sample = is_signed != 0u
+                ? float(static_cast<short>(raw))
+                : float(raw) - unsigned_offset;
+        }
+        components[static_cast<unsigned long long>(component) * num_pixels + idx] = sample;
+    }
+}
+
 extern "C" __global__ void signinum_j2k_forward_rct(
     float *plane0,
     float *plane1,

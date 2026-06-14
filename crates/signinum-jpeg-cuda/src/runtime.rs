@@ -5,7 +5,7 @@ use signinum_core::{BackendKind, BackendRequest, PixelFormat};
 use signinum_cuda_runtime::CudaError;
 
 use crate::surface::Storage;
-use crate::{profile, CudaSession, CudaSurfaceStats, Error, Surface};
+use crate::{CudaSession, CudaSurfaceStats, Error, Surface};
 
 pub(crate) fn wrap_surface(
     bytes: Vec<u8>,
@@ -18,14 +18,13 @@ pub(crate) fn wrap_surface(
     let pitch_bytes = dimensions.0 as usize * fmt.bytes_per_pixel();
     match backend {
         BackendRequest::Cpu | BackendRequest::Auto => {
-            if profile::gpu_route_profile_enabled() {
+            if signinum_profile::gpu_route_profile_enabled() {
                 let request_s = format!("{backend:?}");
                 let fmt_s = format!("{fmt:?}");
                 let width_s = dimensions.0.to_string();
                 let height_s = dimensions.1.to_string();
-                profile::emit_gpu_route_profile(
+                signinum_profile::emit_gpu_route_profile(
                     "jpeg",
-                    "gpu_route",
                     "cuda",
                     &[
                         ("op", "wrap_surface"),
@@ -52,10 +51,8 @@ pub(crate) fn wrap_surface(
 }
 
 pub(crate) fn validate_surface_request(backend: BackendRequest) -> Result<(), Error> {
-    match backend {
-        BackendRequest::Cpu | BackendRequest::Auto | BackendRequest::Cuda => Ok(()),
-        BackendRequest::Metal => Err(Error::UnsupportedBackend { request: backend }),
-    }
+    signinum_core::validate_cuda_surface_backend_request(backend)
+        .map_err(|request| Error::UnsupportedBackend { request })
 }
 
 #[cfg(feature = "cuda-runtime")]
@@ -69,15 +66,14 @@ fn wrap_cuda_surface(
     let context = session.cuda_context()?;
     let output = context.copy_with_kernel(bytes).map_err(cuda_error)?;
     let (buffer, stats) = output.into_parts();
-    if profile::gpu_route_profile_enabled() {
+    if signinum_profile::gpu_route_profile_enabled() {
         let fmt_s = format!("{fmt:?}");
         let width_s = dimensions.0.to_string();
         let height_s = dimensions.1.to_string();
         let kernel_dispatches_s = stats.kernel_dispatches().to_string();
         let copy_dispatches_s = stats.copy_kernel_dispatches().to_string();
-        profile::emit_gpu_route_profile(
+        signinum_profile::emit_gpu_route_profile(
             "jpeg",
-            "gpu_route",
             "cuda",
             &[
                 ("op", "wrap_surface"),
@@ -101,6 +97,7 @@ fn wrap_cuda_surface(
             copy_kernel_dispatches: stats.copy_kernel_dispatches(),
             decode_kernel_dispatches: stats.decode_kernel_dispatches(),
             hardware_decode: stats.used_hardware_decode(),
+            decode_path: crate::surface::CudaJpegDecodePath::None,
         },
         storage: Storage::Cuda(buffer),
     })
@@ -114,13 +111,12 @@ fn wrap_cuda_surface(
     _pitch_bytes: usize,
     _session: &mut CudaSession,
 ) -> Result<Surface, Error> {
-    if profile::gpu_route_profile_enabled() {
+    if signinum_profile::gpu_route_profile_enabled() {
         let fmt_s = format!("{fmt:?}");
         let width_s = dimensions.0.to_string();
         let height_s = dimensions.1.to_string();
-        profile::emit_gpu_route_profile(
+        signinum_profile::emit_gpu_route_profile(
             "jpeg",
-            "gpu_route",
             "cuda",
             &[
                 ("op", "wrap_surface"),
@@ -136,11 +132,13 @@ fn wrap_cuda_surface(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn cuda_error(error: CudaError) -> Error {
-    match error {
-        CudaError::Unavailable { .. } => Error::CudaUnavailable,
-        other => Error::CudaRuntime {
-            message: other.to_string(),
-        },
+    if error.is_unavailable() {
+        Error::CudaUnavailable
+    } else {
+        Error::CudaRuntime {
+            message: error.to_string(),
+        }
     }
 }
