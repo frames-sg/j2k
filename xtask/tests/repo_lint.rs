@@ -497,22 +497,29 @@ mod docs_and_workflows_policy {
     fn ci_workflow_runs_semver_checks_for_stable_library_crates() {
         let workflow = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
             .expect("read CI workflow");
+        let xtask = fs::read_to_string(repo_root().join("xtask/src/main.rs")).expect("read xtask");
         let semver_job = workflow_job(&workflow, "semver");
-        const CARGO_SEMVER_CHECKS_ACTION_SHA: &str = "6b69fcf40e9b5fb17adeb57e4b6ecd020649a239";
+        let semver_packages = const_array_block(&xtask, "STABLE_SEMVER_PACKAGES");
 
         assert!(
-            semver_job.contains(&format!(
-                "obi1kenobi/cargo-semver-checks-action@{CARGO_SEMVER_CHECKS_ACTION_SHA}"
-            )),
-            "CI semver job must pin cargo-semver-checks to an audited commit SHA"
+            semver_job.contains("cargo install cargo-semver-checks --version 0.48.0 --locked"),
+            "CI semver job must install the pinned cargo-semver-checks version"
         );
         assert!(
-            !semver_job.contains("obi1kenobi/cargo-semver-checks-action@v2"),
-            "CI semver job must not use mutable cargo-semver-checks tags"
+            semver_job.contains("cargo xtask semver"),
+            "CI semver job must use the repo-owned semver gate"
         );
         assert!(
-            semver_job.contains("release-type: minor"),
-            "CI semver job must check minor-release compatibility for the 0.5.x line"
+            semver_job.contains("toolchain: \"1.96\""),
+            "CI semver job must install the workspace Rust toolchain"
+        );
+        assert!(
+            xtask.contains("unwrap_or_else(|_| \"1.96\".to_string())"),
+            "xtask semver must default to the workspace Rust toolchain"
+        );
+        assert!(
+            !semver_job.contains("release-type: minor"),
+            "CI semver job must not treat the 0.5.0 boundary as a compatible minor release"
         );
 
         for package in [
@@ -534,8 +541,8 @@ mod docs_and_workflows_policy {
             "signinum-profile",
         ] {
             assert!(
-                semver_job.contains(package),
-                "CI semver job must cover stable library crate `{package}`"
+                semver_packages.contains(&format!("\"{package}\"")),
+                "repo semver policy must cover stable library crate `{package}`"
             );
         }
 

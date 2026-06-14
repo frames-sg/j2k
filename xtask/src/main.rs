@@ -746,7 +746,7 @@ fn render_stable_api_snapshot() -> Result<String, String> {
 }
 
 fn semver() -> Result<(), String> {
-    let toolchain = env::var("SIGNINUM_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "stable".to_string());
+    let toolchain = env::var("SIGNINUM_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
     let toolchain_arg = format!("+{toolchain}");
     for package in STABLE_SEMVER_PACKAGES {
         if !crates_io_package_exists(package)? {
