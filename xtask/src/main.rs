@@ -635,11 +635,14 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
 fn fuzz_run() -> Result<(), String> {
     let runs = env::var("SIGNINUM_FUZZ_RUNS").unwrap_or_else(|_| "1000".to_string());
     let max_total_time = env::var("SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS").ok();
+    let fuzz_target = fuzz_target_triple()?;
 
     for (crate_dir, target) in FUZZ_TARGETS {
         let mut args = vec![
             "fuzz".to_string(),
             "run".to_string(),
+            "--target".to_string(),
+            fuzz_target.clone(),
             (*target).to_string(),
             "--".to_string(),
             format!("-runs={runs}"),
@@ -650,6 +653,25 @@ fn fuzz_run() -> Result<(), String> {
         run_nightly_cargo_in_dir_owned(crate_dir, &args)?;
     }
     Ok(())
+}
+
+fn fuzz_target_triple() -> Result<String, String> {
+    if let Ok(target) = env::var("SIGNINUM_FUZZ_TARGET") {
+        if !target.trim().is_empty() {
+            return Ok(target);
+        }
+    }
+
+    let version = command_output_os(
+        OsString::from("rustup"),
+        &["run", "nightly", "rustc", "-vV"],
+    )
+    .map_err(|err| format!("failed to detect nightly host target for fuzz-run: {err}"))?;
+    version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::to_string)
+        .ok_or_else(|| "failed to parse nightly host target from `rustc -vV`".to_string())
 }
 
 fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -685,7 +707,7 @@ fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
 
 fn render_stable_api_snapshot() -> Result<String, String> {
     let tool_version =
-        command_output_os(cargo(), &["public-api", "--version"]).map_err(|err| {
+        command_output_os_detailed(cargo(), &["public-api", "--version"]).map_err(|err| {
             format!(
                 "failed to detect cargo-public-api: {err}; \
                  install cargo-public-api with `cargo install cargo-public-api --version {CARGO_PUBLIC_API_VERSION} --locked`"
@@ -711,7 +733,7 @@ fn render_stable_api_snapshot() -> Result<String, String> {
     .unwrap();
 
     for package in STABLE_DOC_LIBRARY_PACKAGES {
-        let api = command_output_os(
+        let api = command_output_os_detailed(
             cargo(),
             &[
                 "public-api",
@@ -1433,6 +1455,23 @@ fn command_output_allow_failure(program: &str, args: &[&str]) -> Result<String, 
 
 fn command_output_os(program: OsString, args: &[&str]) -> Result<String, String> {
     process::command_output_os(program, args)
+}
+
+fn command_output_os_detailed(program: OsString, args: &[&str]) -> Result<String, String> {
+    let display = format!("{} {}", program.to_string_lossy(), args.join(" "));
+    let output = process::command_output(program, args, process::CommandContext::new())?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    Err(format!(
+        "`{display}` exited with {}:\n{}",
+        output.status,
+        combined.trim()
+    ))
 }
 
 fn host_description() -> String {
