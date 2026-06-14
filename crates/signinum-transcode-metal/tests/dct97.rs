@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::TranscodeStageError;
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 #[cfg(target_os = "macos")]
@@ -16,8 +15,6 @@ use signinum_transcode::dct97_2d::{
 use signinum_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dwt97;
 use signinum_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
-#[cfg(not(target_os = "macos"))]
-use signinum_transcode_metal::MetalTranscodeError;
 
 #[test]
 fn explicit_metal_reports_unavailable_on_non_macos() {

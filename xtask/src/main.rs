@@ -647,7 +647,7 @@ fn fuzz_run() -> Result<(), String> {
         if let Some(seconds) = &max_total_time {
             args.push(format!("-max_total_time={seconds}"));
         }
-        run_cargo_in_dir_owned(crate_dir, &args)?;
+        run_nightly_cargo_in_dir_owned(crate_dir, &args)?;
     }
     Ok(())
 }
@@ -1380,10 +1380,6 @@ fn run_cargo(args: &[&str]) -> Result<(), String> {
     run_cargo_with_env(args, &[])
 }
 
-fn run_cargo_in_dir_owned(dir: &str, args: &[String]) -> Result<(), String> {
-    run_program_in_dir_owned(cargo(), dir, args, &[])
-}
-
 fn run_cargo_with_env(args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
     run_program(cargo(), args, envs)
 }
@@ -1394,11 +1390,21 @@ fn run_nightly_cargo(args: &[&str]) -> Result<(), String> {
     run_program(OsString::from("rustup"), &rustup_args, &[])
 }
 
+fn run_nightly_cargo_in_dir_owned(dir: &str, args: &[String]) -> Result<(), String> {
+    let mut rustup_args = vec![
+        "run".to_string(),
+        "nightly".to_string(),
+        "cargo".to_string(),
+    ];
+    rustup_args.extend_from_slice(args);
+    run_program_in_dir_owned_with_program(OsString::from("rustup"), dir, &rustup_args, &[])
+}
+
 fn run_program(program: OsString, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
     process::run_command(program, args, process::CommandContext::new().envs(envs))
 }
 
-fn run_program_in_dir_owned(
+fn run_program_in_dir_owned_with_program(
     program: OsString,
     dir: &str,
     args: &[String],

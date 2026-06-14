@@ -122,9 +122,14 @@ pub mod jpeg {
         pub use signinum_jpeg_metal::{
             encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
             viewport, Codec, Decoder, DecoderContext, Error, Info, JpegBaselineMetalEncodeTile,
-            JpegDownscale, JpegMetalResidentBatchReport, JpegPixelFormat, JpegRectPublic,
-            JpegTileBatch, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput,
-            MetalSession, MetalTextureTile, ScratchPool, Surface, SurfaceResidency,
+            JpegDownscale, JpegPixelFormat, JpegRectPublic, JpegTileBatch, MetalBackendSession,
+            MetalSession, ScratchPool, Surface, SurfaceResidency,
+        };
+
+        #[cfg(target_os = "macos")]
+        pub use signinum_jpeg_metal::{
+            JpegMetalResidentBatchReport, MetalBatchOutputBuffer, MetalBatchTextureOutput,
+            MetalTextureTile,
         };
     }
 }
