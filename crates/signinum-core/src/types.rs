@@ -113,6 +113,67 @@ impl Rect {
     }
 }
 
+/// Source-region and reduced-resolution shape requested during decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DecodeRequest {
+    /// Optional source-image region. `None` requests the full image.
+    pub roi: Option<Rect>,
+    /// Reduced-resolution decode scale.
+    pub scale: Downscale,
+}
+
+impl DecodeRequest {
+    /// Full-image, full-resolution decode request.
+    pub const FULL: Self = Self {
+        roi: None,
+        scale: Downscale::None,
+    };
+
+    /// Construct a full-image, full-resolution decode request.
+    pub const fn full() -> Self {
+        Self::FULL
+    }
+
+    /// Construct a full-resolution region decode request.
+    pub const fn region(roi: Rect) -> Self {
+        Self {
+            roi: Some(roi),
+            scale: Downscale::None,
+        }
+    }
+
+    /// Construct a full-image scaled decode request.
+    pub const fn scaled(scale: Downscale) -> Self {
+        Self { roi: None, scale }
+    }
+
+    /// Construct a region scaled decode request.
+    pub const fn region_scaled(roi: Rect, scale: Downscale) -> Self {
+        Self {
+            roi: Some(roi),
+            scale,
+        }
+    }
+
+    /// Return whether this request covers the full image at full resolution.
+    pub const fn is_full_resolution_full_image(self) -> bool {
+        matches!(
+            self,
+            Self {
+                roi: None,
+                scale: Downscale::None
+            }
+        )
+    }
+
+    /// Return the output rectangle covered by this request for image dimensions.
+    #[must_use]
+    pub fn decoded_rect(self, dimensions: (u32, u32)) -> Rect {
+        let roi = self.roi.unwrap_or_else(|| Rect::full(dimensions));
+        roi.scaled_covering(self.scale)
+    }
+}
+
 /// Basic image metadata returned by inspect/parse operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {

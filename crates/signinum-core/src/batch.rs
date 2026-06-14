@@ -3,6 +3,8 @@
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
+use crate::{scale::Downscale, types::Rect};
+
 /// Worker configuration for CPU tile batches.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TileBatchOptions {
@@ -19,6 +21,75 @@ impl TileBatchOptions {
 
 /// Indexed result produced by one tile-batch worker.
 pub type IndexedBatchResult<T, E> = (usize, Result<T, E>);
+
+/// One full-tile decode request.
+pub struct TileDecodeJob<'i, 'o> {
+    /// Compressed tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+}
+
+/// One region tile decode request.
+pub struct TileRegionDecodeJob<'i, 'o> {
+    /// Compressed tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Region of interest in source-image coordinates.
+    pub roi: Rect,
+}
+
+/// One scaled tile decode request.
+pub struct TileScaledDecodeJob<'i, 'o> {
+    /// Compressed tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Downscale factor applied to the full-tile decode.
+    pub scale: Downscale,
+}
+
+/// One region+scaled tile decode request.
+pub struct TileRegionScaledDecodeJob<'i, 'o> {
+    /// Compressed tile bytes.
+    pub input: &'i [u8],
+    /// Caller-owned output buffer for this tile.
+    pub out: &'o mut [u8],
+    /// Distance in bytes between output rows.
+    pub stride: usize,
+    /// Region of interest in source-image coordinates.
+    pub roi: Rect,
+    /// Downscale factor applied to the region decode.
+    pub scale: Downscale,
+}
+
+/// Error returned by tile batches, annotated with the failing input index.
+#[derive(Debug)]
+pub struct TileBatchError<E> {
+    /// Index of the first failing tile in input order.
+    pub index: usize,
+    /// Decode error reported for that tile.
+    pub source: E,
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for TileBatchError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "tile {} decode failed: {}", self.index, self.source)
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for TileBatchError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 /// Resolve the number of CPU workers for a tile batch.
 ///

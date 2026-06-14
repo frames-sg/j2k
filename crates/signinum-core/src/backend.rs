@@ -165,9 +165,13 @@ pub struct BackendCapabilities {
 }
 
 impl BackendCapabilities {
-    /// Detect default backend capabilities for the current build target.
+    /// Return default capabilities implied by the current build target.
+    ///
+    /// This does not probe GPU devices or runtime libraries. Codec facades and
+    /// adapters must further gate the returned device flags by their compiled
+    /// features and runtime availability.
     #[must_use]
-    pub fn detect() -> Self {
+    pub fn compile_time_defaults() -> Self {
         Self {
             cpu: CpuFeatures::detect(),
             metal: cfg!(target_os = "macos"),
@@ -186,22 +190,30 @@ impl BackendCapabilities {
     }
 
     /// Resolve a backend request to the concrete backend that should run.
+    ///
+    /// `Auto` resolves to CPU here. Workload-aware device promotion belongs in
+    /// codec-specific route planners that have benchmark evidence for the
+    /// requested operation.
     #[must_use]
     pub fn resolve(self, request: BackendRequest) -> Option<BackendKind> {
         match request {
-            BackendRequest::Auto => {
-                if self.metal {
-                    Some(BackendKind::Metal)
-                } else if self.cuda {
-                    Some(BackendKind::Cuda)
-                } else {
-                    Some(BackendKind::Cpu)
-                }
-            }
-            BackendRequest::Cpu => Some(BackendKind::Cpu),
+            BackendRequest::Auto | BackendRequest::Cpu => Some(BackendKind::Cpu),
             BackendRequest::Metal if self.metal => Some(BackendKind::Metal),
             BackendRequest::Cuda if self.cuda => Some(BackendKind::Cuda),
             BackendRequest::Metal | BackendRequest::Cuda => None,
+        }
+    }
+
+    /// Return an available accelerator backend without implying it should be
+    /// selected for a workload.
+    #[must_use]
+    pub const fn first_available_accelerator(self) -> Option<BackendKind> {
+        if self.metal {
+            Some(BackendKind::Metal)
+        } else if self.cuda {
+            Some(BackendKind::Cuda)
+        } else {
+            None
         }
     }
 }

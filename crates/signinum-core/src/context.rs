@@ -7,12 +7,31 @@ pub struct CacheStats {
     pub hits: u64,
     /// Number of cache lookups that had to build new state.
     pub misses: u64,
+    /// Number of currently occupied cache slots.
+    pub occupied_slots: u64,
+    /// Number of cache entries evicted by later insertions.
+    pub evictions: u64,
 }
 
 impl CacheStats {
     /// Construct cache statistics from explicit counters.
     pub const fn new(hits: u64, misses: u64) -> Self {
-        Self { hits, misses }
+        Self {
+            hits,
+            misses,
+            occupied_slots: 0,
+            evictions: 0,
+        }
+    }
+
+    /// Construct cache statistics from full counters.
+    pub const fn with_slots(hits: u64, misses: u64, occupied_slots: u64, evictions: u64) -> Self {
+        Self {
+            hits,
+            misses,
+            occupied_slots,
+            evictions,
+        }
     }
 }
 

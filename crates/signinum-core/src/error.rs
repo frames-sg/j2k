@@ -27,6 +27,16 @@ pub enum BufferError {
         /// Name of the size being computed.
         what: &'static str,
     },
+    /// A requested allocation exceeds the configured safety cap.
+    #[error("{what} allocation too large: requested {requested} bytes, cap {cap}")]
+    AllocationTooLarge {
+        /// Requested byte count.
+        requested: usize,
+        /// Configured byte cap.
+        cap: usize,
+        /// Name of the allocation being checked.
+        what: &'static str,
+    },
     /// Output stride cannot hold one decoded row.
     #[error("stride {stride} is smaller than row width {row_bytes}")]
     StrideTooSmall {

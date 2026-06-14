@@ -14,7 +14,7 @@ fn facade_bench_exposes_cpu_and_hybrid_encode_surfaces() {
         "direct_metal_auto_stage_rgb8_512_classic_external",
         "direct_metal_cpu_rct_stage_rgb8_512_htj2k_external",
         "facade_j2k_htj2k_encode_backend_speed_matrix",
-        "EncodeBackendPreference::STRICT_DEVICE",
+        "EncodeBackendPreference::RequireDevice",
         "SIGNINUM_REQUIRE_CUDA_BENCH",
     ] {
         assert!(

@@ -60,26 +60,57 @@ fn facade_runtime_backend_default_is_auto() {
     assert_eq!(BackendRequest::default(), BackendRequest::Auto);
     assert_eq!(
         J2kLosslessEncodeOptions::default().backend,
-        signinum::EncodeBackendPreference::ACCELERATED
+        signinum::EncodeBackendPreference::Auto
     );
     assert_eq!(
-        signinum::EncodeBackendPreference::CPU_ONLY,
+        signinum::EncodeBackendPreference::CpuOnly,
         signinum::EncodeBackendPreference::CpuOnly
     );
     assert_eq!(
-        signinum::EncodeBackendPreference::STRICT_DEVICE,
+        signinum::EncodeBackendPreference::RequireDevice,
         signinum::EncodeBackendPreference::RequireDevice
     );
 }
 
 #[test]
 fn facade_exports_adaptive_j2k_route_types() {
-    let _planner = J2kAdaptiveRoutePlanner::detected();
+    let _planner = J2kAdaptiveRoutePlanner::compile_time_defaults();
     assert_eq!(
         J2kAdaptiveBackendRequest::from_backend_request(BackendRequest::Auto),
         J2kAdaptiveBackendRequest::Accelerated
     );
     assert_eq!(J2kAdaptiveOperation::Encode, J2kAdaptiveOperation::Encode);
+}
+
+#[test]
+fn facade_exports_tiff_jpeg_preparation_contracts() {
+    use signinum::jpeg::{
+        decode_prepared_jpeg_tiles_rgb8, prepare_tiff_jpeg_tile, DecodeOptions,
+        DuplicateTablePolicy, JpegError, JpegTilePrepareOptions, PreparedJpeg, PreparedJpegTileJob,
+    };
+
+    let opts = JpegTilePrepareOptions {
+        expected_dimensions: Some((16, 16)),
+        duplicate_table_policy: DuplicateTablePolicy::RejectConflicting,
+        repair_zero_sof_dimensions: true,
+        validate_restart_markers: true,
+    };
+    assert_eq!(
+        opts.duplicate_table_policy,
+        DuplicateTablePolicy::RejectConflicting
+    );
+
+    let empty_prepared = PreparedJpeg::Borrowed(&[]);
+    assert!(empty_prepared.as_bytes().is_empty());
+
+    let bytes = [0xff, 0xd8, 0xff, 0xd9];
+    let err = prepare_tiff_jpeg_tile(&bytes, None, JpegTilePrepareOptions::default())
+        .expect_err("SOI/EOI without SOF is not decode-ready");
+    assert!(matches!(err, JpegError::MissingMarker { .. }));
+
+    let mut jobs: Vec<PreparedJpegTileJob<'static, 'static>> = Vec::new();
+    assert!(decode_prepared_jpeg_tiles_rgb8(&mut jobs).is_empty());
+    let _options = DecodeOptions::default();
 }
 
 #[test]
@@ -91,6 +122,26 @@ fn facade_auto_j2k_lossless_encode_keeps_ungated_small_workloads_on_cpu() {
 
     let encoded =
         encode_j2k_lossless(samples, &J2kLosslessEncodeOptions::default()).expect("encode");
+
+    assert_eq!(encoded.backend, BackendKind::Cpu);
+    assert!(encoded.codestream.starts_with(&[0xFF, 0x4F]));
+}
+
+/// The facade advertises CUDA to the route planner whenever the `cuda`
+/// feature is compiled, including builds without `cuda-runtime` where the
+/// adapter hooks are declining stubs. Auto must then fall back to CPU and
+/// succeed — never surface a device error. Run with
+/// `cargo test -p signinum --features cuda`.
+#[cfg(all(feature = "cuda", not(feature = "cuda-runtime")))]
+#[test]
+fn facade_auto_j2k_lossless_encode_falls_back_to_cpu_with_stub_cuda_adapters() {
+    let pixels: Vec<u8> = (0..512usize * 512 * 3)
+        .map(|value| u8::try_from((value * 31) & 0xFF).expect("masked sample fits"))
+        .collect();
+    let samples = J2kLosslessSamples::new(&pixels, 512, 512, 3, 8, false).expect("valid samples");
+
+    let encoded = encode_j2k_lossless(samples, &J2kLosslessEncodeOptions::default())
+        .expect("Auto encode must fall back to CPU when CUDA adapters are stubs");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
     assert!(encoded.codestream.starts_with(&[0xFF, 0x4F]));

@@ -1,18 +1,6 @@
 # signinum-cli
 
-Command-line inspection utility for `signinum`.
+Command-line entry point for Signinum.
 
-Install:
-
-```sh
-cargo install signinum-cli
-```
-
-The stable `0.4.x` CLI provides:
-
-```sh
-signinum inspect <file>
-```
-
-It parses JPEG and JPEG 2000 headers and prints decoded metadata. It does not
-own WSI container parsing, caching, prefetch, or image decode workflows.
+The current CLI focuses on inspection and smoke-test workflows. Full
+compress/decompress CLI parity is not claimed by this package.

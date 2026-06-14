@@ -1,6 +1,6 @@
 [package]
-name = "signinum-profile"
-description = "Internal profiling helpers for signinum crates"
+name = "signinum-j2k-types"
+description = "Shared JPEG 2000 encode-stage contract types for signinum"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,12 +13,10 @@ all-features = true
 targets = []
 
 [lib]
-name = "signinum_profile"
+name = "signinum_j2k_types"
 path = "src/lib.rs"
 
-[features]
-default = ["std"]
-std = []
+[dependencies]
 
 [lints]
 workspace = true

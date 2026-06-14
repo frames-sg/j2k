@@ -1,7 +1,8 @@
 use signinum_core::{
-    copy_tight_pixels_to_strided_output, strided_output_len, validate_strided_output_buffer,
-    BackendCapabilities, BackendKind, BackendRequest, BufferError, CodecContext, CodecError,
-    CpuFeatures, DecoderContext, DeviceSubmission, DeviceSurface, Downscale, ImageCodec,
+    copy_tight_pixels_to_strided_output, strided_output_len, submit_ready_device,
+    validate_cuda_surface_backend_request, validate_strided_output_buffer, BackendCapabilities,
+    BackendKind, BackendRequest, BufferError, CodecContext, CodecError, CpuFeatures,
+    DecoderContext, DeviceSubmission, DeviceSubmitSession, DeviceSurface, Downscale, ImageCodec,
     ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PassthroughCandidate, PassthroughDecision,
     PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, ReadySubmission,
     Rect, SampleType, ScratchPool, TileBatchDecodeDevice, TileBatchDecodeManyDevice,
@@ -17,6 +18,70 @@ fn pixel_format_reports_layout_and_sample_type() {
     assert_eq!(PixelFormat::Rgb8.layout(), PixelLayout::Rgb);
     assert_eq!(PixelFormat::Rgb8.sample(), SampleType::U8);
     assert_eq!(PixelFormat::Rgb16.sample(), SampleType::U16);
+}
+
+#[derive(Default)]
+struct SubmitCounter {
+    submissions: u64,
+}
+
+impl DeviceSubmitSession for SubmitCounter {
+    fn record_submit(&mut self) {
+        self.submissions += 1;
+    }
+}
+
+#[test]
+fn submit_ready_device_records_and_returns_success() {
+    let mut session = SubmitCounter::default();
+
+    let surface = submit_ready_device(&mut session, |session| {
+        assert_eq!(session.submissions, 1);
+        Ok::<_, DummyError>(DummySurface {
+            backend: BackendKind::Cuda,
+            dims: (2, 3),
+            fmt: PixelFormat::Rgb8,
+            len: 18,
+        })
+    })
+    .wait()
+    .expect("ready submission succeeds");
+
+    assert_eq!(session.submissions, 1);
+    assert_eq!(surface.backend_kind(), BackendKind::Cuda);
+    assert_eq!(surface.dimensions(), (2, 3));
+}
+
+#[test]
+fn submit_ready_device_records_and_returns_error() {
+    let mut session = SubmitCounter::default();
+
+    let error = submit_ready_device(&mut session, |_session| Err::<DummySurface, _>(DummyError))
+        .wait()
+        .expect_err("ready submission surfaces the error");
+
+    assert_eq!(error, DummyError);
+    assert_eq!(session.submissions, 1);
+}
+
+#[test]
+fn cuda_surface_backend_request_validation_rejects_metal_only() {
+    assert_eq!(
+        validate_cuda_surface_backend_request(BackendRequest::Cpu),
+        Ok(())
+    );
+    assert_eq!(
+        validate_cuda_surface_backend_request(BackendRequest::Auto),
+        Ok(())
+    );
+    assert_eq!(
+        validate_cuda_surface_backend_request(BackendRequest::Cuda),
+        Ok(())
+    );
+    assert_eq!(
+        validate_cuda_surface_backend_request(BackendRequest::Metal),
+        Err(BackendRequest::Metal)
+    );
 }
 
 #[test]
@@ -296,13 +361,14 @@ fn backend_capabilities_resolve_auto_and_explicit_requests() {
         metal: true,
         cuda: false,
     };
-    assert_eq!(caps.resolve(BackendRequest::Auto), Some(BackendKind::Metal));
+    assert_eq!(caps.resolve(BackendRequest::Auto), Some(BackendKind::Cpu));
     assert_eq!(caps.resolve(BackendRequest::Cpu), Some(BackendKind::Cpu));
     assert_eq!(
         caps.resolve(BackendRequest::Metal),
         Some(BackendKind::Metal)
     );
     assert_eq!(caps.resolve(BackendRequest::Cuda), None);
+    assert_eq!(caps.first_available_accelerator(), Some(BackendKind::Metal));
     assert!(caps.supports(BackendRequest::Metal));
     assert!(!caps.supports(BackendRequest::Cuda));
 }
@@ -313,6 +379,59 @@ fn backend_request_exposes_adaptive_cpu_and_strict_aliases() {
     assert_eq!(BackendRequest::CPU_ONLY, BackendRequest::Cpu);
     assert_eq!(BackendRequest::STRICT_METAL, BackendRequest::Metal);
     assert_eq!(BackendRequest::STRICT_CUDA, BackendRequest::Cuda);
+}
+
+#[test]
+fn decode_request_default_and_scaled_rects_are_stable() {
+    let full = signinum_core::DecodeRequest::default();
+    assert!(full.is_full_resolution_full_image());
+    assert_eq!(full.decoded_rect((17, 9)), Rect::full((17, 9)));
+
+    let roi = Rect {
+        x: 3,
+        y: 5,
+        w: 9,
+        h: 7,
+    };
+    let request = signinum_core::DecodeRequest::region_scaled(roi, Downscale::Quarter);
+    assert_eq!(
+        request.decoded_rect((99, 99)),
+        Rect {
+            x: 0,
+            y: 1,
+            w: 3,
+            h: 2
+        }
+    );
+}
+
+#[test]
+fn execution_stats_and_gpu_abi_helpers_are_stable() {
+    let combined = signinum_core::ExecutionStats {
+        submissions: 1,
+        kernel_dispatches: 2,
+        upload_bytes: 3,
+        readback_bytes: 4,
+        device_us: 5,
+    }
+    .saturating_add(signinum_core::ExecutionStats {
+        submissions: u64::MAX,
+        kernel_dispatches: 1,
+        upload_bytes: 1,
+        readback_bytes: 1,
+        device_us: 1,
+    });
+
+    assert_eq!(combined.submissions, u64::MAX);
+    assert_eq!(combined.kernel_dispatches, 3);
+
+    let values = [1_u32, 2_u32];
+    let bytes = <u32 as signinum_core::GpuAbi>::slice_as_bytes(&values);
+    assert_eq!(bytes.len(), 8);
+    assert_eq!(
+        signinum_core::DeviceMemoryRange::new(signinum_core::BackendKind::Cuda, 7, 8, 9).len,
+        9
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -378,7 +497,7 @@ impl ScratchPool for DummyPool {
     fn reset(&mut self) {}
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[error("dummy decode error")]
 struct DummyError;
 

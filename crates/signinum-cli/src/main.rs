@@ -4,21 +4,20 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
+const INSPECT_READ_LIMIT: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let subcommand = args.next();
     match subcommand.as_deref() {
         Some("inspect") => {
-            let path = match args.next() {
-                Some(p) => p,
-                None => {
-                    eprintln!("usage: signinum inspect <file>");
-                    return ExitCode::from(2);
-                }
+            let Some(path) = args.next() else {
+                eprintln!("usage: signinum inspect <file>");
+                return ExitCode::from(2);
             };
             inspect(Path::new(&path))
         }
-        Some("--help") | Some("-h") | Some("help") | None => {
+        Some("--help" | "-h" | "help") | None => {
             eprintln!("signinum {}", env!("CARGO_PKG_VERSION"));
             eprintln!("Usage:");
             eprintln!(
@@ -34,23 +33,34 @@ fn main() -> ExitCode {
 }
 
 fn inspect(path: &Path) -> ExitCode {
-    let bytes = match read_file(path) {
-        Ok(b) => b,
+    let input = match read_inspect_input(path) {
+        Ok(input) => input,
         Err(e) => {
             eprintln!("error reading {}: {e}", path.display());
             return ExitCode::from(1);
         }
     };
-    match inspect_bytes(&bytes) {
+    match inspect_bytes(&input.bytes) {
         Ok(line) => {
             println!("{line}");
             ExitCode::SUCCESS
         }
         Err(message) => {
             eprintln!("{message}");
+            if input.truncated {
+                eprintln!(
+                    "note: inspect read only the first {INSPECT_READ_LIMIT} bytes to avoid unbounded memory use"
+                );
+            }
             ExitCode::from(1)
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectInput {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,72 +122,31 @@ fn inspect_bytes(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
-fn read_file(path: &Path) -> io::Result<Vec<u8>> {
+fn read_inspect_input(path: &Path) -> io::Result<InspectInput> {
+    read_inspect_input_with_limit(path, INSPECT_READ_LIMIT)
+}
+
+fn read_inspect_input_with_limit(path: &Path, limit: usize) -> io::Result<InspectInput> {
     let mut file = std::fs::File::open(path)?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    Ok(buf)
+    let mut limited = file.by_ref().take((limit + 1) as u64);
+    limited.read_to_end(&mut buf)?;
+    let truncated = buf.len() > limit;
+    if truncated {
+        buf.truncate(limit);
+    }
+    Ok(InspectInput {
+        bytes: buf,
+        truncated,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_inspect_format, inspect_bytes, InspectFormat};
-
-    fn minimal_j2k_codestream() -> Vec<u8> {
-        let mut bytes = vec![0xFF, 0x4F];
-        let mut siz = Vec::new();
-        push_u16(&mut siz, 0);
-        push_u32(&mut siz, 128);
-        push_u32(&mut siz, 64);
-        push_u32(&mut siz, 0);
-        push_u32(&mut siz, 0);
-        push_u32(&mut siz, 64);
-        push_u32(&mut siz, 64);
-        push_u32(&mut siz, 0);
-        push_u32(&mut siz, 0);
-        push_u16(&mut siz, 3);
-        for _ in 0..3 {
-            siz.extend_from_slice(&[0x07, 0x01, 0x01]);
-        }
-        bytes.extend_from_slice(&[0xFF, 0x51]);
-        push_u16(&mut bytes, (siz.len() + 2) as u16);
-        bytes.extend_from_slice(&siz);
-
-        let cod = [0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x04, 0x04, 0x00, 0x01];
-        bytes.extend_from_slice(&[0xFF, 0x52]);
-        push_u16(&mut bytes, (cod.len() + 2) as u16);
-        bytes.extend_from_slice(&cod);
-        bytes.extend_from_slice(&[0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        bytes
-    }
-
-    fn minimal_jp2() -> Vec<u8> {
-        let codestream = minimal_j2k_codestream();
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p',
-            b'2', b' ',
-        ]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r', 0, 0, 0, 64,
-            0, 0, 0, 128, 0, 3, 7, 7, 0, 0, 0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0, 0, 0, 0,
-            16,
-        ]);
-        let len = (8 + codestream.len()) as u32;
-        bytes.extend_from_slice(&len.to_be_bytes());
-        bytes.extend_from_slice(b"jp2c");
-        bytes.extend_from_slice(&codestream);
-        bytes
-    }
-
-    fn push_u16(out: &mut Vec<u8>, value: u16) {
-        out.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn push_u32(out: &mut Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_be_bytes());
-    }
+    use super::{
+        detect_inspect_format, inspect_bytes, read_inspect_input_with_limit, InspectFormat,
+    };
+    use signinum_test_support::{minimal_j2k_codestream, minimal_jp2};
 
     #[test]
     fn detects_j2k_codestream_magic() {
@@ -190,6 +159,21 @@ mod tests {
     #[test]
     fn detects_jp2_magic() {
         assert_eq!(detect_inspect_format(&minimal_jp2()), InspectFormat::J2k);
+    }
+
+    #[test]
+    fn inspect_read_is_bounded() {
+        let path = std::env::temp_dir().join(format!(
+            "signinum-cli-inspect-bounded-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, [0xFF; 12]).expect("write bounded-read fixture");
+
+        let input = read_inspect_input_with_limit(&path, 8).expect("read bounded inspect input");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(input.truncated);
+        assert_eq!(input.bytes.len(), 8);
     }
 
     #[test]

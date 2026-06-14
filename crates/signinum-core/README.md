@@ -1,20 +1,9 @@
 # signinum-core
 
-Shared stable `0.4.x` decode contracts for the `signinum` workspace.
+Shared contracts for Signinum codec crates.
 
-Install:
+This crate defines backend requests, pixel formats, decode outcomes, device
+surfaces, scratch-pool traits, row output traits, and tile-batch decode traits.
+It does not implement a codec.
 
-```sh
-cargo add signinum-core
-```
-
-This crate contains the stable value types and traits used by the CPU codec
-crates:
-
-- pixel/sample formats
-- ROI and downscale geometry
-- caller-owned scratch and decoder context traits
-- row streaming and tile-batch decode traits
-- backend request and device-surface contracts
-
-It contains no image-format parser or decoder.
+Use it when implementing or integrating Signinum codec adapters.
