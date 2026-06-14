@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_core::{BackendRequest, PixelFormat};
+#[cfg(target_os = "macos")]
+use signinum_metal_support::metal_kernel_route;
 use signinum_metal_support::{
-    cpu_host_route, metal_kernel_route, reject_explicit_metal_route,
-    reject_unsupported_backend_route, MetalRouteProfileLabels,
+    cpu_host_route, reject_explicit_metal_route, reject_unsupported_backend_route,
+    MetalRouteProfileLabels,
 };
 
 use crate::Error;

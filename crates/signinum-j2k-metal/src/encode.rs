@@ -21,6 +21,7 @@ use signinum_j2k_native::{
     J2kPacketizationCodeBlock, J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder,
     J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
 };
+#[cfg(target_os = "macos")]
 use signinum_j2k_native::{
     EncodedHtJ2kCodeBlock, J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob,
     J2kPacketizationEncodeJob,
@@ -1185,6 +1186,7 @@ macro_rules! stage_stat_timing_flag {
 /// `From<compute::J2kResidentEncodeStageStats>` rule for one stage-stat
 /// field: `resident` fields copy from the compute-layer stats, `local`
 /// fields are facade-side only and keep their default.
+#[cfg(target_os = "macos")]
 macro_rules! stage_stat_from_resident {
     (resident, $out:ident, $stats:ident, $field:ident) => {
         $out.$field = $stats.$field;
@@ -4972,10 +4974,11 @@ mod tests {
     use signinum_core::DeviceSubmission;
     #[cfg(target_os = "macos")]
     use signinum_core::{BackendKind, PixelFormat};
+    #[cfg(target_os = "macos")]
+    use signinum_j2k::J2kForwardDwt53Job;
     use signinum_j2k::{
         encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
-        J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kLosslessEncodeOptions,
-        J2kLosslessSamples,
+        J2kEncodeStageAccelerator, J2kForwardRctJob, J2kLosslessEncodeOptions, J2kLosslessSamples,
     };
     #[cfg(target_os = "macos")]
     use signinum_j2k::{
