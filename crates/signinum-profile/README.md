@@ -1,7 +1,6 @@
 # signinum-profile
 
-Internal profiling helpers shared by the `signinum` workspace crates.
+Small profiling and route-summary helper crate for Signinum.
 
-This crate is published only because public `signinum` crates depend on it at
-runtime. It is not a user-facing API and should not be used directly by
-applications.
+Codec and adapter crates use it to emit stable profile rows and route decisions
+without each crate reimplementing environment parsing or summary formatting.

@@ -2,10 +2,11 @@
 
 //! Facade crate for the `signinum` pathology image codecs.
 //!
-//! Runtime backend requests default to [`BackendRequest::Auto`]. The facade
-//! compiles portable CPU codecs plus the Metal adapter by default, then uses
-//! device backends for supported workloads when they are compiled and available.
-//! CPU is the fallback for `Auto`, not the policy default.
+//! Runtime backend requests default to [`BackendRequest::Auto`]. The default
+//! build compiles only the portable CPU codecs; GPU adapters are opt-in via
+//! the `metal` and `cuda` features (or `gpu` for both). When device backends
+//! are compiled in and available, `Auto` uses them for supported workloads
+//! and falls back to CPU otherwise.
 //!
 //! # Examples
 //!
@@ -52,26 +53,79 @@
 pub mod core {
     //! Shared codec contracts and backend selection types.
 
-    pub use signinum_core::*;
+    pub use signinum_core::{
+        accelerator, backend, batch, collect_indexed_batch_results, context,
+        copy_tight_pixels_to_strided_output, device, error, passthrough, pixel, row_sink, sample,
+        scale, scratch, strided_output_len, submit_ready_device, tile_batch_worker_count, traits,
+        types, validate_cuda_surface_backend_request, validate_strided_output_buffer,
+        AcceleratorSession, BackendCapabilities, BackendFailureKind, BackendKind, BackendRequest,
+        BufferError, CacheStats, CodecContext, CodecError, CodedUnitLayout, Colorspace,
+        CompressedPayloadKind, CompressedTransferSyntax, CpuFeatures, DecodeOutcome, DecodeRequest,
+        DecodeRowsError, DecoderContext, DeviceMemoryRange, DeviceSubmission, DeviceSubmitSession,
+        DeviceSurface, Downscale, ExecutionStats, GpuAbi, ImageCodec, ImageDecode,
+        ImageDecodeDevice, ImageDecodeRows, ImageDecodeSubmit, IndexedBatchResult, Info,
+        InputError, NotImplemented, PassthroughCandidate, PassthroughDecision,
+        PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout,
+        ReadySubmission, Rect, RowSink, Sample, SampleType, ScratchPool, SurfaceResidency,
+        TileBatchDecode, TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
+        TileBatchError, TileBatchOptions, TileDecodeJob, TileDecompress, TileLayout,
+        TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob, Unsupported,
+        WarningKind,
+    };
 }
 
 pub mod jpeg {
     //! Baseline JPEG decode APIs.
 
-    pub use signinum_jpeg::*;
+    pub use signinum_jpeg::{
+        adapter, batch_session, capabilities, context, decode_prepared_jpeg_tiles_rgb8,
+        decode_tile_into, decode_tile_into_in_context, decode_tile_into_in_context_with_options,
+        decode_tile_region_into_in_context, decode_tile_region_into_in_context_with_options,
+        decode_tile_region_scaled_into_in_context,
+        decode_tile_region_scaled_into_in_context_with_options, decode_tile_scaled_into_in_context,
+        decode_tile_scaled_into_in_context_with_options, decode_tiles_into,
+        decode_tiles_into_with_options, decode_tiles_region_scaled_into,
+        decode_tiles_region_scaled_into_with_options, decode_tiles_scaled_into,
+        decode_tiles_scaled_into_with_options, decoder, encode_jpeg_baseline, encoder, error,
+        find_scan_ranges, info, iter_segments, output_buffer, parse_dri, parse_sof_info,
+        prepare_tiff_jpeg_tile, rewrite_sof_dimensions, segment, transcode, BuilderConflictReason,
+        CacheStats, CodecContext, ColorSpace, ColorTransform, ComponentRowWriter,
+        CompressedPayloadKind, CompressedTransferSyntax, DecodeOptions, DecodeOutcome,
+        DecodeRowsError, DecodedTile, Decoder, DecoderContext, Downscale, DuplicateTablePolicy,
+        EncodedJpeg, HuffmanFailure, ImageCodec, ImageDecode, ImageDecodeRows, Info, JpegBackend,
+        JpegBackendEligibility, JpegBatchSession, JpegCapabilityReport, JpegCapabilityRequest,
+        JpegCodec, JpegDecodeOp, JpegDecodeRequest, JpegEncodeError, JpegEncodeOptions, JpegError,
+        JpegOutputBuffer, JpegResolvedDecode, JpegResolvedDecodePath, JpegSamples, JpegScanRanges,
+        JpegSegment, JpegSegmentIter, JpegSofInfo, JpegSubsampling, JpegTilePrepareOptions,
+        JpegView, MarkerKind, McuGeometry, PassthroughCandidate, PassthroughDecision,
+        PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, PreparedJpeg,
+        PreparedJpegTileJob, Rect, RestartIndex, RestartSegment, RowSink, Sample, SampleType,
+        SamplingFactors, ScratchPool, SofKind, TableKind, TileBatchDecode, TileBatchError,
+        TileBatchOptions, TileDecodeJob, TileDecompress, TileRegionScaledDecodeJob,
+        TileScaledDecodeJob, UnsupportedReason, Warning,
+    };
 
     #[cfg(feature = "cuda")]
     pub mod cuda {
         //! CUDA JPEG adapter APIs.
 
-        pub use signinum_jpeg_cuda::*;
+        pub use signinum_jpeg_cuda::{
+            Codec, CudaJpegDecodePath, CudaSession, CudaSurface, CudaSurfaceStats, Decoder,
+            DecoderContext, Error, ScratchPool, Surface,
+        };
     }
 
     #[cfg(feature = "metal")]
     pub mod metal {
         //! Metal JPEG adapter APIs.
 
-        pub use signinum_jpeg_metal::*;
+        pub use signinum_jpeg_metal::{
+            encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
+            viewport, Codec, Decoder, DecoderContext, Error, Info, JpegBaselineMetalEncodeTile,
+            JpegDownscale, JpegMetalResidentBatchReport, JpegPixelFormat, JpegRectPublic,
+            JpegTileBatch, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput,
+            MetalSession, MetalTextureTile, ScratchPool, Surface, SurfaceResidency,
+        };
     }
 }
 
@@ -79,7 +133,7 @@ pub mod j2k {
     //! JPEG 2000 inspect, decode, and encode APIs.
 
     pub use signinum_j2k::{
-        adapter, context, encode_j2k_lossless as encode_j2k_lossless_cpu,
+        context, encode_j2k_lossless as encode_j2k_lossless_cpu,
         encode_j2k_lossless_with_accelerator, error, j2k_lossless_decomposition_levels,
         recode_j2k_to_htj2k_lossless, scratch, view, BackendKind, BackendRequest, BufferError,
         CodecError, CompressedPayloadKind, CompressedTransferSyntax, DecodeOutcome,
@@ -103,14 +157,42 @@ pub mod j2k {
     pub mod cuda {
         //! CUDA JPEG 2000 adapter APIs.
 
-        pub use signinum_j2k_cuda::*;
+        pub use signinum_j2k_cuda::{
+            encode_j2k_lossless_with_cuda, encode_j2k_lossless_with_cuda_and_profile, Codec,
+            CudaEncodeStageAccelerator, CudaEncodeStageTimings, CudaHtj2kBandId,
+            CudaHtj2kCodeBlock, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
+            CudaHtj2kEncodeProfileReport, CudaHtj2kIdwtStep, CudaHtj2kProfileReport, CudaHtj2kRect,
+            CudaHtj2kStoreStep, CudaHtj2kSubband, CudaHtj2kTransform, CudaSession, CudaSurface,
+            CudaSurfaceStats, Error, J2kContext, J2kDecoder, J2kScratchPool, Surface,
+            SurfaceResidency,
+        };
+
+        #[cfg(feature = "cuda-runtime")]
+        pub use signinum_j2k_cuda::{
+            encode_lossless_from_cuda_buffer, encode_lossless_from_cuda_buffer_with_report,
+            encode_lossless_from_cuda_buffers, encode_lossless_from_cuda_buffers_with_report,
+            submit_lossless_from_cuda_buffer, submit_lossless_from_cuda_buffers,
+            CudaLosslessEncodeOutcome, CudaLosslessEncodeResidency, CudaLosslessEncodeTile,
+            SubmittedJ2kLosslessCudaEncode, SubmittedJ2kLosslessCudaEncodeBatch,
+        };
     }
 
     #[cfg(feature = "metal")]
     pub mod metal {
         //! Metal JPEG 2000 adapter APIs.
 
-        pub use signinum_j2k_metal::*;
+        pub use signinum_j2k_metal::{
+            encode_lossless_batch_with_report, submit_lossless_batch,
+            submit_lossless_batch_to_metal, validate_lossless_roundtrip_on_metal,
+            validate_lossless_roundtrip_on_metal_with_session, Codec, Error, J2kContext,
+            J2kDecoder, J2kScratchPool, MetalBackendSession, MetalEncodeInputStaging,
+            MetalEncodeStageAccelerator, MetalEncodedJ2k, MetalLosslessBufferEncodeBatchOutcome,
+            MetalLosslessBufferEncodeOutcome, MetalLosslessEncodeBatchRequest,
+            MetalLosslessEncodeBatchStats, MetalLosslessEncodeConfig, MetalLosslessEncodeOutcome,
+            MetalLosslessEncodeResidency, MetalLosslessEncodeStageStats, MetalLosslessEncodeTile,
+            MetalSession, MetalTileBatch, SubmittedJ2kLosslessMetalBufferEncodeBatch,
+            SubmittedJ2kLosslessMetalEncodeBatch, Surface, SurfaceResidency,
+        };
     }
 
     /// Encode interleaved samples into a raw JPEG 2000 lossless codestream.
@@ -128,10 +210,7 @@ pub mod j2k {
         if options.backend == EncodeBackendPreference::CpuOnly {
             return signinum_j2k::encode_j2k_lossless(samples, options);
         }
-        if matches!(
-            options.backend,
-            EncodeBackendPreference::Auto | EncodeBackendPreference::PreferDevice
-        ) {
+        if matches!(options.backend, EncodeBackendPreference::Auto) {
             let route = adaptive_lossless_encode_route(samples, *options)?;
             if route.route_kind == J2kAdaptiveRouteKind::CpuOnly {
                 return signinum_j2k::encode_j2k_lossless(samples, options);
@@ -152,104 +231,15 @@ pub mod j2k {
         samples: J2kLosslessSamples<'_>,
         options: J2kLosslessEncodeOptions,
     ) -> Result<J2kAdaptiveRouteReport, J2kError> {
-        let workload = lossless_encode_workload(samples, options);
-        let benchmarks = facade_lossless_encode_benchmarks(workload);
-        facade_adaptive_route_planner(facade_adaptive_capabilities()).plan(
-            workload,
-            J2kAdaptiveBackendRequest::Accelerated,
-            &benchmarks,
-        )
-    }
-
-    fn lossless_encode_workload(
-        samples: J2kLosslessSamples<'_>,
-        options: J2kLosslessEncodeOptions,
-    ) -> J2kAdaptiveWorkload {
-        let codec_mode = match options.block_coding_mode {
-            J2kBlockCodingMode::Classic => J2kAdaptiveCodecMode::ClassicJ2k,
-            J2kBlockCodingMode::HighThroughput => J2kAdaptiveCodecMode::Htj2k,
-        };
-        J2kAdaptiveWorkload::new(
-            J2kAdaptiveOperation::Encode,
-            codec_mode,
-            J2kAdaptiveQualityMode::Lossless,
-            samples.components,
-            samples.bit_depth,
-            (samples.width, samples.height),
-            1,
-        )
+        J2kAdaptiveRoutePlanner::lossless_encode(facade_adaptive_capabilities())
+            .plan_lossless_encode(samples, options)
     }
 
     fn facade_adaptive_capabilities() -> signinum_core::BackendCapabilities {
-        let mut capabilities = signinum_core::BackendCapabilities::detect();
+        let mut capabilities = signinum_core::BackendCapabilities::compile_time_defaults();
         capabilities.metal = capabilities.metal && cfg!(feature = "metal");
-        capabilities.cuda = cfg!(feature = "cuda-runtime");
+        capabilities.cuda = cfg!(feature = "cuda");
         capabilities
-    }
-
-    fn facade_adaptive_route_planner(
-        capabilities: signinum_core::BackendCapabilities,
-    ) -> J2kAdaptiveRoutePlanner {
-        J2kAdaptiveRoutePlanner::new(capabilities).with_rca_finding(
-            J2kAdaptiveRcaFinding::reclassify_cpu(
-                J2kAdaptiveStage::Mct,
-                BackendKind::Cuda,
-                J2kAdaptiveRcaReason::CpuGenuinelyBetter,
-            ),
-        )
-    }
-
-    fn facade_lossless_encode_benchmarks(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBenchmarks {
-        let mut benchmarks = J2kAdaptiveBenchmarks::default();
-        if should_use_measured_cuda_htj2k_host_encode(workload) {
-            // Lossless host-pixel RGB/RGBA8 HTJ2K facade measurements. This is
-            // intentionally separate from the JPEG DCT-grid 9/7 transcode
-            // resident-HT measurements documented in
-            // docs/cuda-htj2k-resident-encode.md.
-            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
-                J2kAdaptiveStage::Dwt,
-                BackendKind::Cuda,
-                19_506_000,
-                2_616_000,
-                2.0,
-            ));
-            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
-                J2kAdaptiveStage::HtBlockCoding,
-                BackendKind::Cuda,
-                4_566_000,
-                2_002_000,
-                2.0,
-            ));
-            let (cpu_ns, accelerated_ns) = if workload.components == 4 {
-                (108_350_000, 53_360_000)
-            } else {
-                (81_419_000, 41_307_000)
-            };
-            benchmarks.push_end_to_end(J2kAdaptiveBenchmarkEvidence::end_to_end(
-                BackendKind::Cuda,
-                cpu_ns,
-                accelerated_ns,
-                2.0,
-            ));
-        }
-        benchmarks
-    }
-
-    fn should_use_measured_cuda_htj2k_host_encode(workload: J2kAdaptiveWorkload) -> bool {
-        const MIN_CUDA_HTJ2K_AUTO_PIXELS: u64 = 1024 * 1024;
-        let pixels =
-            u64::from(workload.tile_size.0).saturating_mul(u64::from(workload.tile_size.1));
-        workload.operation == J2kAdaptiveOperation::Encode
-            && workload.codec_mode == J2kAdaptiveCodecMode::Htj2k
-            && workload.quality_mode == J2kAdaptiveQualityMode::Lossless
-            && matches!(workload.components, 3 | 4)
-            && workload.bit_depth == 8
-            && workload.batch_size == 1
-            && !workload.roi
-            && !workload.scaled
-            && workload.quality_layers == 1
-            && workload.output_residency == J2kAdaptiveOutputResidency::Host
-            && pixels >= MIN_CUDA_HTJ2K_AUTO_PIXELS
     }
 
     #[cfg(feature = "metal")]
@@ -304,7 +294,7 @@ pub mod j2k {
         accelerator: &mut impl J2kEncodeStageAccelerator,
     ) -> Result<Option<EncodedJ2k>, J2kError> {
         let requested_backend = options.backend;
-        let device_options = options.with_backend(EncodeBackendPreference::ACCELERATED);
+        let device_options = options.with_backend(EncodeBackendPreference::Auto);
         let before = accelerator.dispatch_report();
         let encoded = signinum_j2k::encode_j2k_lossless_with_accelerator(
             samples,
@@ -341,7 +331,123 @@ pub mod j2k {
                 job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
             ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
                 self.packetization_dispatches = self.packetization_dispatches.saturating_add(1);
-                signinum_j2k_native::encode_j2k_packetization_scalar(job).map(Some)
+                encode_packetization_scalar(job).map(Some)
+            }
+        }
+
+        fn encode_packetization_scalar(
+            job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
+        ) -> core::result::Result<Vec<u8>, &'static str> {
+            let packet_descriptors = job
+                .packet_descriptors
+                .iter()
+                .copied()
+                .map(native_packet_descriptor)
+                .collect::<Vec<_>>();
+            let resolutions = job
+                .resolutions
+                .iter()
+                .map(native_packet_resolution)
+                .collect::<Vec<_>>();
+            let native_job = signinum_j2k_native::J2kPacketizationEncodeJob {
+                resolution_count: job.resolution_count,
+                num_layers: job.num_layers,
+                num_components: job.num_components,
+                code_block_count: job.code_block_count,
+                progression_order: native_packet_progression(job.progression_order),
+                packet_descriptors: &packet_descriptors,
+                resolutions: &resolutions,
+            };
+            signinum_j2k_native::encode_j2k_packetization_scalar(native_job)
+        }
+
+        fn native_packet_descriptor(
+            descriptor: signinum_j2k::J2kPacketizationPacketDescriptor,
+        ) -> signinum_j2k_native::J2kPacketizationPacketDescriptor {
+            signinum_j2k_native::J2kPacketizationPacketDescriptor {
+                packet_index: descriptor.packet_index,
+                state_index: descriptor.state_index,
+                layer: descriptor.layer,
+                resolution: descriptor.resolution,
+                component: descriptor.component,
+                precinct: descriptor.precinct,
+            }
+        }
+
+        fn native_packet_resolution<'a>(
+            resolution: &signinum_j2k::J2kPacketizationResolution<'a>,
+        ) -> signinum_j2k_native::J2kPacketizationResolution<'a> {
+            signinum_j2k_native::J2kPacketizationResolution {
+                subbands: resolution
+                    .subbands
+                    .iter()
+                    .map(native_packet_subband)
+                    .collect(),
+            }
+        }
+
+        fn native_packet_subband<'a>(
+            subband: &signinum_j2k::J2kPacketizationSubband<'a>,
+        ) -> signinum_j2k_native::J2kPacketizationSubband<'a> {
+            signinum_j2k_native::J2kPacketizationSubband {
+                code_blocks: subband
+                    .code_blocks
+                    .iter()
+                    .copied()
+                    .map(native_packet_code_block)
+                    .collect(),
+                num_cbs_x: subband.num_cbs_x,
+                num_cbs_y: subband.num_cbs_y,
+            }
+        }
+
+        fn native_packet_code_block(
+            code_block: signinum_j2k::J2kPacketizationCodeBlock<'_>,
+        ) -> signinum_j2k_native::J2kPacketizationCodeBlock<'_> {
+            signinum_j2k_native::J2kPacketizationCodeBlock {
+                data: code_block.data,
+                ht_cleanup_length: code_block.ht_cleanup_length,
+                ht_refinement_length: code_block.ht_refinement_length,
+                num_coding_passes: code_block.num_coding_passes,
+                num_zero_bitplanes: code_block.num_zero_bitplanes,
+                previously_included: code_block.previously_included,
+                l_block: code_block.l_block,
+                block_coding_mode: native_packet_block_coding_mode(code_block.block_coding_mode),
+            }
+        }
+
+        fn native_packet_block_coding_mode(
+            mode: signinum_j2k::J2kPacketizationBlockCodingMode,
+        ) -> signinum_j2k_native::J2kPacketizationBlockCodingMode {
+            match mode {
+                signinum_j2k::J2kPacketizationBlockCodingMode::Classic => {
+                    signinum_j2k_native::J2kPacketizationBlockCodingMode::Classic
+                }
+                signinum_j2k::J2kPacketizationBlockCodingMode::HighThroughput => {
+                    signinum_j2k_native::J2kPacketizationBlockCodingMode::HighThroughput
+                }
+            }
+        }
+
+        fn native_packet_progression(
+            progression: signinum_j2k::J2kPacketizationProgressionOrder,
+        ) -> signinum_j2k_native::J2kPacketizationProgressionOrder {
+            match progression {
+                signinum_j2k::J2kPacketizationProgressionOrder::Lrcp => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Lrcp
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Rlcp => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Rlcp
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Rpcl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Rpcl
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Pcrl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Pcrl
+                }
+                signinum_j2k::J2kPacketizationProgressionOrder::Cprl => {
+                    signinum_j2k_native::J2kPacketizationProgressionOrder::Cprl
+                }
             }
         }
 
@@ -381,18 +487,19 @@ pub mod j2k {
                 (1024, 1024),
                 1,
             );
-            let benchmarks = facade_lossless_encode_benchmarks(workload);
-            let report = facade_adaptive_route_planner(signinum_core::BackendCapabilities {
-                cpu: signinum_core::CpuFeatures::default(),
-                metal: false,
-                cuda: true,
-            })
-            .plan(
-                workload,
-                J2kAdaptiveBackendRequest::Accelerated,
-                &benchmarks,
-            )
-            .expect("facade CUDA route should plan");
+            let benchmarks = J2kAdaptiveRoutePlanner::lossless_encode_benchmarks(workload);
+            let report =
+                J2kAdaptiveRoutePlanner::lossless_encode(signinum_core::BackendCapabilities {
+                    cpu: signinum_core::CpuFeatures::default(),
+                    metal: false,
+                    cuda: true,
+                })
+                .plan(
+                    workload,
+                    J2kAdaptiveBackendRequest::Accelerated,
+                    &benchmarks,
+                )
+                .expect("facade CUDA route should plan");
 
             assert_eq!(report.route_kind, J2kAdaptiveRouteKind::Hybrid);
             assert_eq!(report.selected_device, Some(BackendKind::Cuda));
@@ -437,18 +544,19 @@ pub mod j2k {
                 (512, 512),
                 1,
             );
-            let benchmarks = facade_lossless_encode_benchmarks(workload);
-            let report = facade_adaptive_route_planner(signinum_core::BackendCapabilities {
-                cpu: signinum_core::CpuFeatures::default(),
-                metal: false,
-                cuda: true,
-            })
-            .plan(
-                workload,
-                J2kAdaptiveBackendRequest::Accelerated,
-                &benchmarks,
-            )
-            .expect("facade CUDA route should plan");
+            let benchmarks = J2kAdaptiveRoutePlanner::lossless_encode_benchmarks(workload);
+            let report =
+                J2kAdaptiveRoutePlanner::lossless_encode(signinum_core::BackendCapabilities {
+                    cpu: signinum_core::CpuFeatures::default(),
+                    metal: false,
+                    cuda: true,
+                })
+                .plan(
+                    workload,
+                    J2kAdaptiveBackendRequest::Accelerated,
+                    &benchmarks,
+                )
+                .expect("facade CUDA route should plan");
 
             assert_eq!(report.route_kind, J2kAdaptiveRouteKind::CpuOnly);
             assert_eq!(report.selected_device, None);
@@ -466,14 +574,17 @@ pub mod j2k {
 pub mod tilecodec {
     //! Tile decompression codecs for container integrations.
 
-    pub use signinum_tilecodec::*;
+    pub use signinum_tilecodec::{
+        DeflateCodec, DeflatePool, LzwCodec, LzwPool, NoPool, TileCodecError, TileDecompress,
+        UncompressedCodec, ZstdCodec, ZstdPool,
+    };
 }
 
 pub use core::{
     BackendCapabilities, BackendKind, BackendRequest, BufferError, CodecError, DecodeOutcome,
     DecodeRowsError, DecoderContext, DeviceSurface, Downscale, ImageCodec, ImageDecode,
     ImageDecodeDevice, ImageDecodeRows, PixelFormat, Rect, RowSink, TileBatchDecode,
-    TileBatchDecodeManyDevice, TileDecompress,
+    TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit, TileDecompress,
 };
 pub use core::{
     CompressedPayloadKind, CompressedTransferSyntax, PassthroughCandidate, PassthroughDecision,

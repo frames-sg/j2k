@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(any(feature = "metal", feature = "cuda"))]
 use signinum::j2k::J2kEncodeStageAccelerator;
 use signinum::j2k::{
@@ -56,7 +56,7 @@ fn bench_facade_j2k_encode(c: &mut Criterion) {
     group.bench_function("facade_cpu_only_rgb8_128x128", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 TILE_SIDE,
                 TILE_SIDE,
                 3,
@@ -66,14 +66,14 @@ fn bench_facade_j2k_encode(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &options).expect("facade cpu-only encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
     group.bench_function("direct_cpu_only_rgb8_128x128", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 TILE_SIDE,
                 TILE_SIDE,
                 3,
@@ -83,7 +83,7 @@ fn bench_facade_j2k_encode(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 signinum_j2k::encode_j2k_lossless(samples, &options).expect("direct cpu encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
     group.finish();
@@ -104,7 +104,7 @@ fn bench_facade_cpu_matrix(c: &mut Criterion) {
     group.bench_function("cpu_only_rgb8_512_classic_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
                 3,
@@ -114,14 +114,14 @@ fn bench_facade_cpu_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &classic_options).expect("classic CPU encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
     group.bench_function("cpu_only_rgb8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
                 3,
@@ -131,7 +131,7 @@ fn bench_facade_cpu_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &htj2k_options).expect("HTJ2K CPU encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
     group.finish();
@@ -139,12 +139,10 @@ fn bench_facade_cpu_matrix(c: &mut Criterion) {
 
 fn bench_facade_adaptive_matrix(c: &mut Criterion) {
     let pixels = patterned_rgb8(MATRIX_SIDE, MATRIX_SIDE);
-    let auto_classic = matrix_encode_options(
-        EncodeBackendPreference::ACCELERATED,
-        J2kBlockCodingMode::Classic,
-    );
+    let auto_classic =
+        matrix_encode_options(EncodeBackendPreference::Auto, J2kBlockCodingMode::Classic);
     let auto_htj2k = matrix_encode_options(
-        EncodeBackendPreference::ACCELERATED,
+        EncodeBackendPreference::Auto,
         J2kBlockCodingMode::HighThroughput,
     );
 
@@ -152,7 +150,7 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
     group.bench_function("adaptive_rgb8_512_classic_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
                 3,
@@ -162,14 +160,14 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 facade_encode_j2k_lossless(samples, &auto_classic).expect("facade adaptive encode");
-            black_box((encoded.backend, encoded.codestream.len()));
+            std::hint::black_box((encoded.backend, encoded.codestream.len()));
         });
     });
 
     group.bench_function("adaptive_rgb8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 MATRIX_SIDE,
                 MATRIX_SIDE,
                 3,
@@ -179,7 +177,7 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded = facade_encode_j2k_lossless(samples, &auto_htj2k)
                 .expect("facade adaptive HTJ2K encode");
-            black_box((encoded.backend, encoded.codestream.len()));
+            std::hint::black_box((encoded.backend, encoded.codestream.len()));
         });
     });
 
@@ -188,7 +186,7 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
         group.bench_function("direct_metal_auto_stage_rgb8_512_classic_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
-                    black_box(pixels.as_slice()),
+                    std::hint::black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
                     3,
@@ -205,14 +203,14 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
                     &mut accelerator,
                 )
                 .expect("direct Metal-stage classic encode");
-                black_box((encoded.backend, encoded.codestream.len()));
+                std::hint::black_box((encoded.backend, encoded.codestream.len()));
             });
         });
 
         group.bench_function("direct_metal_cpu_rct_stage_rgb8_512_htj2k_external", |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
-                    black_box(pixels.as_slice()),
+                    std::hint::black_box(pixels.as_slice()),
                     MATRIX_SIDE,
                     MATRIX_SIDE,
                     3,
@@ -229,7 +227,7 @@ fn bench_facade_adaptive_matrix(c: &mut Criterion) {
                     &mut accelerator,
                 )
                 .expect("direct Metal-stage HTJ2K encode");
-                black_box((encoded.backend, encoded.codestream.len()));
+                std::hint::black_box((encoded.backend, encoded.codestream.len()));
             });
         });
     }
@@ -270,16 +268,16 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         },
     ];
     let cpu_options = matrix_encode_options(
-        EncodeBackendPreference::CPU_ONLY,
+        EncodeBackendPreference::CpuOnly,
         J2kBlockCodingMode::HighThroughput,
     );
     let adaptive_options = matrix_encode_options(
-        EncodeBackendPreference::ACCELERATED,
+        EncodeBackendPreference::Auto,
         J2kBlockCodingMode::HighThroughput,
     );
     #[cfg(any(feature = "metal", feature = "cuda"))]
     let strict_options = matrix_encode_options(
-        EncodeBackendPreference::STRICT_DEVICE,
+        EncodeBackendPreference::RequireDevice,
         J2kBlockCodingMode::HighThroughput,
     );
 
@@ -289,7 +287,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         group.bench_function(cpu_name.as_str(), |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
-                    black_box(case.pixels.as_slice()),
+                    std::hint::black_box(case.pixels.as_slice()),
                     case.width,
                     case.height,
                     case.components,
@@ -299,7 +297,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
                 .expect("valid matrix samples");
                 let encoded =
                     facade_encode_j2k_lossless(samples, &cpu_options).expect("CPU HTJ2K encode");
-                black_box(encoded.codestream.len());
+                std::hint::black_box(encoded.codestream.len());
             });
         });
 
@@ -307,7 +305,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
         group.bench_function(adaptive_name.as_str(), |b| {
             b.iter(|| {
                 let samples = J2kLosslessSamples::new(
-                    black_box(case.pixels.as_slice()),
+                    std::hint::black_box(case.pixels.as_slice()),
                     case.width,
                     case.height,
                     case.components,
@@ -317,7 +315,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
                 .expect("valid matrix samples");
                 let encoded = facade_encode_j2k_lossless(samples, &adaptive_options)
                     .expect("adaptive HTJ2K encode");
-                black_box((encoded.backend, encoded.codestream.len()));
+                std::hint::black_box((encoded.backend, encoded.codestream.len()));
             });
         });
 
@@ -327,7 +325,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
             group.bench_function(metal_name.as_str(), |b| {
                 b.iter(|| {
                     let samples = J2kLosslessSamples::new(
-                        black_box(case.pixels.as_slice()),
+                        std::hint::black_box(case.pixels.as_slice()),
                         case.width,
                         case.height,
                         case.components,
@@ -349,7 +347,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
                         BackendKind::Metal,
                         "Metal speed bench must report a strict Metal backend"
                     );
-                    black_box((encoded.backend, encoded.codestream.len()));
+                    std::hint::black_box((encoded.backend, encoded.codestream.len()));
                 });
             });
         }
@@ -360,7 +358,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
             group.bench_function(cuda_name.as_str(), |b| {
                 b.iter(|| {
                     let samples = J2kLosslessSamples::new(
-                        black_box(case.pixels.as_slice()),
+                        std::hint::black_box(case.pixels.as_slice()),
                         case.width,
                         case.height,
                         case.components,
@@ -386,7 +384,7 @@ fn bench_facade_backend_speed_matrix(c: &mut Criterion) {
                         accelerator.dispatch_report().any(),
                         "CUDA speed bench must dispatch at least one CUDA stage"
                     );
-                    black_box((encoded.backend, encoded.codestream.len()));
+                    std::hint::black_box((encoded.backend, encoded.codestream.len()));
                 });
             });
         }

@@ -7,9 +7,11 @@ members = [
     "crates/signinum-profile",
     "crates/signinum-j2k-compare",
     "crates/signinum-j2k-native",
+    "crates/signinum-j2k-types",
     "crates/signinum-j2k",
     "crates/signinum-j2k-cuda",
     "crates/signinum-j2k-metal",
+    "crates/signinum-metal-support",
     "crates/signinum-jpeg",
     "crates/signinum-jpeg-cuda",
     "crates/signinum-jpeg-metal",
@@ -23,9 +25,9 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.4.4"
+version      = "0.5.0"
 edition      = "2021"
-rust-version = "1.88"
+rust-version = "1.96"
 license      = "Apache-2.0"
 repository   = "https://github.com/frames-sg/signinum"
 homepage     = "https://github.com/frames-sg/signinum"
@@ -35,11 +37,33 @@ categories   = ["multimedia::images"]
 [workspace.dependencies]
 thiserror = { version = "2", default-features = false }
 proptest  = { version = "1" }
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 zstd = { version = "0.13" }
-weezl = { version = "0.1" }
-libloading = "0.8"
+weezl = { version = "0.2" }
+libloading = "0.9"
+metal  = "0.33"
+rayon  = "1"
+cc     = "1.2"
+libc   = "0.2"
+log    = "0.4"
+memchr = { version = "2.8", default-features = false }
+
+# Shared strict-lint policy for safe crates. Crates with genuinely different
+# needs (SIMD/FFI crates that use `unsafe`, crates with documented temporary
+# allow lists) keep their own [lints] tables until later cleanup phases
+# narrow them.
+[workspace.lints.rust]
+unsafe_code            = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub        = "warn"
+
+[workspace.lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate      = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
 
 [profile.release]
 lto           = "fat"

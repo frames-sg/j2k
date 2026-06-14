@@ -2,6 +2,25 @@
 
 use crate::{error::BufferError, pixel::PixelFormat};
 
+/// Default cap for host-side codec-owned allocations.
+pub const DEFAULT_MAX_HOST_ALLOCATION_BYTES: usize = 512 * 1024 * 1024;
+
+/// Returns `len` if it is at or below `cap`.
+pub fn ensure_allocation_within_cap(
+    len: usize,
+    cap: usize,
+    what: &'static str,
+) -> Result<usize, BufferError> {
+    if len > cap {
+        return Err(BufferError::AllocationTooLarge {
+            requested: len,
+            cap,
+            what,
+        });
+    }
+    Ok(len)
+}
+
 /// Returns the number of bytes required for a strided image output buffer.
 ///
 /// The returned length covers the last written byte of the final row and does
@@ -22,6 +41,18 @@ pub fn strided_output_len(
         .ok_or(BufferError::SizeOverflow {
             what: "strided output size",
         })
+}
+
+/// Returns the strided output byte length, rejecting requests over `cap`.
+pub fn strided_output_len_capped(
+    dimensions: (u32, u32),
+    stride: usize,
+    fmt: PixelFormat,
+    cap: usize,
+    what: &'static str,
+) -> Result<usize, BufferError> {
+    let len = strided_output_len(dimensions, stride, fmt)?;
+    ensure_allocation_within_cap(len, cap, what)
 }
 
 /// Validates that `out_len` and `stride` can hold an image output.

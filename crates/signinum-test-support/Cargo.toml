@@ -12,6 +12,12 @@ publish = false
 name = "signinum_test_support"
 path = "src/lib.rs"
 
+[features]
+j2k-native-fixtures = ["dep:signinum-j2k-native"]
+
+[dependencies]
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.5.0", optional = true }
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"

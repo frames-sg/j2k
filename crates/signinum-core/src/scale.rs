@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Power-of-two downscale requested during decode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Downscale {
     /// Full-resolution output.
+    #[default]
     None,
     /// Half-resolution output.
     Half,

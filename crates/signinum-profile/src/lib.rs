@@ -141,7 +141,7 @@ pub fn gpu_route_profile_summary() -> ProfileSummary {
 #[cfg(feature = "std")]
 thread_local! {
     static GPU_ROUTE_PROFILE_SUMMARY: std::cell::RefCell<ProfileSummary> =
-        std::cell::RefCell::new(gpu_route_profile_summary());
+        std::cell::RefCell::new(gpu_route_profile_summary().emit_on_drop());
 }
 
 #[cfg(feature = "std")]
@@ -204,6 +204,39 @@ where
     row
 }
 
+#[cfg(feature = "std")]
+/// Emits a preformatted profile row to stderr.
+pub fn emit_profile_line(row: impl AsRef<str>) {
+    std::eprintln!("{}", row.as_ref());
+}
+
+#[cfg(feature = "std")]
+/// Formats and emits a string-valued profile row to stderr.
+pub fn emit_profile_row_now<K, V>(
+    codec: impl AsRef<str>,
+    op: impl AsRef<str>,
+    path: impl AsRef<str>,
+    fields: &[(K, V)],
+) where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    emit_profile_line(format_profile_row(codec, op, path, fields));
+}
+
+#[cfg(feature = "std")]
+/// Formats and emits an integer-valued profile row to stderr.
+pub fn emit_profile_row_u128_now<K>(
+    codec: impl AsRef<str>,
+    op: impl AsRef<str>,
+    path: impl AsRef<str>,
+    fields: &[(K, u128)],
+) where
+    K: AsRef<str>,
+{
+    emit_profile_line(format_profile_row_u128(codec, op, path, fields));
+}
+
 fn format_profile_prefix(codec: &str, op: &str, path: &str) -> String {
     let mut row = String::new();
     write!(row, "signinum_profile codec={codec} op={op} path={path}")
@@ -212,11 +245,25 @@ fn format_profile_prefix(codec: &str, op: &str, path: &str) -> String {
 }
 
 /// Aggregates profiling rows by codec, operation, path, and configured labels.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ProfileSummary {
     labels: Vec<SummaryLabel>,
     numeric_mode: SummaryNumericMode,
     rows: BTreeMap<SummaryKey, SummaryRow>,
+    #[cfg(feature = "std")]
+    emit_on_drop: bool,
+}
+
+impl Clone for ProfileSummary {
+    fn clone(&self) -> Self {
+        Self {
+            labels: self.labels.clone(),
+            numeric_mode: self.numeric_mode,
+            rows: self.rows.clone(),
+            #[cfg(feature = "std")]
+            emit_on_drop: false,
+        }
+    }
 }
 
 impl ProfileSummary {
@@ -238,7 +285,26 @@ impl ProfileSummary {
             labels: labels.into_iter().collect(),
             numeric_mode,
             rows: BTreeMap::new(),
+            #[cfg(feature = "std")]
+            emit_on_drop: false,
         }
+    }
+
+    /// Emits accumulated rows to stderr when the summary is dropped.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn emit_on_drop(mut self) -> Self {
+        self.emit_on_drop = true;
+        self
+    }
+
+    /// Flushes accumulated rows to stderr and clears them.
+    #[cfg(feature = "std")]
+    pub fn flush_to_stderr(&mut self) {
+        for row in self.format_rows() {
+            std::eprintln!("{row}");
+        }
+        self.rows.clear();
     }
 
     /// Records a profiling row with string field values.
@@ -392,8 +458,8 @@ impl Default for ProfileSummary {
 #[cfg(feature = "std")]
 impl Drop for ProfileSummary {
     fn drop(&mut self) {
-        for row in self.format_rows() {
-            std::eprintln!("{row}");
+        if self.emit_on_drop {
+            self.flush_to_stderr();
         }
     }
 }
@@ -808,16 +874,21 @@ mod tests {
 
     #[cfg(feature = "std")]
     #[test]
-    fn profile_summary_drop_formats_rows_without_panic() {
-        {
-            let mut summary = ProfileSummary::new([SummaryLabel::same("stage")]);
-            summary.record_str(
-                "jpeg",
-                "decode",
-                "tile/0",
-                &[("stage", "emit"), ("elapsed_ms", "4")],
-            );
-        }
+    fn profile_summary_emit_on_drop_is_explicit_and_not_cloned() {
+        let mut summary = ProfileSummary::new([SummaryLabel::same("stage")]).emit_on_drop();
+        summary.record_str(
+            "jpeg",
+            "decode",
+            "tile/0",
+            &[("stage", "emit"), ("elapsed_ms", "4")],
+        );
+
+        let cloned = summary.clone();
+        assert!(summary.emit_on_drop);
+        assert!(!cloned.emit_on_drop);
+
+        summary.flush_to_stderr();
+        assert!(summary.format_rows().is_empty());
     }
 
     #[cfg(feature = "std")]
