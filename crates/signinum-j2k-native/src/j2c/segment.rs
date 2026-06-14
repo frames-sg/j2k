@@ -586,6 +586,7 @@ mod tests {
     use super::*;
     use crate::j2c::codestream::CodeBlockStyle;
     use crate::writer::BitWriter;
+    use alloc::vec::Vec;
 
     fn encode_ht_num_passes(num_passes: u8) -> Vec<u8> {
         let mut writer = BitWriter::new();

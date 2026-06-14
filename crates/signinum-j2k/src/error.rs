@@ -23,8 +23,24 @@ pub enum J2kError {
     Unsupported(#[from] Unsupported),
 
     /// Native backend or encode/decode stage failed.
-    #[error("backend decode failed: {0}")]
+    #[error("backend failed: {0}")]
     Backend(String),
+
+    /// Caller-provided encode samples were malformed.
+    #[error("invalid JPEG 2000 samples: {what}")]
+    InvalidSamples {
+        /// Description of the invalid sample condition.
+        what: String,
+    },
+
+    /// Lossy rate-control search could not satisfy the requested target.
+    #[error("JPEG 2000 lossy rate target unreachable: {target}, best {best}")]
+    RateTargetUnreachable {
+        /// Requested rate target.
+        target: String,
+        /// Best achievable result observed by the search.
+        best: String,
+    },
 
     /// Requested region lies outside image bounds.
     #[error("region ({x},{y} {w}x{h}) is outside image bounds {image_w}x{image_h}")]

@@ -1,5 +1,4 @@
 //! HTJ2K encoder lookup tables generated from OpenJPH source rows.
-#![allow(dead_code)]
 
 #[repr(C)]
 /// Adapter HTJ2K UVLC encoder table row for backend experimentation.
@@ -969,3 +968,23 @@ pub(crate) const HT_UVLC_ENCODE_TABLE: [HtUvlcTableEntry; 75] = [
         ext_len: 4,
     },
 ];
+
+const fn pack_ht_uvlc_encode_table(table: &[HtUvlcTableEntry; 75]) -> [u8; 75 * 6] {
+    let mut bytes = [0u8; 75 * 6];
+    let mut index = 0;
+    while index < 75 {
+        let offset = index * 6;
+        let entry = table[index];
+        bytes[offset] = entry.pre;
+        bytes[offset + 1] = entry.pre_len;
+        bytes[offset + 2] = entry.suf;
+        bytes[offset + 3] = entry.suf_len;
+        bytes[offset + 4] = entry.ext;
+        bytes[offset + 5] = entry.ext_len;
+        index += 1;
+    }
+    bytes
+}
+
+pub(crate) const HT_UVLC_ENCODE_TABLE_BYTES: [u8; 75 * 6] =
+    pack_ht_uvlc_encode_table(&HT_UVLC_ENCODE_TABLE);

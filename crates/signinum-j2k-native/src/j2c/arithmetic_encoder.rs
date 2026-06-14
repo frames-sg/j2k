@@ -261,6 +261,7 @@ impl ArithmeticEncoder {
 mod tests {
     use super::*;
     use crate::j2c::arithmetic_decoder::{ArithmeticDecoder, ArithmeticDecoderContext};
+    use alloc::{vec, vec::Vec};
 
     #[test]
     fn test_encode_decode_round_trip() {

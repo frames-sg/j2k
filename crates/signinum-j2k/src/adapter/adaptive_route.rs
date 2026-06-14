@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use crate::J2kError;
+use crate::{J2kBlockCodingMode, J2kError, J2kLosslessEncodeOptions, J2kLosslessSamples};
 use signinum_core::{BackendCapabilities, BackendKind, BackendRequest, Unsupported};
 
 /// Caller intent for adaptive JPEG 2000-family routing.
@@ -29,6 +29,68 @@ impl J2kAdaptiveBackendRequest {
             BackendRequest::Cuda => Self::StrictDevice(BackendKind::Cuda),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LosslessEncodeReferencePolicy {
+    components: u8,
+    min_pixels: u64,
+    dwt_cpu_ns: u64,
+    dwt_accelerated_ns: u64,
+    ht_cpu_ns: u64,
+    ht_accelerated_ns: u64,
+    end_to_end_cpu_ns: u64,
+    end_to_end_accelerated_ns: u64,
+    criterion_noise_percent: f64,
+}
+
+/// Reference policies captured during the v0.5 release-maturity audit on the
+/// CUDA host-output HTJ2K encode path. They are route-gating policy evidence,
+/// not live measurements from the current machine.
+const CUDA_HTJ2K_HOST_ENCODE_REFERENCE_POLICIES: [LosslessEncodeReferencePolicy; 2] = [
+    LosslessEncodeReferencePolicy {
+        components: 3,
+        min_pixels: 1024 * 1024,
+        dwt_cpu_ns: 19_506_000,
+        dwt_accelerated_ns: 2_616_000,
+        ht_cpu_ns: 4_566_000,
+        ht_accelerated_ns: 2_002_000,
+        end_to_end_cpu_ns: 81_419_000,
+        end_to_end_accelerated_ns: 41_307_000,
+        criterion_noise_percent: 2.0,
+    },
+    LosslessEncodeReferencePolicy {
+        components: 4,
+        min_pixels: 1024 * 1024,
+        dwt_cpu_ns: 19_506_000,
+        dwt_accelerated_ns: 2_616_000,
+        ht_cpu_ns: 4_566_000,
+        ht_accelerated_ns: 2_002_000,
+        end_to_end_cpu_ns: 108_350_000,
+        end_to_end_accelerated_ns: 53_360_000,
+        criterion_noise_percent: 2.0,
+    },
+];
+
+fn cuda_htj2k_host_encode_reference_policy(
+    workload: J2kAdaptiveWorkload,
+) -> Option<&'static LosslessEncodeReferencePolicy> {
+    let pixels = u64::from(workload.tile_size.0).saturating_mul(u64::from(workload.tile_size.1));
+    CUDA_HTJ2K_HOST_ENCODE_REFERENCE_POLICIES
+        .iter()
+        .find(|policy| {
+            workload.operation == J2kAdaptiveOperation::Encode
+                && workload.codec_mode == J2kAdaptiveCodecMode::Htj2k
+                && workload.quality_mode == J2kAdaptiveQualityMode::Lossless
+                && workload.components == policy.components
+                && workload.bit_depth == 8
+                && workload.batch_size == 1
+                && !workload.roi
+                && !workload.scaled
+                && workload.quality_layers == 1
+                && workload.output_residency == J2kAdaptiveOutputResidency::Host
+                && pixels >= policy.min_pixels
+        })
 }
 
 /// High-level operation being routed.
@@ -604,7 +666,7 @@ pub struct J2kAdaptiveRoutePlanner {
 }
 
 impl J2kAdaptiveRoutePlanner {
-    /// Build a planner from detected or test-provided capabilities.
+    /// Build a planner from caller-provided capabilities.
     #[must_use]
     pub fn new(capabilities: BackendCapabilities) -> Self {
         Self {
@@ -614,10 +676,16 @@ impl J2kAdaptiveRoutePlanner {
         }
     }
 
-    /// Build a planner with runtime-detected capabilities.
+    /// Build a planner with the default lossless encode policy evidence.
     #[must_use]
-    pub fn detected() -> Self {
-        Self::new(BackendCapabilities::detect())
+    pub fn lossless_encode(capabilities: BackendCapabilities) -> Self {
+        Self::new(capabilities).with_lossless_encode_policy()
+    }
+
+    /// Build a planner with compile-time default capabilities.
+    #[must_use]
+    pub fn compile_time_defaults() -> Self {
+        Self::new(BackendCapabilities::compile_time_defaults())
     }
 
     /// Return a planner with a different gate policy.
@@ -632,6 +700,85 @@ impl J2kAdaptiveRoutePlanner {
     pub fn with_rca_finding(mut self, finding: J2kAdaptiveRcaFinding) -> Self {
         self.rca_findings.push(finding);
         self
+    }
+
+    /// Return a planner with lossless host-pixel encode RCA defaults.
+    #[must_use]
+    pub fn with_lossless_encode_policy(self) -> Self {
+        self.with_rca_finding(J2kAdaptiveRcaFinding::reclassify_cpu(
+            J2kAdaptiveStage::Mct,
+            BackendKind::Cuda,
+            J2kAdaptiveRcaReason::CpuGenuinelyBetter,
+        ))
+    }
+
+    /// Plan the default lossless JPEG 2000/HTJ2K encode route.
+    ///
+    /// The default route is conservative: CPU-shaped work stays on CPU, and
+    /// CUDA HTJ2K host-output encode is approved only for shapes covered by the
+    /// documented reference-policy table in this module.
+    pub fn plan_lossless_encode(
+        &self,
+        samples: J2kLosslessSamples<'_>,
+        options: J2kLosslessEncodeOptions,
+    ) -> Result<J2kAdaptiveRouteReport, J2kError> {
+        let workload = Self::lossless_encode_workload(samples, options);
+        let benchmarks = Self::lossless_encode_benchmarks(workload);
+        self.plan(
+            workload,
+            J2kAdaptiveBackendRequest::Accelerated,
+            &benchmarks,
+        )
+    }
+
+    /// Build the adaptive workload for lossless encode options.
+    #[must_use]
+    pub fn lossless_encode_workload(
+        samples: J2kLosslessSamples<'_>,
+        options: J2kLosslessEncodeOptions,
+    ) -> J2kAdaptiveWorkload {
+        let codec_mode = match options.block_coding_mode {
+            J2kBlockCodingMode::Classic => J2kAdaptiveCodecMode::ClassicJ2k,
+            J2kBlockCodingMode::HighThroughput => J2kAdaptiveCodecMode::Htj2k,
+        };
+        J2kAdaptiveWorkload::new(
+            J2kAdaptiveOperation::Encode,
+            codec_mode,
+            J2kAdaptiveQualityMode::Lossless,
+            samples.components,
+            samples.bit_depth,
+            (samples.width, samples.height),
+            1,
+        )
+    }
+
+    /// Benchmark evidence for default lossless encode auto-routing.
+    #[must_use]
+    pub fn lossless_encode_benchmarks(workload: J2kAdaptiveWorkload) -> J2kAdaptiveBenchmarks {
+        let mut benchmarks = J2kAdaptiveBenchmarks::default();
+        if let Some(policy) = cuda_htj2k_host_encode_reference_policy(workload) {
+            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+                J2kAdaptiveStage::Dwt,
+                BackendKind::Cuda,
+                policy.dwt_cpu_ns,
+                policy.dwt_accelerated_ns,
+                policy.criterion_noise_percent,
+            ));
+            benchmarks.push_stage(J2kAdaptiveBenchmarkEvidence::stage(
+                J2kAdaptiveStage::HtBlockCoding,
+                BackendKind::Cuda,
+                policy.ht_cpu_ns,
+                policy.ht_accelerated_ns,
+                policy.criterion_noise_percent,
+            ));
+            benchmarks.push_end_to_end(J2kAdaptiveBenchmarkEvidence::end_to_end(
+                BackendKind::Cuda,
+                policy.end_to_end_cpu_ns,
+                policy.end_to_end_accelerated_ns,
+                policy.criterion_noise_percent,
+            ));
+        }
+        benchmarks
     }
 
     /// Plan a route for the workload and benchmark evidence.

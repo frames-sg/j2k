@@ -5,7 +5,7 @@ use signinum_j2k::{
     encode_j2k_lossless, EncodeBackendPreference, J2kDecoder, J2kLosslessEncodeOptions,
     J2kLosslessSamples,
 };
-use signinum_test_support::gradient_u8;
+use signinum_test_support::{gradient_u8, read_pnm_pixels, write_pnm};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -274,7 +274,7 @@ fn decode_with_openjpeg(
     command.args(extra_args);
     let status = command.status().expect("run opj_decompress");
     assert!(status.success(), "opj_decompress failed");
-    read_pnm_pixels(&output_path)
+    read_pnm_pixels(&output_path).expect("read pnm")
 }
 
 fn decode_j2k_with_openjpeg(paths: &OpenJpegPaths, stem: &str, codestream: &[u8]) -> Vec<u8> {
@@ -291,82 +291,7 @@ fn decode_j2k_with_openjpeg(paths: &OpenJpegPaths, stem: &str, codestream: &[u8]
         .status()
         .expect("run opj_decompress");
     assert!(status.success(), "opj_decompress failed");
-    read_pnm_pixels(&output_path)
-}
-
-fn write_pnm(
-    path: &Path,
-    pixels: &[u8],
-    width: u32,
-    height: u32,
-    channels: usize,
-) -> std::io::Result<()> {
-    let mut bytes = Vec::new();
-    if channels == 1 {
-        bytes.extend_from_slice(format!("P5\n{width} {height}\n255\n").as_bytes());
-    } else {
-        bytes.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
-    }
-    bytes.extend_from_slice(pixels);
-    fs::write(path, bytes)
-}
-
-fn read_pnm_pixels(path: &Path) -> Vec<u8> {
-    let bytes = fs::read(path).expect("read pnm");
-    let mut cursor = 0;
-
-    let magic = read_pnm_token(&bytes, &mut cursor).expect("pnm magic");
-    assert!(magic == b"P5" || magic == b"P6", "unexpected pnm magic");
-
-    let _width = read_pnm_token(&bytes, &mut cursor).expect("pnm width");
-    let _height = read_pnm_token(&bytes, &mut cursor).expect("pnm height");
-    let _maxval = read_pnm_token(&bytes, &mut cursor).expect("pnm maxval");
-
-    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-        cursor += 1;
-    }
-
-    bytes[cursor..].to_vec()
-}
-
-fn read_pnm_token<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
-    skip_pnm_separators(bytes, cursor);
-    if *cursor >= bytes.len() {
-        return None;
-    }
-
-    let start = *cursor;
-    while *cursor < bytes.len() {
-        let byte = bytes[*cursor];
-        if byte.is_ascii_whitespace() || byte == b'#' {
-            break;
-        }
-        *cursor += 1;
-    }
-
-    if start == *cursor {
-        None
-    } else {
-        Some(&bytes[start..*cursor])
-    }
-}
-
-fn skip_pnm_separators(bytes: &[u8], cursor: &mut usize) {
-    while *cursor < bytes.len() {
-        let byte = bytes[*cursor];
-        if byte.is_ascii_whitespace() {
-            *cursor += 1;
-            continue;
-        }
-        if byte == b'#' {
-            *cursor += 1;
-            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
-                *cursor += 1;
-            }
-            continue;
-        }
-        break;
-    }
+    read_pnm_pixels(&output_path).expect("read pnm")
 }
 
 fn temp_dir() -> &'static Path {

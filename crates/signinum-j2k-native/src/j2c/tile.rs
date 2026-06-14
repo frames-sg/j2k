@@ -2,6 +2,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::build::{PrecinctData, SubBandType};
 use super::codestream::{
@@ -11,6 +12,7 @@ use super::rect::IntRect;
 use crate::error::{bail, err, DecodingError, MarkerError, Result, TileError, ValidationError};
 use crate::j2c::codestream;
 use crate::reader::BitReader;
+use crate::DEFAULT_MAX_DECODE_BYTES;
 
 /// A single tile in the image.
 #[derive(Clone, Debug)]
@@ -166,23 +168,35 @@ impl<'a> Tile<'a> {
             let x_coord = size_data.tile_x_coord(idx);
             let y_coord = size_data.tile_y_coord(idx);
 
-            // See B-7, B-8, B-9 and B-10.
+            // See B-7, B-8, B-9 and B-10. Saturating arithmetic: the results
+            // are clamped against the reference grid anyway, and a saturated
+            // intermediate already exceeds every in-grid bound, so the clamp
+            // still produces the mathematically correct edge for crafted
+            // headers whose products overflow u32.
             let x0 = u32::max(
-                size_data.tile_x_offset + x_coord * size_data.tile_width,
+                size_data
+                    .tile_x_offset
+                    .saturating_add(x_coord.saturating_mul(size_data.tile_width)),
                 size_data.image_area_x_offset,
             );
             let y0 = u32::max(
-                size_data.tile_y_offset + y_coord * size_data.tile_height,
+                size_data
+                    .tile_y_offset
+                    .saturating_add(y_coord.saturating_mul(size_data.tile_height)),
                 size_data.image_area_y_offset,
             );
 
             // Note that `x1` and `y1` are exclusive.
             let x1 = u32::min(
-                size_data.tile_x_offset + (x_coord + 1) * size_data.tile_width,
+                size_data
+                    .tile_x_offset
+                    .saturating_add((x_coord + 1).saturating_mul(size_data.tile_width)),
                 size_data.reference_grid_width,
             );
             let y1 = u32::min(
-                size_data.tile_y_offset + (y_coord + 1) * size_data.tile_height,
+                size_data
+                    .tile_y_offset
+                    .saturating_add((y_coord + 1).saturating_mul(size_data.tile_height)),
                 size_data.reference_grid_height,
             );
 
@@ -217,6 +231,8 @@ pub(crate) fn parse<'a>(
     reader: &mut BitReader<'a>,
     main_header: &Header<'a>,
 ) -> Result<Vec<Tile<'a>>> {
+    validate_tile_structural_budget(main_header)?;
+
     let mut tiles = (0..main_header.size_data.num_tiles() as usize)
         .map(|idx| Tile::new(idx as u32, main_header))
         .collect::<Vec<_>>();
@@ -236,6 +252,32 @@ pub(crate) fn parse<'a>(
     }
 
     Ok(tiles)
+}
+
+fn validate_tile_structural_budget(main_header: &Header<'_>) -> Result<()> {
+    let num_tiles = usize::try_from(main_header.size_data.num_tiles())
+        .map_err(|_| ValidationError::ImageTooLarge)?;
+    let component_count = main_header.component_infos.len();
+    let progression_change_count = main_header.progression_changes.len();
+
+    let per_tile_components = size_of::<ComponentInfo>()
+        .checked_mul(component_count)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let per_tile_progression_changes = size_of::<ProgressionChange>()
+        .checked_mul(progression_change_count)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let per_tile_bytes = size_of::<Tile<'static>>()
+        .checked_add(per_tile_components)
+        .and_then(|bytes| bytes.checked_add(per_tile_progression_changes))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let total_bytes = per_tile_bytes
+        .checked_mul(num_tiles)
+        .ok_or(ValidationError::ImageTooLarge)?;
+
+    if total_bytes > DEFAULT_MAX_DECODE_BYTES {
+        bail!(ValidationError::ImageTooLarge);
+    }
+    Ok(())
 }
 
 fn parse_tile_part<'a>(

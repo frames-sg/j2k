@@ -7,18 +7,18 @@ use crate::{
     context::J2kContext,
     decode::{
         decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        validate_buffer, validate_region, validate_supported_format, J2kDecodeOutcome,
+        validate_buffer, validate_region, J2kDecodeOutcome,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
-    J2kError,
+    CpuDecodeParallelism, J2kError,
 };
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use signinum_core::{
     BufferError, CompressedPayloadKind, CompressedTransferSyntax, DecodeRowsError, DecoderContext,
     Downscale, ImageCodec, ImageDecode, ImageDecodeRows, Info, PassthroughCandidate, PixelFormat,
-    Rect, RowSink, TileBatchDecode,
+    Rect, RowSink, TileBatchDecode, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 
 /// Borrowed parse result for a JP2 or raw JPEG 2000 / HTJ2K codestream.
@@ -88,6 +88,63 @@ pub struct J2kDecoder<'a> {
     passthrough: Option<(CompressedTransferSyntax, CompressedPayloadKind)>,
 }
 
+/// Options for bounded J2K row decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct J2kRowDecodeOptions {
+    max_rows_per_stripe: u32,
+    max_stripe_bytes: usize,
+}
+
+impl J2kRowDecodeOptions {
+    /// Create row decode options with the requested maximum stripe height.
+    ///
+    /// A zero value is normalized to one row.
+    pub const fn new(max_rows_per_stripe: u32) -> Self {
+        Self {
+            max_rows_per_stripe,
+            max_stripe_bytes: DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        }
+    }
+
+    /// Create row decode options with explicit stripe height and byte caps.
+    pub const fn new_with_max_stripe_bytes(
+        max_rows_per_stripe: u32,
+        max_stripe_bytes: usize,
+    ) -> Self {
+        Self {
+            max_rows_per_stripe,
+            max_stripe_bytes,
+        }
+    }
+
+    /// Return a copy of these options with an explicit stripe byte cap.
+    #[must_use]
+    pub const fn with_max_stripe_bytes(mut self, max_stripe_bytes: usize) -> Self {
+        self.max_stripe_bytes = max_stripe_bytes;
+        self
+    }
+
+    /// Maximum number of decoded rows held per bounded row-decode stripe.
+    pub const fn max_rows_per_stripe(self) -> u32 {
+        if self.max_rows_per_stripe == 0 {
+            1
+        } else {
+            self.max_rows_per_stripe
+        }
+    }
+
+    /// Maximum number of packed bytes held per bounded row-decode stripe.
+    pub const fn max_stripe_bytes(self) -> usize {
+        self.max_stripe_bytes
+    }
+}
+
+impl Default for J2kRowDecodeOptions {
+    fn default() -> Self {
+        Self::new(64)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 /// Marker type used by generic tile-batch decode traits.
 pub struct J2kCodec;
@@ -133,17 +190,15 @@ impl<'a> J2kDecoder<'a> {
         &self.info
     }
 
-    /// Return the native CPU decode parallelism policy for this decoder.
-    pub fn cpu_decode_parallelism(&self) -> signinum_j2k_native::CpuDecodeParallelism {
-        self.native_context.cpu_decode_parallelism()
+    /// Return the CPU decode parallelism policy for this decoder.
+    pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {
+        CpuDecodeParallelism::from_native(self.native_context.cpu_decode_parallelism())
     }
 
-    /// Set the native CPU decode parallelism policy for this decoder.
-    pub fn set_cpu_decode_parallelism(
-        &mut self,
-        parallelism: signinum_j2k_native::CpuDecodeParallelism,
-    ) {
-        self.native_context.set_cpu_decode_parallelism(parallelism);
+    /// Set the CPU decode parallelism policy for this decoder.
+    pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
+        self.native_context
+            .set_cpu_decode_parallelism(parallelism.to_native());
     }
 
     /// Original compressed bytes backing this decoder.
@@ -197,7 +252,6 @@ impl<'a> J2kDecoder<'a> {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<J2kDecodeOutcome, J2kError> {
-        validate_supported_format(fmt)?;
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
@@ -239,7 +293,6 @@ impl<'a> J2kDecoder<'a> {
         fmt: PixelFormat,
         roi: Rect,
     ) -> Result<J2kDecodeOutcome, J2kError> {
-        validate_supported_format(fmt)?;
         validate_region(roi, self.info.dimensions)?;
         validate_buffer((roi.w, roi.h), out.len(), stride, fmt)?;
         self.ensure_image()?;
@@ -271,7 +324,6 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        validate_supported_format(fmt)?;
         let settings = DecodeSettings {
             target_resolution: Some(self.scaled_target_dims(scale)),
             ..DecodeSettings::default()
@@ -308,7 +360,6 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_region_into(pool, out, stride, fmt, roi);
         }
-        validate_supported_format(fmt)?;
         validate_region(roi, self.info.dimensions)?;
         let scaled_roi = roi.scaled_covering(scale);
         validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
@@ -358,6 +409,115 @@ impl<'a> J2kDecoder<'a> {
         let mut native_context = signinum_j2k_native::DecoderContext::default();
         native_context.set_cpu_decode_parallelism(self.native_context.cpu_decode_parallelism());
         native_context
+    }
+
+    /// Decode rows into a `u8` row sink while bounding host output scratch to
+    /// at most `options.max_rows_per_stripe()` rows.
+    ///
+    /// # Errors
+    /// Returns a decode error for unsupported formats or malformed input, and
+    /// forwards sink errors without converting them to successful decodes.
+    pub fn decode_rows_u8_bounded<R: RowSink<u8>>(
+        &mut self,
+        sink: &mut R,
+        options: J2kRowDecodeOptions,
+    ) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
+        let fmt = row_format_u8(self.info()).map_err(DecodeRowsError::Decode)?;
+        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let width = self.info.dimensions.0;
+        let height = self.info.dimensions.1;
+        let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
+            .map_err(DecodeRowsError::Decode)?;
+        let mut pool = J2kScratchPool::new();
+        let mut y = 0_u32;
+        while y < height {
+            let rows = stripe_rows.min(height - y);
+            let stripe_len = row_bytes.checked_mul(rows as usize).ok_or_else(|| {
+                DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
+                    what: "J2K bounded row decode stripe buffer",
+                }))
+            })?;
+            let stripe = pool.packed_bytes(max_stripe_len);
+            self.decode_region_into_cached(
+                &mut stripe[..stripe_len],
+                row_bytes,
+                fmt,
+                Rect {
+                    x: 0,
+                    y,
+                    w: width,
+                    h: rows,
+                },
+            )
+            .map_err(DecodeRowsError::Decode)?;
+            for row_index in 0..rows {
+                let start = row_index as usize * row_bytes;
+                sink.write_row(y + row_index, &stripe[start..start + row_bytes])
+                    .map_err(DecodeRowsError::Sink)?;
+            }
+            y += rows;
+        }
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(self.info.dimensions),
+            Vec::new(),
+        ))
+    }
+
+    /// Decode rows into a `u16` row sink while bounding host output scratch to
+    /// at most `options.max_rows_per_stripe()` rows.
+    ///
+    /// # Errors
+    /// Returns a decode error for unsupported formats or malformed input, and
+    /// forwards sink errors without converting them to successful decodes.
+    pub fn decode_rows_u16_bounded<R: RowSink<u16>>(
+        &mut self,
+        sink: &mut R,
+        options: J2kRowDecodeOptions,
+    ) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
+        let fmt = row_format_u16(self.info()).map_err(DecodeRowsError::Decode)?;
+        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let samples_per_row = row_samples_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
+        let width = self.info.dimensions.0;
+        let height = self.info.dimensions.1;
+        let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
+            .map_err(DecodeRowsError::Decode)?;
+        let mut pool = J2kScratchPool::new();
+        let mut y = 0_u32;
+        while y < height {
+            let rows = stripe_rows.min(height - y);
+            let stripe_len = row_bytes.checked_mul(rows as usize).ok_or_else(|| {
+                DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
+                    what: "J2K bounded row decode stripe buffer",
+                }))
+            })?;
+            let (packed, row) = pool.packed_bytes_and_row_u16(max_stripe_len, samples_per_row);
+            self.decode_region_into_cached(
+                &mut packed[..stripe_len],
+                row_bytes,
+                fmt,
+                Rect {
+                    x: 0,
+                    y,
+                    w: width,
+                    h: rows,
+                },
+            )
+            .map_err(DecodeRowsError::Decode)?;
+            for row_index in 0..rows {
+                let start = row_index as usize * row_bytes;
+                let packed_row = &packed[start..start + row_bytes];
+                for (dst, src) in row.iter_mut().zip(packed_row.chunks_exact(2)) {
+                    *dst = u16::from_le_bytes([src[0], src[1]]);
+                }
+                sink.write_row(y + row_index, row)
+                    .map_err(DecodeRowsError::Sink)?;
+            }
+            y += rows;
+        }
+        Ok(signinum_core::DecodeOutcome::new(
+            Rect::full(self.info.dimensions),
+            Vec::new(),
+        ))
     }
 }
 
@@ -442,28 +602,7 @@ impl<'a> ImageDecodeRows<'a, u8> for J2kDecoder<'a> {
         sink: &mut R,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, DecodeRowsError<Self::Error, R::Error>>
     {
-        let fmt = row_format_u8(self.info()).map_err(DecodeRowsError::Decode)?;
-        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
-        let full_len = row_bytes
-            .checked_mul(self.info.dimensions.1 as usize)
-            .ok_or_else(|| {
-                DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
-                    what: "J2K row decode output buffer",
-                }))
-            })?;
-        let mut pool = J2kScratchPool::new();
-        let full = pool.packed_bytes(full_len);
-        self.decode_into_cached(full, row_bytes, fmt)
-            .map_err(DecodeRowsError::Decode)?;
-        for y in 0..self.info.dimensions.1 {
-            let start = y as usize * row_bytes;
-            let row = &full[start..start + row_bytes];
-            sink.write_row(y, row).map_err(DecodeRowsError::Sink)?;
-        }
-        Ok(signinum_core::DecodeOutcome::new(
-            Rect::full(self.info.dimensions),
-            Vec::new(),
-        ))
+        self.decode_rows_u8_bounded(sink, J2kRowDecodeOptions::default())
     }
 }
 
@@ -473,32 +612,7 @@ impl<'a> ImageDecodeRows<'a, u16> for J2kDecoder<'a> {
         sink: &mut R,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, DecodeRowsError<Self::Error, R::Error>>
     {
-        let fmt = row_format_u16(self.info()).map_err(DecodeRowsError::Decode)?;
-        let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
-        let samples_per_row = row_samples_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
-        let full_len = row_bytes
-            .checked_mul(self.info.dimensions.1 as usize)
-            .ok_or_else(|| {
-                DecodeRowsError::Decode(J2kError::Buffer(BufferError::SizeOverflow {
-                    what: "J2K row decode output buffer",
-                }))
-            })?;
-        let mut pool = J2kScratchPool::new();
-        let (packed, row) = pool.packed_bytes_and_row_u16(full_len, samples_per_row);
-        self.decode_into_cached(packed, row_bytes, fmt)
-            .map_err(DecodeRowsError::Decode)?;
-        for y in 0..self.info.dimensions.1 {
-            let start = y as usize * row_bytes;
-            let packed_row = &packed[start..start + row_bytes];
-            for (dst, src) in row.iter_mut().zip(packed_row.chunks_exact(2)) {
-                *dst = u16::from_le_bytes([src[0], src[1]]);
-            }
-            sink.write_row(y, row).map_err(DecodeRowsError::Sink)?;
-        }
-        Ok(signinum_core::DecodeOutcome::new(
-            Rect::full(self.info.dimensions),
-            Vec::new(),
-        ))
+        self.decode_rows_u16_bounded(sink, J2kRowDecodeOptions::default())
     }
 }
 
@@ -519,7 +633,6 @@ impl TileBatchDecode for J2kCodec {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
-        ctx.codec_mut().record_tile_decode();
         let mut decoder = J2kDecoder::new(input)?;
         decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
         decoder.decode_into_with_scratch(pool, out, stride, fmt)
@@ -534,7 +647,6 @@ impl TileBatchDecode for J2kCodec {
         fmt: PixelFormat,
         roi: Rect,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
-        ctx.codec_mut().record_tile_decode();
         let mut decoder = J2kDecoder::new(input)?;
         decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
         decoder.decode_region_into(pool, out, stride, fmt, roi)
@@ -549,7 +661,6 @@ impl TileBatchDecode for J2kCodec {
         fmt: PixelFormat,
         scale: Downscale,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
-        ctx.codec_mut().record_tile_decode();
         let mut decoder = J2kDecoder::new(input)?;
         decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
         decoder.decode_scaled_into(pool, out, stride, fmt, scale)
@@ -565,7 +676,6 @@ impl TileBatchDecode for J2kCodec {
         roi: Rect,
         scale: Downscale,
     ) -> Result<signinum_core::DecodeOutcome<Self::Warning>, Self::Error> {
-        ctx.codec_mut().record_tile_decode();
         let mut decoder = J2kDecoder::new(input)?;
         decoder.set_cpu_decode_parallelism(ctx.codec().cpu_decode_parallelism());
         decoder.decode_region_scaled_into(pool, out, stride, fmt, roi, scale)
@@ -588,15 +698,41 @@ fn row_format_u16(info: &Info) -> Result<PixelFormat, J2kError> {
     match info.components {
         1 => Ok(PixelFormat::Gray16),
         3 => Ok(PixelFormat::Rgb16),
-        4 => Err(signinum_core::Unsupported {
-            what: "Rgba16 row decode is not supported by signinum-j2k",
-        }
-        .into()),
+        4 => Ok(PixelFormat::Rgba16),
         _ => Err(signinum_core::Unsupported {
-            what: "row decode only supports Gray/RGB images in J2K-M2",
+            what: "row decode only supports Gray/RGB/RGBA images in J2K-M2",
         }
         .into()),
     }
+}
+
+fn bounded_row_stripe_layout(
+    row_bytes: usize,
+    height: u32,
+    options: J2kRowDecodeOptions,
+) -> Result<(u32, usize), J2kError> {
+    let cap = options.max_stripe_bytes();
+    if row_bytes > cap {
+        return Err(J2kError::Buffer(BufferError::AllocationTooLarge {
+            requested: row_bytes,
+            cap,
+            what: "J2K bounded row decode stripe buffer",
+        }));
+    }
+
+    let max_rows = options.max_rows_per_stripe();
+    let image_rows = height.max(1);
+    let rows_by_cap = cap.checked_div(row_bytes).map_or(max_rows, |capped_rows| {
+        u32::try_from(capped_rows).unwrap_or(u32::MAX).max(1)
+    });
+    let stripe_rows = max_rows.min(image_rows).min(rows_by_cap);
+    let max_stripe_len = row_bytes
+        .checked_mul(stripe_rows as usize)
+        .ok_or(J2kError::Buffer(BufferError::SizeOverflow {
+            what: "J2K bounded row decode stripe buffer",
+        }))?;
+
+    Ok((stripe_rows, max_stripe_len))
 }
 
 fn row_bytes_for(info: &Info, fmt: PixelFormat) -> Result<usize, J2kError> {
@@ -645,8 +781,6 @@ fn should_retry_with_backend(error: &J2kError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use signinum_j2k_native::CpuDecodeParallelism;
-
     #[test]
     fn scaled_decode_native_context_preserves_configured_parallelism() {
         let mut decoder = J2kDecoder {
@@ -671,7 +805,35 @@ mod tests {
 
         assert_eq!(
             native_context.cpu_decode_parallelism(),
-            CpuDecodeParallelism::Serial
+            CpuDecodeParallelism::Serial.to_native()
         );
+    }
+
+    #[test]
+    fn bounded_row_stripe_layout_clamps_rows_to_byte_cap() {
+        let options = J2kRowDecodeOptions::new_with_max_stripe_bytes(100, 1_024);
+
+        let (rows, bytes) =
+            bounded_row_stripe_layout(100, 50, options).expect("stripe layout should fit");
+
+        assert_eq!(rows, 10);
+        assert_eq!(bytes, 1_000);
+    }
+
+    #[test]
+    fn bounded_row_stripe_layout_rejects_single_row_over_cap() {
+        let options = J2kRowDecodeOptions::new_with_max_stripe_bytes(100, 99);
+
+        let err =
+            bounded_row_stripe_layout(100, 50, options).expect_err("single row should exceed cap");
+
+        assert!(matches!(
+            err,
+            J2kError::Buffer(BufferError::AllocationTooLarge {
+                requested: 100,
+                cap: 99,
+                what: "J2K bounded row decode stripe buffer",
+            })
+        ));
     }
 }

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use signinum_j2k_native::{
@@ -309,7 +309,7 @@ fn bench_tier1_decode(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode_64x64", name), &job, |b, job| {
             b.iter(|| {
                 decode_j2k_code_block_scalar(*job, &mut output).expect("decode code block");
-                black_box(&output);
+                std::hint::black_box(&output);
             });
         });
     }
@@ -361,7 +361,7 @@ fn bench_tier1_encode(c: &mut Criterion) {
             |b, coefficients| {
                 b.iter(|| {
                     let encoded = encode_j2k_code_block_scalar_with_style(
-                        black_box(coefficients),
+                        std::hint::black_box(coefficients),
                         width,
                         height,
                         sub_band_type,
@@ -369,7 +369,7 @@ fn bench_tier1_encode(c: &mut Criterion) {
                         style,
                     )
                     .expect("encode code block");
-                    black_box(encoded);
+                    std::hint::black_box(encoded);
                 });
             },
         );
@@ -407,7 +407,7 @@ fn bench_htj2k_cleanup_decode(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("decode_64x64", seed), &job, |b, job| {
             b.iter(|| {
                 decode_ht_code_block_scalar(*job, &mut output).expect("decode HTJ2K code block");
-                black_box(&output);
+                std::hint::black_box(&output);
             });
         });
     }
@@ -425,7 +425,7 @@ fn bench_htj2k_refinement_fixture_decode(c: &mut Criterion) {
             let components = image
                 .decode_components_with_context(&mut context)
                 .expect("decode HTJ2K refinement fixture");
-            black_box(components.planes()[0].samples());
+            std::hint::black_box(components.planes()[0].samples());
         });
     });
 
@@ -446,9 +446,9 @@ fn bench_htj2k_refinement_block_decode(c: &mut Criterion) {
     group.bench_function("ds0_ht_09_b11_cleanup", |b| {
         b.iter(|| {
             cleanup_output.fill(0.0);
-            decode_ht_code_block_scalar(black_box(cleanup_job), &mut cleanup_output)
+            decode_ht_code_block_scalar(std::hint::black_box(cleanup_job), &mut cleanup_output)
                 .expect("cleanup-limited HTJ2K decode");
-            black_box(&cleanup_output);
+            std::hint::black_box(&cleanup_output);
         });
     });
 
@@ -456,9 +456,9 @@ fn bench_htj2k_refinement_block_decode(c: &mut Criterion) {
     group.bench_function("ds0_ht_09_b11_sigprop", |b| {
         b.iter(|| {
             sigprop_output.fill(0.0);
-            decode_ht_code_block_scalar(black_box(sigprop_job), &mut sigprop_output)
+            decode_ht_code_block_scalar(std::hint::black_box(sigprop_job), &mut sigprop_output)
                 .expect("significance-propagation-limited HTJ2K decode");
-            black_box(&sigprop_output);
+            std::hint::black_box(&sigprop_output);
         });
     });
 
@@ -466,9 +466,9 @@ fn bench_htj2k_refinement_block_decode(c: &mut Criterion) {
     group.bench_function("ds0_ht_09_b11_magref_full", |b| {
         b.iter(|| {
             magref_output.fill(0.0);
-            decode_ht_code_block_scalar(black_box(magref_job), &mut magref_output)
+            decode_ht_code_block_scalar(std::hint::black_box(magref_job), &mut magref_output)
                 .expect("full HTJ2K decode through magnitude refinement");
-            black_box(&magref_output);
+            std::hint::black_box(&magref_output);
         });
     });
 
@@ -489,13 +489,13 @@ fn bench_htj2k_cleanup_encode(c: &mut Criterion) {
             |b, coefficients| {
                 b.iter(|| {
                     let encoded = encode_ht_code_block_scalar(
-                        black_box(coefficients),
+                        std::hint::black_box(coefficients),
                         width,
                         height,
                         total_bitplanes,
                     )
                     .expect("encode HTJ2K code block");
-                    black_box(encoded);
+                    std::hint::black_box(encoded);
                 });
             },
         );
@@ -517,13 +517,13 @@ fn bench_htj2k_cleanup_encode_distribution(c: &mut Criterion) {
             |b, coefficients| {
                 b.iter(|| {
                     let distribution = collect_ht_cleanup_encode_distribution(
-                        black_box(coefficients),
+                        std::hint::black_box(coefficients),
                         width,
                         height,
                         total_bitplanes,
                     )
                     .expect("collect HTJ2K cleanup encode distribution");
-                    black_box(distribution);
+                    std::hint::black_box(distribution);
                 });
             },
         );
@@ -540,17 +540,25 @@ fn bench_htj2k_cleanup_encode_parallel_granularity(c: &mut Criterion) {
 
     group.bench_function("serial_128_blocks", |b| {
         b.iter(|| {
-            let total_len =
-                encode_ht_batch_serial(black_box(&blocks), width, height, total_bitplanes);
-            black_box(total_len);
+            let total_len = encode_ht_batch_serial(
+                std::hint::black_box(&blocks),
+                width,
+                height,
+                total_bitplanes,
+            );
+            std::hint::black_box(total_len);
         });
     });
 
     group.bench_function("rayon_par_iter_global_128_blocks", |b| {
         b.iter(|| {
-            let total_len =
-                encode_ht_batch_rayon(black_box(&blocks), width, height, total_bitplanes);
-            black_box(total_len);
+            let total_len = encode_ht_batch_rayon(
+                std::hint::black_box(&blocks),
+                width,
+                height,
+                total_bitplanes,
+            );
+            std::hint::black_box(total_len);
         });
     });
 
@@ -565,9 +573,14 @@ fn bench_htj2k_cleanup_encode_parallel_granularity(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let total_len = pool.install(|| {
-                        encode_ht_batch_rayon(black_box(&blocks), width, height, total_bitplanes)
+                        encode_ht_batch_rayon(
+                            std::hint::black_box(&blocks),
+                            width,
+                            height,
+                            total_bitplanes,
+                        )
                     });
-                    black_box(total_len);
+                    std::hint::black_box(total_len);
                 });
             },
         );
@@ -588,14 +601,14 @@ fn bench_htj2k_cleanup_encode_parallel_granularity(c: &mut Criterion) {
                 b.iter(|| {
                     let total_len = chunk_pool.install(|| {
                         encode_ht_batch_rayon_chunks(
-                            black_box(&blocks),
+                            std::hint::black_box(&blocks),
                             chunk_size,
                             width,
                             height,
                             total_bitplanes,
                         )
                     });
-                    black_box(total_len);
+                    std::hint::black_box(total_len);
                 });
             },
         );
@@ -617,9 +630,13 @@ fn bench_htj2k_cleanup_encode_parallel_batch_size(c: &mut Criterion) {
             &blocks,
             |b, blocks| {
                 b.iter(|| {
-                    let total_len =
-                        encode_ht_batch_serial(black_box(blocks), width, height, total_bitplanes);
-                    black_box(total_len);
+                    let total_len = encode_ht_batch_serial(
+                        std::hint::black_box(blocks),
+                        width,
+                        height,
+                        total_bitplanes,
+                    );
+                    std::hint::black_box(total_len);
                 });
             },
         );
@@ -628,9 +645,13 @@ fn bench_htj2k_cleanup_encode_parallel_batch_size(c: &mut Criterion) {
             &blocks,
             |b, blocks| {
                 b.iter(|| {
-                    let total_len =
-                        encode_ht_batch_rayon(black_box(blocks), width, height, total_bitplanes);
-                    black_box(total_len);
+                    let total_len = encode_ht_batch_rayon(
+                        std::hint::black_box(blocks),
+                        width,
+                        height,
+                        total_bitplanes,
+                    );
+                    std::hint::black_box(total_len);
                 });
             },
         );
@@ -652,9 +673,13 @@ fn bench_j2k_tier1_encode_parallel_batch_size(c: &mut Criterion) {
             &blocks,
             |b, blocks| {
                 b.iter(|| {
-                    let total_len =
-                        encode_j2k_batch_serial(black_box(blocks), width, height, total_bitplanes);
-                    black_box(total_len);
+                    let total_len = encode_j2k_batch_serial(
+                        std::hint::black_box(blocks),
+                        width,
+                        height,
+                        total_bitplanes,
+                    );
+                    std::hint::black_box(total_len);
                 });
             },
         );
@@ -663,9 +688,13 @@ fn bench_j2k_tier1_encode_parallel_batch_size(c: &mut Criterion) {
             &blocks,
             |b, blocks| {
                 b.iter(|| {
-                    let total_len =
-                        encode_j2k_batch_rayon(black_box(blocks), width, height, total_bitplanes);
-                    black_box(total_len);
+                    let total_len = encode_j2k_batch_rayon(
+                        std::hint::black_box(blocks),
+                        width,
+                        height,
+                        total_bitplanes,
+                    );
+                    std::hint::black_box(total_len);
                 });
             },
         );

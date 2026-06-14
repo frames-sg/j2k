@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_j2k::{
     decode_tiles_region_scaled_into, encode_j2k_lossless, recode_j2k_to_htj2k_lossless,
     CpuDecodeParallelism, DecoderContext, Downscale, EncodeBackendPreference, ImageDecodeRows,
@@ -8,7 +8,7 @@ use signinum_j2k::{
     J2kLosslessEncodeOptions, J2kLosslessSamples, J2kScratchPool, J2kToHtj2kOptions, PixelFormat,
     Rect, RowSink, TileBatchDecode, TileBatchOptions, TileRegionScaledDecodeJob,
 };
-use signinum_test_support::{patterned_gray8, patterned_rgb8};
+use signinum_test_support::{patterned_gray8, patterned_rgb8, wrap_codestream_jp2};
 
 const TILE_SIDE: u32 = 128;
 const ROI_SIDE: u32 = 64;
@@ -76,39 +76,6 @@ fn encode_ht_rgb8_codestream(width: u32, height: u32) -> Vec<u8> {
     encode_rgb8_codestream_from_pixels(width, height, &pixels, ht_encode_options())
 }
 
-fn wrap_codestream_jp2(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u16,
-    bit_depth: u8,
-    colorspace_enum: u32,
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
-        b' ',
-    ]);
-
-    let bpc = bit_depth.saturating_sub(1);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-    ]);
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&components.to_be_bytes());
-    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
-    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
-
-    let len = (8 + codestream.len()) as u32;
-    bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(b"jp2c");
-    bytes.extend_from_slice(codestream);
-    bytes
-}
-
 fn encode_gray8_codestream_from_pixels(
     width: u32,
     height: u32,
@@ -158,7 +125,7 @@ fn bench_lossless_encode(c: &mut Criterion) {
     group.bench_function("gray8_128x128", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(gray.as_slice()),
+                std::hint::black_box(gray.as_slice()),
                 TILE_SIDE,
                 TILE_SIDE,
                 1,
@@ -167,7 +134,7 @@ fn bench_lossless_encode(c: &mut Criterion) {
             )
             .expect("valid gray8 samples");
             let encoded = encode_j2k_lossless(samples, &options).expect("encode gray8");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
@@ -175,7 +142,7 @@ fn bench_lossless_encode(c: &mut Criterion) {
     group.bench_function("rgb8_128x128", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(rgb.as_slice()),
+                std::hint::black_box(rgb.as_slice()),
                 TILE_SIDE,
                 TILE_SIDE,
                 3,
@@ -184,7 +151,7 @@ fn bench_lossless_encode(c: &mut Criterion) {
             )
             .expect("valid rgb8 samples");
             let encoded = encode_j2k_lossless(samples, &options).expect("encode rgb8");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
@@ -197,8 +164,9 @@ fn bench_inspect(c: &mut Criterion) {
     let mut group = c.benchmark_group("j2k_public_inspect");
     group.bench_function("rgb8_128x128", |b| {
         b.iter(|| {
-            let info = J2kDecoder::inspect(black_box(codestream.as_slice())).expect("inspect");
-            black_box(info);
+            let info =
+                J2kDecoder::inspect(std::hint::black_box(codestream.as_slice())).expect("inspect");
+            std::hint::black_box(info);
         });
     });
     group.finish();
@@ -214,11 +182,11 @@ fn bench_decode(c: &mut Criterion) {
     group.bench_function("rgb8_full_128x128", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
             decoder
                 .decode_into(&mut full, full_stride, PixelFormat::Rgb8)
                 .expect("decode full rgb8");
-            black_box(&full);
+            std::hint::black_box(&full);
         });
     });
 
@@ -234,11 +202,11 @@ fn bench_decode(c: &mut Criterion) {
     group.bench_function("rgb8_roi_64x64", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
             decoder
                 .decode_region_into(&mut pool, &mut roi_out, roi_stride, PixelFormat::Rgb8, roi)
                 .expect("decode rgb8 roi");
-            black_box(&roi_out);
+            std::hint::black_box(&roi_out);
         });
     });
 
@@ -246,12 +214,12 @@ fn bench_decode(c: &mut Criterion) {
     let mut ht_out = vec![0u8; ht_stride * HT_TILE_SIDE as usize];
     group.bench_function("htj2k_gray8_full_512x512", |b| {
         b.iter(|| {
-            let mut decoder =
-                J2kDecoder::new(black_box(ht_codestream.as_slice())).expect("htj2k decoder");
+            let mut decoder = J2kDecoder::new(std::hint::black_box(ht_codestream.as_slice()))
+                .expect("htj2k decoder");
             decoder
                 .decode_into(&mut ht_out, ht_stride, PixelFormat::Gray8)
                 .expect("decode full htj2k gray8");
-            black_box(&ht_out);
+            std::hint::black_box(&ht_out);
         });
     });
 
@@ -266,17 +234,19 @@ fn bench_recode(c: &mut Criterion) {
 
     group.bench_function("classic_rgb8_512_to_htj2k_53_coefficients", |b| {
         b.iter(|| {
-            let recoded = recode_j2k_to_htj2k_lossless(black_box(classic.as_slice()), options)
-                .expect("coefficient-domain recode");
-            black_box(recoded.bytes.len());
+            let recoded =
+                recode_j2k_to_htj2k_lossless(std::hint::black_box(classic.as_slice()), options)
+                    .expect("coefficient-domain recode");
+            std::hint::black_box(recoded.bytes.len());
         });
     });
 
     group.bench_function("raw_htj2k_rgb8_512_passthrough", |b| {
         b.iter(|| {
-            let recoded = recode_j2k_to_htj2k_lossless(black_box(htj2k.as_slice()), options)
-                .expect("HTJ2K passthrough");
-            black_box(recoded.bytes.len());
+            let recoded =
+                recode_j2k_to_htj2k_lossless(std::hint::black_box(htj2k.as_slice()), options)
+                    .expect("HTJ2K passthrough");
+            std::hint::black_box(recoded.bytes.len());
         });
     });
 
@@ -300,7 +270,7 @@ fn bench_region_scaled(c: &mut Criterion) {
     group.bench_function("rgb8_region_scaled_64x64_q4", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
             decoder
                 .decode_region_scaled_into(
                     &mut pool,
@@ -311,7 +281,7 @@ fn bench_region_scaled(c: &mut Criterion) {
                     Downscale::Quarter,
                 )
                 .expect("decode rgb8 region scaled");
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
     group.finish();
@@ -331,12 +301,12 @@ fn bench_scaled_reuse(c: &mut Criterion) {
     group.bench_function("rgb8_512_q4_setup_inclusive", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
             let mut pool = J2kScratchPool::new();
             decoder
                 .decode_scaled_into(&mut pool, &mut setup_out, stride, PixelFormat::Rgb8, scale)
                 .expect("setup-inclusive scaled decode");
-            black_box(&setup_out);
+            std::hint::black_box(&setup_out);
         });
     });
     group.bench_function("rgb8_512_q4_decoder_setup_excluded", |b| {
@@ -350,7 +320,7 @@ fn bench_scaled_reuse(c: &mut Criterion) {
                     scale,
                 )
                 .expect("reused scaled decode");
-            black_box(&reused_out);
+            std::hint::black_box(&reused_out);
         });
     });
     group.finish();
@@ -377,7 +347,7 @@ fn bench_region_scaled_reuse(c: &mut Criterion) {
     group.bench_function("rgb8_512_roi256_q4_setup_inclusive", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("rgb8 decoder");
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
             let mut pool = J2kScratchPool::new();
             decoder
                 .decode_region_scaled_into(
@@ -389,7 +359,7 @@ fn bench_region_scaled_reuse(c: &mut Criterion) {
                     scale,
                 )
                 .expect("setup-inclusive region scaled decode");
-            black_box(&setup_out);
+            std::hint::black_box(&setup_out);
         });
     });
     group.bench_function("rgb8_512_roi256_q4_decoder_setup_excluded", |b| {
@@ -404,7 +374,7 @@ fn bench_region_scaled_reuse(c: &mut Criterion) {
                     scale,
                 )
                 .expect("reused region scaled decode");
-            black_box(&reused_out);
+            std::hint::black_box(&reused_out);
         });
     });
     group.finish();
@@ -451,7 +421,7 @@ fn bench_mixed_scale_reuse(c: &mut Criterion) {
                     Downscale::Quarter,
                 )
                 .expect("quarter decode after half");
-            black_box((&quarter_out, &half_out));
+            std::hint::black_box((&quarter_out, &half_out));
         });
     });
     group.finish();
@@ -463,11 +433,11 @@ fn bench_rows(c: &mut Criterion) {
     let mut group = c.benchmark_group("j2k_public_decode_rows");
     group.bench_function("gray8_rows_128x128", |b| {
         b.iter(|| {
-            let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("gray8 decoder");
+            let mut decoder = J2kDecoder::new(std::hint::black_box(codestream.as_slice()))
+                .expect("gray8 decoder");
             let mut sink = VecRowSink::new(TILE_SIDE, TILE_SIDE);
             decoder.decode_rows(&mut sink).expect("decode gray8 rows");
-            black_box(sink.rows);
+            std::hint::black_box(sink.rows);
         });
     });
     group.bench_function("gray8_rows_128x128_reused_decoder", |b| {
@@ -475,7 +445,7 @@ fn bench_rows(c: &mut Criterion) {
         b.iter(|| {
             let mut sink = VecRowSink::new(TILE_SIDE, TILE_SIDE);
             decoder.decode_rows(&mut sink).expect("decode gray8 rows");
-            black_box(sink.rows);
+            std::hint::black_box(sink.rows);
         });
     });
     group.bench_function("gray16_rows_128x128_reused_decoder", |b| {
@@ -485,7 +455,7 @@ fn bench_rows(c: &mut Criterion) {
             let mut sink = VecRowSinkU16::new(TILE_SIDE, TILE_SIDE);
             <J2kDecoder<'_> as ImageDecodeRows<'_, u16>>::decode_rows(&mut decoder, &mut sink)
                 .expect("decode gray16 rows");
-            black_box(sink.rows);
+            std::hint::black_box(sink.rows);
         });
     });
     group.finish();
@@ -525,14 +495,14 @@ fn bench_tile_batch(c: &mut Criterion) {
                 <J2kCodec as TileBatchDecode>::decode_tile(
                     &mut ctx,
                     &mut pool,
-                    black_box(repeated.as_slice()),
+                    std::hint::black_box(repeated.as_slice()),
                     &mut out,
                     stride,
                     PixelFormat::Gray8,
                 )
                 .expect("decode repeated gray8 tile");
             }
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
 
@@ -544,14 +514,14 @@ fn bench_tile_batch(c: &mut Criterion) {
                 <J2kCodec as TileBatchDecode>::decode_tile(
                     &mut ctx,
                     &mut pool,
-                    black_box(ht_repeated.as_slice()),
+                    std::hint::black_box(ht_repeated.as_slice()),
                     &mut out,
                     stride,
                     PixelFormat::Gray8,
                 )
                 .expect("decode repeated htj2k gray8 tile");
             }
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
 
@@ -563,14 +533,14 @@ fn bench_tile_batch(c: &mut Criterion) {
                 <J2kCodec as TileBatchDecode>::decode_tile(
                     &mut ctx,
                     &mut pool,
-                    black_box(codestream.as_slice()),
+                    std::hint::black_box(codestream.as_slice()),
                     &mut out,
                     stride,
                     PixelFormat::Gray8,
                 )
                 .expect("decode distinct gray8 tile");
             }
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
 
@@ -582,14 +552,14 @@ fn bench_tile_batch(c: &mut Criterion) {
                 <J2kCodec as TileBatchDecode>::decode_tile(
                     &mut ctx,
                     &mut pool,
-                    black_box(codestream.as_slice()),
+                    std::hint::black_box(codestream.as_slice()),
                     &mut out,
                     stride,
                     PixelFormat::Gray8,
                 )
                 .expect("decode distinct htj2k gray8 tile");
             }
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
 
@@ -652,7 +622,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: black_box(repeated_classic.as_slice()),
+                    input: std::hint::black_box(repeated_classic.as_slice()),
                     out,
                     stride,
                     roi,
@@ -665,7 +635,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode repeated classic RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("classic_distinct_512_roi256_batch16", |b| {
@@ -675,7 +645,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 .iter_mut()
                 .zip(distinct_classic.iter())
                 .map(|(out, input)| TileRegionScaledDecodeJob {
-                    input: black_box(input.as_slice()),
+                    input: std::hint::black_box(input.as_slice()),
                     out,
                     stride,
                     roi,
@@ -688,7 +658,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode distinct classic RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("htj2k_repeated_512_roi256_batch16", |b| {
@@ -697,7 +667,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: black_box(repeated_htj2k.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k.as_slice()),
                     out,
                     stride,
                     roi,
@@ -710,7 +680,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode repeated HTJ2K RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("htj2k_jp2_rgb8_repeated_512_roi256_batch16", |b| {
@@ -719,7 +689,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: black_box(repeated_htj2k_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_jp2.as_slice()),
                     out,
                     stride,
                     roi,
@@ -732,7 +702,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode repeated HTJ2K JP2 RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("htj2k_jp2_rgba8_repeated_512_roi256_batch16", |b| {
@@ -741,7 +711,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: black_box(repeated_htj2k_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_jp2.as_slice()),
                     out,
                     stride: rgba_stride,
                     roi,
@@ -754,7 +724,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode repeated HTJ2K JP2 RGBA ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("htj2k_jp2_rgb8_repeated_256_roi128_batch16", |b| {
@@ -763,7 +733,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             let mut jobs = outputs
                 .iter_mut()
                 .map(|out| TileRegionScaledDecodeJob {
-                    input: black_box(repeated_htj2k_256_jp2.as_slice()),
+                    input: std::hint::black_box(repeated_htj2k_256_jp2.as_slice()),
                     out,
                     stride: stride_256,
                     roi: roi_256,
@@ -776,7 +746,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode repeated 256 HTJ2K JP2 RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.bench_function("htj2k_distinct_512_roi256_batch16", |b| {
@@ -786,7 +756,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 .iter_mut()
                 .zip(distinct_htj2k.iter())
                 .map(|(out, input)| TileRegionScaledDecodeJob {
-                    input: black_box(input.as_slice()),
+                    input: std::hint::black_box(input.as_slice()),
                     out,
                     stride,
                     roi,
@@ -799,7 +769,7 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
                 TileBatchOptions::default(),
             )
             .expect("decode distinct HTJ2K RGB ROI+scale batch");
-            black_box((outputs, outcomes));
+            std::hint::black_box((outputs, outcomes));
         });
     });
     group.finish();
@@ -813,12 +783,12 @@ fn bench_decode_gray_setup(c: &mut Criterion) {
     let mut group = c.benchmark_group("j2k_public_decode_gray");
     group.bench_function("gray8_full_128x128", |b| {
         b.iter(|| {
-            let mut decoder =
-                J2kDecoder::new(black_box(codestream.as_slice())).expect("gray8 decoder");
+            let mut decoder = J2kDecoder::new(std::hint::black_box(codestream.as_slice()))
+                .expect("gray8 decoder");
             decoder
                 .decode_into(&mut out, stride, PixelFormat::Gray8)
                 .expect("decode full gray8");
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
     group.finish();
@@ -841,7 +811,7 @@ fn bench_cpu_encode_matrix(c: &mut Criterion) {
     group.bench_function("rgb8_512_classic_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 CPU_MATRIX_SIDE,
                 CPU_MATRIX_SIDE,
                 3,
@@ -851,14 +821,14 @@ fn bench_cpu_encode_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 encode_j2k_lossless(samples, &classic_external).expect("classic CPU encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
     group.bench_function("rgb8_512_htj2k_external", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 CPU_MATRIX_SIDE,
                 CPU_MATRIX_SIDE,
                 3,
@@ -867,14 +837,14 @@ fn bench_cpu_encode_matrix(c: &mut Criterion) {
             )
             .expect("valid rgb8 samples");
             let encoded = encode_j2k_lossless(samples, &htj2k_external).expect("HTJ2K CPU encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
 
     group.bench_function("rgb8_512_classic_roundtrip", |b| {
         b.iter(|| {
             let samples = J2kLosslessSamples::new(
-                black_box(pixels.as_slice()),
+                std::hint::black_box(pixels.as_slice()),
                 CPU_MATRIX_SIDE,
                 CPU_MATRIX_SIDE,
                 3,
@@ -884,7 +854,7 @@ fn bench_cpu_encode_matrix(c: &mut Criterion) {
             .expect("valid rgb8 samples");
             let encoded =
                 encode_j2k_lossless(samples, &classic_roundtrip).expect("classic CPU encode");
-            black_box(encoded.codestream.len());
+            std::hint::black_box(encoded.codestream.len());
         });
     });
     group.finish();
@@ -920,57 +890,60 @@ fn bench_cpu_decode_matrix(c: &mut Criterion) {
     let mut group = c.benchmark_group("j2k_public_cpu_decode_matrix");
     group.bench_function("gray8_512_classic_decode", |b| {
         b.iter(|| {
-            let mut decoder =
-                J2kDecoder::new(black_box(classic_codestream.as_slice())).expect("J2K decoder");
+            let mut decoder = J2kDecoder::new(std::hint::black_box(classic_codestream.as_slice()))
+                .expect("J2K decoder");
             decoder
                 .decode_into(&mut classic_out, stride, PixelFormat::Gray8)
                 .expect("decode classic gray8");
-            black_box(&classic_out);
+            std::hint::black_box(&classic_out);
         });
     });
 
     group.bench_function("gray8_512_htj2k_decode", |b| {
         b.iter(|| {
-            let mut decoder =
-                J2kDecoder::new(black_box(htj2k_codestream.as_slice())).expect("HTJ2K decoder");
+            let mut decoder = J2kDecoder::new(std::hint::black_box(htj2k_codestream.as_slice()))
+                .expect("HTJ2K decoder");
             decoder
                 .decode_into(&mut htj2k_out, stride, PixelFormat::Gray8)
                 .expect("decode htj2k gray8");
-            black_box(&htj2k_out);
+            std::hint::black_box(&htj2k_out);
         });
     });
 
     group.bench_function("rgb8_512_classic_decode", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(rgb_classic_codestream.as_slice())).expect("J2K decoder");
+                J2kDecoder::new(std::hint::black_box(rgb_classic_codestream.as_slice()))
+                    .expect("J2K decoder");
             decoder
                 .decode_into(&mut rgb_classic_out, rgb_stride, PixelFormat::Rgb8)
                 .expect("decode classic rgb8");
-            black_box(&rgb_classic_out);
+            std::hint::black_box(&rgb_classic_out);
         });
     });
 
     group.bench_function("rgb8_512_classic_decode_serial", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(rgb_classic_codestream.as_slice())).expect("J2K decoder");
+                J2kDecoder::new(std::hint::black_box(rgb_classic_codestream.as_slice()))
+                    .expect("J2K decoder");
             decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
             decoder
                 .decode_into(&mut rgb_classic_out, rgb_stride, PixelFormat::Rgb8)
                 .expect("decode serial classic rgb8");
-            black_box(&rgb_classic_out);
+            std::hint::black_box(&rgb_classic_out);
         });
     });
 
     group.bench_function("rgb8_512_htj2k_decode", |b| {
         b.iter(|| {
             let mut decoder =
-                J2kDecoder::new(black_box(rgb_htj2k_codestream.as_slice())).expect("HTJ2K decoder");
+                J2kDecoder::new(std::hint::black_box(rgb_htj2k_codestream.as_slice()))
+                    .expect("HTJ2K decoder");
             decoder
                 .decode_into(&mut rgb_htj2k_out, rgb_stride, PixelFormat::Rgb8)
                 .expect("decode htj2k rgb8");
-            black_box(&rgb_htj2k_out);
+            std::hint::black_box(&rgb_htj2k_out);
         });
     });
     group.finish();

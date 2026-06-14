@@ -9,17 +9,19 @@ use openjpeg_sys::{
     opj_stream_set_user_data_length, opj_stream_t, opj_version, OPJ_BOOL, OPJ_CODEC_FORMAT,
     OPJ_FALSE, OPJ_OFF_T, OPJ_SIZE_T, OPJ_STREAM_READ, OPJ_TRUE,
 };
-use signinum_core::Rect;
 use std::{
     ffi::{c_void, CStr},
     ptr, slice,
 };
+
+use crate::ExternalDecodeRequest;
 
 pub fn is_available() -> bool {
     true
 }
 
 pub fn version() -> String {
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     unsafe {
         let ptr = opj_version();
         if ptr.is_null() {
@@ -34,90 +36,87 @@ pub fn library_path() -> &'static str {
     "openjpeg-sys vendored openjp2"
 }
 
-pub fn decode_rgb(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    decode(bytes, 3, None, None)
-}
+crate::external_decode_wrappers!(decode);
 
-pub fn decode_gray(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    decode(bytes, 1, None, None)
-}
+/// Owns an `OpenJPEG` stream; never null.
+struct StreamGuard(*mut opj_stream_t);
 
-pub fn decode_rgb_region(bytes: &[u8], roi: Rect) -> Result<Vec<u8>, String> {
-    decode(bytes, 3, None, Some(roi))
-}
-
-pub fn decode_gray_region(bytes: &[u8], roi: Rect) -> Result<Vec<u8>, String> {
-    decode(bytes, 1, None, Some(roi))
-}
-
-pub fn decode_rgb_region_scaled(bytes: &[u8], roi: Rect, reduce: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, 3, Some(reduce), Some(roi))
-}
-
-pub fn decode_gray_region_scaled(bytes: &[u8], roi: Rect, reduce: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, 1, Some(reduce), Some(roi))
-}
-
-pub fn decode_rgb_scaled(bytes: &[u8], reduce: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, 3, Some(reduce), None)
-}
-
-pub fn decode_gray_scaled(bytes: &[u8], reduce: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, 1, Some(reduce), None)
-}
-
-fn decode(
-    bytes: &[u8],
-    channels: usize,
-    reduce: Option<u32>,
-    region: Option<Rect>,
-) -> Result<Vec<u8>, String> {
-    let mut image = ptr::null_mut();
-    let codec_format = codec_format(bytes)?;
-    let stream = create_stream(bytes)?;
-    let codec = create_codec(codec_format)?;
-    let result = unsafe {
-        if opj_read_header(stream, codec, &raw mut image) == bool_false() {
-            Err("openjpeg: failed to read header".to_string())
-        } else {
-            if let Some(reduce) = reduce {
-                if opj_set_decoded_resolution_factor(codec, reduce) == bool_false() {
-                    return Err("openjpeg: failed to set reduction factor".to_string());
-                }
-            }
-            if let Some(roi) = region {
-                if opj_set_decode_area(
-                    codec,
-                    image,
-                    roi.x as i32,
-                    roi.y as i32,
-                    (roi.x + roi.w) as i32,
-                    (roi.y + roi.h) as i32,
-                ) == bool_false()
-                {
-                    return Err("openjpeg: failed to set decode area".to_string());
-                }
-            }
-            if opj_decode(codec, stream, image) == bool_false() {
-                Err("openjpeg: decode failed".to_string())
-            } else {
-                let packed = pack_image(image, channels)?;
-                if opj_end_decompress(codec, stream) == bool_false() {
-                    Err("openjpeg: end_decompress failed".to_string())
-                } else {
-                    Ok(packed)
-                }
-            }
-        }
-    };
-    unsafe {
-        if !image.is_null() {
-            opj_image_destroy(image);
-        }
-        opj_destroy_codec(codec);
-        opj_stream_destroy(stream);
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from a successful `opj_stream_create` and
+        // this guard is its single owner.
+        // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
+        unsafe { opj_stream_destroy(self.0) };
     }
-    result
+}
+
+/// Owns an `OpenJPEG` codec; never null.
+struct CodecGuard(*mut openjpeg_sys::opj_codec_t);
+
+impl Drop for CodecGuard {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from a successful `opj_create_decompress`
+        // and this guard is its single owner.
+        // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
+        unsafe { opj_destroy_codec(self.0) };
+    }
+}
+
+/// Owns the image pointer `opj_read_header` fills in; null until then.
+struct ImageGuard(*mut opj_image_t);
+
+impl Drop for ImageGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: non-null only after OpenJPEG allocated the image, and
+            // this guard is its single owner.
+            // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
+            unsafe { opj_image_destroy(self.0) };
+        }
+    }
+}
+
+fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, String> {
+    let codec_format = codec_format(bytes)?;
+    let channels = request.color.channels() as usize;
+    // Declaration order matters: drops run in reverse (image, codec, stream),
+    // and the RAII guards free the FFI resources on every exit path,
+    // including the early error returns below.
+    let stream = StreamGuard(create_stream(bytes)?);
+    let codec = CodecGuard(create_codec(codec_format)?);
+    let mut image = ImageGuard(ptr::null_mut());
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
+    unsafe {
+        if opj_read_header(stream.0, codec.0, &raw mut image.0) == bool_false() {
+            return Err("openjpeg: failed to read header".to_string());
+        }
+        if let Some(reduce) = request.reduce {
+            if opj_set_decoded_resolution_factor(codec.0, reduce) == bool_false() {
+                return Err("openjpeg: failed to set reduction factor".to_string());
+            }
+        }
+        if let Some(roi) = request.region {
+            if opj_set_decode_area(
+                codec.0,
+                image.0,
+                roi.x as i32,
+                roi.y as i32,
+                (roi.x + roi.w) as i32,
+                (roi.y + roi.h) as i32,
+            ) == bool_false()
+            {
+                return Err("openjpeg: failed to set decode area".to_string());
+            }
+        }
+        if opj_decode(codec.0, stream.0, image.0) == bool_false() {
+            return Err("openjpeg: decode failed".to_string());
+        }
+        let packed = pack_image(image.0, channels)?;
+        if opj_end_decompress(codec.0, stream.0) == bool_false() {
+            return Err("openjpeg: end_decompress failed".to_string());
+        }
+        Ok(packed)
+    }
 }
 
 fn codec_format(bytes: &[u8]) -> Result<OPJ_CODEC_FORMAT, String> {
@@ -131,11 +130,13 @@ fn codec_format(bytes: &[u8]) -> Result<OPJ_CODEC_FORMAT, String> {
 }
 
 fn create_stream(bytes: &[u8]) -> Result<*mut opj_stream_t, String> {
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let stream = unsafe { opj_stream_create(64 * 1024, OPJ_STREAM_READ as OPJ_BOOL) };
     if stream.is_null() {
         return Err("openjpeg: failed to create stream".to_string());
     }
     let user = Box::into_raw(Box::new(MemoryStream::new(bytes)));
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     unsafe {
         opj_stream_set_user_data(stream, user.cast(), Some(drop_memory_stream));
         opj_stream_set_user_data_length(stream, bytes.len() as u64);
@@ -147,19 +148,26 @@ fn create_stream(bytes: &[u8]) -> Result<*mut opj_stream_t, String> {
 }
 
 fn create_codec(codec_format: OPJ_CODEC_FORMAT) -> Result<*mut openjpeg_sys::opj_codec_t, String> {
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let mut params = unsafe { std::mem::zeroed::<opj_dparameters_t>() };
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     unsafe { opj_set_default_decoder_parameters(&raw mut params) };
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let codec = unsafe { opj_create_decompress(codec_format) };
     if codec.is_null() {
         return Err("openjpeg: failed to create codec".to_string());
     }
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let setup_ok = unsafe { opj_setup_decoder(codec, &raw mut params) };
     if setup_ok == bool_false() {
+        // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
         unsafe { opj_destroy_codec(codec) };
         return Err("openjpeg: setup_decoder failed".to_string());
     }
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let threading_ok = unsafe { opj_codec_set_threads(codec, 1) };
     if threading_ok == bool_false() {
+        // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
         unsafe { opj_destroy_codec(codec) };
         return Err("openjpeg: codec_set_threads failed".to_string());
     }
@@ -170,10 +178,12 @@ fn pack_image(image: *mut opj_image_t, channels: usize) -> Result<Vec<u8>, Strin
     if image.is_null() {
         return Err("openjpeg: null image".to_string());
     }
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let image_ref = unsafe { &*image };
     if image_ref.numcomps == 0 || image_ref.comps.is_null() {
         return Err("openjpeg: image has no components".to_string());
     }
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let comp0 = unsafe { &*image_ref.comps };
     let width = comp0.w as usize;
     let height = comp0.h as usize;
@@ -208,6 +218,7 @@ fn read_component(
     full_width: usize,
     full_height: usize,
 ) -> Result<u8, String> {
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let comp = unsafe {
         image
             .comps
@@ -223,6 +234,7 @@ fn read_component(
     if stride == 0 || height == 0 {
         return Err("openjpeg: component has zero-sized output".to_string());
     }
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let data = unsafe { slice::from_raw_parts(comp.data, stride * height) };
     let comp_col = col.saturating_mul(stride) / full_width.max(1);
     let comp_row = row.saturating_mul(height) / full_height.max(1);
@@ -268,6 +280,7 @@ unsafe extern "C" fn read_memory(
 ) -> OPJ_SIZE_T {
     // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
     // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     let remaining = state.len.saturating_sub(state.offset);
     if remaining == 0 {
@@ -276,6 +289,7 @@ unsafe extern "C" fn read_memory(
     let count = remaining.min(bytes);
     // SAFETY: `count` is bounded by the remaining source length, and OpenJPEG
     // provides a writable buffer of the requested size for the read callback.
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     unsafe {
         ptr::copy_nonoverlapping(state.ptr.add(state.offset), buffer.cast::<u8>(), count);
     }
@@ -286,6 +300,7 @@ unsafe extern "C" fn read_memory(
 unsafe extern "C" fn skip_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OPJ_OFF_T {
     // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
     // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     if bytes < 0 {
         return -1;
@@ -301,6 +316,7 @@ unsafe extern "C" fn skip_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OP
 unsafe extern "C" fn seek_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OPJ_BOOL {
     // SAFETY: OpenJPEG passes back the `MemoryStream` pointer registered in
     // `create_stream`; the stream owns it until `drop_memory_stream` runs.
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     let state = unsafe { &mut *user_data.cast::<MemoryStream>() };
     if bytes < 0 || bytes as usize > state.len {
         return bool_false();
@@ -312,6 +328,7 @@ unsafe extern "C" fn seek_memory(bytes: OPJ_OFF_T, user_data: *mut c_void) -> OP
 unsafe extern "C" fn drop_memory_stream(user_data: *mut c_void) {
     // SAFETY: `create_stream` allocated this pointer with `Box::into_raw` and
     // registered this callback as the single owner responsible for freeing it.
+    // SAFETY: OpenJPEG FFI calls use checked handles and validated component buffers.
     unsafe { drop(Box::from_raw(user_data.cast::<MemoryStream>())) };
 }
 

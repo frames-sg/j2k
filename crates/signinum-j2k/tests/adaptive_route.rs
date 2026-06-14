@@ -111,43 +111,30 @@ fn metal_stage_candidate_benchmarks_for(stage: J2kAdaptiveStage) -> J2kAdaptiveB
 }
 
 #[test]
-fn encode_backend_preference_exposes_clear_adaptive_aliases() {
-    assert_eq!(
-        EncodeBackendPreference::ACCELERATED,
-        EncodeBackendPreference::Auto
-    );
-    assert_eq!(
-        EncodeBackendPreference::CPU_ONLY,
-        EncodeBackendPreference::CpuOnly
-    );
-    assert_eq!(
-        EncodeBackendPreference::STRICT_DEVICE,
-        EncodeBackendPreference::RequireDevice
-    );
-
+fn encode_backend_preference_helpers_select_clear_routes() {
     assert_eq!(
         J2kLosslessEncodeOptions::default()
             .with_accelerated_backend()
             .backend,
-        EncodeBackendPreference::ACCELERATED
+        EncodeBackendPreference::Auto
     );
     assert_eq!(
         J2kLosslessEncodeOptions::default()
             .with_cpu_only_backend()
             .backend,
-        EncodeBackendPreference::CPU_ONLY
+        EncodeBackendPreference::CpuOnly
     );
     assert_eq!(
         J2kLosslessEncodeOptions::default()
             .with_strict_device_backend()
             .backend,
-        EncodeBackendPreference::STRICT_DEVICE
+        EncodeBackendPreference::RequireDevice
     );
     assert_eq!(
         J2kLossyEncodeOptions::default()
             .with_accelerated_backend()
             .backend,
-        EncodeBackendPreference::ACCELERATED
+        EncodeBackendPreference::Auto
     );
 }
 

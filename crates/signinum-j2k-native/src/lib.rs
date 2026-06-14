@@ -89,11 +89,14 @@ use crate::jp2::icc::ICCMetadata;
 use crate::jp2::{DecodedImage, ImageBoxes};
 
 pub mod error;
+mod inspect;
 #[macro_use]
 pub(crate) mod log;
 mod direct_cpu;
 mod direct_plan;
 pub(crate) mod math;
+#[doc(hidden)]
+pub mod packet_math;
 pub(crate) mod profile;
 pub(crate) mod writer;
 
@@ -105,6 +108,10 @@ pub use direct_plan::{
     HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan,
     J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
     J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan,
+};
+pub use inspect::{
+    inspect_j2k_codestream_header, looks_like_j2k_codestream, J2kCodestreamComponentHeader,
+    J2kCodestreamHeaderError, J2kCodestreamHeaderMetadata,
 };
 
 /// Maps an output coordinate within an IDWT step to the source sub-band index.
@@ -140,16 +147,27 @@ pub use j2c::encode::{
     encode_preencoded_htj2k_97_owned_with_accelerator, encode_preencoded_htj2k_97_with_accelerator,
     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
     encode_with_accelerator, irreversible_quantization_step_for_subband, EncodeOptions,
-    EncodeProgressionOrder, IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    EncodeProgressionOrder,
+};
+pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
+pub use signinum_j2k_types::{
+    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
+    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kForwardDwt53Job,
+    J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level,
+    J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
+    J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component,
+    PrecomputedHtj2k53Image, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
+    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
     PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
     PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
     PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
     PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
-pub use j2c::{CpuDecodeParallelism, DecoderContext, Reversible53CoefficientImage};
 
 mod j2c;
 mod jp2;
@@ -157,6 +175,61 @@ pub(crate) mod reader;
 pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 
 const MAX_CLASSIC_DECODE_BITPLANES: u8 = 32;
+pub(crate) const MAX_J2K_SPEC_COMPONENTS: u16 = 16_384;
+pub(crate) const MAX_NATIVE_DECODE_COMPONENTS: u16 = u8::MAX as u16;
+pub(crate) const MAX_J2K_IMAGE_DIMENSION: u32 = 60_000;
+pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
+pub(crate) const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
+
+#[inline]
+pub(crate) fn checked_decode_usize_product2(left: usize, right: usize) -> Result<usize> {
+    left.checked_mul(right)
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+#[inline]
+fn checked_decode_byte_cap(len: usize) -> Result<usize> {
+    if len > DEFAULT_MAX_DECODE_BYTES {
+        bail!(ValidationError::ImageTooLarge);
+    }
+    Ok(len)
+}
+
+#[inline]
+pub(crate) fn checked_decode_byte_len2(left: usize, right: usize) -> Result<usize> {
+    checked_decode_byte_cap(checked_decode_usize_product2(left, right)?)
+}
+
+#[inline]
+pub(crate) fn checked_decode_byte_len3(first: usize, second: usize, third: usize) -> Result<usize> {
+    let partial = checked_decode_usize_product2(first, second)?;
+    checked_decode_byte_cap(checked_decode_usize_product2(partial, third)?)
+}
+
+#[inline]
+pub(crate) fn checked_decode_byte_len4(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> Result<usize> {
+    let partial = checked_decode_usize_product2(first, second)?;
+    let partial = checked_decode_usize_product2(partial, third)?;
+    checked_decode_byte_cap(checked_decode_usize_product2(partial, fourth)?)
+}
+
+#[inline]
+pub(crate) fn checked_decode_sample_count(width: u32, height: u32) -> Result<usize> {
+    #[cfg(target_pointer_width = "64")]
+    {
+        Ok((u64::from(width) * u64::from(height)) as usize)
+    }
+
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        checked_decode_usize_product2(width as usize, height as usize)
+    }
+}
 
 /// Adapter HTJ2K code-block job description for backend experimentation.
 #[derive(Debug, Clone, Copy)]
@@ -222,49 +295,6 @@ pub struct HtSubBandDecodeJob<'a> {
     pub jobs: &'a [HtCodeBlockBatchJob<'a>],
 }
 
-/// Adapter classic J2K sub-band kind for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum J2kSubBandType {
-    /// Low-low sub-band.
-    LowLow,
-    /// High-low sub-band.
-    HighLow,
-    /// Low-high sub-band.
-    LowHigh,
-    /// High-high sub-band.
-    HighHigh,
-}
-
-/// Adapter classic J2K code-block style for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kCodeBlockStyle {
-    /// Selective arithmetic coding bypass was enabled.
-    pub selective_arithmetic_coding_bypass: bool,
-    /// Context probabilities reset after each pass.
-    pub reset_context_probabilities: bool,
-    /// Coding terminated after each pass.
-    pub termination_on_each_pass: bool,
-    /// Vertically causal context was enabled.
-    pub vertically_causal_context: bool,
-    /// Segmentation symbols were enabled.
-    pub segmentation_symbols: bool,
-}
-
-/// Adapter classic J2K coded segment for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct J2kCodeBlockSegment {
-    /// Byte offset of this segment within the combined payload.
-    pub data_offset: u32,
-    /// Segment payload length in bytes.
-    pub data_length: u32,
-    /// First coding pass covered by this segment.
-    pub start_coding_pass: u8,
-    /// One-past-last coding pass covered by this segment.
-    pub end_coding_pass: u8,
-    /// Whether this segment is decoded through the arithmetic path.
-    pub use_arithmetic: bool,
-}
-
 /// Adapter Classic Tier-1 compact token segment for backend experimentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kTier1TokenSegment {
@@ -314,279 +344,6 @@ pub struct J2kCodeBlockDecodeJob<'a> {
     pub dequantization_step: f32,
 }
 
-/// Adapter encoded classic J2K code-block payload for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct EncodedJ2kCodeBlock {
-    /// Combined payload bytes for all coded segments in this code block.
-    pub data: Vec<u8>,
-    /// Coded segments for the code block.
-    pub segments: Vec<J2kCodeBlockSegment>,
-    /// Number of coding passes present for this code block.
-    pub number_of_coding_passes: u8,
-    /// Missing most-significant bit planes for this code block.
-    pub missing_bit_planes: u8,
-}
-
-/// Adapter encoded HTJ2K cleanup code-block payload for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct EncodedHtJ2kCodeBlock {
-    /// Combined cleanup/refinement bytes for this code block.
-    pub data: Vec<u8>,
-    /// Cleanup segment length in bytes.
-    pub cleanup_length: u32,
-    /// Refinement segment length in bytes.
-    pub refinement_length: u32,
-    /// Number of coding passes present for this code block.
-    pub num_coding_passes: u8,
-    /// Number of zero most-significant bitplanes before first inclusion.
-    pub num_zero_bitplanes: u8,
-}
-
-/// Adapter pixel deinterleave/level-shift job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kDeinterleaveToF32Job<'a> {
-    /// Interleaved source pixel bytes.
-    pub pixels: &'a [u8],
-    /// Number of pixels to convert.
-    pub num_pixels: usize,
-    /// Number of interleaved components per pixel.
-    pub num_components: u8,
-    /// Source sample bit depth.
-    pub bit_depth: u8,
-    /// Whether source samples are signed.
-    pub signed: bool,
-}
-
-/// Adapter forward RCT job for backend experimentation.
-#[derive(Debug)]
-pub struct J2kForwardRctJob<'a> {
-    /// First component plane, updated in place.
-    pub plane0: &'a mut [f32],
-    /// Second component plane, updated in place.
-    pub plane1: &'a mut [f32],
-    /// Third component plane, updated in place.
-    pub plane2: &'a mut [f32],
-}
-
-/// Adapter forward ICT job for backend experimentation.
-#[derive(Debug)]
-pub struct J2kForwardIctJob<'a> {
-    /// First component plane, updated in place.
-    pub plane0: &'a mut [f32],
-    /// Second component plane, updated in place.
-    pub plane1: &'a mut [f32],
-    /// Third component plane, updated in place.
-    pub plane2: &'a mut [f32],
-}
-
-/// Adapter forward 5/3 DWT job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kForwardDwt53Job<'a> {
-    /// Source samples in row-major order.
-    pub samples: &'a [f32],
-    /// Source width in samples.
-    pub width: u32,
-    /// Source height in samples.
-    pub height: u32,
-    /// Number of decomposition levels requested.
-    pub num_levels: u8,
-}
-
-/// Adapter forward 5/3 DWT output for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct J2kForwardDwt53Output {
-    /// LL subband coefficients from the lowest decomposition level.
-    pub ll: Vec<f32>,
-    /// LL subband width.
-    pub ll_width: u32,
-    /// LL subband height.
-    pub ll_height: u32,
-    /// Higher resolution detail levels, ordered from lowest to highest.
-    pub levels: Vec<J2kForwardDwt53Level>,
-}
-
-/// Adapter forward 5/3 DWT detail level for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct J2kForwardDwt53Level {
-    /// HL subband coefficients.
-    pub hl: Vec<f32>,
-    /// LH subband coefficients.
-    pub lh: Vec<f32>,
-    /// HH subband coefficients.
-    pub hh: Vec<f32>,
-    /// Full-resolution width represented by this level.
-    pub width: u32,
-    /// Full-resolution height represented by this level.
-    pub height: u32,
-    /// Low-pass width at this level.
-    pub low_width: u32,
-    /// Low-pass height at this level.
-    pub low_height: u32,
-    /// High-pass width at this level.
-    pub high_width: u32,
-    /// High-pass height at this level.
-    pub high_height: u32,
-}
-
-/// Adapter forward irreversible 9/7 DWT job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kForwardDwt97Job<'a> {
-    /// Source samples in row-major order.
-    pub samples: &'a [f32],
-    /// Source width in samples.
-    pub width: u32,
-    /// Source height in samples.
-    pub height: u32,
-    /// Number of decomposition levels requested.
-    pub num_levels: u8,
-}
-
-/// Adapter forward 9/7 DWT output for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct J2kForwardDwt97Output {
-    /// LL subband coefficients from the lowest decomposition level.
-    pub ll: Vec<f32>,
-    /// LL subband width.
-    pub ll_width: u32,
-    /// LL subband height.
-    pub ll_height: u32,
-    /// Higher resolution detail levels, ordered from lowest to highest.
-    pub levels: Vec<J2kForwardDwt97Level>,
-}
-
-/// Adapter forward 9/7 DWT detail level for backend experimentation.
-#[derive(Debug, Clone)]
-pub struct J2kForwardDwt97Level {
-    /// HL subband coefficients.
-    pub hl: Vec<f32>,
-    /// LH subband coefficients.
-    pub lh: Vec<f32>,
-    /// HH subband coefficients.
-    pub hh: Vec<f32>,
-    /// Full-resolution width represented by this level.
-    pub width: u32,
-    /// Full-resolution height represented by this level.
-    pub height: u32,
-    /// Low-pass width at this level.
-    pub low_width: u32,
-    /// Low-pass height at this level.
-    pub low_height: u32,
-    /// High-pass width at this level.
-    pub high_width: u32,
-    /// High-pass height at this level.
-    pub high_height: u32,
-}
-
-/// Adapter sub-band quantization job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kQuantizeSubbandJob<'a> {
-    /// Source sub-band coefficients in row-major order.
-    pub coefficients: &'a [f32],
-    /// Quantization step-size exponent.
-    pub step_exponent: u16,
-    /// Quantization step-size mantissa.
-    pub step_mantissa: u16,
-    /// Nominal range bits for this sub-band.
-    pub range_bits: u8,
-    /// Whether to use reversible integer quantization.
-    pub reversible: bool,
-}
-
-/// Adapter Tier-1 classic J2K code-block encode job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kTier1CodeBlockEncodeJob<'a> {
-    /// Quantized coefficients in row-major order.
-    pub coefficients: &'a [i32],
-    /// Code-block width in samples.
-    pub width: u32,
-    /// Code-block height in samples.
-    pub height: u32,
-    /// Subband kind containing this code-block.
-    pub sub_band_type: J2kSubBandType,
-    /// Total bitplanes for this subband/code-block.
-    pub total_bitplanes: u8,
-    /// Classic J2K code-block style flags.
-    pub style: J2kCodeBlockStyle,
-}
-
-/// Adapter HTJ2K code-block encode job for backend experimentation.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kHtCodeBlockEncodeJob<'a> {
-    /// Quantized coefficients in row-major order.
-    pub coefficients: &'a [i32],
-    /// Code-block width in samples.
-    pub width: u32,
-    /// Code-block height in samples.
-    pub height: u32,
-    /// Total bitplanes for this subband/code-block.
-    pub total_bitplanes: u8,
-    /// Requested HT coding passes for this contribution.
-    ///
-    /// `1` is cleanup-only. Higher values require an accelerator that can
-    /// encode those passes and must not be silently reduced by CPU fallback.
-    pub target_coding_passes: u8,
-}
-
-/// Adapter HTJ2K cleanup encode job for one unquantized sub-band.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kHtSubbandEncodeJob<'a> {
-    /// Source sub-band coefficients in row-major order.
-    pub coefficients: &'a [f32],
-    /// Sub-band width in samples.
-    pub width: u32,
-    /// Sub-band height in samples.
-    pub height: u32,
-    /// Quantization step-size exponent.
-    pub step_exponent: u16,
-    /// Quantization step-size mantissa.
-    pub step_mantissa: u16,
-    /// Nominal range bits for this sub-band.
-    pub range_bits: u8,
-    /// Whether to use reversible integer quantization.
-    pub reversible: bool,
-    /// Code-block width in samples.
-    pub code_block_width: u32,
-    /// Code-block height in samples.
-    pub code_block_height: u32,
-    /// Total coded bitplanes for this sub-band.
-    pub total_bitplanes: u8,
-}
-
-/// Adapter HTJ2K tile-body encode job for backend-resident full-tile paths.
-#[derive(Debug, Clone, Copy)]
-pub struct J2kHtj2kTileEncodeJob<'a> {
-    /// Interleaved source pixel bytes.
-    pub pixels: &'a [u8],
-    /// Tile/image width in samples.
-    pub width: u32,
-    /// Tile/image height in samples.
-    pub height: u32,
-    /// Number of interleaved image components.
-    pub num_components: u8,
-    /// Source component bit depth.
-    pub bit_depth: u8,
-    /// Whether source samples are signed.
-    pub signed: bool,
-    /// Number of DWT decomposition levels.
-    pub num_decomposition_levels: u8,
-    /// Whether the codestream uses reversible coding.
-    pub reversible: bool,
-    /// Whether a multi-component transform should be applied.
-    pub use_mct: bool,
-    /// JPEG 2000 guard bits used to derive total coded bitplanes.
-    pub guard_bits: u8,
-    /// Code-block width in samples.
-    pub code_block_width: u32,
-    /// Code-block height in samples.
-    pub code_block_height: u32,
-    /// Packet progression order to emit.
-    pub progression_order: J2kPacketizationProgressionOrder,
-    /// Per-component sampling factors, as `(x_rsiz, y_rsiz)`.
-    pub component_sampling: &'a [(u8, u8)],
-    /// Quantization step sizes, as `(exponent, mantissa)`, in codestream order.
-    pub quantization_steps: &'a [(u16, u16)],
-}
-
 /// Adapter HTJ2K cleanup-encode shape counters for backend benchmarking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HtCleanupEncodeDistribution {
@@ -618,170 +375,6 @@ pub struct HtCleanupEncodeDistribution {
     pub mag_sign_sample_bit_counts: [u64; 32],
     /// Number of individual magnitude/sign samples emitted.
     pub mag_sign_encoded_samples: u64,
-}
-
-/// Adapter LRCP packetization code-block contribution for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct J2kPacketizationCodeBlock<'a> {
-    /// Encoded Tier-1 bitstream bytes for this packet contribution.
-    pub data: &'a [u8],
-    /// HTJ2K cleanup segment length in bytes when using high-throughput coding.
-    pub ht_cleanup_length: u32,
-    /// HTJ2K refinement segment length in bytes when using high-throughput coding.
-    pub ht_refinement_length: u32,
-    /// Number of coding passes in this contribution.
-    pub num_coding_passes: u8,
-    /// Number of zero most-significant bitplanes before first inclusion.
-    pub num_zero_bitplanes: u8,
-    /// Whether this code-block was included in a previous packet.
-    pub previously_included: bool,
-    /// L-block value used for segment length coding.
-    pub l_block: u32,
-    /// Block coder used for this contribution.
-    pub block_coding_mode: J2kPacketizationBlockCodingMode,
-}
-
-/// Adapter packetization block coding mode for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum J2kPacketizationBlockCodingMode {
-    /// Classic JPEG 2000 Part 1 EBCOT block coding.
-    Classic,
-    /// High-throughput JPEG 2000 Part 15 block coding.
-    HighThroughput,
-}
-
-/// Adapter packet progression order for backend packetization experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum J2kPacketizationProgressionOrder {
-    /// Layer-resolution-component-position progression.
-    Lrcp,
-    /// Resolution-layer-component-position progression.
-    Rlcp,
-    /// Resolution-position-component-layer progression.
-    Rpcl,
-    /// Position-component-resolution-layer progression.
-    Pcrl,
-    /// Component-position-resolution-layer progression.
-    Cprl,
-}
-
-/// Adapter LRCP packetization subband precinct for backend experimentation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct J2kPacketizationSubband<'a> {
-    /// Code-block contributions in row-major order.
-    pub code_blocks: Vec<J2kPacketizationCodeBlock<'a>>,
-    /// Number of code-blocks in the x direction.
-    pub num_cbs_x: u32,
-    /// Number of code-blocks in the y direction.
-    pub num_cbs_y: u32,
-}
-
-/// Adapter LRCP packetization resolution packet for backend experimentation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct J2kPacketizationResolution<'a> {
-    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
-    pub subbands: Vec<J2kPacketizationSubband<'a>>,
-}
-
-/// Adapter explicit packet descriptor for backend packetization experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct J2kPacketizationPacketDescriptor {
-    /// Index into the packet contribution array.
-    pub packet_index: u32,
-    /// Persistent packet-state index for repeated layer/precinct packets.
-    pub state_index: u32,
-    /// Quality layer for inclusion tag-tree thresholds.
-    pub layer: u8,
-    /// Resolution index in the output progression.
-    pub resolution: u32,
-    /// Component index in the output progression.
-    pub component: u8,
-    /// Precinct index in the output progression.
-    pub precinct: u64,
-}
-
-/// Adapter LRCP packetization job for backend experimentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct J2kPacketizationEncodeJob<'a> {
-    /// Number of resolution packets prepared for packetization.
-    pub resolution_count: u32,
-    /// Number of layers to write.
-    pub num_layers: u8,
-    /// Number of image components.
-    pub num_components: u8,
-    /// Total number of code-block contributions.
-    pub code_block_count: u32,
-    /// Packet progression order to emit.
-    pub progression_order: J2kPacketizationProgressionOrder,
-    /// Explicit packet descriptors in output progression order.
-    pub packet_descriptors: &'a [J2kPacketizationPacketDescriptor],
-    /// Packet payload prepared by Tier-1, in LRCP packet order.
-    pub resolutions: &'a [J2kPacketizationResolution<'a>],
-}
-
-/// Adapter encode-stage dispatch counters for backend experimentation.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct J2kEncodeDispatchReport {
-    /// Pixel deinterleave/level-shift dispatch count.
-    pub deinterleave: usize,
-    /// Forward RCT kernel dispatch count.
-    pub forward_rct: usize,
-    /// Forward ICT kernel dispatch count.
-    pub forward_ict: usize,
-    /// Forward reversible 5/3 DWT kernel dispatch count.
-    pub forward_dwt53: usize,
-    /// Forward irreversible 9/7 DWT kernel dispatch count.
-    pub forward_dwt97: usize,
-    /// Sub-band quantization dispatch count.
-    pub quantize_subband: usize,
-    /// Tier-1 code-block encode dispatch count.
-    pub tier1_code_block: usize,
-    /// HTJ2K code-block encode dispatch count.
-    pub ht_code_block: usize,
-    /// Packetization dispatch count.
-    pub packetization: usize,
-}
-
-impl J2kEncodeDispatchReport {
-    /// Return the saturating per-stage delta from `before` to `self`.
-    #[must_use]
-    pub fn saturating_delta(self, before: Self) -> Self {
-        Self {
-            deinterleave: self.deinterleave.saturating_sub(before.deinterleave),
-            forward_rct: self.forward_rct.saturating_sub(before.forward_rct),
-            forward_ict: self.forward_ict.saturating_sub(before.forward_ict),
-            forward_dwt53: self.forward_dwt53.saturating_sub(before.forward_dwt53),
-            forward_dwt97: self.forward_dwt97.saturating_sub(before.forward_dwt97),
-            quantize_subband: self
-                .quantize_subband
-                .saturating_sub(before.quantize_subband),
-            tier1_code_block: self
-                .tier1_code_block
-                .saturating_sub(before.tier1_code_block),
-            ht_code_block: self.ht_code_block.saturating_sub(before.ht_code_block),
-            packetization: self.packetization.saturating_sub(before.packetization),
-        }
-    }
-
-    /// Return total dispatches across all encode stages.
-    #[must_use]
-    pub fn total(self) -> usize {
-        self.forward_rct
-            .saturating_add(self.deinterleave)
-            .saturating_add(self.forward_ict)
-            .saturating_add(self.forward_dwt53)
-            .saturating_add(self.forward_dwt97)
-            .saturating_add(self.quantize_subband)
-            .saturating_add(self.tier1_code_block)
-            .saturating_add(self.ht_code_block)
-            .saturating_add(self.packetization)
-    }
-
-    /// Return whether at least one encode stage dispatched.
-    #[must_use]
-    pub fn any(self) -> bool {
-        self.total() > 0
-    }
 }
 
 /// Adapter JPEG 2000 encode-stage accelerator for backend experimentation.
@@ -953,10 +546,6 @@ pub trait J2kEncodeStageAccelerator {
         Ok(None)
     }
 }
-
-/// Adapter CPU-only encode accelerator that always falls back to native stages.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CpuOnlyJ2kEncodeStageAccelerator;
 
 impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
     fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
@@ -1269,7 +858,7 @@ pub fn encode_j2k_code_block_scalar_with_style(
 
 /// Adapter scalar Classic Tier-1 compact token packer for backend experimentation.
 ///
-/// The token format matches the Metal Classic Tier-1 token-emitter prototype:
+/// The token format matches the Metal Classic Tier-1 token-emitter contract:
 /// arithmetic segments are 6-bit `(context_label, bit)` MQ tokens, while raw
 /// bypass segments are one bit per raw bypass event.
 pub fn pack_j2k_code_block_scalar_from_tier1_tokens(
@@ -2052,6 +1641,11 @@ pub fn ht_uvlc_encode_table() -> &'static [HtUvlcTableEntry; 75] {
     &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE
 }
 
+/// Adapter HTJ2K cleanup encoder UVLC table packed for byte-addressed backends.
+pub fn ht_uvlc_encode_table_bytes() -> &'static [u8] {
+    &j2c::ht_encode_tables::HT_UVLC_ENCODE_TABLE_BYTES
+}
+
 /// JP2 signature box: 00 00 00 0C 6A 50 20 20
 pub(crate) const JP2_MAGIC: &[u8] = b"\x00\x00\x00\x0C\x6A\x50\x20\x20";
 /// Codestream signature: FF 4F FF 51 (SOC + SIZ markers)
@@ -2176,9 +1770,11 @@ impl<'a> Image<'a> {
     /// Decode the image and return its decoded result using a caller-provided
     /// decoder context so allocations can be reused across repeated decodes.
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
-        let buffer_size = self.width() as usize
-            * self.height() as usize
-            * (self.color_space.num_channels() as usize + if self.has_alpha { 1 } else { 0 });
+        let buffer_size = checked_decode_byte_len3(
+            self.width() as usize,
+            self.height() as usize,
+            self.color_space.num_channels() as usize + if self.has_alpha { 1 } else { 0 },
+        )?;
         let mut buf = vec![0; buffer_size];
         self.decode_into(&mut buf, decoder_context)?;
 
@@ -2383,7 +1979,8 @@ impl<'a> Image<'a> {
         let (_x, _y, width, height) = roi;
         let channels =
             self.color_space.num_channels() as usize + if self.has_alpha { 1 } else { 0 };
-        let mut data = vec![0; width as usize * height as usize * channels];
+        let data_len = checked_decode_byte_len3(width as usize, height as usize, channels)?;
+        let mut data = vec![0; data_len];
         interleave_and_convert_region(
             &mut decoded_image,
             width as usize,
@@ -2451,14 +2048,16 @@ impl<'a> Image<'a> {
 
         let components = &decoder_context.tile_decode_context.channel_data;
         let bit_depth = self.original_bit_depth();
-        let num_components = components.len() as u8;
+        let num_components =
+            u8::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
         let width = self.width();
         let height = self.height();
-        let pixel_count = width as usize * height as usize;
+        let pixel_count = checked_decode_sample_count(width, height)?;
 
         if bit_depth <= 8 {
             let max_val = ((1u32 << bit_depth) - 1) as f32;
-            let mut data = Vec::with_capacity(pixel_count * num_components as usize);
+            let capacity = checked_decode_byte_len2(pixel_count, num_components as usize)?;
+            let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
                 for component in components.iter() {
                     let v = math::round_f32(component.container.truncated()[i]);
@@ -2482,7 +2081,8 @@ impl<'a> Image<'a> {
             })
         } else {
             let max_val = ((1u32 << bit_depth) - 1) as f32;
-            let mut data = Vec::with_capacity(pixel_count * num_components as usize * 2);
+            let capacity = checked_decode_byte_len3(pixel_count, num_components as usize, 2)?;
+            let mut data = Vec::with_capacity(capacity);
             for i in 0..pixel_count {
                 for component in components.iter() {
                     let v = math::round_f32(component.container.truncated()[i]);
@@ -2520,12 +2120,17 @@ impl<'a> Image<'a> {
 
         let components = &decoder_context.tile_decode_context.channel_data;
         let bit_depth = self.original_bit_depth();
-        let num_components = components.len() as u8;
+        let num_components =
+            u8::try_from(components.len()).map_err(|_| ValidationError::TooManyChannels)?;
         let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
         let (_x, _y, width, height) = roi;
-        let mut data = Vec::with_capacity(
-            width as usize * height as usize * num_components as usize * bytes_per_sample,
-        );
+        let capacity = checked_decode_byte_len4(
+            width as usize,
+            height as usize,
+            num_components as usize,
+            bytes_per_sample,
+        )?;
+        let mut data = Vec::with_capacity(capacity);
         let max_val = ((1u32 << bit_depth) - 1) as f32;
 
         for row in 0..height as usize {
@@ -2574,7 +2179,8 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
         let mut decoded_image = self.prepare_decoded_image(decoder_context)?;
-        interleave_and_convert(&mut decoded_image, buf);
+        validate_interleaved_output_buffer(&decoded_image, buf)?;
+        interleave_and_convert(&mut decoded_image, buf)?;
 
         Ok(())
     }
@@ -2898,7 +2504,27 @@ impl<'a> DecodedComponents<'a> {
     }
 }
 
-fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) {
+fn validate_interleaved_output_buffer(image: &DecodedImage<'_>, buf: &[u8]) -> Result<()> {
+    let required_len = interleaved_output_len(image)?;
+    if buf.len() < required_len {
+        bail!(DecodingError::OutputBufferTooSmall);
+    }
+    Ok(())
+}
+
+fn interleaved_output_len(image: &DecodedImage<'_>) -> Result<usize> {
+    let Some(first) = image.decoded_components.first() else {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    };
+    first
+        .container
+        .truncated()
+        .len()
+        .checked_mul(image.decoded_components.len())
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) -> Result<()> {
     let components = &mut *image.decoded_components;
     let num_components = components.len();
 
@@ -2976,7 +2602,7 @@ fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) {
                     *output_iter.next().unwrap() = math::round_f32(c3[i]) as u8;
                 }
             }
-            _ => unreachable!(),
+            _ => bail!(ValidationError::TooManyChannels),
         }
     } else {
         // Slow path that also requires us to scale to 8 bit.
@@ -2991,6 +2617,8 @@ fn interleave_and_convert(image: &mut DecodedImage<'_>, buf: &mut [u8]) {
             }
         }
     }
+
+    Ok(())
 }
 
 fn interleave_and_convert_region(
@@ -3142,7 +2770,13 @@ fn resolve_palette_indices(
         return Ok(components);
     };
 
-    let mapping = boxes.component_mapping.as_ref().unwrap();
+    let Some(mapping) = boxes.component_mapping.as_ref() else {
+        bail!(ColorError::PaletteResolutionFailed);
+    };
+    if mapping.entries.is_empty() {
+        bail!(ColorError::PaletteResolutionFailed);
+    }
+
     let mut resolved = Vec::with_capacity(mapping.entries.len());
 
     for entry in &mapping.entries {
@@ -3194,7 +2828,7 @@ fn cielab_to_rgb<S: Simd>(
         .ok_or(ColorError::LabConversionFailed)?;
 
     let [l, a, b] = head else {
-        unreachable!();
+        bail!(ColorError::LabConversionFailed);
     };
 
     let prec0 = l.bit_depth;
@@ -3280,7 +2914,7 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
         .ok_or(ColorError::SyccConversionFailed)?;
 
     let [y, cb, cr] = head else {
-        unreachable!();
+        bail!(ColorError::SyccConversionFailed);
     };
 
     let offset_v = f32x8::splat(simd, offset);
@@ -3319,6 +2953,28 @@ fn sycc_to_rgb<S: Simd>(simd: S, components: &mut [ComponentData], bit_depth: u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ht_uvlc_encode_table_bytes_match_entry_packing_order() {
+        let entries = ht_uvlc_encode_table();
+        let bytes = ht_uvlc_encode_table_bytes();
+
+        assert_eq!(bytes.len(), entries.len() * 6);
+        for (index, entry) in entries.iter().enumerate() {
+            let offset = index * 6;
+            assert_eq!(
+                &bytes[offset..offset + 6],
+                &[
+                    entry.pre,
+                    entry.pre_len,
+                    entry.suf,
+                    entry.suf_len,
+                    entry.ext,
+                    entry.ext_len
+                ],
+            );
+        }
+    }
 
     #[test]
     fn roi_maxshift_inverse_preserves_background_and_unshifts_roi_coefficients() {
@@ -3832,6 +3488,23 @@ mod tests {
         encode(&pixels, 2, 2, 3, 8, false, &options).expect("encode")
     }
 
+    #[test]
+    fn decode_into_rejects_short_output_buffer() {
+        let bytes = fixture();
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+        let mut output = vec![0; 11];
+
+        let err = image
+            .decode_into(&mut output, &mut context)
+            .expect_err("short output buffer must be rejected");
+
+        assert_eq!(
+            err,
+            DecodeError::Decoding(DecodingError::OutputBufferTooSmall)
+        );
+    }
+
     fn fixture_multi_block() -> Vec<u8> {
         let pixels: Vec<u8> = (0..64).collect();
         let options = EncodeOptions {
@@ -3852,6 +3525,134 @@ mod tests {
             ..EncodeOptions::default()
         };
         encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
+    }
+
+    fn rewrite_siz_to_single_large_tile(codestream: &mut [u8], dimensions: u32) {
+        let siz = codestream
+            .windows(2)
+            .position(|w| w == [0xFF, 0x51])
+            .expect("SIZ marker");
+        codestream[siz + 6..siz + 10].copy_from_slice(&dimensions.to_be_bytes());
+        codestream[siz + 10..siz + 14].copy_from_slice(&dimensions.to_be_bytes());
+        codestream[siz + 22..siz + 26].copy_from_slice(&dimensions.to_be_bytes());
+        codestream[siz + 26..siz + 30].copy_from_slice(&dimensions.to_be_bytes());
+    }
+
+    fn rewrite_siz_tile_grid(codestream: &mut [u8], dimensions: (u32, u32), tile_size: (u32, u32)) {
+        let siz = codestream
+            .windows(2)
+            .position(|w| w == [0xFF, 0x51])
+            .expect("SIZ marker");
+        codestream[siz + 6..siz + 10].copy_from_slice(&dimensions.0.to_be_bytes());
+        codestream[siz + 10..siz + 14].copy_from_slice(&dimensions.1.to_be_bytes());
+        codestream[siz + 22..siz + 26].copy_from_slice(&tile_size.0.to_be_bytes());
+        codestream[siz + 26..siz + 30].copy_from_slice(&tile_size.1.to_be_bytes());
+    }
+
+    fn rewrite_siz_component_count(codestream: &mut Vec<u8>, component_count: u16) {
+        let siz = codestream
+            .windows(2)
+            .position(|w| w == [0xFF, 0x51])
+            .expect("SIZ marker");
+        let old_component_count =
+            u16::from_be_bytes([codestream[siz + 38], codestream[siz + 39]]) as usize;
+        let component_start = siz + 40;
+        let component_end = component_start + old_component_count * 3;
+        let descriptor = codestream[component_start..component_start + 3].to_vec();
+        let mut descriptors = Vec::with_capacity(usize::from(component_count) * 3);
+        for _ in 0..component_count {
+            descriptors.extend_from_slice(&descriptor);
+        }
+
+        let siz_len = 38_u16
+            .checked_add(
+                component_count
+                    .checked_mul(3)
+                    .expect("SIZ component bytes fit"),
+            )
+            .expect("SIZ length fits");
+        codestream[siz + 2..siz + 4].copy_from_slice(&siz_len.to_be_bytes());
+        codestream[siz + 38..siz + 40].copy_from_slice(&component_count.to_be_bytes());
+        codestream.splice(component_start..component_end, descriptors);
+    }
+
+    #[test]
+    fn inspect_rejects_component_count_above_j2k_spec_cap() {
+        let mut bytes = fixture_gray();
+        rewrite_siz_component_count(&mut bytes, MAX_J2K_SPEC_COMPONENTS + 1);
+
+        let err = inspect_j2k_codestream_header(&bytes)
+            .expect_err("SIZ component count above spec cap must be rejected");
+
+        assert_eq!(
+            err,
+            J2kCodestreamHeaderError::InvalidSiz {
+                what: "component count exceeds JPEG 2000 limit"
+            }
+        );
+    }
+
+    #[test]
+    fn native_decode_rejects_component_count_above_u8_before_bitmap_truncation() {
+        let mut bytes = fixture_gray();
+        rewrite_siz_component_count(&mut bytes, MAX_NATIVE_DECODE_COMPONENTS + 1);
+
+        let err = match Image::new(&bytes, &DecodeSettings::default()) {
+            Err(err) => err,
+            Ok(_) => {
+                panic!("native decode must reject component counts that cannot fit RawBitmap")
+            }
+        };
+
+        assert_eq!(
+            err,
+            DecodeError::Validation(ValidationError::TooManyChannels)
+        );
+    }
+
+    #[test]
+    fn tile_parse_rejects_component_tile_structural_bomb_before_allocation() {
+        let mut bytes = fixture_gray();
+        rewrite_siz_component_count(&mut bytes, MAX_NATIVE_DECODE_COMPONENTS);
+        rewrite_siz_tile_grid(&mut bytes, (256, 256), (1, 1));
+        let parsed = j2c::parse_raw(&bytes, &DecodeSettings::default()).expect("raw header parses");
+        let mut context = j2c::DecoderContext::default();
+        let mut ht_decoder: Option<&mut dyn HtCodeBlockDecoder> = None;
+
+        let err = j2c::decode(parsed.data, &parsed.header, &mut context, &mut ht_decoder)
+            .expect_err("tile structural budget must reject before tile allocation");
+
+        assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+    }
+
+    #[test]
+    fn owned_decode_rejects_large_siz_before_allocating_output() {
+        let mut bytes = fixture_gray();
+        rewrite_siz_to_single_large_tile(&mut bytes, 60_000);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
+
+        let err = match image.decode() {
+            Err(err) => err,
+            Ok(_) => panic!("large owned decode must be capped"),
+        };
+
+        assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+    }
+
+    #[test]
+    fn decode_into_rejects_large_siz_before_allocating_component_storage() {
+        let mut bytes = fixture_gray();
+        rewrite_siz_to_single_large_tile(&mut bytes, 60_000);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
+        let mut context = DecoderContext::default();
+        let mut out = [];
+
+        let err = match image.decode_into(&mut out, &mut context) {
+            Err(err) => err,
+            Ok(_) => panic!("component storage must be capped before allocation"),
+        };
+
+        assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
     }
 
     fn fixture_ht_gray() -> Vec<u8> {

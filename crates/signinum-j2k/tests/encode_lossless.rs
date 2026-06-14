@@ -7,10 +7,11 @@ use signinum_j2k::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, j2k_lossless_decomposition_levels,
     j2k_lossless_decomposition_levels_for_options,
     j2k_lossless_decomposition_levels_for_progression, EncodeBackendPreference,
-    EncodedHtJ2kCodeBlock, J2kBlockCodingMode, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kEncodeValidation, J2kHtCodeBlockEncodeJob,
-    J2kLosslessEncodeOptions, J2kLosslessSamples, J2kPacketizationEncodeJob, J2kProgressionOrder,
-    J2kQuantizeSubbandJob, ReversibleTransform,
+    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kBlockCodingMode, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kEncodeValidation, J2kHtCodeBlockEncodeJob, J2kLosslessEncodeOptions, J2kLosslessSamples,
+    J2kPacketizationEncodeJob, J2kProgressionOrder, J2kQuantizeSubbandJob, J2kSubBandType,
+    ReversibleTransform,
 };
 use signinum_j2k_native::{DecodeSettings, Image};
 
@@ -25,8 +26,8 @@ fn cpu_options() -> J2kLosslessEncodeOptions {
     J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly)
 }
 
-fn prefer_device_options() -> J2kLosslessEncodeOptions {
-    J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::PreferDevice)
+fn auto_options() -> J2kLosslessEncodeOptions {
+    J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::Auto)
 }
 
 fn require_device_options() -> J2kLosslessEncodeOptions {
@@ -72,6 +73,54 @@ fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32
         }
     }
     components
+}
+
+fn native_subband(subband: J2kSubBandType) -> signinum_j2k_native::J2kSubBandType {
+    match subband {
+        J2kSubBandType::LowLow => signinum_j2k_native::J2kSubBandType::LowLow,
+        J2kSubBandType::HighLow => signinum_j2k_native::J2kSubBandType::HighLow,
+        J2kSubBandType::LowHigh => signinum_j2k_native::J2kSubBandType::LowHigh,
+        J2kSubBandType::HighHigh => signinum_j2k_native::J2kSubBandType::HighHigh,
+    }
+}
+
+fn native_code_block_style(style: J2kCodeBlockStyle) -> signinum_j2k_native::J2kCodeBlockStyle {
+    signinum_j2k_native::J2kCodeBlockStyle {
+        selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
+        reset_context_probabilities: style.reset_context_probabilities,
+        termination_on_each_pass: style.termination_on_each_pass,
+        vertically_causal_context: style.vertically_causal_context,
+        segmentation_symbols: style.segmentation_symbols,
+    }
+}
+
+fn public_encoded_j2k(block: signinum_j2k_native::EncodedJ2kCodeBlock) -> EncodedJ2kCodeBlock {
+    EncodedJ2kCodeBlock {
+        data: block.data,
+        segments: block
+            .segments
+            .into_iter()
+            .map(|segment| J2kCodeBlockSegment {
+                data_offset: segment.data_offset,
+                data_length: segment.data_length,
+                start_coding_pass: segment.start_coding_pass,
+                end_coding_pass: segment.end_coding_pass,
+                use_arithmetic: segment.use_arithmetic,
+            })
+            .collect(),
+        number_of_coding_passes: block.number_of_coding_passes,
+        missing_bit_planes: block.missing_bit_planes,
+    }
+}
+
+fn public_encoded_ht(block: signinum_j2k_native::EncodedHtJ2kCodeBlock) -> EncodedHtJ2kCodeBlock {
+    EncodedHtJ2kCodeBlock {
+        data: block.data,
+        cleanup_length: block.cleanup_length,
+        refinement_length: block.refinement_length,
+        num_coding_passes: block.num_coding_passes,
+        num_zero_bitplanes: block.num_zero_bitplanes,
+    }
 }
 
 #[test]
@@ -491,12 +540,12 @@ fn cpu_lossless_round_trips_gray8_seed_104_64() {
 }
 
 #[test]
-fn prefer_device_falls_back_to_validated_cpu_until_device_encode_is_complete() {
+fn auto_falls_back_to_validated_cpu_until_device_encode_is_complete() {
     let pixels: Vec<u8> = (0..27).map(|v| (v * 3) as u8).collect();
     let samples = J2kLosslessSamples::new(&pixels, 3, 3, 3, 8, false).unwrap();
 
-    let encoded = encode_j2k_lossless(samples, &prefer_device_options())
-        .expect("prefer-device lossless encode");
+    let encoded =
+        encode_j2k_lossless(samples, &auto_options()).expect("prefer-device lossless encode");
 
     assert_eq!(encoded.backend, BackendKind::Cpu);
     let decoded = decode_native(&encoded.codestream);
@@ -516,7 +565,7 @@ fn require_device_errors_clearly_when_encode_backend_is_unavailable() {
 }
 
 #[test]
-fn accelerator_facade_prefer_device_falls_back_when_no_stage_dispatches() {
+fn accelerator_facade_auto_falls_back_when_no_stage_dispatches() {
     #[derive(Default)]
     struct NoDispatchAccelerator;
 
@@ -528,7 +577,7 @@ fn accelerator_facade_prefer_device_falls_back_when_no_stage_dispatches() {
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
-        &prefer_device_options(),
+        &auto_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -652,10 +701,11 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
                 job.coefficients,
                 job.width,
                 job.height,
-                job.sub_band_type,
+                native_subband(job.sub_band_type),
                 job.total_bitplanes,
-                job.style,
+                native_code_block_style(job.style),
             )
+            .map(public_encoded_j2k)
             .map(Some)
         }
 
@@ -674,7 +724,7 @@ fn accelerator_facade_reports_requested_backend_after_all_required_stages_dispat
 
     let encoded = encode_j2k_lossless_with_accelerator(
         samples,
-        &prefer_device_options(),
+        &auto_options(),
         BackendKind::Metal,
         &mut accelerator,
     )
@@ -737,6 +787,7 @@ fn accelerator_facade_ht_require_device_checks_ht_code_block_stage() {
                 job.height,
                 job.total_bitplanes,
             )
+            .map(public_encoded_ht)
             .map(Some)
         }
 

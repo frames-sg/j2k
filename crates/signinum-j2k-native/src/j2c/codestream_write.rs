@@ -440,6 +440,7 @@ fn write_sot_marker(out: &mut Vec<u8>, tile_index: u16, tile_part_length: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{vec, vec::Vec};
 
     fn find_marker_offset(codestream: &[u8], marker: u8) -> Option<usize> {
         codestream

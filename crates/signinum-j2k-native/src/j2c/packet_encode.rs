@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use super::codestream::markers;
 use super::codestream_write::BlockCodingMode;
 use super::tag_tree_encode::TagTreeEncoder;
+use crate::packet_math::{self, bits_for_ht_cleanup_length, bits_for_length, value_fits_in_bits};
 use crate::writer::BitWriter;
 use crate::J2kPacketizationProgressionOrder;
 
@@ -611,75 +612,12 @@ fn encode_ht_segment_lengths_with_lblock(
 }
 
 fn ht_segment_lengths(code_block: &CodeBlockPacketData) -> Result<(u32, u32), &'static str> {
-    if code_block.num_coding_passes == 0 {
-        if code_block.data.is_empty()
-            && code_block.ht_cleanup_length == 0
-            && code_block.ht_refinement_length == 0
-        {
-            return Ok((0, 0));
-        }
-        return Err("empty HTJ2K packet contribution must not carry segment bytes");
-    }
-
-    let data_len = u32::try_from(code_block.data.len())
-        .map_err(|_| "HTJ2K packet contribution exceeds u32 length")?;
-    if code_block.num_coding_passes == 1 {
-        if code_block.ht_refinement_length != 0 {
-            return Err("single-pass HTJ2K packet contribution must not carry refinement bytes");
-        }
-        let cleanup_length = if code_block.ht_cleanup_length == 0 {
-            data_len
-        } else {
-            code_block.ht_cleanup_length
-        };
-        if cleanup_length != data_len {
-            return Err("single-pass HTJ2K packet contribution length mismatch");
-        }
-        return Ok((cleanup_length, 0));
-    }
-
-    if code_block.ht_cleanup_length == 0 || code_block.ht_refinement_length == 0 {
-        return Err("multi-pass HTJ2K packet contribution requires cleanup/refinement lengths");
-    }
-    if code_block
-        .ht_cleanup_length
-        .checked_add(code_block.ht_refinement_length)
-        .ok_or("multi-pass HTJ2K packet contribution length overflow")?
-        != data_len
-    {
-        return Err("multi-pass HTJ2K packet contribution length mismatch");
-    }
-    if !(2..65535).contains(&code_block.ht_cleanup_length) {
-        return Err("HTJ2K cleanup segment length is out of range");
-    }
-    if code_block.ht_refinement_length >= 2047 {
-        return Err("HTJ2K refinement segment length is out of range");
-    }
-
-    Ok((
+    packet_math::ht_segment_lengths(
+        code_block.num_coding_passes,
+        code_block.data.len(),
         code_block.ht_cleanup_length,
         code_block.ht_refinement_length,
-    ))
-}
-
-fn value_fits_in_bits(value: u32, bits: u32) -> bool {
-    bits >= u32::BITS || value < (1u32 << bits)
-}
-
-/// Calculate number of bits needed to encode a segment length.
-fn bits_for_length(l_block: u32, num_coding_passes: u8) -> u32 {
-    let log2_passes = if num_coding_passes <= 1 {
-        0
-    } else {
-        (num_coding_passes as u32).ilog2()
-    };
-    l_block + log2_passes
-}
-
-fn bits_for_ht_cleanup_length(l_block: u32, raw_num_passes: u8) -> u32 {
-    let placeholder_groups = u32::from(raw_num_passes.saturating_sub(1)) / 3;
-    let placeholder_passes = placeholder_groups * 3;
-    l_block + (placeholder_passes + 1).ilog2()
+    )
 }
 
 /// Form tile bitstream from resolution packets in LRCP order.

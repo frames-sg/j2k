@@ -15,10 +15,10 @@ use signinum_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, PassthroughRequirements,
     Unsupported,
 };
-use signinum_j2k_native::{DecodeSettings, EncodeOptions, EncodeProgressionOrder, Image};
+use signinum_j2k_native::{DecodeSettings, EncodeOptions, Image};
 
 use crate::{
-    encode::{J2kEncodeValidation, J2kProgressionOrder},
+    encode::{native_progression_order, J2kEncodeValidation, J2kProgressionOrder},
     parse::{parse_image_info, ParsedImageInfo},
     J2kError, J2kView,
 };
@@ -263,20 +263,10 @@ fn native_encode_options(
         code_block_width_exp: coefficients.code_block_width_exp,
         code_block_height_exp: coefficients.code_block_height_exp,
         guard_bits: coefficients.guard_bits,
-        progression_order: native_progression(options.progression),
+        progression_order: native_progression_order(options.progression),
         write_tlm: options.progression == J2kProgressionOrder::Rpcl,
         validate_high_throughput_codestream: false,
         ..EncodeOptions::default()
-    }
-}
-
-fn native_progression(progression: J2kProgressionOrder) -> EncodeProgressionOrder {
-    match progression {
-        J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
-        J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
-        J2kProgressionOrder::Rpcl => EncodeProgressionOrder::Rpcl,
-        J2kProgressionOrder::Pcrl => EncodeProgressionOrder::Pcrl,
-        J2kProgressionOrder::Cprl => EncodeProgressionOrder::Cprl,
     }
 }
 

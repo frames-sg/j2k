@@ -21,21 +21,25 @@ use super::fdwt::{self, DwtDecomposition};
 use super::forward_mct;
 use super::ht_block_encode;
 use super::packet_encode::{self, CodeBlockPacketData, ResolutionPacket, SubbandPrecinct};
+pub use super::quantize::irreversible_quantization_step_for_subband;
 use super::quantize::{self, QuantStepSize};
-pub use super::quantize::{
-    irreversible_quantization_step_for_subband, IrreversibleQuantizationStep,
-    IrreversibleQuantizationSubbandScales,
-};
 use crate::math::{floor_f32, log2_f32};
 use crate::profile;
 use crate::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
-    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kForwardDwt97Job, J2kForwardDwt97Level, J2kForwardDwt97Output,
-    J2kForwardIctJob, J2kForwardRctJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
-    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
-    J2kPacketizationPacketDescriptor, J2kPacketizationResolution, J2kPacketizationSubband,
-    J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    IrreversibleQuantizationSubbandScales, J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode,
+    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
+    J2kPacketizationResolution, J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kSubBandType,
+    J2kTier1CodeBlockEncodeJob, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock,
+    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
+    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
+    PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use crate::{DecodeSettings, Image};
 
@@ -245,246 +249,6 @@ pub fn encode_htj2k(
         signed,
         &options,
     )
-}
-
-/// Precomputed reversible 5/3 wavelet coefficients for one component.
-#[derive(Debug, Clone)]
-pub struct PrecomputedHtj2k53Component {
-    /// Horizontal SIZ sampling factor (`XRsiz`).
-    pub x_rsiz: u8,
-    /// Vertical SIZ sampling factor (`YRsiz`).
-    pub y_rsiz: u8,
-    /// Forward 5/3 DWT output, ordered as the encoder expects.
-    pub dwt: J2kForwardDwt53Output,
-}
-
-/// Precomputed reversible 5/3 wavelet image.
-#[derive(Debug, Clone)]
-pub struct PrecomputedHtj2k53Image {
-    /// Reference-grid image width.
-    pub width: u32,
-    /// Reference-grid image height.
-    pub height: u32,
-    /// Component precision in bits.
-    pub bit_depth: u8,
-    /// Whether component samples are signed.
-    pub signed: bool,
-    /// Components at their native resolution.
-    pub components: Vec<PrecomputedHtj2k53Component>,
-}
-
-/// Precomputed irreversible 9/7 wavelet coefficients for one component.
-#[derive(Debug, Clone)]
-pub struct PrecomputedHtj2k97Component {
-    /// Horizontal SIZ sampling factor (`XRsiz`).
-    pub x_rsiz: u8,
-    /// Vertical SIZ sampling factor (`YRsiz`).
-    pub y_rsiz: u8,
-    /// Forward 9/7 DWT output, ordered as the encoder expects.
-    pub dwt: J2kForwardDwt97Output,
-}
-
-/// Precomputed irreversible 9/7 wavelet image.
-#[derive(Debug, Clone)]
-pub struct PrecomputedHtj2k97Image {
-    /// Reference-grid image width.
-    pub width: u32,
-    /// Reference-grid image height.
-    pub height: u32,
-    /// Component precision in bits.
-    pub bit_depth: u8,
-    /// Whether component samples are signed.
-    pub signed: bool,
-    /// Components at their native resolution.
-    pub components: Vec<PrecomputedHtj2k97Component>,
-}
-
-/// Prequantized irreversible 9/7 HTJ2K code-block image.
-#[derive(Debug, Clone)]
-pub struct PrequantizedHtj2k97Image {
-    /// Reference-grid image width.
-    pub width: u32,
-    /// Reference-grid image height.
-    pub height: u32,
-    /// Component precision in bits.
-    pub bit_depth: u8,
-    /// Whether component samples are signed.
-    pub signed: bool,
-    /// Components at their native resolution.
-    pub components: Vec<PrequantizedHtj2k97Component>,
-}
-
-/// Prequantized irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
-pub struct PrequantizedHtj2k97Component {
-    /// Horizontal SIZ sampling factor (`XRsiz`).
-    pub x_rsiz: u8,
-    /// Vertical SIZ sampling factor (`YRsiz`).
-    pub y_rsiz: u8,
-    /// Resolution packets for this component, ordered from lowest to highest.
-    pub resolutions: Vec<PrequantizedHtj2k97Resolution>,
-}
-
-/// One component resolution's prequantized HTJ2K subbands.
-#[derive(Debug, Clone)]
-pub struct PrequantizedHtj2k97Resolution {
-    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
-    pub subbands: Vec<PrequantizedHtj2k97Subband>,
-}
-
-/// One prequantized HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
-pub struct PrequantizedHtj2k97Subband {
-    /// Subband kind.
-    pub sub_band_type: J2kSubBandType,
-    /// Number of code-blocks in the x direction.
-    pub num_cbs_x: u32,
-    /// Number of code-blocks in the y direction.
-    pub num_cbs_y: u32,
-    /// Total bitplanes declared for every code-block in this subband.
-    pub total_bitplanes: u8,
-    /// Code-block coefficients in row-major code-block order.
-    pub code_blocks: Vec<PrequantizedHtj2k97CodeBlock>,
-}
-
-/// One prequantized HTJ2K code-block.
-#[derive(Debug, Clone)]
-pub struct PrequantizedHtj2k97CodeBlock {
-    /// Quantized coefficients in row-major order.
-    pub coefficients: Vec<i32>,
-    /// Code-block width in coefficients.
-    pub width: u32,
-    /// Code-block height in coefficients.
-    pub height: u32,
-}
-
-/// Preencoded irreversible 9/7 HTJ2K code-block image.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97Image {
-    /// Reference-grid image width.
-    pub width: u32,
-    /// Reference-grid image height.
-    pub height: u32,
-    /// Component precision in bits.
-    pub bit_depth: u8,
-    /// Whether component samples are signed.
-    pub signed: bool,
-    /// Components at their native resolution.
-    pub components: Vec<PreencodedHtj2k97Component>,
-}
-
-/// Preencoded irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97Component {
-    /// Horizontal SIZ sampling factor (`XRsiz`).
-    pub x_rsiz: u8,
-    /// Vertical SIZ sampling factor (`YRsiz`).
-    pub y_rsiz: u8,
-    /// Resolution packets for this component, ordered from lowest to highest.
-    pub resolutions: Vec<PreencodedHtj2k97Resolution>,
-}
-
-/// One component resolution's preencoded HTJ2K subbands.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97Resolution {
-    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
-    pub subbands: Vec<PreencodedHtj2k97Subband>,
-}
-
-/// One preencoded HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97Subband {
-    /// Subband kind.
-    pub sub_band_type: J2kSubBandType,
-    /// Number of code-blocks in the x direction.
-    pub num_cbs_x: u32,
-    /// Number of code-blocks in the y direction.
-    pub num_cbs_y: u32,
-    /// Total bitplanes declared for every code-block in this subband.
-    pub total_bitplanes: u8,
-    /// Encoded code-block payloads in row-major code-block order.
-    pub code_blocks: Vec<PreencodedHtj2k97CodeBlock>,
-}
-
-/// One preencoded HTJ2K code-block.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CodeBlock {
-    /// Code-block width in coefficients.
-    pub width: u32,
-    /// Code-block height in coefficients.
-    pub height: u32,
-    /// Encoded cleanup/refinement payload and packet metadata.
-    pub encoded: EncodedHtJ2kCodeBlock,
-}
-
-/// Preencoded irreversible 9/7 HTJ2K code-block image backed by one compact
-/// payload buffer.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CompactImage {
-    /// Reference-grid image width.
-    pub width: u32,
-    /// Reference-grid image height.
-    pub height: u32,
-    /// Component precision in bits.
-    pub bit_depth: u8,
-    /// Whether component samples are signed.
-    pub signed: bool,
-    /// Contiguous encoded code-block payload bytes.
-    pub payload: Vec<u8>,
-    /// Components at their native resolution.
-    pub components: Vec<PreencodedHtj2k97CompactComponent>,
-}
-
-/// Preencoded compact irreversible 9/7 HTJ2K component.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CompactComponent {
-    /// Horizontal SIZ sampling factor (`XRsiz`).
-    pub x_rsiz: u8,
-    /// Vertical SIZ sampling factor (`YRsiz`).
-    pub y_rsiz: u8,
-    /// Resolution packets for this component, ordered from lowest to highest.
-    pub resolutions: Vec<PreencodedHtj2k97CompactResolution>,
-}
-
-/// One component resolution's compact preencoded HTJ2K subbands.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CompactResolution {
-    /// Subbands in packet order: LL for resolution 0, then HL/LH/HH.
-    pub subbands: Vec<PreencodedHtj2k97CompactSubband>,
-}
-
-/// One compact preencoded HTJ2K subband split into code-blocks.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CompactSubband {
-    /// Subband kind.
-    pub sub_band_type: J2kSubBandType,
-    /// Number of code-blocks in the x direction.
-    pub num_cbs_x: u32,
-    /// Number of code-blocks in the y direction.
-    pub num_cbs_y: u32,
-    /// Total bitplanes declared for every code-block in this subband.
-    pub total_bitplanes: u8,
-    /// Code-block metadata in row-major code-block order.
-    pub code_blocks: Vec<PreencodedHtj2k97CompactCodeBlock>,
-}
-
-/// One compact preencoded HTJ2K code-block.
-#[derive(Debug, Clone)]
-pub struct PreencodedHtj2k97CompactCodeBlock {
-    /// Code-block width in coefficients.
-    pub width: u32,
-    /// Code-block height in coefficients.
-    pub height: u32,
-    /// Byte range into the image-level compact payload.
-    pub payload_range: Range<usize>,
-    /// HTJ2K cleanup segment length in bytes.
-    pub cleanup_length: u32,
-    /// HTJ2K refinement segment length in bytes.
-    pub refinement_length: u32,
-    /// Number of coding passes in the encoded payload.
-    pub num_coding_passes: u8,
-    /// Number of missing most-significant bitplanes.
-    pub num_zero_bitplanes: u8,
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into an HTJ2K
@@ -1315,7 +1079,11 @@ fn validate_precomputed_dwt_geometry(image: &PrecomputedHtj2k53Image) -> Result<
     for component in &image.components {
         let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
         let component_height = image.height.div_ceil(u32::from(component.y_rsiz));
-        validate_precomputed_component_dwt(&component.dwt, component_width, component_height)?;
+        validate_precomputed_component_dwt_geometry(
+            &component.dwt,
+            component_width,
+            component_height,
+        )?;
     }
 
     Ok(())
@@ -1327,21 +1095,25 @@ fn validate_precomputed_dwt97_geometry(
     for component in &image.components {
         let component_width = image.width.div_ceil(u32::from(component.x_rsiz));
         let component_height = image.height.div_ceil(u32::from(component.y_rsiz));
-        validate_precomputed_component_dwt97(&component.dwt, component_width, component_height)?;
+        validate_precomputed_component_dwt_geometry(
+            &component.dwt,
+            component_width,
+            component_height,
+        )?;
     }
 
     Ok(())
 }
 
-fn validate_precomputed_component_dwt(
-    dwt: &J2kForwardDwt53Output,
+fn validate_precomputed_component_dwt_geometry(
+    dwt: &impl PrecomputedDwtGeometryView,
     component_width: u32,
     component_height: u32,
 ) -> Result<(), &'static str> {
-    if dwt.levels.is_empty() {
+    if dwt.level_count() == 0 {
         return Err("precomputed DWT must contain at least one decomposition level");
     }
-    if let Some(highest_level) = dwt.levels.last() {
+    if let Some(highest_level) = dwt.last_level_geometry() {
         if highest_level.width != component_width || highest_level.height != component_height {
             return Err("precomputed DWT component dimensions mismatch");
         }
@@ -1349,7 +1121,8 @@ fn validate_precomputed_component_dwt(
 
     let mut expected_width = component_width;
     let mut expected_height = component_height;
-    for level in dwt.levels.iter().rev() {
+    for level_index in (0..dwt.level_count()).rev() {
+        let level = dwt.level_geometry(level_index);
         let low_width = expected_width.div_ceil(2);
         let low_height = expected_height.div_ceil(2);
         let high_width = expected_width / 2;
@@ -1364,63 +1137,111 @@ fn validate_precomputed_component_dwt(
         {
             return Err("precomputed DWT recursive geometry mismatch");
         }
-        validate_band_len(level.hl.len(), high_width, low_height)?;
-        validate_band_len(level.lh.len(), low_width, high_height)?;
-        validate_band_len(level.hh.len(), high_width, high_height)?;
+        validate_band_len(level.hl_len, high_width, low_height)?;
+        validate_band_len(level.lh_len, low_width, high_height)?;
+        validate_band_len(level.hh_len, high_width, high_height)?;
 
         expected_width = low_width;
         expected_height = low_height;
     }
 
-    if dwt.ll_width != expected_width || dwt.ll_height != expected_height {
+    if dwt.ll_width() != expected_width || dwt.ll_height() != expected_height {
         return Err("precomputed DWT component dimensions mismatch");
     }
-    validate_band_len(dwt.ll.len(), expected_width, expected_height)
+    validate_band_len(dwt.ll_len(), expected_width, expected_height)
 }
 
-fn validate_precomputed_component_dwt97(
-    dwt: &J2kForwardDwt97Output,
-    component_width: u32,
-    component_height: u32,
-) -> Result<(), &'static str> {
-    if dwt.levels.is_empty() {
-        return Err("precomputed DWT must contain at least one decomposition level");
+#[derive(Debug, Clone, Copy)]
+struct PrecomputedDwtLevelGeometry {
+    width: u32,
+    height: u32,
+    low_width: u32,
+    low_height: u32,
+    high_width: u32,
+    high_height: u32,
+    hl_len: usize,
+    lh_len: usize,
+    hh_len: usize,
+}
+
+trait PrecomputedDwtGeometryView {
+    fn ll_len(&self) -> usize;
+    fn ll_width(&self) -> u32;
+    fn ll_height(&self) -> u32;
+    fn level_count(&self) -> usize;
+    fn level_geometry(&self, index: usize) -> PrecomputedDwtLevelGeometry;
+
+    fn last_level_geometry(&self) -> Option<PrecomputedDwtLevelGeometry> {
+        self.level_count()
+            .checked_sub(1)
+            .map(|index| self.level_geometry(index))
     }
-    if let Some(highest_level) = dwt.levels.last() {
-        if highest_level.width != component_width || highest_level.height != component_height {
-            return Err("precomputed DWT component dimensions mismatch");
+}
+
+impl PrecomputedDwtGeometryView for J2kForwardDwt53Output {
+    fn ll_len(&self) -> usize {
+        self.ll.len()
+    }
+
+    fn ll_width(&self) -> u32 {
+        self.ll_width
+    }
+
+    fn ll_height(&self) -> u32 {
+        self.ll_height
+    }
+
+    fn level_count(&self) -> usize {
+        self.levels.len()
+    }
+
+    fn level_geometry(&self, index: usize) -> PrecomputedDwtLevelGeometry {
+        let level = &self.levels[index];
+        PrecomputedDwtLevelGeometry {
+            width: level.width,
+            height: level.height,
+            low_width: level.low_width,
+            low_height: level.low_height,
+            high_width: level.high_width,
+            high_height: level.high_height,
+            hl_len: level.hl.len(),
+            lh_len: level.lh.len(),
+            hh_len: level.hh.len(),
         }
     }
+}
 
-    let mut expected_width = component_width;
-    let mut expected_height = component_height;
-    for level in dwt.levels.iter().rev() {
-        let low_width = expected_width.div_ceil(2);
-        let low_height = expected_height.div_ceil(2);
-        let high_width = expected_width / 2;
-        let high_height = expected_height / 2;
+impl PrecomputedDwtGeometryView for J2kForwardDwt97Output {
+    fn ll_len(&self) -> usize {
+        self.ll.len()
+    }
 
-        if level.width != expected_width
-            || level.height != expected_height
-            || level.low_width != low_width
-            || level.low_height != low_height
-            || level.high_width != high_width
-            || level.high_height != high_height
-        {
-            return Err("precomputed DWT recursive geometry mismatch");
+    fn ll_width(&self) -> u32 {
+        self.ll_width
+    }
+
+    fn ll_height(&self) -> u32 {
+        self.ll_height
+    }
+
+    fn level_count(&self) -> usize {
+        self.levels.len()
+    }
+
+    fn level_geometry(&self, index: usize) -> PrecomputedDwtLevelGeometry {
+        let level = &self.levels[index];
+        PrecomputedDwtLevelGeometry {
+            width: level.width,
+            height: level.height,
+            low_width: level.low_width,
+            low_height: level.low_height,
+            high_width: level.high_width,
+            high_height: level.high_height,
+            hl_len: level.hl.len(),
+            lh_len: level.lh.len(),
+            hh_len: level.hh.len(),
         }
-        validate_band_len(level.hl.len(), high_width, low_height)?;
-        validate_band_len(level.lh.len(), low_width, high_height)?;
-        validate_band_len(level.hh.len(), high_width, high_height)?;
-
-        expected_width = low_width;
-        expected_height = low_height;
     }
-
-    if dwt.ll_width != expected_width || dwt.ll_height != expected_height {
-        return Err("precomputed DWT component dimensions mismatch");
-    }
-    validate_band_len(dwt.ll.len(), expected_width, expected_height)
 }
 
 fn precomputed_level_count(components: &[PrecomputedHtj2k53Component]) -> Result<u8, &'static str> {
@@ -2333,7 +2154,7 @@ fn validate_irreversible_quantization_scale(scale: f32) -> Result<(), &'static s
 
 fn validate_irreversible_quantization_profile(options: &EncodeOptions) -> Result<(), &'static str> {
     validate_irreversible_quantization_scale(options.irreversible_quantization_scale)?;
-    if options.irreversible_quantization_subband_scales.all_valid() {
+    if quantize::subband_scales_all_valid(options.irreversible_quantization_subband_scales) {
         Ok(())
     } else {
         Err("irreversible quantization subband scales must be finite and greater than zero")
@@ -5640,6 +5461,7 @@ fn max_decomposition_levels(width: u32, height: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PrequantizedHtj2k97CodeBlock;
 
     fn test_preencoded_subband_payload(marker: u8) -> PreencodedHtj2k97Subband {
         PreencodedHtj2k97Subband {
@@ -6057,6 +5879,23 @@ mod tests {
     }
 
     #[test]
+    fn precomputed_dwt_geometry_validation_rejects_recursive_mismatch_for_both_filters() {
+        let mut dwt53 = sample_precomputed_htj2k53_image();
+        dwt53.components[0].dwt.levels[0].low_width += 1;
+        assert_eq!(
+            validate_precomputed_dwt_geometry(&dwt53),
+            Err("precomputed DWT recursive geometry mismatch")
+        );
+
+        let mut dwt97 = sample_precomputed_htj2k97_image();
+        dwt97.components[0].dwt.levels[0].low_width += 1;
+        assert_eq!(
+            validate_precomputed_dwt97_geometry(&dwt97),
+            Err("precomputed DWT recursive geometry mismatch")
+        );
+    }
+
+    #[test]
     fn prequantized_htj2k97_offers_ht_code_blocks_to_encode_accelerator() {
         let image = sample_precomputed_htj2k97_image();
         let options = EncodeOptions {
@@ -6402,6 +6241,7 @@ mod tests {
         assert_eq!(error, "HTJ2K code-block zero-bitplane count out of range");
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn preencoded_htj2k97_rejects_too_many_coding_passes_without_panic() {
         let (mut image, options) = sample_preencoded_htj2k97_for_test();
@@ -7214,6 +7054,7 @@ mod tests {
     /// across repeated invocations with the same input before CUDA parity can be
     /// asserted.  96x80 with 3 components and 5 decomposition levels exercises
     /// multi-codeblock subbands.
+    #[cfg(feature = "std")]
     #[test]
     fn encode_htj2k_is_byte_deterministic() {
         const WIDTH: u32 = 96;
@@ -7287,6 +7128,7 @@ mod tests {
 
     /// Precondition gate: prove native encode_htj2k round-trips 2-component
     /// 8-bit lossless images exactly with independent component channels.
+    #[cfg(feature = "std")]
     #[test]
     fn native_htj2k_roundtrips_two_component_lossless() {
         const WIDTH: u32 = 32;
@@ -7347,6 +7189,7 @@ mod tests {
     /// Precondition gate: prove native encode_htj2k round-trips 4-component
     /// (e.g. RGBA) 8-bit lossless images exactly.
     /// Required before a CUDA parity oracle can be established for this component count.
+    #[cfg(feature = "std")]
     #[test]
     fn native_htj2k_roundtrips_four_component_lossless() {
         const WIDTH: u32 = 32;

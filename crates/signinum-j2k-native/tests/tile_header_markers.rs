@@ -111,6 +111,33 @@ fn main_header_rgn_with_explicit_style_is_rejected() {
 }
 
 #[test]
+fn crafted_siz_with_absurd_tile_grid_is_rejected_without_allocating() {
+    let pixels: Vec<_> = (0..16 * 16).map(|idx| (idx % 251) as u8).collect();
+    let mut codestream = encode(&pixels, 16, 16, 1, 8, false, &EncodeOptions::default())
+        .expect("lossless fixture encode");
+
+    // Rewrite SIZ to a 15,300,000² reference grid of 1×1 tiles. The component
+    // resolutions go to 255 so image_width stays at the 60,000 dimension cap,
+    // but the tile grid implies ~2.3e14 tiles — overflowing num_tiles() and
+    // driving the eager per-tile allocation in tile parsing.
+    let siz = codestream
+        .windows(2)
+        .position(|w| w == [0xFF, 0x51])
+        .expect("SIZ marker");
+    codestream[siz + 6..siz + 10].copy_from_slice(&15_300_000u32.to_be_bytes()); // Xsiz
+    codestream[siz + 10..siz + 14].copy_from_slice(&15_300_000u32.to_be_bytes()); // Ysiz
+    codestream[siz + 22..siz + 26].copy_from_slice(&1u32.to_be_bytes()); // XTsiz
+    codestream[siz + 26..siz + 30].copy_from_slice(&1u32.to_be_bytes()); // YTsiz
+    codestream[siz + 41] = 255; // XRsiz (component 0)
+    codestream[siz + 42] = 255; // YRsiz (component 0)
+
+    let result =
+        Image::new(&codestream, &DecodeSettings::default()).and_then(|image| image.decode_native());
+    let err = result.err().expect("absurd tile grid must be rejected");
+    assert_eq!(err.to_string(), "image has too many tiles");
+}
+
+#[test]
 fn iso_p0_03_tile_header_roi_maxshift_matches_reference_when_available() {
     let Some(root) = std::env::var_os("SIGNINUM_J2K_ISO_CONFORMANCE_DIR") else {
         return;

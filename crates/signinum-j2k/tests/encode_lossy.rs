@@ -30,6 +30,16 @@ fn strict_decode_native(codestream: &[u8]) -> signinum_j2k_native::RawBitmap {
     .expect("encoded codestream should decode strictly")
 }
 
+fn public_encoded_ht(block: signinum_j2k_native::EncodedHtJ2kCodeBlock) -> EncodedHtJ2kCodeBlock {
+    EncodedHtJ2kCodeBlock {
+        data: block.data,
+        cleanup_length: block.cleanup_length,
+        refinement_length: block.refinement_length,
+        num_coding_passes: block.num_coding_passes,
+        num_zero_bitplanes: block.num_zero_bitplanes,
+    }
+}
+
 fn plt_packet_length_count(codestream: &[u8]) -> usize {
     plt_packet_lengths(codestream).len()
 }
@@ -587,6 +597,7 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
                 job.height,
                 job.total_bitplanes,
             )
+            .map(public_encoded_ht)
             .map(Some)
         }
 

@@ -10,6 +10,7 @@ mod backend;
 mod batch;
 mod decode;
 mod encode;
+mod parallelism;
 mod recode;
 
 /// Reusable JPEG 2000 decode context.
@@ -25,16 +26,21 @@ pub mod scratch;
 pub use scratch::J2kScratchPool;
 
 /// Adapter-facing planning APIs shared with GPU crates.
+///
+/// This module is public so device adapters can use the same route planning and
+/// encode-stage contracts as the facade without depending on root re-exports.
 pub mod adapter;
 
 /// Borrowed view and decoder entry points.
 pub mod view;
-pub use view::{J2kCodec, J2kDecoder, J2kView};
+pub use view::{J2kCodec, J2kDecoder, J2kRowDecodeOptions, J2kView};
 
 pub use batch::{
-    decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
-    decode_tiles_region_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob,
+    decode_tile_into_in_context, decode_tile_region_into_in_context,
+    decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
+    decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use adapter::adaptive_route::{
@@ -46,7 +52,26 @@ pub use adapter::adaptive_route::{
     J2kAdaptiveWorkload,
 };
 
-pub use signinum_j2k_native::CpuDecodeParallelism;
+pub use adapter::encode_stage::{
+    CpuOnlyJ2kEncodeStageAccelerator, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock,
+    IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
+    J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Job,
+    J2kForwardDwt97Level, J2kForwardDwt97Output, J2kForwardIctJob, J2kForwardRctJob,
+    J2kHtCodeBlockEncodeJob, J2kHtSubbandEncodeJob, J2kHtj2kTileEncodeJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
+    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationSubband, J2kQuantizeSubbandJob, J2kSubBandType, J2kTier1CodeBlockEncodeJob,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image, PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PreencodedHtj2k97Resolution,
+    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+};
+
+pub use parallelism::CpuDecodeParallelism;
 
 pub use encode::{
     encode_j2k_lossless, encode_j2k_lossless_with_accelerator, encode_j2k_lossy,
@@ -61,15 +86,6 @@ pub use encode::{
 pub use recode::{
     recode_j2k_to_htj2k_lossless, J2kToHtj2kMode, J2kToHtj2kOptions, J2kToHtj2kReport,
     ReencodedHtj2k,
-};
-
-pub use signinum_j2k_native::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kDeinterleaveToF32Job, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardDwt53Level, J2kForwardDwt53Output,
-    J2kForwardRctJob, J2kHtCodeBlockEncodeJob, J2kPacketizationBlockCodingMode,
-    J2kPacketizationCodeBlock, J2kPacketizationEncodeJob, J2kPacketizationProgressionOrder,
-    J2kPacketizationResolution, J2kPacketizationSubband, J2kQuantizeSubbandJob,
-    J2kTier1CodeBlockEncodeJob,
 };
 
 pub use signinum_core::{

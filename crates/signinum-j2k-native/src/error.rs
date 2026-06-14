@@ -76,6 +76,8 @@ pub enum ValidationError {
     ImageTooLarge,
     /// Image has too many channels.
     TooManyChannels,
+    /// The SIZ tile grid implies more tiles than any conforming codestream can address.
+    TooManyTiles,
     /// Invalid component metadata.
     InvalidComponentMetadata,
     /// Invalid JP2 channel definition metadata.
@@ -116,6 +118,8 @@ pub enum DecodingError {
     InvalidProgressionIterator,
     /// Unexpected end of data.
     UnexpectedEof,
+    /// Caller-provided output buffer is too small for the decoded image.
+    OutputBufferTooSmall,
 }
 
 /// Errors related to color space and component handling.
@@ -191,6 +195,7 @@ impl fmt::Display for ValidationError {
             Self::InvalidDimensions => write!(f, "invalid image dimensions"),
             Self::ImageTooLarge => write!(f, "image is too large"),
             Self::TooManyChannels => write!(f, "image has too many channels"),
+            Self::TooManyTiles => write!(f, "image has too many tiles"),
             Self::InvalidComponentMetadata => write!(f, "invalid component metadata"),
             Self::InvalidChannelDefinition => write!(f, "invalid channel definition"),
             Self::InvalidProgressionOrder => write!(f, "invalid progression order"),
@@ -225,6 +230,7 @@ impl fmt::Display for DecodingError {
                 write!(f, "a progression iterator was invalid")
             }
             Self::UnexpectedEof => write!(f, "unexpected end of data"),
+            Self::OutputBufferTooSmall => write!(f, "output buffer is too small"),
         }
     }
 }

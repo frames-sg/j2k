@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::num::NonZeroUsize;
-use std::time::Instant;
 
 use signinum_core::{tile_batch_worker_count, Downscale, PixelFormat, Rect};
 use signinum_j2k::{
@@ -9,7 +8,10 @@ use signinum_j2k::{
     J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessSamples,
     TileBatchOptions, TileRegionScaledDecodeJob,
 };
-use signinum_j2k_compare::grok;
+use signinum_j2k_compare::{
+    grok, measure_repeated, parse_positive_usize, sample_stats, usize_to_f64,
+};
+use signinum_test_support::{patterned_rgb8, wrap_jp2_codestream};
 
 const DEFAULT_REPEATS: usize = 9;
 const DEFAULT_BATCH_SIZE: usize = 16;
@@ -80,9 +82,9 @@ fn run() -> Result<(), String> {
 
 fn compare_cases() -> Result<Vec<CompareCase>, String> {
     let raw_512 = encode_htj2k_rgb_codestream(512, 512)?;
-    let jp2_512 = wrap_codestream_jp2(&raw_512, 512, 512, 3, 8, 16);
+    let jp2_512 = wrap_jp2_codestream(&raw_512, 512, 512, 3, 8, 16);
     let raw_256 = encode_htj2k_rgb_codestream(256, 256)?;
-    let jp2_256 = wrap_codestream_jp2(&raw_256, 256, 256, 3, 8, 16);
+    let jp2_256 = wrap_jp2_codestream(&raw_256, 256, 256, 3, 8, 16);
     Ok(vec![
         CompareCase {
             name: "htj2k_raw_rgb8_512_roi256_q4_repeated_batch16",
@@ -137,18 +139,6 @@ fn encode_htj2k_rgb_codestream(width: u32, height: u32) -> Result<Vec<u8>, Strin
         .codestream)
 }
 
-fn patterned_rgb8(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
-    for y in 0..height {
-        for x in 0..width {
-            pixels.push(((x * 3 + y * 5) & 0xff) as u8);
-            pixels.push(((x * 7 + y * 11 + 17) & 0xff) as u8);
-            pixels.push(((x * 13 + y * 19 + 31) & 0xff) as u8);
-        }
-    }
-    pixels
-}
-
 fn validate_case(case: &CompareCase) -> Result<(), String> {
     let ours = decode_signinum_once(case)?;
     let theirs = decode_grok_once(case, None)?;
@@ -168,22 +158,10 @@ fn measure_signinum(
     repeats: usize,
     workers: Option<NonZeroUsize>,
 ) -> Result<Measurement, String> {
-    let mut samples = Vec::with_capacity(repeats);
-    let mut decoded = decode_signinum_once(case)?;
-    std::hint::black_box(&decoded);
-    for _ in 0..repeats {
-        let started = Instant::now();
-        decoded = decode_signinum_once_with_workers(case, workers)?;
-        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
-        std::hint::black_box(&decoded);
-    }
-    Ok(measurement(
-        "signinum",
-        case,
-        repeats,
-        samples,
-        decoded.len(),
-    ))
+    let (samples, decoded) = measure_repeated(repeats, 1_000_000.0, || {
+        decode_signinum_once_with_workers(case, workers)
+    })?;
+    measurement("signinum", case, repeats, samples, decoded.len())
 }
 
 fn decode_signinum_once(case: &CompareCase) -> Result<Vec<u8>, String> {
@@ -217,16 +195,9 @@ fn measure_grok(
     repeats: usize,
     workers: Option<NonZeroUsize>,
 ) -> Result<Measurement, String> {
-    let mut samples = Vec::with_capacity(repeats);
-    let mut decoded = decode_grok_once(case, workers)?;
-    std::hint::black_box(&decoded);
-    for _ in 0..repeats {
-        let started = Instant::now();
-        decoded = decode_grok_once(case, workers)?;
-        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
-        std::hint::black_box(&decoded);
-    }
-    Ok(measurement("grok", case, repeats, samples, decoded.len()))
+    let (samples, decoded) =
+        measure_repeated(repeats, 1_000_000.0, || decode_grok_once(case, workers))?;
+    measurement("grok", case, repeats, samples, decoded.len())
 }
 
 fn decode_grok_once(case: &CompareCase, workers: Option<NonZeroUsize>) -> Result<Vec<u8>, String> {
@@ -273,20 +244,19 @@ fn measurement(
     repeats: usize,
     samples: Vec<f64>,
     decoded_bytes_per_repeat: usize,
-) -> Measurement {
-    let median_us = median(samples.clone());
-    let mean_us = samples.iter().sum::<f64>() / usize_to_f64(samples.len());
-    Measurement {
+) -> Result<Measurement, String> {
+    let stats = sample_stats(&samples)?;
+    Ok(Measurement {
         decoder,
         case_name: case.name,
         repeats,
         batch_size: case.batch_size,
-        median_us,
-        mean_us,
-        tiles_per_second_median: usize_to_f64(case.batch_size) / (median_us / 1_000_000.0),
+        median_us: stats.median,
+        mean_us: stats.mean,
+        tiles_per_second_median: usize_to_f64(case.batch_size) / (stats.median / 1_000_000.0),
         decoded_bytes_per_repeat,
         samples_us: samples,
-    }
+    })
 }
 
 fn emit_measurement(row: &Measurement) {
@@ -327,56 +297,4 @@ fn reduce_factor(scale: Downscale) -> Result<u32, String> {
         Downscale::Eighth => Ok(3),
         _ => Err(format!("unsupported downscale for Grok compare: {scale:?}")),
     }
-}
-
-fn median(mut samples: Vec<f64>) -> f64 {
-    samples.sort_by(f64::total_cmp);
-    samples[samples.len() / 2]
-}
-
-fn parse_positive_usize(value: &str, label: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|error| format!("invalid {label} {value:?}: {error}"))?;
-    if parsed == 0 {
-        return Err(format!("{label} must be > 0"));
-    }
-    Ok(parsed)
-}
-
-fn usize_to_f64(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
-}
-
-fn wrap_codestream_jp2(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u16,
-    bit_depth: u8,
-    colorspace_enum: u32,
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
-        b' ',
-    ]);
-
-    let bpc = bit_depth.saturating_sub(1);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-    ]);
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&components.to_be_bytes());
-    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
-    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
-
-    let len = (8 + codestream.len()) as u32;
-    bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(b"jp2c");
-    bytes.extend_from_slice(codestream);
-    bytes
 }
