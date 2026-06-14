@@ -6,8 +6,8 @@
 //! single-level 5/3 result without first storing the 8x8 spatial samples. The
 //! reference path materializes samples to keep the oracle easy to audit.
 
-use core::f64::consts::PI;
-use core::fmt;
+use crate::dct_grid::{high_len, idct8_basis, low_len, validate_dct_block_grid};
+pub use crate::DctGridError as Dct53GridError;
 
 /// One separable single-level 2D 5/3 transform result.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,60 +49,6 @@ impl Dwt53TwoDimensional<f64> {
             .fold(0.0, f64::max)
     }
 }
-
-/// Error returned when a DCT block grid cannot cover the requested component.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Dct53GridError {
-    block_count: usize,
-    block_cols: usize,
-    block_rows: usize,
-    width: usize,
-    height: usize,
-}
-
-impl Dct53GridError {
-    /// Number of supplied 8x8 DCT blocks.
-    #[must_use]
-    pub const fn block_count(self) -> usize {
-        self.block_count
-    }
-
-    /// Declared block columns.
-    #[must_use]
-    pub const fn block_cols(self) -> usize {
-        self.block_cols
-    }
-
-    /// Declared block rows.
-    #[must_use]
-    pub const fn block_rows(self) -> usize {
-        self.block_rows
-    }
-
-    /// Requested component width.
-    #[must_use]
-    pub const fn width(self) -> usize {
-        self.width
-    }
-
-    /// Requested component height.
-    #[must_use]
-    pub const fn height(self) -> usize {
-        self.height
-    }
-}
-
-impl fmt::Display for Dct53GridError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "DCT grid has {} blocks for {}x{} grid covering requested {}x{} samples",
-            self.block_count, self.block_cols, self.block_rows, self.width, self.height
-        )
-    }
-}
-
-impl std::error::Error for Dct53GridError {}
 
 /// Scratch storage for repeated DCT-grid to 5/3 projection calls.
 ///
@@ -499,26 +445,6 @@ fn linearized_53_from_sample_slice(samples: &[f64]) -> Dwt53OneDimensional {
     Dwt53OneDimensional { low, high }
 }
 
-fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
-    debug_assert!(sample_idx < 8);
-    debug_assert!(freq < 8);
-
-    let scale = if freq == 0 {
-        (1.0_f64 / 8.0).sqrt()
-    } else {
-        (2.0_f64 / 8.0).sqrt()
-    };
-    scale * (((sample_idx as f64 + 0.5) * freq as f64 * PI) / 8.0).cos()
-}
-
-fn low_len(sample_len: usize) -> usize {
-    sample_len.div_ceil(2)
-}
-
-fn high_len(sample_len: usize) -> usize {
-    sample_len / 2
-}
-
 fn validate_grid(
     block_count: usize,
     block_cols: usize,
@@ -526,25 +452,7 @@ fn validate_grid(
     width: usize,
     height: usize,
 ) -> Result<(), Dct53GridError> {
-    let expected_blocks = block_cols.saturating_mul(block_rows);
-    let covered_width = block_cols.saturating_mul(8);
-    let covered_height = block_rows.saturating_mul(8);
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(Dct53GridError {
-            block_count,
-            block_cols,
-            block_rows,
-            width,
-            height,
-        });
-    }
-
-    Ok(())
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
 }
 
 #[derive(Debug, Default)]

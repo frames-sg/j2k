@@ -7,15 +7,12 @@
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]
 
+use signinum_test_support::cuda_runtime_required;
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 use signinum_transcode::dct97_2d::{dct8x8_blocks_then_dwt97_float, Dwt97TwoDimensional};
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
 const TOLERANCE: f64 = 2.0e-2;
-
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
 
 /// Deterministic small f64 DCT coefficients.
 fn make_blocks(block_cols: usize, block_rows: usize) -> Vec<[[f64; 8]; 8]> {
@@ -47,7 +44,7 @@ fn max_abs_diff(actual: &Dwt97TwoDimensional<f64>, expected: &Dwt97TwoDimensiona
 
 #[test]
 fn cuda_dwt97_matches_scalar_oracle_within_tolerance_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 

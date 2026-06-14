@@ -22,6 +22,7 @@ use std::path::Path;
 
 use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples};
+use signinum_nvidia_baseline::ycbcr_to_rgb_round_nearest;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -223,7 +224,7 @@ fn decode_tile_rgb(tile: &[u8], compression: u16) -> Option<(Vec<u8>, u32, u32)>
     match bitmap.num_components {
         3 => {
             let rgb = if compression == APERIO_J2K_YCBCR {
-                ycbcr_to_rgb(&bitmap.data)
+                ycbcr_to_rgb_round_nearest(&bitmap.data)
             } else {
                 bitmap.data
             };
@@ -236,20 +237,6 @@ fn decode_tile_rgb(tile: &[u8], compression: u16) -> Option<(Vec<u8>, u32, u32)>
         }
         _ => None,
     }
-}
-
-/// JFIF full-range YCbCr -> RGB, interleaved.
-fn ycbcr_to_rgb(ycbcr: &[u8]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(ycbcr.len());
-    for px in ycbcr.chunks_exact(3) {
-        let y = f32::from(px[0]);
-        let cb = f32::from(px[1]) - 128.0;
-        let cr = f32::from(px[2]) - 128.0;
-        rgb.push((y + 1.402 * cr).clamp(0.0, 255.0) as u8);
-        rgb.push((y - 0.344_136 * cb - 0.714_136 * cr).clamp(0.0, 255.0) as u8);
-        rgb.push((y + 1.772 * cb).clamp(0.0, 255.0) as u8);
-    }
-    rgb
 }
 
 struct Ifd {

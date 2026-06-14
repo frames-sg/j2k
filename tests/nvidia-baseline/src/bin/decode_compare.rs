@@ -12,17 +12,21 @@
     clippy::too_many_lines
 )]
 
+mod report_format;
+
 use std::{
     fs,
     path::{Path, PathBuf},
     time::Instant,
 };
 
+use report_format::{csv_f64_or_inf, escape_csv, escape_json, json_f64_or_inf};
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
 use signinum_j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
 use signinum_nvidia_baseline::{
-    nvidia_j2k_decode_available, psnr_u8, NvBaselineError, NvBaselineSession, NvJ2kDecodeFormat,
+    nvidia_j2k_decode_available, psnr_u8, write_text_artifact, NvBaselineError, NvBaselineSession,
+    NvJ2kDecodeFormat,
 };
 
 const DEFAULT_FIXTURE_DIM: u32 = 512;
@@ -1424,16 +1428,10 @@ fn fmt_optional(value: Option<f64>) -> String {
 
 fn write_artifacts(report: &DecodeReport, config: &Config) -> std::io::Result<()> {
     if let Some(path) = &config.json {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, json_report(report, config))?;
+        write_text_artifact(path, json_report(report, config))?;
     }
     if let Some(path) = &config.csv {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, csv_report(report))?;
+        write_text_artifact(path, csv_report(report))?;
     }
     Ok(())
 }
@@ -1581,16 +1579,7 @@ fn json_cuda_profile(profile: &CudaStageBreakdown) -> String {
 }
 
 fn json_optional(value: Option<f64>) -> String {
-    value.map_or_else(
-        || "null".to_string(),
-        |value| {
-            if value.is_finite() {
-                format!("{value:.6}")
-            } else {
-                "\"inf\"".to_string()
-            }
-        },
-    )
+    json_f64_or_inf(value, 6)
 }
 
 fn csv_report(report: &DecodeReport) -> String {
@@ -1808,37 +1797,7 @@ fn csv_download_ms(status: &TimedStatus) -> String {
 }
 
 fn csv_optional(value: Option<f64>) -> String {
-    value.map_or_else(String::new, |value| {
-        if value.is_finite() {
-            format!("{value:.6}")
-        } else {
-            "inf".to_string()
-        }
-    })
-}
-
-fn escape_json(value: &str) -> String {
-    let mut escaped = String::new();
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-fn escape_csv(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
+    csv_f64_or_inf(value, 6)
 }
 
 #[cfg(test)]
@@ -2204,7 +2163,7 @@ mod tests {
                     gpu_ms: Some(0.25),
                     stage_ms: Some(0.5),
                     download_ms: Some(0.125),
-                    cuda_profile: Some(fake_cuda_profile()),
+                    cuda_profile: Some(sample_cuda_profile()),
                     pixels: Vec::new(),
                 }),
             },
@@ -2221,7 +2180,7 @@ mod tests {
         assert!(csv.contains(",7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24"));
     }
 
-    fn fake_cuda_profile() -> CudaStageBreakdown {
+    fn sample_cuda_profile() -> CudaStageBreakdown {
         CudaStageBreakdown {
             parse_us: 1,
             plan_us: 2,

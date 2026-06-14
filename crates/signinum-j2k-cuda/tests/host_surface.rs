@@ -4,7 +4,12 @@ use signinum_core::{
     TileBatchDecodeManyDevice,
 };
 use signinum_j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
-use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
+use signinum_j2k_native::{encode, EncodeOptions};
+use signinum_test_support::{
+    cuda_htj2k_strict_required, cuda_runtime_required, htj2k_gray8_97_fixture, htj2k_gray8_fixture,
+    htj2k_rgb8_97_fixture, htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture,
+    openhtj2k_refinement_odd_fixture, rgb16ne_to_opaque_rgba16ne,
+};
 
 fn fixture() -> Vec<u8> {
     let pixels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
@@ -17,67 +22,27 @@ fn fixture() -> Vec<u8> {
 }
 
 fn fixture_ht_gray8() -> Vec<u8> {
-    let pixels: Vec<u8> = (0..16).collect();
-    let options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode ht gray8")
+    htj2k_gray8_fixture(4, 4)
 }
 
 fn fixture_ht_gray8_irreversible_97() -> Vec<u8> {
-    let pixels: Vec<u8> = (0..16).map(|idx| idx * 11).collect();
-    let options = EncodeOptions {
-        reversible: false,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    encode_htj2k(&pixels, 4, 4, 1, 8, false, &options).expect("encode ht gray8 9/7")
+    htj2k_gray8_97_fixture(4, 4)
 }
 
 fn fixture_ht_rgb8() -> (Vec<u8>, Vec<u8>) {
-    let pixels: Vec<u8> = (0u16..4 * 4 * 3)
-        .map(|idx| u8::try_from((idx * 13 + idx / 3) & 0xff).expect("masked value fits in u8"))
-        .collect();
-    let options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    let codestream = encode_htj2k(&pixels, 4, 4, 3, 8, false, &options).expect("encode ht rgb8");
-    (codestream, pixels)
+    htj2k_rgb8_fixture_with_pixels(4, 4)
 }
 
 fn fixture_ht_rgb8_pattern(width: u32, height: u32, seed: u32) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
-    for idx in 0..width * height {
-        pixels.push(u8::try_from((idx * seed + idx / 3) & 0xff).expect("red"));
-        pixels.push(u8::try_from((idx * (seed + 11) + 7) & 0xff).expect("green"));
-        pixels.push(u8::try_from((idx * (seed + 23) + 19) & 0xff).expect("blue"));
-    }
-    let options = EncodeOptions {
-        reversible: true,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    encode_htj2k(&pixels, width, height, 3, 8, false, &options).expect("encode patterned ht rgb8")
+    htj2k_rgb8_pattern_fixture(width, height, seed)
 }
 
 fn fixture_ht_rgb8_irreversible_97() -> Vec<u8> {
-    let pixels: Vec<u8> = (0u16..4 * 4 * 3)
-        .map(|idx| u8::try_from((idx * 17 + idx / 5) & 0xff).expect("masked value fits in u8"))
-        .collect();
-    let options = EncodeOptions {
-        reversible: false,
-        num_decomposition_levels: 1,
-        ..EncodeOptions::default()
-    };
-    encode_htj2k(&pixels, 4, 4, 3, 8, false, &options).expect("encode ht rgb8 9/7")
+    htj2k_rgb8_97_fixture(4, 4)
 }
 
 fn fixture_openhtj2k_refinement_odd() -> &'static [u8] {
-    include_bytes!("fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k")
+    openhtj2k_refinement_odd_fixture()
 }
 
 fn fixture_openhtj2k_refinement_odd_pixels() -> &'static [u8] {
@@ -137,7 +102,7 @@ fn expected_host_decode_case(
 ) -> Vec<u8> {
     if format == PixelFormat::Rgba16 {
         let rgb16 = expected_host_decode_case(bytes, PixelFormat::Rgb16, case, full_dims);
-        return rgb16_to_opaque_rgba16(&rgb16);
+        return rgb16ne_to_opaque_rgba16ne(&rgb16);
     }
 
     let dims = case.output_dims(full_dims);
@@ -178,15 +143,6 @@ fn expected_host_decode_case(
             .expect("host region+scaled decode"),
     };
     expected
-}
-
-fn rgb16_to_opaque_rgba16(rgb16: &[u8]) -> Vec<u8> {
-    let mut expanded = Vec::with_capacity(rgb16.len() / 3 * 4);
-    for rgb in rgb16.chunks_exact(6) {
-        expanded.extend_from_slice(rgb);
-        expanded.extend_from_slice(&u16::MAX.to_ne_bytes());
-    }
-    expanded
 }
 
 fn assert_bytes_within(actual: &[u8], expected: &[u8], tolerance: u8, label: &str) {
@@ -239,8 +195,8 @@ fn explicit_cuda_request_validates_decode_before_upload() {
 }
 
 #[test]
-fn explicit_cuda_request_returns_cuda_surface_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -269,8 +225,8 @@ fn explicit_cuda_request_returns_cuda_surface_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_profile_reports_gpu_stage_timings_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_profile_reports_gpu_stage_timings_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -293,8 +249,8 @@ fn explicit_cuda_profile_reports_gpu_stage_timings_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_region_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_region_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -335,8 +291,8 @@ fn explicit_cuda_region_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_scaled_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_scaled_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -373,8 +329,8 @@ fn explicit_cuda_scaled_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_rgb8_request_returns_resident_surface_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_rgb8_request_returns_resident_surface_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -453,8 +409,8 @@ fn explicit_cuda_rgba_requests_reach_runtime_boundary() {
 }
 
 #[test]
-fn explicit_cuda_rgb8_region_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_rgb8_region_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -495,8 +451,8 @@ fn explicit_cuda_rgb8_region_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_scaled_rgb8_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_scaled_rgb8_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -533,8 +489,8 @@ fn explicit_cuda_scaled_rgb8_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_rgb8_region_scaled_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_rgb8_region_scaled_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -578,8 +534,8 @@ fn explicit_cuda_rgb8_region_scaled_surface_matches_host_when_runtime_required()
 }
 
 #[test]
-fn explicit_cuda_gray16_and_rgb16_requests_return_resident_surfaces_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_gray16_and_rgb16_requests_return_resident_surfaces_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -634,8 +590,8 @@ fn explicit_cuda_gray16_and_rgb16_requests_return_resident_surfaces_when_runtime
 }
 
 #[test]
-fn explicit_cuda_rgba8_and_rgba16_requests_return_resident_surfaces_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_rgba8_and_rgba16_requests_return_resident_surfaces_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -744,8 +700,8 @@ fn explicit_cuda_16bit_and_rgba_region_scaled_requests_reach_runtime_boundary() 
 }
 
 #[test]
-fn explicit_cuda_16bit_and_rgba_region_scaled_surfaces_match_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_16bit_and_rgba_region_scaled_surfaces_match_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -850,8 +806,8 @@ fn explicit_cuda_irreversible_97_requests_reach_runtime_boundary() {
 }
 
 #[test]
-fn explicit_cuda_irreversible_97_surfaces_match_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_irreversible_97_surfaces_match_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -935,8 +891,8 @@ fn explicit_cuda_refinement_fixture_request_reaches_runtime_boundary() {
 }
 
 #[test]
-fn explicit_cuda_refinement_fixture_surface_matches_oracle_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_refinement_fixture_surface_matches_oracle_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -958,8 +914,8 @@ fn explicit_cuda_refinement_fixture_surface_matches_oracle_when_runtime_required
 }
 
 #[test]
-fn explicit_cuda_refinement_fixture_profile_reports_refine_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_refinement_fixture_profile_reports_refine_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -980,8 +936,8 @@ fn explicit_cuda_refinement_fixture_profile_reports_refine_when_runtime_required
 }
 
 #[test]
-fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_runtime_required() {
-    if !runtime_required() {
+fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_cuda_runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -1011,8 +967,8 @@ fn explicit_cpu_staged_cuda_api_marks_cpu_upload_residency_when_runtime_required
 }
 
 #[test]
-fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_region_scaled_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -1056,8 +1012,8 @@ fn explicit_cuda_region_scaled_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn explicit_cuda_download_respects_padded_stride_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -1084,14 +1040,6 @@ fn explicit_cuda_download_respects_padded_stride_when_runtime_required() {
         assert_eq!(&downloaded[start..start + row_bytes], expected_row);
         assert_eq!(&downloaded[start + row_bytes..start + stride], &[0xCD; 5]);
     }
-}
-
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
-
-fn strict_cuda_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT").is_some()
 }
 
 fn assert_cpu_staged_cuda_surface(surface: &signinum_j2k_cuda::Surface) {
@@ -1158,7 +1106,7 @@ fn submit_to_device_auto_does_not_initialize_cuda_runtime() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn explicit_cuda_submissions_reuse_session_runtime_when_required() {
-    if !runtime_required() || !strict_cuda_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -1270,8 +1218,8 @@ fn auto_region_scaled_surface_matches_host_decode() {
 }
 
 #[test]
-fn tile_batch_region_cuda_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn tile_batch_region_cuda_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -1319,8 +1267,8 @@ fn tile_batch_region_cuda_surface_matches_host_when_runtime_required() {
 }
 
 #[test]
-fn tile_batch_region_scaled_cuda_surface_matches_host_when_runtime_required() {
-    if !runtime_required() || !strict_cuda_required() {
+fn tile_batch_region_scaled_cuda_surface_matches_host_when_cuda_runtime_required() {
+    if !cuda_runtime_required() || !cuda_htj2k_strict_required() {
         return;
     }
 
@@ -1442,9 +1390,9 @@ fn decode_tiles_to_device_explicit_cuda_rgb8_batch_matches_host_bytes() {
         BackendRequest::Cuda,
     ) {
         Ok(surfaces) => surfaces,
-        Err(Error::CudaUnavailable) if !runtime_required() => return,
+        Err(Error::CudaUnavailable) if !cuda_runtime_required() => return,
         #[cfg(feature = "cuda-runtime")]
-        Err(Error::CudaRuntime { .. }) if !runtime_required() => return,
+        Err(Error::CudaRuntime { .. }) if !cuda_runtime_required() => return,
         Err(error) => panic!("strict CUDA RGB8 batch decode failed: {error}"),
     };
 
@@ -1488,9 +1436,9 @@ fn decode_tiles_to_device_explicit_cuda_rgba8_batch_matches_host_bytes() {
         BackendRequest::Cuda,
     ) {
         Ok(surfaces) => surfaces,
-        Err(Error::CudaUnavailable) if !runtime_required() => return,
+        Err(Error::CudaUnavailable) if !cuda_runtime_required() => return,
         #[cfg(feature = "cuda-runtime")]
-        Err(Error::CudaRuntime { .. }) if !runtime_required() => return,
+        Err(Error::CudaRuntime { .. }) if !cuda_runtime_required() => return,
         Err(error) => panic!("strict CUDA Rgba8 batch decode failed: {error}"),
     };
 

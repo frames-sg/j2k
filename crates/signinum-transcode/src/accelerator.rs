@@ -6,16 +6,23 @@
 //! direct DCT-grid to one-level wavelet projection, while the scalar path
 //! remains the default oracle and fallback.
 
+use core::fmt;
+
 use crate::dct53_2d::Dwt53TwoDimensional;
 use crate::dct97_2d::Dwt97TwoDimensional;
+use crate::dct_grid::validate_dct_block_grid;
+use crate::reversible53::{
+    reversible_lift_53_high_at, reversible_lift_53_i32, reversible_lift_53_low_at,
+};
 use rayon::prelude::*;
-pub use signinum_j2k_native::{
-    IrreversibleQuantizationSubbandScales, J2kSubBandType, PreencodedHtj2k97CodeBlock,
-    PreencodedHtj2k97CompactCodeBlock, PreencodedHtj2k97CompactComponent,
-    PreencodedHtj2k97CompactImage, PreencodedHtj2k97CompactResolution,
-    PreencodedHtj2k97CompactSubband, PreencodedHtj2k97Component, PreencodedHtj2k97Resolution,
-    PreencodedHtj2k97Subband, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image, PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+pub use signinum_j2k::{
+    EncodedHtJ2kCodeBlock, IrreversibleQuantizationSubbandScales, J2kSubBandType,
+    PreencodedHtj2k97CodeBlock, PreencodedHtj2k97CompactCodeBlock,
+    PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
+    PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
+    PreencodedHtj2k97Component, PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
 };
 use signinum_jpeg::transcode::idct_islow_block;
 
@@ -200,6 +207,36 @@ pub struct Dwt97BatchStageTimings {
     pub readback_us: u128,
 }
 
+/// Error returned by accelerated transcode stage backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscodeStageError {
+    /// The job shape, options, or environment are outside what this backend
+    /// supports.
+    Unsupported(&'static str),
+    /// The backend failed while executing the stage.
+    Backend(String),
+    /// The device or runtime backing this accelerator is unavailable.
+    DeviceUnavailable,
+}
+
+impl fmt::Display for TranscodeStageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported(reason) => f.write_str(reason),
+            Self::Backend(reason) => f.write_str(reason),
+            Self::DeviceUnavailable => f.write_str("accelerator device is unavailable"),
+        }
+    }
+}
+
+impl std::error::Error for TranscodeStageError {}
+
+impl From<&'static str> for TranscodeStageError {
+    fn from(reason: &'static str) -> Self {
+        Self::Unsupported(reason)
+    }
+}
+
 /// Optional backend for SIMD, GPU, or other accelerated transform stages.
 pub trait DctToWaveletStageAccelerator {
     /// Whether this accelerator wants same-geometry 9/7 batch jobs offered.
@@ -224,6 +261,12 @@ pub trait DctToWaveletStageAccelerator {
         false
     }
 
+    /// Whether this accelerator wants the compact i16 preencoded HTJ2K batch
+    /// hook offered before the owned preencoded hook.
+    fn supports_htj2k97_compact_preencoded_batch(&self) -> bool {
+        self.supports_htj2k97_i16_preencoded_batch()
+    }
+
     /// Optionally compute the direct DCT-grid to one-level reversible integer
     /// 5/3 projection.
     ///
@@ -233,7 +276,7 @@ pub trait DctToWaveletStageAccelerator {
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         _job: DctGridToReversibleDwt53Job<'_>,
-    ) -> Result<Option<ReversibleDwt53FirstLevel>, &'static str> {
+    ) -> Result<Option<ReversibleDwt53FirstLevel>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -245,7 +288,7 @@ pub trait DctToWaveletStageAccelerator {
     fn dct_grid_to_reversible_dwt53_batch(
         &mut self,
         _jobs: &[DctGridToReversibleDwt53Job<'_>],
-    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -256,7 +299,7 @@ pub trait DctToWaveletStageAccelerator {
     fn dct_grid_to_dwt53(
         &mut self,
         _job: DctGridToDwt53Job<'_>,
-    ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt53TwoDimensional<f64>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -267,7 +310,7 @@ pub trait DctToWaveletStageAccelerator {
     fn dct_grid_to_dwt97(
         &mut self,
         _job: DctGridToDwt97Job<'_>,
-    ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt97TwoDimensional<f64>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -279,7 +322,7 @@ pub trait DctToWaveletStageAccelerator {
     fn dct_grid_to_dwt97_batch(
         &mut self,
         _jobs: &[DctGridToDwt97Job<'_>],
-    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -292,7 +335,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -305,7 +348,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -318,7 +361,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -332,7 +375,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, &'static str> {
+    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -347,7 +390,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, &'static str> {
+    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -361,7 +404,7 @@ pub trait DctToWaveletStageAccelerator {
         &mut self,
         _groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         _options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, &'static str> {
+    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, TranscodeStageError> {
         Ok(None)
     }
 
@@ -420,7 +463,7 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
-    ) -> Result<Option<ReversibleDwt53FirstLevel>, &'static str> {
+    ) -> Result<Option<ReversibleDwt53FirstLevel>, TranscodeStageError> {
         self.attempts = self.attempts.saturating_add(1);
         let output = reversible_dwt53_first_level_rayon(job)?;
         self.dispatches = self.dispatches.saturating_add(1);
@@ -430,7 +473,7 @@ impl DctToWaveletStageAccelerator for RayonReversibleDwt53Accelerator {
     fn dct_grid_to_reversible_dwt53_batch(
         &mut self,
         jobs: &[DctGridToReversibleDwt53Job<'_>],
-    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
         self.batch_attempts = self.batch_attempts.saturating_add(1);
         let mut output = Vec::with_capacity(jobs.len());
         for job in jobs {
@@ -568,25 +611,8 @@ fn validate_reversible_grid(
     width: usize,
     height: usize,
 ) -> Result<(), &'static str> {
-    let expected_blocks = block_cols
-        .checked_mul(block_rows)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-    let covered_width = block_cols
-        .checked_mul(8)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-    let covered_height = block_rows
-        .checked_mul(8)
-        .ok_or(REVERSIBLE_DWT53_UNSUPPORTED_GRID)?;
-
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(REVERSIBLE_DWT53_UNSUPPORTED_GRID);
-    }
-    Ok(())
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
+        .map_err(|_| REVERSIBLE_DWT53_UNSUPPORTED_GRID)
 }
 
 fn vertical_low_53_i32_at(
@@ -597,37 +623,9 @@ fn vertical_low_53_i32_at(
     x: usize,
     low_idx: usize,
 ) -> i32 {
-    let even_idx = low_idx * 2;
-    let current = component_sample_i32(block_samples, block_cols, width, height, x, even_idx);
-    if height < 2 {
-        return current;
-    }
-
-    if height.is_multiple_of(2) {
-        let right = vertical_high_53_i32_at(block_samples, block_cols, width, height, x, low_idx);
-        if low_idx == 0 {
-            return current + floor_div_i32(right + 1, 2);
-        }
-        let left =
-            vertical_high_53_i32_at(block_samples, block_cols, width, height, x, low_idx - 1);
-        return current + floor_div_i32(left + right + 2, 4);
-    }
-
-    let high_len = height / 2;
-    if high_len == 0 {
-        return current;
-    }
-    let left = if low_idx > 0 {
-        vertical_high_53_i32_at(block_samples, block_cols, width, height, x, low_idx - 1)
-    } else {
-        vertical_high_53_i32_at(block_samples, block_cols, width, height, x, 0)
-    };
-    let right = if low_idx < high_len {
-        vertical_high_53_i32_at(block_samples, block_cols, width, height, x, low_idx)
-    } else {
-        left
-    };
-    current + floor_div_i32(left + right + 2, 4)
+    reversible_lift_53_low_at(height, low_idx, |y| {
+        component_sample_i32(block_samples, block_cols, width, height, x, y)
+    })
 }
 
 fn vertical_high_53_i32_at(
@@ -638,20 +636,9 @@ fn vertical_high_53_i32_at(
     x: usize,
     high_idx: usize,
 ) -> i32 {
-    let odd_idx = high_idx * 2 + 1;
-    let current = component_sample_i32(block_samples, block_cols, width, height, x, odd_idx);
-    let left = component_sample_i32(block_samples, block_cols, width, height, x, odd_idx - 1);
-    if height.is_multiple_of(2) && odd_idx + 1 == height {
-        return current - left;
-    }
-
-    let right_idx = if odd_idx + 1 < height {
-        odd_idx + 1
-    } else {
-        height - 1
-    };
-    let right = component_sample_i32(block_samples, block_cols, width, height, x, right_idx);
-    current - floor_div_i32(left + right, 2)
+    reversible_lift_53_high_at(height, high_idx, |y| {
+        component_sample_i32(block_samples, block_cols, width, height, x, y)
+    })
 }
 
 fn component_sample_i32(
@@ -669,41 +656,6 @@ fn component_sample_i32(
     let block_idx = block_y * block_cols + block_x;
     let local_idx = (y % 8) * 8 + (x % 8);
     block_samples[block_idx][local_idx]
-}
-
-fn reversible_lift_53_i32(values: &mut [i32]) {
-    let n = values.len();
-    if n < 2 {
-        return;
-    }
-
-    if n.is_multiple_of(2) {
-        for i in (1..n - 1).step_by(2) {
-            values[i] -= floor_div_i32(values[i - 1] + values[i + 1], 2);
-        }
-        values[n - 1] -= values[n - 2];
-
-        values[0] += floor_div_i32(values[1] + 1, 2);
-        for i in (2..n).step_by(2) {
-            values[i] += floor_div_i32(values[i - 1] + values[i + 1] + 2, 4);
-        }
-        return;
-    }
-
-    let last_even = n - 1;
-    for i in (1..n).step_by(2) {
-        let right = values.get(i + 1).copied().unwrap_or(values[last_even]);
-        values[i] -= floor_div_i32(values[i - 1] + right, 2);
-    }
-    for i in (0..n).step_by(2) {
-        let left = if i > 0 { values[i - 1] } else { values[1] };
-        let right = values.get(i + 1).copied().unwrap_or(left);
-        values[i] += floor_div_i32(left + right + 2, 4);
-    }
-}
-
-fn floor_div_i32(numerator: i32, denominator: i32) -> i32 {
-    numerator.div_euclid(denominator)
 }
 
 #[cfg(test)]
@@ -844,6 +796,21 @@ mod ground_truth_tests {
             let signal: Vec<i32> = (0..n).map(|_| next_sample(&mut state)).collect();
             let mut lifted = signal.clone();
             reversible_lift_53_i32(&mut lifted);
+            let lifted_low: Vec<i32> = lifted.iter().step_by(2).copied().collect();
+            let lifted_high: Vec<i32> = lifted.iter().skip(1).step_by(2).copied().collect();
+            let (low, high) = ref_53_forward(&signal);
+            assert_eq!(lifted_low, low, "low band mismatch for n={n}");
+            assert_eq!(lifted_high, high, "high band mismatch for n={n}");
+        }
+    }
+
+    #[test]
+    fn reversible_lift_53_shared_helper_matches_canonical_formula_1d() {
+        let mut state = 0x5a53_5a53_5a53_5a53u64;
+        for n in [2usize, 3, 4, 5, 8, 9, 16, 17, 31, 32, 65] {
+            let signal: Vec<i32> = (0..n).map(|_| next_sample(&mut state)).collect();
+            let mut lifted = signal.clone();
+            crate::reversible53::reversible_lift_53_i32(&mut lifted);
             let lifted_low: Vec<i32> = lifted.iter().step_by(2).copied().collect();
             let lifted_high: Vec<i32> = lifted.iter().skip(1).step_by(2).copied().collect();
             let (low, high) = ref_53_forward(&signal);

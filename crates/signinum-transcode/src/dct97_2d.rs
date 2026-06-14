@@ -5,11 +5,10 @@
 //! The production float path performs a separable 8x8 IDCT into a reusable
 //! spatial plane, then applies the separable single-level 9/7 transform.
 
-use core::f64::consts::PI;
-use core::fmt;
-use std::sync::LazyLock;
-
 use rayon::prelude::*;
+
+use crate::dct_grid::{high_len, idct8_basis, idct8_basis_table, low_len, validate_dct_block_grid};
+pub use crate::DctGridError as Dct97GridError;
 
 const ALPHA: f64 = -1.586_134_342_059_924;
 const BETA: f64 = -0.052_980_118_572_961;
@@ -39,60 +38,6 @@ pub struct Dwt97TwoDimensional<T> {
     /// Height of vertically high-pass bands.
     pub high_height: usize,
 }
-
-/// Error returned when a DCT block grid cannot cover the requested component.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Dct97GridError {
-    block_count: usize,
-    block_cols: usize,
-    block_rows: usize,
-    width: usize,
-    height: usize,
-}
-
-impl Dct97GridError {
-    /// Number of supplied 8x8 DCT blocks.
-    #[must_use]
-    pub const fn block_count(self) -> usize {
-        self.block_count
-    }
-
-    /// Declared block columns.
-    #[must_use]
-    pub const fn block_cols(self) -> usize {
-        self.block_cols
-    }
-
-    /// Declared block rows.
-    #[must_use]
-    pub const fn block_rows(self) -> usize {
-        self.block_rows
-    }
-
-    /// Requested component width.
-    #[must_use]
-    pub const fn width(self) -> usize {
-        self.width
-    }
-
-    /// Requested component height.
-    #[must_use]
-    pub const fn height(self) -> usize {
-        self.height
-    }
-}
-
-impl fmt::Display for Dct97GridError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "DCT grid has {} blocks for {}x{} grid covering requested {}x{} samples",
-            self.block_count, self.block_cols, self.block_rows, self.width, self.height
-        )
-    }
-}
-
-impl std::error::Error for Dct97GridError {}
 
 /// Scratch storage for repeated DCT-grid to 9/7 transform calls.
 #[derive(Debug, Default)]
@@ -473,43 +418,6 @@ fn linearized_97_split_strided_into(
     }
 }
 
-fn idct8_basis(sample_idx: usize, freq: usize) -> f64 {
-    debug_assert!(sample_idx < 8);
-    debug_assert!(freq < 8);
-
-    idct8_basis_table()[sample_idx][freq]
-}
-
-fn idct8_basis_table() -> &'static [[f64; 8]; 8] {
-    static BASIS: LazyLock<[[f64; 8]; 8]> = LazyLock::new(|| {
-        let mut basis = [[0.0; 8]; 8];
-        for (sample_idx, row) in basis.iter_mut().enumerate() {
-            for (freq, value) in row.iter_mut().enumerate() {
-                *value = idct8_basis_uncached(sample_idx, freq);
-            }
-        }
-        basis
-    });
-    &BASIS
-}
-
-fn idct8_basis_uncached(sample_idx: usize, freq: usize) -> f64 {
-    let scale = if freq == 0 {
-        (1.0_f64 / 8.0).sqrt()
-    } else {
-        (2.0_f64 / 8.0).sqrt()
-    };
-    scale * (((sample_idx as f64 + 0.5) * freq as f64 * PI) / 8.0).cos()
-}
-
-fn low_len(sample_len: usize) -> usize {
-    sample_len.div_ceil(2)
-}
-
-fn high_len(sample_len: usize) -> usize {
-    sample_len / 2
-}
-
 fn validate_grid(
     block_count: usize,
     block_cols: usize,
@@ -517,25 +425,7 @@ fn validate_grid(
     width: usize,
     height: usize,
 ) -> Result<(), Dct97GridError> {
-    let expected_blocks = block_cols.saturating_mul(block_rows);
-    let covered_width = block_cols.saturating_mul(8);
-    let covered_height = block_rows.saturating_mul(8);
-    if block_count != expected_blocks
-        || width == 0
-        || height == 0
-        || width > covered_width
-        || height > covered_height
-    {
-        return Err(Dct97GridError {
-            block_count,
-            block_cols,
-            block_rows,
-            width,
-            height,
-        });
-    }
-
-    Ok(())
+    validate_dct_block_grid(block_count, block_cols, block_rows, width, height)
 }
 
 #[cfg(test)]
@@ -546,6 +436,8 @@ struct Dwt97OneDimensional {
 
 #[cfg(test)]
 mod tests {
+    use core::f64::consts::PI;
+
     use super::*;
 
     fn assert_all_close(values: &[f64], expected: f64, epsilon: f64) {

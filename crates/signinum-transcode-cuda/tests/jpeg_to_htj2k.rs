@@ -12,23 +12,25 @@
 #![cfg(feature = "cuda-runtime")]
 
 use signinum_j2k_native::{DecodeSettings, Image};
+use signinum_test_support::{cuda_runtime_required, jpeg_baseline_420_16x16};
 use signinum_transcode::{
     JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
-
 #[test]
 fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
-    let jpeg = include_bytes!("fixtures/conformance/baseline_420_16x16.jpg");
-    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let jpeg = jpeg_baseline_420_16x16();
+    let inputs = vec![
+        JpegTileBatchInput {
+            bytes: jpeg.as_slice(),
+        };
+        4
+    ];
     let options = JpegToHtj2kOptions::lossy_97();
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();

@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use signinum_core::{
-    copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceSurface, PixelFormat,
+    copy_tight_pixels_to_strided_output, BackendKind, BufferError, DeviceMemoryRange,
+    DeviceSurface, ExecutionStats, PixelFormat,
 };
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::CudaDeviceBuffer;
@@ -83,21 +84,16 @@ impl CudaSurface<'_> {
 }
 
 /// Residency of a decoded J2K CUDA adapter surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SurfaceResidency {
     /// Pixels are stored in host memory.
+    #[default]
     Host,
     /// Pixels were produced directly by a CUDA codestream decode path.
     CudaResidentDecode,
     /// Pixels were decoded on CPU and uploaded into a CUDA buffer.
     CpuStagedCudaUpload,
-}
-
-impl Default for SurfaceResidency {
-    fn default() -> Self {
-        Self::Host
-    }
 }
 
 /// Host- or CUDA-backed decoded surface.
@@ -341,6 +337,18 @@ impl DeviceSurface for Surface {
         self.backend
     }
 
+    fn residency(&self) -> signinum_core::SurfaceResidency {
+        match self.residency {
+            SurfaceResidency::Host => signinum_core::SurfaceResidency::Host,
+            SurfaceResidency::CudaResidentDecode => {
+                signinum_core::SurfaceResidency::CudaResidentDecode
+            }
+            SurfaceResidency::CpuStagedCudaUpload => {
+                signinum_core::SurfaceResidency::CpuStagedCudaUpload
+            }
+        }
+    }
+
     fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
@@ -351,6 +359,37 @@ impl DeviceSurface for Surface {
 
     fn byte_len(&self) -> usize {
         self.pitch_bytes * self.dimensions.1 as usize
+    }
+
+    fn execution_stats(&self) -> ExecutionStats {
+        ExecutionStats {
+            kernel_dispatches: self.stats.total as u64,
+            ..ExecutionStats::default()
+        }
+    }
+
+    fn memory_range(&self) -> Option<DeviceMemoryRange> {
+        match &self.storage {
+            Storage::Host(_) => None,
+            #[cfg(feature = "cuda-runtime")]
+            Storage::Cuda(buffer) => Some(DeviceMemoryRange::new(
+                BackendKind::Cuda,
+                buffer.device_ptr(),
+                0,
+                self.byte_len(),
+            )),
+            #[cfg(feature = "cuda-runtime")]
+            Storage::CudaRange {
+                buffer,
+                offset,
+                len,
+            } => Some(DeviceMemoryRange::new(
+                BackendKind::Cuda,
+                buffer.device_ptr(),
+                *offset,
+                *len,
+            )),
+        }
     }
 }
 

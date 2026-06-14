@@ -9,8 +9,8 @@ use std::sync::Arc;
 #[cfg(feature = "cuda-runtime")]
 use signinum_core::BackendKind;
 use signinum_core::{
-    BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode, ImageDecodeDevice,
-    ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
+    submit_ready_device, BackendRequest, DecodeOutcome, Downscale, ImageCodec, ImageDecode,
+    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
 };
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::{
@@ -25,8 +25,6 @@ use signinum_j2k::{
     adapter::device_plan::{DeviceDecodePlan, DeviceDecodeRequest},
     J2kDecoder as CpuDecoder, J2kError, J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
-#[cfg(feature = "cuda-runtime")]
-use signinum_j2k_native::J2kDirectBandId;
 use signinum_j2k_native::{
     DecodeSettings, DecoderContext as NativeDecoderContext, Image as NativeImage,
 };
@@ -42,7 +40,8 @@ use crate::{
 };
 #[cfg(feature = "cuda-runtime")]
 use crate::{
-    CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kTransform, CudaSurfaceStats, SurfaceResidency,
+    CudaHtj2kBandId, CudaHtj2kIdwtStep, CudaHtj2kStoreStep, CudaHtj2kTransform, CudaSurfaceStats,
+    SurfaceResidency,
 };
 
 #[cfg(feature = "cuda-runtime")]
@@ -51,6 +50,9 @@ const CUDA_HTJ2K_KERNELS_NOT_READY: &str =
 #[cfg(feature = "cuda-runtime")]
 const CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED: &str =
     "strict CUDA HTJ2K resident decode currently accepts Gray8, Gray16, Rgb8, Rgba8, Rgb16, and Rgba16 output";
+#[cfg(feature = "cuda-runtime")]
+const CUDA_HTJ2K_PLAN_INVARIANT_FAILED: &str =
+    "strict CUDA HTJ2K resident decode plan has invalid internal ranges";
 #[cfg(feature = "cuda-runtime")]
 const CUDA_HTJ2K_STORE_UNSUPPORTED: &str =
     "strict CUDA HTJ2K resident decode requires a single grayscale store step";
@@ -176,14 +178,13 @@ impl<'a> J2kDecoder<'a> {
         let dims = self.inner.info().dimensions;
         let stride = dims.0 as usize * fmt.bytes_per_pixel();
         let mut out = vec![0u8; stride * dims.1 as usize];
-        if profile::gpu_route_profile_enabled() {
+        if signinum_profile::gpu_route_profile_enabled() {
             let request_s = format!("{backend:?}");
             let fmt_s = format!("{fmt:?}");
             let width_s = dims.0.to_string();
             let height_s = dims.1.to_string();
-            profile::emit_gpu_route_profile(
+            signinum_profile::emit_gpu_route_profile(
                 "j2k",
-                "gpu_route",
                 "cuda",
                 &[
                     ("op", "full"),
@@ -335,7 +336,6 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a batch of full HTJ2K images into CUDA-backed surfaces
     /// using an existing backend session.
-    #[cfg(feature = "cuda-runtime")]
     pub fn decode_batch_to_device_with_session(
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -347,7 +347,6 @@ impl<'a> J2kDecoder<'a> {
 
     /// Strictly decode a batch of full HTJ2K images into CUDA-backed surfaces
     /// and return one aggregate profile report for the shared batch.
-    #[cfg(feature = "cuda-runtime")]
     pub fn decode_batch_to_device_with_session_and_profile(
         inputs: &[&[u8]],
         fmt: PixelFormat,
@@ -435,8 +434,8 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_region_plan_with_profile(
+    /// Build a flat CUDA HTJ2K grayscale region decode plan and return stage timings.
+    pub fn build_cuda_htj2k_grayscale_region_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         roi: Rect,
@@ -483,8 +482,9 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
+    /// Build a flat reduced-resolution CUDA HTJ2K grayscale decode plan and
+    /// return stage timings.
+    pub fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         output_dimensions: (u32, u32),
@@ -529,8 +529,9 @@ impl<'a> J2kDecoder<'a> {
         Ok((cuda_plan, report))
     }
 
-    #[cfg(feature = "cuda-runtime")]
-    fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
+    /// Build a flat reduced-resolution CUDA HTJ2K grayscale region decode
+    /// plan and return stage timings.
+    pub fn build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
         scaled_roi: Rect,
@@ -658,7 +659,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -723,7 +724,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -795,7 +796,7 @@ impl<'a> J2kDecoder<'a> {
             mct_dimensions: native_plan.dimensions,
             bit_depths: native_plan.bit_depths,
             mct: native_plan.mct,
-            transform: CudaHtj2kTransform::from(native_plan.transform),
+            transform: CudaHtj2kTransform::from_native(native_plan.transform),
             payload,
             components,
             report,
@@ -887,7 +888,7 @@ impl<'a> J2kDecoder<'a> {
 
 #[cfg(feature = "cuda-runtime")]
 struct CudaCoefficientBand {
-    band_id: J2kDirectBandId,
+    band_id: CudaHtj2kBandId,
     buffer: CudaPooledDeviceBuffer,
 }
 
@@ -1337,9 +1338,9 @@ fn decode_grayscale_cuda_resident_surface_with_plan_profile(
                         bit_depth: u32::from(plan.bit_depth()),
                     },
                 ),
-                _ => {
-                    unreachable!("validated grayscale CUDA output format");
-                }
+                _ => Err(CudaError::InvalidArgument {
+                    message: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED.to_string(),
+                }),
             },
         )
         .map_err(cuda_error)?;
@@ -1702,7 +1703,7 @@ fn build_cuda_htj2k_color_plans_from_bytes_with_profile<'a>(
         mct_dimensions: native_plan.dimensions,
         bit_depths: native_plan.bit_depths,
         mct: native_plan.mct,
-        transform: CudaHtj2kTransform::from(native_plan.transform),
+        transform: CudaHtj2kTransform::from_native(native_plan.transform),
         payload,
         components,
         report,
@@ -1827,10 +1828,8 @@ fn finish_color_cuda_resident_batch_surfaces_with_rgb8_mct_store(
     let mut reports = Vec::with_capacity(prepared.len());
     let store_dispatches = store_stats.kernel_dispatches();
     let store_decode_dispatches = store_stats.decode_kernel_dispatches();
-    for (index, (mut prepared, surface_range)) in prepared
-        .into_iter()
-        .zip(surface_ranges.into_iter())
-        .enumerate()
+    for (index, (mut prepared, surface_range)) in
+        prepared.into_iter().zip(surface_ranges).enumerate()
     {
         let report_store_dispatches = if index == 0 { store_dispatches } else { 0 };
         let report_store_decode_dispatches = if index == 0 {
@@ -2227,9 +2226,9 @@ fn finish_color_cuda_resident_surface_with_component_work(
                         )
                     }
                 }
-                _ => {
-                    unreachable!("validated color CUDA output format");
-                }
+                _ => Err(CudaError::InvalidArgument {
+                    message: CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED.to_string(),
+                }),
             },
         )
         .map_err(cuda_error)?;
@@ -2406,6 +2405,16 @@ fn decode_region_scaled_to_cuda_resident_surface_impl(
     Err(Error::CudaUnavailable)
 }
 
+#[cfg(not(feature = "cuda-runtime"))]
+fn decode_batch_to_cuda_resident_surface_with_profile_control(
+    _inputs: &[&[u8]],
+    _session: &mut CudaSession,
+    _fmt: PixelFormat,
+    _collect_stage_timings: bool,
+) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
+    Err(Error::CudaUnavailable)
+}
+
 #[cfg(feature = "cuda-runtime")]
 fn decode_cuda_component_plan(
     context: &signinum_cuda_runtime::CudaContext,
@@ -2447,7 +2456,7 @@ fn split_htj2k_subband_decode_dispatches(kernel_dispatches: usize) -> (usize, us
     )
 }
 
-#[cfg(any(feature = "cuda-runtime", test))]
+#[cfg(feature = "cuda-runtime")]
 fn htj2k_batched_cleanup_dispatches(target_count: usize) -> usize {
     usize::from(target_count > 0)
 }
@@ -2457,7 +2466,7 @@ fn htj2k_batched_dequant_dispatches(target_count: usize) -> usize {
     usize::from(target_count > 0)
 }
 
-#[cfg(any(feature = "cuda-runtime", test))]
+#[cfg(feature = "cuda-runtime")]
 fn htj2k_batched_cleanup_dequant_dispatches(
     target_count: usize,
     fused_cleanup_dequant: bool,
@@ -2514,8 +2523,18 @@ fn decode_cuda_component_subbands_with_resources(
 
     for subband in plan.subbands() {
         let start = subband.code_block_start as usize;
-        let end = start + subband.code_block_count as usize;
-        let jobs = plan.code_blocks()[start..end]
+        let end = start.checked_add(subband.code_block_count as usize).ok_or(
+            Error::UnsupportedCudaRequest {
+                reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+            },
+        )?;
+        let code_blocks =
+            plan.code_blocks()
+                .get(start..end)
+                .ok_or(Error::UnsupportedCudaRequest {
+                    reason: CUDA_HTJ2K_PLAN_INVARIANT_FAILED,
+                })?;
+        let jobs = code_blocks
             .iter()
             .map(|block| cuda_code_block_job_from_plan_block(block, subband.width))
             .collect::<Result<Vec<_>, Error>>()?;
@@ -3153,7 +3172,7 @@ fn checked_area(width: u32, height: u32) -> Result<usize, Error> {
 #[cfg(feature = "cuda-runtime")]
 fn find_cuda_band(
     bands: &[CudaCoefficientBand],
-    band_id: J2kDirectBandId,
+    band_id: CudaHtj2kBandId,
 ) -> Result<&CudaCoefficientBand, Error> {
     bands
         .iter()
@@ -3636,10 +3655,9 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            self.decode_to_surface_impl(session, fmt, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            self.decode_to_surface_impl(session, fmt, backend)
+        }))
     }
 
     fn submit_region_to_device(
@@ -3650,10 +3668,9 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            self.decode_region_to_surface_impl(session, fmt, roi, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            self.decode_region_to_surface_impl(session, fmt, roi, backend)
+        }))
     }
 
     fn submit_scaled_to_device(
@@ -3664,10 +3681,9 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            self.decode_scaled_to_surface_impl(session, fmt, scale, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            self.decode_scaled_to_surface_impl(session, fmt, scale, backend)
+        }))
     }
 
     fn submit_region_scaled_to_device(
@@ -3679,10 +3695,9 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         validate_surface_request(backend)?;
-        session.record_submit();
-        Ok(ReadySubmission::from_result(
-            self.decode_region_scaled_to_surface_impl(session, fmt, roi, scale, backend),
-        ))
+        Ok(submit_ready_device(session, |session| {
+            self.decode_region_scaled_to_surface_impl(session, fmt, roi, scale, backend)
+        }))
     }
 }
 

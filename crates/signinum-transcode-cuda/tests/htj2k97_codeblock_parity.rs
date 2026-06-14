@@ -17,9 +17,7 @@ use signinum_transcode::htj2k97_codeblock_oracle::prequantized_component_from_dw
 use signinum_transcode::{JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator;
 
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
+use signinum_test_support::{cuda_runtime_required, jpeg_baseline_420_16x16};
 
 /// Deterministic small f64 DCT coefficients, varied per job by `salt`.
 fn make_blocks(block_cols: usize, block_rows: usize, salt: usize) -> Vec<[[f64; 8]; 8]> {
@@ -101,7 +99,7 @@ fn assert_coefficients_close(
 
 #[test]
 fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -182,7 +180,7 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
 
 #[test]
 fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -233,12 +231,17 @@ fn cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required() {
 
 #[test]
 fn cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
-    let jpeg = include_bytes!("fixtures/conformance/baseline_420_16x16.jpg");
-    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 2];
+    let jpeg = jpeg_baseline_420_16x16();
+    let inputs = vec![
+        JpegTileBatchInput {
+            bytes: jpeg.as_slice(),
+        };
+        2
+    ];
     let options = JpegToHtj2kOptions::lossy_97();
 
     let mut host_transcoder = JpegToHtj2kTranscoder::default();

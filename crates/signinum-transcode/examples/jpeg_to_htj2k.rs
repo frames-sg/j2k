@@ -5,11 +5,11 @@
 //! Run with:
 //! `cargo run -p signinum-transcode --example jpeg_to_htj2k`
 
+use signinum_test_support::JPEG_GRAYSCALE_8X8;
 use signinum_transcode::{jpeg_to_htj2k, JpegToHtj2kOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let jpeg = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-    let encoded = jpeg_to_htj2k(jpeg, &JpegToHtj2kOptions::lossless_53())?;
+    let encoded = jpeg_to_htj2k(JPEG_GRAYSCALE_8X8, &JpegToHtj2kOptions::lossless_53())?;
     let report = &encoded.report;
 
     assert!(!encoded.codestream.is_empty());

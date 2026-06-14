@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_core::{copy_tight_pixels_to_strided_output, BackendKind, DeviceSurface, PixelFormat};
+use signinum_core::{
+    copy_tight_pixels_to_strided_output, BackendKind, DeviceMemoryRange, DeviceSurface,
+    ExecutionStats, PixelFormat,
+};
 #[cfg(feature = "cuda-runtime")]
 use signinum_cuda_runtime::CudaDeviceBuffer;
 
@@ -16,12 +19,23 @@ pub(crate) enum Storage {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// CUDA JPEG decode path used to produce a surface.
+pub enum CudaJpegDecodePath {
+    /// Surface did not use a CUDA JPEG decode kernel or library path.
+    #[default]
+    None,
+    /// Surface was produced by Signinum-owned CUDA JPEG kernels.
+    OwnedCuda,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Dispatch counters and residency metadata for a CUDA JPEG surface.
 pub struct CudaSurfaceStats {
     pub(crate) kernel_dispatches: usize,
     pub(crate) copy_kernel_dispatches: usize,
     pub(crate) decode_kernel_dispatches: usize,
     pub(crate) hardware_decode: bool,
+    pub(crate) decode_path: CudaJpegDecodePath,
 }
 
 impl CudaSurfaceStats {
@@ -35,9 +49,19 @@ impl CudaSurfaceStats {
         self.copy_kernel_dispatches
     }
 
-    /// Number of nvJPEG decode dispatches used for the surface.
+    /// Number of decode kernel or library dispatches used for the surface.
     pub fn decode_kernel_dispatches(self) -> usize {
         self.decode_kernel_dispatches
+    }
+
+    /// CUDA JPEG decode path used for the surface.
+    pub fn decode_path(self) -> CudaJpegDecodePath {
+        self.decode_path
+    }
+
+    /// Whether the Signinum-owned CUDA JPEG decode path was used.
+    pub fn used_owned_cuda_decode(self) -> bool {
+        self.decode_path == CudaJpegDecodePath::OwnedCuda
     }
 
     /// Whether hardware JPEG decode was used.
@@ -141,6 +165,14 @@ impl DeviceSurface for Surface {
         self.backend
     }
 
+    fn residency(&self) -> signinum_core::SurfaceResidency {
+        match &self.storage {
+            Storage::Host(_) => signinum_core::SurfaceResidency::Host,
+            #[cfg(feature = "cuda-runtime")]
+            Storage::Cuda(_) => signinum_core::SurfaceResidency::CudaResidentDecode,
+        }
+    }
+
     fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
@@ -151,5 +183,25 @@ impl DeviceSurface for Surface {
 
     fn byte_len(&self) -> usize {
         self.pitch_bytes * self.dimensions.1 as usize
+    }
+
+    fn execution_stats(&self) -> ExecutionStats {
+        ExecutionStats {
+            kernel_dispatches: self.stats.kernel_dispatches as u64,
+            ..ExecutionStats::default()
+        }
+    }
+
+    fn memory_range(&self) -> Option<DeviceMemoryRange> {
+        match &self.storage {
+            Storage::Host(_) => None,
+            #[cfg(feature = "cuda-runtime")]
+            Storage::Cuda(buffer) => Some(DeviceMemoryRange::new(
+                BackendKind::Cuda,
+                buffer.device_ptr(),
+                0,
+                self.byte_len(),
+            )),
+        }
     }
 }

@@ -14,15 +14,22 @@
 // The NVIDIA columns show "n/a (not built)" unless this crate was compiled with
 // --features nvjpeg2000 on a host with nvcc + libnvjpeg + libnvjpeg2k.
 
+mod report_format;
+
 use std::{path::PathBuf, time::Instant};
 
+use report_format::{
+    csv_f64_or_blank, escape_csv as csv_escape, escape_json as json_escape, json_f64_or_null,
+};
+use signinum_j2k::IrreversibleQuantizationSubbandScales;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use signinum_j2k_cuda::CudaEncodeStageAccelerator;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 use signinum_j2k_native::J2kEncodeStageAccelerator;
-use signinum_j2k_native::{DecodeSettings, Image, IrreversibleQuantizationSubbandScales};
+use signinum_j2k_native::{DecodeSettings, Image};
 use signinum_nvidia_baseline::{
-    nvidia_decode_jpeg_rgb, psnr_u8, NvBaselineError, NvBaselineSession,
+    nvidia_decode_jpeg_rgb, psnr_u8, write_text_artifact, ycbcr_to_rgb_round_nearest,
+    NvBaselineError, NvBaselineSession,
 };
 use signinum_transcode::{
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kError, JpegToHtj2kOptions,
@@ -1137,7 +1144,7 @@ fn quality_summary(jpegs: &[JpegInput], codestreams: &[Vec<u8>]) -> Option<Quali
 
 fn best_psnr_and_mse(recon: &[u8], source_rgb: &[u8]) -> Option<(f64, RgbMseSummary)> {
     let direct = psnr_u8(recon, source_rgb);
-    let converted_rgb = ycbcr_to_rgb(recon);
+    let converted_rgb = ycbcr_to_rgb_round_nearest(recon);
     let converted = psnr_u8(&converted_rgb, source_rgb);
     match (direct, converted) {
         (Some(a), Some(b)) if a >= b => rgb_mse_summary(recon, source_rgb).map(|mse| (a, mse)),
@@ -1187,24 +1194,6 @@ fn psnr_from_mse(sum_sq: f64, samples: usize) -> Option<f64> {
     }
     let mse = sum_sq / samples as f64;
     Some(10.0 * (255.0f64 * 255.0 / mse).log10())
-}
-
-/// JFIF full-range YCbCr -> RGB, interleaved.
-fn ycbcr_to_rgb(ycbcr: &[u8]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(ycbcr.len());
-    for px in ycbcr.chunks_exact(3) {
-        let y = f32::from(px[0]);
-        let cb = f32::from(px[1]) - 128.0;
-        let cr = f32::from(px[2]) - 128.0;
-        rgb.push((y + 1.402 * cr).clamp(0.0, 255.0).round() as u8);
-        rgb.push(
-            (y - 0.344_136 * cb - 0.714_136 * cr)
-                .clamp(0.0, 255.0)
-                .round() as u8,
-        );
-        rgb.push((y + 1.772 * cb).clamp(0.0, 255.0).round() as u8);
-    }
-    rgb
 }
 
 #[allow(
@@ -1581,7 +1570,7 @@ fn write_artifacts(
     nvidia: &NvidiaResult,
 ) -> std::io::Result<()> {
     if let Some(path) = &config.csv_path {
-        std::fs::write(
+        write_text_artifact(
             path,
             csv_report(
                 jpegs,
@@ -1594,7 +1583,7 @@ fn write_artifacts(
         )?;
     }
     if let Some(path) = &config.json_path {
-        std::fs::write(
+        write_text_artifact(
             path,
             json_report(
                 config,
@@ -1618,13 +1607,13 @@ fn write_signinum_profile_artifacts(
     signinum: &SigninumResult,
 ) -> std::io::Result<()> {
     if let Some(path) = &config.csv_path {
-        std::fs::write(
+        write_text_artifact(
             path,
             signinum_profile_csv_report(jpegs, megapixels, scale, signinum),
         )?;
     }
     if let Some(path) = &config.json_path {
-        std::fs::write(
+        write_text_artifact(
             path,
             signinum_profile_json_report(config, jpegs, megapixels, scale, signinum),
         )?;
@@ -2029,42 +2018,11 @@ fn append_json_signinum_result(
 }
 
 fn json_optional_f64(value: Option<f64>) -> String {
-    value
-        .filter(|value| value.is_finite())
-        .map_or_else(|| "null".to_string(), |value| format!("{value:.8}"))
+    json_f64_or_null(value, 8)
 }
 
 fn csv_optional_f64(value: Option<f64>) -> String {
-    value
-        .filter(|value| value.is_finite())
-        .map_or_else(String::new, |value| format!("{value:.6}"))
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch < ' ' => {
-                use std::fmt::Write as _;
-                let _ = write!(escaped, "\\u{:04x}", ch as u32);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-fn csv_escape(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
+    csv_f64_or_blank(value, 6)
 }
 
 #[cfg(test)]

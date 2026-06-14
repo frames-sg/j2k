@@ -43,10 +43,6 @@ impl CudaSession {
         self.context.is_some()
     }
 
-    pub(crate) fn record_submit(&mut self) {
-        self.submissions = self.submissions.saturating_add(1);
-    }
-
     #[cfg(feature = "cuda-runtime")]
     pub(crate) fn cuda_context(&mut self) -> Result<CudaContext, Error> {
         if self.context.is_none() {
@@ -99,6 +95,25 @@ impl CudaSession {
         let pool = context.best_fit_buffer_pool();
         self.decode_batch_buffer_pool = Some(pool.clone());
         Ok(pool)
+    }
+}
+
+impl signinum_core::DeviceSubmitSession for CudaSession {
+    fn record_submit(&mut self) {
+        self.submissions = self.submissions.saturating_add(1);
+    }
+}
+
+impl signinum_core::AcceleratorSession for CudaSession {
+    fn backend_kind(&self) -> signinum_core::BackendKind {
+        signinum_core::BackendKind::Cuda
+    }
+
+    fn execution_stats(&self) -> signinum_core::ExecutionStats {
+        signinum_core::ExecutionStats {
+            submissions: self.submissions,
+            ..signinum_core::ExecutionStats::default()
+        }
     }
 }
 

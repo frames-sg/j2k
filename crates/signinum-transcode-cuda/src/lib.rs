@@ -24,7 +24,7 @@ use signinum_transcode::accelerator::{
     DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job,
     DctToWaveletStageAccelerator, Dwt97BatchStageTimings, Htj2k97CodeBlockOptions,
     PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups, PreencodedHtj2k97Component,
-    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
+    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, TranscodeStageError,
 };
 use signinum_transcode::dct53_2d::Dwt53TwoDimensional;
 use signinum_transcode::dct97_2d::Dwt97TwoDimensional;
@@ -39,6 +39,7 @@ const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
 const DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS: usize = 32;
 const DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES: usize = 224 * 224 * 32;
+const DISABLE_COMPACT_PREENCODED_ENV: &str = "SIGNINUM_CUDA_DISABLE_COMPACT_PREENCODED";
 
 /// Error returned by the CUDA transcode accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,15 +53,6 @@ pub enum CudaTranscodeError {
 }
 
 impl CudaTranscodeError {
-    /// Convert into the static message required by the accelerator trait.
-    #[must_use]
-    pub const fn as_static_str(self) -> &'static str {
-        match self {
-            Self::CudaUnavailable => CUDA_UNAVAILABLE,
-            Self::UnsupportedJob(reason) | Self::Kernel(reason) => reason,
-        }
-    }
-
     /// Whether Auto mode may recover from this error by using the scalar
     /// fallback (`Ok(None)`). Hard kernel failures propagate as `Err`.
     #[cfg(feature = "cuda-runtime")]
@@ -71,7 +63,20 @@ impl CudaTranscodeError {
 
 impl fmt::Display for CudaTranscodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_static_str())
+        match self {
+            Self::CudaUnavailable => f.write_str(CUDA_UNAVAILABLE),
+            Self::UnsupportedJob(reason) | Self::Kernel(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl From<CudaTranscodeError> for TranscodeStageError {
+    fn from(error: CudaTranscodeError) -> Self {
+        match error {
+            CudaTranscodeError::CudaUnavailable => Self::DeviceUnavailable,
+            CudaTranscodeError::UnsupportedJob(reason) => Self::Unsupported(reason),
+            CudaTranscodeError::Kernel(reason) => Self::Backend(reason.to_string()),
+        }
     }
 }
 
@@ -109,6 +114,8 @@ pub struct CudaDctToWaveletStageAccelerator {
     htj2k97_codeblock_batch_dispatches: usize,
     last_dwt97_batch_stage_timings: Option<Dwt97BatchStageTimings>,
     resident_ht_encode: bool,
+    #[cfg(feature = "cuda-runtime")]
+    session: Option<cuda::CudaTranscodeSession>,
 }
 
 impl CudaDctToWaveletStageAccelerator {
@@ -124,23 +131,21 @@ impl CudaDctToWaveletStageAccelerator {
     /// packetization.
     #[must_use]
     pub const fn new_explicit_resident_ht_encode() -> Self {
-        Self {
-            resident_ht_encode: true,
-            ..Self::with_mode(CudaDispatchMode::Explicit, 0)
-        }
+        let mut accelerator = Self::with_mode(CudaDispatchMode::Explicit, 0);
+        accelerator.resident_ht_encode = true;
+        accelerator
     }
 
     /// Create an accelerator that falls back to the scalar oracle for small or
     /// unsupported jobs.
     #[must_use]
     pub const fn for_auto() -> Self {
-        Self {
-            min_auto_reversible_batch_jobs: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS,
-            min_auto_reversible_batch_samples: DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES,
-            min_auto_dwt97_batch_jobs: DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS,
-            min_auto_dwt97_batch_samples: DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES,
-            ..Self::with_mode(CudaDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES)
-        }
+        let mut accelerator = Self::with_mode(CudaDispatchMode::Auto, DEFAULT_AUTO_MIN_SAMPLES);
+        accelerator.min_auto_reversible_batch_jobs = DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_JOBS;
+        accelerator.min_auto_reversible_batch_samples = DEFAULT_AUTO_REVERSIBLE_BATCH_MIN_SAMPLES;
+        accelerator.min_auto_dwt97_batch_jobs = DEFAULT_AUTO_DWT97_BATCH_MIN_JOBS;
+        accelerator.min_auto_dwt97_batch_samples = DEFAULT_AUTO_DWT97_BATCH_MIN_SAMPLES;
+        accelerator
     }
 
     const fn with_mode(mode: CudaDispatchMode, min_auto_samples: usize) -> Self {
@@ -165,7 +170,15 @@ impl CudaDctToWaveletStageAccelerator {
             htj2k97_codeblock_batch_dispatches: 0,
             last_dwt97_batch_stage_timings: None,
             resident_ht_encode: false,
+            #[cfg(feature = "cuda-runtime")]
+            session: None,
         }
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn cuda_session(&mut self) -> &mut cuda::CudaTranscodeSession {
+        self.session
+            .get_or_insert_with(cuda::CudaTranscodeSession::default)
     }
 
     /// Override the reversible 5/3 batch thresholds used before Auto mode
@@ -268,9 +281,9 @@ impl CudaDctToWaveletStageAccelerator {
 
     /// Outcome for a job that CUDA cannot serve, resolved by dispatch mode.
     #[cfg(not(feature = "cuda-runtime"))]
-    fn unavailable<T>(&self) -> Result<Option<T>, &'static str> {
+    fn unavailable<T>(&self) -> Result<Option<T>, TranscodeStageError> {
         match self.mode {
-            CudaDispatchMode::Explicit => Err(CUDA_UNAVAILABLE),
+            CudaDispatchMode::Explicit => Err(TranscodeStageError::DeviceUnavailable),
             CudaDispatchMode::Auto => Ok(None),
         }
     }
@@ -279,11 +292,11 @@ impl CudaDctToWaveletStageAccelerator {
     /// Auto recovers from recoverable errors with `Ok(None)`; Explicit and hard
     /// kernel failures propagate as `Err`.
     #[cfg(feature = "cuda-runtime")]
-    fn recover<T>(&self, error: CudaTranscodeError) -> Result<Option<T>, &'static str> {
+    fn recover<T>(&self, error: CudaTranscodeError) -> Result<Option<T>, TranscodeStageError> {
         if self.mode == CudaDispatchMode::Auto && error.is_recoverable() {
             Ok(None)
         } else {
-            Err(error.as_static_str())
+            Err(error.into())
         }
     }
 }
@@ -344,10 +357,14 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         self.resident_ht_encode
     }
 
+    fn supports_htj2k97_compact_preencoded_batch(&self) -> bool {
+        self.resident_ht_encode && std::env::var_os(DISABLE_COMPACT_PREENCODED_ENV).is_none()
+    }
+
     fn dct_grid_to_reversible_dwt53(
         &mut self,
         job: DctGridToReversibleDwt53Job<'_>,
-    ) -> Result<Option<ReversibleDwt53FirstLevel>, &'static str> {
+    ) -> Result<Option<ReversibleDwt53FirstLevel>, TranscodeStageError> {
         self.reversible_dwt53_attempts = self.reversible_dwt53_attempts.saturating_add(1);
 
         if self.mode == CudaDispatchMode::Auto
@@ -364,7 +381,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_reversible_dwt53(job) {
+            match cuda::dispatch_reversible_dwt53(self.cuda_session(), job) {
                 Ok(output) => {
                     self.reversible_dwt53_dispatches =
                         self.reversible_dwt53_dispatches.saturating_add(1);
@@ -378,7 +395,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn dct_grid_to_reversible_dwt53_batch(
         &mut self,
         jobs: &[DctGridToReversibleDwt53Job<'_>],
-    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, &'static str> {
+    ) -> Result<Option<Vec<ReversibleDwt53FirstLevel>>, TranscodeStageError> {
         self.reversible_dwt53_batch_attempts =
             self.reversible_dwt53_batch_attempts.saturating_add(1);
 
@@ -400,7 +417,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_reversible_dwt53_batch(jobs) {
+            match cuda::dispatch_reversible_dwt53_batch(self.cuda_session(), jobs) {
                 Ok(output) => {
                     self.reversible_dwt53_batch_dispatches =
                         self.reversible_dwt53_batch_dispatches.saturating_add(1);
@@ -414,7 +431,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn dct_grid_to_dwt53(
         &mut self,
         job: DctGridToDwt53Job<'_>,
-    ) -> Result<Option<Dwt53TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt53TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt53_attempts = self.dwt53_attempts.saturating_add(1);
 
         if self.mode == CudaDispatchMode::Auto
@@ -444,7 +461,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn dct_grid_to_dwt97(
         &mut self,
         job: DctGridToDwt97Job<'_>,
-    ) -> Result<Option<Dwt97TwoDimensional<f64>>, &'static str> {
+    ) -> Result<Option<Dwt97TwoDimensional<f64>>, TranscodeStageError> {
         self.dwt97_attempts = self.dwt97_attempts.saturating_add(1);
 
         if self.mode == CudaDispatchMode::Auto
@@ -461,7 +478,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_dwt97(job) {
+            match cuda::dispatch_dwt97(self.cuda_session(), job) {
                 Ok(output) => {
                     self.dwt97_dispatches = self.dwt97_dispatches.saturating_add(1);
                     Ok(Some(output))
@@ -474,7 +491,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn dct_grid_to_dwt97_batch(
         &mut self,
         jobs: &[DctGridToDwt97Job<'_>],
-    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, &'static str> {
+    ) -> Result<Option<Vec<Dwt97TwoDimensional<f64>>>, TranscodeStageError> {
         self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
         self.last_dwt97_batch_stage_timings = None;
 
@@ -496,7 +513,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_dwt97_batch(jobs) {
+            match cuda::dispatch_dwt97_batch(self.cuda_session(), jobs) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.last_dwt97_batch_stage_timings = Some(timings);
@@ -511,7 +528,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PrequantizedHtj2k97Component>>, TranscodeStageError> {
         // The code-block path is a staged 9/7 batch plus quantization, so it
         // counts as both a 9/7 batch and a code-block batch (matching Metal).
         self.dwt97_batch_attempts = self.dwt97_batch_attempts.saturating_add(1);
@@ -537,7 +554,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_codeblock_batch(jobs, options) {
+            match cuda::dispatch_htj2k97_codeblock_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
@@ -554,7 +571,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -582,7 +599,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_preencoded_batch(jobs, options) {
+            match cuda::dispatch_htj2k97_preencoded_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
@@ -599,7 +616,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, &'static str> {
+    ) -> Result<Option<Vec<PreencodedHtj2k97Component>>, TranscodeStageError> {
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -628,7 +645,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_preencoded_i16_batch(jobs, options) {
+            match cuda::dispatch_htj2k97_preencoded_i16_batch(self.cuda_session(), jobs, options) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
@@ -645,7 +662,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         jobs: &[DctGridI16ToHtj2k97CodeBlockJob<'_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, &'static str> {
+    ) -> Result<Option<PreencodedHtj2k97CompactBatch>, TranscodeStageError> {
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -677,7 +694,11 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch(jobs, options) {
+            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch(
+                self.cuda_session(),
+                jobs,
+                options,
+            ) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches = self.dwt97_batch_dispatches.saturating_add(1);
                     self.htj2k97_codeblock_batch_dispatches =
@@ -694,7 +715,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, &'static str> {
+    ) -> Result<Option<Vec<Vec<PreencodedHtj2k97Component>>>, TranscodeStageError> {
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -725,7 +746,11 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_preencoded_i16_batch_groups(groups, options) {
+            match cuda::dispatch_htj2k97_preencoded_i16_batch_groups(
+                self.cuda_session(),
+                groups,
+                options,
+            ) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches =
                         self.dwt97_batch_dispatches.saturating_add(groups.len());
@@ -744,7 +769,7 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
         &mut self,
         groups: &[DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>],
         options: Htj2k97CodeBlockOptions,
-    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, &'static str> {
+    ) -> Result<Option<PreencodedHtj2k97CompactBatchGroups>, TranscodeStageError> {
         if !self.resident_ht_encode {
             return Ok(None);
         }
@@ -778,7 +803,11 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 
         #[cfg(feature = "cuda-runtime")]
         {
-            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch_groups(groups, options) {
+            match cuda::dispatch_htj2k97_compact_preencoded_i16_batch_groups(
+                self.cuda_session(),
+                groups,
+                options,
+            ) {
                 Ok((output, timings)) => {
                     self.dwt97_batch_dispatches =
                         self.dwt97_batch_dispatches.saturating_add(groups.len());
@@ -801,6 +830,9 @@ impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_htj2k97_codeblock_options() -> Htj2k97CodeBlockOptions {
         Htj2k97CodeBlockOptions {
@@ -829,7 +861,7 @@ mod tests {
         };
         let result = accelerator.dct_grid_to_reversible_dwt53(job);
         #[cfg(not(feature = "cuda-runtime"))]
-        assert_eq!(result, Err(CUDA_UNAVAILABLE));
+        assert_eq!(result, Err(TranscodeStageError::DeviceUnavailable));
         let _ = result;
         assert_eq!(accelerator.reversible_dwt53_attempts(), 1);
     }
@@ -861,6 +893,27 @@ mod tests {
             accelerator.dct_grid_to_dwt97_batch(&[]),
             Ok(Some(Vec::new()))
         );
+    }
+
+    #[test]
+    fn compact_preencoded_support_obeys_cuda_env_gate() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous = std::env::var_os(DISABLE_COMPACT_PREENCODED_ENV);
+        std::env::remove_var(DISABLE_COMPACT_PREENCODED_ENV);
+        let accelerator = CudaDctToWaveletStageAccelerator::new_explicit_resident_ht_encode();
+        assert!(accelerator.supports_htj2k97_i16_preencoded_batch());
+        assert!(accelerator.supports_htj2k97_compact_preencoded_batch());
+
+        std::env::set_var(DISABLE_COMPACT_PREENCODED_ENV, "1");
+        let accelerator = CudaDctToWaveletStageAccelerator::new_explicit_resident_ht_encode();
+        assert!(accelerator.supports_htj2k97_i16_preencoded_batch());
+        assert!(!accelerator.supports_htj2k97_compact_preencoded_batch());
+
+        if let Some(previous) = previous {
+            std::env::set_var(DISABLE_COMPACT_PREENCODED_ENV, previous);
+        } else {
+            std::env::remove_var(DISABLE_COMPACT_PREENCODED_ENV);
+        }
     }
 
     #[test]

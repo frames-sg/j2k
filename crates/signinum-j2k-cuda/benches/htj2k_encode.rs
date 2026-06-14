@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use signinum_core::BackendKind;
 use signinum_cuda_runtime::{
     CudaContext, CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob,
@@ -45,13 +45,19 @@ fn bench_host_input(c: &mut Criterion, pixels: &[u8], cuda_available: bool) {
         |b, pixels| {
             let options = cpu_htj2k_options();
             b.iter(|| {
-                let samples =
-                    J2kLosslessSamples::new(black_box(pixels), TILE_DIM, TILE_DIM, 1, 8, false)
-                        .expect("valid gray8 samples");
+                let samples = J2kLosslessSamples::new(
+                    std::hint::black_box(pixels),
+                    TILE_DIM,
+                    TILE_DIM,
+                    1,
+                    8,
+                    false,
+                )
+                .expect("valid gray8 samples");
                 let encoded =
                     encode_j2k_lossless(samples, &options).expect("CPU HTJ2K lossless encode");
                 assert_eq!(encoded.backend, BackendKind::Cpu);
-                black_box(encoded.codestream.len())
+                std::hint::black_box(encoded.codestream.len())
             });
         },
     );
@@ -63,13 +69,19 @@ fn bench_host_input(c: &mut Criterion, pixels: &[u8], cuda_available: bool) {
             |b, pixels| {
                 let options = cuda_htj2k_options();
                 b.iter(|| {
-                    let samples =
-                        J2kLosslessSamples::new(black_box(pixels), TILE_DIM, TILE_DIM, 1, 8, false)
-                            .expect("valid gray8 samples");
+                    let samples = J2kLosslessSamples::new(
+                        std::hint::black_box(pixels),
+                        TILE_DIM,
+                        TILE_DIM,
+                        1,
+                        8,
+                        false,
+                    )
+                    .expect("valid gray8 samples");
                     let encoded = encode_j2k_lossless_with_cuda(samples, &options)
                         .expect("CUDA HTJ2K lossless encode");
                     assert_eq!(encoded.backend, BackendKind::Cuda);
-                    black_box(encoded.codestream.len())
+                    std::hint::black_box(encoded.codestream.len())
                 });
             },
         );
@@ -94,7 +106,7 @@ fn bench_codeblock_microkernels(
                     .map(|job| {
                         let coefficients = contiguous_block(coefficients, *job);
                         encode_ht_code_block_scalar(
-                            black_box(coefficients),
+                            std::hint::black_box(coefficients),
                             job.width,
                             job.height,
                             job.total_bitplanes,
@@ -104,7 +116,7 @@ fn bench_codeblock_microkernels(
                         .len()
                     })
                     .sum::<usize>();
-                black_box(encoded_bytes)
+                std::hint::black_box(encoded_bytes)
             });
         },
     );
@@ -122,12 +134,12 @@ fn bench_codeblock_microkernels(
                 b.iter(|| {
                     let encoded = context
                         .encode_htj2k_codeblocks_with_resources(
-                            black_box(coefficients),
-                            black_box(jobs),
+                            std::hint::black_box(coefficients),
+                            std::hint::black_box(jobs),
                             &resources,
                         )
                         .expect("CUDA host-staged HTJ2K code-block encode");
-                    black_box(assert_cuda_batch(&encoded))
+                    std::hint::black_box(assert_cuda_batch(&encoded))
                 });
             },
         );
@@ -150,11 +162,11 @@ fn bench_codeblock_microkernels(
                         .encode_htj2k_codeblocks_resident_with_resources(
                             &resident_coefficients,
                             coefficients.len(),
-                            black_box(jobs),
+                            std::hint::black_box(jobs),
                             &resources,
                         )
                         .expect("CUDA resident HTJ2K code-block encode");
-                    black_box(assert_cuda_batch(&encoded))
+                    std::hint::black_box(assert_cuda_batch(&encoded))
                 });
             },
         );
@@ -179,7 +191,7 @@ fn bench_device_input_regions(
                     .map(|job| {
                         let block = gather_region(coefficients, *job);
                         encode_ht_code_block_scalar(
-                            black_box(&block),
+                            std::hint::black_box(&block),
                             job.width,
                             job.height,
                             job.total_bitplanes,
@@ -189,7 +201,7 @@ fn bench_device_input_regions(
                         .len()
                     })
                     .sum::<usize>();
-                black_box(encoded_bytes)
+                std::hint::black_box(encoded_bytes)
             });
         },
     );
@@ -213,11 +225,11 @@ fn bench_device_input_regions(
                         .encode_htj2k_codeblock_regions_resident_with_resources(
                             &resident_coefficients,
                             coefficients.len(),
-                            black_box(jobs),
+                            std::hint::black_box(jobs),
                             &resources,
                         )
                         .expect("CUDA resident strided HTJ2K encode");
-                    black_box(assert_cuda_batch(&encoded))
+                    std::hint::black_box(assert_cuda_batch(&encoded))
                 });
             },
         );

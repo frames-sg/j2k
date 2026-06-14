@@ -65,6 +65,14 @@ mod ffi {
             height: *mut c_int,
         ) -> c_int;
 
+        pub fn nvb_session_decode_jpeg_rgb_interleaved_timed(
+            session: *mut NvbSession,
+            jpeg: *const c_uchar,
+            jpeg_len: usize,
+            decode_ms: *mut f64,
+            width: *mut c_int,
+            height: *mut c_int,
+        ) -> c_int;
     }
 }
 
@@ -131,6 +139,17 @@ pub struct NvTranscodeResult {
     pub num_components: u32,
 }
 
+/// One reused-session NVIDIA JPEG decode timing.
+#[derive(Debug, Clone, Copy)]
+pub struct NvJpegDecodeTiming {
+    /// nvJPEG device-resident RGBI decode time, milliseconds.
+    pub decode_ms: f64,
+    /// Decoded image width.
+    pub width: u32,
+    /// Decoded image height.
+    pub height: u32,
+}
+
 /// Reusable NVIDIA baseline session.
 ///
 /// This keeps nvJPEG/nvJPEG2000 handles, CUDA stream/events, encode state, and
@@ -174,6 +193,44 @@ impl NvBaselineSession {
         #[cfg(nvbaseline_built)]
         {
             nvidia_transcode_with_session(self.raw.as_ptr(), jpeg)
+        }
+    }
+
+    /// Decode one JPEG to device-resident interleaved RGB and return the nvJPEG event time.
+    pub fn decode_jpeg_rgb_interleaved_timed(
+        &mut self,
+        jpeg: &[u8],
+    ) -> Result<NvJpegDecodeTiming, NvBaselineError> {
+        #[cfg(not(nvbaseline_built))]
+        {
+            let _ = jpeg;
+            Err(NvBaselineError::NotBuilt)
+        }
+        #[cfg(nvbaseline_built)]
+        {
+            let mut decode_ms = 0f64;
+            let mut width = 0i32;
+            let mut height = 0i32;
+            // SAFETY: `self.raw` owns a live NVIDIA baseline session and
+            // output pointers refer to initialized stack locals.
+            let rc = unsafe {
+                ffi::nvb_session_decode_jpeg_rgb_interleaved_timed(
+                    self.raw.as_ptr(),
+                    jpeg.as_ptr(),
+                    jpeg.len(),
+                    std::ptr::addr_of_mut!(decode_ms),
+                    std::ptr::addr_of_mut!(width),
+                    std::ptr::addr_of_mut!(height),
+                )
+            };
+            if rc != 0 {
+                return Err(NvBaselineError::Stage(rc));
+            }
+            Ok(NvJpegDecodeTiming {
+                decode_ms,
+                width: width as u32,
+                height: height as u32,
+            })
         }
     }
 
@@ -491,4 +548,70 @@ pub fn psnr_u8(a: &[u8], b: &[u8]) -> Option<f64> {
         return Some(f64::INFINITY);
     }
     Some(10.0 * (255.0f64 * 255.0 / mse).log10())
+}
+
+/// JFIF full-range YCbCr to interleaved RGB, rounded to the nearest channel value.
+#[must_use]
+pub fn ycbcr_to_rgb_round_nearest(ycbcr: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(ycbcr.len());
+    for px in ycbcr.chunks_exact(3) {
+        let y = f32::from(px[0]);
+        let cb = f32::from(px[1]) - 128.0;
+        let cr = f32::from(px[2]) - 128.0;
+        rgb.push(round_rgb_channel(y + 1.402 * cr));
+        rgb.push(round_rgb_channel(y - 0.344_136 * cb - 0.714_136 * cr));
+        rgb.push(round_rgb_channel(y + 1.772 * cb));
+    }
+    rgb
+}
+
+fn round_rgb_channel(value: f32) -> u8 {
+    value.clamp(0.0, 255.0).round() as u8
+}
+
+/// Writes a text artifact and creates parent directories when needed.
+///
+/// This keeps benchmark binaries consistent when output paths include nested
+/// artifact directories.
+pub fn write_text_artifact(
+    path: &std::path::Path,
+    contents: impl AsRef<str>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_text_artifact, ycbcr_to_rgb_round_nearest};
+
+    #[test]
+    fn ycbcr_to_rgb_rounds_to_nearest_channel_value() {
+        let rgb = ycbcr_to_rgb_round_nearest(&[100, 129, 128]);
+
+        assert_eq!(rgb, vec![100, 100, 102]);
+    }
+
+    #[test]
+    fn write_text_artifact_creates_parent_directories() {
+        let path = std::env::temp_dir()
+            .join(format!("signinum-nvb-artifact-{}", std::process::id()))
+            .join("nested")
+            .join("report.json");
+
+        if let Some(root) = path.parent().and_then(std::path::Path::parent) {
+            if root.exists() {
+                std::fs::remove_dir_all(root).expect("remove stale test artifact dir");
+            }
+        }
+
+        write_text_artifact(&path, "report").expect("write artifact");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read artifact"),
+            "report"
+        );
+    }
 }

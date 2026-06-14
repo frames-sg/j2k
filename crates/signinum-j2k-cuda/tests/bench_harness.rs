@@ -136,11 +136,7 @@ fn cuda_htj2k_decode_steady_state_uses_untimed_runtime_path() {
 
 #[test]
 fn cuda_runtime_exposes_untimed_htj2k_decode_helpers() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../signinum-cuda-runtime/src/lib.rs"
-    );
-    let runtime = std::fs::read_to_string(path).expect("read CUDA runtime");
+    let runtime = read_cuda_runtime_sources();
 
     for expected in [
         "pub fn synchronize(&self) -> Result<(), CudaError>",
@@ -150,15 +146,37 @@ fn cuda_runtime_exposes_untimed_htj2k_decode_helpers() {
         "pinned_upload_staging",
         "take_pinned_upload_staging",
         "recycle_pinned_upload_staging",
-        "fn launch_htj2k_decode_codeblocks_async",
-        "fn launch_j2k_dequantize_htj2k_codeblocks_async",
-        "fn launch_j2k_idwt_interleave_async",
+        "enum CudaLaunchMode",
+        "CudaLaunchMode::Async",
+        "fn launch_htj2k_decode_codeblocks(",
+        "fn launch_j2k_dequantize_htj2k_codeblocks(",
+        "fn launch_j2k_idwt_interleave(",
     ] {
         assert!(
             runtime.contains(expected),
             "CUDA runtime is missing steady-state decode helper `{expected}`"
         );
     }
+}
+
+fn read_cuda_runtime_sources() -> String {
+    let src_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../signinum-cuda-runtime/src");
+    let mut runtime = String::new();
+
+    for module in [
+        "lib.rs",
+        "context.rs",
+        "execution.rs",
+        "memory.rs",
+        "htj2k_decode.rs",
+        "j2k_decode.rs",
+    ] {
+        let path = format!("{src_dir}/{module}");
+        runtime.push_str(&std::fs::read_to_string(&path).expect("read CUDA runtime module"));
+        runtime.push('\n');
+    }
+
+    runtime
 }
 
 fn extract_function_body<'a>(source: &'a str, signature: &str) -> &'a str {

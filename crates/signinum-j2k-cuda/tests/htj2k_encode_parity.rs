@@ -1,7 +1,7 @@
 // Stage-level byte/value-exact parity tests: CUDA forward-encode stages vs.
 // native CPU reference.
 //
-// Every test gates on `runtime_required()` and returns early when
+// Every test gates on `cuda_runtime_required()` and returns early when
 // `SIGNINUM_REQUIRE_CUDA_RUNTIME` is absent.  They run for real only on the
 // CI CUDA runner.
 
@@ -32,9 +32,7 @@ use signinum_j2k_native::{DecodeSettings, Image};
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cuda-runtime")]
-fn runtime_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
-}
+use signinum_test_support::cuda_runtime_required;
 
 // ---------------------------------------------------------------------------
 // DWT sub-band reshape
@@ -140,7 +138,7 @@ fn assert_cuda_forward_dwt53_matches_native(width: u32, height: u32, num_levels:
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_forward_dwt53_matches_native_reference_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -161,7 +159,7 @@ fn cuda_forward_dwt53_matches_native_reference_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_forward_rct_matches_native_reference_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -195,7 +193,7 @@ fn cuda_forward_rct_matches_native_reference_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_quantize_reversible_matches_native_reference_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -241,7 +239,7 @@ fn cuda_quantize_reversible_matches_native_reference_when_required() {
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_deinterleave_matches_native_reference_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -366,13 +364,13 @@ fn cuda_runtime_required_implies_feature_compiled() {
     // Fail-closed: if CI asserts the CUDA runtime is required but the cuda-runtime
     // feature was not compiled in, every gated parity test would silently early-return
     // and masquerade as green. Make that misconfiguration a hard failure instead.
-    if std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some() {
-        assert!(
-            cfg!(feature = "cuda-runtime"),
-            "SIGNINUM_REQUIRE_CUDA_RUNTIME is set but the cuda-runtime feature is not compiled — \
-             gated CUDA parity tests would silently skip and false-green"
-        );
-    }
+    let cuda_runtime_required = std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some();
+    let cuda_runtime_feature_enabled = cfg!(feature = "cuda-runtime");
+    assert!(
+        !cuda_runtime_required || cuda_runtime_feature_enabled,
+        "SIGNINUM_REQUIRE_CUDA_RUNTIME is set but the cuda-runtime feature is not compiled — \
+         gated CUDA parity tests would silently skip and false-green"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +417,7 @@ fn cuda_runtime_required_implies_feature_compiled() {
 // codestream is byte-identical to native for signed and unsigned alike (asserted
 // for every cell). Signed-source decode round-trip is not a supported contract
 // in this repo (e.g. the recode path rejects signed sources outright). Tracked
-// as a native-decoder non-goal in docs/architecture.md and docs/wsi-decode-api.md.
+// as a native-decoder non-goal in the public support policy.
 
 // Cell descriptor used for matrix iteration and assertion messages.
 #[cfg(feature = "cuda-runtime")]
@@ -505,7 +503,7 @@ const MATRIX_LEVELS: &[u8] = &[0, 1, 3];
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_facade_byte_matches_native_across_matrix_when_required() {
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
@@ -682,13 +680,13 @@ fn cuda_facade_byte_matches_native_across_matrix_when_required() {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_runtime_required() {
-    use signinum_j2k_cuda::CudaEncodeStageAccelerator;
-    use signinum_j2k_native::{
+fn cuda_htj2k_tile_encode_hook_rejects_subsampling_with_typed_err_when_cuda_runtime_required() {
+    use signinum_j2k::{
         J2kEncodeStageAccelerator as _, J2kHtj2kTileEncodeJob, J2kPacketizationProgressionOrder,
     };
+    use signinum_j2k_cuda::CudaEncodeStageAccelerator;
 
-    if !runtime_required() {
+    if !cuda_runtime_required() {
         return;
     }
 
