@@ -1,7 +1,7 @@
 [package]
 name = "signinum-transcode-metal"
 description = "Metal acceleration for signinum-transcode coefficient-domain paths"
-version = "0.4.4"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,16 +19,19 @@ name = "signinum_transcode_metal"
 path = "src/lib.rs"
 
 [dependencies]
-signinum-transcode = { path = "../signinum-transcode", version = "=0.4.4" }
+signinum-transcode = { path = "../signinum-transcode", version = "=0.5.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.31"
-rayon = "1"
+metal = { workspace = true }
+rayon = { workspace = true }
+signinum-core = { path = "../signinum-core", version = "=0.5.0" }
+signinum-metal-support = { path = "../signinum-metal-support", version = "=0.5.0" }
 
 [dev-dependencies]
 criterion = { workspace = true }
-signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.4.4" }
-signinum-jpeg = { path = "../signinum-jpeg", version = "=0.4.4" }
+signinum-j2k-native = { path = "../signinum-j2k-native", version = "=0.5.0" }
+signinum-jpeg = { path = "../signinum-jpeg", version = "=0.5.0" }
+signinum-test-support = { path = "../signinum-test-support" }
 
 [[bench]]
 name = "dct97"
@@ -41,6 +44,7 @@ unreachable_pub = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"

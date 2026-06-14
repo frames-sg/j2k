@@ -2,15 +2,19 @@
 
 //! Metal runtime for direct DCT-grid to one-level wavelet projection.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use core::f32::consts::PI;
 use core::mem::{size_of, size_of_val};
 
 use metal::{
-    Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
+    Buffer, CommandQueue, ComputeCommandEncoderRef, ComputePipelineState, Device,
     MTLResourceOptions, MTLSize,
+};
+use signinum_metal_support::{
+    checked_buffer_contents_slice, checked_command_queue, shared_buffer_for_len,
+    shared_buffer_with_slice, system_default_device, MetalPipelineLoader,
 };
 use signinum_transcode::accelerator::{
     idct_blocks_to_signed_samples_rayon, DctGridToDwt53Job, DctGridToDwt97Job,
@@ -30,6 +34,7 @@ use crate::MetalTranscodeError;
 
 const SHADER_SOURCE: &str = include_str!("dct97.metal");
 const METAL_DCT_KERNEL_FAILED: &str = "Metal DCT wavelet projection failed";
+const METAL_DCT_RUNTIME_FAILED: &str = "Metal DCT wavelet runtime setup failed";
 const METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID: &str =
     "Metal reversible DCT 5/3 job has unsupported grid geometry";
 const METAL_DCT53_UNSUPPORTED_GRID: &str = "Metal DCT 5/3 job has unsupported grid geometry";
@@ -38,8 +43,7 @@ const DWT97_STAGED_MAX_AXIS: usize = 1024;
 const DWT97_STAGED_ROWS_PER_GROUP: usize = 2;
 const DWT97_STAGED_COLUMNS_PER_GROUP: usize = 4;
 const DWT97_STAGED_THREADS_PER_GROUP: u64 = 256;
-
-static METAL_RUNTIME: OnceLock<Result<Arc<MetalRuntime>, MetalTranscodeError>> = OnceLock::new();
+const DWT97_BLOCK_COEFFICIENTS: usize = 64;
 
 struct MetalRuntime {
     device: Device,
@@ -51,6 +55,59 @@ struct MetalRuntime {
     dct97_quantize_codeblocks_batch: ComputePipelineState,
     reversible53_project_band: ComputePipelineState,
     idct_basis: Buffer,
+}
+
+#[derive(Clone, Default)]
+/// Reusable Metal session for transcode-stage accelerator dispatch.
+pub struct MetalTranscodeSession {
+    device: Option<Device>,
+    runtime: Option<Arc<MetalRuntime>>,
+}
+
+impl MetalTranscodeSession {
+    /// Create a transcode session bound to an existing Metal device.
+    pub fn new(device: Device) -> Self {
+        Self {
+            device: Some(device),
+            runtime: None,
+        }
+    }
+
+    /// Create a transcode session bound to the system default Metal device.
+    pub fn system_default() -> Result<Self, MetalTranscodeError> {
+        system_default_device()
+            .map(Self::new)
+            .map_err(|_| MetalTranscodeError::MetalUnavailable)
+    }
+
+    fn runtime(&mut self) -> Result<Arc<MetalRuntime>, MetalTranscodeError> {
+        if let Some(runtime) = &self.runtime {
+            return Ok(Arc::clone(runtime));
+        }
+        let runtime = Arc::new(match &self.device {
+            Some(device) => MetalRuntime::new_with_device(device.clone())?,
+            None => MetalRuntime::new()?,
+        });
+        self.runtime = Some(Arc::clone(&runtime));
+        Ok(runtime)
+    }
+
+    fn with_runtime<R>(
+        &mut self,
+        f: impl FnOnce(&MetalRuntime) -> Result<R, MetalTranscodeError>,
+    ) -> Result<R, MetalTranscodeError> {
+        let runtime = self.runtime()?;
+        f(&runtime)
+    }
+}
+
+impl core::fmt::Debug for MetalTranscodeSession {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MetalTranscodeSession")
+            .field("device", &self.device.as_ref().map(|device| device.name()))
+            .field("runtime_initialized", &self.runtime.is_some())
+            .finish()
+    }
 }
 
 #[repr(C)]
@@ -134,11 +191,21 @@ struct MetalSparseRow {
     count: u32,
 }
 
+// SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
+unsafe impl signinum_core::GpuAbi for MetalSparseRow {
+    const NAME: &'static str = "MetalSparseRow";
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MetalWeightTap {
     sample_idx: u32,
     weight: f32,
+}
+
+// SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
+unsafe impl signinum_core::GpuAbi for MetalWeightTap {
+    const NAME: &'static str = "MetalWeightTap";
 }
 
 struct MetalSparseRows {
@@ -148,48 +215,26 @@ struct MetalSparseRows {
 
 impl MetalRuntime {
     fn new() -> Result<Self, MetalTranscodeError> {
-        let device = Device::system_default().ok_or(MetalTranscodeError::MetalUnavailable)?;
-        let options = CompileOptions::new();
-        let library = device
-            .new_library_with_source(SHADER_SOURCE, &options)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let function = library
-            .get_function("dct97_project_band", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let dct_project_band = device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let batch_function = library
-            .get_function("dct97_project_band_batch", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let dct_project_band_batch = device
-            .new_compute_pipeline_state_with_function(&batch_function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let row_lift_function = library
-            .get_function("dct97_idct_row_lift_batch", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let dct97_idct_row_lift_batch = device
-            .new_compute_pipeline_state_with_function(&row_lift_function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let column_lift_function = library
-            .get_function("dct97_column_lift_batch", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let dct97_column_lift_batch = device
-            .new_compute_pipeline_state_with_function(&column_lift_function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let quantize_codeblocks_function = library
-            .get_function("dct97_quantize_codeblocks_batch", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let dct97_quantize_codeblocks_batch = device
-            .new_compute_pipeline_state_with_function(&quantize_codeblocks_function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let reversible_function = library
-            .get_function("reversible53_project_band", None)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let reversible53_project_band = device
-            .new_compute_pipeline_state_with_function(&reversible_function)
-            .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))?;
-        let queue = device.new_command_queue();
+        let device = system_default_device().map_err(|_| MetalTranscodeError::MetalUnavailable)?;
+        Self::new_with_device(device)
+    }
+
+    fn new_with_device(device: Device) -> Result<Self, MetalTranscodeError> {
+        let loader = MetalPipelineLoader::new(&device, SHADER_SOURCE)
+            .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))?;
+        let pipeline = |name| {
+            loader
+                .pipeline(name)
+                .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))
+        };
+        let dct_project_band = pipeline("dct97_project_band")?;
+        let dct_project_band_batch = pipeline("dct97_project_band_batch")?;
+        let dct97_idct_row_lift_batch = pipeline("dct97_idct_row_lift_batch")?;
+        let dct97_column_lift_batch = pipeline("dct97_column_lift_batch")?;
+        let dct97_quantize_codeblocks_batch = pipeline("dct97_quantize_codeblocks_batch")?;
+        let reversible53_project_band = pipeline("reversible53_project_band")?;
+        let queue = checked_command_queue(&device)
+            .map_err(|_| MetalTranscodeError::Runtime(METAL_DCT_RUNTIME_FAILED))?;
         let idct_basis_data = idct8_basis_table();
         let idct_basis = device.new_buffer_with_data(
             idct_basis_data.as_ptr().cast(),
@@ -212,15 +257,18 @@ impl MetalRuntime {
 }
 
 pub(crate) fn dispatch_dct_grid_to_reversible_dwt53(
+    session: &mut MetalTranscodeSession,
     job: DctGridToReversibleDwt53Job<'_>,
 ) -> Result<ReversibleDwt53FirstLevel, MetalTranscodeError> {
-    let mut outputs = dispatch_dct_grid_to_reversible_dwt53_batch(core::slice::from_ref(&job))?;
+    let mut outputs =
+        dispatch_dct_grid_to_reversible_dwt53_batch(session, core::slice::from_ref(&job))?;
     outputs
         .pop()
         .ok_or(MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 
 pub(crate) fn dispatch_dct_grid_to_reversible_dwt53_batch(
+    session: &mut MetalTranscodeSession,
     jobs: &[DctGridToReversibleDwt53Job<'_>],
 ) -> Result<Vec<ReversibleDwt53FirstLevel>, MetalTranscodeError> {
     let Some(first) = jobs.first() else {
@@ -236,7 +284,7 @@ pub(crate) fn dispatch_dct_grid_to_reversible_dwt53_batch(
         block_samples.extend(idct_blocks_to_signed_samples_rayon(job.dequantized_blocks));
     }
 
-    with_runtime(|runtime| {
+    session.with_runtime(|runtime| {
         dispatch_reversible_dwt53_batch_with_runtime(
             runtime,
             &block_samples,
@@ -249,6 +297,7 @@ pub(crate) fn dispatch_dct_grid_to_reversible_dwt53_batch(
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt53(
+    session: &mut MetalTranscodeSession,
     job: DctGridToDwt53Job<'_>,
 ) -> Result<Dwt53TwoDimensional<f64>, MetalTranscodeError> {
     validate_grid(
@@ -259,7 +308,7 @@ pub(crate) fn dispatch_dct_grid_to_dwt53(
         job.height,
         METAL_DCT53_UNSUPPORTED_GRID,
     )?;
-    with_runtime(|runtime| dispatch_dct_grid_to_dwt53_with_runtime(runtime, job))
+    session.with_runtime(|runtime| dispatch_dct_grid_to_dwt53_with_runtime(runtime, job))
 }
 
 #[allow(clippy::similar_names)]
@@ -379,6 +428,7 @@ fn dispatch_reversible_dwt53_batch_with_runtime(
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt97(
+    session: &mut MetalTranscodeSession,
     job: DctGridToDwt97Job<'_>,
 ) -> Result<Dwt97TwoDimensional<f64>, MetalTranscodeError> {
     validate_grid(
@@ -389,20 +439,23 @@ pub(crate) fn dispatch_dct_grid_to_dwt97(
         job.height,
         METAL_DCT97_UNSUPPORTED_GRID,
     )?;
-    with_runtime(|runtime| dispatch_dct_grid_to_dwt97_with_runtime(runtime, job))
+    session.with_runtime(|runtime| dispatch_dct_grid_to_dwt97_with_runtime(runtime, job))
 }
 
 pub(crate) fn dispatch_dct_grid_to_dwt97_batch(
+    session: &mut MetalTranscodeSession,
     jobs: &[DctGridToDwt97Job<'_>],
 ) -> Result<(Vec<Dwt97TwoDimensional<f64>>, Dwt97BatchStageTimings), MetalTranscodeError> {
     let Some(first) = jobs.first() else {
         return Ok((Vec::new(), Dwt97BatchStageTimings::default()));
     };
     validate_dwt97_batch_geometry(jobs)?;
-    with_runtime(|runtime| dispatch_dct_grid_to_dwt97_batch_with_runtime(runtime, jobs, first))
+    session
+        .with_runtime(|runtime| dispatch_dct_grid_to_dwt97_batch_with_runtime(runtime, jobs, first))
 }
 
 pub(crate) fn dispatch_dct_grid_to_htj2k97_codeblock_batch(
+    session: &mut MetalTranscodeSession,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
     options: Htj2k97CodeBlockOptions,
 ) -> Result<(Vec<PrequantizedHtj2k97Component>, Dwt97BatchStageTimings), MetalTranscodeError> {
@@ -411,7 +464,7 @@ pub(crate) fn dispatch_dct_grid_to_htj2k97_codeblock_batch(
     };
     validate_dwt97_codeblock_batch_geometry(jobs)?;
     validate_htj2k97_codeblock_options(options)?;
-    with_runtime(|runtime| {
+    session.with_runtime(|runtime| {
         dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(runtime, jobs, first, options)
     })
 }
@@ -550,7 +603,7 @@ fn dispatch_dct_grid_to_dwt97_batch_staged_with_runtime(
     let mut timings = Dwt97BatchStageTimings::default();
 
     let pack_upload_start = Instant::now();
-    let blocks = dwt97_batch_blocks_buffer(&runtime.device, jobs);
+    let blocks = dwt97_batch_blocks_buffer(&runtime.device, jobs)?;
     let row_buffers = dwt97_staged_row_buffers(runtime, shape)?;
     let output_buffers =
         projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
@@ -602,7 +655,7 @@ fn dispatch_dct_grid_to_htj2k97_codeblock_batch_with_runtime(
     let mut timings = Dwt97BatchStageTimings::default();
 
     let pack_upload_start = Instant::now();
-    let blocks = dwt97_codeblock_batch_blocks_buffer(&runtime.device, jobs);
+    let blocks = dwt97_codeblock_batch_blocks_buffer(&runtime.device, jobs)?;
     let row_buffers = dwt97_staged_row_buffers(runtime, shape)?;
     let band_buffers =
         projection_batch_output_buffers(runtime, shape, METAL_DCT97_UNSUPPORTED_GRID)?;
@@ -940,17 +993,11 @@ fn dispatch_dwt97_quantize_codeblock_band(
         size_of::<Dct97QuantizeCodeblocksParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        MTLSize {
-            width: band.width as u64,
-            height: band.height as u64,
-            depth: u64::from(band.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+    dispatch_projection_threads(
+        encoder,
+        band.width as u64,
+        band.height as u64,
+        u64::from(band.batch_count),
     );
     Ok(())
 }
@@ -961,6 +1008,63 @@ fn staged_threads_per_group() -> MTLSize {
         height: 1,
         depth: 1,
     }
+}
+
+#[inline]
+fn projection_thread_grid(width: u64, height: u64, depth: u64) -> MTLSize {
+    MTLSize {
+        width,
+        height,
+        depth,
+    }
+}
+
+#[inline]
+fn projection_threads_per_group() -> MTLSize {
+    projection_thread_grid(16, 8, 1)
+}
+
+#[inline]
+fn projection_dispatch_sizes(width: u64, height: u64, depth: u64) -> (MTLSize, MTLSize) {
+    (
+        projection_thread_grid(width, height, depth),
+        projection_threads_per_group(),
+    )
+}
+
+#[inline]
+fn dispatch_projection_threads(
+    encoder: &ComputeCommandEncoderRef,
+    width: u64,
+    height: u64,
+    depth: u64,
+) {
+    let (threads, threads_per_group) = projection_dispatch_sizes(width, height, depth);
+    encoder.dispatch_threads(threads, threads_per_group);
+}
+
+#[inline]
+fn bind_projection_input_buffers(
+    encoder: &ComputeCommandEncoderRef,
+    blocks: &Buffer,
+    idct_basis: &Buffer,
+) {
+    encoder.set_buffer(0, Some(blocks), 0);
+    encoder.set_buffer(5, Some(idct_basis), 0);
+}
+
+#[inline]
+fn bind_projection_band_buffers(
+    encoder: &ComputeCommandEncoderRef,
+    x_weights: (&Buffer, &Buffer),
+    y_weights: (&Buffer, &Buffer),
+    output: &Buffer,
+) {
+    encoder.set_buffer(1, Some(x_weights.0), 0);
+    encoder.set_buffer(2, Some(x_weights.1), 0);
+    encoder.set_buffer(3, Some(y_weights.0), 0);
+    encoder.set_buffer(4, Some(y_weights.1), 0);
+    encoder.set_buffer(6, Some(output), 0);
 }
 
 #[derive(Clone, Copy)]
@@ -1035,7 +1139,7 @@ fn read_reversible_batch_outputs(
             shape.batch_count,
             METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
         )?,
-    );
+    )?;
     let hl = read_i32_buffer(
         buffers.hl,
         checked_batch_len(
@@ -1043,7 +1147,7 @@ fn read_reversible_batch_outputs(
             shape.batch_count,
             METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
         )?,
-    );
+    )?;
     let lh = read_i32_buffer(
         buffers.lh,
         checked_batch_len(
@@ -1051,7 +1155,7 @@ fn read_reversible_batch_outputs(
             shape.batch_count,
             METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
         )?,
-    );
+    )?;
     let hh = read_i32_buffer(
         buffers.hh,
         checked_batch_len(
@@ -1059,7 +1163,7 @@ fn read_reversible_batch_outputs(
             shape.batch_count,
             METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
         )?,
-    );
+    )?;
 
     let mut outputs = Vec::with_capacity(shape.batch_count);
     for idx in 0..shape.batch_count {
@@ -1103,7 +1207,7 @@ fn dispatch_projected_bands_with_runtime(
     let y_low_taps = buffer_with_slice(&runtime.device, &y_low.taps);
     let y_high_rows = buffer_with_slice(&runtime.device, &y_high.rows);
     let y_high_taps = buffer_with_slice(&runtime.device, &y_high.taps);
-    let blocks = dwt97_blocks_buffer(&runtime.device, job.blocks);
+    let blocks = dwt97_blocks_buffer(&runtime.device, job.blocks)?;
 
     let ll_buffer = output_buffer(&runtime.device, low_width * low_height);
     let hl_buffer = output_buffer(&runtime.device, high_width * low_height);
@@ -1114,8 +1218,7 @@ fn dispatch_projected_bands_with_runtime(
     command_buffer.set_label(job.label);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct_project_band);
-    encoder.set_buffer(0, Some(&blocks), 0);
-    encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
+    bind_projection_input_buffers(encoder, &blocks, &runtime.idct_basis);
 
     dispatch_band(
         encoder,
@@ -1175,10 +1278,10 @@ fn dispatch_projected_bands_with_runtime(
     command_buffer.wait_until_completed();
 
     Ok(ProjectedBands {
-        ll: read_f32_buffer(&ll_buffer, low_width * low_height),
-        hl: read_f32_buffer(&hl_buffer, high_width * low_height),
-        lh: read_f32_buffer(&lh_buffer, low_width * high_height),
-        hh: read_f32_buffer(&hh_buffer, high_width * high_height),
+        ll: read_f32_buffer(&ll_buffer, low_width * low_height)?,
+        hl: read_f32_buffer(&hl_buffer, high_width * low_height)?,
+        lh: read_f32_buffer(&lh_buffer, low_width * high_height)?,
+        hh: read_f32_buffer(&hh_buffer, high_width * high_height)?,
         low_width,
         low_height,
         high_width,
@@ -1196,7 +1299,7 @@ fn dispatch_projected_bands_batch_with_runtime(
     };
 
     let weights = projection_batch_weight_buffers(runtime, job)?;
-    let blocks = dwt97_batch_blocks_buffer(&runtime.device, job.jobs);
+    let blocks = dwt97_batch_blocks_buffer(&runtime.device, job.jobs)?;
     let outputs = projection_batch_output_buffers(runtime, shape, job.unsupported_grid)?;
 
     dispatch_projection_batch_bands(runtime, job, shape, &weights, &blocks, &outputs)?;
@@ -1364,8 +1467,7 @@ fn dispatch_projection_batch_bands(
     command_buffer.set_label(job.label);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.set_compute_pipeline_state(&runtime.dct_project_band_batch);
-    encoder.set_buffer(0, Some(blocks), 0);
-    encoder.set_buffer(5, Some(&runtime.idct_basis), 0);
+    bind_projection_input_buffers(encoder, blocks, &runtime.idct_basis);
 
     dispatch_band_batch(
         encoder,
@@ -1446,19 +1548,19 @@ fn read_projected_batch_outputs(
     let ll = shared_f32_slice(
         &buffers.ll,
         checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let hl = shared_f32_slice(
         &buffers.hl,
         checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let lh = shared_f32_slice(
         &buffers.lh,
         checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let hh = shared_f32_slice(
         &buffers.hh,
         checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
 
     let mut outputs = Vec::with_capacity(shape.batch_count);
     for idx in 0..shape.batch_count {
@@ -1487,19 +1589,19 @@ fn read_prequantized_97_codeblock_outputs(
     let ll = shared_i32_slice(
         &buffers.ll,
         checked_batch_len(shape.ll_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let hl = shared_i32_slice(
         &buffers.hl,
         checked_batch_len(shape.hl_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let lh = shared_i32_slice(
         &buffers.lh,
         checked_batch_len(shape.lh_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
     let hh = shared_i32_slice(
         &buffers.hh,
         checked_batch_len(shape.hh_len, shape.batch_count, unsupported_grid)?,
-    );
+    )?;
 
     let mut components = Vec::with_capacity(shape.batch_count);
     for (idx, job) in jobs.iter().enumerate() {
@@ -1631,15 +1733,6 @@ fn prequantized_subband_from_codeblock_buffer(
     })
 }
 
-fn with_runtime<R>(
-    f: impl FnOnce(&MetalRuntime) -> Result<R, MetalTranscodeError>,
-) -> Result<R, MetalTranscodeError> {
-    match METAL_RUNTIME.get_or_init(|| MetalRuntime::new().map(Arc::new)) {
-        Ok(runtime) => f(runtime),
-        Err(error) => Err(*error),
-    }
-}
-
 #[derive(Clone, Copy)]
 struct BandGeometry {
     width: u32,
@@ -1732,17 +1825,11 @@ fn dispatch_reversible_band(
         size_of::<Reversible53ProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: u64::from(geometry.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        u64::from(geometry.batch_count),
     );
 }
 
@@ -1764,27 +1851,17 @@ fn dispatch_band(
         band_width: geometry.band_width,
         band_height: geometry.band_height,
     };
-    encoder.set_buffer(1, Some(x_weights.0), 0);
-    encoder.set_buffer(2, Some(x_weights.1), 0);
-    encoder.set_buffer(3, Some(y_weights.0), 0);
-    encoder.set_buffer(4, Some(y_weights.1), 0);
-    encoder.set_buffer(6, Some(output), 0);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
     encoder.set_bytes(
         7,
         size_of::<DctProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: 1,
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        1,
     );
 }
 
@@ -1808,27 +1885,17 @@ fn dispatch_band_batch(
         band_height: geometry.band_height,
         output_stride: geometry.output_stride,
     };
-    encoder.set_buffer(1, Some(x_weights.0), 0);
-    encoder.set_buffer(2, Some(x_weights.1), 0);
-    encoder.set_buffer(3, Some(y_weights.0), 0);
-    encoder.set_buffer(4, Some(y_weights.1), 0);
-    encoder.set_buffer(6, Some(output), 0);
+    bind_projection_band_buffers(encoder, x_weights, y_weights, output);
     encoder.set_bytes(
         7,
         size_of::<DctBatchProjectionParams>() as u64,
         (&raw const params).cast(),
     );
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(geometry.band_width),
-            height: u64::from(geometry.band_height),
-            depth: u64::from(geometry.batch_count),
-        },
-        MTLSize {
-            width: 16,
-            height: 8,
-            depth: 1,
-        },
+    dispatch_projection_threads(
+        encoder,
+        u64::from(geometry.band_width),
+        u64::from(geometry.band_height),
+        u64::from(geometry.batch_count),
     );
 }
 
@@ -1957,35 +2024,11 @@ fn validate_dwt97_codeblock_batch_geometry(
 fn validate_htj2k97_codeblock_options(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<(), MetalTranscodeError> {
-    if options.bit_depth == 0 || options.guard_bits == 0 {
-        return Err(MetalTranscodeError::UnsupportedJob(
-            METAL_DCT97_UNSUPPORTED_GRID,
-        ));
-    }
-    if !options.irreversible_quantization_scale.is_finite()
-        || options.irreversible_quantization_scale <= 0.0
-    {
-        return Err(MetalTranscodeError::UnsupportedJob(
-            METAL_DCT97_UNSUPPORTED_GRID,
-        ));
-    }
-    let subband_scales = options.irreversible_quantization_subband_scales;
-    if [
-        subband_scales.low_low,
-        subband_scales.high_low,
-        subband_scales.low_high,
-        subband_scales.high_high,
-    ]
-    .iter()
-    .any(|scale| !scale.is_finite() || *scale <= 0.0)
-    {
-        return Err(MetalTranscodeError::UnsupportedJob(
-            METAL_DCT97_UNSUPPORTED_GRID,
-        ));
-    }
-    let _ = code_block_len_from_exp(options.code_block_width_exp)?;
-    let _ = code_block_len_from_exp(options.code_block_height_exp)?;
-    Ok(())
+    // Shared with CUDA so the two backends accept/reject identical options.
+    // Option failures keep their own message instead of the grid-geometry one.
+    signinum_transcode::htj2k97_codeblock_oracle::validate_htj2k97_codeblock_options(options)
+        .map(|_| ())
+        .map_err(MetalTranscodeError::UnsupportedJob)
 }
 
 fn code_block_len_from_exp(exp: u8) -> Result<usize, MetalTranscodeError> {
@@ -2045,67 +2088,106 @@ fn metal_sparse_rows(
     })
 }
 
-fn buffer_with_slice<T>(device: &Device, values: &[T]) -> Buffer {
-    if values.is_empty() {
-        return device.new_buffer(1, MTLResourceOptions::StorageModeShared);
-    }
-    device.new_buffer_with_data(
-        values.as_ptr().cast(),
-        size_of_val(values) as u64,
-        MTLResourceOptions::StorageModeShared,
-    )
+fn buffer_with_slice<T: signinum_core::GpuAbi>(device: &Device, values: &[T]) -> Buffer {
+    shared_buffer_with_slice(device, values)
 }
 
-fn dwt97_blocks_buffer(device: &Device, blocks: &[[[f64; 8]; 8]]) -> Buffer {
-    let value_count = blocks.len().saturating_mul(64);
+fn dwt97_blocks_buffer(
+    device: &Device,
+    blocks: &[[[f64; 8]; 8]],
+) -> Result<Buffer, MetalTranscodeError> {
+    let value_count = dwt97_block_value_count(blocks.len())?;
     let buffer = output_buffer(device, value_count);
-    write_dwt97_blocks_to_buffer(&buffer, blocks);
-    buffer
+    write_dwt97_blocks_to_buffer(&buffer, blocks)?;
+    Ok(buffer)
 }
 
-fn dwt97_batch_blocks_buffer(device: &Device, jobs: &[DctGridToDwt97Job<'_>]) -> Buffer {
-    let value_count = jobs
-        .iter()
-        .map(|job| job.blocks.len().saturating_mul(64))
-        .sum();
+fn dwt97_batch_blocks_buffer(
+    device: &Device,
+    jobs: &[DctGridToDwt97Job<'_>],
+) -> Result<Buffer, MetalTranscodeError> {
+    let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
     let buffer = output_buffer(device, value_count);
     let mut offset = 0;
     for job in jobs {
-        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks);
+        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks)?;
     }
     debug_assert_eq!(offset, value_count);
-    buffer
+    Ok(buffer)
 }
 
 fn dwt97_codeblock_batch_blocks_buffer(
     device: &Device,
     jobs: &[DctGridToHtj2k97CodeBlockJob<'_>],
-) -> Buffer {
-    let value_count = jobs
-        .iter()
-        .map(|job| job.blocks.len().saturating_mul(64))
-        .sum();
+) -> Result<Buffer, MetalTranscodeError> {
+    let value_count = dwt97_jobs_value_count(jobs.iter().map(|job| job.blocks.len()))?;
     let buffer = output_buffer(device, value_count);
     let mut offset = 0;
     for job in jobs {
-        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks);
+        offset += write_dwt97_blocks_to_buffer_at(&buffer, offset, job.blocks)?;
     }
     debug_assert_eq!(offset, value_count);
-    buffer
+    Ok(buffer)
 }
 
-fn write_dwt97_blocks_to_buffer(buffer: &Buffer, blocks: &[[[f64; 8]; 8]]) {
-    let written = write_dwt97_blocks_to_buffer_at(buffer, 0, blocks);
-    debug_assert_eq!(written, blocks.len().saturating_mul(64));
+fn dwt97_jobs_value_count(
+    mut block_counts: impl Iterator<Item = usize>,
+) -> Result<usize, MetalTranscodeError> {
+    block_counts.try_fold(0_usize, |total, block_count| {
+        let block_values = dwt97_block_value_count(block_count)?;
+        total
+            .checked_add(block_values)
+            .ok_or(MetalTranscodeError::UnsupportedJob(
+                METAL_DCT97_UNSUPPORTED_GRID,
+            ))
+    })
+}
+
+fn dwt97_block_value_count(block_count: usize) -> Result<usize, MetalTranscodeError> {
+    let value_count = block_count.checked_mul(DWT97_BLOCK_COEFFICIENTS).ok_or(
+        MetalTranscodeError::UnsupportedJob(METAL_DCT97_UNSUPPORTED_GRID),
+    )?;
+    value_count
+        .checked_mul(size_of::<f32>())
+        .ok_or(MetalTranscodeError::UnsupportedJob(
+            METAL_DCT97_UNSUPPORTED_GRID,
+        ))?;
+    Ok(value_count)
+}
+
+fn write_dwt97_blocks_to_buffer(
+    buffer: &Buffer,
+    blocks: &[[[f64; 8]; 8]],
+) -> Result<(), MetalTranscodeError> {
+    let written = write_dwt97_blocks_to_buffer_at(buffer, 0, blocks)?;
+    debug_assert_eq!(written, dwt97_block_value_count(blocks.len())?);
+    Ok(())
 }
 
 fn write_dwt97_blocks_to_buffer_at(
     buffer: &Buffer,
     start: usize,
     blocks: &[[[f64; 8]; 8]],
-) -> usize {
+) -> Result<usize, MetalTranscodeError> {
+    let value_count = dwt97_block_value_count(blocks.len())?;
+    let end = start
+        .checked_add(value_count)
+        .ok_or(MetalTranscodeError::UnsupportedJob(
+            METAL_DCT97_UNSUPPORTED_GRID,
+        ))?;
+    if end > buffer_f32_capacity(buffer) {
+        return Err(MetalTranscodeError::UnsupportedJob(
+            METAL_DCT97_UNSUPPORTED_GRID,
+        ));
+    }
+
     let mut offset = start;
+    // SAFETY: Metal ABI structs are repr(C) plain data matching shader layouts.
     unsafe {
+        // SAFETY: `buffer_f32_capacity` above proves every write from
+        // `start..end` is within the shared f32 buffer. The buffer is newly
+        // allocated by these packers and is not aliased for CPU writes while
+        // this function fills it.
         let values = buffer.contents().cast::<f32>();
         for block in blocks {
             for row in block {
@@ -2116,43 +2198,44 @@ fn write_dwt97_blocks_to_buffer_at(
             }
         }
     }
-    offset - start
+    Ok(offset - start)
+}
+
+fn buffer_f32_capacity(buffer: &Buffer) -> usize {
+    let element_size = size_of::<f32>() as u64;
+    usize::try_from(buffer.length() / element_size).unwrap_or(usize::MAX)
 }
 
 fn output_buffer(device: &Device, value_count: usize) -> Buffer {
-    device.new_buffer(
-        (value_count * size_of::<f32>()).max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    )
+    shared_buffer_for_len::<f32>(device, value_count)
 }
 
 fn output_i32_buffer(device: &Device, value_count: usize) -> Buffer {
-    device.new_buffer(
-        (value_count * size_of::<i32>()).max(1) as u64,
-        MTLResourceOptions::StorageModeShared,
-    )
+    shared_buffer_for_len::<i32>(device, value_count)
 }
 
-fn read_f32_buffer(buffer: &Buffer, value_count: usize) -> Vec<f64> {
-    f32_slice_to_f64(shared_f32_slice(buffer, value_count))
+fn read_f32_buffer(buffer: &Buffer, value_count: usize) -> Result<Vec<f64>, MetalTranscodeError> {
+    shared_f32_slice(buffer, value_count).map(f32_slice_to_f64)
 }
 
-fn read_i32_buffer(buffer: &Buffer, value_count: usize) -> Vec<i32> {
-    shared_i32_slice(buffer, value_count).to_vec()
+fn read_i32_buffer(buffer: &Buffer, value_count: usize) -> Result<Vec<i32>, MetalTranscodeError> {
+    shared_i32_slice(buffer, value_count).map(<[i32]>::to_vec)
 }
 
-fn shared_f32_slice(buffer: &Buffer, value_count: usize) -> &[f32] {
+fn shared_f32_slice(buffer: &Buffer, value_count: usize) -> Result<&[f32], MetalTranscodeError> {
     if value_count == 0 {
-        return &[];
+        return Ok(&[]);
     }
-    unsafe { core::slice::from_raw_parts(buffer.contents().cast::<f32>(), value_count) }
+    checked_buffer_contents_slice(buffer, 0, value_count)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 
-fn shared_i32_slice(buffer: &Buffer, value_count: usize) -> &[i32] {
+fn shared_i32_slice(buffer: &Buffer, value_count: usize) -> Result<&[i32], MetalTranscodeError> {
     if value_count == 0 {
-        return &[];
+        return Ok(&[]);
     }
-    unsafe { core::slice::from_raw_parts(buffer.contents().cast::<i32>(), value_count) }
+    checked_buffer_contents_slice(buffer, 0, value_count)
+        .map_err(|_| MetalTranscodeError::Kernel(METAL_DCT_KERNEL_FAILED))
 }
 
 fn f32_slice_to_f64(values: &[f32]) -> Vec<f64> {
@@ -2176,4 +2259,31 @@ fn idct8_basis(sample_idx: usize, freq: usize) -> f32 {
         (2.0_f32 / 8.0).sqrt()
     };
     scale * (((sample_idx as f32 + 0.5) * freq as f32 * PI) / 8.0).cos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_dispatch_sizes_use_16_by_8_threadgroups() {
+        let (threads, threadgroup) = projection_dispatch_sizes(5, 6, 7);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (5, 6, 7));
+        assert_eq!(
+            (threadgroup.width, threadgroup.height, threadgroup.depth),
+            (16, 8, 1)
+        );
+    }
+
+    #[test]
+    fn dwt97_block_value_count_rejects_overflow() {
+        assert_eq!(dwt97_block_value_count(2), Ok(128));
+        assert_eq!(
+            dwt97_block_value_count(usize::MAX),
+            Err(MetalTranscodeError::UnsupportedJob(
+                METAL_DCT97_UNSUPPORTED_GRID
+            ))
+        );
+    }
 }

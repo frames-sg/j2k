@@ -30,7 +30,26 @@ static REGION_SCALED_COLOR_PLAN_CACHE: OnceLock<
 > = OnceLock::new();
 
 #[cfg(test)]
-static REGION_SCALED_COLOR_PLAN_BUILDS: AtomicUsize = AtomicUsize::new(0);
+macro_rules! test_atomic_counter {
+    ($counter:ident, $reset:ident, $load:ident) => {
+        static $counter: AtomicUsize = AtomicUsize::new(0);
+
+        pub(crate) fn $reset() {
+            $counter.store(0, Ordering::Relaxed);
+        }
+
+        pub(crate) fn $load() -> usize {
+            $counter.load(Ordering::Relaxed)
+        }
+    };
+}
+
+#[cfg(test)]
+test_atomic_counter!(
+    REGION_SCALED_COLOR_PLAN_BUILDS,
+    reset_region_scaled_color_plan_builds_for_test,
+    region_scaled_color_plan_builds_for_test
+);
 #[cfg(test)]
 static REGION_SCALED_COLOR_PLAN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -42,22 +61,12 @@ pub(crate) fn region_scaled_color_plan_test_lock_for_test() -> std::sync::MutexG
 }
 
 #[cfg(test)]
-pub(crate) fn reset_region_scaled_color_plan_builds_for_test() {
-    REGION_SCALED_COLOR_PLAN_BUILDS.store(0, Ordering::Relaxed);
-}
-
-#[cfg(test)]
 pub(crate) fn reset_region_scaled_color_plan_cache_for_test() {
     if let Some(cache) = REGION_SCALED_COLOR_PLAN_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
             guard.clear();
         }
     }
-}
-
-#[cfg(test)]
-pub(crate) fn region_scaled_color_plan_builds_for_test() -> usize {
-    REGION_SCALED_COLOR_PLAN_BUILDS.load(Ordering::Relaxed)
 }
 
 enum PreparedRegionScaledDirectPlan {
@@ -76,18 +85,19 @@ pub(crate) fn decode_region_scaled_direct_to_surface(
     };
     execute_region_scaled_direct_plan(prepared, fmt)
 }
-
-pub(crate) fn decode_region_scaled_direct_to_surface_with_device(
+pub(crate) fn decode_region_scaled_direct_to_surface_with_session(
     input: &[u8],
     fmt: PixelFormat,
     roi: Rect,
     scale: Downscale,
-    device: &Device,
+    session: &crate::MetalBackendSession,
 ) -> Result<Option<Surface>, Error> {
-    let Some(prepared) = build_region_scaled_direct_plan(input, fmt, roi, scale)? else {
+    let Some(prepared) =
+        build_region_scaled_direct_plan_with_session(input, fmt, roi, scale, session)?
+    else {
         return Ok(None);
     };
-    execute_region_scaled_direct_plan_with_device(prepared, fmt, device)
+    execute_region_scaled_direct_plan_with_device(prepared, fmt, &session.device)
 }
 
 fn build_region_scaled_direct_plan(
@@ -107,6 +117,33 @@ fn build_region_scaled_direct_plan(
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
             Ok(Some(PreparedRegionScaledDirectPlan::Color(
                 build_region_scaled_direct_color_plan(input, roi, scale)?,
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn build_region_scaled_direct_plan_with_session(
+    input: &[u8],
+    fmt: PixelFormat,
+    roi: Rect,
+    scale: Downscale,
+    session: &crate::MetalBackendSession,
+) -> Result<Option<PreparedRegionScaledDirectPlan>, Error> {
+    match fmt {
+        PixelFormat::Gray8 | PixelFormat::Gray16 => {
+            match build_region_scaled_direct_gray_plan(input, roi, scale) {
+                Ok(plan) => Ok(Some(PreparedRegionScaledDirectPlan::Gray(plan))),
+                Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
+            Ok(Some(PreparedRegionScaledDirectPlan::Color(
+                (*build_region_scaled_direct_color_plan_cached_with_session(
+                    input, roi, scale, session,
+                )?)
+                .clone(),
             )))
         }
         _ => Ok(None),
@@ -391,6 +428,41 @@ fn build_region_scaled_direct_color_plan_cached(
     Ok(plan)
 }
 
+fn build_region_scaled_direct_color_plan_cached_with_session(
+    input: &[u8],
+    roi: Rect,
+    scale: Downscale,
+    session: &crate::MetalBackendSession,
+) -> Result<Arc<crate::compute::PreparedDirectColorPlan>, Error> {
+    let cache_key = region_scaled_color_plan_cache_key(input, roi, scale);
+    if let Some(plan) = cached_region_scaled_direct_color_plan_with_session(session, cache_key) {
+        return Ok(plan);
+    }
+
+    let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
+    store_region_scaled_direct_color_plan_with_session(session, cache_key, plan.clone());
+    Ok(plan)
+}
+
+fn cached_region_scaled_direct_color_plan_with_session(
+    session: &crate::MetalBackendSession,
+    key: u64,
+) -> Option<Arc<crate::compute::PreparedDirectColorPlan>> {
+    let guard = session.region_scaled_color_plan_cache.lock().ok()?;
+    guard.get(&key).cloned()
+}
+
+fn store_region_scaled_direct_color_plan_with_session(
+    session: &crate::MetalBackendSession,
+    key: u64,
+    plan: Arc<crate::compute::PreparedDirectColorPlan>,
+) {
+    if let Ok(mut guard) = session.region_scaled_color_plan_cache.lock() {
+        evict_one_region_scaled_color_plan_if_needed(&mut guard);
+        guard.insert(key, plan);
+    }
+}
+
 fn region_scaled_color_plan_cache_key(input: &[u8], roi: Rect, scale: Downscale) -> u64 {
     let mut hasher = DefaultHasher::new();
     input.len().hash(&mut hasher);
@@ -455,8 +527,22 @@ fn emit_region_scaled_color_plan_build_timings(
         let metric = plan_stage_metric(stage);
         let metric_kind = plan_stage_metric_kind(stage);
         let aggregation = plan_stage_aggregation(stage);
-        eprintln!(
-            "signinum_profile codec=j2k op=decode path=metal_cpu_hybrid_plan pipeline=decode_hybrid label={label} stage={stage} processor={processor} metric={metric} metric_kind={metric_kind} aggregation={aggregation} fmt=Rgb batch_count=1 elapsed_us={elapsed_us}"
+        signinum_profile::emit_profile_row_now(
+            "j2k",
+            "decode",
+            "metal_cpu_hybrid_plan",
+            &[
+                ("pipeline", "decode_hybrid".to_string()),
+                ("label", label.clone()),
+                ("stage", stage.to_string()),
+                ("processor", processor.to_string()),
+                ("metric", metric.to_string()),
+                ("metric_kind", metric_kind.to_string()),
+                ("aggregation", aggregation.to_string()),
+                ("fmt", "Rgb".to_string()),
+                ("batch_count", "1".to_string()),
+                ("elapsed_us", elapsed_us.to_string()),
+            ],
         );
     }
 }

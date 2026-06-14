@@ -4,7 +4,7 @@ use std::{
     cell::OnceCell,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use signinum_core::{BackendKind, BackendRequest, DeviceSubmission, Downscale, PixelFormat, Rect};
@@ -107,6 +107,12 @@ struct GroupedRequests {
     requests: Vec<QueuedRequest>,
 }
 
+fn batch_scheduler_invariant(message: &'static str) -> Error {
+    Error::MetalKernel {
+        message: format!("internal J2K Metal batch scheduler error: {message}"),
+    }
+}
+
 impl GroupedRequests {
     fn generic(requests: Vec<QueuedRequest>) -> Self {
         Self {
@@ -164,6 +170,14 @@ pub(crate) struct SessionState {
 #[derive(Clone, Default)]
 pub(crate) struct SharedSession(pub(crate) Arc<Mutex<SessionState>>);
 
+impl SharedSession {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, SessionState>, Error> {
+        self.0.lock().map_err(|_| Error::MetalStatePoisoned {
+            state: "J2K Metal session",
+        })
+    }
+}
+
 pub struct MetalSubmission {
     session: SharedSession,
     slot: usize,
@@ -174,7 +188,7 @@ impl DeviceSubmission for MetalSubmission {
     type Error = Error;
 
     fn wait(self) -> Result<Self::Output, Self::Error> {
-        let mut session = self.session.0.lock().expect("J2K Metal session");
+        let mut session = self.session.lock()?;
         flush_if_needed(&mut session);
         take_surface(&mut session, self.slot)
     }
@@ -186,7 +200,7 @@ pub(crate) fn queue_tile_request(
     fmt: PixelFormat,
     backend: BackendRequest,
     op: BatchOp,
-) -> MetalSubmission {
+) -> Result<MetalSubmission, Error> {
     queue_tile_request_shared(session, Arc::<[u8]>::from(input), fmt, backend, op)
 }
 
@@ -196,8 +210,8 @@ pub(crate) fn queue_tile_request_shared(
     fmt: PixelFormat,
     backend: BackendRequest,
     op: BatchOp,
-) -> MetalSubmission {
-    let mut state = session.shared.0.lock().expect("J2K Metal session");
+) -> Result<MetalSubmission, Error> {
+    let mut state = session.shared.lock()?;
     let slot = state.completed.len();
     state.completed.push(None);
     state.queued.push(QueuedRequest {
@@ -209,10 +223,10 @@ pub(crate) fn queue_tile_request_shared(
         max_image_dim: OnceCell::new(),
         input_fingerprint: OnceCell::new(),
     });
-    MetalSubmission {
+    Ok(MetalSubmission {
         session: session.shared.clone(),
         slot,
-    }
+    })
 }
 
 fn flush_if_needed(session: &mut SessionState) {
@@ -294,7 +308,7 @@ fn coalesce_distinct_full_grayscale_metal_requests(
             match request.fmt {
                 PixelFormat::Gray8 => gray8.push(request),
                 PixelFormat::Gray16 => gray16.push(request),
-                _ => unreachable!("candidate pixel format is restricted above"),
+                _ => batches.push(GroupedRequests::generic(vec![request])),
             }
         } else {
             batches.push(batch);
@@ -325,12 +339,14 @@ fn coalesce_distinct_region_scaled_direct_metal_requests(
                 .into_iter()
                 .next()
                 .expect("single-entry batch has request");
-            let format_idx = region_scaled_direct_format_index(request.fmt)
-                .expect("candidate pixel format is restricted above");
+            let Some(format_idx) = region_scaled_direct_format_index(request.fmt) else {
+                batches.push(GroupedRequests::generic(vec![request]));
+                continue;
+            };
             match request.backend {
                 BackendRequest::Metal => metal_by_format[format_idx].push(request),
                 BackendRequest::Auto => auto_by_format[format_idx].push(request),
-                _ => unreachable!("candidate backend is restricted above"),
+                _ => batches.push(GroupedRequests::generic(vec![request])),
             }
         } else {
             batches.push(batch);
@@ -424,7 +440,7 @@ fn coalesce_distinct_full_color_metal_requests(
                 PixelFormat::Rgb8 => rgb8.push(request),
                 PixelFormat::Rgba8 => rgba8.push(request),
                 PixelFormat::Rgb16 => rgb16.push(request),
-                _ => unreachable!("candidate pixel format is restricted above"),
+                _ => batches.push(GroupedRequests::generic(vec![request])),
             }
         } else {
             batches.push(batch);
@@ -1016,7 +1032,9 @@ fn decode_cpu_region_scaled_batch_inner(
     let mut outputs = Vec::with_capacity(requests.len());
     for request in requests {
         let BatchOp::RegionScaled { roi, scale } = request.op else {
-            unreachable!("candidate op is restricted above");
+            return Err(batch_scheduler_invariant(
+                "CPU region-scaled batch contains a non-region-scaled request",
+            ));
         };
         let dimensions = roi.scaled_covering(scale);
         let stride = dimensions.w as usize * fmt.bytes_per_pixel();
@@ -1025,23 +1043,22 @@ fn decode_cpu_region_scaled_batch_inner(
     }
 
     {
-        let mut jobs = requests
-            .iter()
-            .zip(outputs.iter_mut())
-            .map(|(request, out)| {
-                let BatchOp::RegionScaled { roi, scale } = request.op else {
-                    unreachable!("candidate op is restricted above");
-                };
-                let dimensions = roi.scaled_covering(scale);
-                TileRegionScaledDecodeJob {
-                    input: request.input.as_ref(),
-                    out: out.as_mut_slice(),
-                    stride: dimensions.w as usize * fmt.bytes_per_pixel(),
-                    roi,
-                    scale,
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut jobs = Vec::with_capacity(requests.len());
+        for (request, out) in requests.iter().zip(outputs.iter_mut()) {
+            let BatchOp::RegionScaled { roi, scale } = request.op else {
+                return Err(batch_scheduler_invariant(
+                    "CPU region-scaled job creation received a non-region-scaled request",
+                ));
+            };
+            let dimensions = roi.scaled_covering(scale);
+            jobs.push(TileRegionScaledDecodeJob {
+                input: request.input.as_ref(),
+                out: out.as_mut_slice(),
+                stride: dimensions.w as usize * fmt.bytes_per_pixel(),
+                roi,
+                scale,
+            });
+        }
         decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
             .map_err(|err| Error::Decode(err.source))?;
     }
@@ -1083,7 +1100,9 @@ fn decode_repeated_full_grayscale(
                 BackendRequest::Metal => {
                     decoder.decode_repeated_grayscale_direct_to_device(request.fmt, count)
                 }
-                _ => unreachable!("candidate backend is restricted above"),
+                _ => Err(batch_scheduler_invariant(
+                    "repeated grayscale batch contains an unsupported backend",
+                )),
             });
         Some(result)
     }
@@ -1194,7 +1213,9 @@ fn decode_repeated_region_scaled_direct_batch_prechecked(
     #[cfg(target_os = "macos")]
     {
         let BatchOp::RegionScaled { roi, scale } = first.op else {
-            unreachable!("prechecked region-scaled operation");
+            return Some(Err(batch_scheduler_invariant(
+                "repeated direct batch is missing its region-scaled operation",
+            )));
         };
         let result = match first.fmt {
             PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 => {
@@ -1246,13 +1267,19 @@ fn decode_distinct_region_scaled_direct_batch_inner(
 
     #[cfg(target_os = "macos")]
     {
-        let request_specs = requests
-            .iter()
-            .map(|request| match request.op {
-                BatchOp::RegionScaled { roi, scale } => (request.input.clone(), roi, scale),
-                _ => unreachable!("candidate op is restricted above"),
-            })
-            .collect::<Vec<_>>();
+        let mut request_specs = Vec::with_capacity(requests.len());
+        for request in requests {
+            match request.op {
+                BatchOp::RegionScaled { roi, scale } => {
+                    request_specs.push((request.input.clone(), roi, scale));
+                }
+                _ => {
+                    return Some(Err(batch_scheduler_invariant(
+                        "direct region-scaled batch contains a non-region-scaled request",
+                    )));
+                }
+            }
+        }
         let result = match first.fmt {
             PixelFormat::Gray8 | PixelFormat::Gray16 => {
                 crate::hybrid::decode_region_scaled_grayscale_batch_direct_to_device(
@@ -1266,7 +1293,9 @@ fn decode_distinct_region_scaled_direct_batch_inner(
                     first.fmt,
                 )
             }
-            _ => unreachable!("candidate pixel format is restricted above"),
+            _ => Err(batch_scheduler_invariant(
+                "direct region-scaled batch contains an unsupported pixel format",
+            )),
         };
         Some(result)
     }

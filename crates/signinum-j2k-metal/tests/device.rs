@@ -14,6 +14,8 @@ use signinum_j2k_metal::{
 };
 use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
 
+const UNSUPPORTED_RGBA16_REASON: &str = "J2K Metal does not support PixelFormat::Rgba16";
+
 fn fixture_rgb8() -> Vec<u8> {
     let pixels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
     let options = EncodeOptions {
@@ -439,7 +441,7 @@ fn decode_to_device_with_session_unsupported_rgba16_is_rejected() {
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
-            assert!(reason.contains("Rgba16"));
+            assert_eq!(reason, UNSUPPORTED_RGBA16_REASON);
         }
         Err(other) => panic!("unexpected explicit Metal session error: {other:?}"),
         Ok(surface) => panic!(
@@ -471,7 +473,7 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "submitted tile surfaces should stay queued until a wait flushes the session"
     );
@@ -489,7 +491,7 @@ fn submitted_full_grayscale_tiles_flush_as_one_device_batch() {
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "compatible queued grayscale tiles should flush through one repeated Metal batch"
     );
@@ -517,7 +519,7 @@ fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "auto submitted tile surfaces should stay queued until a wait flushes the session"
     );
@@ -528,7 +530,7 @@ fn submitted_auto_512_grayscale_tiles_flush_as_one_metal_batch() {
         assert_eq!(surface.dimensions(), (512, 512));
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "compatible auto grayscale tiles should flush through one repeated Metal batch"
     );
@@ -562,7 +564,7 @@ fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
     .expect("submit reversed tile");
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "distinct submitted tile surfaces should stay queued until wait"
     );
@@ -587,7 +589,7 @@ fn submitted_distinct_full_grayscale_tiles_flush_as_one_device_batch() {
     assert_eq!(classic_surface.as_bytes(), classic_host.as_slice());
     assert_eq!(reversed_surface.as_bytes(), reversed_host.as_slice());
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "distinct queued grayscale tiles should flush through one Metal command buffer"
     );
@@ -615,7 +617,7 @@ fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "submitted RGB tile surfaces should stay queued until a wait flushes the session"
     );
@@ -632,7 +634,7 @@ fn submitted_full_rgb_tiles_flush_as_one_device_batch() {
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "compatible queued RGB tiles should flush through one Metal batch"
     );
@@ -667,7 +669,7 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
         .collect::<Vec<_>>();
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "distinct RGB tile surfaces should stay queued until a wait flushes the session"
     );
@@ -694,7 +696,7 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
         surfaces.push(surface);
     }
     assert!(
-        session.submissions() >= 1,
+        session.submissions().expect("session submissions") >= 1,
         "queued RGB tiles should submit at least one resident Metal decode"
     );
     for surface in surfaces {
@@ -727,7 +729,7 @@ fn metal_tile_batch_decodes_submitted_tiles_in_order() {
         1
     );
     assert_eq!(batch.len(), 2);
-    assert_eq!(batch.submissions(), 0);
+    assert_eq!(batch.submissions().expect("batch submissions"), 0);
 
     let surfaces = batch.decode_all().expect("batch decode");
     assert_eq!(surfaces.len(), 2);
@@ -898,7 +900,7 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
     .expect("submit reversed ht region-scaled tile");
 
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         0,
         "region-scaled submitted tile surfaces should stay queued until wait"
     );
@@ -934,7 +936,7 @@ fn submitted_distinct_region_scaled_htj2k_grayscale_tiles_flush_as_one_device_ba
     assert_eq!(ht_surface.as_bytes(), expected[0].as_slice());
     assert_eq!(reversed_surface.as_bytes(), expected[1].as_slice());
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "distinct queued HTJ2K region-scaled grayscale tiles should flush through one Metal command buffer"
     );
@@ -1012,7 +1014,7 @@ fn submitted_distinct_region_scaled_htj2k_gray16_tiles_flush_as_one_device_batch
     assert_eq!(first_surface.as_bytes(), expected[0].as_slice());
     assert_eq!(second_surface.as_bytes(), expected[1].as_slice());
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "distinct queued HTJ2K region-scaled Gray16 tiles should flush through one Metal command buffer"
     );
@@ -1052,7 +1054,7 @@ fn submitted_auto_region_scaled_grayscale_keeps_short_batch_on_cpu() {
         assert_eq!(surface.backend_kind(), BackendKind::Cpu);
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "short auto ROI+scaled grayscale tile batches should use one CPU batch fallback"
     );
@@ -1107,7 +1109,7 @@ fn submitted_auto_region_scaled_rgb_tiles_flush_as_one_cpu_batch() {
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "auto RGB ROI+scaled tile batches should flush through one CPU batch fallback"
     );
@@ -1164,7 +1166,7 @@ fn submitted_auto_region_scaled_grayscale_batch64_uses_one_metal_batch() {
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "large auto ROI+scaled grayscale tile batches should use one Metal batch"
     );
@@ -1221,7 +1223,7 @@ fn submitted_auto_region_scaled_ht_grayscale_1024_batch16_uses_one_metal_batch()
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "1024-class auto HT ROI+scaled grayscale tile batches should use one Metal batch"
     );
@@ -1279,7 +1281,7 @@ fn submitted_auto_region_scaled_rgb_1024_batch16_uses_hybrid_metal() {
         assert_eq!(surface.as_bytes(), host.as_slice());
     }
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         1,
         "1024-class auto ROI+scaled RGB tile batches should use one resident hybrid Metal batch"
     );
@@ -1363,7 +1365,7 @@ fn submitted_auto_region_scaled_ht_grayscale_batch16_is_not_order_dependent() {
     assert_eq!(surfaces[1].dimensions(), (large_scaled.w, large_scaled.h));
     assert_eq!(surfaces[1].as_bytes(), host.as_slice());
     assert_eq!(
-        session.submissions(),
+        session.submissions().expect("session submissions"),
         2,
         "auto ROI+scaled should use one Metal batch for the sixteen qualifying 1024-class tiles and leave the leading small tile on CPU"
     );
@@ -1487,7 +1489,7 @@ fn explicit_metal_unsupported_rgba16_full_decode_is_rejected() {
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
-            assert!(reason.contains("Rgba16"));
+            assert_eq!(reason, UNSUPPORTED_RGBA16_REASON);
         }
         Err(other) => panic!("unexpected explicit Metal error: {other:?}"),
         Ok(surface) => panic!(
@@ -1987,7 +1989,7 @@ fn explicit_metal_tile_unsupported_rgba16_is_rejected() {
 
     match result {
         Err(Error::UnsupportedMetalRequest { reason }) => {
-            assert!(reason.contains("Rgba16"));
+            assert_eq!(reason, UNSUPPORTED_RGBA16_REASON);
         }
         Err(other) => panic!("unexpected explicit Metal tile error: {other:?}"),
         Ok(surface) => panic!(

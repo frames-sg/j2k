@@ -155,6 +155,41 @@ struct JpegFastRegionScaledBatchParams {
     uint origin_y;
 };
 
+struct JpegFast444TextureBatchParams {
+    uint width;
+    uint height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint segment_count;
+    uint tile_index;
+    uint alpha;
+    uint mode;
+};
+
+struct JpegFast422TextureBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint segment_count;
+    uint tile_index;
+    uint alpha;
+};
+
+struct JpegFast420TextureBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint mcus_per_row;
+    uint mcu_rows;
+    uint segment_count;
+    uint tile_index;
+    uint alpha;
+};
+
 struct JpegWindowedPackBatchParams {
     uint src_width;
     uint src_height;
@@ -169,6 +204,36 @@ struct JpegWindowedPackBatchParams {
     uint alpha;
     uint mode;
     uint out_format;
+};
+
+struct JpegWindowedTexturePackBatchParams {
+    uint src_width;
+    uint src_height;
+    uint chroma_width;
+    uint chroma_height;
+    uint src_x;
+    uint src_y;
+    uint width;
+    uint height;
+    uint tile_index;
+    uint alpha;
+};
+
+struct JpegTexturePackBatchParams {
+    uint width;
+    uint height;
+    uint chroma_width;
+    uint chroma_height;
+    uint tile_index;
+    uint alpha;
+    uint mode;
+};
+
+struct JpegRgb8ToRgbaTextureParams {
+    uint width;
+    uint height;
+    uint in_stride;
+    uint alpha;
 };
 
 struct JpegDecodeStatus {
@@ -189,7 +254,7 @@ struct JpegEntropyCheckpoint {
     uint reserved;
 };
 
-struct MetalHuffmanTable {
+struct JpegHuffmanTable {
     uchar bits[16];
     ushort values_len;
     ushort reserved;
@@ -1083,7 +1148,7 @@ inline bool configure_batch_entropy_thread(
 }
 
 inline void prepare_huffman(
-    constant MetalHuffmanTable &raw,
+    constant JpegHuffmanTable &raw,
     thread PreparedHuffman &out
 ) {
     uchar huffsize[256];
@@ -1989,7 +2054,15 @@ inline void deposit_scaled_block_region(
     thread const short coeffs[64],
     bool dc_only
 ) {
-    if (scale_shift == 1u) {
+    if (scale_shift == 0u) {
+        thread uchar pixels8[64];
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], pixels8);
+        } else {
+            idct_islow(coeffs, pixels8);
+        }
+        deposit_block_region(plane, stride, width, height, origin_x, origin_y, x, y, pixels8);
+    } else if (scale_shift == 1u) {
         thread uchar pixels4[16];
         if (dc_only) {
             const uchar pixel = idct_islow_1x1(coeffs);
@@ -2049,6 +2122,143 @@ inline uchar h2v2_sample(
     return uchar((this_sum * 3u + next_sum + 7u) >> 4);
 }
 
+inline uchar h2v2_sample_thread(
+    thread const uchar *near_row,
+    thread const uchar *curr_row,
+    uint n,
+    uint x
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2, n - 1);
+    const uint this_sum = 3u * uint(curr_row[sample]) + uint(near_row[sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = 3u * uint(curr_row[sample - 1]) + uint(near_row[sample - 1]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[sample + 1]) + uint(near_row[sample + 1]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
+inline uchar h2v2_sample_thread_local(
+    thread const uchar *near_row,
+    thread const uchar *curr_row,
+    uint n,
+    uint x,
+    uint local_sample_base,
+    uchar left_near_sample,
+    uchar left_curr_sample
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2, n - 1);
+    const uint local_sample = sample - local_sample_base;
+    const uint this_sum = 3u * uint(curr_row[local_sample]) + uint(near_row[local_sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = local_sample == 0u
+            ? 3u * uint(left_curr_sample) + uint(left_near_sample)
+            : 3u * uint(curr_row[local_sample - 1]) + uint(near_row[local_sample - 1]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[local_sample + 1]) + uint(near_row[local_sample + 1]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
+inline uint fast420_boundary_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast420_boundary_sample_base(uint record_index) {
+    return record_index * 64u;
+}
+
+inline uint fast420_vertical_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast420_vertical_sample_base(uint record_index) {
+    return record_index * 64u;
+}
+
+inline uchar h2v2_sample_device_local(
+    device const uchar *near_row,
+    device const uchar *curr_row,
+    uint n,
+    uint x,
+    uint local_sample_base
+) {
+    if (n == 0) {
+        return 0;
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    const uint local_sample = sample - local_sample_base;
+    const uint this_sum = 3u * uint(curr_row[local_sample]) + uint(near_row[local_sample]);
+    if (n == 1) {
+        return uchar((4u * this_sum + 8u) >> 4);
+    }
+    if (x == 0u) {
+        return uchar((this_sum * 4u + 8u) >> 4);
+    }
+    if (x == n * 2u - 1u) {
+        return uchar((this_sum * 4u + 7u) >> 4);
+    }
+    if ((x & 1u) == 0u) {
+        const uint last_sum = 3u * uint(curr_row[local_sample - 1u])
+            + uint(near_row[local_sample - 1u]);
+        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
+    }
+    const uint next_sum = 3u * uint(curr_row[local_sample + 1u])
+        + uint(near_row[local_sample + 1u]);
+    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
+}
+
+inline uchar h2v2_boundary_left_from_sums(uint left_sum, uint right_sum) {
+    return uchar((left_sum * 3u + right_sum + 7u) >> 4);
+}
+
+inline uchar h2v2_boundary_right_from_sums(uint left_sum, uint right_sum) {
+    return uchar((right_sum * 3u + left_sum + 8u) >> 4);
+}
+
+inline uchar h2v2_corner_sample(
+    uchar top_left,
+    uchar top_right,
+    uchar bottom_left,
+    uchar bottom_right,
+    bool bottom_row,
+    bool right_column
+) {
+    const uint left_sum = bottom_row
+        ? 3u * uint(bottom_left) + uint(top_left)
+        : 3u * uint(top_left) + uint(bottom_left);
+    const uint right_sum = bottom_row
+        ? 3u * uint(bottom_right) + uint(top_right)
+        : 3u * uint(top_right) + uint(bottom_right);
+    return right_column
+        ? h2v2_boundary_right_from_sums(left_sum, right_sum)
+        : h2v2_boundary_left_from_sums(left_sum, right_sum);
+}
+
 inline uchar h2v1_sample(
     device const uchar *row,
     uint n,
@@ -2075,6 +2285,73 @@ inline uchar h2v1_sample(
     const uint curr = uint(row[sample]);
     const uint next = uint(row[sample + 1u]);
     return uchar((3u * curr + next + 2u) >> 2);
+}
+
+inline uchar h2v1_sample_thread(
+    thread const uchar *row,
+    uint n,
+    uint x
+) {
+    if (n == 0) {
+        return 0;
+    }
+    if (n == 1) {
+        return row[0];
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    if (x == 0u) {
+        return row[0];
+    }
+    if (x == n * 2u - 1u) {
+        return row[n - 1u];
+    }
+    if ((x & 1u) == 0u) {
+        const uint prev = uint(row[sample - 1u]);
+        const uint curr = uint(row[sample]);
+        return uchar((3u * curr + prev + 2u) >> 2);
+    }
+    const uint curr = uint(row[sample]);
+    const uint next = uint(row[sample + 1u]);
+    return uchar((3u * curr + next + 2u) >> 2);
+}
+
+inline uchar h2v1_sample_thread_local(
+    thread const uchar *row,
+    uint n,
+    uint x,
+    uint local_sample_base,
+    uchar left_sample
+) {
+    if (n == 0) {
+        return 0;
+    }
+    if (n == 1) {
+        return row[0];
+    }
+    const uint sample = min(x / 2u, n - 1u);
+    const uint local_sample = sample - local_sample_base;
+    if (x == 0u) {
+        return row[0];
+    }
+    if (x == n * 2u - 1u) {
+        return row[local_sample];
+    }
+    if ((x & 1u) == 0u) {
+        const uint prev = local_sample == 0u ? uint(left_sample) : uint(row[local_sample - 1u]);
+        const uint curr = uint(row[local_sample]);
+        return uchar((3u * curr + prev + 2u) >> 2);
+    }
+    const uint curr = uint(row[local_sample]);
+    const uint next = uint(row[local_sample + 1u]);
+    return uchar((3u * curr + next + 2u) >> 2);
+}
+
+inline uint fast422_boundary_meta_base(uint record_index) {
+    return record_index * 4u;
+}
+
+inline uint fast422_boundary_sample_base(uint record_index) {
+    return record_index * 48u;
 }
 
 inline void h2v2_sample_even_pair(
@@ -2134,6 +2411,47 @@ inline void h2v1_sample_even_pair(
     right = uchar((3u * curr + next + 2u) >> 2);
 }
 
+inline void jpeg_sample_420_chroma(
+    device const uchar *cb_plane,
+    device const uchar *cr_plane,
+    uint chroma_width,
+    uint chroma_height,
+    uint x,
+    uint y,
+    thread uchar &cb,
+    thread uchar &cr
+) {
+    const uint chroma_y = min(y / 2u, chroma_height - 1u);
+    const uint near_y = (y & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, chroma_height - 1u);
+    device const uchar *curr_cb = cb_plane + chroma_y * chroma_width;
+    device const uchar *near_cb = cb_plane + near_y * chroma_width;
+    device const uchar *curr_cr = cr_plane + chroma_y * chroma_width;
+    device const uchar *near_cr = cr_plane + near_y * chroma_width;
+
+    cb = h2v2_sample(near_cb, curr_cb, chroma_width, x);
+    cr = h2v2_sample(near_cr, curr_cr, chroma_width, x);
+}
+
+inline void jpeg_sample_422_chroma(
+    device const uchar *cb_plane,
+    device const uchar *cr_plane,
+    uint chroma_width,
+    uint chroma_height,
+    uint x,
+    uint y,
+    thread uchar &cb,
+    thread uchar &cr
+) {
+    const uint chroma_y = min(y, chroma_height - 1u);
+    device const uchar *curr_cb = cb_plane + chroma_y * chroma_width;
+    device const uchar *curr_cr = cr_plane + chroma_y * chroma_width;
+
+    cb = h2v1_sample(curr_cb, chroma_width, x);
+    cr = h2v1_sample(curr_cr, chroma_width, x);
+}
+
 inline void store_rgb_ycbcr(
     device uchar *out,
     uint out_idx,
@@ -2147,6 +2465,42 @@ inline void store_rgb_ycbcr(
     out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
     out[out_idx + 1u] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
     out[out_idx + 2u] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+}
+
+inline void store_rgba_ycbcr(
+    device uchar *out,
+    uint out_idx,
+    uchar y_value,
+    uchar cb_value,
+    uchar cr_value,
+    uint alpha
+) {
+    store_rgb_ycbcr(out, out_idx, y_value, cb_value, cr_value);
+    out[out_idx + 3u] = uchar(alpha);
+}
+
+inline float4 rgba_float_ycbcr(
+    uchar y_value,
+    uchar cb_value,
+    uchar cr_value,
+    uint alpha
+) {
+    const int y = int(y_value);
+    const int cb_centered = int(cb_value) - 128;
+    const int cr_centered = int(cr_value) - 128;
+    const uchar r = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
+    const uchar g = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
+    const uchar b = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    return float4(float(r), float(g), float(b), float(uchar(alpha))) / 255.0f;
+}
+
+inline float4 rgba_float_direct(
+    uchar r,
+    uchar g,
+    uchar b,
+    uint alpha
+) {
+    return float4(float(r), float(g), float(b), float(uchar(alpha))) / 255.0f;
 }
 
 kernel void jpeg_pack(
@@ -2190,12 +2544,7 @@ kernel void jpeg_pack(
         out[out_idx + 1] = plane1[idx];
         out[out_idx + 2] = plane2[idx];
     } else {
-        const int y = int(plane0[idx]);
-        const int cb = int(plane1[idx]) - 128;
-        const int cr = int(plane2[idx]) - 128;
-        out[out_idx] = clamp_u8(y + ((91881 * cr + (1 << 15)) >> 16));
-        out[out_idx + 1] = clamp_u8(y - ((22554 * cb + 46802 * cr + (1 << 15)) >> 16));
-        out[out_idx + 2] = clamp_u8(y + ((116130 * cb + (1 << 15)) >> 16));
+        store_rgb_ycbcr(out, out_idx, plane0[idx], plane1[idx], plane2[idx]);
     }
 
     if (params.out_format == OUT_RGBA) {
@@ -2225,7 +2574,8 @@ kernel void jpeg_pack_444_rgb_batch(
 
     const uint idx = plane_base + src_y * params.src_width + src_x;
     const uint out_base = gid.z * params.out_stride * params.height;
-    const uint out_idx = out_base + gid.y * params.out_stride + gid.x * 3u;
+    const uint out_idx =
+        out_base + gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
 
     if (params.mode == MODE_GRAY) {
         const uchar gray = plane0[idx];
@@ -2237,12 +2587,40 @@ kernel void jpeg_pack_444_rgb_batch(
         out[out_idx + 1] = plane1[idx];
         out[out_idx + 2] = plane2[idx];
     } else {
-        const int y = int(plane0[idx]);
-        const int cb = int(plane1[idx]) - 128;
-        const int cr = int(plane2[idx]) - 128;
-        out[out_idx] = clamp_u8(y + ((91881 * cr + (1 << 15)) >> 16));
-        out[out_idx + 1] = clamp_u8(y - ((22554 * cb + 46802 * cr + (1 << 15)) >> 16));
-        out[out_idx + 2] = clamp_u8(y + ((116130 * cb + (1 << 15)) >> 16));
+        store_rgb_ycbcr(out, out_idx, plane0[idx], plane1[idx], plane2[idx]);
+    }
+
+    if (params.out_format == OUT_RGBA) {
+        out[out_idx + 3] = uchar(params.alpha);
+    }
+}
+
+kernel void jpeg_pack_444_rgba_texture(
+    device const uchar *plane0 [[buffer(0)]],
+    device const uchar *plane1 [[buffer(1)]],
+    device const uchar *plane2 [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint plane_len = params.width * params.height;
+    const uint plane_base = params.tile_index * plane_len;
+    const uint idx = plane_base + gid.y * params.width + gid.x;
+
+    if (params.mode == MODE_GRAY) {
+        const uchar gray = plane0[idx];
+        out.write(rgba_float_direct(gray, gray, gray, params.alpha), gid);
+    } else if (params.mode == MODE_RGB) {
+        out.write(
+            rgba_float_direct(plane0[idx], plane1[idx], plane2[idx], params.alpha),
+            gid
+        );
+    } else {
+        out.write(rgba_float_ycbcr(plane0[idx], plane1[idx], plane2[idx], params.alpha), gid);
     }
 }
 
@@ -2512,6 +2890,684 @@ kernel void jpeg_decode_fast420_batch(
         deposit_block(tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, pixels);
         advance_mcu_cursor(mx, my, params.mcus_per_row);
     }
+}
+
+kernel void jpeg_decode_fast420_rgba_texture_batch(
+    device const uchar *entropy [[buffer(0)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant PreparedHuffman &y_dc [[buffer(8)]],
+    constant PreparedHuffman &y_ac [[buffer(9)]],
+    constant PreparedHuffman &cb_dc [[buffer(10)]],
+    constant PreparedHuffman &cb_ac [[buffer(11)]],
+    constant PreparedHuffman &cr_dc [[buffer(12)]],
+    constant PreparedHuffman &cr_ac [[buffer(13)]],
+    device const uint *entropy_offsets [[buffer(14)]],
+    device const uint *entropy_lens [[buffer(15)]],
+    device JpegDecodeStatus *status [[buffer(16)]],
+    device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    device uint *boundary_meta [[buffer(18)]],
+    device uchar *boundary_samples [[buffer(19)]],
+    device uint *vertical_meta [[buffer(20)]],
+    device uchar *vertical_samples [[buffer(21)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.segment_count) {
+        return;
+    }
+
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    const uint status_index = params.tile_index * params.segment_count + gid;
+    device JpegDecodeStatus *thread_status = status + status_index;
+    thread_status->code = FAST420_STATUS_OK;
+    thread_status->detail = 0;
+    thread_status->position = 0;
+    thread_status->reserved = 0;
+
+    const uint checkpoint_base = params.tile_index * params.segment_count;
+    const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
+    uint start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    uint end_mcu = total_mcus;
+    if (gid + 1u < params.segment_count) {
+        end_mcu = min(total_mcus, entropy_checkpoints[checkpoint_base + gid + 1u].mcu_index);
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    const uint entropy_base = entropy_offsets[params.tile_index];
+    const uint entropy_end = entropy_base + entropy_lens[params.tile_index];
+    thread BitReader br;
+    br.pos = entropy_base + checkpoint.entropy_pos;
+    br.acc = checkpoint.bit_acc;
+    br.bits = checkpoint.bit_count;
+
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    thread short coeffs[64];
+    thread uchar y00_pixels[64];
+    thread uchar y10_pixels[64];
+    thread uchar y01_pixels[64];
+    thread uchar y11_pixels[64];
+    thread uchar cb_pixels[64];
+    thread uchar cr_pixels[64];
+    thread uchar prev_y10_pixels[64];
+    thread uchar prev_y11_pixels[64];
+    thread uchar prev_cb_pixels[64];
+    thread uchar prev_cr_pixels[64];
+    bool have_prev_horizontal = false;
+    thread uchar prev_vertical_y01_pixels[64];
+    thread uchar prev_vertical_y11_pixels[64];
+    thread uchar prev_vertical_cb_pixels[64];
+    thread uchar prev_vertical_cr_pixels[64];
+    bool have_prev_vertical = false;
+
+    uint mx = 0u;
+    uint my = 0u;
+    init_mcu_cursor(start_mcu, params.mcus_per_row, mx, my);
+    for (uint mcu_index = start_mcu; mcu_index < end_mcu; ++mcu_index) {
+        const uint y_x = mx * 16u;
+        const uint y_y = my * 16u;
+        bool dc_only = false;
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y00_pixels);
+        } else {
+            idct_islow(coeffs, y00_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y10_pixels);
+        } else {
+            idct_islow(coeffs, y10_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y01_pixels);
+        } else {
+            idct_islow(coeffs, y01_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y11_pixels);
+        } else {
+            idct_islow(coeffs, y11_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cb_pixels);
+        } else {
+            idct_islow(coeffs, cb_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cr_pixels);
+        } else {
+            idct_islow(coeffs, cr_pixels);
+        }
+
+        const uint copy_width = min(16u, params.width - min(y_x, params.width));
+        const uint copy_height = min(16u, params.height - min(y_y, params.height));
+        const uint chroma_y_base = my * 8u;
+        const uint copy_chroma_height = min(8u, params.chroma_height - min(chroma_y_base, params.chroma_height));
+        const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
+        const bool has_left_mcu = mx > 0u;
+        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
+        const bool has_top_mcu = my > 0u;
+        const bool has_bottom_mcu = my + 1u < params.mcu_rows;
+        const uint repair_record_index = params.tile_index * total_mcus + mcu_index;
+        const uint boundary_meta_base = fast420_boundary_meta_base(repair_record_index);
+        boundary_meta[boundary_meta_base] = 0u;
+        boundary_meta[boundary_meta_base + 1u] = 0u;
+        boundary_meta[boundary_meta_base + 2u] = 0u;
+        boundary_meta[boundary_meta_base + 3u] = 0u;
+        const uint vertical_meta_base = fast420_vertical_meta_base(repair_record_index);
+        vertical_meta[vertical_meta_base] = 0u;
+        vertical_meta[vertical_meta_base + 1u] = 0u;
+        vertical_meta[vertical_meta_base + 2u] = 0u;
+        vertical_meta[vertical_meta_base + 3u] = 0u;
+        const uint boundary_sample_base = fast420_boundary_sample_base(repair_record_index);
+        const uint vertical_sample_base = fast420_vertical_sample_base(repair_record_index);
+        const uint local_sample_base = mx * 8u;
+        if (has_left_mcu) {
+            boundary_meta[boundary_meta_base] = y_x;
+            boundary_meta[boundary_meta_base + 1u] = y_y;
+            boundary_meta[boundary_meta_base + 2u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + by] = by < 8u
+                    ? y00_pixels[by * 8u]
+                    : y01_pixels[(by - 8u) * 8u];
+            }
+            for (uint cy = 0u; cy < copy_chroma_height; ++cy) {
+                boundary_samples[boundary_sample_base + 16u + cy] = cb_pixels[cy * 8u];
+                boundary_samples[boundary_sample_base + 24u + cy] = cr_pixels[cy * 8u];
+            }
+        }
+        if (has_right_mcu) {
+            boundary_meta[boundary_meta_base + 3u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + 32u + by] = by < 8u
+                    ? y10_pixels[by * 8u + 7u]
+                    : y11_pixels[(by - 8u) * 8u + 7u];
+            }
+            for (uint cy = 0u; cy < copy_chroma_height; ++cy) {
+                boundary_samples[boundary_sample_base + 48u + cy] = cb_pixels[cy * 8u + 7u];
+                boundary_samples[boundary_sample_base + 56u + cy] = cr_pixels[cy * 8u + 7u];
+            }
+        }
+        if (has_top_mcu) {
+            vertical_meta[vertical_meta_base] = y_x;
+            vertical_meta[vertical_meta_base + 1u] = y_y;
+            vertical_meta[vertical_meta_base + 2u] = 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                vertical_samples[vertical_sample_base + bx] = bx < 8u
+                    ? y00_pixels[bx]
+                    : y10_pixels[bx - 8u];
+            }
+            for (uint cx = 0u; cx < min(8u, params.chroma_width - min(mx * 8u, params.chroma_width)); ++cx) {
+                vertical_samples[vertical_sample_base + 16u + cx] = cb_pixels[cx];
+                vertical_samples[vertical_sample_base + 24u + cx] = cr_pixels[cx];
+            }
+        }
+        if (has_bottom_mcu) {
+            vertical_meta[vertical_meta_base + 3u] = 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                vertical_samples[vertical_sample_base + 32u + bx] = bx < 8u
+                    ? y01_pixels[7u * 8u + bx]
+                    : y11_pixels[7u * 8u + (bx - 8u)];
+            }
+            for (uint cx = 0u; cx < min(8u, params.chroma_width - min(mx * 8u, params.chroma_width)); ++cx) {
+                vertical_samples[vertical_sample_base + 48u + cx] = cb_pixels[7u * 8u + cx];
+                vertical_samples[vertical_sample_base + 56u + cx] = cr_pixels[7u * 8u + cx];
+            }
+        }
+        if (have_prev_vertical && params.mcus_per_row == 1u && has_top_mcu) {
+            const uint top_y = y_y;
+            const uint bottom_y = y_y - 1u;
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint out_x = y_x + bx;
+                const uchar top_y_value = bx < 8u ? y00_pixels[bx] : y10_pixels[bx - 8u];
+                const uchar bottom_y_value = bx < 8u
+                    ? prev_vertical_y01_pixels[7u * 8u + bx]
+                    : prev_vertical_y11_pixels[7u * 8u + (bx - 8u)];
+                out.write(
+                    rgba_float_ycbcr(
+                        bottom_y_value,
+                        h2v2_sample_thread_local(
+                            cb_pixels,
+                            prev_vertical_cb_pixels + 7u * 8u,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            cb_pixels[0],
+                            prev_vertical_cb_pixels[7u * 8u]
+                        ),
+                        h2v2_sample_thread_local(
+                            cr_pixels,
+                            prev_vertical_cr_pixels + 7u * 8u,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            cr_pixels[0],
+                            prev_vertical_cr_pixels[7u * 8u]
+                        ),
+                        params.alpha
+                    ),
+                    uint2(out_x, bottom_y)
+                );
+                out.write(
+                    rgba_float_ycbcr(
+                        top_y_value,
+                        h2v2_sample_thread_local(
+                            prev_vertical_cb_pixels + 7u * 8u,
+                            cb_pixels,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            prev_vertical_cb_pixels[7u * 8u],
+                            cb_pixels[0]
+                        ),
+                        h2v2_sample_thread_local(
+                            prev_vertical_cr_pixels + 7u * 8u,
+                            cr_pixels,
+                            params.chroma_width,
+                            out_x,
+                            local_sample_base,
+                            prev_vertical_cr_pixels[7u * 8u],
+                            cr_pixels[0]
+                        ),
+                        params.alpha
+                    ),
+                    uint2(out_x, top_y)
+                );
+            }
+        }
+        if (have_prev_horizontal && mx > 0u) {
+            const uint left_x = y_x - 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                const uint out_y = y_y + by;
+                if (params.mcu_rows > 1u && has_top_mcu && by == 0u) {
+                    continue;
+                }
+                if (params.mcu_rows > 1u && has_bottom_mcu && by + 1u == copy_height) {
+                    continue;
+                }
+                const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+                const uint near_y = (out_y & 1u) == 0u
+                    ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+                    : min(chroma_y + 1u, params.chroma_height - 1u);
+                const uint local_chroma_y = chroma_y - chroma_y_base;
+                const uint local_near_y = near_y - chroma_y_base;
+                const uint left_cb_sum = 3u * uint(prev_cb_pixels[local_chroma_y * 8u + 7u])
+                    + uint(prev_cb_pixels[local_near_y * 8u + 7u]);
+                const uint left_cr_sum = 3u * uint(prev_cr_pixels[local_chroma_y * 8u + 7u])
+                    + uint(prev_cr_pixels[local_near_y * 8u + 7u]);
+                const uint right_cb_sum = 3u * uint(cb_pixels[local_chroma_y * 8u])
+                    + uint(cb_pixels[local_near_y * 8u]);
+                const uint right_cr_sum = 3u * uint(cr_pixels[local_chroma_y * 8u])
+                    + uint(cr_pixels[local_near_y * 8u]);
+                const uchar left_y = by < 8u
+                    ? prev_y10_pixels[by * 8u + 7u]
+                    : prev_y11_pixels[(by - 8u) * 8u + 7u];
+                const uchar right_y = by < 8u
+                    ? y00_pixels[by * 8u]
+                    : y01_pixels[(by - 8u) * 8u];
+                out.write(
+                    rgba_float_ycbcr(
+                        left_y,
+                        h2v2_boundary_left_from_sums(left_cb_sum, right_cb_sum),
+                        h2v2_boundary_left_from_sums(left_cr_sum, right_cr_sum),
+                        params.alpha
+                    ),
+                    uint2(left_x, out_y)
+                );
+                out.write(
+                    rgba_float_ycbcr(
+                        right_y,
+                        h2v2_boundary_right_from_sums(left_cb_sum, right_cb_sum),
+                        h2v2_boundary_right_from_sums(left_cr_sum, right_cr_sum),
+                        params.alpha
+                    ),
+                    uint2(y_x, out_y)
+                );
+            }
+        }
+
+        const uint last_chroma_x = params.chroma_width * 2u - 1u;
+        for (uint by = 0u; by < copy_height; ++by) {
+            const uint out_y = y_y + by;
+            if (has_top_mcu && by == 0u) {
+                continue;
+            }
+            if (has_bottom_mcu && by + 1u == copy_height) {
+                continue;
+            }
+            const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+            const uint near_y = (out_y & 1u) == 0u
+                ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+                : min(chroma_y + 1u, params.chroma_height - 1u);
+            const uint local_chroma_y = chroma_y - chroma_y_base;
+            const uint local_near_y = near_y - chroma_y_base;
+            thread const uchar *curr_cb = cb_pixels + local_chroma_y * 8u;
+            thread const uchar *curr_cr = cr_pixels + local_chroma_y * 8u;
+            thread const uchar *near_cb = cb_pixels + local_near_y * 8u;
+            thread const uchar *near_cr = cr_pixels + local_near_y * 8u;
+            const uchar left_curr_cb = mx == 0u || starts_mid_row
+                ? curr_cb[0]
+                : prev_cb_pixels[local_chroma_y * 8u + 7u];
+            const uchar left_curr_cr = mx == 0u || starts_mid_row
+                ? curr_cr[0]
+                : prev_cr_pixels[local_chroma_y * 8u + 7u];
+            const uchar left_near_cb = mx == 0u || starts_mid_row
+                ? near_cb[0]
+                : prev_cb_pixels[local_near_y * 8u + 7u];
+            const uchar left_near_cr = mx == 0u || starts_mid_row
+                ? near_cr[0]
+                : prev_cr_pixels[local_near_y * 8u + 7u];
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint out_x = y_x + bx;
+                if (mx > 0u && bx == 0u) {
+                    continue;
+                }
+                if (has_right_mcu && bx == 15u && out_x != last_chroma_x) {
+                    continue;
+                }
+                uchar y_value;
+                if (by < 8u) {
+                    y_value = bx < 8u
+                        ? y00_pixels[by * 8u + bx]
+                        : y10_pixels[by * 8u + (bx - 8u)];
+                } else {
+                    y_value = bx < 8u
+                        ? y01_pixels[(by - 8u) * 8u + bx]
+                        : y11_pixels[(by - 8u) * 8u + (bx - 8u)];
+                }
+                const uchar cb_value = h2v2_sample_thread_local(
+                    near_cb,
+                    curr_cb,
+                    params.chroma_width,
+                    out_x,
+                    local_sample_base,
+                    left_near_cb,
+                    left_curr_cb
+                );
+                const uchar cr_value = h2v2_sample_thread_local(
+                    near_cr,
+                    curr_cr,
+                    params.chroma_width,
+                    out_x,
+                    local_sample_base,
+                    left_near_cr,
+                    left_curr_cr
+                );
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(out_x, out_y)
+                );
+            }
+        }
+
+        for (uint i = 0u; i < 64u; ++i) {
+            prev_y10_pixels[i] = y10_pixels[i];
+            prev_y11_pixels[i] = y11_pixels[i];
+            prev_cb_pixels[i] = cb_pixels[i];
+            prev_cr_pixels[i] = cr_pixels[i];
+            prev_vertical_y01_pixels[i] = y01_pixels[i];
+            prev_vertical_y11_pixels[i] = y11_pixels[i];
+            prev_vertical_cb_pixels[i] = cb_pixels[i];
+            prev_vertical_cr_pixels[i] = cr_pixels[i];
+        }
+        have_prev_horizontal = true;
+        have_prev_vertical = true;
+        advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_boundaries(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uchar *boundary_samples [[buffer(1)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus || params.mcus_per_row <= 1u) {
+        return;
+    }
+    const uint mx = gid % params.mcus_per_row;
+    if (mx == 0u) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * total_mcus + gid;
+    const uint previous_record_index = record_index - 1u;
+    const uint meta_base = fast420_boundary_meta_base(record_index);
+    const uint previous_meta_base = fast420_boundary_meta_base(previous_record_index);
+    if (boundary_meta[meta_base + 2u] == 0u || boundary_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = boundary_meta[meta_base];
+    const uint y = boundary_meta[meta_base + 1u];
+    if (x == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast420_boundary_sample_base(record_index);
+    const uint previous_sample_base = fast420_boundary_sample_base(previous_record_index);
+    const uint copy_height = min(16u, params.height - y);
+    const uint chroma_y_base = y / 2u;
+    const bool has_top_row = y > 0u;
+    const bool has_bottom_row = y + copy_height < params.height;
+    for (uint by = 0u; by < copy_height; ++by) {
+        const uint out_y = y + by;
+        if (params.mcu_rows > 1u && has_top_row && by == 0u) {
+            continue;
+        }
+        if (params.mcu_rows > 1u && has_bottom_row && by + 1u == copy_height) {
+            continue;
+        }
+        const uint chroma_y = min(out_y / 2u, params.chroma_height - 1u);
+        const uint near_y = (out_y & 1u) == 0u
+            ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+            : min(chroma_y + 1u, params.chroma_height - 1u);
+        const uint local_chroma_y = chroma_y - chroma_y_base;
+        const uint local_near_y = near_y - chroma_y_base;
+        const uint left_cb_sum = 3u * uint(boundary_samples[previous_sample_base + 48u + local_chroma_y])
+            + uint(boundary_samples[previous_sample_base + 48u + local_near_y]);
+        const uint left_cr_sum = 3u * uint(boundary_samples[previous_sample_base + 56u + local_chroma_y])
+            + uint(boundary_samples[previous_sample_base + 56u + local_near_y]);
+        const uint right_cb_sum = 3u * uint(boundary_samples[sample_base + 16u + local_chroma_y])
+            + uint(boundary_samples[sample_base + 16u + local_near_y]);
+        const uint right_cr_sum = 3u * uint(boundary_samples[sample_base + 24u + local_chroma_y])
+            + uint(boundary_samples[sample_base + 24u + local_near_y]);
+        const uchar left_y = boundary_samples[previous_sample_base + 32u + by];
+        const uchar right_y = boundary_samples[sample_base + by];
+        out.write(
+            rgba_float_ycbcr(
+                left_y,
+                h2v2_boundary_left_from_sums(left_cb_sum, right_cb_sum),
+                h2v2_boundary_left_from_sums(left_cr_sum, right_cr_sum),
+                params.alpha
+            ),
+            uint2(x - 1u, out_y)
+        );
+        out.write(
+            rgba_float_ycbcr(
+                right_y,
+                h2v2_boundary_right_from_sums(left_cb_sum, right_cb_sum),
+                h2v2_boundary_right_from_sums(left_cr_sum, right_cr_sum),
+                params.alpha
+            ),
+            uint2(x, out_y)
+        );
+    }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_vertical_boundaries(
+    device const uint *vertical_meta [[buffer(0)]],
+    device const uchar *vertical_samples [[buffer(1)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus || params.mcu_rows <= 1u) {
+        return;
+    }
+    const uint my = gid / params.mcus_per_row;
+    if (my == 0u) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * total_mcus + gid;
+    const uint previous_record_index = record_index - params.mcus_per_row;
+    const uint meta_base = fast420_vertical_meta_base(record_index);
+    const uint previous_meta_base = fast420_vertical_meta_base(previous_record_index);
+    if (vertical_meta[meta_base + 2u] == 0u || vertical_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = vertical_meta[meta_base];
+    const uint y = vertical_meta[meta_base + 1u];
+    if (x >= params.width || y == 0u || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast420_vertical_sample_base(record_index);
+    const uint previous_sample_base = fast420_vertical_sample_base(previous_record_index);
+    const uint copy_width = min(16u, params.width - x);
+    const uint local_sample_base = x / 2u;
+    device const uchar *top_cb = vertical_samples + sample_base + 16u;
+    device const uchar *top_cr = vertical_samples + sample_base + 24u;
+    device const uchar *bottom_cb = vertical_samples + previous_sample_base + 48u;
+    device const uchar *bottom_cr = vertical_samples + previous_sample_base + 56u;
+    const bool has_left_column = params.mcus_per_row > 1u && x > 0u;
+    const bool has_right_column = params.mcus_per_row > 1u && x + copy_width < params.width;
+    for (uint bx = 0u; bx < copy_width; ++bx) {
+        const uint out_x = x + bx;
+        if (has_left_column && bx == 0u) {
+            continue;
+        }
+        if (has_right_column && bx + 1u == copy_width) {
+            continue;
+        }
+        const uchar bottom_y = vertical_samples[previous_sample_base + 32u + bx];
+        const uchar top_y = vertical_samples[sample_base + bx];
+        out.write(
+            rgba_float_ycbcr(
+                bottom_y,
+                h2v2_sample_device_local(top_cb, bottom_cb, params.chroma_width, out_x, local_sample_base),
+                h2v2_sample_device_local(top_cr, bottom_cr, params.chroma_width, out_x, local_sample_base),
+                params.alpha
+            ),
+            uint2(out_x, y - 1u)
+        );
+        out.write(
+            rgba_float_ycbcr(
+                top_y,
+                h2v2_sample_device_local(bottom_cb, top_cb, params.chroma_width, out_x, local_sample_base),
+                h2v2_sample_device_local(bottom_cr, top_cr, params.chroma_width, out_x, local_sample_base),
+                params.alpha
+            ),
+            uint2(out_x, y)
+        );
+    }
+}
+
+kernel void jpeg_resolve_fast420_rgba_texture_corners(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uint *vertical_meta [[buffer(1)]],
+    device const uchar *vertical_samples [[buffer(2)]],
+    constant JpegFast420TextureBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.mcus_per_row <= 1u || params.mcu_rows <= 1u) {
+        return;
+    }
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    if (gid >= total_mcus) {
+        return;
+    }
+    const uint mx = gid % params.mcus_per_row;
+    const uint my = gid / params.mcus_per_row;
+    if (mx == 0u || my == 0u) {
+        return;
+    }
+
+    const uint br_record = params.tile_index * total_mcus + gid;
+    const uint bl_record = br_record - 1u;
+    const uint tr_record = br_record - params.mcus_per_row;
+    const uint tl_record = tr_record - 1u;
+    const uint br_boundary_meta_base = fast420_boundary_meta_base(br_record);
+    const uint bl_boundary_meta_base = fast420_boundary_meta_base(bl_record);
+    const uint tr_boundary_meta_base = fast420_boundary_meta_base(tr_record);
+    const uint tl_boundary_meta_base = fast420_boundary_meta_base(tl_record);
+    const uint br_vertical_meta_base = fast420_vertical_meta_base(br_record);
+    const uint bl_vertical_meta_base = fast420_vertical_meta_base(bl_record);
+    const uint tr_vertical_meta_base = fast420_vertical_meta_base(tr_record);
+    const uint tl_vertical_meta_base = fast420_vertical_meta_base(tl_record);
+    if (
+        boundary_meta[br_boundary_meta_base + 2u] == 0u ||
+        boundary_meta[bl_boundary_meta_base + 3u] == 0u ||
+        boundary_meta[tr_boundary_meta_base + 2u] == 0u ||
+        boundary_meta[tl_boundary_meta_base + 3u] == 0u ||
+        vertical_meta[br_vertical_meta_base + 2u] == 0u ||
+        vertical_meta[bl_vertical_meta_base + 2u] == 0u ||
+        vertical_meta[tr_vertical_meta_base + 3u] == 0u ||
+        vertical_meta[tl_vertical_meta_base + 3u] == 0u
+    ) {
+        return;
+    }
+
+    const uint x = vertical_meta[br_vertical_meta_base];
+    const uint y = vertical_meta[br_vertical_meta_base + 1u];
+    if (x == 0u || y == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint br_sample_base = fast420_vertical_sample_base(br_record);
+    const uint bl_sample_base = fast420_vertical_sample_base(bl_record);
+    const uint tr_sample_base = fast420_vertical_sample_base(tr_record);
+    const uint tl_sample_base = fast420_vertical_sample_base(tl_record);
+
+    const uchar tl_y = vertical_samples[tl_sample_base + 32u + 15u];
+    const uchar tr_y = vertical_samples[tr_sample_base + 32u];
+    const uchar bl_y = vertical_samples[bl_sample_base + 15u];
+    const uchar br_y = vertical_samples[br_sample_base];
+
+    const uchar tl_cb = vertical_samples[tl_sample_base + 48u + 7u];
+    const uchar tr_cb = vertical_samples[tr_sample_base + 48u];
+    const uchar bl_cb = vertical_samples[bl_sample_base + 16u + 7u];
+    const uchar br_cb = vertical_samples[br_sample_base + 16u];
+    const uchar tl_cr = vertical_samples[tl_sample_base + 56u + 7u];
+    const uchar tr_cr = vertical_samples[tr_sample_base + 56u];
+    const uchar bl_cr = vertical_samples[bl_sample_base + 24u + 7u];
+    const uchar br_cr = vertical_samples[br_sample_base + 24u];
+
+    out.write(
+        rgba_float_ycbcr(
+            tl_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, false, false),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, false, false),
+            params.alpha
+        ),
+        uint2(x - 1u, y - 1u)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            tr_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, false, true),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, false, true),
+            params.alpha
+        ),
+        uint2(x, y - 1u)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            bl_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, true, false),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, true, false),
+            params.alpha
+        ),
+        uint2(x - 1u, y)
+    );
+    out.write(
+        rgba_float_ycbcr(
+            br_y,
+            h2v2_corner_sample(tl_cb, tr_cb, bl_cb, br_cb, true, true),
+            h2v2_corner_sample(tl_cr, tr_cr, bl_cr, br_cr, true, true),
+            params.alpha
+        ),
+        uint2(x, y)
+    );
 }
 
 inline uint fast420_total_mcus(constant JpegFast420BatchParams &params) {
@@ -2965,6 +4021,268 @@ kernel void jpeg_decode_fast422_batch(
         }
         deposit_block(tile_cr_plane, params.chroma_width, params.chroma_width, params.chroma_height, c_x, c_y, pixels);
         advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_decode_fast422_rgba_texture_batch(
+    device const uchar *entropy [[buffer(0)]],
+    constant JpegFast422TextureBatchParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant PreparedHuffman &y_dc [[buffer(8)]],
+    constant PreparedHuffman &y_ac [[buffer(9)]],
+    constant PreparedHuffman &cb_dc [[buffer(10)]],
+    constant PreparedHuffman &cb_ac [[buffer(11)]],
+    constant PreparedHuffman &cr_dc [[buffer(12)]],
+    constant PreparedHuffman &cr_ac [[buffer(13)]],
+    device const uint *entropy_offsets [[buffer(14)]],
+    device const uint *entropy_lens [[buffer(15)]],
+    device JpegDecodeStatus *status [[buffer(16)]],
+    device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    device uint *boundary_meta [[buffer(18)]],
+    device uchar *boundary_samples [[buffer(19)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.segment_count) {
+        return;
+    }
+
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    const uint status_index = params.tile_index * params.segment_count + gid;
+    device JpegDecodeStatus *thread_status = status + status_index;
+    thread_status->code = FAST420_STATUS_OK;
+    thread_status->detail = 0;
+    thread_status->position = 0;
+    thread_status->reserved = 0;
+    const uint boundary_meta_base = fast422_boundary_meta_base(status_index);
+    boundary_meta[boundary_meta_base] = 0u;
+    boundary_meta[boundary_meta_base + 1u] = 0u;
+    boundary_meta[boundary_meta_base + 2u] = 0u;
+    boundary_meta[boundary_meta_base + 3u] = 0u;
+
+    const uint checkpoint_base = params.tile_index * params.segment_count;
+    const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
+    uint start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    uint end_mcu = total_mcus;
+    if (gid + 1u < params.segment_count) {
+        end_mcu = min(total_mcus, entropy_checkpoints[checkpoint_base + gid + 1u].mcu_index);
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    const uint entropy_base = entropy_offsets[params.tile_index];
+    const uint entropy_end = entropy_base + entropy_lens[params.tile_index];
+    thread BitReader br;
+    br.pos = entropy_base + checkpoint.entropy_pos;
+    br.acc = checkpoint.bit_acc;
+    br.bits = checkpoint.bit_count;
+
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    thread short coeffs[64];
+    thread uchar y_left_pixels[64];
+    thread uchar y_right_pixels[64];
+    thread uchar cb_pixels[64];
+    thread uchar cr_pixels[64];
+    thread uchar prev_y_right_pixels[64];
+    thread uchar prev_cb_pixels[64];
+    thread uchar prev_cr_pixels[64];
+    bool have_prev_horizontal = false;
+
+    uint mx = 0u;
+    uint my = 0u;
+    init_mcu_cursor(start_mcu, params.mcus_per_row, mx, my);
+    for (uint mcu_index = start_mcu; mcu_index < end_mcu; ++mcu_index) {
+        const uint y_x = mx * 16u;
+        const uint y_y = my * 8u;
+        bool dc_only = false;
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y_left_pixels);
+        } else {
+            idct_islow(coeffs, y_left_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y_right_pixels);
+        } else {
+            idct_islow(coeffs, y_right_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cb_pixels);
+        } else {
+            idct_islow(coeffs, cb_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cr_pixels);
+        } else {
+            idct_islow(coeffs, cr_pixels);
+        }
+
+        const uint copy_width = min(16u, params.width - min(y_x, params.width));
+        const uint copy_height = min(8u, params.height - min(y_y, params.height));
+        const bool starts_mid_row = mcu_index == start_mcu && mx > 0u;
+        const bool ends_mid_row = mcu_index + 1u >= end_mcu && mx + 1u < params.mcus_per_row;
+        const uint boundary_sample_base = fast422_boundary_sample_base(status_index);
+        if (starts_mid_row) {
+            boundary_meta[boundary_meta_base] = y_x;
+            boundary_meta[boundary_meta_base + 1u] = y_y;
+            boundary_meta[boundary_meta_base + 2u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + by] = y_left_pixels[by * 8u];
+                boundary_samples[boundary_sample_base + 8u + by] = cb_pixels[by * 8u];
+                boundary_samples[boundary_sample_base + 16u + by] = cr_pixels[by * 8u];
+            }
+        }
+        if (ends_mid_row) {
+            boundary_meta[boundary_meta_base + 3u] = 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                boundary_samples[boundary_sample_base + 24u + by] = y_right_pixels[by * 8u + 7u];
+                boundary_samples[boundary_sample_base + 32u + by] = cb_pixels[by * 8u + 7u];
+                boundary_samples[boundary_sample_base + 40u + by] = cr_pixels[by * 8u + 7u];
+            }
+        }
+        if (have_prev_horizontal && mx > 0u) {
+            const uint prev_x = y_x - 1u;
+            for (uint by = 0u; by < copy_height; ++by) {
+                thread const uchar *cb_row = cb_pixels + by * 8u;
+                thread const uchar *cr_row = cr_pixels + by * 8u;
+                thread const uchar *prev_cb_row = prev_cb_pixels + by * 8u;
+                thread const uchar *prev_cr_row = prev_cr_pixels + by * 8u;
+                const uchar y_value = prev_y_right_pixels[by * 8u + 7u];
+                const uchar cb_value = uchar((3u * uint(prev_cb_row[7]) + uint(cb_row[0]) + 2u) >> 2);
+                const uchar cr_value = uchar((3u * uint(prev_cr_row[7]) + uint(cr_row[0]) + 2u) >> 2);
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(prev_x, y_y + by)
+                );
+            }
+        }
+
+        const uint local_sample_base = mx * 8u;
+        const bool has_right_mcu = mx + 1u < params.mcus_per_row;
+        const uint last_chroma_x = params.chroma_width * 2u - 1u;
+        for (uint by = 0u; by < copy_height; ++by) {
+            thread const uchar *cb_row = cb_pixels + by * 8u;
+            thread const uchar *cr_row = cr_pixels + by * 8u;
+            const uchar left_cb = mx == 0u || starts_mid_row
+                ? cb_row[0]
+                : prev_cb_pixels[by * 8u + 7u];
+            const uchar left_cr = mx == 0u || starts_mid_row
+                ? cr_row[0]
+                : prev_cr_pixels[by * 8u + 7u];
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint x = y_x + bx;
+                if (starts_mid_row && bx == 0u) {
+                    continue;
+                }
+                if (has_right_mcu && bx == 15u && (x & 1u) == 1u && x != last_chroma_x) {
+                    continue;
+                }
+                const uchar y_value = bx < 8u
+                    ? y_left_pixels[by * 8u + bx]
+                    : y_right_pixels[by * 8u + (bx - 8u)];
+                const uchar cb_value = h2v1_sample_thread_local(
+                    cb_row,
+                    params.chroma_width,
+                    x,
+                    local_sample_base,
+                    left_cb
+                );
+                const uchar cr_value = h2v1_sample_thread_local(
+                    cr_row,
+                    params.chroma_width,
+                    x,
+                    local_sample_base,
+                    left_cr
+                );
+                out.write(
+                    rgba_float_ycbcr(y_value, cb_value, cr_value, params.alpha),
+                    uint2(x, y_y + by)
+                );
+            }
+        }
+
+        for (uint i = 0u; i < 64u; ++i) {
+            prev_y_right_pixels[i] = y_right_pixels[i];
+            prev_cb_pixels[i] = cb_pixels[i];
+            prev_cr_pixels[i] = cr_pixels[i];
+        }
+        have_prev_horizontal = true;
+        advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
+kernel void jpeg_resolve_fast422_rgba_texture_boundaries(
+    device const uint *boundary_meta [[buffer(0)]],
+    device const uchar *boundary_samples [[buffer(1)]],
+    constant JpegFast422TextureBatchParams &params [[buffer(2)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid == 0u || gid >= params.segment_count) {
+        return;
+    }
+
+    const uint record_index = params.tile_index * params.segment_count + gid;
+    const uint previous_record_index = record_index - 1u;
+    const uint meta_base = fast422_boundary_meta_base(record_index);
+    const uint previous_meta_base = fast422_boundary_meta_base(previous_record_index);
+    if (boundary_meta[meta_base + 2u] == 0u || boundary_meta[previous_meta_base + 3u] == 0u) {
+        return;
+    }
+
+    const uint x = boundary_meta[meta_base];
+    const uint y = boundary_meta[meta_base + 1u];
+    if (x == 0u || x >= params.width || y >= params.height) {
+        return;
+    }
+
+    const uint sample_base = fast422_boundary_sample_base(record_index);
+    const uint previous_sample_base = fast422_boundary_sample_base(previous_record_index);
+    const uint copy_height = min(8u, params.height - y);
+    for (uint by = 0u; by < copy_height; ++by) {
+        const uchar left_y = boundary_samples[previous_sample_base + 24u + by];
+        const uchar left_cb = boundary_samples[previous_sample_base + 32u + by];
+        const uchar left_cr = boundary_samples[previous_sample_base + 40u + by];
+        const uchar right_y = boundary_samples[sample_base + by];
+        const uchar right_cb = boundary_samples[sample_base + 8u + by];
+        const uchar right_cr = boundary_samples[sample_base + 16u + by];
+        const uchar resolved_left_cb = uchar((3u * uint(left_cb) + uint(right_cb) + 2u) >> 2);
+        const uchar resolved_left_cr = uchar((3u * uint(left_cr) + uint(right_cr) + 2u) >> 2);
+        const uchar resolved_right_cb = uchar((3u * uint(right_cb) + uint(left_cb) + 2u) >> 2);
+        const uchar resolved_right_cr = uchar((3u * uint(right_cr) + uint(left_cr) + 2u) >> 2);
+        const uint row_y = y + by;
+        out.write(
+            rgba_float_ycbcr(left_y, resolved_left_cb, resolved_left_cr, params.alpha),
+            uint2(x - 1u, row_y)
+        );
+        out.write(
+            rgba_float_ycbcr(right_y, resolved_right_cb, resolved_right_cr, params.alpha),
+            uint2(x, row_y)
+        );
     }
 }
 
@@ -5299,6 +6617,127 @@ kernel void jpeg_decode_fast444_scaled_region_batch(
     }
 }
 
+kernel void jpeg_decode_fast444_rgba_texture_batch(
+    device const uchar *entropy [[buffer(0)]],
+    constant JpegFast444TextureBatchParams &params [[buffer(4)]],
+    constant ushort *y_quant [[buffer(5)]],
+    constant ushort *cb_quant [[buffer(6)]],
+    constant ushort *cr_quant [[buffer(7)]],
+    constant PreparedHuffman &y_dc [[buffer(8)]],
+    constant PreparedHuffman &y_ac [[buffer(9)]],
+    constant PreparedHuffman &cb_dc [[buffer(10)]],
+    constant PreparedHuffman &cb_ac [[buffer(11)]],
+    constant PreparedHuffman &cr_dc [[buffer(12)]],
+    constant PreparedHuffman &cr_ac [[buffer(13)]],
+    device const uint *entropy_offsets [[buffer(14)]],
+    device const uint *entropy_lens [[buffer(15)]],
+    device JpegDecodeStatus *status [[buffer(16)]],
+    device const JpegEntropyCheckpoint *entropy_checkpoints [[buffer(17)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.segment_count) {
+        return;
+    }
+
+    const uint total_mcus = params.mcus_per_row * params.mcu_rows;
+    const uint status_index = params.tile_index * params.segment_count + gid;
+    device JpegDecodeStatus *thread_status = status + status_index;
+    thread_status->code = FAST420_STATUS_OK;
+    thread_status->detail = 0;
+    thread_status->position = 0;
+    thread_status->reserved = 0;
+
+    const uint checkpoint_base = params.tile_index * params.segment_count;
+    const JpegEntropyCheckpoint checkpoint = entropy_checkpoints[checkpoint_base + gid];
+    uint start_mcu = checkpoint.mcu_index;
+    if (start_mcu >= total_mcus) {
+        return;
+    }
+    uint end_mcu = total_mcus;
+    if (gid + 1u < params.segment_count) {
+        end_mcu = min(total_mcus, entropy_checkpoints[checkpoint_base + gid + 1u].mcu_index);
+    }
+    if (end_mcu <= start_mcu) {
+        return;
+    }
+
+    const uint entropy_base = entropy_offsets[params.tile_index];
+    const uint entropy_end = entropy_base + entropy_lens[params.tile_index];
+    thread BitReader br;
+    br.pos = entropy_base + checkpoint.entropy_pos;
+    br.acc = checkpoint.bit_acc;
+    br.bits = checkpoint.bit_count;
+
+    int y_prev_dc = checkpoint.y_prev_dc;
+    int cb_prev_dc = checkpoint.cb_prev_dc;
+    int cr_prev_dc = checkpoint.cr_prev_dc;
+
+    thread short coeffs[64];
+    thread uchar y_pixels[64];
+    thread uchar cb_pixels[64];
+    thread uchar cr_pixels[64];
+    uint mx = 0u;
+    uint my = 0u;
+    init_mcu_cursor(start_mcu, params.mcus_per_row, mx, my);
+    for (uint mcu_index = start_mcu; mcu_index < end_mcu; ++mcu_index) {
+        const uint block_x = mx * 8u;
+        const uint block_y = my * 8u;
+        bool dc_only = false;
+
+        if (!decode_block(br, entropy, entropy_end, y_dc, y_ac, y_quant, y_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], y_pixels);
+        } else {
+            idct_islow(coeffs, y_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cb_dc, cb_ac, cb_quant, cb_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cb_pixels);
+        } else {
+            idct_islow(coeffs, cb_pixels);
+        }
+
+        if (!decode_block(br, entropy, entropy_end, cr_dc, cr_ac, cr_quant, cr_prev_dc, thread_status, coeffs, dc_only)) {
+            return;
+        }
+        if (dc_only) {
+            idct_islow_dc_only(coeffs[0], cr_pixels);
+        } else {
+            idct_islow(coeffs, cr_pixels);
+        }
+
+        const uint copy_width = min(8u, params.width - min(block_x, params.width));
+        const uint copy_height = min(8u, params.height - min(block_y, params.height));
+        for (uint by = 0u; by < copy_height; ++by) {
+            for (uint bx = 0u; bx < copy_width; ++bx) {
+                const uint idx = by * 8u + bx;
+                const uint2 pos = uint2(block_x + bx, block_y + by);
+                if (params.mode == MODE_GRAY) {
+                    const uchar gray = y_pixels[idx];
+                    out.write(rgba_float_direct(gray, gray, gray, params.alpha), pos);
+                } else if (params.mode == MODE_RGB) {
+                    out.write(
+                        rgba_float_direct(y_pixels[idx], cb_pixels[idx], cr_pixels[idx], params.alpha),
+                        pos
+                    );
+                } else {
+                    out.write(
+                        rgba_float_ycbcr(y_pixels[idx], cb_pixels[idx], cr_pixels[idx], params.alpha),
+                        pos
+                    );
+                }
+            }
+        }
+        advance_mcu_cursor(mx, my, params.mcus_per_row);
+    }
+}
+
 kernel void jpeg_pack_420(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -5317,25 +6756,21 @@ kernel void jpeg_pack_420(
         return;
     }
 
-    const uint chroma_y = min(gid.y / 2u, params.chroma_height - 1u);
-    const uint near_y = (gid.y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, gid.x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, gid.x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        gid.x,
+        gid.y,
+        cb,
+        cr
+    );
 
     uint out_idx = gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
     if (params.out_format == OUT_RGBA) {
         out[out_idx + 3] = uchar(params.alpha);
     }
@@ -5354,25 +6789,21 @@ kernel void jpeg_pack_420_rgb(
     }
 
     const uint y_idx = gid.y * params.width + gid.x;
-    const uint chroma_y = min(gid.y / 2u, params.chroma_height - 1u);
-    const uint near_y = (gid.y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, gid.x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, gid.x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        gid.x,
+        gid.y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
 }
 
 kernel void jpeg_pack_420_rgb_batch(
@@ -5459,26 +6890,100 @@ kernel void jpeg_pack_420_rgba(
     }
 
     const uint y_idx = gid.y * params.width + gid.x;
-    const uint chroma_y = min(gid.y / 2u, params.chroma_height - 1u);
-    const uint near_y = (gid.y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, gid.x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, gid.x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        gid.x,
+        gid.y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 4u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
-    out[out_idx + 3] = uchar(params.alpha);
+    store_rgba_ycbcr(out, out_idx, y_plane[y_idx], cb, cr, params.alpha);
+}
+
+kernel void jpeg_pack_420_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    const uint y0 = gid.y * 2u;
+    if (x0 >= params.width || y0 >= params.height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.width * params.height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint chroma_y = min(y0 / 2u, params.chroma_height - 1u);
+    const uint near_y = (y0 & 1u) == 0u
+        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
+        : min(chroma_y + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cb = tile_cb_plane + near_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+    device const uchar *near_cr = tile_cr_plane + near_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v2_sample_even_pair(near_cb, curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr, curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx0 = y0 * params.width + x0;
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx0], cb0, cr0, params.alpha),
+        uint2(x0, y0)
+    );
+    const uint x1 = x0 + 1u;
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx0 + 1u], cb1, cr1, params.alpha),
+            uint2(x1, y0)
+        );
+    }
+
+    const uint y1 = y0 + 1u;
+    if (y1 >= params.height) {
+        return;
+    }
+
+    const uint chroma_y1 = min(y1 / 2u, params.chroma_height - 1u);
+    const uint near_y1 = (y1 & 1u) == 0u
+        ? (chroma_y1 == 0u ? 0u : chroma_y1 - 1u)
+        : min(chroma_y1 + 1u, params.chroma_height - 1u);
+    device const uchar *curr_cb1 = tile_cb_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cb1 = tile_cb_plane + near_y1 * params.chroma_width;
+    device const uchar *curr_cr1 = tile_cr_plane + chroma_y1 * params.chroma_width;
+    device const uchar *near_cr1 = tile_cr_plane + near_y1 * params.chroma_width;
+
+    h2v2_sample_even_pair(near_cb1, curr_cb1, params.chroma_width, x0, cb0, cb1);
+    h2v2_sample_even_pair(near_cr1, curr_cr1, params.chroma_width, x0, cr0, cr1);
+
+    const uint y_idx1 = y1 * params.width + x0;
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx1], cb0, cr0, params.alpha),
+        uint2(x0, y1)
+    );
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx1 + 1u], cb1, cr1, params.alpha),
+            uint2(x1, y1)
+        );
+    }
 }
 
 kernel void jpeg_pack_422_rgb(
@@ -5494,20 +6999,21 @@ kernel void jpeg_pack_422_rgb(
     }
 
     const uint y_idx = gid.y * params.width + gid.x;
-    const uint chroma_y = min(gid.y, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, gid.x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, gid.x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        gid.x,
+        gid.y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
 }
 
 kernel void jpeg_pack_422_rgb_batch(
@@ -5550,6 +7056,50 @@ kernel void jpeg_pack_422_rgb_batch(
     }
 }
 
+kernel void jpeg_pack_422_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    const uint x0 = gid.x * 2u;
+    if (x0 >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.width * params.height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = gid.y * params.width + x0;
+    const uint chroma_y = min(gid.y, params.chroma_height - 1u);
+    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
+    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
+
+    uchar cb0;
+    uchar cb1;
+    uchar cr0;
+    uchar cr1;
+    h2v1_sample_even_pair(curr_cb, params.chroma_width, x0, cb0, cb1);
+    h2v1_sample_even_pair(curr_cr, params.chroma_width, x0, cr0, cr1);
+
+    out.write(
+        rgba_float_ycbcr(tile_y_plane[y_idx], cb0, cr0, params.alpha),
+        uint2(x0, gid.y)
+    );
+    const uint x1 = x0 + 1u;
+    if (x1 < params.width) {
+        out.write(
+            rgba_float_ycbcr(tile_y_plane[y_idx + 1u], cb1, cr1, params.alpha),
+            uint2(x1, gid.y)
+        );
+    }
+}
+
 kernel void jpeg_pack_422_rgba(
     device const uchar *y_plane [[buffer(0)]],
     device const uchar *cb_plane [[buffer(1)]],
@@ -5563,21 +7113,21 @@ kernel void jpeg_pack_422_rgba(
     }
 
     const uint y_idx = gid.y * params.width + gid.x;
-    const uint chroma_y = min(gid.y, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, gid.x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, gid.x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        gid.x,
+        gid.y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 4u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
-    out[out_idx + 3] = uchar(params.alpha);
+    store_rgba_ycbcr(out, out_idx, y_plane[y_idx], cb, cr, params.alpha);
 }
 
 kernel void jpeg_pack_422_windowed(
@@ -5604,20 +7154,21 @@ kernel void jpeg_pack_422_windowed(
         return;
     }
 
-    const uint chroma_y = min(src_y, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     uint out_idx = gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
     if (params.out_format == OUT_RGBA) {
         out[out_idx + 3] = uchar(params.alpha);
     }
@@ -5642,20 +7193,21 @@ kernel void jpeg_pack_422_windowed_rgb(
     }
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
 }
 
 kernel void jpeg_pack_422_windowed_rgb_batch(
@@ -5683,21 +7235,62 @@ kernel void jpeg_pack_422_windowed_rgb_batch(
     device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y, params.chroma_height - 1u);
-    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, src_x);
-    const int y = int(tile_y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        tile_cb_plane,
+        tile_cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_base = gid.z * params.out_stride * params.height;
     const uint out_idx = out_base + gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, tile_y_plane[y_idx], cb, cr);
+}
+
+kernel void jpeg_pack_422_windowed_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegWindowedTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint src_x = gid.x + params.src_x;
+    const uint src_y = gid.y + params.src_y;
+    if (src_x >= params.src_width || src_y >= params.src_height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.src_width * params.src_height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = src_y * params.src_width + src_x;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        tile_cb_plane,
+        tile_cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
+    out.write(rgba_float_ycbcr(tile_y_plane[y_idx], cb, cr, params.alpha), gid);
 }
 
 kernel void jpeg_pack_422_windowed_rgba(
@@ -5719,21 +7312,21 @@ kernel void jpeg_pack_422_windowed_rgba(
     }
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-
-    const uchar cb = h2v1_sample(curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v1_sample(curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_422_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 4u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
-    out[out_idx + 3] = uchar(params.alpha);
+    store_rgba_ycbcr(out, out_idx, y_plane[y_idx], cb, cr, params.alpha);
 }
 
 kernel void jpeg_pack_420_windowed(
@@ -5760,25 +7353,21 @@ kernel void jpeg_pack_420_windowed(
         return;
     }
 
-    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
-    const uint near_y = (src_y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     uint out_idx = gid.y * params.out_stride + gid.x * (params.out_format == OUT_RGB ? 3u : 4u);
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
     if (params.out_format == OUT_RGBA) {
         out[out_idx + 3] = uchar(params.alpha);
     }
@@ -5803,25 +7392,21 @@ kernel void jpeg_pack_420_windowed_rgb(
     }
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
-    const uint near_y = (src_y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, y_plane[y_idx], cb, cr);
 }
 
 kernel void jpeg_pack_420_windowed_rgb_batch(
@@ -5849,26 +7434,81 @@ kernel void jpeg_pack_420_windowed_rgb_batch(
     device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
-    const uint near_y = (src_y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = tile_cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = tile_cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = tile_cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = tile_cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
-    const int y = int(tile_y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        tile_cb_plane,
+        tile_cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_base = gid.z * params.out_stride * params.height;
     const uint out_idx = out_base + gid.y * params.out_stride + gid.x * 3u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    store_rgb_ycbcr(out, out_idx, tile_y_plane[y_idx], cb, cr);
+}
+
+kernel void jpeg_pack_420_windowed_rgba_texture(
+    device const uchar *y_plane [[buffer(0)]],
+    device const uchar *cb_plane [[buffer(1)]],
+    device const uchar *cr_plane [[buffer(2)]],
+    constant JpegWindowedTexturePackBatchParams &params [[buffer(3)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint src_x = gid.x + params.src_x;
+    const uint src_y = gid.y + params.src_y;
+    if (src_x >= params.src_width || src_y >= params.src_height) {
+        return;
+    }
+
+    const uint y_plane_base = params.tile_index * params.src_width * params.src_height;
+    const uint chroma_plane_base = params.tile_index * params.chroma_width * params.chroma_height;
+    device const uchar *tile_y_plane = y_plane + y_plane_base;
+    device const uchar *tile_cb_plane = cb_plane + chroma_plane_base;
+    device const uchar *tile_cr_plane = cr_plane + chroma_plane_base;
+
+    const uint y_idx = src_y * params.src_width + src_x;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        tile_cb_plane,
+        tile_cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
+    out.write(rgba_float_ycbcr(tile_y_plane[y_idx], cb, cr, params.alpha), gid);
+}
+
+kernel void jpeg_copy_rgb8_to_rgba_texture(
+    device const uchar *rgb [[buffer(0)]],
+    constant JpegRgb8ToRgbaTextureParams &params [[buffer(1)]],
+    texture2d<float, access::write> out [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint idx = gid.y * params.in_stride + gid.x * 3u;
+    out.write(float4(
+        float(rgb[idx]) / 255.0f,
+        float(rgb[idx + 1u]) / 255.0f,
+        float(rgb[idx + 2u]) / 255.0f,
+        float(params.alpha) / 255.0f
+    ), gid);
 }
 
 kernel void jpeg_pack_420_windowed_rgba(
@@ -5890,24 +7530,19 @@ kernel void jpeg_pack_420_windowed_rgba(
     }
 
     const uint y_idx = src_y * params.src_width + src_x;
-    const uint chroma_y = min(src_y / 2u, params.chroma_height - 1u);
-    const uint near_y = (src_y & 1u) == 0u
-        ? (chroma_y == 0u ? 0u : chroma_y - 1u)
-        : min(chroma_y + 1u, params.chroma_height - 1u);
-    device const uchar *curr_cb = cb_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cb = cb_plane + near_y * params.chroma_width;
-    device const uchar *curr_cr = cr_plane + chroma_y * params.chroma_width;
-    device const uchar *near_cr = cr_plane + near_y * params.chroma_width;
-
-    const uchar cb = h2v2_sample(near_cb, curr_cb, params.chroma_width, src_x);
-    const uchar cr = h2v2_sample(near_cr, curr_cr, params.chroma_width, src_x);
-    const int y = int(y_plane[y_idx]);
-    const int cb_centered = int(cb) - 128;
-    const int cr_centered = int(cr) - 128;
+    uchar cb;
+    uchar cr;
+    jpeg_sample_420_chroma(
+        cb_plane,
+        cr_plane,
+        params.chroma_width,
+        params.chroma_height,
+        src_x,
+        src_y,
+        cb,
+        cr
+    );
 
     const uint out_idx = gid.y * params.out_stride + gid.x * 4u;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
-    out[out_idx + 3] = uchar(params.alpha);
+    store_rgba_ycbcr(out, out_idx, y_plane[y_idx], cb, cr, params.alpha);
 }

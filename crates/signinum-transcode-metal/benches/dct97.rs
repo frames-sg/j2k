@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -184,7 +184,7 @@ const WSI_FIXTURES: [WsiFixtureSpec; 12] = [
 ];
 
 fn bench_dct97_idct_dwt(c: &mut Criterion) {
-    black_box(DIRECT_BENCH_MARKERS);
+    std::hint::black_box(DIRECT_BENCH_MARKERS);
     let mut group = c.benchmark_group("dct97_metal_idct_dwt");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
@@ -208,9 +208,9 @@ fn bench_dct97_idct_dwt(c: &mut Criterion) {
             |b, job| {
                 let mut scratch = Dct97GridScratch::default();
                 b.iter(|| {
-                    black_box(
+                    std::hint::black_box(
                         dct8x8_blocks_then_dwt97_float_with_scratch(
-                            black_box(job.blocks),
+                            std::hint::black_box(job.blocks),
                             job.block_cols,
                             job.block_rows,
                             job.width,
@@ -230,9 +230,9 @@ fn bench_dct97_idct_dwt(c: &mut Criterion) {
                 |b, job| {
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             accelerator
-                                .dct_grid_to_dwt97(black_box(*job))
+                                .dct_grid_to_dwt97(std::hint::black_box(*job))
                                 .expect("explicit Metal 9/7 transform succeeds")
                                 .expect("explicit Metal handles benchmark job"),
                         );
@@ -248,7 +248,7 @@ fn bench_dct97_idct_dwt(c: &mut Criterion) {
 }
 
 fn bench_dct53_projection(c: &mut Criterion) {
-    black_box(DIRECT_BENCH_MARKERS);
+    std::hint::black_box(DIRECT_BENCH_MARKERS);
     let mut group = c.benchmark_group("dct53_metal_projection");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
@@ -272,9 +272,9 @@ fn bench_dct53_projection(c: &mut Criterion) {
             |b, job| {
                 let mut scratch = Dct53GridScratch::default();
                 b.iter(|| {
-                    black_box(
+                    std::hint::black_box(
                         dct8x8_blocks_to_dwt53_float_linear_with_scratch(
-                            black_box(job.blocks),
+                            std::hint::black_box(job.blocks),
                             job.block_cols,
                             job.block_rows,
                             job.width,
@@ -294,9 +294,9 @@ fn bench_dct53_projection(c: &mut Criterion) {
                 |b, job| {
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             accelerator
-                                .dct_grid_to_dwt53(black_box(*job))
+                                .dct_grid_to_dwt53(std::hint::black_box(*job))
                                 .expect("explicit Metal 5/3 projection succeeds")
                                 .expect("explicit Metal handles benchmark job"),
                         );
@@ -312,7 +312,7 @@ fn bench_dct53_projection(c: &mut Criterion) {
 }
 
 fn bench_reversible_dct53_projection(c: &mut Criterion) {
-    black_box(REVERSIBLE_BENCH_MARKERS);
+    std::hint::black_box(REVERSIBLE_BENCH_MARKERS);
     let mut group = c.benchmark_group("reversible_dct53_metal_projection");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
@@ -336,9 +336,9 @@ fn bench_reversible_dct53_projection(c: &mut Criterion) {
             |b, job| {
                 let mut accelerator = RayonReversibleDwt53Accelerator::default();
                 b.iter(|| {
-                    black_box(
+                    std::hint::black_box(
                         accelerator
-                            .dct_grid_to_reversible_dwt53(black_box(*job))
+                            .dct_grid_to_reversible_dwt53(std::hint::black_box(*job))
                             .expect("rayon reversible 5/3 projection succeeds")
                             .expect("rayon handles benchmark job"),
                     );
@@ -353,9 +353,9 @@ fn bench_reversible_dct53_projection(c: &mut Criterion) {
                 |b, job| {
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             accelerator
-                                .dct_grid_to_reversible_dwt53(black_box(*job))
+                                .dct_grid_to_reversible_dwt53(std::hint::black_box(*job))
                                 .expect("explicit Metal reversible 5/3 projection succeeds")
                                 .expect("explicit Metal handles benchmark job"),
                         );
@@ -371,7 +371,7 @@ fn bench_reversible_dct53_projection(c: &mut Criterion) {
 }
 
 fn bench_reversible_dct53_batch_projection(c: &mut Criterion) {
-    black_box(REVERSIBLE_BATCH_BENCH_MARKERS);
+    std::hint::black_box(REVERSIBLE_BATCH_BENCH_MARKERS);
     let mut group = c.benchmark_group("reversible_dct53_batch_metal_projection");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
@@ -415,12 +415,12 @@ fn bench_reversible_dct53_batch_projection(c: &mut Criterion) {
                         for job in jobs {
                             outputs.push(
                                 accelerator
-                                    .dct_grid_to_reversible_dwt53(black_box(*job))
+                                    .dct_grid_to_reversible_dwt53(std::hint::black_box(*job))
                                     .expect("rayon reversible 5/3 batch item succeeds")
                                     .expect("rayon handles reversible 5/3 batch item"),
                             );
                         }
-                        black_box(outputs);
+                        std::hint::black_box(outputs);
                     });
                 },
             );
@@ -434,9 +434,9 @@ fn bench_reversible_dct53_batch_projection(c: &mut Criterion) {
                     |b, jobs| {
                         let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                         b.iter(|| {
-                            black_box(
+                            std::hint::black_box(
                                 accelerator
-                                    .dct_grid_to_reversible_dwt53_batch(black_box(jobs))
+                                    .dct_grid_to_reversible_dwt53_batch(std::hint::black_box(jobs))
                                     .expect("explicit Metal reversible 5/3 batch succeeds")
                                     .expect("explicit Metal handles benchmark batch"),
                             );
@@ -468,9 +468,9 @@ fn bench_jpeg_to_htj2k_wsi(c: &mut Criterion) {
             let mut transcoder = JpegToHtj2kTranscoder::default();
             let options = JpegToHtj2kOptions::lossy_97();
             b.iter(|| {
-                black_box(
+                std::hint::black_box(
                     transcoder
-                        .transcode(black_box(jpeg), &options)
+                        .transcode(std::hint::black_box(jpeg), &options)
                         .expect("scalar JPEG to HTJ2K 9/7 transcode succeeds"),
                 );
             });
@@ -485,10 +485,10 @@ fn bench_jpeg_to_htj2k_wsi(c: &mut Criterion) {
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                     let options = JpegToHtj2kOptions::lossy_97();
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             transcoder
                                 .transcode_with_accelerator(
-                                    black_box(jpeg),
+                                    std::hint::black_box(jpeg),
                                     &options,
                                     &mut accelerator,
                                 )
@@ -524,9 +524,9 @@ fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
                 ..JpegToHtj2kOptions::lossless_53()
             };
             b.iter(|| {
-                black_box(
+                std::hint::black_box(
                     transcoder
-                        .transcode(black_box(jpeg), &options)
+                        .transcode(std::hint::black_box(jpeg), &options)
                         .expect("scalar JPEG to HTJ2K 5/3 transcode succeeds"),
                 );
             });
@@ -544,10 +544,10 @@ fn bench_jpeg_to_htj2k_wsi_53(c: &mut Criterion) {
                         ..JpegToHtj2kOptions::lossless_53()
                     };
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             transcoder
                                 .transcode_with_accelerator(
-                                    black_box(jpeg),
+                                    std::hint::black_box(jpeg),
                                     &options,
                                     &mut accelerator,
                                 )
@@ -580,9 +580,9 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
             let mut transcoder = JpegToHtj2kTranscoder::default();
             let options = JpegToHtj2kOptions::lossless_53();
             b.iter(|| {
-                black_box(
+                std::hint::black_box(
                     transcoder
-                        .transcode(black_box(jpeg), &options)
+                        .transcode(std::hint::black_box(jpeg), &options)
                         .expect("scalar JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
                 );
             });
@@ -593,9 +593,13 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
             let mut accelerator = RayonReversibleDwt53Accelerator::default();
             let options = JpegToHtj2kOptions::lossless_53();
             b.iter(|| {
-                black_box(
+                std::hint::black_box(
                     transcoder
-                        .transcode_with_accelerator(black_box(jpeg), &options, &mut accelerator)
+                        .transcode_with_accelerator(
+                            std::hint::black_box(jpeg),
+                            &options,
+                            &mut accelerator,
+                        )
                         .expect("rayon JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
                 );
             });
@@ -609,9 +613,13 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
                 let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
                 let options = JpegToHtj2kOptions::lossless_53();
                 b.iter(|| {
-                    black_box(
+                    std::hint::black_box(
                         transcoder
-                            .transcode_with_accelerator(black_box(jpeg), &options, &mut accelerator)
+                            .transcode_with_accelerator(
+                                std::hint::black_box(jpeg),
+                                &options,
+                                &mut accelerator,
+                            )
                             .expect("auto Metal JPEG to HTJ2K IntegerDirect53 transcode succeeds"),
                     );
                 });
@@ -627,10 +635,10 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
                     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                     let options = JpegToHtj2kOptions::lossless_53();
                     b.iter(|| {
-                        black_box(
+                        std::hint::black_box(
                             transcoder
                                 .transcode_with_accelerator(
-                                    black_box(jpeg),
+                                    std::hint::black_box(jpeg),
                                     &options,
                                     &mut accelerator,
                                 )
@@ -651,7 +659,7 @@ fn bench_jpeg_to_htj2k_wsi_integer_53(c: &mut Criterion) {
 }
 
 fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
-    black_box(WSI_TILE_BATCH_BENCH_MARKERS);
+    std::hint::black_box(WSI_TILE_BATCH_BENCH_MARKERS);
     let mut group = c.benchmark_group("jpeg_to_htj2k_wsi_integer_53_tile_batch");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
@@ -675,10 +683,10 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                     let mut transcoder = JpegToHtj2kTranscoder::default();
                     let mut accelerator = RayonReversibleDwt53Accelerator::default();
                     b.iter(|| {
-                        black_box(expect_successful_batch(
+                        std::hint::black_box(expect_successful_batch(
                             transcoder
                                 .transcode_batch_with_accelerator(
-                                    black_box(inputs),
+                                    std::hint::black_box(inputs),
                                     &options,
                                     &mut accelerator,
                                 )
@@ -696,10 +704,10 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                     let mut transcoder = JpegToHtj2kTranscoder::default();
                     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
                     b.iter(|| {
-                        black_box(expect_successful_batch(
+                        std::hint::black_box(expect_successful_batch(
                             transcoder
                                 .transcode_batch_with_accelerator(
-                                    black_box(inputs),
+                                    std::hint::black_box(inputs),
                                     &options,
                                     &mut accelerator,
                                 )
@@ -718,10 +726,10 @@ fn bench_jpeg_to_htj2k_wsi_integer_53_tile_batch(c: &mut Criterion) {
                         let mut transcoder = JpegToHtj2kTranscoder::default();
                         let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
                         b.iter(|| {
-                            black_box(expect_successful_batch(
+                            std::hint::black_box(expect_successful_batch(
                                 transcoder
                                     .transcode_batch_with_accelerator(
-                                        black_box(inputs),
+                                        std::hint::black_box(inputs),
                                         &options,
                                         &mut accelerator,
                                     )

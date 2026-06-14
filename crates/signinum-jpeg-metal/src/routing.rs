@@ -2,7 +2,7 @@
 
 use signinum_core::{BackendRequest, PixelFormat};
 use signinum_jpeg::{
-    adapter::{JpegMetalFast420PacketV1, JpegMetalFast422PacketV1, JpegMetalFast444PacketV1},
+    adapter::{JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1},
     Decoder as CpuDecoder,
 };
 
@@ -42,9 +42,9 @@ impl JpegMetalCapabilities {
         _decoder: &CpuDecoder<'_>,
         fmt: PixelFormat,
         _op: BatchOp,
-        fast444_packet: Option<&JpegMetalFast444PacketV1>,
-        fast422_packet: Option<&JpegMetalFast422PacketV1>,
-        fast420_packet: Option<&JpegMetalFast420PacketV1>,
+        fast444_packet: Option<&JpegFast444PacketV1>,
+        fast422_packet: Option<&JpegFast422PacketV1>,
+        fast420_packet: Option<&JpegFast420PacketV1>,
     ) -> Self {
         let has_fast_packet =
             fast444_packet.is_some() || fast422_packet.is_some() || fast420_packet.is_some();

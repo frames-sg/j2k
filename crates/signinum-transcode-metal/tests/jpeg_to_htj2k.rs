@@ -3,16 +3,22 @@
 #[cfg(target_os = "macos")]
 use signinum_j2k_native::{DecodeSettings, Image};
 #[cfg(target_os = "macos")]
+use signinum_test_support::{
+    jpeg_baseline_420_16x16, jpeg_baseline_422_16x8, jpeg_baseline_444_8x8, jpeg_grayscale_8x8,
+};
+#[cfg(target_os = "macos")]
+use signinum_transcode::accelerator::TranscodeStageError;
+use signinum_transcode::JpegToHtj2kError;
+#[cfg(target_os = "macos")]
 use signinum_transcode::{
     JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
-#[cfg(target_os = "macos")]
-use signinum_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
+use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = jpeg_baseline_420_16x16();
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -20,9 +26,9 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    let encoded = match transcoder.transcode_with_accelerator(jpeg, &options, &mut accelerator) {
+    let encoded = match transcoder.transcode_with_accelerator(&jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!(
                 "skipping Metal transcode integration test because no Metal device is available"
             );
@@ -64,7 +70,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_97_and_native_sampling
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let jpeg = jpeg_baseline_420_16x16();
     let options = JpegToHtj2kOptions {
         coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
         validate_against_float_reference: true,
@@ -73,9 +79,9 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    let encoded = match transcoder.transcode_with_accelerator(jpeg, &options, &mut accelerator) {
+    let encoded = match transcoder.transcode_with_accelerator(&jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!(
                 "skipping Metal transcode integration test because no Metal device is available"
             );
@@ -118,7 +124,7 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_53_and_native_sampling
 #[test]
 fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../fixtures/conformance/grayscale_8x8.jpg"),
+        &jpeg_grayscale_8x8(),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1)],
         &[(1, 1)],
@@ -130,7 +136,7 @@ fn grayscale_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../fixtures/conformance/baseline_444_8x8.jpg"),
+        &jpeg_baseline_444_8x8(),
         "full_resolution_components_integer_direct_53",
         &[(8, 8, 1, 1), (8, 8, 1, 1), (8, 8, 1, 1)],
         &[(1, 1), (1, 1), (1, 1)],
@@ -142,7 +148,7 @@ fn ycbcr_444_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../fixtures/conformance/baseline_422_16x8.jpg"),
+        &jpeg_baseline_422_16x8(),
         "native_component_sampling_integer_direct_53",
         &[(16, 8, 1, 1), (8, 8, 2, 1), (8, 8, 2, 1)],
         &[(1, 1), (2, 1), (2, 1)],
@@ -154,7 +160,7 @@ fn ycbcr_422_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[test]
 fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() {
     assert_explicit_metal_integer53_matches_scalar(
-        include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg"),
+        &jpeg_baseline_420_16x16(),
         "native_component_sampling_integer_direct_53",
         &[(16, 16, 1, 1), (8, 8, 2, 2), (8, 8, 2, 2)],
         &[(1, 1), (2, 2), (2, 2)],
@@ -165,15 +171,20 @@ fn ycbcr_420_jpeg_transcodes_to_htj2k_with_explicit_metal_reversible_53_batch() 
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let jpeg = jpeg_baseline_420_16x16();
+    let inputs = vec![
+        JpegTileBatchInput {
+            bytes: jpeg.as_slice(),
+        };
+        4
+    ];
     let options = JpegToHtj2kOptions {
         validate_against_integer_reference: true,
         ..JpegToHtj2kOptions::lossless_53()
     };
     let mut scalar_transcoder = JpegToHtj2kTranscoder::default();
     let scalar = scalar_transcoder
-        .transcode(jpeg, &options)
+        .transcode(&jpeg, &options)
         .expect("scalar IntegerDirect53 transcode succeeds");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
@@ -184,7 +195,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
         &mut accelerator,
     ) {
         Ok(batch) => batch,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!(
                     "skipping Metal reversible batch transcode integration test because no Metal device is available"
                 );
@@ -211,8 +222,13 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_reversible_53_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let jpeg = jpeg_baseline_420_16x16();
+    let inputs = vec![
+        JpegTileBatchInput {
+            bytes: jpeg.as_slice(),
+        };
+        4
+    ];
     let options = JpegToHtj2kOptions {
         validate_against_float_reference: true,
         ..JpegToHtj2kOptions::lossy_97()
@@ -226,7 +242,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
         &mut accelerator,
     ) {
         Ok(batch) => batch,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!("skipping Metal 9/7 batch transcode integration test because no Metal device is available");
             return;
         }
@@ -273,8 +289,13 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_across_tiles() {
 #[cfg(target_os = "macos")]
 #[test]
 fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
-    let jpeg = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-    let inputs = vec![JpegTileBatchInput { bytes: jpeg }; 4];
+    let jpeg = jpeg_baseline_420_16x16();
+    let inputs = vec![
+        JpegTileBatchInput {
+            bytes: jpeg.as_slice(),
+        };
+        4
+    ];
     let options = JpegToHtj2kOptions::lossy_97();
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
@@ -285,7 +306,7 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
         &mut accelerator,
     ) {
         Ok(batch) => batch,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!("skipping Metal 9/7 code-block batch transcode integration test because no Metal device is available");
             return;
         }
@@ -351,7 +372,7 @@ fn assert_explicit_metal_integer53_matches_scalar(
 
     let encoded = match transcoder.transcode_with_accelerator(jpeg, &options, &mut accelerator) {
         Ok(encoded) => encoded,
-        Err(error) if error.to_string().contains(METAL_UNAVAILABLE) => {
+        Err(JpegToHtj2kError::Accelerator(TranscodeStageError::DeviceUnavailable)) => {
             eprintln!(
                 "skipping Metal reversible transcode integration test because no Metal device is available"
             );

@@ -1,14 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
+use signinum_core::{BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
 use signinum_jpeg::{Decoder, ScratchPool};
+#[cfg(target_os = "macos")]
+use signinum_jpeg_metal::viewport::{
+    choose_resizable_metal_viewport_strategy, compose_viewport_hybrid,
+    compose_viewport_to_resizable_metal_buffer_with_session,
+    compose_viewport_to_resizable_metal_textures_with_session, decode_viewport_region_hybrid,
+    decode_viewport_region_to_resizable_metal_buffer_with_session,
+    decode_viewport_region_to_resizable_metal_textures_with_session,
+    decode_viewport_to_resizable_metal_buffer_with_decoder_session,
+    decode_viewport_to_resizable_metal_buffer_with_session,
+    decode_viewport_to_resizable_metal_textures_with_decoder_session,
+    decode_viewport_to_resizable_metal_textures_with_session, ViewportResidentOutputStrategy,
+};
 use signinum_jpeg_metal::viewport::{
     choose_viewport_surface_strategy, compose_viewport_cpu, decode_viewport_region_cpu,
     decode_viewport_to_surface, is_contiguous_viewport_workload, suggest_viewport_workload,
     viewport_source_bounds, ViewportSurfaceStrategy, ViewportTile,
 };
 #[cfg(target_os = "macos")]
-use signinum_jpeg_metal::viewport::{compose_viewport_hybrid, decode_viewport_region_hybrid};
+use signinum_jpeg_metal::{
+    Decoder as MetalDecoder, MetalBackendSession, MetalBatchOutputBuffer, MetalBatchTextureOutput,
+    SurfaceResidency,
+};
 
 const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
 const GRAYSCALE: &[u8] = include_bytes!("../fixtures/jpeg/grayscale_8x8.jpg");
@@ -72,6 +87,51 @@ fn quadrant_tiles() -> [ViewportTile; 4] {
             },
         },
     ]
+}
+
+#[cfg(target_os = "macos")]
+fn rgb_to_rgba_opaque(rgb: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    for pixel in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(pixel);
+        rgba.push(u8::MAX);
+    }
+    rgba
+}
+
+#[cfg(target_os = "macos")]
+fn download_rgba8_texture(
+    session: &MetalBackendSession,
+    texture: &metal::TextureRef,
+    dimensions: (u32, u32),
+) -> Vec<u8> {
+    let row_bytes = dimensions.0 as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let byte_len = row_bytes * dimensions.1 as usize;
+    let buffer = session.device().new_buffer(
+        byte_len as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let queue = session.device().new_command_queue();
+    let command_buffer = queue.new_command_buffer();
+    let blit = command_buffer.new_blit_command_encoder();
+    blit.copy_from_texture_to_buffer(
+        texture,
+        0,
+        0,
+        metal::MTLOrigin { x: 0, y: 0, z: 0 },
+        metal::MTLSize::new(u64::from(dimensions.0), u64::from(dimensions.1), 1),
+        &buffer,
+        0,
+        row_bytes as u64,
+        byte_len as u64,
+        metal::MTLBlitOption::None,
+    );
+    blit.end_encoding();
+    command_buffer.commit();
+    command_buffer.wait_until_completed();
+
+    // SAFETY: The test buffer size is computed from the validated viewport dimensions.
+    unsafe { core::slice::from_raw_parts(buffer.contents().cast::<u8>(), byte_len).to_vec() }
 }
 
 #[test]
@@ -272,6 +332,69 @@ fn cpu_auto_strategy_prefers_contiguous_when_available() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn reusable_metal_viewport_strategy_reports_direct_contiguous_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: quadrant_tiles().to_vec(),
+    };
+
+    assert_eq!(
+        choose_resizable_metal_viewport_strategy(&decoder, &workload)
+            .expect("resident viewport strategy"),
+        ViewportResidentOutputStrategy::DirectContiguous
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_strategy_reports_sparse_composition_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+
+    assert_eq!(
+        choose_resizable_metal_viewport_strategy(&decoder, &workload)
+            .expect("resident viewport strategy"),
+        ViewportResidentOutputStrategy::Composite
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn hybrid_viewport_quadrants_match_cpu_viewport() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
@@ -337,6 +460,154 @@ fn hybrid_viewport_misaligned_scaled_tile_matches_cpu_viewport() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn sparse_viewport_composition_resizes_reusable_metal_output_buffer() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+    assert!(!is_contiguous_viewport_workload(&workload));
+    let expected = compose_viewport_cpu(
+        &decoder,
+        &mut cpu_pool,
+        PixelFormat::Rgb8,
+        workload.scale,
+        workload.viewport_dims,
+        &workload.tiles,
+    )
+    .expect("cpu viewport");
+
+    let surface = compose_viewport_to_resizable_metal_buffer_with_session(
+        &decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident sparse viewport");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_buffer_helper_routes_sparse_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+    assert!(!is_contiguous_viewport_workload(&workload));
+    let expected = compose_viewport_cpu(
+        &decoder,
+        &mut cpu_pool,
+        PixelFormat::Rgb8,
+        workload.scale,
+        workload.viewport_dims,
+        &workload.tiles,
+    )
+    .expect("cpu viewport");
+
+    let surface = decode_viewport_to_resizable_metal_buffer_with_session(
+        &decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident sparse viewport");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn hybrid_contiguous_viewport_region_matches_cpu_region() {
     let decoder = Decoder::new(BASELINE_420).expect("decoder");
     let mut cpu_pool = ScratchPool::new();
@@ -354,6 +625,362 @@ fn hybrid_contiguous_viewport_region_matches_cpu_region() {
         .expect("hybrid viewport region");
 
     assert_eq!(actual.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn contiguous_viewport_region_resizes_reusable_metal_output_buffer() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    let expected =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+
+    let surface = decode_viewport_region_to_resizable_metal_buffer_with_session(
+        BASELINE_420,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport region");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn contiguous_viewport_region_resizes_reusable_metal_textures() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    let expected_rgb =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+    let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+    let tile = decode_viewport_region_to_resizable_metal_textures_with_session(
+        BASELINE_420,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport texture");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(tile.dimensions(), workload.viewport_dims);
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+    assert!(std::ptr::eq(
+        tile.texture(),
+        output.texture(0).expect("output texture")
+    ));
+    assert_eq!(
+        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        expected_rgba
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_buffer() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let metal_decoder = MetalDecoder::new(BASELINE_420).expect("metal decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchOutputBuffer::new_rgb8_tiles(&session, (1, 1), 1).expect("output buffer");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    assert!(is_contiguous_viewport_workload(&workload));
+    let expected =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+
+    let surface = decode_viewport_to_resizable_metal_buffer_with_decoder_session(
+        &metal_decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport buffer");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+    assert_eq!(surface.dimensions(), workload.viewport_dims);
+    assert_eq!(surface.pixel_format(), PixelFormat::Rgb8);
+    let (buffer, offset) = surface.metal_buffer().expect("metal buffer");
+    assert!(std::ptr::eq(buffer.as_ref(), output.buffer()));
+    assert_eq!(offset, 0);
+    assert_eq!(surface.as_bytes(), expected.as_slice());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_decoder_helper_routes_contiguous_workload_to_textures() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let metal_decoder = MetalDecoder::new(BASELINE_420).expect("metal decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    assert!(is_contiguous_viewport_workload(&workload));
+    let expected_rgb =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+    let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+    let tile = decode_viewport_to_resizable_metal_textures_with_decoder_session(
+        &metal_decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport texture");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(tile.dimensions(), workload.viewport_dims);
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+    assert!(std::ptr::eq(
+        tile.texture(),
+        output.texture(0).expect("output texture")
+    ));
+    assert_eq!(
+        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        expected_rgba
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn reusable_metal_viewport_texture_helper_routes_contiguous_workload() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+    let roi = Rect {
+        x: 1,
+        y: 2,
+        w: 10,
+        h: 9,
+    };
+    let scaled = roi.scaled_covering(Downscale::Quarter);
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::Quarter,
+        viewport_dims: (scaled.w, scaled.h),
+        tiles: vec![ViewportTile {
+            source_roi: roi,
+            dest: Rect {
+                x: 0,
+                y: 0,
+                w: scaled.w,
+                h: scaled.h,
+            },
+        }],
+    };
+    assert!(is_contiguous_viewport_workload(&workload));
+    let expected_rgb =
+        decode_viewport_region_cpu(&decoder, &mut cpu_pool, PixelFormat::Rgb8, &workload)
+            .expect("cpu viewport region");
+    let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+    let tile = decode_viewport_to_resizable_metal_textures_with_session(
+        &decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident viewport texture");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(tile.dimensions(), workload.viewport_dims);
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+    assert!(std::ptr::eq(
+        tile.texture(),
+        output.texture(0).expect("output texture")
+    ));
+    assert_eq!(
+        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        expected_rgba
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sparse_viewport_composition_resizes_reusable_metal_texture_output() {
+    let decoder = Decoder::new(BASELINE_420).expect("decoder");
+    let mut cpu_pool = ScratchPool::new();
+    let mut metal_pool = ScratchPool::new();
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let mut output =
+        MetalBatchTextureOutput::new_rgba8_tiles(&session, (1, 1), 1).expect("texture output");
+    let workload = signinum_jpeg_metal::viewport::ViewportWorkload {
+        scale: Downscale::None,
+        viewport_dims: (16, 16),
+        tiles: vec![
+            ViewportTile {
+                source_roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 8,
+                    h: 8,
+                },
+            },
+            ViewportTile {
+                source_roi: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                dest: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+            },
+        ],
+    };
+    assert!(!is_contiguous_viewport_workload(&workload));
+    let expected_rgb = compose_viewport_cpu(
+        &decoder,
+        &mut cpu_pool,
+        PixelFormat::Rgb8,
+        workload.scale,
+        workload.viewport_dims,
+        &workload.tiles,
+    )
+    .expect("cpu viewport");
+    let expected_rgba = rgb_to_rgba_opaque(&expected_rgb);
+
+    let tile = compose_viewport_to_resizable_metal_textures_with_session(
+        &decoder,
+        &mut metal_pool,
+        &workload,
+        &mut output,
+        &session,
+    )
+    .expect("resident sparse viewport texture");
+
+    assert_eq!(output.dimensions(), workload.viewport_dims);
+    assert_eq!(output.tile_capacity(), 1);
+    assert_eq!(tile.dimensions(), workload.viewport_dims);
+    assert_eq!(tile.pixel_format(), PixelFormat::Rgba8);
+    assert!(std::ptr::eq(
+        tile.texture(),
+        output.texture(0).expect("output texture")
+    ));
+    assert_eq!(
+        download_rgba8_texture(&session, tile.texture(), tile.dimensions()),
+        expected_rgba
+    );
 }
 
 #[cfg(target_os = "macos")]
