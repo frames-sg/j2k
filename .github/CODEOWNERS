@@ -1,0 +1,11 @@
+# GPU and accelerator surfaces require maintainer review.
+.github/CODEOWNERS @frames-sg/signinum-maintainers
+.github/workflows/gpu-validation.yml @frames-sg/signinum-maintainers
+crates/signinum-cuda-runtime/ @frames-sg/signinum-maintainers
+crates/signinum-jpeg-cuda/ @frames-sg/signinum-maintainers
+crates/signinum-j2k-cuda/ @frames-sg/signinum-maintainers
+crates/signinum-transcode-cuda/ @frames-sg/signinum-maintainers
+crates/signinum-metal-support/ @frames-sg/signinum-maintainers
+crates/signinum-jpeg-metal/ @frames-sg/signinum-maintainers
+crates/signinum-j2k-metal/ @frames-sg/signinum-maintainers
+crates/signinum-transcode-metal/ @frames-sg/signinum-maintainers
