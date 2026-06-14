@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    bounded::{copy_scratch_to_output, read_to_scratch_bounded, BoundedReadError},
+    bounded::{read_to_output_bounded, BoundedReadError},
     pool::DeflatePool,
     TileCodecError,
 };
@@ -24,27 +24,20 @@ impl TileDecompress for DeflateCodec {
         input: &[u8],
         out: &mut [u8],
     ) -> Result<usize, Self::Error> {
-        match read_to_scratch_bounded(ZlibDecoder::new(input), &mut pool.scratch, out.len()) {
-            Ok(written) => {
-                copy_scratch_to_output(&pool.scratch, out);
-                Ok(written)
-            }
+        match read_to_output_bounded(ZlibDecoder::new(input), &mut pool.scratch, out) {
+            Ok(written) => Ok(written),
             Err(BoundedReadError::OutputTooSmall(error)) => Err(error.into()),
-            Err(BoundedReadError::Io(zlib_error)) => {
+            Err(BoundedReadError::Io(_zlib_error)) => {
                 pool.scratch.clear();
-                match read_to_scratch_bounded(
-                    DeflateDecoder::new(input),
-                    &mut pool.scratch,
-                    out.len(),
-                ) {
-                    Ok(written) => {
-                        copy_scratch_to_output(&pool.scratch, out);
-                        Ok(written)
-                    }
+                match read_to_output_bounded(DeflateDecoder::new(input), &mut pool.scratch, out) {
+                    Ok(written) => Ok(written),
                     Err(BoundedReadError::OutputTooSmall(error)) => Err(error.into()),
-                    Err(BoundedReadError::Io(raw_error)) => Err(TileCodecError::Backend(format!(
-                        "deflate decode failed (zlib: {zlib_error}; raw: {raw_error})"
-                    ))),
+                    Err(BoundedReadError::Io(raw_error)) => {
+                        Err(crate::error::input_or_backend_io_error(
+                            &raw_error,
+                            "deflate decode failed",
+                        ))
+                    }
                 }
             }
         }

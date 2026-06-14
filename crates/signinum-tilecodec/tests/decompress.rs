@@ -4,7 +4,7 @@ use flate2::{
     write::{DeflateEncoder, ZlibEncoder},
     Compression,
 };
-use signinum_core::{ScratchPool, TileDecompress};
+use signinum_core::{CodecError, ScratchPool, TileDecompress};
 use signinum_tilecodec::{
     DeflateCodec, DeflatePool, LzwCodec, LzwPool, NoPool, TileCodecError, UncompressedCodec,
     ZstdCodec, ZstdPool,
@@ -17,6 +17,7 @@ fn sample_bytes() -> Vec<u8> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "flate2 zlib backend calls foreign functions")]
 fn deflate_codec_decodes_zlib_wrapped_payload() {
     let source = sample_bytes();
     let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
@@ -34,6 +35,7 @@ fn deflate_codec_decodes_zlib_wrapped_payload() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "flate2 zlib backend calls foreign functions")]
 fn deflate_codec_decodes_raw_deflate_payload() {
     let source = sample_bytes();
     let mut compressor = DeflateEncoder::new(Vec::new(), Compression::default());
@@ -50,6 +52,7 @@ fn deflate_codec_decodes_raw_deflate_payload() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "zstd backend calls foreign functions")]
 fn zstd_codec_roundtrips_payload() {
     let source = sample_bytes();
     let encoded = zstd::stream::encode_all(std::io::Cursor::new(&source), 1).expect("zstd encode");
@@ -77,6 +80,46 @@ fn lzw_codec_roundtrips_payload() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "deflate and zstd backends call foreign functions")]
+fn malformed_payloads_are_not_truncated_for_codec_error_classifier() {
+    let source = sample_bytes();
+
+    // Stored Deflate block with an invalid LEN/NLEN pair; this cannot be
+    // accepted by either the zlib-wrapped or raw-Deflate fallback path.
+    let deflate = [0x01_u8, 0x01, 0x00, 0x00, 0x00];
+
+    let mut deflate_pool = DeflatePool::new();
+    let mut zstd_pool = ZstdPool::new();
+    let mut out = vec![0_u8; source.len()];
+
+    for err in [
+        DeflateCodec::decompress_into(&mut deflate_pool, &deflate, &mut out)
+            .expect_err("malformed deflate must fail"),
+        ZstdCodec::decompress_into(&mut zstd_pool, &[0, 1, 2, 3], &mut out)
+            .expect_err("malformed zstd must fail"),
+    ] {
+        assert!(matches!(err, TileCodecError::Malformed { .. }), "{err:?}");
+        assert!(!CodecError::is_truncated(&err), "{err:?}");
+    }
+}
+
+#[test]
+fn truncated_payloads_are_input_errors_for_codec_error_classifier() {
+    let source = sample_bytes();
+    let mut lzw_encoder = Encoder::new(BitOrder::Msb, 8);
+    let mut lzw = lzw_encoder.encode(&source).expect("lzw encode");
+    lzw.pop();
+
+    let mut lzw_pool = LzwPool::new();
+    let mut out = vec![0_u8; source.len()];
+    let err = LzwCodec::decompress_into(&mut lzw_pool, &lzw, &mut out)
+        .expect_err("truncated lzw must fail");
+
+    assert!(matches!(err, TileCodecError::Input(_)), "{err:?}");
+    assert!(CodecError::is_truncated(&err), "{err:?}");
+}
+
+#[test]
 fn uncompressed_codec_copies_input_verbatim() {
     let source = sample_bytes();
     let mut pool = NoPool;
@@ -92,6 +135,7 @@ fn uncompressed_codec_copies_input_verbatim() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "deflate and zstd setup calls foreign functions")]
 fn codecs_reject_undersized_output() {
     let source = sample_bytes();
 
@@ -128,6 +172,7 @@ fn codecs_reject_undersized_output() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "flate2 zlib backend calls foreign functions")]
 fn deflate_codec_rejects_oversized_zlib_without_full_scratch_allocation() {
     let source = vec![0xA5; 1 << 20];
     let mut compressor = ZlibEncoder::new(Vec::new(), Compression::best());
@@ -154,6 +199,7 @@ fn deflate_codec_rejects_oversized_zlib_without_full_scratch_allocation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "zstd backend calls foreign functions")]
 fn zstd_codec_rejects_oversized_payload_without_full_scratch_allocation() {
     let source = vec![0x5A; 1 << 20];
     let encoded = zstd::stream::encode_all(std::io::Cursor::new(&source), 19).expect("zstd encode");
@@ -178,6 +224,7 @@ fn zstd_codec_rejects_oversized_payload_without_full_scratch_allocation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "large LZW stress case is too slow under Miri")]
 fn lzw_codec_rejects_oversized_payload_without_full_scratch_allocation() {
     let source = vec![0x33; 1 << 20];
     let mut compressor = Encoder::new(BitOrder::Msb, 8);
@@ -203,6 +250,7 @@ fn lzw_codec_rejects_oversized_payload_without_full_scratch_allocation() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "zstd backend calls foreign functions")]
 fn pools_can_be_reused_across_calls() {
     let source = sample_bytes();
     let encoded = zstd::stream::encode_all(std::io::Cursor::new(&source), 1).expect("zstd encode");
