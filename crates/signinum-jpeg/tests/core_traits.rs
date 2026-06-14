@@ -3,6 +3,7 @@ use signinum_core::{
     PixelFormat, RowSink, TileBatchDecode,
 };
 use signinum_jpeg::{Decoder, DecoderContext, JpegCodec, JpegError, ScratchPool};
+use signinum_test_support::{JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_RESTART_32X16};
 
 struct CollectRows {
     rows: Vec<Vec<u8>>,
@@ -19,7 +20,7 @@ impl RowSink<u8> for CollectRows {
 
 #[test]
 fn decoder_implements_core_traits_for_rgb_decode() {
-    let bytes = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let bytes = JPEG_BASELINE_420_16X16;
     let mut dec = <Decoder<'_> as ImageDecode<'_>>::from_view(
         <Decoder<'_> as ImageDecode<'_>>::parse(bytes).expect("parse"),
     )
@@ -50,7 +51,7 @@ fn decoder_implements_core_traits_for_rgb_decode() {
 
 #[test]
 fn core_inspect_exposes_restart_interval_and_coded_units_for_wsi_planning() {
-    let bytes = include_bytes!("../fixtures/conformance/baseline_420_restart_32x16.jpg");
+    let bytes = JPEG_BASELINE_420_RESTART_32X16;
     let info = <Decoder<'_> as ImageDecode<'_>>::inspect(bytes).expect("inspect");
 
     assert_eq!(info.dimensions, (32, 16));
@@ -68,7 +69,7 @@ fn core_inspect_exposes_restart_interval_and_coded_units_for_wsi_planning() {
 
 #[test]
 fn row_and_tile_core_traits_are_callable() {
-    let bytes = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let bytes = JPEG_BASELINE_420_16X16;
     let mut dec = Decoder::new(bytes).expect("decoder");
     let mut sink = CollectRows { rows: Vec::new() };
     <Decoder<'_> as ImageDecodeRows<'_, u8>>::decode_rows(&mut dec, &mut sink)

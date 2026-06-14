@@ -1,7 +1,7 @@
 use signinum_core::Downscale;
 use signinum_jpeg::{ComponentRowWriter, Decoder, Rect, ScratchPool};
 
-mod fixtures;
+use signinum_test_support as fixtures;
 
 #[derive(Default)]
 struct CollectRows {

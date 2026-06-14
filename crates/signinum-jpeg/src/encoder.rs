@@ -208,12 +208,6 @@ impl BitWriter {
         self.used = 0;
     }
 
-    fn push_restart_marker(&mut self, rst: u8) {
-        self.align_with_ones();
-        self.bytes.push(0xFF);
-        self.bytes.push(0xD0 + (rst & 0x07));
-    }
-
     pub(crate) fn into_bytes(mut self) -> Vec<u8> {
         self.align_with_ones();
         self.bytes
@@ -475,59 +469,56 @@ fn encode_entropy_serial(
     cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
 ) -> Result<Vec<u8>, JpegEncodeError> {
-    let mcu_width = u32::from(sampling.max_h) * 8;
-    let mcu_height = u32::from(sampling.max_v) * 8;
-    let mcus_per_row = width.div_ceil(mcu_width);
-    let mcu_rows = height.div_ceil(mcu_height);
-    let mut writer = BitWriter::new();
-    let mut prev_dc = [0i32; 3];
-    let mut mcus_since_restart = 0u16;
-    let mut rst = 0u8;
-
-    for mcu_y in 0..mcu_rows {
-        for mcu_x in 0..mcus_per_row {
-            if let Some(interval) = restart_interval {
-                if mcus_since_restart == interval {
-                    writer.push_restart_marker(rst);
-                    rst = (rst + 1) & 7;
-                    prev_dc = [0; 3];
-                    mcus_since_restart = 0;
-                }
-            }
-            for component in 0..sampling.components as usize {
-                let quant = if component == 0 { q_luma } else { q_chroma };
-                let dc_table = if component == 0 {
-                    dc_tables[0]
-                } else {
-                    dc_tables[1]
-                };
-                let ac_table = if component == 0 {
-                    ac_tables[0]
-                } else {
-                    ac_tables[1]
-                };
-                for block_y in 0..sampling.v[component] {
-                    for block_x in 0..sampling.h[component] {
-                        let block = sample_block(
-                            planes, width, height, sampling, component, mcu_x, mcu_y, block_x,
-                            block_y,
-                        );
-                        let coeffs = fdct_quantize(&block, quant, cosine);
-                        encode_block(
-                            &coeffs,
-                            &mut prev_dc[component],
-                            dc_table,
-                            ac_table,
-                            &mut writer,
-                        )?;
-                    }
-                }
-            }
-            mcus_since_restart = mcus_since_restart.saturating_add(1);
+    let (mcus_per_row, total_mcus) = entropy_mcu_layout(width, height, sampling)?;
+    if total_mcus == 0 {
+        return Ok(Vec::new());
+    }
+    if let Some(restart_interval) = restart_interval {
+        if restart_interval == 0 {
+            return Err(JpegEncodeError::InvalidRestartInterval);
         }
+        let restart_interval = u32::from(restart_interval);
+        let mut out = Vec::new();
+        let mut rst = 0u8;
+        for start_mcu in (0..total_mcus).step_by(restart_interval as usize) {
+            if start_mcu > 0 {
+                out.push(0xFF);
+                out.push(0xD0 + rst);
+                rst = (rst + 1) & 7;
+            }
+            let end_mcu = start_mcu.saturating_add(restart_interval).min(total_mcus);
+            out.extend_from_slice(&encode_entropy_mcu_range(
+                planes,
+                width,
+                height,
+                sampling,
+                q_luma,
+                q_chroma,
+                dc_tables,
+                ac_tables,
+                cosine,
+                mcus_per_row,
+                start_mcu,
+                end_mcu,
+            )?);
+        }
+        return Ok(out);
     }
 
-    Ok(writer.into_bytes())
+    encode_entropy_mcu_range(
+        planes,
+        width,
+        height,
+        sampling,
+        q_luma,
+        q_chroma,
+        dc_tables,
+        ac_tables,
+        cosine,
+        mcus_per_row,
+        0,
+        total_mcus,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -546,13 +537,7 @@ fn encode_entropy_restart_segments(
     if restart_interval == 0 {
         return Err(JpegEncodeError::InvalidRestartInterval);
     }
-    let mcu_width = u32::from(sampling.max_h) * 8;
-    let mcu_height = u32::from(sampling.max_v) * 8;
-    let mcus_per_row = width.div_ceil(mcu_width);
-    let mcu_rows = height.div_ceil(mcu_height);
-    let total_mcus = mcus_per_row
-        .checked_mul(mcu_rows)
-        .ok_or_else(|| JpegEncodeError::Internal("JPEG MCU count overflow".into()))?;
+    let (mcus_per_row, total_mcus) = entropy_mcu_layout(width, height, sampling)?;
     if total_mcus == 0 {
         return Ok(Vec::new());
     }
@@ -611,7 +596,7 @@ fn encode_entropy_mcu_range(
     for mcu_index in start_mcu..end_mcu {
         let mcu_y = mcu_index / mcus_per_row;
         let mcu_x = mcu_index % mcus_per_row;
-        for component in 0..sampling.components as usize {
+        for_each_mcu_block(sampling, |component, block_x, block_y| {
             let quant = if component == 0 { q_luma } else { q_chroma };
             let dc_table = if component == 0 {
                 dc_tables[0]
@@ -623,24 +608,52 @@ fn encode_entropy_mcu_range(
             } else {
                 ac_tables[1]
             };
-            for block_y in 0..sampling.v[component] {
-                for block_x in 0..sampling.h[component] {
-                    let block = sample_block(
-                        planes, width, height, sampling, component, mcu_x, mcu_y, block_x, block_y,
-                    );
-                    let coeffs = fdct_quantize(&block, quant, cosine);
-                    encode_block(
-                        &coeffs,
-                        &mut prev_dc[component],
-                        dc_table,
-                        ac_table,
-                        &mut writer,
-                    )?;
-                }
+            let block = sample_block(
+                planes, width, height, sampling, component, mcu_x, mcu_y, block_x, block_y,
+            );
+            let coeffs = fdct_quantize(&block, quant, cosine);
+            encode_block(
+                &coeffs,
+                &mut prev_dc[component],
+                dc_table,
+                ac_table,
+                &mut writer,
+            )
+        })?;
+    }
+    Ok(writer.into_bytes())
+}
+
+fn entropy_mcu_layout(
+    width: u32,
+    height: u32,
+    sampling: JpegBaselineSampling,
+) -> Result<(u32, u32), JpegEncodeError> {
+    let mcu_width = u32::from(sampling.max_h) * 8;
+    let mcu_height = u32::from(sampling.max_v) * 8;
+    let mcus_per_row = width.div_ceil(mcu_width);
+    let mcu_rows = height.div_ceil(mcu_height);
+    let total_mcus = mcus_per_row
+        .checked_mul(mcu_rows)
+        .ok_or_else(|| JpegEncodeError::Internal("JPEG MCU count overflow".into()))?;
+    Ok((mcus_per_row, total_mcus))
+}
+
+fn for_each_mcu_block<F>(
+    sampling: JpegBaselineSampling,
+    mut visit: F,
+) -> Result<(), JpegEncodeError>
+where
+    F: FnMut(usize, u8, u8) -> Result<(), JpegEncodeError>,
+{
+    for component in 0..sampling.components as usize {
+        for block_y in 0..sampling.v[component] {
+            for block_x in 0..sampling.h[component] {
+                visit(component, block_x, block_y)?;
             }
         }
     }
-    Ok(writer.into_bytes())
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

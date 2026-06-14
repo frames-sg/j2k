@@ -14,5 +14,7 @@ pub(crate) mod neon;
 pub(crate) mod avx2;
 
 pub(crate) use scalar::idct_islow;
+pub(crate) use scalar::idct_islow_12bit;
+pub(crate) use scalar::idct_islow_12bit_dc_only_sample;
 pub(crate) use scalar::idct_islow_dc_only;
 pub(crate) use scalar::idct_islow_dc_only_pixel;

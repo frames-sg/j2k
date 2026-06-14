@@ -3,7 +3,7 @@
 //! `Rgba8Writer` — 4-byte-per-pixel RGBA output. Alpha is a constant captured
 //! at construction time and written verbatim into every pixel's A channel.
 
-use crate::color::ycbcr::ycbcr_to_rgb;
+use crate::backend::Backend;
 use crate::error::JpegError;
 use crate::output::OutputWriter;
 
@@ -12,15 +12,28 @@ pub(crate) struct Rgba8Writer<'o> {
     stride: usize,
     width: u32,
     alpha: u8,
+    backend: Backend,
 }
 
 impl<'o> Rgba8Writer<'o> {
+    #[cfg(test)]
     pub(crate) fn new(out: &'o mut [u8], stride: usize, width: u32, alpha: u8) -> Self {
+        Self::new_with_backend(out, stride, width, alpha, Backend::detect())
+    }
+
+    pub(crate) fn new_with_backend(
+        out: &'o mut [u8],
+        stride: usize,
+        width: u32,
+        alpha: u8,
+        backend: Backend,
+    ) -> Self {
         Self {
             out,
             stride,
             width,
             alpha,
+            backend,
         }
     }
 }
@@ -36,13 +49,8 @@ impl OutputWriter for Rgba8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 4];
-        let alpha = self.alpha;
-        for i in 0..width {
-            dst[i * 4] = r_row[i];
-            dst[i * 4 + 1] = g_row[i];
-            dst[i * 4 + 2] = b_row[i];
-            dst[i * 4 + 3] = alpha;
-        }
+        self.backend
+            .fill_rgba_row_from_rgb(r_row, g_row, b_row, dst, self.alpha);
         Ok(())
     }
 
@@ -56,14 +64,8 @@ impl OutputWriter for Rgba8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 4];
-        let alpha = self.alpha;
-        for i in 0..width {
-            let (r, g, b) = ycbcr_to_rgb(y_row[i], cb_row[i], cr_row[i]);
-            dst[i * 4] = r;
-            dst[i * 4 + 1] = g;
-            dst[i * 4 + 2] = b;
-            dst[i * 4 + 3] = alpha;
-        }
+        self.backend
+            .fill_rgba_row_from_ycbcr(y_row, cb_row, cr_row, dst, self.alpha);
         Ok(())
     }
 
@@ -71,13 +73,8 @@ impl OutputWriter for Rgba8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 4];
-        let alpha = self.alpha;
-        for i in 0..width {
-            dst[i * 4] = gray_row[i];
-            dst[i * 4 + 1] = gray_row[i];
-            dst[i * 4 + 2] = gray_row[i];
-            dst[i * 4 + 3] = alpha;
-        }
+        self.backend
+            .fill_rgba_row_from_gray(gray_row, dst, self.alpha);
         Ok(())
     }
 }

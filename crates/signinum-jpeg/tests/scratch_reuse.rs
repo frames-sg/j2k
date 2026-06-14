@@ -4,9 +4,10 @@
 //! output on every iteration. Regression guard for Phase 3.
 
 use signinum_jpeg::{Decoder, Downscale, PixelFormat, Rect, ScratchPool};
+use signinum_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};
 
-const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-const GRAYSCALE_8X8: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
+const BASELINE_420: &[u8] = JPEG_BASELINE_420_16X16;
+const GRAYSCALE_8X8: &[u8] = JPEG_GRAYSCALE_8X8;
 
 #[test]
 fn rgb8_decode_is_byte_stable_across_pool_reuse() {

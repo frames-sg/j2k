@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-mod fixtures;
+use signinum_test_support as fixtures;
 
 use signinum_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctCodingMode,

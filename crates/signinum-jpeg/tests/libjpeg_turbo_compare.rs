@@ -4,6 +4,7 @@
 mod libjpeg_turbo;
 
 use signinum_jpeg::{Decoder, Downscale, PixelFormat, Rect};
+use signinum_test_support::JPEG_BASELINE_420_16X16;
 
 #[test]
 fn turbojpeg_rgb_and_region_match_signinum_fixture() {
@@ -17,7 +18,7 @@ fn turbojpeg_rgb_and_region_match_signinum_fixture() {
         return;
     }
 
-    let bytes = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let bytes = JPEG_BASELINE_420_16X16;
     let dec = Decoder::new(bytes).expect("signinum decoder");
     let mut turbo = libjpeg_turbo::TurboJpegDecoder::new().expect("turbojpeg decoder");
 

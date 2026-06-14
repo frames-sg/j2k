@@ -2,6 +2,7 @@
 
 //! Hidden helpers used by Criterion benches.
 
+use crate::backend::scalar;
 use crate::backend::Backend;
 use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
@@ -21,14 +22,6 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 use core::ptr;
 use std::time::Instant;
-
-// `crate::backend::scalar` is intentionally private. Reuse the production
-// source file here so bench/test helpers call the real scalar row-pair kernel
-// without carrying a second handwritten copy of the algorithm.
-#[allow(dead_code)]
-#[allow(clippy::duplicate_mod)]
-#[path = "backend/scalar.rs"]
-mod bench_scalar_backend;
 
 #[doc(hidden)]
 #[derive(Default, Debug, Clone)]
@@ -192,6 +185,7 @@ pub(crate) fn record_420_dispatch_scalar_chunk() {
     BENCH_420_DISPATCH_STATS.with(|slot| {
         let stats = slot.get();
         if !stats.is_null() {
+            // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
             unsafe {
                 (*stats).record_scalar_chunk();
             }
@@ -204,6 +198,7 @@ pub(crate) fn record_420_dispatch_neon_tail_chunk() {
     BENCH_420_DISPATCH_STATS.with(|slot| {
         let stats = slot.get();
         if !stats.is_null() {
+            // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
             unsafe {
                 (*stats).record_neon_tail_chunk();
             }
@@ -404,6 +399,7 @@ pub fn bench_idct_reduced_2x2_block_with(input: &[i16; 64], output: &mut [u8; 4]
 #[cfg(target_arch = "aarch64")]
 #[doc(hidden)]
 pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
+    // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
     unsafe { crate::idct::neon::idct_islow(input, output) };
 }
 
@@ -412,6 +408,7 @@ pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
 #[cfg(target_arch = "x86_64")]
 #[doc(hidden)]
 pub fn bench_idct_avx2_block(input: &[i16; 64], output: &mut [u8; 64]) {
+    // SAFETY: Benchmark helpers preserve production buffer sizing and backend feature checks.
     unsafe { crate::idct::avx2::idct_islow(input, output) };
 }
 
@@ -548,7 +545,7 @@ pub fn bench_rgb_row_pair_from_420_reference(
     dst_top: &mut [u8],
     dst_bottom: Option<&mut [u8]>,
 ) {
-    bench_scalar_backend::fill_rgb_row_pair_from_420(
+    scalar::fill_rgb_row_pair_from_420(
         y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top, dst_bottom,
     );
 }

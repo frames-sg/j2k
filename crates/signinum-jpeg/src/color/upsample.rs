@@ -143,32 +143,62 @@ pub(crate) fn upsample_h2v2_fancy_row(
 /// below (for the bottom output) the current chroma row.
 fn emit_h2v2_row(near: &[u8], curr: &[u8], output_width: usize, out: &mut [u8]) {
     let n = curr.len();
+    for (x, slot) in out.iter_mut().enumerate().take(output_width) {
+        *slot = h2v2_fancy_sample_with_len(near, curr, n, n * 2, x);
+    }
+}
+
+#[inline]
+pub(crate) fn h2v2_fancy_sample(near: &[u8], curr: &[u8], x: usize) -> u8 {
+    debug_assert_eq!(near.len(), curr.len());
+    h2v2_fancy_sample_with_len(near, curr, curr.len(), curr.len() * 2, x)
+}
+
+// Only the NEON row filler samples by explicit output width; the scalar and
+// x86 paths go through h2v2_fancy_sample.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub(crate) fn h2v2_fancy_sample_for_width(
+    near: &[u8],
+    curr: &[u8],
+    output_width: usize,
+    x: usize,
+) -> u8 {
+    debug_assert_eq!(near.len(), curr.len());
+    h2v2_fancy_sample_with_len(near, curr, curr.len(), output_width, x)
+}
+
+#[inline]
+fn h2v2_fancy_sample_with_len(
+    near: &[u8],
+    curr: &[u8],
+    n: usize,
+    output_width: usize,
+    x: usize,
+) -> u8 {
+    if n == 0 {
+        return 0;
+    }
+    let sample = (x / 2).min(n - 1);
     // Column sums: `colsum[i] = 3 * curr[i] + near[i]`. libjpeg-turbo streams
     // these as `this/next/last` without materializing the whole array.
-    let colsum = |i: usize| 3 * curr[i] as u32 + near[i] as u32;
-
+    let colsum = |i: usize| 3 * u32::from(curr[i]) + u32::from(near[i]);
     if n == 1 {
-        // Degenerate edge: just replicate.
-        let v = (4 * colsum(0) + 8) >> 4;
-        out[..output_width].fill(v as u8);
-        return;
+        return ((4 * colsum(0) + 8) >> 4) as u8;
     }
 
-    for (x, slot) in out.iter_mut().enumerate().take(output_width) {
-        let sample = x / 2;
-        let this = colsum(sample);
-        *slot = match x {
-            0 => ((this * 4 + 8) >> 4) as u8,
-            _ if x == n * 2 - 1 => ((this * 4 + 7) >> 4) as u8,
-            _ if x.is_multiple_of(2) => {
-                let last = colsum(sample - 1);
-                ((this * 3 + last + 8) >> 4) as u8
-            }
-            _ => {
-                let next = colsum(sample + 1);
-                ((this * 3 + next + 7) >> 4) as u8
-            }
-        };
+    let this = colsum(sample);
+    match x {
+        0 => ((this * 4 + 8) >> 4) as u8,
+        _ if x == output_width - 1 => ((this * 4 + 7) >> 4) as u8,
+        _ if x.is_multiple_of(2) => {
+            let last = colsum(sample - 1);
+            ((this * 3 + last + 8) >> 4) as u8
+        }
+        _ => {
+            let next = colsum(sample + 1);
+            ((this * 3 + next + 7) >> 4) as u8
+        }
     }
 }
 

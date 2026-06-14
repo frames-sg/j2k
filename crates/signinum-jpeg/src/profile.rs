@@ -37,7 +37,7 @@ pub(crate) fn emit_jpeg_profile_row(op: &str, path: &str, fields: &[(&str, &str)
 
 thread_local! {
     static PROFILE_SUMMARY: RefCell<signinum_profile::ProfileSummary> = RefCell::new(
-        signinum_profile::ProfileSummary::new(summary_label_fields().iter().cloned())
+        signinum_profile::ProfileSummary::new(summary_label_fields().iter().cloned()).emit_on_drop()
     );
 }
 

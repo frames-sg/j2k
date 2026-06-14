@@ -48,16 +48,25 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     // Load 8 rows as int16x8_t so the common bottom-half-zero shortcut can
     // reuse the tail rows instead of rescanning coefficients scalar-by-scalar.
     let src = input.as_ptr();
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row0 = unsafe { vld1q_s16(src) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row1 = unsafe { vld1q_s16(src.add(8)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row2 = unsafe { vld1q_s16(src.add(16)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row3 = unsafe { vld1q_s16(src.add(24)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row4 = unsafe { vld1q_s16(src.add(32)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row5 = unsafe { vld1q_s16(src.add(40)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row6 = unsafe { vld1q_s16(src.add(48)) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let row7 = unsafe { vld1q_s16(src.add(56)) };
     let bottom_half_zero = bottom_half_rows_are_zero(row4, row5, row6, row7);
     if bottom_half_zero {
+        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
         unsafe {
             idct_islow_bottom_half_zero_rows(row0, row1, row2, row3, output);
         }
@@ -135,6 +144,7 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     // `fhl_r` = row r (4..7), cols 0..3.
     // `fhh_r` = row r (4..7), cols 4..7.
     let store = output.as_mut_ptr();
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     unsafe {
         store_row(store, fll0, flh0);
         store_row(store.add(8), fll1, flh1);
@@ -151,6 +161,7 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn idct_islow_bottom_half_zero(input: &[i16; 64], output: &mut [u8; 64]) {
     let src = input.as_ptr();
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     unsafe {
         idct_islow_bottom_half_zero_rows(
             vld1q_s16(src),
@@ -217,6 +228,7 @@ unsafe fn idct_islow_bottom_half_zero_rows(
     );
 
     let store = output.as_mut_ptr();
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     unsafe {
         store_row(store, fll0, flh0);
         store_row(store.add(8), fll1, flh1);
@@ -232,7 +244,9 @@ unsafe fn idct_islow_bottom_half_zero_rows(
 #[inline]
 #[cfg(test)]
 fn bottom_half_is_zero(input: &[i16; 64]) -> bool {
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     let tail = unsafe { input.as_ptr().add(32) };
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     unsafe {
         bottom_half_rows_are_zero(
             vld1q_s16(tail),
@@ -266,6 +280,7 @@ fn bottom_half_rows_are_zero(
 #[target_feature(enable = "neon")]
 unsafe fn store_row(dst: *mut u8, lo: int32x4_t, hi: int32x4_t) {
     let packed_i16: int16x8_t = vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi));
+    // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
     unsafe {
         vst1_u8(dst, vqmovun_s16(packed_i16));
     }
@@ -402,6 +417,7 @@ mod tests {
         let mut scalar_out = [0u8; 64];
         idct_scalar(input, &mut scalar_out);
         let mut neon_out = [0u8; 64];
+        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
         unsafe { idct_islow(input, &mut neon_out) };
         (scalar_out, neon_out)
     }
@@ -469,6 +485,7 @@ mod tests {
         let mut scalar_out = [0u8; 64];
         idct_scalar(&input, &mut scalar_out);
         let mut neon_out = [0u8; 64];
+        // SAFETY: IDCT pointers address fixed 8x8 arrays and NEON dispatch preconditions hold.
         unsafe { idct_islow_bottom_half_zero(&input, &mut neon_out) };
         assert_eq!(scalar_out, neon_out);
     }

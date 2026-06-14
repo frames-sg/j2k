@@ -57,39 +57,54 @@ pub(crate) fn validate_buffer(
     image_height: u32,
     bytes_per_pixel: usize,
 ) -> Result<(), JpegError> {
-    let fmt = match bytes_per_pixel {
-        1 => PixelFormat::Gray8,
-        3 => PixelFormat::Rgb8,
-        4 => PixelFormat::Rgba8,
-        _ => {
-            return Err(JpegError::OutputBufferTooSmall {
-                required: usize::MAX,
-                provided: out.len(),
-            })
-        }
+    let Some(fmt) = pixel_format_for_bytes_per_pixel(bytes_per_pixel) else {
+        return Err(JpegError::OutputBufferTooSmall {
+            required: usize::MAX,
+            provided: out.len(),
+        });
     };
-    validate_strided_output_buffer((image_width, image_height), out.len(), stride, fmt).map_err(
-        |err| match err {
-            BufferError::StrideTooSmall { row_bytes, stride } => JpegError::InvalidStride {
-                stride,
-                row: row_bytes,
-            },
-            BufferError::OutputTooSmall { required, have } => JpegError::OutputBufferTooSmall {
-                required,
-                provided: have,
-            },
-            BufferError::SizeOverflow { .. } => JpegError::OutputBufferTooSmall {
-                required: usize::MAX,
-                provided: out.len(),
-            },
-            BufferError::InputTooSmall { .. }
-            | BufferError::StrideNotAligned { .. }
-            | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
-                required: usize::MAX,
-                provided: out.len(),
-            },
+    validate_strided_output_buffer((image_width, image_height), out.len(), stride, fmt)
+        .map_err(|err| jpeg_buffer_error(err, out.len()))
+}
+
+pub(crate) const fn pixel_format_for_bytes_per_pixel(
+    bytes_per_pixel: usize,
+) -> Option<PixelFormat> {
+    match bytes_per_pixel {
+        1 => Some(PixelFormat::Gray8),
+        2 => Some(PixelFormat::Gray16),
+        3 => Some(PixelFormat::Rgb8),
+        4 => Some(PixelFormat::Rgba8),
+        6 => Some(PixelFormat::Rgb16),
+        8 => Some(PixelFormat::Rgba16),
+        _ => None,
+    }
+}
+
+pub(crate) fn jpeg_buffer_error(error: BufferError, provided_len: usize) -> JpegError {
+    match error {
+        BufferError::StrideTooSmall { row_bytes, stride } => JpegError::InvalidStride {
+            stride,
+            row: row_bytes,
         },
-    )
+        BufferError::OutputTooSmall { required, have } => JpegError::OutputBufferTooSmall {
+            required,
+            provided: have,
+        },
+        BufferError::AllocationTooLarge { requested, cap, .. } => {
+            JpegError::MemoryCapExceeded { requested, cap }
+        }
+        BufferError::SizeOverflow { .. } => JpegError::OutputBufferTooSmall {
+            required: usize::MAX,
+            provided: provided_len,
+        },
+        BufferError::InputTooSmall { .. }
+        | BufferError::StrideNotAligned { .. }
+        | BufferError::SampleTypeMismatch { .. } => JpegError::OutputBufferTooSmall {
+            required: usize::MAX,
+            provided: provided_len,
+        },
+    }
 }
 
 #[cfg(test)]

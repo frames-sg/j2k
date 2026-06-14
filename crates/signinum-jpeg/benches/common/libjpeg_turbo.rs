@@ -74,6 +74,7 @@ mod imp {
 
     impl TurboJpegDecoder {
         pub(crate) fn new() -> Result<Self, String> {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let handle = unsafe { tj3Init(TJINIT_DECOMPRESS) };
             let Some(handle) = NonNull::new(handle) else {
                 return Err("tj3Init returned null".to_string());
@@ -91,6 +92,34 @@ mod imp {
 
         pub(crate) fn decode_gray(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
             self.decode(bytes, TJPF_GRAY, None, Downscale::None)
+        }
+
+        pub(crate) fn prepare_rgb(&mut self, bytes: &[u8]) -> Result<InspectInfo, String> {
+            let header = self.read_header(bytes)?;
+            self.set_scaling(TJUNSCALED)?;
+            self.set_crop(TJUNCROPPED)?;
+            Ok(header)
+        }
+
+        pub(crate) fn decode_rgb_into(
+            &mut self,
+            bytes: &[u8],
+            out: &mut [u8],
+            pitch: usize,
+        ) -> Result<(), String> {
+            self.decode_into(bytes, TJPF_RGB, Downscale::None, out, pitch)
+        }
+
+        pub(crate) fn decode_prepared_rgb_into(
+            &mut self,
+            bytes: &[u8],
+            out: &mut [u8],
+            pitch: usize,
+            width: usize,
+            height: usize,
+        ) -> Result<(), String> {
+            validate_output_buffer(width, height, TJPF_RGB, out, pitch)?;
+            self.decompress(bytes, out, pitch, TJPF_RGB)
         }
 
         pub(crate) fn decode_scaled_rgb(
@@ -168,15 +197,39 @@ mod imp {
             Ok(out)
         }
 
+        fn decode_into(
+            &mut self,
+            bytes: &[u8],
+            pixel_format: c_int,
+            factor: Downscale,
+            out: &mut [u8],
+            pitch: usize,
+        ) -> Result<(), String> {
+            let header = self.read_header(bytes)?;
+            let scale = scaling_factor(factor);
+            self.set_scaling(scale)?;
+            self.set_crop(TJUNCROPPED)?;
+
+            let out_width = scaled_dimension(header.width, scale) as usize;
+            let out_height = scaled_dimension(header.height, scale) as usize;
+            validate_output_buffer(out_width, out_height, pixel_format, out, pitch)?;
+
+            self.decompress(bytes, out, pitch, pixel_format)
+        }
+
         fn read_header(&mut self, bytes: &[u8]) -> Result<InspectInfo, String> {
             let rc =
+                // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
                 unsafe { tj3DecompressHeader(self.handle.as_ptr(), bytes.as_ptr(), bytes.len()) };
             if rc != 0 {
                 return Err(self.error_string());
             }
 
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let width = unsafe { tj3Get(self.handle.as_ptr(), TJPARAM_JPEGWIDTH) };
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let height = unsafe { tj3Get(self.handle.as_ptr(), TJPARAM_JPEGHEIGHT) };
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let subsamp = unsafe { tj3Get(self.handle.as_ptr(), TJPARAM_SUBSAMP) };
             if width < 0 || height < 0 || subsamp < 0 {
                 return Err("tj3Get returned incomplete header parameters".to_string());
@@ -190,6 +243,7 @@ mod imp {
         }
 
         fn set_scaling(&mut self, scale: TjScalingFactor) -> Result<(), String> {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let rc = unsafe { tj3SetScalingFactor(self.handle.as_ptr(), scale) };
             if rc != 0 {
                 return Err(self.error_string());
@@ -198,6 +252,7 @@ mod imp {
         }
 
         fn set_crop(&mut self, region: TjRegion) -> Result<(), String> {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let rc = unsafe { tj3SetCroppingRegion(self.handle.as_ptr(), region) };
             if rc != 0 {
                 return Err(self.error_string());
@@ -212,6 +267,7 @@ mod imp {
             pitch: usize,
             pixel_format: c_int,
         ) -> Result<(), String> {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let rc = unsafe {
                 tj3Decompress8(
                     self.handle.as_ptr(),
@@ -229,18 +285,60 @@ mod imp {
         }
 
         fn error_string(&self) -> String {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             let ptr = unsafe { tj3GetErrorStr(self.handle.as_ptr()) };
             if ptr.is_null() {
                 return "libjpeg-turbo error".to_string();
             }
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             unsafe { CStr::from_ptr(ptr) }
                 .to_string_lossy()
                 .into_owned()
         }
     }
 
+    fn validate_output_buffer(
+        width: usize,
+        height: usize,
+        pixel_format: c_int,
+        out: &[u8],
+        pitch: usize,
+    ) -> Result<(), String> {
+        let row_bytes = width
+            .checked_mul(bytes_per_pixel(pixel_format))
+            .ok_or("libjpeg-turbo output row size overflow")?;
+        if pitch < row_bytes {
+            return Err(format!(
+                "libjpeg-turbo output pitch {pitch} is smaller than row bytes {row_bytes}"
+            ));
+        }
+        let required_len = required_strided_len(height, pitch, row_bytes)?;
+        if out.len() < required_len {
+            return Err(format!(
+                "libjpeg-turbo output buffer too small: need {required_len}, got {}",
+                out.len()
+            ));
+        }
+        Ok(())
+    }
+
+    fn required_strided_len(
+        height: usize,
+        pitch: usize,
+        row_bytes: usize,
+    ) -> Result<usize, String> {
+        if height == 0 {
+            return Ok(0);
+        }
+        pitch
+            .checked_mul(height - 1)
+            .and_then(|prefix| prefix.checked_add(row_bytes))
+            .ok_or_else(|| "libjpeg-turbo output buffer size overflow".to_string())
+    }
+
     impl Drop for TurboJpegDecoder {
         fn drop(&mut self) {
+            // SAFETY: Benchmark FFI calls use a live libjpeg-turbo handle and sized outputs.
             unsafe { tj3Destroy(self.handle.as_ptr()) };
         }
     }
@@ -287,13 +385,7 @@ mod imp {
     }
 
     fn scaled_rect(rect: Rect, factor: Downscale) -> Rect {
-        let denom = match factor {
-            Downscale::None => 1,
-            Downscale::Half => 2,
-            Downscale::Quarter => 4,
-            Downscale::Eighth => 8,
-            _ => unreachable!("unsupported Downscale variant"),
-        };
+        let denom = factor.denominator();
         let x_end = rect.x + rect.w;
         let y_end = rect.y + rect.h;
         Rect {
@@ -356,6 +448,33 @@ mod imp {
         }
 
         pub(crate) fn decode_gray(&mut self, _bytes: &[u8]) -> Result<Vec<u8>, String> {
+            let _ = self;
+            Err("libjpeg-turbo not available".to_string())
+        }
+
+        pub(crate) fn prepare_rgb(&mut self, _bytes: &[u8]) -> Result<InspectInfo, String> {
+            let _ = self;
+            Err("libjpeg-turbo not available".to_string())
+        }
+
+        pub(crate) fn decode_rgb_into(
+            &mut self,
+            _bytes: &[u8],
+            _out: &mut [u8],
+            _pitch: usize,
+        ) -> Result<(), String> {
+            let _ = self;
+            Err("libjpeg-turbo not available".to_string())
+        }
+
+        pub(crate) fn decode_prepared_rgb_into(
+            &mut self,
+            _bytes: &[u8],
+            _out: &mut [u8],
+            _pitch: usize,
+            _width: usize,
+            _height: usize,
+        ) -> Result<(), String> {
             let _ = self;
             Err("libjpeg-turbo not available".to_string())
         }

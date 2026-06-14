@@ -16,19 +16,19 @@ use common::{
     classification::{should_compare_full_frame, CorpusInputClass},
     jpeg_decoder_decode, jpeg_decoder_decode_batch_region_scaled, jpeg_decoder_decode_batch_scaled,
     jpeg_decoder_decode_region, jpeg_decoder_decode_region_scaled, jpeg_decoder_decode_scaled,
-    jpeg_decoder_inspect, load_bench_inputs, scaled_rect, signinum_decode, signinum_decode_region,
-    signinum_decode_region_scaled, signinum_decode_rows, signinum_decode_scaled,
-    signinum_decode_tile_batch_region_scaled, signinum_decode_tile_batch_scaled, signinum_inspect,
-    zune_decode, zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
+    jpeg_decoder_inspect, load_bench_inputs,
+    report::{format_ns, report_iterations, write_reports},
+    scaled_rect, signinum_decode, signinum_decode_region, signinum_decode_region_scaled,
+    signinum_decode_rows, signinum_decode_scaled, signinum_decode_tile_batch_region_scaled,
+    signinum_decode_tile_batch_scaled, signinum_inspect, zune_decode,
+    zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
     zune_decode_region_scaled, zune_decode_scaled, zune_inspect, BenchInput, DecodeMode,
 };
 use signinum_jpeg::{Downscale, Rect};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 const ROI_SIDE: u32 = 256;
 const TILE_BATCH: usize = 64;
@@ -46,38 +46,19 @@ fn main() {
             .then_with(|| lhs.mode.cmp(&rhs.mode))
             .then_with(|| lhs.name.cmp(&rhs.name))
     });
-    let iterations = std::env::var("SIGNINUM_REPORT_ITERS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|&iters| iters > 0)
-        .unwrap_or(DEFAULT_ITERS);
+    let iterations = report_iterations(DEFAULT_ITERS);
 
     let mut rows = Vec::new();
     for input in &inputs {
         rows.extend(run_input(input, iterations));
     }
 
-    let report_dir = PathBuf::from("target/bench-reports");
-    fs::create_dir_all(&report_dir).expect("create target/bench-reports");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_secs();
-    let csv_path = report_dir.join(format!("corpus-report-{timestamp}.csv"));
-    let md_path = report_dir.join(format!("corpus-report-{timestamp}.md"));
-    let latest_csv = report_dir.join("corpus-report-latest.csv");
-    let latest_md = report_dir.join("corpus-report-latest.md");
-
     let csv = render_csv(&rows);
     let markdown = render_markdown(&rows, iterations);
+    let paths = write_reports("target/bench-reports", "corpus-report", &csv, &markdown);
 
-    fs::write(&csv_path, &csv).expect("write CSV report");
-    fs::write(&md_path, &markdown).expect("write Markdown report");
-    fs::write(&latest_csv, &csv).expect("write latest CSV report");
-    fs::write(&latest_md, &markdown).expect("write latest Markdown report");
-
-    println!("Wrote {}", csv_path.display());
-    println!("Wrote {}", md_path.display());
+    println!("Wrote {}", paths.csv.display());
+    println!("Wrote {}", paths.markdown.display());
     println!();
     println!("{markdown}");
 }
@@ -360,7 +341,7 @@ fn estimated_output_bytes(input: &BenchInput, operation: Operation) -> Option<us
 
     usize::try_from(dims.0)
         .ok()
-        .and_then(|width| usize::try_from(dims.1).ok().map(|height| (width, height)))
+        .zip(usize::try_from(dims.1).ok())
         .and_then(|(width, height)| width.checked_mul(height))
         .and_then(|pixels| pixels.checked_mul(bpp))
 }
@@ -909,16 +890,6 @@ fn format_measurement(measurement: &Measurement) -> String {
 
 fn render_ns(measurement: &Measurement) -> String {
     measurement.ns.map_or_else(String::new, |ns| ns.to_string())
-}
-
-fn format_ns(ns: u128) -> String {
-    if ns >= 1_000_000 {
-        format!("{:.3} ms", ns as f64 / 1_000_000.0)
-    } else if ns >= 1_000 {
-        format!("{:.3} µs", ns as f64 / 1_000.0)
-    } else {
-        format!("{ns} ns")
-    }
 }
 
 fn escape_csv(raw: &str) -> String {
