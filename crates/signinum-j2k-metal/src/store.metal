@@ -64,6 +64,33 @@ struct J2kGrayStoreParams {
     float u16_scale;
 };
 
+struct J2kStoreWindowIndices {
+    uint src_idx;
+    uint dst_idx;
+};
+
+inline J2kStoreWindowIndices j2k_store_window_indices(
+    uint input_width,
+    uint output_width,
+    uint source_x,
+    uint source_y,
+    uint output_x,
+    uint output_y,
+    uint2 gid,
+    uint input_offset,
+    uint output_offset
+) {
+    const uint src_x = source_x + gid.x;
+    const uint src_y = source_y + gid.y;
+    const uint dst_x = output_x + gid.x;
+    const uint dst_y = output_y + gid.y;
+
+    return {
+        input_offset + src_y * input_width + src_x,
+        output_offset + dst_y * output_width + dst_x,
+    };
+}
+
 kernel void j2k_store_component(
     device const float *input [[buffer(0)]],
     device float *output [[buffer(1)]],
@@ -74,14 +101,18 @@ kernel void j2k_store_component(
         return;
     }
 
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = src_y * params.input_width + src_x;
-    const uint dst_idx = dst_y * params.output_width + dst_x;
-    output[dst_idx] = input[src_idx] + params.addend;
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid,
+        0u,
+        0u
+    );
+    output[indices.dst_idx] = input[indices.src_idx] + params.addend;
 }
 
 kernel void j2k_store_component_repeated(
@@ -95,14 +126,18 @@ kernel void j2k_store_component_repeated(
     }
 
     const uint output_plane_len = params.output_width * params.output_height;
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = gid.z * params.input_instance_stride + src_y * params.input_width + src_x;
-    const uint dst_idx = gid.z * output_plane_len + dst_y * params.output_width + dst_x;
-    output[dst_idx] = input[src_idx] + params.addend;
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid.xy,
+        gid.z * params.input_instance_stride,
+        gid.z * output_plane_len
+    );
+    output[indices.dst_idx] = input[indices.src_idx] + params.addend;
 }
 
 kernel void j2k_store_component_repeated_gray_u8(
@@ -117,14 +152,18 @@ kernel void j2k_store_component_repeated_gray_u8(
 
     const uint input_plane_len = params.input_width * params.input_height;
     const uint output_plane_len = params.output_width * params.output_height;
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = gid.z * input_plane_len + src_y * params.input_width + src_x;
-    const uint dst_idx = gid.z * output_plane_len + dst_y * params.output_width + dst_x;
-    output[dst_idx] = scale_to_u8(input[src_idx] + params.addend, params.max_value, params.u8_scale);
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid.xy,
+        gid.z * input_plane_len,
+        gid.z * output_plane_len
+    );
+    output[indices.dst_idx] = scale_to_u8(input[indices.src_idx] + params.addend, params.max_value, params.u8_scale);
 }
 
 kernel void j2k_store_component_repeated_gray_u16(
@@ -139,14 +178,18 @@ kernel void j2k_store_component_repeated_gray_u16(
 
     const uint input_plane_len = params.input_width * params.input_height;
     const uint output_plane_len = params.output_width * params.output_height;
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = gid.z * input_plane_len + src_y * params.input_width + src_x;
-    const uint dst_idx = gid.z * output_plane_len + dst_y * params.output_width + dst_x;
-    output[dst_idx] = pack_to_u16(input[src_idx] + params.addend, params.max_value, params.u16_scale);
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid.xy,
+        gid.z * input_plane_len,
+        gid.z * output_plane_len
+    );
+    output[indices.dst_idx] = pack_to_u16(input[indices.src_idx] + params.addend, params.max_value, params.u16_scale);
 }
 
 kernel void j2k_store_component_repeated_gray_u8_contiguous(
@@ -189,14 +232,18 @@ kernel void j2k_store_component_gray_u8(
         return;
     }
 
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = src_y * params.input_width + src_x;
-    const uint dst_idx = dst_y * params.output_width + dst_x;
-    output[dst_idx] = scale_to_u8(input[src_idx] + params.addend, params.max_value, params.u8_scale);
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid,
+        0u,
+        0u
+    );
+    output[indices.dst_idx] = scale_to_u8(input[indices.src_idx] + params.addend, params.max_value, params.u8_scale);
 }
 
 kernel void j2k_store_component_gray_u16(
@@ -209,12 +256,16 @@ kernel void j2k_store_component_gray_u16(
         return;
     }
 
-    const uint src_x = params.source_x + gid.x;
-    const uint src_y = params.source_y + gid.y;
-    const uint dst_x = params.output_x + gid.x;
-    const uint dst_y = params.output_y + gid.y;
-
-    const uint src_idx = src_y * params.input_width + src_x;
-    const uint dst_idx = dst_y * params.output_width + dst_x;
-    output[dst_idx] = pack_to_u16(input[src_idx] + params.addend, params.max_value, params.u16_scale);
+    const J2kStoreWindowIndices indices = j2k_store_window_indices(
+        params.input_width,
+        params.output_width,
+        params.source_x,
+        params.source_y,
+        params.output_x,
+        params.output_y,
+        gid,
+        0u,
+        0u
+    );
+    output[indices.dst_idx] = pack_to_u16(input[indices.src_idx] + params.addend, params.max_value, params.u16_scale);
 }

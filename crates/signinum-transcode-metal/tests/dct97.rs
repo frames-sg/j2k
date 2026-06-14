@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(target_os = "macos")]
+use signinum_transcode::accelerator::TranscodeStageError;
 use signinum_transcode::accelerator::{DctGridToDwt97Job, DctToWaveletStageAccelerator};
 #[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::{
@@ -16,8 +18,6 @@ use signinum_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
 use signinum_transcode_metal::MetalTranscodeError;
-#[cfg(target_os = "macos")]
-use signinum_transcode_metal::METAL_UNAVAILABLE;
 
 #[test]
 fn explicit_metal_reports_unavailable_on_non_macos() {
@@ -34,7 +34,7 @@ fn explicit_metal_reports_unavailable_on_non_macos() {
     #[cfg(not(target_os = "macos"))]
     assert_eq!(
         result.expect_err("explicit Metal is unavailable off macOS"),
-        MetalTranscodeError::MetalUnavailable.as_static_str()
+        TranscodeStageError::DeviceUnavailable
     );
 
     #[cfg(target_os = "macos")]
@@ -73,9 +73,8 @@ fn auto_metal_uses_cpu_for_97_jobs_by_default() {
         width: 512,
         height: 512,
     }) {
-        Ok(None) => {}
+        Ok(None) | Err(TranscodeStageError::DeviceUnavailable) => {}
         Ok(Some(_)) => panic!("auto Metal should leave 9/7 jobs on the optimized CPU path"),
-        Err(message) if message == METAL_UNAVAILABLE => {}
         Err(message) => panic!("auto Metal 9/7 accelerator failed: {message}"),
     }
 
@@ -100,7 +99,7 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
         }) {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
-            Err(message) if message == METAL_UNAVAILABLE => {
+            Err(TranscodeStageError::DeviceUnavailable) => {
                 eprintln!("skipping Metal coefficient test because no Metal device is available");
                 return;
             }
@@ -153,7 +152,7 @@ fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
     let actual = match accelerator.dct_grid_to_dwt97_batch(&jobs) {
         Ok(Some(output)) => output,
         Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
-        Err(message) if message == METAL_UNAVAILABLE => {
+        Err(TranscodeStageError::DeviceUnavailable) => {
             eprintln!("skipping Metal batch coefficient test because no Metal device is available");
             return;
         }
@@ -204,7 +203,7 @@ fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
     match accelerator.dct_grid_to_dwt97_batch(&jobs) {
         Ok(Some(_)) => {}
         Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
-        Err(message) if message == METAL_UNAVAILABLE => {
+        Err(TranscodeStageError::DeviceUnavailable) => {
             eprintln!("skipping Metal batch timing test because no Metal device is available");
             return;
         }
@@ -260,7 +259,7 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
         Ok(None) => {
             panic!("explicit Metal code-block batch accelerator must not silently fall back")
         }
-        Err(message) if message == METAL_UNAVAILABLE => {
+        Err(TranscodeStageError::DeviceUnavailable) => {
             eprintln!("skipping Metal code-block batch test because no Metal device is available");
             return;
         }
@@ -296,6 +295,68 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
     assert!(timings.column_lift_us > 0);
     assert!(timings.quantize_codeblock_us > 0);
     assert!(timings.readback_us > 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scalar() {
+    // The old Metal-only validator rejected guard_bits == 0; the shared
+    // validator accepts it (CUDA and the native encoder always did). This
+    // pins the Metal kernel against the CPU oracle for the newly reachable
+    // option so the widening cannot silently produce divergent code-blocks.
+    let blocks = structured_blocks_with_offset(4, 4, 19.0);
+    let jobs = [DctGridToHtj2k97CodeBlockJob {
+        blocks: &blocks,
+        block_cols: 4,
+        block_rows: 4,
+        width: 29,
+        height: 31,
+        x_rsiz: 1,
+        y_rsiz: 1,
+    }];
+    let options = Htj2k97CodeBlockOptions {
+        bit_depth: 8,
+        guard_bits: 0,
+        code_block_width_exp: 2,
+        code_block_height_exp: 2,
+        irreversible_quantization_scale: 2.5,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales {
+            low_low: 0.9,
+            high_low: 1.1,
+            low_high: 1.2,
+            high_high: 1.5,
+        },
+    };
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+
+    let actual = match accelerator.dct_grid_to_htj2k97_codeblock_batch(&jobs, options) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            panic!("explicit Metal code-block batch accelerator must not silently fall back")
+        }
+        Err(TranscodeStageError::DeviceUnavailable) => {
+            eprintln!("skipping Metal zero-guard-bits test because no Metal device is available");
+            return;
+        }
+        Err(message) => panic!("explicit Metal rejected guard_bits == 0: {message}"),
+    };
+
+    assert_eq!(actual.len(), jobs.len());
+    let mut scalar_scratch = Dct97GridScratch::default();
+    let job = &jobs[0];
+    let dwt = dct8x8_blocks_then_dwt97_float_with_scratch(
+        job.blocks,
+        job.block_cols,
+        job.block_rows,
+        job.width,
+        job.height,
+        &mut scalar_scratch,
+    )
+    .expect("scalar 9/7 IDCT path accepts covered grid");
+    let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
+
+    assert_prequantized_component_layout_eq(&actual[0], &expected);
+    assert_prequantized_component_coefficients_close(&actual[0], &expected, 1);
 }
 
 #[test]

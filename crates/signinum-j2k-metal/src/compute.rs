@@ -20,9 +20,8 @@ use std::{
 use metal::{
     foreign_types::{ForeignType, ForeignTypeRef},
     objc::{runtime::Sel, Message},
-    Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions,
-    ComputeCommandEncoderRef, ComputePipelineState, Device, MTLCommandQueue, MTLResourceOptions,
-    MTLSize,
+    Buffer, CommandBuffer, CommandBufferRef, CommandQueue, ComputeCommandEncoderRef,
+    ComputePipelineState, Device, MTLResourceOptions, MTLSize,
 };
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;
@@ -52,6 +51,13 @@ use signinum_j2k_native::{
     DecodeSettings as NativeDecodeSettings, DecoderContext as NativeDecoderContext,
     Image as NativeImage,
 };
+#[cfg(test)]
+use signinum_metal_support::system_default_device;
+#[cfg(target_os = "macos")]
+use signinum_metal_support::{
+    checked_command_queue, dispatch_1d_pipeline, dispatch_2d_pipeline, dispatch_3d_pipeline,
+    dispatch_single_thread, private_buffer, shared_buffer, MetalPipelineLoader, MetalSupportError,
+};
 
 #[cfg(target_os = "macos")]
 use crate::{
@@ -61,17 +67,56 @@ use crate::{
 use crate::{Error, Surface};
 
 #[cfg(all(target_os = "macos", test))]
-static HT_BATCH_COEFFICIENT_COPY_BLITS: AtomicUsize = AtomicUsize::new(0);
+macro_rules! test_atomic_counter {
+    ($counter:ident, $reset:ident, $load:ident) => {
+        static $counter: AtomicUsize = AtomicUsize::new(0);
+
+        pub(crate) fn $reset() {
+            $counter.store(0, Ordering::Relaxed);
+        }
+
+        pub(crate) fn $load() -> usize {
+            $counter.load(Ordering::Relaxed)
+        }
+    };
+}
+
 #[cfg(all(target_os = "macos", test))]
-static HYBRID_STACKED_COMPONENT_BATCHES: AtomicUsize = AtomicUsize::new(0);
+test_atomic_counter!(
+    HT_BATCH_COEFFICIENT_COPY_BLITS,
+    reset_ht_batch_coefficient_copy_blits_for_test,
+    ht_batch_coefficient_copy_blits_for_test
+);
 #[cfg(all(target_os = "macos", test))]
-static HYBRID_REPEATED_OUTPUT_BLITS: AtomicUsize = AtomicUsize::new(0);
+test_atomic_counter!(
+    HYBRID_STACKED_COMPONENT_BATCHES,
+    reset_hybrid_stacked_component_batches_for_test,
+    hybrid_stacked_component_batches_for_test
+);
 #[cfg(all(target_os = "macos", test))]
-static HYBRID_CPU_DECODE_WORKER_INITS: AtomicUsize = AtomicUsize::new(0);
+test_atomic_counter!(
+    HYBRID_REPEATED_OUTPUT_BLITS,
+    reset_hybrid_repeated_output_blits_for_test,
+    hybrid_repeated_output_blits_for_test
+);
 #[cfg(all(target_os = "macos", test))]
-static HYBRID_CPU_DECODE_INPUTS: AtomicUsize = AtomicUsize::new(0);
+test_atomic_counter!(
+    HYBRID_CPU_DECODE_WORKER_INITS,
+    reset_hybrid_cpu_decode_worker_inits_for_test,
+    hybrid_cpu_decode_worker_inits_for_test
+);
 #[cfg(all(target_os = "macos", test))]
-static FLATTENED_HYBRID_CPU_DECODE_BATCHES: AtomicUsize = AtomicUsize::new(0);
+test_atomic_counter!(
+    HYBRID_CPU_DECODE_INPUTS,
+    reset_hybrid_cpu_decode_inputs_for_test,
+    hybrid_cpu_decode_inputs_for_test
+);
+#[cfg(all(target_os = "macos", test))]
+test_atomic_counter!(
+    FLATTENED_HYBRID_CPU_DECODE_BATCHES,
+    reset_flattened_hybrid_cpu_decode_batches_for_test,
+    flattened_hybrid_cpu_decode_batches_for_test
+);
 #[cfg(all(target_os = "macos", test))]
 std::thread_local! {
     static RESIDENT_GPU_TIMESTAMP_QUERIES: Cell<usize> = const { Cell::new(0) };
@@ -84,16 +129,6 @@ std::thread_local! {
     static CLASSIC_SPLIT_MQ_BYTE_GPU_TOKEN_PACK_DISPATCHES: Cell<usize> = const { Cell::new(0) };
     static CLASSIC_GPU_TOKEN_PACK_ROUTE_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
     static METAL_PROFILE_STAGES_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_ht_batch_coefficient_copy_blits_for_test() {
-    HT_BATCH_COEFFICIENT_COPY_BLITS.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn ht_batch_coefficient_copy_blits_for_test() -> usize {
-    HT_BATCH_COEFFICIENT_COPY_BLITS.load(Ordering::Relaxed)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -124,56 +159,6 @@ pub(crate) fn reset_direct_tier1_input_buffer_prepares_for_test() {
 #[cfg(all(target_os = "macos", test))]
 pub(crate) fn direct_tier1_input_buffer_prepares_for_test() -> usize {
     DIRECT_TIER1_INPUT_BUFFER_PREPARES.with(Cell::get)
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_hybrid_stacked_component_batches_for_test() {
-    HYBRID_STACKED_COMPONENT_BATCHES.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn hybrid_stacked_component_batches_for_test() -> usize {
-    HYBRID_STACKED_COMPONENT_BATCHES.load(Ordering::Relaxed)
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_hybrid_repeated_output_blits_for_test() {
-    HYBRID_REPEATED_OUTPUT_BLITS.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn hybrid_repeated_output_blits_for_test() -> usize {
-    HYBRID_REPEATED_OUTPUT_BLITS.load(Ordering::Relaxed)
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_hybrid_cpu_decode_worker_inits_for_test() {
-    HYBRID_CPU_DECODE_WORKER_INITS.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn hybrid_cpu_decode_worker_inits_for_test() -> usize {
-    HYBRID_CPU_DECODE_WORKER_INITS.load(Ordering::Relaxed)
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_hybrid_cpu_decode_inputs_for_test() {
-    HYBRID_CPU_DECODE_INPUTS.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn hybrid_cpu_decode_inputs_for_test() -> usize {
-    HYBRID_CPU_DECODE_INPUTS.load(Ordering::Relaxed)
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn reset_flattened_hybrid_cpu_decode_batches_for_test() {
-    FLATTENED_HYBRID_CPU_DECODE_BATCHES.store(0, Ordering::Relaxed);
-}
-
-#[cfg(all(target_os = "macos", test))]
-pub(crate) fn flattened_hybrid_cpu_decode_batches_for_test() -> usize {
-    FLATTENED_HYBRID_CPU_DECODE_BATCHES.load(Ordering::Relaxed)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -962,8 +947,7 @@ struct J2kScalarPackParams {
 #[cfg(target_os = "macos")]
 fn j2k_scalar_pack_params(bit_depth: u32) -> J2kScalarPackParams {
     let clamped = bit_depth.min(16);
-    let max_value_u16 = u16::try_from(((1u32 << clamped) - 1).max(1))
-        .expect("clamped J2K bit depth max fits in u16");
+    let max_value_u16 = ((1u32 << clamped) - 1).max(1) as u16;
     let max_value = f32::from(max_value_u16);
     let u8_scale = 255.0 / max_value;
     let u16_scale = if bit_depth <= 8 {
@@ -976,6 +960,13 @@ fn j2k_scalar_pack_params(bit_depth: u32) -> J2kScalarPackParams {
         u8_scale,
         u16_scale,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn j2k_u32_param(value: usize, message: &'static str) -> Result<u32, Error> {
+    u32::try_from(value).map_err(|_| Error::MetalKernel {
+        message: message.to_string(),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1693,6 +1684,7 @@ struct HybridStageSignpost {
 #[cfg(target_os = "macos")]
 impl Drop for HybridStageSignpost {
     fn drop(&mut self) {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             signinum_j2k_metal_signpost_end(self.name, self.id);
         }
@@ -1704,6 +1696,7 @@ fn hybrid_stage_signpost(name: HybridSignpostName) -> Option<HybridStageSignpost
     if !metal_profile_signposts_enabled() {
         return None;
     }
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let id = unsafe { signinum_j2k_metal_signpost_begin(name) };
     if id == OS_SIGNPOST_ID_NULL || id == OS_SIGNPOST_ID_INVALID {
         return None;
@@ -2150,21 +2143,13 @@ struct J2kCodestreamAssemblyStatus {
 }
 
 #[cfg(target_os = "macos")]
-static METAL_RUNTIME: OnceLock<Result<Arc<MetalRuntime>, String>> = OnceLock::new();
-
-#[cfg(target_os = "macos")]
-type MetalRuntimeCache = Mutex<HashMap<usize, Result<Arc<MetalRuntime>, String>>>;
-
-#[cfg(target_os = "macos")]
-static METAL_DEVICE_RUNTIMES: OnceLock<MetalRuntimeCache> = OnceLock::new();
-
-#[cfg(target_os = "macos")]
 thread_local! {
+    static DEFAULT_METAL_SESSION: RefCell<Option<Result<crate::MetalBackendSession, MetalSupportError>>> = const { RefCell::new(None) };
     static METAL_RUNTIME_OVERRIDE: RefCell<Option<Arc<MetalRuntime>>> = const { RefCell::new(None) };
 }
 
 #[cfg(target_os = "macos")]
-struct MetalRuntime {
+pub(crate) struct MetalRuntime {
     device: Device,
     queue: CommandQueue,
     zero_u32_buffer: ComputePipelineState,
@@ -2254,139 +2239,16 @@ struct MetalRuntime {
 
 #[cfg(target_os = "macos")]
 impl MetalRuntime {
-    fn new() -> Result<Self, String> {
-        let device = Device::system_default()
-            .ok_or_else(|| "Metal is unavailable on this host".to_string())?;
+    #[cfg(test)]
+    fn new() -> Result<Self, MetalSupportError> {
+        let device = system_default_device()?;
         Self::new_with_device(&device)
     }
 
-    fn new_with_device(device: &Device) -> Result<Self, String> {
-        let options = CompileOptions::new();
-        let library = device.new_library_with_source(SHADER_SOURCE, &options)?;
-        let pipeline = |name: &str| {
-            let function = library.get_function(name, None)?;
-            device.new_compute_pipeline_state_with_function(&function)
-        };
-        let classic_cleanup_plain_batched_fn =
-            library.get_function("j2k_decode_classic_cleanup_plain_batched", None)?;
-        let classic_cleanup_batched_fn =
-            library.get_function("j2k_decode_classic_cleanup_batched", None)?;
-        let classic_cleanup_plain_repeated_batched_fn =
-            library.get_function("j2k_decode_classic_cleanup_plain_repeated_batched", None)?;
-        let classic_cleanup_plain_dev_repeated_batched_fn = library.get_function(
-            "j2k_decode_classic_cleanup_plain_dev_repeated_batched",
-            None,
-        )?;
-        let classic_cleanup_repeated_batched_fn =
-            library.get_function("j2k_decode_classic_cleanup_repeated_batched", None)?;
-        let classic_store_repeated_batched_fn =
-            library.get_function("j2k_store_classic_repeated_batched", None)?;
-        let idwt_interleave_fn = library.get_function("j2k_idwt_interleave", None)?;
-        let idwt_interleave_batched_fn =
-            library.get_function("j2k_idwt_interleave_batched", None)?;
-        let idwt_reversible53_horizontal_fn =
-            library.get_function("j2k_idwt_reversible53_horizontal_pass", None)?;
-        let idwt_reversible53_horizontal_batched_fn =
-            library.get_function("j2k_idwt_reversible53_horizontal_pass_batched", None)?;
-        let idwt_reversible53_vertical_fn =
-            library.get_function("j2k_idwt_reversible53_vertical_pass", None)?;
-        let idwt_reversible53_vertical_batched_fn =
-            library.get_function("j2k_idwt_reversible53_vertical_pass_batched", None)?;
-        let idwt_irreversible97_single_decomposition_fn =
-            library.get_function("j2k_idwt_irreversible97_single_decomposition", None)?;
-        let fdwt53_horizontal_fn = library.get_function("j2k_forward_dwt53_horizontal", None)?;
-        let fdwt53_vertical_fn = library.get_function("j2k_forward_dwt53_vertical", None)?;
-        let fdwt53_horizontal_batched_fn =
-            library.get_function("j2k_forward_dwt53_horizontal_batched", None)?;
-        let fdwt53_vertical_batched_fn =
-            library.get_function("j2k_forward_dwt53_vertical_batched", None)?;
-        let inverse_mct_fn = library.get_function("j2k_inverse_mct", None)?;
-        let forward_rct_fn = library.get_function("j2k_forward_rct", None)?;
-        let store_component_fn = library.get_function("j2k_store_component", None)?;
-        let store_component_repeated_fn =
-            library.get_function("j2k_store_component_repeated", None)?;
-        let store_component_repeated_gray_u8_fn =
-            library.get_function("j2k_store_component_repeated_gray_u8", None)?;
-        let store_component_repeated_gray_u16_fn =
-            library.get_function("j2k_store_component_repeated_gray_u16", None)?;
-        let store_component_repeated_gray_u8_contiguous_fn =
-            library.get_function("j2k_store_component_repeated_gray_u8_contiguous", None)?;
-        let store_component_repeated_gray_u16_contiguous_fn =
-            library.get_function("j2k_store_component_repeated_gray_u16_contiguous", None)?;
-        let store_component_gray_u8_fn =
-            library.get_function("j2k_store_component_gray_u8", None)?;
-        let store_component_gray_u16_fn =
-            library.get_function("j2k_store_component_gray_u16", None)?;
-        let ht_cleanup_fn = library.get_function("j2k_decode_ht_cleanup", None)?;
-        let ht_cleanup_batched_fn = library.get_function("j2k_decode_ht_cleanup_batched", None)?;
-        let ht_cleanup_repeated_batched_fn =
-            library.get_function("j2k_decode_ht_cleanup_repeated_batched", None)?;
-        let classic_cleanup_plain_batched =
-            device.new_compute_pipeline_state_with_function(&classic_cleanup_plain_batched_fn)?;
-        let classic_cleanup_batched =
-            device.new_compute_pipeline_state_with_function(&classic_cleanup_batched_fn)?;
-        let classic_cleanup_plain_repeated_batched = device
-            .new_compute_pipeline_state_with_function(&classic_cleanup_plain_repeated_batched_fn)?;
-        let classic_cleanup_plain_dev_repeated_batched = device
-            .new_compute_pipeline_state_with_function(
-                &classic_cleanup_plain_dev_repeated_batched_fn,
-            )?;
-        let classic_cleanup_repeated_batched = device
-            .new_compute_pipeline_state_with_function(&classic_cleanup_repeated_batched_fn)?;
-        let classic_store_repeated_batched =
-            device.new_compute_pipeline_state_with_function(&classic_store_repeated_batched_fn)?;
-        let idwt_interleave =
-            device.new_compute_pipeline_state_with_function(&idwt_interleave_fn)?;
-        let idwt_interleave_batched =
-            device.new_compute_pipeline_state_with_function(&idwt_interleave_batched_fn)?;
-        let idwt_reversible53_horizontal =
-            device.new_compute_pipeline_state_with_function(&idwt_reversible53_horizontal_fn)?;
-        let idwt_reversible53_horizontal_batched = device
-            .new_compute_pipeline_state_with_function(&idwt_reversible53_horizontal_batched_fn)?;
-        let idwt_reversible53_vertical =
-            device.new_compute_pipeline_state_with_function(&idwt_reversible53_vertical_fn)?;
-        let idwt_reversible53_vertical_batched = device
-            .new_compute_pipeline_state_with_function(&idwt_reversible53_vertical_batched_fn)?;
-        let idwt_irreversible97_single_decomposition = device
-            .new_compute_pipeline_state_with_function(
-                &idwt_irreversible97_single_decomposition_fn,
-            )?;
-        let fdwt53_horizontal =
-            device.new_compute_pipeline_state_with_function(&fdwt53_horizontal_fn)?;
-        let fdwt53_vertical =
-            device.new_compute_pipeline_state_with_function(&fdwt53_vertical_fn)?;
-        let fdwt53_horizontal_batched =
-            device.new_compute_pipeline_state_with_function(&fdwt53_horizontal_batched_fn)?;
-        let fdwt53_vertical_batched =
-            device.new_compute_pipeline_state_with_function(&fdwt53_vertical_batched_fn)?;
-        let inverse_mct = device.new_compute_pipeline_state_with_function(&inverse_mct_fn)?;
-        let forward_rct = device.new_compute_pipeline_state_with_function(&forward_rct_fn)?;
-        let store_component =
-            device.new_compute_pipeline_state_with_function(&store_component_fn)?;
-        let store_component_repeated =
-            device.new_compute_pipeline_state_with_function(&store_component_repeated_fn)?;
-        let store_component_repeated_gray_u8 = device
-            .new_compute_pipeline_state_with_function(&store_component_repeated_gray_u8_fn)?;
-        let store_component_repeated_gray_u16 = device
-            .new_compute_pipeline_state_with_function(&store_component_repeated_gray_u16_fn)?;
-        let store_component_repeated_gray_u8_contiguous = device
-            .new_compute_pipeline_state_with_function(
-                &store_component_repeated_gray_u8_contiguous_fn,
-            )?;
-        let store_component_repeated_gray_u16_contiguous = device
-            .new_compute_pipeline_state_with_function(
-                &store_component_repeated_gray_u16_contiguous_fn,
-            )?;
-        let store_component_gray_u8 =
-            device.new_compute_pipeline_state_with_function(&store_component_gray_u8_fn)?;
-        let store_component_gray_u16 =
-            device.new_compute_pipeline_state_with_function(&store_component_gray_u16_fn)?;
-        let ht_cleanup = device.new_compute_pipeline_state_with_function(&ht_cleanup_fn)?;
-        let ht_cleanup_batched =
-            device.new_compute_pipeline_state_with_function(&ht_cleanup_batched_fn)?;
-        let ht_cleanup_repeated_batched =
-            device.new_compute_pipeline_state_with_function(&ht_cleanup_repeated_batched_fn)?;
-        let queue = new_command_queue(device)?;
+    pub(crate) fn new_with_device(device: &Device) -> Result<Self, MetalSupportError> {
+        let loader = MetalPipelineLoader::new(device, SHADER_SOURCE)?;
+        let pipeline = |name: &str| loader.pipeline(name);
+        let queue = checked_command_queue(device)?;
         Ok(Self {
             device: device.clone(),
             queue,
@@ -2408,36 +2270,52 @@ impl MetalRuntime {
             pack_rgb16: pipeline("j2k_pack_rgb16")?,
             pack_u8_repeated_gray: pipeline("j2k_pack_u8_repeated_gray")?,
             pack_u16_repeated_gray: pipeline("j2k_pack_u16_repeated_gray")?,
-            classic_cleanup_plain_batched,
-            classic_cleanup_batched,
-            classic_cleanup_plain_repeated_batched,
-            classic_cleanup_plain_dev_repeated_batched,
-            classic_cleanup_repeated_batched,
-            classic_store_repeated_batched,
-            idwt_interleave,
-            idwt_reversible53_horizontal,
-            idwt_reversible53_vertical,
-            idwt_interleave_batched,
-            idwt_reversible53_horizontal_batched,
-            idwt_reversible53_vertical_batched,
-            idwt_irreversible97_single_decomposition,
-            fdwt53_horizontal,
-            fdwt53_vertical,
-            fdwt53_horizontal_batched,
-            fdwt53_vertical_batched,
-            inverse_mct,
-            forward_rct,
-            store_component,
-            store_component_repeated,
-            store_component_repeated_gray_u8,
-            store_component_repeated_gray_u16,
-            store_component_repeated_gray_u8_contiguous,
-            store_component_repeated_gray_u16_contiguous,
-            store_component_gray_u8,
-            store_component_gray_u16,
-            ht_cleanup,
-            ht_cleanup_batched,
-            ht_cleanup_repeated_batched,
+            classic_cleanup_plain_batched: pipeline("j2k_decode_classic_cleanup_plain_batched")?,
+            classic_cleanup_batched: pipeline("j2k_decode_classic_cleanup_batched")?,
+            classic_cleanup_plain_repeated_batched: pipeline(
+                "j2k_decode_classic_cleanup_plain_repeated_batched",
+            )?,
+            classic_cleanup_plain_dev_repeated_batched: pipeline(
+                "j2k_decode_classic_cleanup_plain_dev_repeated_batched",
+            )?,
+            classic_cleanup_repeated_batched: pipeline(
+                "j2k_decode_classic_cleanup_repeated_batched",
+            )?,
+            classic_store_repeated_batched: pipeline("j2k_store_classic_repeated_batched")?,
+            idwt_interleave: pipeline("j2k_idwt_interleave")?,
+            idwt_reversible53_horizontal: pipeline("j2k_idwt_reversible53_horizontal_pass")?,
+            idwt_reversible53_vertical: pipeline("j2k_idwt_reversible53_vertical_pass")?,
+            idwt_interleave_batched: pipeline("j2k_idwt_interleave_batched")?,
+            idwt_reversible53_horizontal_batched: pipeline(
+                "j2k_idwt_reversible53_horizontal_pass_batched",
+            )?,
+            idwt_reversible53_vertical_batched: pipeline(
+                "j2k_idwt_reversible53_vertical_pass_batched",
+            )?,
+            idwt_irreversible97_single_decomposition: pipeline(
+                "j2k_idwt_irreversible97_single_decomposition",
+            )?,
+            fdwt53_horizontal: pipeline("j2k_forward_dwt53_horizontal")?,
+            fdwt53_vertical: pipeline("j2k_forward_dwt53_vertical")?,
+            fdwt53_horizontal_batched: pipeline("j2k_forward_dwt53_horizontal_batched")?,
+            fdwt53_vertical_batched: pipeline("j2k_forward_dwt53_vertical_batched")?,
+            inverse_mct: pipeline("j2k_inverse_mct")?,
+            forward_rct: pipeline("j2k_forward_rct")?,
+            store_component: pipeline("j2k_store_component")?,
+            store_component_repeated: pipeline("j2k_store_component_repeated")?,
+            store_component_repeated_gray_u8: pipeline("j2k_store_component_repeated_gray_u8")?,
+            store_component_repeated_gray_u16: pipeline("j2k_store_component_repeated_gray_u16")?,
+            store_component_repeated_gray_u8_contiguous: pipeline(
+                "j2k_store_component_repeated_gray_u8_contiguous",
+            )?,
+            store_component_repeated_gray_u16_contiguous: pipeline(
+                "j2k_store_component_repeated_gray_u16_contiguous",
+            )?,
+            store_component_gray_u8: pipeline("j2k_store_component_gray_u8")?,
+            store_component_gray_u16: pipeline("j2k_store_component_gray_u16")?,
+            ht_cleanup: pipeline("j2k_decode_ht_cleanup")?,
+            ht_cleanup_batched: pipeline("j2k_decode_ht_cleanup_batched")?,
+            ht_cleanup_repeated_batched: pipeline("j2k_decode_ht_cleanup_repeated_batched")?,
             classic_encode_code_block: pipeline("j2k_encode_classic_code_block")?,
             classic_encode_code_blocks: pipeline("j2k_encode_classic_code_blocks")?,
             classic_encode_code_blocks_32: pipeline("j2k_encode_classic_code_blocks_32")?,
@@ -2543,14 +2421,13 @@ impl MetalRuntime {
         let mut pool = self
             .private_buffer_pool
             .lock()
-            .expect("private buffer pool lock not poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(buffer) = pool.get_mut(&bytes).and_then(Vec::pop) {
             buffer
         } else {
             #[cfg(test)]
             PRIVATE_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
-            self.device
-                .new_buffer(bytes as u64, MTLResourceOptions::StorageModePrivate)
+            private_buffer(&self.device, bytes)
         }
     }
 
@@ -2558,7 +2435,7 @@ impl MetalRuntime {
         let bytes = bytes.max(1);
         self.private_buffer_pool
             .lock()
-            .expect("private buffer pool lock not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(bytes)
             .or_default()
             .push(buffer);
@@ -2569,14 +2446,13 @@ impl MetalRuntime {
         let mut pool = self
             .shared_buffer_pool
             .lock()
-            .expect("shared buffer pool lock not poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(buffer) = pool.get_mut(&bytes).and_then(Vec::pop) {
             buffer
         } else {
             #[cfg(test)]
             SHARED_BUFFER_POOL_MISSES.with(|misses| misses.set(misses.get() + 1));
-            self.device
-                .new_buffer(bytes as u64, MTLResourceOptions::StorageModeShared)
+            shared_buffer(&self.device, bytes)
         }
     }
 
@@ -2584,25 +2460,11 @@ impl MetalRuntime {
         let bytes = bytes.max(1);
         self.shared_buffer_pool
             .lock()
-            .expect("shared buffer pool lock not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(bytes)
             .or_default()
             .push(buffer);
     }
-}
-
-#[cfg(target_os = "macos")]
-fn new_command_queue(device: &Device) -> Result<CommandQueue, String> {
-    let queue: *mut MTLCommandQueue = unsafe {
-        device
-            .as_ref()
-            .send_message(Sel::register("newCommandQueue"), ())
-            .map_err(|error| format!("Metal command queue creation failed: {error}"))?
-    };
-    if queue.is_null() {
-        return Err("Metal command queue is unavailable on this host".to_string());
-    }
-    Ok(unsafe { CommandQueue::from_ptr(queue) })
 }
 
 #[cfg(target_os = "macos")]
@@ -2612,21 +2474,34 @@ fn with_runtime<R>(f: impl FnOnce(&MetalRuntime) -> Result<R, Error>) -> Result<
         return f(&runtime);
     }
 
-    match METAL_RUNTIME.get_or_init(|| MetalRuntime::new().map(Arc::new)) {
-        Ok(runtime) => f(runtime),
-        Err(message) => Err(runtime_initialization_error(message)),
-    }
+    DEFAULT_METAL_SESSION.with(|session| {
+        let mut session = session.borrow_mut();
+        if session.is_none() {
+            *session = Some(
+                signinum_metal_support::system_default_device()
+                    .map(crate::MetalBackendSession::new),
+            );
+        }
+        let Some(session) = session.as_ref() else {
+            return Err(Error::MetalRuntime {
+                message: "J2K Metal default session was not initialized".to_string(),
+            });
+        };
+        match session {
+            Ok(session) => with_runtime_for_session(session, f),
+            Err(error) => Err(runtime_initialization_error(error)),
+        }
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn runtime_initialization_error(message: &str) -> Error {
-    match message {
-        "Metal is unavailable on this host" | "Metal command queue is unavailable on this host" => {
-            Error::MetalUnavailable
+pub(crate) fn runtime_initialization_error(error: &MetalSupportError) -> Error {
+    if error.is_unavailable() {
+        Error::MetalUnavailable
+    } else {
+        Error::MetalRuntime {
+            message: error.to_string(),
         }
-        _ => Error::MetalKernel {
-            message: message.to_string(),
-        },
     }
 }
 
@@ -2646,6 +2521,17 @@ impl Drop for RuntimeOverrideGuard {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn with_runtime_for_session<R>(
+    session: &crate::MetalBackendSession,
+    f: impl FnOnce(&MetalRuntime) -> Result<R, Error>,
+) -> Result<R, Error> {
+    let runtime = session.runtime()?;
+    let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime.clone())));
+    let _guard = RuntimeOverrideGuard { previous };
+    f(&runtime)
+}
+
+#[cfg(target_os = "macos")]
 fn with_runtime_for_device<R>(
     device: &Device,
     f: impl FnOnce(&MetalRuntime) -> Result<R, Error>,
@@ -2657,21 +2543,8 @@ fn with_runtime_for_device<R>(
         }
     }
 
-    let cache = METAL_DEVICE_RUNTIMES.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = device.as_ptr() as usize;
-    let runtime = {
-        let mut cache = cache
-            .lock()
-            .expect("J2K Metal runtime cache lock not poisoned");
-        cache
-            .entry(key)
-            .or_insert_with(|| MetalRuntime::new_with_device(device).map(Arc::new))
-            .clone()
-    }
-    .map_err(|message| runtime_initialization_error(&message))?;
-    let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime.clone())));
-    let _guard = RuntimeOverrideGuard { previous };
-    f(&runtime)
+    let session = crate::MetalBackendSession::new(device.clone());
+    with_runtime_for_session(&session, f)
 }
 
 #[cfg(all(target_os = "macos", test))]
@@ -2681,7 +2554,7 @@ pub(crate) fn with_isolated_runtime_for_device_for_test<R>(
 ) -> Result<R, Error> {
     let runtime = Arc::new(
         MetalRuntime::new_with_device(device)
-            .map_err(|message| runtime_initialization_error(&message))?,
+            .map_err(|error| runtime_initialization_error(&error))?,
     );
     let previous = METAL_RUNTIME_OVERRIDE.with(|slot| slot.replace(Some(runtime)));
     let _guard = RuntimeOverrideGuard { previous };
@@ -2705,7 +2578,7 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
         message: "J2K Metal validation buffer offset exceeds u64".to_string(),
     })?;
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let expected_buffer = runtime.device.new_buffer_with_data(
             expected.as_ptr().cast(),
             expected.len() as u64,
@@ -2731,22 +2604,12 @@ pub(crate) fn validate_metal_buffer_matches_bytes(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
             status_buffer
                 .contents()
@@ -2788,7 +2651,7 @@ pub(crate) fn validate_metal_buffers_match(
         message: "J2K Metal validation actual buffer offset exceeds u64".to_string(),
     })?;
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let status = J2kValidateBytesStatus::default();
         let status_buffer = runtime.device.new_buffer_with_data(
             (&raw const status).cast(),
@@ -2814,22 +2677,12 @@ pub(crate) fn validate_metal_buffers_match(
             size_of::<J2kValidateBytesParams>() as u64,
             (&raw const params).cast(),
         );
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
             status_buffer
                 .contents()
@@ -2890,7 +2743,7 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
         message: "J2K Metal input tile offset exceeds u64".to_string(),
     })?;
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let dst_buffer = runtime
             .device
             .new_buffer(dst_len as u64, MTLResourceOptions::StorageModeShared);
@@ -2913,26 +2766,10 @@ pub(crate) fn copy_interleaved_padded_to_shared_buffer(
             size_of::<J2kCopyInterleavedParams>() as u64,
             (&raw const params).cast(),
         );
-        let width = runtime
-            .copy_interleaved_padded
-            .thread_execution_width()
-            .max(1);
-        let max_threads = runtime
-            .copy_interleaved_padded
-            .max_total_threads_per_threadgroup()
-            .max(width);
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(dst_width),
-                height: u64::from(dst_height),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.copy_interleaved_padded,
+            (dst_width, dst_height),
         );
         encoder.end_encoding();
         command_buffer.commit();
@@ -3482,7 +3319,7 @@ fn encode_plane_stage_to_surface_in_command_buffer(
     let params = J2kPackParams {
         width: stage.dims.0,
         height: stage.dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         output_channels,
         opaque_alpha,
         max_values,
@@ -3519,22 +3356,7 @@ fn encode_plane_stage_to_surface_in_command_buffer(
         size_of::<J2kPackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(stage.dims.0),
-            height: u64::from(stage.dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, stage.dims);
     encoder.end_encoding();
 
     Ok(Surface::from_metal_buffer(out_buffer, stage.dims, fmt))
@@ -3548,7 +3370,7 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
     dims: (u32, u32),
     bit_depths: [u8; 3],
     transform: J2kWaveletTransform,
-) -> Surface {
+) -> Result<Surface, Error> {
     let pitch_bytes = dims.0 as usize * PixelFormat::Rgb8.bytes_per_pixel();
     let out_buffer = runtime.device.new_buffer(
         (pitch_bytes * dims.1 as usize) as u64,
@@ -3563,7 +3385,7 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
     let params = J2kMctRgb8PackParams {
         width: dims.0,
         height: dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         transform: mct_transform_code(transform),
         addends: [
             signed_sample_bias(bit_depths[0]),
@@ -3587,29 +3409,15 @@ fn encode_mct_rgb8_to_surface_in_command_buffer(
         size_of::<J2kMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime.pack_mct_rgb8.thread_execution_width().max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8, dims);
     encoder.end_encoding();
     drop(signpost);
 
-    Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
+    Ok(Surface::from_metal_buffer(
+        out_buffer,
+        dims,
+        PixelFormat::Rgb8,
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -3655,7 +3463,7 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
     let params = J2kBatchedMctRgb8PackParams {
         width: dims.0,
         height: dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         transform: mct_transform_code(transform),
         batch_count: count_u32,
         plane_stride,
@@ -3684,27 +3492,10 @@ fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         size_of::<J2kBatchedMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime
-        .pack_mct_rgb8_batched
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8_batched
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: u64::from(count_u32),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.pack_mct_rgb8_batched,
+        (dims.0, dims.1, count_u32),
     );
     encoder.end_encoding();
     drop(signpost);
@@ -3764,7 +3555,7 @@ fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
     let params = J2kBatchedMctRgb8PackParams {
         width: dims.0,
         height: dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         transform: mct_transform_code(transform),
         batch_count: 1,
         plane_stride,
@@ -3793,28 +3584,7 @@ fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
         size_of::<J2kBatchedMctRgb8PackParams>() as u64,
         (&raw const params).cast(),
     );
-
-    let width = runtime
-        .pack_mct_rgb8_batched
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .pack_mct_rgb8_batched
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, &runtime.pack_mct_rgb8_batched, dims);
     encoder.end_encoding();
     drop(signpost);
 
@@ -5987,14 +5757,17 @@ struct FlattenedCpuTier1Output(*mut f32);
 // packed coefficient slabs. Each pointer is written exactly once before the
 // owning Vec is moved or exposed again.
 #[cfg(target_os = "macos")]
+// SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
 unsafe impl Send for FlattenedCpuTier1Output {}
 
 #[cfg(target_os = "macos")]
+// SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
 unsafe impl Sync for FlattenedCpuTier1Output {}
 
 #[cfg(target_os = "macos")]
 impl FlattenedCpuTier1Output {
     unsafe fn as_slice_mut<'a>(self, len: usize) -> &'a mut [f32] {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe { std::slice::from_raw_parts_mut(self.0, len) }
     }
 }
@@ -6257,6 +6030,7 @@ fn decode_flattened_cpu_tier1_buckets(
                 });
             }
             let output =
+                // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
                 FlattenedCpuTier1Output(unsafe { buckets[bucket_idx].as_mut_ptr().add(start) });
             work_items.push(FlattenedCpuTier1WorkItem {
                 output_len: spec.output_len,
@@ -6324,6 +6098,7 @@ fn decode_flattened_cpu_tier1_work_item(
     scratch: &mut FlattenedCpuTier1DecodeScratch,
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
 ) -> Result<(), Error> {
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let output = unsafe { item.output.as_slice_mut(item.output_len) };
     match item.source {
         FlattenedCpuTier1Source::Classic {
@@ -6571,8 +6346,22 @@ fn emit_direct_hybrid_stage_timings(
         let metric = stage_metric(stage);
         let metric_kind = stage_metric_kind(stage);
         let aggregation = stage_aggregation(stage);
-        eprintln!(
-            "signinum_profile codec=j2k op=decode path=metal_cpu_hybrid pipeline=decode_hybrid label={label} stage={stage} processor={processor} metric={metric} metric_kind={metric_kind} aggregation={aggregation} fmt={fmt_s} batch_count={batch_count_s} elapsed_us={elapsed_us_s}"
+        signinum_profile::emit_profile_row_now(
+            "j2k",
+            "decode",
+            "metal_cpu_hybrid",
+            &[
+                ("pipeline", "decode_hybrid".to_string()),
+                ("label", label.clone()),
+                ("stage", stage.to_string()),
+                ("processor", processor.to_string()),
+                ("metric", metric.to_string()),
+                ("metric_kind", metric_kind.to_string()),
+                ("aggregation", aggregation.to_string()),
+                ("fmt", fmt_s.clone()),
+                ("batch_count", batch_count_s.clone()),
+                ("elapsed_us", elapsed_us_s),
+            ],
         );
     }
 }
@@ -7490,7 +7279,7 @@ fn encode_prepared_direct_color_plan_in_command_buffer(
             plan.dimensions,
             plan.bit_depths,
             plan.transform,
-        );
+        )?;
         if let Some(started) = encode_started {
             stage_timings.metal_mct_pack_encode += elapsed_us(started);
         }
@@ -8070,6 +7859,13 @@ fn store_shapes_match(first: &J2kDirectStoreStep, other: &J2kDirectStoreStep) ->
 }
 
 #[cfg(target_os = "macos")]
+fn direct_preflight_invariant(message: &'static str) -> Error {
+    Error::MetalKernel {
+        message: format!("internal J2K Metal direct preflight error: {message}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_arguments)]
 fn encode_stacked_direct_component_plane_batch(
     runtime: &MetalRuntime,
@@ -8306,10 +8102,12 @@ fn encode_stacked_direct_component_plane_batch(
                 let sub_bands = plans
                     .iter()
                     .map(|plan| match &plan.steps[step_idx] {
-                        PreparedDirectGrayscaleStep::ClassicSubBand(other) => other,
-                        _ => unreachable!("preflight validated classic sub-band"),
+                        PreparedDirectGrayscaleStep::ClassicSubBand(other) => Ok(other),
+                        _ => Err(direct_preflight_invariant(
+                            "classic sub-band step mismatch in stacked component batch",
+                        )),
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, Error>>()?;
                 let per_instance_len = sub_band.width as usize * sub_band.height as usize;
                 let buffer = match tier1_mode {
                     DirectTier1Mode::Metal => {
@@ -8407,10 +8205,12 @@ fn encode_stacked_direct_component_plane_batch(
                 let sub_bands = plans
                     .iter()
                     .map(|plan| match &plan.steps[step_idx] {
-                        PreparedDirectGrayscaleStep::HtSubBand(other) => other,
-                        _ => unreachable!("preflight validated HT sub-band"),
+                        PreparedDirectGrayscaleStep::HtSubBand(other) => Ok(other),
+                        _ => Err(direct_preflight_invariant(
+                            "HT sub-band step mismatch in stacked component batch",
+                        )),
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, Error>>()?;
                 let per_instance_len = sub_band.width as usize * sub_band.height as usize;
                 let buffer = match tier1_mode {
                     DirectTier1Mode::Metal => {
@@ -8560,7 +8360,9 @@ fn encode_stacked_direct_component_plane_batch(
                             let PreparedDirectGrayscaleStep::Idwt(step) =
                                 &plans[instance_idx].steps[step_idx]
                             else {
-                                unreachable!("preflight validated IDWT")
+                                return Err(direct_preflight_invariant(
+                                    "IDWT step mismatch in stacked component batch",
+                                ));
                             };
                             let ll = lookup_direct_band_slice_entry(
                                 bands,
@@ -8614,7 +8416,9 @@ fn encode_stacked_direct_component_plane_batch(
                     let PreparedDirectGrayscaleStep::Idwt(step) =
                         &plans[instance_idx].steps[step_idx]
                     else {
-                        unreachable!("preflight validated IDWT")
+                        return Err(direct_preflight_invariant(
+                            "IDWT output step mismatch in stacked component batch",
+                        ));
                     };
                     bands.push(DirectBandSlice {
                         band_id: step.step.output_band_id,
@@ -9101,6 +8905,7 @@ fn encode_repeated_direct_grayscale_plan_in_command_buffer(
 #[cfg(target_os = "macos")]
 fn copy_plane_samples(buffer: &Buffer, samples: &[f32], image_width: usize, roi: Rect) {
     let row_width = roi.w as usize;
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let dst = unsafe {
         core::slice::from_raw_parts_mut(buffer.contents().cast::<f32>(), row_width * roi.h as usize)
     };
@@ -9174,6 +8979,7 @@ fn recycle_shared_buffers(runtime: &MetalRuntime, recyclable_shared_buffers: Vec
 fn validate_direct_status(status_check: DirectStatusCheck) -> Result<(), Error> {
     match status_check {
         DirectStatusCheck::Classic { buffer, len } => {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let statuses = unsafe {
                 core::slice::from_raw_parts(buffer.contents().cast::<J2kClassicStatus>(), len)
             };
@@ -9186,6 +8992,7 @@ fn validate_direct_status(status_check: DirectStatusCheck) -> Result<(), Error> 
             }
         }
         DirectStatusCheck::Ht { buffer, len } => {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let statuses = unsafe {
                 core::slice::from_raw_parts(buffer.contents().cast::<J2kHtStatus>(), len)
             };
@@ -9198,12 +9005,14 @@ fn validate_direct_status(status_check: DirectStatusCheck) -> Result<(), Error> 
             }
         }
         DirectStatusCheck::Idwt(buffer) => {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let status = unsafe { buffer.contents().cast::<J2kIdwtStatus>().read() };
             if status.code != J2K_IDWT_STATUS_OK {
                 return Err(decode_idwt_status_error(status));
             }
         }
         DirectStatusCheck::Mct(buffer) => {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let status = unsafe { buffer.contents().cast::<J2kMctStatus>().read() };
             if status.code != J2K_MCT_STATUS_OK {
                 return Err(decode_mct_status_error(status));
@@ -9275,7 +9084,7 @@ fn encode_gray_plane_to_surface_in_encoder_with_offset(
     let params = J2kPackParams {
         width: dims.0,
         height: dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         output_channels,
         opaque_alpha,
         max_values,
@@ -9294,21 +9103,7 @@ fn encode_gray_plane_to_surface_in_encoder_with_offset(
         size_of::<J2kPackParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, dims);
 
     Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
 }
@@ -9345,7 +9140,7 @@ fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
     let params = J2kRepeatedGrayPackParams {
         width: dims.0,
         height: dims.1,
-        out_stride: u32::try_from(pitch_bytes).expect("J2K Metal output stride fits in u32"),
+        out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         batch_count: count_u32,
         max_value: scale.max_value,
         u8_scale: scale.u8_scale,
@@ -9370,21 +9165,7 @@ fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         size_of::<J2kRepeatedGrayPackParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(dims.0),
-            height: u64::from(dims.1),
-            depth: u64::from(count_u32),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_3d_pipeline(encoder, pipeline, (dims.0, dims.1, count_u32));
     encoder.end_encoding();
 
     let mut surfaces = Vec::with_capacity(count);
@@ -9404,6 +9185,7 @@ fn owned_slice_buffer<T>(device: &Device, data: &[T]) -> Buffer {
     let size = size_of_val(data).max(1);
     let buffer = device.new_buffer(size as u64, MTLResourceOptions::StorageModeShared);
     if !data.is_empty() {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 data.as_ptr().cast::<u8>(),
@@ -9438,16 +9220,21 @@ fn j2k_pack_kernel_name_for(
 fn j2k_pack_pipeline_for<'a>(
     runtime: &'a MetalRuntime,
     kernel_name: &str,
-) -> &'a ComputePipelineState {
-    match kernel_name {
+) -> Result<&'a ComputePipelineState, Error> {
+    let pipeline = match kernel_name {
         "j2k_pack_gray8" => &runtime.pack_gray8,
         "j2k_pack_rgb8" => &runtime.pack_rgb8,
         "j2k_pack_rgb_opaque_rgba8" => &runtime.pack_rgb_opaque_rgba8,
         "j2k_pack_rgba8" => &runtime.pack_rgba8,
         "j2k_pack_gray16" => &runtime.pack_gray16,
         "j2k_pack_rgb16" => &runtime.pack_rgb16,
-        _ => unreachable!("validated J2K pack kernel name"),
-    }
+        _ => {
+            return Err(Error::MetalKernel {
+                message: format!("unsupported validated J2K Metal pack kernel `{kernel_name}`"),
+            });
+        }
+    };
+    Ok(pipeline)
 }
 
 #[cfg(target_os = "macos")]
@@ -9472,12 +9259,18 @@ fn output_shape_for<'a>(
         | (NativeColorSpace::RGB, true, 4, PixelFormat::Rgb8) => (3, 0),
         (NativeColorSpace::RGB, false, 3, PixelFormat::Rgba8) => (4, 1),
         (NativeColorSpace::RGB, true, 4, PixelFormat::Rgba8) => (4, 0),
-        _ => unreachable!("validated J2K pack shape"),
+        _ => {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "unsupported validated J2K Metal pack shape for {color_space:?}, alpha={has_alpha}, planes={plane_count}, fmt={fmt:?}"
+                ),
+            });
+        }
     };
     Ok((
         output_channels,
         opaque_alpha,
-        j2k_pack_pipeline_for(runtime, kernel_name),
+        j2k_pack_pipeline_for(runtime, kernel_name)?,
     ))
 }
 
@@ -9619,6 +9412,7 @@ fn copied_recyclable_shared_slice_buffer<T>(
     let size = size_of_val(data).max(1);
     let buffer = take_recyclable_shared_buffer(runtime, size, recyclable_shared_buffers);
     if !data.is_empty() {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 data.as_ptr().cast::<u8>(),
@@ -9638,6 +9432,7 @@ fn zeroed_recyclable_shared_buffer(
 ) -> Buffer {
     let bytes = bytes.max(1);
     let buffer = take_recyclable_shared_buffer(runtime, bytes, recyclable_shared_buffers);
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     unsafe {
         core::ptr::write_bytes(buffer.contents().cast::<u8>(), 0, bytes);
     }
@@ -9784,6 +9579,7 @@ pub(crate) fn encode_forward_dwt53(
         command_buffer.wait_until_completed();
 
         let active_buffer = if active_is_a { &buffer_a } else { &buffer_b };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let transformed = unsafe {
             core::slice::from_raw_parts(active_buffer.contents().cast::<f32>(), samples.len())
         };
@@ -9830,20 +9626,10 @@ fn dispatch_forward_dwt53_pass(
         size_of::<J2kForwardDwt53Params>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.current_width),
-            height: u64::from(params.current_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        pipeline,
+        (params.current_width, params.current_height),
     );
     encoder.end_encoding();
 }
@@ -9881,20 +9667,14 @@ fn dispatch_forward_dwt53_batched_pass(
         size_of::<J2kForwardDwt53BatchedParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.current_width),
-            height: u64::from(params.current_height),
-            depth: u64::from(params.component_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        pipeline,
+        (
+            params.current_width,
+            params.current_height,
+            params.component_count,
+        ),
     );
     encoder.end_encoding();
 }
@@ -10122,6 +9902,112 @@ pub(crate) struct J2kResidentLosslessHtCodeBlocks {
     _coefficient_job_buffer: Buffer,
 }
 
+/// Family descriptor that lets the resident Tier-1 codestream drivers run
+/// generically over the classic and HT code-block tables. Associated consts
+/// keep diagnostics byte-identical to the pre-convergence per-family bodies.
+#[cfg(target_os = "macos")]
+pub(crate) trait ResidentLosslessTier1Metal {
+    /// Prefix for Tier-2 resident packet diagnostics ("" for classic).
+    const TIER2_PREFIX: &'static str;
+    /// Family name used in codestream assembly diagnostics.
+    const FAMILY_NAME: &'static str;
+    /// Value stored in `J2kResidentPacketBlock::block_coding_mode`.
+    const BLOCK_CODING_MODE: u32;
+    const CODESTREAM_STATUS_STAGE: &'static str;
+    const CODESTREAM_LENGTH_ERROR: &'static str;
+    const CODESTREAM_CAPACITY_ERROR: &'static str;
+
+    fn batch_job_count(&self) -> usize;
+    fn code_block_count(&self) -> usize;
+    fn output_capacity_total(&self) -> usize;
+    fn output_buffer(&self) -> &Buffer;
+    fn status_buffer(&self) -> &Buffer;
+    fn job_buffer(&self) -> &Buffer;
+    fn prepare_command_buffer(&self) -> &CommandBuffer;
+    fn tier1_command_buffer(&self) -> &CommandBuffer;
+    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState;
+}
+
+#[cfg(target_os = "macos")]
+impl ResidentLosslessTier1Metal for J2kResidentLosslessTier1CodeBlocks {
+    const TIER2_PREFIX: &'static str = "";
+    const FAMILY_NAME: &'static str = "J2K";
+    const BLOCK_CODING_MODE: u32 = 0;
+    const CODESTREAM_STATUS_STAGE: &'static str = "J2K codestream assembly";
+    const CODESTREAM_LENGTH_ERROR: &'static str =
+        "J2K Metal codestream output length exceeds usize";
+    const CODESTREAM_CAPACITY_ERROR: &'static str =
+        "J2K Metal codestream output length exceeds buffer";
+
+    fn batch_job_count(&self) -> usize {
+        self.batch_jobs.len()
+    }
+    fn code_block_count(&self) -> usize {
+        self.code_blocks.len()
+    }
+    fn output_capacity_total(&self) -> usize {
+        self.output_capacity_total
+    }
+    fn output_buffer(&self) -> &Buffer {
+        &self.output_buffer
+    }
+    fn status_buffer(&self) -> &Buffer {
+        &self.status_buffer
+    }
+    fn job_buffer(&self) -> &Buffer {
+        &self.job_buffer
+    }
+    fn prepare_command_buffer(&self) -> &CommandBuffer {
+        &self.prepare_command_buffer
+    }
+    fn tier1_command_buffer(&self) -> &CommandBuffer {
+        &self.tier1_command_buffer
+    }
+    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.packet_block_prepare_resident_classic
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ResidentLosslessTier1Metal for J2kResidentLosslessHtCodeBlocks {
+    const TIER2_PREFIX: &'static str = "HTJ2K ";
+    const FAMILY_NAME: &'static str = "HTJ2K";
+    const BLOCK_CODING_MODE: u32 = 1;
+    const CODESTREAM_STATUS_STAGE: &'static str = "HTJ2K codestream assembly";
+    const CODESTREAM_LENGTH_ERROR: &'static str =
+        "HTJ2K Metal codestream output length exceeds usize";
+    const CODESTREAM_CAPACITY_ERROR: &'static str =
+        "HTJ2K Metal codestream output length exceeds buffer";
+
+    fn batch_job_count(&self) -> usize {
+        self.batch_jobs.len()
+    }
+    fn code_block_count(&self) -> usize {
+        self.code_blocks.len()
+    }
+    fn output_capacity_total(&self) -> usize {
+        self.output_capacity_total
+    }
+    fn output_buffer(&self) -> &Buffer {
+        &self.output_buffer
+    }
+    fn status_buffer(&self) -> &Buffer {
+        &self.status_buffer
+    }
+    fn job_buffer(&self) -> &Buffer {
+        &self.job_buffer
+    }
+    fn prepare_command_buffer(&self) -> &CommandBuffer {
+        &self.prepare_command_buffer
+    }
+    fn tier1_command_buffer(&self) -> &CommandBuffer {
+        &self.tier1_command_buffer
+    }
+    fn packet_block_prepare_pipeline(runtime: &MetalRuntime) -> &ComputePipelineState {
+        &runtime.packet_block_prepare_resident_ht
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) struct J2kResidentLosslessCodestream {
     pub(crate) buffer: Buffer,
@@ -10145,19 +10031,7 @@ pub(crate) struct J2kPendingResidentLosslessCodestream {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) struct J2kResidentHtBatchEncodeItem {
-    pub(crate) prepared: J2kPreparedLosslessDeviceCodeBlocks,
-    pub(crate) resolution_count: u32,
-    pub(crate) num_layers: u8,
-    pub(crate) num_components: u8,
-    pub(crate) code_block_count: u32,
-    pub(crate) packet_descriptors: Vec<J2kPacketizationPacketDescriptor>,
-    pub(crate) resolutions: Vec<J2kResidentPacketizationResolution>,
-    pub(crate) codestream: J2kLosslessCodestreamAssemblyJob,
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) struct J2kResidentClassicBatchEncodeItem {
+pub(crate) struct J2kResidentBatchEncodeItem {
     pub(crate) prepared: J2kPreparedLosslessDeviceCodeBlocks,
     pub(crate) resolution_count: u32,
     pub(crate) num_layers: u8,
@@ -10390,7 +10264,7 @@ struct J2kResidentClassicTier1SplitTokenBuffers {
 
 #[cfg(target_os = "macos")]
 pub(crate) struct J2kPendingResidentLosslessCodestreamBatch {
-    device: Device,
+    runtime: Arc<MetalRuntime>,
     buffer: Buffer,
     byte_offsets: Vec<usize>,
     capacities: Vec<usize>,
@@ -10499,6 +10373,7 @@ pub(crate) fn wait_resident_lossless_codestream(
         &pending.retained_command_buffers,
         &pending.command_buffer,
     );
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let status = unsafe {
         pending
             .status_buffer
@@ -11225,18 +11100,7 @@ fn dispatch_classic_tier1_split_token_emit_for_gpu_pack(
         (&raw const token_segment_stride).cast(),
     );
     encoder.set_bytes(9, size_of::<u32>() as u64, (&raw const job_count).cast());
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: emit_pipeline.thread_execution_width().max(1),
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_1d_pipeline(encoder, emit_pipeline, u64::from(job_count));
     encoder.end_encoding();
 
     Ok(J2kResidentClassicTier1SplitTokenBuffers {
@@ -11681,6 +11545,7 @@ fn record_classic_tier1_density_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1DensityReadback,
 ) -> Result<(), Error> {
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -11837,6 +11702,7 @@ fn record_classic_tier1_symbol_plan_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1SymbolPlanReadback,
 ) -> Result<(), Error> {
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -11991,6 +11857,7 @@ fn record_classic_tier1_pass_plan_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1PassPlanReadback,
 ) -> Result<(), Error> {
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -12101,6 +11968,7 @@ fn compare_classic_tier1_symbol_plan_and_pass_plan_counters(
             message: "J2K Metal classic Tier-1 pass-plan comparison count mismatch".to_string(),
         });
     }
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let symbol_plan_counters = unsafe {
         core::slice::from_raw_parts(
             symbol_plan
@@ -12110,6 +11978,7 @@ fn compare_classic_tier1_symbol_plan_and_pass_plan_counters(
             symbol_plan.count,
         )
     };
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let pass_plan_counters = unsafe {
         core::slice::from_raw_parts(
             pass_plan
@@ -12158,6 +12027,7 @@ fn record_classic_tier1_token_emit_counters(
     stage_stats: &mut J2kResidentEncodeStageStats,
     readback: &J2kResidentClassicTier1TokenEmitReadback,
 ) -> Result<(), Error> {
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -12237,6 +12107,7 @@ fn compare_classic_tier1_symbol_plan_and_token_emit_counters(
             message: "J2K Metal classic Tier-1 token-emitter comparison count mismatch".to_string(),
         });
     }
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let symbol_plan_counters = unsafe {
         core::slice::from_raw_parts(
             symbol_plan
@@ -12246,6 +12117,7 @@ fn compare_classic_tier1_symbol_plan_and_token_emit_counters(
             symbol_plan.count,
         )
     };
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let token_emit_counters = unsafe {
         core::slice::from_raw_parts(
             token_emit
@@ -12322,6 +12194,7 @@ fn validate_classic_tier1_split_token_emit_counters(
     let count = usize::try_from(readback.job_count).map_err(|_| Error::MetalKernel {
         message: "J2K Metal classic Tier-1 split-token counter count exceeds usize".to_string(),
     })?;
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -12356,6 +12229,7 @@ fn compare_classic_tier1_symbol_plan_and_split_token_emit_counters(
             message: "J2K Metal classic Tier-1 split-token comparison count mismatch".to_string(),
         });
     }
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let symbol_plan_counters = unsafe {
         core::slice::from_raw_parts(
             symbol_plan
@@ -12365,6 +12239,7 @@ fn compare_classic_tier1_symbol_plan_and_split_token_emit_counters(
             symbol_plan.count,
         )
     };
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let split_emit_counters = unsafe {
         core::slice::from_raw_parts(
             split_emit
@@ -12434,6 +12309,7 @@ fn profile_classic_tier1_token_pack(
     if !metal_profile_classic_tier1_token_pack_enabled() {
         return Ok(());
     }
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let counters = unsafe {
         core::slice::from_raw_parts(
             readback
@@ -12459,12 +12335,14 @@ fn profile_classic_tier1_token_pack(
                 "J2K Metal classic Tier-1 token-pack profiling requires token segment readback"
                     .to_string(),
         })?;
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let token_bytes = unsafe {
         core::slice::from_raw_parts(
             token_buffer.contents().cast::<u8>(),
             readback.count.saturating_mul(readback.token_stride_bytes),
         )
     };
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let token_segments = unsafe {
         core::slice::from_raw_parts(
             segment_buffer
@@ -12559,6 +12437,7 @@ fn record_resident_tier1_output_usage(
                             "J2K Metal classic Tier-1 profile readback is missing job metadata"
                                 .to_string(),
                     })?;
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let statuses = unsafe {
                 core::slice::from_raw_parts(
                     readback.buffer.contents().cast::<J2kClassicEncodeStatus>(),
@@ -12681,6 +12560,7 @@ fn record_resident_tier1_output_usage(
             }
         }
         J2kResidentTier1StatusKind::HighThroughput => {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             let statuses = unsafe {
                 core::slice::from_raw_parts(
                     readback.buffer.contents().cast::<J2kHtEncodeStatus>(),
@@ -12811,18 +12691,17 @@ fn finish_completed_resident_lossless_codestream_batch(
     ) {
         compare_classic_tier1_symbol_plan_and_split_token_emit_counters(symbol_plan, split_emit)?;
     }
+    let runtime = pending.runtime.clone();
     let recyclable_private_buffers = pending.recyclable_private_buffers;
     let private_recycle_started = profile_stages.then(Instant::now);
-    with_runtime_for_device(&pending.device, |runtime| {
-        recycle_private_buffers(runtime, recyclable_private_buffers);
-        Ok(())
-    })?;
+    recycle_private_buffers(&runtime, recyclable_private_buffers);
     if let Some(started) = private_recycle_started {
         stage_stats.result_private_recycle_duration = started.elapsed();
     }
     let gpu_duration_share =
         gpu_duration.map(|duration| duration_share(duration, pending.capacities.len()));
     let status_copy_started = profile_stages.then(Instant::now);
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
         core::slice::from_raw_parts(
             pending
@@ -12833,6 +12712,7 @@ fn finish_completed_resident_lossless_codestream_batch(
         )
     }
     .to_vec();
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let packet_statuses = unsafe {
         core::slice::from_raw_parts(
             pending
@@ -12848,10 +12728,7 @@ fn finish_completed_resident_lossless_codestream_batch(
     }
     let recyclable_shared_buffers = pending.recyclable_shared_buffers;
     let shared_recycle_started = profile_stages.then(Instant::now);
-    with_runtime_for_device(&pending.device, |runtime| {
-        recycle_shared_buffers(runtime, recyclable_shared_buffers);
-        Ok(())
-    })?;
+    recycle_shared_buffers(&runtime, recyclable_shared_buffers);
     if let Some(started) = shared_recycle_started {
         stage_stats.result_shared_recycle_duration = started.elapsed();
     }
@@ -13304,11 +13181,13 @@ fn completed_command_buffer_gpu_times(command_buffer: &CommandBufferRef) -> Opti
     #[cfg(test)]
     RESIDENT_GPU_TIMESTAMP_QUERIES.with(|queries| queries.set(queries.get() + 1));
 
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let start: f64 = unsafe {
         command_buffer
             .send_message::<(), f64>(Sel::register("GPUStartTime"), ())
             .ok()?
     };
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let end: f64 = unsafe {
         command_buffer
             .send_message::<(), f64>(Sel::register("GPUEndTime"), ())
@@ -13366,26 +13245,10 @@ fn dispatch_lossless_deinterleave(
         size_of::<J2kLosslessDeinterleaveParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime
-        .lossless_deinterleave_to_planes
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_deinterleave_to_planes
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job.output_width),
-            height: u64::from(job.output_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.lossless_deinterleave_to_planes,
+        (job.output_width, job.output_height),
     );
     encoder.end_encoding();
     Ok(())
@@ -13438,26 +13301,10 @@ fn dispatch_lossless_deinterleave_rct_rgb8(
         (&raw const params).cast(),
     );
     encoder.set_buffer(5, Some(status_buffer), 0);
-    let width = runtime
-        .lossless_deinterleave_rct_rgb8_to_planes
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_deinterleave_rct_rgb8_to_planes
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job.output_width),
-            height: u64::from(job.output_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.lossless_deinterleave_rct_rgb8_to_planes,
+        (job.output_width, job.output_height),
     );
     encoder.end_encoding();
     #[cfg(test)]
@@ -13880,26 +13727,10 @@ fn dispatch_lossless_extract_coefficients(
     encoder.set_buffer(3, Some(coefficient_buffer), 0);
     encoder.set_buffer(4, Some(&coefficient_job_buffer), 0);
     encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-    let width = runtime
-        .lossless_extract_coefficients
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .lossless_extract_coefficients
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(max_block_width),
-            height: u64::from(max_block_height),
-            depth: u64::from(job_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.lossless_extract_coefficients,
+        (max_block_width, max_block_height, job_count),
     );
     encoder.end_encoding();
     let _ = output_width;
@@ -13961,7 +13792,7 @@ pub(crate) fn prepare_lossless_device_code_blocks(
 ) -> Result<J2kPreparedLosslessDeviceCodeBlocks, Error> {
     let sizes = lossless_prepare_sizes(job)?;
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let mut plane_buffers = Vec::with_capacity(3);
         let mut scratch_buffers = Vec::with_capacity(usize::from(job.components));
         for _ in 0..3 {
@@ -14113,7 +13944,7 @@ pub(crate) fn prepare_lossless_device_code_blocks_batch(
         sizes.push(item_sizes);
     }
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let mut shared_recyclable_private_buffers = Vec::new();
         let coefficient_buffer = take_recyclable_private_buffer(
             runtime,
@@ -14470,6 +14301,7 @@ pub(crate) fn encode_forward_rct(
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
         if status.code != J2K_MCT_STATUS_OK {
             return Err(decode_mct_status_error(status));
@@ -14557,16 +14389,20 @@ pub(crate) fn decode_inverse_mct(job: J2kInverseMctJob<'_>) -> Result<Vec<Buffer
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kMctStatus>().read() };
         if status.code != J2K_MCT_STATUS_OK {
             return Err(decode_mct_status_error(status));
         }
 
         let plane0_host =
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe { core::slice::from_raw_parts(plane0_buffer.contents().cast::<f32>(), len) };
         let plane1_host =
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe { core::slice::from_raw_parts(plane1_buffer.contents().cast::<f32>(), len) };
         let plane2_host =
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe { core::slice::from_raw_parts(plane2_buffer.contents().cast::<f32>(), len) };
         for (dst, sample) in plane0.iter_mut().zip(plane0_host.iter().copied()) {
             *dst = sample - addend0;
@@ -14734,24 +14570,7 @@ pub(crate) fn decode_store_component_and_capture(
             size_of::<J2kStoreParams>() as u64,
             (&raw const params).cast(),
         );
-        let width = runtime.store_component.thread_execution_width().max(1);
-        let max_threads = runtime
-            .store_component
-            .max_total_threads_per_threadgroup()
-            .max(width);
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(copy_width),
-                height: u64::from(copy_height),
-                depth: 1,
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
-        );
+        dispatch_2d_pipeline(encoder, &runtime.store_component, (copy_width, copy_height));
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -14802,23 +14621,10 @@ fn dispatch_store_component_buffer_in_encoder_with_offsets(
         size_of::<J2kStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime.store_component.thread_execution_width().max(1);
-    let max_threads = runtime
-        .store_component
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.store_component,
+        (params.copy_width, params.copy_height),
     );
 }
 
@@ -14841,26 +14647,10 @@ fn dispatch_store_component_repeated_in_command_buffer(
         size_of::<J2kRepeatedStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = runtime
-        .store_component_repeated
-        .thread_execution_width()
-        .max(1);
-    let max_threads = runtime
-        .store_component_repeated
-        .max_total_threads_per_threadgroup()
-        .max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: u64::from(params.batch_count),
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.store_component_repeated,
+        (params.copy_width, params.copy_height, params.batch_count),
     );
     encoder.end_encoding();
 }
@@ -14946,18 +14736,10 @@ fn encode_repeated_gray_store_to_surfaces_in_command_buffer(
             },
         );
     } else {
-        let height = (max_threads / width).max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(params.copy_width),
-                height: u64::from(params.copy_height),
-                depth: u64::from(params.batch_count),
-            },
-            MTLSize {
-                width,
-                height,
-                depth: 1,
-            },
+        dispatch_3d_pipeline(
+            encoder,
+            pipeline,
+            (params.copy_width, params.copy_height, params.batch_count),
         );
     }
     encoder.end_encoding();
@@ -15007,21 +14789,7 @@ fn encode_gray_store_to_surface_in_encoder(
         size_of::<J2kGrayStoreParams>() as u64,
         (&raw const params).cast(),
     );
-    let width = pipeline.thread_execution_width().max(1);
-    let max_threads = pipeline.max_total_threads_per_threadgroup().max(width);
-    let height = (max_threads / width).max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.copy_width),
-            height: u64::from(params.copy_height),
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height,
-            depth: 1,
-        },
-    );
+    dispatch_2d_pipeline(encoder, pipeline, (params.copy_width, params.copy_height));
 
     Ok(Surface::from_metal_buffer(out_buffer, dims, fmt))
 }
@@ -15084,24 +14852,10 @@ pub(crate) fn decode_reversible53_single_decomposition_idwt(
             size_of::<J2kIdwtSingleDecompositionParams>() as u64,
             (&raw const params).cast(),
         );
-        let interleave_width = runtime.idwt_interleave.thread_execution_width().max(1);
-        let interleave_height = (runtime
-            .idwt_interleave
-            .max_total_threads_per_threadgroup()
-            .max(interleave_width)
-            / interleave_width)
-            .max(1);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(params.width),
-                height: u64::from(params.height),
-                depth: 1,
-            },
-            MTLSize {
-                width: interleave_width,
-                height: interleave_height,
-                depth: 1,
-            },
+        dispatch_2d_pipeline(
+            encoder,
+            &runtime.idwt_interleave,
+            (params.width, params.height),
         );
         encoder.end_encoding();
 
@@ -15228,24 +14982,10 @@ fn dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets(
         size_of::<J2kIdwtSingleDecompositionParams>() as u64,
         (&raw const params).cast(),
     );
-    let interleave_width = runtime.idwt_interleave.thread_execution_width().max(1);
-    let interleave_height = (runtime
-        .idwt_interleave
-        .max_total_threads_per_threadgroup()
-        .max(interleave_width)
-        / interleave_width)
-        .max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.width),
-            height: u64::from(params.height),
-            depth: 1,
-        },
-        MTLSize {
-            width: interleave_width,
-            height: interleave_height,
-            depth: 1,
-        },
+    dispatch_2d_pipeline(
+        encoder,
+        &runtime.idwt_interleave,
+        (params.width, params.height),
     );
 
     encoder.set_compute_pipeline_state(&runtime.idwt_reversible53_horizontal);
@@ -15327,27 +15067,10 @@ fn dispatch_reversible53_repeated_buffers_in_command_buffer_with_offsets(
         size_of::<J2kRepeatedIdwtSingleDecompositionParams>() as u64,
         (&raw const params).cast(),
     );
-    let interleave_width = runtime
-        .idwt_interleave_batched
-        .thread_execution_width()
-        .max(1);
-    let interleave_height = (runtime
-        .idwt_interleave_batched
-        .max_total_threads_per_threadgroup()
-        .max(interleave_width)
-        / interleave_width)
-        .max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(params.width),
-            height: u64::from(params.height),
-            depth: u64::from(params.batch_count),
-        },
-        MTLSize {
-            width: interleave_width,
-            height: interleave_height,
-            depth: 1,
-        },
+    dispatch_3d_pipeline(
+        encoder,
+        &runtime.idwt_interleave_batched,
+        (params.width, params.height, params.batch_count),
     );
     encoder.end_encoding();
 
@@ -15468,22 +15191,12 @@ pub(crate) fn decode_irreversible97_single_decomposition_idwt(
             (&raw const params).cast(),
         );
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kIdwtStatus>().read() };
         if status.code != J2K_IDWT_STATUS_OK {
             return Err(decode_idwt_status_error(status));
@@ -15609,18 +15322,7 @@ fn dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_status(
         (&raw const params).cast(),
     );
     encoder.set_buffer(6, Some(status_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_single_thread(encoder);
 }
 
 #[cfg(target_os = "macos")]
@@ -15743,6 +15445,7 @@ fn dispatch_classic_cleanup_batched(
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
         core::slice::from_raw_parts(
             status_buffer.contents().cast::<J2kClassicStatus>(),
@@ -15915,7 +15618,7 @@ fn dispatch_classic_cleanup_repeated_batched_in_command_buffer(
     segments: &Buffer,
     decoded: &Buffer,
     coefficients_scratch: &Buffer,
-) -> DirectStatusCheck {
+) -> Result<DirectStatusCheck, Error> {
     let pipeline = if use_plain_fast_path {
         &runtime.classic_cleanup_plain_repeated_batched
     } else {
@@ -15926,11 +15629,15 @@ fn dispatch_classic_cleanup_repeated_batched_in_command_buffer(
         MTLResourceOptions::StorageModeShared,
     );
     let repeated = J2kClassicRepeatedBatchParams {
-        job_count: u32::try_from(job_count).expect("classic repeated base job count fits in u32"),
-        output_plane_len: u32::try_from(output_plane_len)
-            .expect("classic repeated output plane len fits in u32"),
-        batch_count: u32::try_from(total_job_count / job_count.max(1))
-            .expect("classic repeated batch count fits in u32"),
+        job_count: j2k_u32_param(job_count, "classic repeated base job count exceeds u32")?,
+        output_plane_len: j2k_u32_param(
+            output_plane_len,
+            "classic repeated output plane len exceeds u32",
+        )?,
+        batch_count: j2k_u32_param(
+            total_job_count / job_count.max(1),
+            "classic repeated batch count exceeds u32",
+        )?,
     };
 
     let encoder = command_buffer.new_compute_command_encoder();
@@ -15979,10 +15686,10 @@ fn dispatch_classic_cleanup_repeated_batched_in_command_buffer(
     }
     encoder.end_encoding();
 
-    DirectStatusCheck::Classic {
+    Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
         len: total_job_count,
-    }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -15999,17 +15706,21 @@ fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
     decoded: &Buffer,
     coefficients_scratch: &Buffer,
     states_scratch: &Buffer,
-) -> DirectStatusCheck {
+) -> Result<DirectStatusCheck, Error> {
     let status_buffer = runtime.device.new_buffer(
         (total_job_count.max(1) * size_of::<J2kClassicStatus>()) as u64,
         MTLResourceOptions::StorageModeShared,
     );
     let repeated = J2kClassicRepeatedBatchParams {
-        job_count: u32::try_from(job_count).expect("classic repeated base job count fits in u32"),
-        output_plane_len: u32::try_from(output_plane_len)
-            .expect("classic repeated output plane len fits in u32"),
-        batch_count: u32::try_from(total_job_count / job_count.max(1))
-            .expect("classic repeated batch count fits in u32"),
+        job_count: j2k_u32_param(job_count, "classic repeated base job count exceeds u32")?,
+        output_plane_len: j2k_u32_param(
+            output_plane_len,
+            "classic repeated output plane len exceeds u32",
+        )?,
+        batch_count: j2k_u32_param(
+            total_job_count / job_count.max(1),
+            "classic repeated batch count exceeds u32",
+        )?,
     };
 
     let encoder = command_buffer.new_compute_command_encoder();
@@ -16044,10 +15755,10 @@ fn dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
     );
     encoder.end_encoding();
 
-    DirectStatusCheck::Classic {
+    Ok(DirectStatusCheck::Classic {
         buffer: status_buffer,
         len: total_job_count,
-    }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -16061,13 +15772,17 @@ fn dispatch_classic_store_repeated_batched_in_command_buffer(
     output_plane_len: usize,
     decoded: &Buffer,
     coefficients_scratch: &Buffer,
-) {
+) -> Result<(), Error> {
     let repeated = J2kClassicRepeatedBatchParams {
-        job_count: u32::try_from(job_count).expect("classic repeated base job count fits in u32"),
-        output_plane_len: u32::try_from(output_plane_len)
-            .expect("classic repeated output plane len fits in u32"),
-        batch_count: u32::try_from(total_job_count / job_count.max(1))
-            .expect("classic repeated batch count fits in u32"),
+        job_count: j2k_u32_param(job_count, "classic repeated base job count exceeds u32")?,
+        output_plane_len: j2k_u32_param(
+            output_plane_len,
+            "classic repeated output plane len exceeds u32",
+        )?,
+        batch_count: j2k_u32_param(
+            total_job_count / job_count.max(1),
+            "classic repeated batch count exceeds u32",
+        )?,
     };
 
     let encoder = command_buffer.new_compute_command_encoder();
@@ -16093,6 +15808,7 @@ fn dispatch_classic_store_repeated_batched_in_command_buffer(
         },
     );
     encoder.end_encoding();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -16503,7 +16219,7 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
             &segments_buffer,
             output,
             &coefficients_scratch.buffer,
-        )
+        )?
     } else if let Some(states_scratch) = states_scratch.as_ref() {
         dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
             runtime,
@@ -16517,7 +16233,7 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
             output,
             &coefficients_scratch.buffer,
             &states_scratch.buffer,
-        )
+        )?
     } else {
         dispatch_classic_cleanup_repeated_batched_in_command_buffer(
             runtime,
@@ -16531,7 +16247,7 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
             &segments_buffer,
             output,
             &coefficients_scratch.buffer,
-        )
+        )?
     };
     if !use_plain_fast_path {
         dispatch_classic_store_repeated_batched_in_command_buffer(
@@ -16543,7 +16259,7 @@ fn encode_repeated_classic_sub_band_to_buffer_in_command_buffer(
             job.width as usize * job.height as usize,
             output,
             &coefficients_scratch.buffer,
-        );
+        )?;
     }
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
@@ -16613,7 +16329,7 @@ fn encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer(
             &segments_buffer,
             output,
             &coefficients_scratch.buffer,
-        )
+        )?
     } else if let Some(states_scratch) = states_scratch.as_ref() {
         dispatch_classic_cleanup_plain_dev_repeated_batched_in_command_buffer(
             runtime,
@@ -16627,7 +16343,7 @@ fn encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer(
             output,
             &coefficients_scratch.buffer,
             &states_scratch.buffer,
-        )
+        )?
     } else {
         dispatch_classic_cleanup_repeated_batched_in_command_buffer(
             runtime,
@@ -16641,7 +16357,7 @@ fn encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer(
             &segments_buffer,
             output,
             &coefficients_scratch.buffer,
-        )
+        )?
     };
     if !use_plain_fast_path {
         dispatch_classic_store_repeated_batched_in_command_buffer(
@@ -16653,7 +16369,7 @@ fn encode_repeated_classic_sub_band_group_to_buffer_in_command_buffer(
             group.total_coefficients,
             output,
             &coefficients_scratch.buffer,
-        );
+        )?;
     }
     scratch_buffers.push(coefficients_scratch);
     if let Some(states_scratch) = states_scratch {
@@ -17016,19 +16732,7 @@ fn dispatch_zero_u32_buffer_in_encoder(
     encoder.set_compute_pipeline_state(&runtime.zero_u32_buffer);
     encoder.set_buffer(0, Some(buffer), 0);
     encoder.set_bytes(1, size_of::<u32>() as u64, (&raw const word_count).cast());
-    let width = runtime.zero_u32_buffer.thread_execution_width().max(1);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(word_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_1d_pipeline(encoder, &runtime.zero_u32_buffer, u64::from(word_count));
     Ok(())
 }
 
@@ -17253,6 +16957,7 @@ fn read_classic_encoded_code_block(
     let raw_segments = if segment_count == 0 {
         &[][..]
     } else {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             core::slice::from_raw_parts(
                 segment_buffer
@@ -17283,6 +16988,7 @@ fn read_classic_encoded_code_block(
                 .ok_or_else(|| Error::MetalKernel {
                     message: "classic J2K Metal encode payload offset overflow".to_string(),
                 })?;
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             core::slice::from_raw_parts(
                 output.contents().cast::<u8>().add(payload_offset),
@@ -17429,22 +17135,12 @@ pub(crate) fn encode_classic_tier1_code_blocks(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(job_count),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: classic_encode_pipeline.thread_execution_width().max(1),
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
             core::slice::from_raw_parts(
                 status_buffer.contents().cast::<J2kClassicEncodeStatus>(),
@@ -17608,6 +17304,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_gpu_token_pack_for_test(
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
             core::slice::from_raw_parts(
                 status_buffer.contents().cast::<J2kClassicEncodeStatus>(),
@@ -17798,6 +17495,7 @@ fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_gpu_pack_for_test_wi
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
             core::slice::from_raw_parts(
                 status_buffer.contents().cast::<J2kClassicEncodeStatus>(),
@@ -18010,6 +17708,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let counters = unsafe {
             core::slice::from_raw_parts(
                 counter_readback
@@ -18018,9 +17717,11 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_ordered_tokens_cpu_pack_for_t
                 job_count,
             )
         };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let token_bytes = unsafe {
             core::slice::from_raw_parts(token_readback.contents().cast::<u8>(), token_byte_len)
         };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let token_segments = unsafe {
             core::slice::from_raw_parts(
                 token_segment_readback
@@ -18377,6 +18078,7 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_
                         .to_string(),
                 }
             })?;
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let counters = unsafe {
             core::slice::from_raw_parts(
                 split_buffers
@@ -18386,18 +18088,21 @@ pub(crate) fn encode_classic_tier1_code_blocks_via_split_mq_raw_tokens_cpu_pack_
                 job_count,
             )
         };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let mq_token_bytes = unsafe {
             core::slice::from_raw_parts(
                 split_buffers.mq_token_buffer.contents().cast::<u8>(),
                 job_count.saturating_mul(mq_token_stride_bytes),
             )
         };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let raw_token_bytes = unsafe {
             core::slice::from_raw_parts(
                 split_buffers.raw_token_buffer.contents().cast::<u8>(),
                 job_count.saturating_mul(raw_token_stride_bytes),
             )
         };
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let token_segments = unsafe {
             core::slice::from_raw_parts(
                 split_buffers
@@ -18475,7 +18180,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         _scratch_buffers: scratch_buffers,
         _coefficient_job_buffer: coefficient_job_buffer,
     } = prepared;
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         if code_blocks.is_empty() {
             let output = runtime
                 .device
@@ -18590,18 +18295,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
         encoder.set_bytes(5, size_of::<u32>() as u64, (&raw const job_count).cast());
-        encoder.dispatch_threads(
-            MTLSize {
-                width: u64::from(job_count),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: classic_encode_pipeline.thread_execution_width().max(1),
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -18647,7 +18341,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         _scratch_buffers: scratch_buffers,
         _coefficient_job_buffer: coefficient_job_buffer,
     } = prepared;
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         if code_blocks.is_empty() {
             let output = runtime
                 .device
@@ -18732,7 +18426,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
         encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-        dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
+        dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -18823,22 +18517,12 @@ pub(crate) fn encode_classic_tier1_code_block(
         );
         encoder.set_buffer(3, Some(&status_buffer), 0);
         encoder.set_buffer(4, Some(&segment_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
             status_buffer
                 .contents()
@@ -18873,6 +18557,7 @@ pub(crate) fn encode_classic_tier1_code_block(
         let data = if data_len == 0 {
             Vec::new()
         } else {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe {
                 core::slice::from_raw_parts(
                     output.contents().cast::<u8>().add(payload_offset),
@@ -18905,6 +18590,7 @@ pub(crate) fn encode_classic_tier1_code_block(
         let raw_segments = if segment_count == 0 {
             &[][..]
         } else {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe {
                 core::slice::from_raw_parts(
                     segment_buffer.contents().cast::<J2kClassicSegment>(),
@@ -18969,6 +18655,7 @@ fn read_ht_encoded_code_block(
     let data = if data_len == 0 {
         Vec::new()
     } else {
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         unsafe {
             core::slice::from_raw_parts(output.contents().cast::<u8>().add(output_offset), data_len)
         }
@@ -18996,7 +18683,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
     session: &crate::MetalBackendSession,
     tier1: &J2kResidentLosslessHtCodeBlocks,
 ) -> Result<Vec<EncodedHtJ2kCodeBlock>, Error> {
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         if tier1.batch_jobs.is_empty() {
             return Ok(Vec::new());
         }
@@ -19039,6 +18726,7 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let statuses = unsafe {
             core::slice::from_raw_parts(
                 status_buffer.contents().cast::<J2kHtEncodeStatus>(),
@@ -19063,26 +18751,6 @@ pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
             })
             .collect()
     })
-}
-
-#[cfg(target_os = "macos")]
-fn dispatch_ht_encode_code_blocks(
-    encoder: &ComputeCommandEncoderRef,
-    pipeline: &ComputePipelineState,
-    job_count: u32,
-) {
-    encoder.dispatch_threads(
-        MTLSize {
-            width: u64::from(job_count),
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: pipeline.thread_execution_width().max(1),
-            height: 1,
-            depth: 1,
-        },
-    );
 }
 
 #[cfg(target_os = "macos")]
@@ -19196,11 +18864,12 @@ fn encode_ht_cleanup_code_blocks_with_runtime_and_statuses(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
     encoder.set_buffer(6, Some(&status_buffer), 0);
     encoder.set_bytes(7, size_of::<u32>() as u64, (&raw const job_count).cast());
-    dispatch_ht_encode_code_blocks(encoder, pipeline, job_count);
+    dispatch_1d_pipeline(encoder, pipeline, u64::from(job_count));
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
         core::slice::from_raw_parts(
             status_buffer.contents().cast::<J2kHtEncodeStatus>(),
@@ -19287,22 +18956,12 @@ pub(crate) fn encode_ht_cleanup_code_block(
         encoder.set_buffer(4, Some(&runtime.ht_vlc_encode_table1), 0);
         encoder.set_buffer(5, Some(&runtime.ht_uvlc_encode_table), 0);
         encoder.set_buffer(6, Some(&status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe { status_buffer.contents().cast::<J2kHtEncodeStatus>().read() };
         if status.code != J2K_ENCODE_STATUS_OK {
             return Err(encode_status_error(
@@ -19322,6 +18981,7 @@ pub(crate) fn encode_ht_cleanup_code_block(
         let data = if data_len == 0 {
             Vec::new()
         } else {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe { core::slice::from_raw_parts(output.contents().cast::<u8>(), data_len) }
                 .to_vec()
         };
@@ -19830,22 +19490,12 @@ pub(crate) fn encode_tier2_packetization(
         encoder.set_buffer(8, Some(&status_buffer), 0);
         encoder.set_buffer(9, Some(&descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
         let status = unsafe {
             status_buffer
                 .contents()
@@ -19870,6 +19520,7 @@ pub(crate) fn encode_tier2_packetization(
         Ok(if data_len == 0 {
             Vec::new()
         } else {
+            // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
             unsafe { core::slice::from_raw_parts(output_buffer.contents().cast::<u8>(), data_len) }
                 .to_vec()
         })
@@ -19877,508 +19528,15 @@ pub(crate) fn encode_tier2_packetization(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn encode_lossless_codestream_buffer_from_resident_classic_tier1(
+pub(crate) fn encode_lossless_codestream_buffer_from_resident_tier1<
+    T: ResidentLosslessTier1Metal,
+>(
     session: &crate::MetalBackendSession,
-    tier1: &J2kResidentLosslessTier1CodeBlocks,
+    tier1: &T,
     job: J2kResidentPacketizationEncodeJob<'_>,
     codestream_job: J2kLosslessCodestreamAssemblyJob,
 ) -> Result<J2kResidentLosslessCodestream, Error> {
-    wait_resident_lossless_codestream(
-        submit_lossless_codestream_buffer_from_resident_classic_tier1(
-            session,
-            tier1,
-            job,
-            codestream_job,
-        )?,
-    )
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn submit_lossless_codestream_buffer_from_resident_classic_tier1(
-    session: &crate::MetalBackendSession,
-    tier1: &J2kResidentLosslessTier1CodeBlocks,
-    job: J2kResidentPacketizationEncodeJob<'_>,
-    codestream_job: J2kLosslessCodestreamAssemblyJob,
-) -> Result<J2kPendingResidentLosslessCodestream, Error> {
-    with_runtime_for_device(&session.device, |runtime| {
-        if tier1.batch_jobs.len() != tier1.code_blocks.len() {
-            return Err(Error::MetalKernel {
-                message: "Tier-2 Metal resident packetization Tier-1 table mismatch".to_string(),
-            });
-        }
-
-        let mut resolutions = Vec::<J2kPacketResolution>::new();
-        let mut subbands = Vec::<J2kPacketSubband>::new();
-        let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
-        let mut max_tree_nodes = 1usize;
-
-        for resolution in job.resolutions {
-            let subband_offset = u32::try_from(subbands.len()).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet subband table exceeds u32".to_string(),
-            })?;
-            for subband in &resolution.subbands {
-                let block_offset =
-                    u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet block table exceeds u32".to_string(),
-                    })?;
-                max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
-                    subband.num_cbs_x,
-                    subband.num_cbs_y,
-                )?);
-                let code_block_start =
-                    usize::try_from(subband.code_block_start).map_err(|_| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet code-block offset exceeds usize"
-                            .to_string(),
-                    })?;
-                let code_block_count =
-                    usize::try_from(subband.code_block_count).map_err(|_| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet code-block count exceeds usize"
-                            .to_string(),
-                    })?;
-                let code_block_end =
-                    code_block_start
-                        .checked_add(code_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "Tier-2 Metal resident packet code-block range overflow"
-                                .to_string(),
-                        })?;
-                if code_block_end > tier1.batch_jobs.len() {
-                    return Err(Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet code-block range out of bounds"
-                            .to_string(),
-                    });
-                }
-                for tier1_job_index in code_block_start..code_block_end {
-                    resident_blocks.push(J2kResidentPacketBlock {
-                        tier1_job_index: u32::try_from(tier1_job_index).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "Tier-2 Metal resident packet Tier-1 index exceeds u32"
-                                    .to_string(),
-                            }
-                        })?,
-                        previously_included: 0,
-                        l_block: 3,
-                        block_coding_mode: 0,
-                    });
-                }
-                subbands.push(J2kPacketSubband {
-                    block_offset,
-                    block_count: subband.code_block_count,
-                    num_cbs_x: subband.num_cbs_x,
-                    num_cbs_y: subband.num_cbs_y,
-                });
-            }
-            resolutions.push(J2kPacketResolution {
-                subband_offset,
-                subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
-                    Error::MetalKernel {
-                        message:
-                            "Tier-2 Metal resident packet resolution subband count exceeds u32"
-                                .to_string(),
-                    }
-                })?,
-            });
-        }
-
-        if resolutions.len()
-            != usize::try_from(job.resolution_count).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet resolution count exceeds usize".to_string(),
-            })?
-        {
-            return Err(Error::MetalKernel {
-                message: "Tier-2 Metal resident packet resolution count mismatch".to_string(),
-            });
-        }
-        if resident_blocks.len()
-            != usize::try_from(job.code_block_count).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet code-block count exceeds usize".to_string(),
-            })?
-        {
-            return Err(Error::MetalKernel {
-                message: "Tier-2 Metal resident packet code-block count mismatch".to_string(),
-            });
-        }
-
-        let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
-        let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-        let mut descriptors =
-            Vec::<J2kPacketDescriptor>::with_capacity(job.packet_descriptors.len());
-        for descriptor in job.packet_descriptors {
-            let packet_index =
-                usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor packet index exceeds usize"
-                        .to_string(),
-                })?;
-            let resolution = resolutions
-                .get(packet_index)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor packet index out of range"
-                        .to_string(),
-                })?;
-            let subband_start =
-                usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor subband offset exceeds usize"
-                        .to_string(),
-                })?;
-            let subband_count =
-                usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor subband count exceeds usize"
-                        .to_string(),
-                })?;
-            let subband_end =
-                subband_start
-                    .checked_add(subband_count)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet descriptor subband range overflow"
-                            .to_string(),
-                    })?;
-            if subband_end > subbands.len() {
-                return Err(Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor subband range out of bounds"
-                        .to_string(),
-                });
-            }
-            let mut packet_block_count = 0usize;
-            for subband in &subbands[subband_start..subband_end] {
-                packet_block_count = packet_block_count
-                    .checked_add(usize::try_from(subband.block_count).map_err(|_| {
-                        Error::MetalKernel {
-                            message:
-                                "Tier-2 Metal resident packet descriptor block count exceeds usize"
-                                    .to_string(),
-                        }
-                    })?)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet descriptor block count overflow"
-                            .to_string(),
-                    })?;
-            }
-
-            let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
-                state_block_offsets.get(&descriptor.state_index)
-            {
-                (offset, count)
-            } else {
-                let offset = u32::try_from(state_blocks.len()).map_err(|_| Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet state block offset exceeds u32"
-                        .to_string(),
-                })?;
-                for subband in &subbands[subband_start..subband_end] {
-                    let block_start =
-                        usize::try_from(subband.block_offset).map_err(|_| Error::MetalKernel {
-                            message:
-                                "Tier-2 Metal resident packet state block offset exceeds usize"
-                                    .to_string(),
-                        })?;
-                    let block_count =
-                        usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
-                            message: "Tier-2 Metal resident packet state block count exceeds usize"
-                                .to_string(),
-                        })?;
-                    let block_end =
-                        block_start
-                            .checked_add(block_count)
-                            .ok_or_else(|| Error::MetalKernel {
-                                message: "Tier-2 Metal resident packet state block range overflow"
-                                    .to_string(),
-                            })?;
-                    if block_end > resident_blocks.len() {
-                        return Err(Error::MetalKernel {
-                            message: "Tier-2 Metal resident packet state block range out of bounds"
-                                .to_string(),
-                        });
-                    }
-                    for block in &resident_blocks[block_start..block_end] {
-                        state_blocks.push(J2kPacketStateBlock {
-                            previously_included: block.previously_included,
-                            l_block: block.l_block,
-                        });
-                    }
-                }
-                state_block_offsets.insert(descriptor.state_index, (offset, packet_block_count));
-                (offset, packet_block_count)
-            };
-            if existing_count != packet_block_count {
-                return Err(Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet descriptor state layout mismatch"
-                        .to_string(),
-                });
-            }
-
-            descriptors.push(J2kPacketDescriptor {
-                packet_index: descriptor.packet_index,
-                state_index: descriptor.state_index,
-                layer: u32::from(descriptor.layer),
-                resolution: descriptor.resolution,
-                component: u32::from(descriptor.component),
-                precinct_lo: descriptor.precinct as u32,
-                precinct_hi: (descriptor.precinct >> 32) as u32,
-                state_block_offset,
-            });
-        }
-
-        let header_capacity = resident_blocks
-            .len()
-            .checked_mul(256)
-            .and_then(|bytes| bytes.checked_add(4096))
-            .map(|bytes| bytes.max(4096))
-            .ok_or_else(|| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet header capacity overflow".to_string(),
-            })?;
-        let output_capacity = tier1
-            .output_capacity_total
-            .checked_add(
-                header_capacity
-                    .checked_mul(descriptors.len().max(resolutions.len()).max(1))
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "Tier-2 Metal resident packet output capacity overflow"
-                            .to_string(),
-                    })?,
-            )
-            .and_then(|bytes| bytes.checked_add(1024))
-            .ok_or_else(|| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet output capacity overflow".to_string(),
-            })?;
-        let codestream_capacity =
-            lossless_codestream_assembly_capacity(output_capacity, codestream_job)?;
-
-        let params = J2kPacketEncodeParams {
-            resolution_count: u32::try_from(resolutions.len()).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet resolution count exceeds u32".to_string(),
-            })?,
-            num_layers: u32::from(job.num_layers),
-            num_components: u32::from(job.num_components),
-            code_block_count: u32::try_from(resident_blocks.len()).map_err(|_| {
-                Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet code-block count exceeds u32"
-                        .to_string(),
-                }
-            })?,
-            subband_count: u32::try_from(subbands.len()).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet subband count exceeds u32".to_string(),
-            })?,
-            descriptor_count: u32::try_from(descriptors.len()).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet descriptor count exceeds u32".to_string(),
-            })?,
-            output_capacity: u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet output capacity exceeds u32".to_string(),
-            })?,
-            header_capacity: u32::try_from(header_capacity).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet header capacity exceeds u32".to_string(),
-            })?,
-            scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
-                Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet scratch node capacity exceeds u32"
-                        .to_string(),
-                }
-            })?,
-        };
-        let codestream_params = J2kLosslessCodestreamAssemblyParams {
-            width: codestream_job.width,
-            height: codestream_job.height,
-            num_components: u32::from(codestream_job.num_components),
-            bit_depth: u32::from(codestream_job.bit_depth),
-            signed_samples: u32::from(codestream_job.signed),
-            num_decomposition_levels: u32::from(codestream_job.num_decomposition_levels),
-            use_mct: u32::from(codestream_job.use_mct),
-            guard_bits: u32::from(codestream_job.guard_bits),
-            progression_order: codestream_progression_order_code(codestream_job.progression_order),
-            write_tlm: u32::from(codestream_job.write_tlm),
-            high_throughput: u32::from(
-                codestream_job.block_coding_mode
-                    == J2kLosslessCodestreamBlockCodingMode::HighThroughput,
-            ),
-            code_block_style: match codestream_job.block_coding_mode {
-                J2kLosslessCodestreamBlockCodingMode::Classic => 0,
-                J2kLosslessCodestreamBlockCodingMode::HighThroughput => 0x40,
-            },
-            code_block_width_exp: u32::from(codestream_job.code_block_width_exp),
-            code_block_height_exp: u32::from(codestream_job.code_block_height_exp),
-            output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
-                Error::MetalKernel {
-                    message: "J2K Metal codestream assembly capacity exceeds u32".to_string(),
-                }
-            })?,
-        };
-
-        let resident_block_params = J2kResidentPacketBlockParams {
-            block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet block count exceeds u32".to_string(),
-            })?,
-            tier1_job_count: u32::try_from(tier1.batch_jobs.len()).map_err(|_| {
-                Error::MetalKernel {
-                    message: "Tier-2 Metal resident packet Tier-1 job count exceeds u32"
-                        .to_string(),
-                }
-            })?,
-        };
-
-        let resolution_buffer = copied_slice_buffer(&runtime.device, &resolutions);
-        let subband_buffer = copied_slice_buffer(&runtime.device, &subbands);
-        let resident_block_buffer = copied_slice_buffer(&runtime.device, &resident_blocks);
-        let packet_block_buffer = runtime.device.new_buffer(
-            (resident_blocks.len().max(1) * size_of::<J2kPacketBlock>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
-        let descriptor_buffer = copied_slice_buffer(&runtime.device, &descriptors);
-        let state_block_buffer = copied_slice_buffer(&runtime.device, &state_blocks);
-        let output_buffer = runtime.device.new_buffer(
-            output_capacity as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
-        let codestream_buffer = runtime.device.new_buffer(
-            codestream_capacity as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let header_buffer = runtime.device.new_buffer(
-            header_capacity as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
-        let scratch_words = max_tree_nodes
-            .checked_mul(6)
-            .ok_or_else(|| Error::MetalKernel {
-                message: "Tier-2 Metal resident packet scratch size overflow".to_string(),
-            })?;
-        let scratch_buffer = runtime.device.new_buffer(
-            (scratch_words * size_of::<u32>()) as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
-        let status_buffer = runtime.device.new_buffer(
-            size_of::<J2kPacketEncodeStatus>() as u64,
-            MTLResourceOptions::StorageModePrivate,
-        );
-        let codestream_status_buffer = runtime.device.new_buffer(
-            size_of::<J2kCodestreamAssemblyStatus>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-
-        let command_buffer = runtime.queue.new_command_buffer();
-        if !resident_blocks.is_empty() {
-            let encoder = command_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_classic);
-            encoder.set_buffer(0, Some(&resident_block_buffer), 0);
-            encoder.set_buffer(1, Some(&tier1.job_buffer), 0);
-            encoder.set_buffer(2, Some(&tier1.status_buffer), 0);
-            encoder.set_buffer(3, Some(&packet_block_buffer), 0);
-            encoder.set_bytes(
-                4,
-                size_of::<J2kResidentPacketBlockParams>() as u64,
-                (&raw const resident_block_params).cast(),
-            );
-            encoder.dispatch_threads(
-                MTLSize {
-                    width: resident_blocks.len() as u64,
-                    height: 1,
-                    depth: 1,
-                },
-                MTLSize {
-                    width: runtime
-                        .packet_block_prepare_resident_classic
-                        .thread_execution_width()
-                        .max(1),
-                    height: 1,
-                    depth: 1,
-                },
-            );
-            encoder.end_encoding();
-        }
-
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.packet_encode);
-        encoder.set_buffer(0, Some(&resolution_buffer), 0);
-        encoder.set_buffer(1, Some(&subband_buffer), 0);
-        encoder.set_buffer(2, Some(&packet_block_buffer), 0);
-        encoder.set_buffer(3, Some(&tier1.output_buffer), 0);
-        encoder.set_buffer(4, Some(&output_buffer), 0);
-        encoder.set_buffer(5, Some(&header_buffer), 0);
-        encoder.set_buffer(6, Some(&scratch_buffer), 0);
-        encoder.set_bytes(
-            7,
-            size_of::<J2kPacketEncodeParams>() as u64,
-            (&raw const params).cast(),
-        );
-        encoder.set_buffer(8, Some(&status_buffer), 0);
-        encoder.set_buffer(9, Some(&descriptor_buffer), 0);
-        encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
-
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&runtime.lossless_codestream_assemble);
-        encoder.set_buffer(0, Some(&output_buffer), 0);
-        encoder.set_buffer(1, Some(&status_buffer), 0);
-        encoder.set_buffer(2, Some(&codestream_buffer), 0);
-        encoder.set_bytes(
-            3,
-            size_of::<J2kLosslessCodestreamAssemblyParams>() as u64,
-            (&raw const codestream_params).cast(),
-        );
-        encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
-        encoder.end_encoding();
-        command_buffer.commit();
-
-        Ok(J2kPendingResidentLosslessCodestream {
-            buffer: codestream_buffer,
-            capacity: codestream_capacity,
-            status_buffer: codestream_status_buffer,
-            command_buffer: command_buffer.to_owned(),
-            retained_command_buffers: vec![
-                tier1.prepare_command_buffer.clone(),
-                tier1.tier1_command_buffer.clone(),
-            ],
-            _retained_buffers: vec![
-                resolution_buffer,
-                subband_buffer,
-                resident_block_buffer,
-                packet_block_buffer,
-                descriptor_buffer,
-                state_block_buffer,
-                output_buffer,
-                header_buffer,
-                scratch_buffer,
-                status_buffer,
-                tier1.output_buffer.clone(),
-                tier1.status_buffer.clone(),
-                tier1.job_buffer.clone(),
-            ],
-            status_stage: "J2K codestream assembly",
-            length_error: "J2K Metal codestream output length exceeds usize",
-            capacity_error: "J2K Metal codestream output length exceeds buffer",
-        })
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn encode_lossless_codestream_buffer_from_resident_ht_tier1(
-    session: &crate::MetalBackendSession,
-    tier1: &J2kResidentLosslessHtCodeBlocks,
-    job: J2kResidentPacketizationEncodeJob<'_>,
-    codestream_job: J2kLosslessCodestreamAssemblyJob,
-) -> Result<J2kResidentLosslessCodestream, Error> {
-    wait_resident_lossless_codestream(submit_lossless_codestream_buffer_from_resident_ht_tier1(
+    wait_resident_lossless_codestream(submit_lossless_codestream_buffer_from_resident_tier1(
         session,
         tier1,
         job,
@@ -20387,17 +19545,21 @@ pub(crate) fn encode_lossless_codestream_buffer_from_resident_ht_tier1(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
+pub(crate) fn submit_lossless_codestream_buffer_from_resident_tier1<
+    T: ResidentLosslessTier1Metal,
+>(
     session: &crate::MetalBackendSession,
-    tier1: &J2kResidentLosslessHtCodeBlocks,
+    tier1: &T,
     job: J2kResidentPacketizationEncodeJob<'_>,
     codestream_job: J2kLosslessCodestreamAssemblyJob,
 ) -> Result<J2kPendingResidentLosslessCodestream, Error> {
-    with_runtime_for_device(&session.device, |runtime| {
-        if tier1.batch_jobs.len() != tier1.code_blocks.len() {
+    with_runtime_for_session(session, |runtime| {
+        if tier1.batch_job_count() != tier1.code_block_count() {
             return Err(Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packetization Tier-1 table mismatch"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packetization Tier-1 table mismatch",
+                    T::TIER2_PREFIX
+                ),
             });
         }
 
@@ -20408,13 +19570,18 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
 
         for resolution in job.resolutions {
             let subband_offset = u32::try_from(subbands.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet subband table exceeds u32".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet subband table exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?;
             for subband in &resolution.subbands {
                 let block_offset =
                     u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Tier-2 Metal resident packet block table exceeds u32"
-                            .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet block table exceeds u32",
+                            T::TIER2_PREFIX
+                        ),
                     })?;
                 max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
                     subband.num_cbs_x,
@@ -20422,42 +19589,48 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 )?);
                 let code_block_start =
                     usize::try_from(subband.code_block_start).map_err(|_| Error::MetalKernel {
-                        message:
-                            "HTJ2K Tier-2 Metal resident packet code-block offset exceeds usize"
-                                .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet code-block offset exceeds usize",
+                            T::TIER2_PREFIX
+                        ),
                     })?;
                 let code_block_count =
                     usize::try_from(subband.code_block_count).map_err(|_| Error::MetalKernel {
-                        message:
-                            "HTJ2K Tier-2 Metal resident packet code-block count exceeds usize"
-                                .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet code-block count exceeds usize",
+                            T::TIER2_PREFIX
+                        ),
                     })?;
                 let code_block_end =
                     code_block_start
                         .checked_add(code_block_count)
                         .ok_or_else(|| Error::MetalKernel {
-                            message: "HTJ2K Tier-2 Metal resident packet code-block range overflow"
-                                .to_string(),
+                            message: format!(
+                                "{}Tier-2 Metal resident packet code-block range overflow",
+                                T::TIER2_PREFIX
+                            ),
                         })?;
-                if code_block_end > tier1.batch_jobs.len() {
+                if code_block_end > tier1.batch_job_count() {
                     return Err(Error::MetalKernel {
-                        message:
-                            "HTJ2K Tier-2 Metal resident packet code-block range out of bounds"
-                                .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet code-block range out of bounds",
+                            T::TIER2_PREFIX
+                        ),
                     });
                 }
                 for tier1_job_index in code_block_start..code_block_end {
                     resident_blocks.push(J2kResidentPacketBlock {
                         tier1_job_index: u32::try_from(tier1_job_index).map_err(|_| {
                             Error::MetalKernel {
-                                message:
-                                    "HTJ2K Tier-2 Metal resident packet Tier-1 index exceeds u32"
-                                        .to_string(),
+                                message: format!(
+                                    "{}Tier-2 Metal resident packet Tier-1 index exceeds u32",
+                                    T::TIER2_PREFIX
+                                ),
                             }
                         })?,
                         previously_included: 0,
                         l_block: 3,
-                        block_coding_mode: 1,
+                        block_coding_mode: T::BLOCK_CODING_MODE,
                     });
                 }
                 subbands.push(J2kPacketSubband {
@@ -20471,8 +19644,10 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 subband_offset,
                 subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
                     Error::MetalKernel {
-                        message: "HTJ2K Tier-2 Metal resident packet resolution subband count exceeds u32"
-                            .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet resolution subband count exceeds u32",
+                            T::TIER2_PREFIX
+                        ),
                     }
                 })?,
             });
@@ -20480,22 +19655,32 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
 
         if resolutions.len()
             != usize::try_from(job.resolution_count).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet resolution count exceeds usize"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet resolution count exceeds usize",
+                    T::TIER2_PREFIX
+                ),
             })?
         {
             return Err(Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet resolution count mismatch".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet resolution count mismatch",
+                    T::TIER2_PREFIX
+                ),
             });
         }
         if resident_blocks.len()
             != usize::try_from(job.code_block_count).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet code-block count exceeds usize"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet code-block count exceeds usize",
+                    T::TIER2_PREFIX
+                ),
             })?
         {
             return Err(Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet code-block count mismatch".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet code-block count mismatch",
+                    T::TIER2_PREFIX
+                ),
             });
         }
 
@@ -20506,42 +19691,48 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         for descriptor in job.packet_descriptors {
             let packet_index =
                 usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
-                    message:
-                        "HTJ2K Tier-2 Metal resident packet descriptor packet index exceeds usize"
-                            .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor packet index exceeds usize",
+                        T::TIER2_PREFIX
+                    ),
                 })?;
             let resolution = resolutions
                 .get(packet_index)
                 .ok_or_else(|| Error::MetalKernel {
-                    message:
-                        "HTJ2K Tier-2 Metal resident packet descriptor packet index out of range"
-                            .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor packet index out of range",
+                        T::TIER2_PREFIX
+                    ),
                 })?;
             let subband_start =
                 usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
-                    message:
-                        "HTJ2K Tier-2 Metal resident packet descriptor subband offset exceeds usize"
-                            .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor subband offset exceeds usize",
+                        T::TIER2_PREFIX
+                    ),
                 })?;
             let subband_count =
                 usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
-                    message:
-                        "HTJ2K Tier-2 Metal resident packet descriptor subband count exceeds usize"
-                            .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor subband count exceeds usize",
+                        T::TIER2_PREFIX
+                    ),
                 })?;
             let subband_end =
                 subband_start
                     .checked_add(subband_count)
                     .ok_or_else(|| Error::MetalKernel {
-                        message:
-                            "HTJ2K Tier-2 Metal resident packet descriptor subband range overflow"
-                                .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet descriptor subband range overflow",
+                            T::TIER2_PREFIX
+                        ),
                     })?;
             if subband_end > subbands.len() {
                 return Err(Error::MetalKernel {
-                    message:
-                        "HTJ2K Tier-2 Metal resident packet descriptor subband range out of bounds"
-                            .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor subband range out of bounds",
+                        T::TIER2_PREFIX
+                    ),
                 });
             }
             let mut packet_block_count = 0usize;
@@ -20549,13 +19740,11 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 packet_block_count = packet_block_count
                     .checked_add(usize::try_from(subband.block_count).map_err(|_| {
                         Error::MetalKernel {
-                            message: "HTJ2K Tier-2 Metal resident packet descriptor block count exceeds usize"
-                                .to_string(),
+                            message: format!("{}Tier-2 Metal resident packet descriptor block count exceeds usize", T::TIER2_PREFIX),
                         }
                     })?)
                     .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Tier-2 Metal resident packet descriptor block count overflow"
-                            .to_string(),
+                        message: format!("{}Tier-2 Metal resident packet descriptor block count overflow", T::TIER2_PREFIX),
                     })?;
             }
 
@@ -20565,34 +19754,41 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 (offset, count)
             } else {
                 let offset = u32::try_from(state_blocks.len()).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Tier-2 Metal resident packet state block offset exceeds u32"
-                        .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet state block offset exceeds u32",
+                        T::TIER2_PREFIX
+                    ),
                 })?;
                 for subband in &subbands[subband_start..subband_end] {
                     let block_start =
                         usize::try_from(subband.block_offset).map_err(|_| Error::MetalKernel {
-                            message: "HTJ2K Tier-2 Metal resident packet state block offset exceeds usize"
-                                .to_string(),
+                            message: format!(
+                                "{}Tier-2 Metal resident packet state block offset exceeds usize",
+                                T::TIER2_PREFIX
+                            ),
                         })?;
                     let block_count =
                         usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
-                            message:
-                                "HTJ2K Tier-2 Metal resident packet state block count exceeds usize"
-                                    .to_string(),
+                            message: format!(
+                                "{}Tier-2 Metal resident packet state block count exceeds usize",
+                                T::TIER2_PREFIX
+                            ),
                         })?;
                     let block_end =
                         block_start
                             .checked_add(block_count)
                             .ok_or_else(|| Error::MetalKernel {
-                                message:
-                                    "HTJ2K Tier-2 Metal resident packet state block range overflow"
-                                        .to_string(),
+                                message: format!(
+                                    "{}Tier-2 Metal resident packet state block range overflow",
+                                    T::TIER2_PREFIX
+                                ),
                             })?;
                     if block_end > resident_blocks.len() {
                         return Err(Error::MetalKernel {
-                            message:
-                                "HTJ2K Tier-2 Metal resident packet state block range out of bounds"
-                                    .to_string(),
+                            message: format!(
+                                "{}Tier-2 Metal resident packet state block range out of bounds",
+                                T::TIER2_PREFIX
+                            ),
                         });
                     }
                     for block in &resident_blocks[block_start..block_end] {
@@ -20607,8 +19803,10 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             };
             if existing_count != packet_block_count {
                 return Err(Error::MetalKernel {
-                    message: "HTJ2K Tier-2 Metal resident packet descriptor state layout mismatch"
-                        .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet descriptor state layout mismatch",
+                        T::TIER2_PREFIX
+                    ),
                 });
             }
 
@@ -20630,57 +19828,80 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             .and_then(|bytes| bytes.checked_add(4096))
             .map(|bytes| bytes.max(4096))
             .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet header capacity overflow".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet header capacity overflow",
+                    T::TIER2_PREFIX
+                ),
             })?;
         let output_capacity = tier1
-            .output_capacity_total
+            .output_capacity_total()
             .checked_add(
                 header_capacity
                     .checked_mul(descriptors.len().max(resolutions.len()).max(1))
                     .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Tier-2 Metal resident packet output capacity overflow"
-                            .to_string(),
+                        message: format!(
+                            "{}Tier-2 Metal resident packet output capacity overflow",
+                            T::TIER2_PREFIX
+                        ),
                     })?,
             )
             .and_then(|bytes| bytes.checked_add(1024))
             .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet output capacity overflow".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet output capacity overflow",
+                    T::TIER2_PREFIX
+                ),
             })?;
         let codestream_capacity =
             lossless_codestream_assembly_capacity(output_capacity, codestream_job)?;
 
         let params = J2kPacketEncodeParams {
             resolution_count: u32::try_from(resolutions.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet resolution count exceeds u32"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet resolution count exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
             num_layers: u32::from(job.num_layers),
             num_components: u32::from(job.num_components),
             code_block_count: u32::try_from(resident_blocks.len()).map_err(|_| {
                 Error::MetalKernel {
-                    message: "HTJ2K Tier-2 Metal resident packet code-block count exceeds u32"
-                        .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet code-block count exceeds u32",
+                        T::TIER2_PREFIX
+                    ),
                 }
             })?,
             subband_count: u32::try_from(subbands.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet subband count exceeds u32".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet subband count exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
             descriptor_count: u32::try_from(descriptors.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet descriptor count exceeds u32"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet descriptor count exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
             output_capacity: u32::try_from(output_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet output capacity exceeds u32"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet output capacity exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
             header_capacity: u32::try_from(header_capacity).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet header capacity exceeds u32"
-                    .to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet header capacity exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
             scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
                 Error::MetalKernel {
-                    message: "HTJ2K Tier-2 Metal resident packet scratch node capacity exceeds u32"
-                        .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet scratch node capacity exceeds u32",
+                        T::TIER2_PREFIX
+                    ),
                 }
             })?,
         };
@@ -20707,19 +19928,27 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             code_block_height_exp: u32::from(codestream_job.code_block_height_exp),
             output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
                 Error::MetalKernel {
-                    message: "HTJ2K Metal codestream assembly capacity exceeds u32".to_string(),
+                    message: format!(
+                        "{} Metal codestream assembly capacity exceeds u32",
+                        T::FAMILY_NAME
+                    ),
                 }
             })?,
         };
 
         let resident_block_params = J2kResidentPacketBlockParams {
             block_count: u32::try_from(resident_blocks.len()).map_err(|_| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet block count exceeds u32".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet block count exceeds u32",
+                    T::TIER2_PREFIX
+                ),
             })?,
-            tier1_job_count: u32::try_from(tier1.batch_jobs.len()).map_err(|_| {
+            tier1_job_count: u32::try_from(tier1.batch_job_count()).map_err(|_| {
                 Error::MetalKernel {
-                    message: "HTJ2K Tier-2 Metal resident packet Tier-1 job count exceeds u32"
-                        .to_string(),
+                    message: format!(
+                        "{}Tier-2 Metal resident packet Tier-1 job count exceeds u32",
+                        T::TIER2_PREFIX
+                    ),
                 }
             })?,
         };
@@ -20748,7 +19977,10 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         let scratch_words = max_tree_nodes
             .checked_mul(6)
             .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Tier-2 Metal resident packet scratch size overflow".to_string(),
+                message: format!(
+                    "{}Tier-2 Metal resident packet scratch size overflow",
+                    T::TIER2_PREFIX
+                ),
             })?;
         let scratch_buffer = runtime.device.new_buffer(
             (scratch_words * size_of::<u32>()) as u64,
@@ -20766,10 +19998,10 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         let command_buffer = runtime.queue.new_command_buffer();
         if !resident_blocks.is_empty() {
             let encoder = command_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&runtime.packet_block_prepare_resident_ht);
+            encoder.set_compute_pipeline_state(T::packet_block_prepare_pipeline(runtime));
             encoder.set_buffer(0, Some(&resident_block_buffer), 0);
-            encoder.set_buffer(1, Some(&tier1.job_buffer), 0);
-            encoder.set_buffer(2, Some(&tier1.status_buffer), 0);
+            encoder.set_buffer(1, Some(tier1.job_buffer()), 0);
+            encoder.set_buffer(2, Some(tier1.status_buffer()), 0);
             encoder.set_buffer(3, Some(&packet_block_buffer), 0);
             encoder.set_bytes(
                 4,
@@ -20783,8 +20015,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                     depth: 1,
                 },
                 MTLSize {
-                    width: runtime
-                        .packet_block_prepare_resident_ht
+                    width: T::packet_block_prepare_pipeline(runtime)
                         .thread_execution_width()
                         .max(1),
                     height: 1,
@@ -20799,7 +20030,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         encoder.set_buffer(0, Some(&resolution_buffer), 0);
         encoder.set_buffer(1, Some(&subband_buffer), 0);
         encoder.set_buffer(2, Some(&packet_block_buffer), 0);
-        encoder.set_buffer(3, Some(&tier1.output_buffer), 0);
+        encoder.set_buffer(3, Some(tier1.output_buffer()), 0);
         encoder.set_buffer(4, Some(&output_buffer), 0);
         encoder.set_buffer(5, Some(&header_buffer), 0);
         encoder.set_buffer(6, Some(&scratch_buffer), 0);
@@ -20811,18 +20042,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
         encoder.set_buffer(8, Some(&status_buffer), 0);
         encoder.set_buffer(9, Some(&descriptor_buffer), 0);
         encoder.set_buffer(10, Some(&state_block_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
 
         let encoder = command_buffer.new_compute_command_encoder();
@@ -20836,18 +20056,7 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             (&raw const codestream_params).cast(),
         );
         encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
-        encoder.dispatch_threads(
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 1,
-                height: 1,
-                depth: 1,
-            },
-        );
+        dispatch_single_thread(encoder);
         encoder.end_encoding();
         command_buffer.commit();
 
@@ -20857,8 +20066,8 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
             status_buffer: codestream_status_buffer,
             command_buffer: command_buffer.to_owned(),
             retained_command_buffers: vec![
-                tier1.prepare_command_buffer.clone(),
-                tier1.tier1_command_buffer.clone(),
+                tier1.prepare_command_buffer().clone(),
+                tier1.tier1_command_buffer().clone(),
             ],
             _retained_buffers: vec![
                 resolution_buffer,
@@ -20871,29 +20080,348 @@ pub(crate) fn submit_lossless_codestream_buffer_from_resident_ht_tier1(
                 header_buffer,
                 scratch_buffer,
                 status_buffer,
-                tier1.output_buffer.clone(),
-                tier1.status_buffer.clone(),
-                tier1.job_buffer.clone(),
+                tier1.output_buffer().clone(),
+                tier1.status_buffer().clone(),
+                tier1.job_buffer().clone(),
             ],
-            status_stage: "HTJ2K codestream assembly",
-            length_error: "HTJ2K Metal codestream output length exceeds usize",
-            capacity_error: "HTJ2K Metal codestream output length exceeds buffer",
+            status_stage: T::CODESTREAM_STATUS_STAGE,
+            length_error: T::CODESTREAM_LENGTH_ERROR,
+            capacity_error: T::CODESTREAM_CAPACITY_ERROR,
         })
     })
 }
 
+/// Per-family constants for the shared resident batch packet planner; values
+/// reproduce each family's original literals so diagnostics and GPU job
+/// fields stay byte-identical.
 #[cfg(target_os = "macos")]
-pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
-    session: &crate::MetalBackendSession,
-    items: Vec<J2kResidentHtBatchEncodeItem>,
-    packet_capacity_mode: J2kHtPacketOutputCapacityMode,
-) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
-    if items.is_empty() {
-        return Err(Error::MetalKernel {
-            message: "HTJ2K Metal resident batch encode requires at least one tile".to_string(),
+#[derive(Clone, Copy)]
+struct ResidentBatchPacketPlanParams {
+    family_name: &'static str,
+    block_coding_mode: u32,
+    high_throughput: u32,
+    code_block_style: u32,
+}
+
+#[cfg(target_os = "macos")]
+struct ResidentBatchPacketPlan {
+    packet_resolutions: Vec<J2kPacketResolution>,
+    packet_subbands: Vec<J2kPacketSubband>,
+    resident_blocks: Vec<J2kResidentPacketBlock>,
+    packet_descriptors: Vec<J2kPacketDescriptor>,
+    state_blocks: Vec<J2kPacketStateBlock>,
+    packet_jobs: Vec<J2kBatchedPacketEncodeJob>,
+    assembly_jobs: Vec<J2kBatchedCodestreamAssemblyJob>,
+    packet_output_capacity_total: usize,
+    packet_payload_copy_job_capacity_total: usize,
+    max_payload_copy_jobs_per_tile: usize,
+    header_capacity_total: usize,
+    scratch_words_total: usize,
+    codestream_capacity_total: usize,
+    codestream_offsets: Vec<usize>,
+    codestream_capacities: Vec<usize>,
+}
+
+/// Builds the per-tile packet/assembly plan shared by the classic and HT
+/// resident batch encode drivers (the packet-plan stage of both was
+/// token-identical apart from the values now carried in `params` and the
+/// per-family packet output capacity rule).
+#[cfg(target_os = "macos")]
+fn build_resident_batch_packet_plan(
+    prepared_tiles: &[PreparedLosslessBatchTile],
+    tile_tier1_job_bases: &[usize],
+    params: ResidentBatchPacketPlanParams,
+    tile_packet_output_capacity: impl Fn(
+        usize,
+        &PreparedLosslessBatchTile,
+        usize,
+    ) -> Result<usize, Error>,
+) -> Result<ResidentBatchPacketPlan, Error> {
+    let batch_err = |suffix: &str| Error::MetalKernel {
+        message: format!("{} Metal batch {}", params.family_name, suffix),
+    };
+    let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
+    let mut packet_subbands = Vec::<J2kPacketSubband>::new();
+    let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
+    let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
+    let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
+    let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
+    let mut assembly_jobs =
+        Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
+    let mut packet_output_capacity_total = 0usize;
+    let mut packet_payload_copy_job_capacity_total = 0usize;
+    let mut max_payload_copy_jobs_per_tile = 0usize;
+    let mut header_capacity_total = 0usize;
+    let mut scratch_words_total = 0usize;
+    let mut codestream_capacity_total = 0usize;
+    let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
+    let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
+
+    for (tile_index, tile) in prepared_tiles.iter().enumerate() {
+        let local_resolution_offset = packet_resolutions.len();
+        let local_subband_offset = packet_subbands.len();
+        let local_block_offset = resident_blocks.len();
+        let local_descriptor_offset = packet_descriptors.len();
+        let local_state_block_offset = state_blocks.len();
+        let tier1_job_base = tile_tier1_job_bases[tile_index];
+        let mut max_tree_nodes = 1usize;
+        let mut local_subband_count = 0usize;
+        let mut local_resident_block_count = 0usize;
+        let mut local_payload_copy_job_capacity = 0usize;
+
+        for resolution in &tile.resolutions {
+            let subband_offset = u32::try_from(local_subband_count)
+                .map_err(|_| batch_err("packet subband offset exceeds u32"))?;
+            for subband in &resolution.subbands {
+                let block_offset = u32::try_from(local_resident_block_count)
+                    .map_err(|_| batch_err("packet block offset exceeds u32"))?;
+                max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
+                    subband.num_cbs_x,
+                    subband.num_cbs_y,
+                )?);
+                let code_block_start = usize::try_from(subband.code_block_start)
+                    .map_err(|_| batch_err("packet code-block offset exceeds usize"))?;
+                let code_block_count = usize::try_from(subband.code_block_count)
+                    .map_err(|_| batch_err("packet code-block count exceeds usize"))?;
+                let code_block_end = code_block_start
+                    .checked_add(code_block_count)
+                    .ok_or_else(|| batch_err("packet code-block range overflow"))?;
+                if code_block_end > tile.code_blocks.len() {
+                    return Err(batch_err("packet code-block range out of bounds"));
+                }
+                for tier1_job_index in code_block_start..code_block_end {
+                    resident_blocks.push(J2kResidentPacketBlock {
+                        tier1_job_index: u32::try_from(
+                            tier1_job_base
+                                .checked_add(tier1_job_index)
+                                .ok_or_else(|| batch_err("Tier-1 index overflow"))?,
+                        )
+                        .map_err(|_| batch_err("Tier-1 index exceeds u32"))?,
+                        previously_included: 0,
+                        l_block: 3,
+                        block_coding_mode: params.block_coding_mode,
+                    });
+                }
+                packet_subbands.push(J2kPacketSubband {
+                    block_offset,
+                    block_count: subband.code_block_count,
+                    num_cbs_x: subband.num_cbs_x,
+                    num_cbs_y: subband.num_cbs_y,
+                });
+                local_subband_count = local_subband_count
+                    .checked_add(1)
+                    .ok_or_else(|| batch_err("subband count overflow"))?;
+                local_resident_block_count = local_resident_block_count
+                    .checked_add(code_block_count)
+                    .ok_or_else(|| batch_err("resident block count overflow"))?;
+            }
+            packet_resolutions.push(J2kPacketResolution {
+                subband_offset,
+                subband_count: u32::try_from(resolution.subbands.len())
+                    .map_err(|_| batch_err("resolution subband count exceeds u32"))?,
+            });
+        }
+
+        if tile.resolutions.len()
+            != usize::try_from(tile.resolution_count)
+                .map_err(|_| batch_err("resolution count exceeds usize"))?
+        {
+            return Err(batch_err("resolution count mismatch"));
+        }
+        if local_resident_block_count
+            != usize::try_from(tile.code_block_count)
+                .map_err(|_| batch_err("code-block count exceeds usize"))?
+        {
+            return Err(batch_err("code-block count mismatch"));
+        }
+
+        let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
+        for descriptor in &tile.packet_descriptors {
+            let packet_index = usize::try_from(descriptor.packet_index)
+                .map_err(|_| batch_err("descriptor packet index exceeds usize"))?;
+            let resolution = packet_resolutions
+                .get(local_resolution_offset + packet_index)
+                .ok_or_else(|| batch_err("descriptor packet index out of range"))?;
+            let subband_start = usize::try_from(resolution.subband_offset)
+                .map_err(|_| batch_err("descriptor subband offset exceeds usize"))?;
+            let subband_count = usize::try_from(resolution.subband_count)
+                .map_err(|_| batch_err("descriptor subband count exceeds usize"))?;
+            let mut packet_block_count = 0usize;
+            for subband in &packet_subbands[local_subband_offset + subband_start
+                ..local_subband_offset + subband_start + subband_count]
+            {
+                let subband_block_count = usize::try_from(subband.block_count)
+                    .map_err(|_| batch_err("descriptor block count exceeds usize"))?;
+                packet_block_count = packet_block_count
+                    .checked_add(subband_block_count)
+                    .ok_or_else(|| batch_err("descriptor block count overflow"))?;
+            }
+            let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
+                state_block_offsets.get(&descriptor.state_index)
+            {
+                (offset, count)
+            } else {
+                let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
+                    .map_err(|_| batch_err("state block offset exceeds u32"))?;
+                for subband in &packet_subbands[local_subband_offset + subband_start
+                    ..local_subband_offset + subband_start + subband_count]
+                {
+                    for _ in 0..subband.block_count {
+                        state_blocks.push(J2kPacketStateBlock {
+                            previously_included: 0,
+                            l_block: 3,
+                        });
+                    }
+                }
+                state_block_offsets.insert(descriptor.state_index, (offset, packet_block_count));
+                (offset, packet_block_count)
+            };
+            if existing_count != packet_block_count {
+                return Err(batch_err("descriptor state layout mismatch"));
+            }
+            local_payload_copy_job_capacity = local_payload_copy_job_capacity
+                .checked_add(packet_block_count)
+                .ok_or_else(|| batch_err("packet payload-copy job count overflow"))?;
+            packet_descriptors.push(J2kPacketDescriptor {
+                packet_index: descriptor.packet_index,
+                state_index: descriptor.state_index,
+                layer: u32::from(descriptor.layer),
+                resolution: descriptor.resolution,
+                component: u32::from(descriptor.component),
+                precinct_lo: descriptor.precinct as u32,
+                precinct_hi: (descriptor.precinct >> 32) as u32,
+                state_block_offset,
+            });
+        }
+
+        let header_capacity = local_resident_block_count
+            .checked_mul(256)
+            .and_then(|bytes| bytes.checked_add(4096))
+            .map(|bytes| bytes.max(4096))
+            .ok_or_else(|| batch_err("packet header capacity overflow"))?;
+        let packet_output_capacity =
+            tile_packet_output_capacity(tile_index, tile, header_capacity)?;
+        let codestream_capacity =
+            lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
+        let codestream_payload_offset = lossless_codestream_payload_offset(tile.codestream)?;
+        let scratch_words = max_tree_nodes
+            .checked_mul(6)
+            .ok_or_else(|| batch_err("scratch size overflow"))?;
+
+        let header_offset = header_capacity_total;
+        let scratch_offset = scratch_words_total;
+        if tile.packet_descriptors.is_empty() {
+            local_payload_copy_job_capacity = local_resident_block_count;
+        }
+        let payload_copy_offset = packet_payload_copy_job_capacity_total;
+        let codestream_offset = codestream_capacity_total;
+        let packet_output_offset = codestream_offset
+            .checked_add(codestream_payload_offset)
+            .ok_or_else(|| batch_err("direct packet output offset overflow"))?;
+        packet_jobs.push(J2kBatchedPacketEncodeJob {
+            resolution_offset: u32::try_from(local_resolution_offset)
+                .map_err(|_| batch_err("resolution offset exceeds u32"))?,
+            subband_offset: u32::try_from(local_subband_offset)
+                .map_err(|_| batch_err("subband offset exceeds u32"))?,
+            block_offset: u32::try_from(local_block_offset)
+                .map_err(|_| batch_err("block offset exceeds u32"))?,
+            descriptor_offset: u32::try_from(local_descriptor_offset)
+                .map_err(|_| batch_err("descriptor offset exceeds u32"))?,
+            state_block_offset: u32::try_from(local_state_block_offset)
+                .map_err(|_| batch_err("state block offset exceeds u32"))?,
+            output_offset: u32::try_from(packet_output_offset)
+                .map_err(|_| batch_err("packet output offset exceeds u32"))?,
+            header_offset: u32::try_from(header_offset)
+                .map_err(|_| batch_err("header offset exceeds u32"))?,
+            scratch_offset: u32::try_from(scratch_offset)
+                .map_err(|_| batch_err("scratch offset exceeds u32"))?,
+            payload_copy_offset: u32::try_from(payload_copy_offset)
+                .map_err(|_| batch_err("packet payload-copy offset exceeds u32"))?,
+            payload_copy_capacity: u32::try_from(local_payload_copy_job_capacity)
+                .map_err(|_| batch_err("packet payload-copy capacity exceeds u32"))?,
+            resolution_count: tile.resolution_count,
+            num_layers: u32::from(tile.num_layers),
+            num_components: u32::from(tile.num_components),
+            code_block_count: tile.code_block_count,
+            subband_count: u32::try_from(local_subband_count)
+                .map_err(|_| batch_err("local subband count exceeds u32"))?,
+            descriptor_count: u32::try_from(tile.packet_descriptors.len())
+                .map_err(|_| batch_err("descriptor count exceeds u32"))?,
+            output_capacity: u32::try_from(packet_output_capacity)
+                .map_err(|_| batch_err("packet output capacity exceeds u32"))?,
+            header_capacity: u32::try_from(header_capacity)
+                .map_err(|_| batch_err("header capacity exceeds u32"))?,
+            scratch_node_capacity: u32::try_from(max_tree_nodes)
+                .map_err(|_| batch_err("scratch node capacity exceeds u32"))?,
         });
+        assembly_jobs.push(J2kBatchedCodestreamAssemblyJob {
+            tile_data_offset: u32::try_from(packet_output_offset)
+                .map_err(|_| batch_err("assembly packet offset exceeds u32"))?,
+            codestream_offset: u32::try_from(codestream_offset)
+                .map_err(|_| batch_err("codestream offset exceeds u32"))?,
+            width: tile.codestream.width,
+            height: tile.codestream.height,
+            num_components: u32::from(tile.codestream.num_components),
+            bit_depth: u32::from(tile.codestream.bit_depth),
+            signed_samples: u32::from(tile.codestream.signed),
+            num_decomposition_levels: u32::from(tile.codestream.num_decomposition_levels),
+            use_mct: u32::from(tile.codestream.use_mct),
+            guard_bits: u32::from(tile.codestream.guard_bits),
+            progression_order: codestream_progression_order_code(tile.codestream.progression_order),
+            write_tlm: u32::from(tile.codestream.write_tlm),
+            high_throughput: params.high_throughput,
+            code_block_style: params.code_block_style,
+            code_block_width_exp: u32::from(tile.codestream.code_block_width_exp),
+            code_block_height_exp: u32::from(tile.codestream.code_block_height_exp),
+            output_capacity: u32::try_from(codestream_capacity)
+                .map_err(|_| batch_err("codestream capacity exceeds u32"))?,
+        });
+        codestream_offsets.push(codestream_offset);
+        codestream_capacities.push(codestream_capacity);
+        packet_output_capacity_total = packet_output_capacity_total
+            .checked_add(packet_output_capacity)
+            .ok_or_else(|| batch_err("packet output total overflow"))?;
+        packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total
+            .checked_add(local_payload_copy_job_capacity)
+            .ok_or_else(|| batch_err("packet payload-copy job total overflow"))?;
+        max_payload_copy_jobs_per_tile =
+            max_payload_copy_jobs_per_tile.max(local_payload_copy_job_capacity);
+        header_capacity_total = header_capacity_total
+            .checked_add(header_capacity)
+            .ok_or_else(|| batch_err("header total overflow"))?;
+        scratch_words_total = scratch_words_total
+            .checked_add(scratch_words)
+            .ok_or_else(|| batch_err("scratch total overflow"))?;
+        codestream_capacity_total = codestream_capacity_total
+            .checked_add(codestream_capacity)
+            .ok_or_else(|| batch_err("codestream total overflow"))?;
     }
 
+    Ok(ResidentBatchPacketPlan {
+        packet_resolutions,
+        packet_subbands,
+        resident_blocks,
+        packet_descriptors,
+        state_blocks,
+        packet_jobs,
+        assembly_jobs,
+        packet_output_capacity_total,
+        packet_payload_copy_job_capacity_total,
+        max_payload_copy_jobs_per_tile,
+        header_capacity_total,
+        scratch_words_total,
+        codestream_capacity_total,
+        codestream_offsets,
+        codestream_capacities,
+    })
+}
+
+/// Moves resident batch encode items into the family-neutral per-tile form
+/// shared by the classic and HT batch drivers.
+#[cfg(target_os = "macos")]
+fn prepared_lossless_batch_tiles(
+    items: Vec<J2kResidentBatchEncodeItem>,
+) -> Vec<PreparedLosslessBatchTile> {
     let mut prepared_tiles = Vec::with_capacity(items.len());
     for item in items {
         let J2kPreparedLosslessDeviceCodeBlocks {
@@ -20940,8 +20468,24 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
             codestream: item.codestream,
         });
     }
+    prepared_tiles
+}
 
-    with_runtime_for_device(&session.device, |runtime| {
+#[cfg(target_os = "macos")]
+pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
+    session: &crate::MetalBackendSession,
+    items: Vec<J2kResidentBatchEncodeItem>,
+    packet_capacity_mode: J2kHtPacketOutputCapacityMode,
+) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
+    if items.is_empty() {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal resident batch encode requires at least one tile".to_string(),
+        });
+    }
+
+    let prepared_tiles = prepared_lossless_batch_tiles(items);
+
+    with_runtime_for_session(session, |runtime| {
         let profile_stages = metal_profile_stages_enabled();
         let mut stage_stats = J2kResidentEncodeStageStats::default();
         let mut ht_table_build_duration = Duration::ZERO;
@@ -21120,7 +20664,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
                 size_of::<u32>() as u64,
                 (&raw const tier1_job_count).cast(),
             );
-            dispatch_ht_encode_code_blocks(encoder, pipeline, tier1_job_count);
+            dispatch_1d_pipeline(encoder, pipeline, u64::from(tier1_job_count));
             encoder.end_encoding();
             drop(signpost);
             if let Some(started) = command_encode_started {
@@ -21142,408 +20686,41 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
 
         ht_table_build_started = profile_stages.then(Instant::now);
         let ht_packet_plan_signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_HT_PACKET_PLAN);
-        let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
-        let mut packet_subbands = Vec::<J2kPacketSubband>::new();
-        let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
-        let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
-        let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-        let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
-        let mut assembly_jobs =
-            Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
-        let mut packet_output_capacity_total = 0usize;
-        let mut packet_payload_copy_job_capacity_total = 0usize;
-        let mut max_payload_copy_jobs_per_tile = 0usize;
-        let mut header_capacity_total = 0usize;
-        let mut scratch_words_total = 0usize;
-        let mut codestream_capacity_total = 0usize;
-        let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
-        let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
-
-        for (tile_index, tile) in prepared_tiles.iter().enumerate() {
-            let local_resolution_offset = packet_resolutions.len();
-            let local_subband_offset = packet_subbands.len();
-            let local_block_offset = resident_blocks.len();
-            let local_descriptor_offset = packet_descriptors.len();
-            let local_state_block_offset = state_blocks.len();
-            let tier1_job_base = tile_tier1_job_bases[tile_index];
-            let mut max_tree_nodes = 1usize;
-            let mut local_subband_count = 0usize;
-            let mut local_resident_block_count = 0usize;
-            let mut local_payload_copy_job_capacity = 0usize;
-
-            for resolution in &tile.resolutions {
-                let subband_offset =
-                    u32::try_from(local_subband_count).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet subband offset exceeds u32".to_string(),
-                    })?;
-                for subband in &resolution.subbands {
-                    let block_offset = u32::try_from(local_resident_block_count).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "HTJ2K Metal batch packet block offset exceeds u32"
-                                .to_string(),
-                        }
-                    })?;
-                    max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
-                        subband.num_cbs_x,
-                        subband.num_cbs_y,
-                    )?);
-                    let code_block_start =
-                        usize::try_from(subband.code_block_start).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "HTJ2K Metal batch packet code-block offset exceeds usize"
-                                    .to_string(),
-                            }
-                        })?;
-                    let code_block_count =
-                        usize::try_from(subband.code_block_count).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "HTJ2K Metal batch packet code-block count exceeds usize"
-                                    .to_string(),
-                            }
-                        })?;
-                    let code_block_end = code_block_start
-                        .checked_add(code_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "HTJ2K Metal batch packet code-block range overflow"
-                                .to_string(),
-                        })?;
-                    if code_block_end > tile.code_blocks.len() {
-                        return Err(Error::MetalKernel {
-                            message: "HTJ2K Metal batch packet code-block range out of bounds"
-                                .to_string(),
-                        });
-                    }
-                    for tier1_job_index in code_block_start..code_block_end {
-                        resident_blocks.push(J2kResidentPacketBlock {
-                            tier1_job_index: u32::try_from(
-                                tier1_job_base.checked_add(tier1_job_index).ok_or_else(|| {
-                                    Error::MetalKernel {
-                                        message: "HTJ2K Metal batch Tier-1 index overflow"
-                                            .to_string(),
-                                    }
-                                })?,
-                            )
-                            .map_err(|_| Error::MetalKernel {
-                                message: "HTJ2K Metal batch Tier-1 index exceeds u32".to_string(),
-                            })?,
-                            previously_included: 0,
-                            l_block: 3,
-                            block_coding_mode: 1,
-                        });
-                    }
-                    packet_subbands.push(J2kPacketSubband {
-                        block_offset,
-                        block_count: subband.code_block_count,
-                        num_cbs_x: subband.num_cbs_x,
-                        num_cbs_y: subband.num_cbs_y,
-                    });
-                    local_subband_count =
-                        local_subband_count
-                            .checked_add(1)
-                            .ok_or_else(|| Error::MetalKernel {
-                                message: "HTJ2K Metal batch subband count overflow".to_string(),
-                            })?;
-                    local_resident_block_count = local_resident_block_count
-                        .checked_add(code_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "HTJ2K Metal batch resident block count overflow".to_string(),
-                        })?;
-                }
-                packet_resolutions.push(J2kPacketResolution {
-                    subband_offset,
-                    subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "HTJ2K Metal batch resolution subband count exceeds u32"
-                                .to_string(),
-                        }
-                    })?,
-                });
-            }
-
-            if tile.resolutions.len()
-                != usize::try_from(tile.resolution_count).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal batch resolution count exceeds usize".to_string(),
-                })?
-            {
-                return Err(Error::MetalKernel {
-                    message: "HTJ2K Metal batch resolution count mismatch".to_string(),
-                });
-            }
-            if local_resident_block_count
-                != usize::try_from(tile.code_block_count).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal batch code-block count exceeds usize".to_string(),
-                })?
-            {
-                return Err(Error::MetalKernel {
-                    message: "HTJ2K Metal batch code-block count mismatch".to_string(),
-                });
-            }
-
-            let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
-            for descriptor in &tile.packet_descriptors {
-                let packet_index =
-                    usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor packet index exceeds usize"
-                            .to_string(),
-                    })?;
-                let resolution = packet_resolutions
-                    .get(local_resolution_offset + packet_index)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor packet index out of range"
-                            .to_string(),
-                    })?;
-                let subband_start =
-                    usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor subband offset exceeds usize"
-                            .to_string(),
-                    })?;
-                let subband_count =
-                    usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor subband count exceeds usize"
-                            .to_string(),
-                    })?;
-                let mut packet_block_count = 0usize;
-                for subband in &packet_subbands[local_subband_offset + subband_start
-                    ..local_subband_offset + subband_start + subband_count]
-                {
-                    packet_block_count = packet_block_count
-                        .checked_add(usize::try_from(subband.block_count).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "HTJ2K Metal batch descriptor block count exceeds usize"
-                                    .to_string(),
-                            }
-                        })?)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "HTJ2K Metal batch descriptor block count overflow"
-                                .to_string(),
-                        })?;
-                }
-                let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
-                    state_block_offsets.get(&descriptor.state_index)
-                {
-                    (offset, count)
-                } else {
-                    let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
-                        .map_err(|_| Error::MetalKernel {
-                            message: "HTJ2K Metal batch state block offset exceeds u32".to_string(),
-                        })?;
-                    for subband in &packet_subbands[local_subband_offset + subband_start
-                        ..local_subband_offset + subband_start + subband_count]
-                    {
-                        for idx in 0..subband.block_count {
-                            let _ = idx;
-                            state_blocks.push(J2kPacketStateBlock {
-                                previously_included: 0,
-                                l_block: 3,
-                            });
-                        }
-                    }
-                    state_block_offsets
-                        .insert(descriptor.state_index, (offset, packet_block_count));
-                    (offset, packet_block_count)
-                };
-                if existing_count != packet_block_count {
-                    return Err(Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor state layout mismatch".to_string(),
-                    });
-                }
-                local_payload_copy_job_capacity = local_payload_copy_job_capacity
-                    .checked_add(packet_block_count)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet payload-copy job count overflow"
-                            .to_string(),
-                    })?;
-                packet_descriptors.push(J2kPacketDescriptor {
-                    packet_index: descriptor.packet_index,
-                    state_index: descriptor.state_index,
-                    layer: u32::from(descriptor.layer),
-                    resolution: descriptor.resolution,
-                    component: u32::from(descriptor.component),
-                    precinct_lo: descriptor.precinct as u32,
-                    precinct_hi: (descriptor.precinct >> 32) as u32,
-                    state_block_offset,
-                });
-            }
-
-            let header_capacity = local_resident_block_count
-                .checked_mul(256)
-                .and_then(|bytes| bytes.checked_add(4096))
-                .map(|bytes| bytes.max(4096))
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch packet header capacity overflow".to_string(),
-                })?;
-            let packet_output_capacity = ht_packet_output_capacity_for_mode(
-                tile.code_blocks.len(),
-                header_capacity,
-                tile.packet_descriptors.len().max(tile.resolutions.len()),
-                tile.codestream,
-                packet_capacity_mode,
-            )?;
-            let codestream_capacity =
-                lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
-            let codestream_payload_offset = lossless_codestream_payload_offset(tile.codestream)?;
-            let scratch_words =
-                max_tree_nodes
-                    .checked_mul(6)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Metal batch scratch size overflow".to_string(),
-                    })?;
-
-            let header_offset = header_capacity_total;
-            let scratch_offset = scratch_words_total;
-            if tile.packet_descriptors.is_empty() {
-                local_payload_copy_job_capacity = local_resident_block_count;
-            }
-            let payload_copy_offset = packet_payload_copy_job_capacity_total;
-            let codestream_offset = codestream_capacity_total;
-            let packet_output_offset = codestream_offset
-                .checked_add(codestream_payload_offset)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch direct packet output offset overflow".to_string(),
-                })?;
-            packet_jobs.push(J2kBatchedPacketEncodeJob {
-                resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch resolution offset exceeds u32".to_string(),
-                    }
-                })?,
-                subband_offset: u32::try_from(local_subband_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch subband offset exceeds u32".to_string(),
-                    }
-                })?,
-                block_offset: u32::try_from(local_block_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch block offset exceeds u32".to_string(),
-                    }
-                })?,
-                descriptor_offset: u32::try_from(local_descriptor_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor offset exceeds u32".to_string(),
-                    }
-                })?,
-                state_block_offset: u32::try_from(local_state_block_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch state block offset exceeds u32".to_string(),
-                    }
-                })?,
-                output_offset: u32::try_from(packet_output_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet output offset exceeds u32".to_string(),
-                    }
-                })?,
-                header_offset: u32::try_from(header_offset).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal batch header offset exceeds u32".to_string(),
-                })?,
-                scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal batch scratch offset exceeds u32".to_string(),
-                })?,
-                payload_copy_offset: u32::try_from(payload_copy_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet payload-copy offset exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                payload_copy_capacity: u32::try_from(local_payload_copy_job_capacity).map_err(
-                    |_| Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet payload-copy capacity exceeds u32"
-                            .to_string(),
-                    },
-                )?,
-                resolution_count: tile.resolution_count,
-                num_layers: u32::from(tile.num_layers),
-                num_components: u32::from(tile.num_components),
-                code_block_count: tile.code_block_count,
-                subband_count: u32::try_from(local_subband_count).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch local subband count exceeds u32".to_string(),
-                    }
-                })?,
-                descriptor_count: u32::try_from(tile.packet_descriptors.len()).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch descriptor count exceeds u32".to_string(),
-                    }
-                })?,
-                output_capacity: u32::try_from(packet_output_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch packet output capacity exceeds u32".to_string(),
-                    }
-                })?,
-                header_capacity: u32::try_from(header_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch header capacity exceeds u32".to_string(),
-                    }
-                })?,
-                scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch scratch node capacity exceeds u32".to_string(),
-                    }
-                })?,
-            });
-            assembly_jobs.push(J2kBatchedCodestreamAssemblyJob {
-                tile_data_offset: u32::try_from(packet_output_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch assembly packet offset exceeds u32".to_string(),
-                    }
-                })?,
-                codestream_offset: u32::try_from(codestream_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch codestream offset exceeds u32".to_string(),
-                    }
-                })?,
-                width: tile.codestream.width,
-                height: tile.codestream.height,
-                num_components: u32::from(tile.codestream.num_components),
-                bit_depth: u32::from(tile.codestream.bit_depth),
-                signed_samples: u32::from(tile.codestream.signed),
-                num_decomposition_levels: u32::from(tile.codestream.num_decomposition_levels),
-                use_mct: u32::from(tile.codestream.use_mct),
-                guard_bits: u32::from(tile.codestream.guard_bits),
-                progression_order: codestream_progression_order_code(
-                    tile.codestream.progression_order,
-                ),
-                write_tlm: u32::from(tile.codestream.write_tlm),
+        let ResidentBatchPacketPlan {
+            packet_resolutions,
+            packet_subbands,
+            resident_blocks,
+            packet_descriptors,
+            state_blocks,
+            packet_jobs,
+            assembly_jobs,
+            packet_output_capacity_total,
+            packet_payload_copy_job_capacity_total,
+            max_payload_copy_jobs_per_tile,
+            header_capacity_total,
+            scratch_words_total,
+            codestream_capacity_total,
+            codestream_offsets,
+            codestream_capacities,
+        } = build_resident_batch_packet_plan(
+            &prepared_tiles,
+            &tile_tier1_job_bases,
+            ResidentBatchPacketPlanParams {
+                family_name: "HTJ2K",
+                block_coding_mode: 1,
                 high_throughput: 1,
                 code_block_style: 0x40,
-                code_block_width_exp: u32::from(tile.codestream.code_block_width_exp),
-                code_block_height_exp: u32::from(tile.codestream.code_block_height_exp),
-                output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "HTJ2K Metal batch codestream capacity exceeds u32".to_string(),
-                    }
-                })?,
-            });
-            codestream_offsets.push(codestream_offset);
-            codestream_capacities.push(codestream_capacity);
-            packet_output_capacity_total = packet_output_capacity_total
-                .checked_add(packet_output_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch packet output total overflow".to_string(),
-                })?;
-            packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total
-                .checked_add(local_payload_copy_job_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch packet payload-copy job total overflow".to_string(),
-                })?;
-            max_payload_copy_jobs_per_tile =
-                max_payload_copy_jobs_per_tile.max(local_payload_copy_job_capacity);
-            header_capacity_total = header_capacity_total
-                .checked_add(header_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch header total overflow".to_string(),
-                })?;
-            scratch_words_total =
-                scratch_words_total
-                    .checked_add(scratch_words)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "HTJ2K Metal batch scratch total overflow".to_string(),
-                    })?;
-            codestream_capacity_total = codestream_capacity_total
-                .checked_add(codestream_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "HTJ2K Metal batch codestream total overflow".to_string(),
-                })?;
-        }
+            },
+            |_tile_index, tile, header_capacity| {
+                ht_packet_output_capacity_for_mode(
+                    tile.code_blocks.len(),
+                    header_capacity,
+                    tile.packet_descriptors.len().max(tile.resolutions.len()),
+                    tile.codestream,
+                    packet_capacity_mode,
+                )
+            },
+        )?;
 
         drop(ht_packet_plan_signpost);
         if let Some(started) = ht_table_build_started.take() {
@@ -21975,7 +21152,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
         stage_stats.code_block_count = tier1_jobs.len();
 
         Ok(J2kPendingResidentLosslessCodestreamBatch {
-            device: runtime.device.clone(),
+            runtime: session.runtime()?,
             buffer: codestream_buffer,
             byte_offsets: codestream_offsets,
             capacities: codestream_capacities,
@@ -22006,7 +21183,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_ht_batch(
 #[cfg(target_os = "macos")]
 pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
     session: &crate::MetalBackendSession,
-    items: Vec<J2kResidentClassicBatchEncodeItem>,
+    items: Vec<J2kResidentBatchEncodeItem>,
     output_capacity_mode: J2kClassicEncodeOutputCapacityMode,
 ) -> Result<J2kPendingResidentLosslessCodestreamBatch, Error> {
     if items.is_empty() {
@@ -22015,54 +21192,9 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         });
     }
 
-    let mut prepared_tiles = Vec::with_capacity(items.len());
-    for item in items {
-        let J2kPreparedLosslessDeviceCodeBlocks {
-            coefficient_buffer,
-            coefficient_byte_offset,
-            coefficient_byte_len,
-            coefficient_buffer_is_batch_shared,
-            code_blocks,
-            recyclable_private_buffers,
-            _prepare_command_buffer: prepare_command_buffer,
-            _prepare_deinterleave_rct_command_buffer: prepare_deinterleave_rct_command_buffer,
-            _prepare_dwt53_command_buffer: prepare_dwt53_command_buffer,
-            _prepare_dwt53_vertical_command_buffers: prepare_dwt53_vertical_command_buffers,
-            _prepare_dwt53_horizontal_command_buffers: prepare_dwt53_horizontal_command_buffers,
-            _prepare_coefficient_extract_command_buffer: prepare_coefficient_extract_command_buffer,
-            _deinterleave_status_buffer: deinterleave_status_buffer,
-            _plane_buffers: plane_buffers,
-            _scratch_buffers: scratch_buffers,
-            _coefficient_job_buffer: coefficient_job_buffer,
-        } = item.prepared;
-        prepared_tiles.push(PreparedLosslessBatchTile {
-            coefficient_buffer,
-            coefficient_byte_offset,
-            coefficient_byte_len,
-            coefficient_buffer_is_batch_shared,
-            code_blocks,
-            recyclable_private_buffers,
-            prepare_command_buffer,
-            prepare_deinterleave_rct_command_buffer,
-            prepare_dwt53_command_buffer,
-            prepare_dwt53_vertical_command_buffers,
-            prepare_dwt53_horizontal_command_buffers,
-            prepare_coefficient_extract_command_buffer,
-            deinterleave_status_buffer,
-            plane_buffers,
-            scratch_buffers,
-            coefficient_job_buffer,
-            resolution_count: item.resolution_count,
-            num_layers: item.num_layers,
-            num_components: item.num_components,
-            code_block_count: item.code_block_count,
-            packet_descriptors: item.packet_descriptors,
-            resolutions: item.resolutions,
-            codestream: item.codestream,
-        });
-    }
+    let prepared_tiles = prepared_lossless_batch_tiles(items);
 
-    with_runtime_for_device(&session.device, |runtime| {
+    with_runtime_for_session(session, |runtime| {
         let profile_stages = metal_profile_stages_enabled();
         // Commit classic stages independently so the long Tier-1 kernel can run
         // while CPU packet metadata for the following stages is built.
@@ -22478,18 +21610,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
                     size_of::<u32>() as u64,
                     (&raw const tier1_job_count).cast(),
                 );
-                encoder.dispatch_threads(
-                    MTLSize {
-                        width: u64::from(tier1_job_count),
-                        height: 1,
-                        depth: 1,
-                    },
-                    MTLSize {
-                        width: classic_encode_pipeline.thread_execution_width().max(1),
-                        height: 1,
-                        depth: 1,
-                    },
-                );
+                dispatch_1d_pipeline(encoder, classic_encode_pipeline, u64::from(tier1_job_count));
                 encoder.end_encoding();
                 drop(signpost);
                 if let Some(started) = command_encode_started {
@@ -22752,402 +21873,40 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         let classic_packet_plan_started = profile_stages.then(Instant::now);
         let classic_packet_plan_signpost =
             hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_CLASSIC_PACKET_PLAN);
-        let mut packet_resolutions = Vec::<J2kPacketResolution>::new();
-        let mut packet_subbands = Vec::<J2kPacketSubband>::new();
-        let mut resident_blocks = Vec::<J2kResidentPacketBlock>::new();
-        let mut packet_descriptors = Vec::<J2kPacketDescriptor>::new();
-        let mut state_blocks = Vec::<J2kPacketStateBlock>::new();
-        let mut packet_jobs = Vec::<J2kBatchedPacketEncodeJob>::with_capacity(prepared_tiles.len());
-        let mut assembly_jobs =
-            Vec::<J2kBatchedCodestreamAssemblyJob>::with_capacity(prepared_tiles.len());
-        let mut packet_output_capacity_total = 0usize;
-        let mut packet_payload_copy_job_capacity_total = 0usize;
-        let mut max_payload_copy_jobs_per_tile = 0usize;
-        let mut header_capacity_total = 0usize;
-        let mut scratch_words_total = 0usize;
-        let mut codestream_capacity_total = 0usize;
-        let mut codestream_offsets = Vec::<usize>::with_capacity(prepared_tiles.len());
-        let mut codestream_capacities = Vec::<usize>::with_capacity(prepared_tiles.len());
-
-        for (tile_index, tile) in prepared_tiles.iter().enumerate() {
-            let local_resolution_offset = packet_resolutions.len();
-            let local_subband_offset = packet_subbands.len();
-            let local_block_offset = resident_blocks.len();
-            let local_descriptor_offset = packet_descriptors.len();
-            let local_state_block_offset = state_blocks.len();
-            let tier1_job_base = tile_tier1_job_bases[tile_index];
-            let mut max_tree_nodes = 1usize;
-            let mut local_subband_count = 0usize;
-            let mut local_resident_block_count = 0usize;
-            let mut local_payload_copy_job_capacity = 0usize;
-
-            for resolution in &tile.resolutions {
-                let subband_offset =
-                    u32::try_from(local_subband_count).map_err(|_| Error::MetalKernel {
-                        message: "J2K Metal batch packet subband offset exceeds u32".to_string(),
-                    })?;
-                for subband in &resolution.subbands {
-                    let block_offset = u32::try_from(local_resident_block_count).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "J2K Metal batch packet block offset exceeds u32".to_string(),
-                        }
-                    })?;
-                    max_tree_nodes = max_tree_nodes.max(packet_tree_node_count(
-                        subband.num_cbs_x,
-                        subband.num_cbs_y,
-                    )?);
-                    let code_block_start =
-                        usize::try_from(subband.code_block_start).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "J2K Metal batch packet code-block offset exceeds usize"
-                                    .to_string(),
-                            }
-                        })?;
-                    let code_block_count =
-                        usize::try_from(subband.code_block_count).map_err(|_| {
-                            Error::MetalKernel {
-                                message: "J2K Metal batch packet code-block count exceeds usize"
-                                    .to_string(),
-                            }
-                        })?;
-                    let code_block_end = code_block_start
-                        .checked_add(code_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "J2K Metal batch packet code-block range overflow".to_string(),
-                        })?;
-                    if code_block_end > tile.code_blocks.len() {
-                        return Err(Error::MetalKernel {
-                            message: "J2K Metal batch packet code-block range out of bounds"
-                                .to_string(),
-                        });
-                    }
-                    for tier1_job_index in code_block_start..code_block_end {
-                        resident_blocks.push(J2kResidentPacketBlock {
-                            tier1_job_index: u32::try_from(
-                                tier1_job_base.checked_add(tier1_job_index).ok_or_else(|| {
-                                    Error::MetalKernel {
-                                        message: "J2K Metal batch Tier-1 index overflow"
-                                            .to_string(),
-                                    }
-                                })?,
-                            )
-                            .map_err(|_| Error::MetalKernel {
-                                message: "J2K Metal batch Tier-1 index exceeds u32".to_string(),
-                            })?,
-                            previously_included: 0,
-                            l_block: 3,
-                            block_coding_mode: 0,
-                        });
-                    }
-                    packet_subbands.push(J2kPacketSubband {
-                        block_offset,
-                        block_count: subband.code_block_count,
-                        num_cbs_x: subband.num_cbs_x,
-                        num_cbs_y: subband.num_cbs_y,
-                    });
-                    local_subband_count =
-                        local_subband_count
-                            .checked_add(1)
-                            .ok_or_else(|| Error::MetalKernel {
-                                message: "J2K Metal batch subband count overflow".to_string(),
-                            })?;
-                    local_resident_block_count = local_resident_block_count
-                        .checked_add(code_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "J2K Metal batch resident block count overflow".to_string(),
-                        })?;
-                }
-                packet_resolutions.push(J2kPacketResolution {
-                    subband_offset,
-                    subband_count: u32::try_from(resolution.subbands.len()).map_err(|_| {
-                        Error::MetalKernel {
-                            message: "J2K Metal batch resolution subband count exceeds u32"
-                                .to_string(),
-                        }
-                    })?,
-                });
-            }
-
-            if tile.resolutions.len()
-                != usize::try_from(tile.resolution_count).map_err(|_| Error::MetalKernel {
-                    message: "J2K Metal batch resolution count exceeds usize".to_string(),
-                })?
-            {
-                return Err(Error::MetalKernel {
-                    message: "J2K Metal batch resolution count mismatch".to_string(),
-                });
-            }
-            if local_resident_block_count
-                != usize::try_from(tile.code_block_count).map_err(|_| Error::MetalKernel {
-                    message: "J2K Metal batch code-block count exceeds usize".to_string(),
-                })?
-            {
-                return Err(Error::MetalKernel {
-                    message: "J2K Metal batch code-block count mismatch".to_string(),
-                });
-            }
-
-            let mut state_block_offsets = HashMap::<u32, (u32, usize)>::new();
-            for descriptor in &tile.packet_descriptors {
-                let packet_index =
-                    usize::try_from(descriptor.packet_index).map_err(|_| Error::MetalKernel {
-                        message: "J2K Metal batch descriptor packet index exceeds usize"
-                            .to_string(),
-                    })?;
-                let resolution = packet_resolutions
-                    .get(local_resolution_offset + packet_index)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "J2K Metal batch descriptor packet index out of range".to_string(),
-                    })?;
-                let subband_start =
-                    usize::try_from(resolution.subband_offset).map_err(|_| Error::MetalKernel {
-                        message: "J2K Metal batch descriptor subband offset exceeds usize"
-                            .to_string(),
-                    })?;
-                let subband_count =
-                    usize::try_from(resolution.subband_count).map_err(|_| Error::MetalKernel {
-                        message: "J2K Metal batch descriptor subband count exceeds usize"
-                            .to_string(),
-                    })?;
-                let mut packet_block_count = 0usize;
-                for subband in &packet_subbands[local_subband_offset + subband_start
-                    ..local_subband_offset + subband_start + subband_count]
-                {
-                    let subband_block_count =
-                        usize::try_from(subband.block_count).map_err(|_| Error::MetalKernel {
-                            message: "J2K Metal batch descriptor block count exceeds usize"
-                                .to_string(),
-                        })?;
-                    packet_block_count = packet_block_count
-                        .checked_add(subband_block_count)
-                        .ok_or_else(|| Error::MetalKernel {
-                            message: "J2K Metal batch descriptor block count overflow".to_string(),
-                        })?;
-                }
-                let (state_block_offset, existing_count) = if let Some(&(offset, count)) =
-                    state_block_offsets.get(&descriptor.state_index)
-                {
-                    (offset, count)
-                } else {
-                    let offset = u32::try_from(state_blocks.len() - local_state_block_offset)
-                        .map_err(|_| Error::MetalKernel {
-                            message: "J2K Metal batch state block offset exceeds u32".to_string(),
-                        })?;
-                    for subband in &packet_subbands[local_subband_offset + subband_start
-                        ..local_subband_offset + subband_start + subband_count]
-                    {
-                        for _ in 0..subband.block_count {
-                            state_blocks.push(J2kPacketStateBlock {
-                                previously_included: 0,
-                                l_block: 3,
-                            });
-                        }
-                    }
-                    state_block_offsets
-                        .insert(descriptor.state_index, (offset, packet_block_count));
-                    (offset, packet_block_count)
-                };
-                if existing_count != packet_block_count {
-                    return Err(Error::MetalKernel {
-                        message: "J2K Metal batch descriptor state layout mismatch".to_string(),
-                    });
-                }
-                local_payload_copy_job_capacity = local_payload_copy_job_capacity
-                    .checked_add(packet_block_count)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "J2K Metal batch packet payload-copy job count overflow"
-                            .to_string(),
-                    })?;
-                packet_descriptors.push(J2kPacketDescriptor {
-                    packet_index: descriptor.packet_index,
-                    state_index: descriptor.state_index,
-                    layer: u32::from(descriptor.layer),
-                    resolution: descriptor.resolution,
-                    component: u32::from(descriptor.component),
-                    precinct_lo: descriptor.precinct as u32,
-                    precinct_hi: (descriptor.precinct >> 32) as u32,
-                    state_block_offset,
-                });
-            }
-
-            let header_capacity = local_resident_block_count
-                .checked_mul(256)
-                .and_then(|bytes| bytes.checked_add(4096))
-                .map(|bytes| bytes.max(4096))
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch packet header capacity overflow".to_string(),
-                })?;
-            let packet_output_capacity = classic_packet_output_capacity(
-                tile_tier1_output_capacities[tile_index],
-                header_capacity,
-                tile.packet_descriptors.len().max(tile.resolutions.len()),
-                tile.codestream,
-            )?;
-            let codestream_capacity =
-                lossless_codestream_assembly_capacity(packet_output_capacity, tile.codestream)?;
-            let codestream_payload_offset = lossless_codestream_payload_offset(tile.codestream)?;
-            let scratch_words =
-                max_tree_nodes
-                    .checked_mul(6)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "J2K Metal batch scratch size overflow".to_string(),
-                    })?;
-
-            let header_offset = header_capacity_total;
-            let scratch_offset = scratch_words_total;
-            if tile.packet_descriptors.is_empty() {
-                local_payload_copy_job_capacity = local_resident_block_count;
-            }
-            let payload_copy_offset = packet_payload_copy_job_capacity_total;
-            let codestream_offset = codestream_capacity_total;
-            let packet_output_offset = codestream_offset
-                .checked_add(codestream_payload_offset)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch direct packet output offset overflow".to_string(),
-                })?;
-            packet_jobs.push(J2kBatchedPacketEncodeJob {
-                resolution_offset: u32::try_from(local_resolution_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch resolution offset exceeds u32".to_string(),
-                    }
-                })?,
-                subband_offset: u32::try_from(local_subband_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch subband offset exceeds u32".to_string(),
-                    }
-                })?,
-                block_offset: u32::try_from(local_block_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch block offset exceeds u32".to_string(),
-                    }
-                })?,
-                descriptor_offset: u32::try_from(local_descriptor_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch descriptor offset exceeds u32".to_string(),
-                    }
-                })?,
-                state_block_offset: u32::try_from(local_state_block_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch state block offset exceeds u32".to_string(),
-                    }
-                })?,
-                output_offset: u32::try_from(packet_output_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch packet output offset exceeds u32".to_string(),
-                    }
-                })?,
-                header_offset: u32::try_from(header_offset).map_err(|_| Error::MetalKernel {
-                    message: "J2K Metal batch header offset exceeds u32".to_string(),
-                })?,
-                scratch_offset: u32::try_from(scratch_offset).map_err(|_| Error::MetalKernel {
-                    message: "J2K Metal batch scratch offset exceeds u32".to_string(),
-                })?,
-                payload_copy_offset: u32::try_from(payload_copy_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch packet payload-copy offset exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                payload_copy_capacity: u32::try_from(local_payload_copy_job_capacity).map_err(
-                    |_| Error::MetalKernel {
-                        message: "J2K Metal batch packet payload-copy capacity exceeds u32"
-                            .to_string(),
-                    },
-                )?,
-                resolution_count: tile.resolution_count,
-                num_layers: u32::from(tile.num_layers),
-                num_components: u32::from(tile.num_components),
-                code_block_count: tile.code_block_count,
-                subband_count: u32::try_from(local_subband_count).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch local subband count exceeds u32".to_string(),
-                    }
-                })?,
-                descriptor_count: u32::try_from(tile.packet_descriptors.len()).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch descriptor count exceeds u32".to_string(),
-                    }
-                })?,
-                output_capacity: u32::try_from(packet_output_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch packet output capacity exceeds u32".to_string(),
-                    }
-                })?,
-                header_capacity: u32::try_from(header_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch header capacity exceeds u32".to_string(),
-                    }
-                })?,
-                scratch_node_capacity: u32::try_from(max_tree_nodes).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch scratch node capacity exceeds u32".to_string(),
-                    }
-                })?,
-            });
-            assembly_jobs.push(J2kBatchedCodestreamAssemblyJob {
-                tile_data_offset: u32::try_from(packet_output_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch assembly packet offset exceeds u32".to_string(),
-                    }
-                })?,
-                codestream_offset: u32::try_from(codestream_offset).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch codestream offset exceeds u32".to_string(),
-                    }
-                })?,
-                width: tile.codestream.width,
-                height: tile.codestream.height,
-                num_components: u32::from(tile.codestream.num_components),
-                bit_depth: u32::from(tile.codestream.bit_depth),
-                signed_samples: u32::from(tile.codestream.signed),
-                num_decomposition_levels: u32::from(tile.codestream.num_decomposition_levels),
-                use_mct: u32::from(tile.codestream.use_mct),
-                guard_bits: u32::from(tile.codestream.guard_bits),
-                progression_order: codestream_progression_order_code(
-                    tile.codestream.progression_order,
-                ),
-                write_tlm: u32::from(tile.codestream.write_tlm),
+        let ResidentBatchPacketPlan {
+            packet_resolutions,
+            packet_subbands,
+            resident_blocks,
+            packet_descriptors,
+            state_blocks,
+            packet_jobs,
+            assembly_jobs,
+            packet_output_capacity_total,
+            packet_payload_copy_job_capacity_total,
+            max_payload_copy_jobs_per_tile,
+            header_capacity_total,
+            scratch_words_total,
+            codestream_capacity_total,
+            codestream_offsets,
+            codestream_capacities,
+        } = build_resident_batch_packet_plan(
+            &prepared_tiles,
+            &tile_tier1_job_bases,
+            ResidentBatchPacketPlanParams {
+                family_name: "J2K",
+                block_coding_mode: 0,
                 high_throughput: 0,
                 code_block_style: classic_cod_block_style_from_flags(classic_resident_style_flags),
-                code_block_width_exp: u32::from(tile.codestream.code_block_width_exp),
-                code_block_height_exp: u32::from(tile.codestream.code_block_height_exp),
-                output_capacity: u32::try_from(codestream_capacity).map_err(|_| {
-                    Error::MetalKernel {
-                        message: "J2K Metal batch codestream capacity exceeds u32".to_string(),
-                    }
-                })?,
-            });
-            codestream_offsets.push(codestream_offset);
-            codestream_capacities.push(codestream_capacity);
-            packet_output_capacity_total = packet_output_capacity_total
-                .checked_add(packet_output_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch packet output total overflow".to_string(),
-                })?;
-            packet_payload_copy_job_capacity_total = packet_payload_copy_job_capacity_total
-                .checked_add(local_payload_copy_job_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch packet payload-copy job total overflow".to_string(),
-                })?;
-            max_payload_copy_jobs_per_tile =
-                max_payload_copy_jobs_per_tile.max(local_payload_copy_job_capacity);
-            header_capacity_total = header_capacity_total
-                .checked_add(header_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch header total overflow".to_string(),
-                })?;
-            scratch_words_total =
-                scratch_words_total
-                    .checked_add(scratch_words)
-                    .ok_or_else(|| Error::MetalKernel {
-                        message: "J2K Metal batch scratch total overflow".to_string(),
-                    })?;
-            codestream_capacity_total = codestream_capacity_total
-                .checked_add(codestream_capacity)
-                .ok_or_else(|| Error::MetalKernel {
-                    message: "J2K Metal batch codestream total overflow".to_string(),
-                })?;
-        }
+            },
+            |tile_index, tile, header_capacity| {
+                classic_packet_output_capacity(
+                    tile_tier1_output_capacities[tile_index],
+                    header_capacity,
+                    tile.packet_descriptors.len().max(tile.resolutions.len()),
+                    tile.codestream,
+                )
+            },
+        )?;
         drop(classic_packet_plan_signpost);
         if let Some(started) = classic_packet_plan_started {
             classic_packet_plan_duration = started.elapsed();
@@ -23526,7 +22285,7 @@ pub(crate) fn submit_lossless_codestream_buffers_from_prepared_classic_batch(
         stage_stats.code_block_count = tier1_jobs.len();
 
         Ok(J2kPendingResidentLosslessCodestreamBatch {
-            device: runtime.device.clone(),
+            runtime: session.runtime()?,
             buffer: codestream_buffer,
             byte_offsets: codestream_offsets,
             capacities: codestream_capacities,
@@ -23595,22 +22354,12 @@ fn dispatch_ht_cleanup(
     encoder.set_buffer(5, Some(&runtime.ht_uvlc_table0), 0);
     encoder.set_buffer(6, Some(&runtime.ht_uvlc_table1), 0);
     encoder.set_buffer(7, Some(&status_buffer), 0);
-    encoder.dispatch_threads(
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-        MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        },
-    );
+    dispatch_single_thread(encoder);
     encoder.end_encoding();
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let status = unsafe { status_buffer.contents().cast::<J2kHtStatus>().read() };
     if status.code != J2K_HT_STATUS_OK {
         return Err(decode_ht_status_error(status));
@@ -23671,6 +22420,7 @@ fn dispatch_ht_cleanup_batched(
     command_buffer.commit();
     command_buffer.wait_until_completed();
 
+    // SAFETY: Metal buffer access follows validated sizes and synchronized command completion.
     let statuses = unsafe {
         core::slice::from_raw_parts(status_buffer.contents().cast::<J2kHtStatus>(), jobs.len())
     };
@@ -24194,9 +22944,10 @@ mod tests {
         runtime_initialization_error, shared_buffer_pool_misses_for_test,
         should_flatten_hybrid_cpu_tier1_color_batch, supports_stacked_direct_component_plane_batch,
         with_runtime_for_device, J2kClassicCleanupBatchJob, J2kClassicSegment,
-        J2kRepeatedGrayStoreParams, MetalRuntime, PreparedClassicSubBand, PreparedDirectColorPlan,
-        PreparedDirectGrayscaleStep,
+        J2kRepeatedGrayStoreParams, MetalRuntime, MetalSupportError, PreparedClassicSubBand,
+        PreparedDirectColorPlan, PreparedDirectGrayscaleStep,
     };
+    use metal::foreign_types::ForeignType;
     use metal::Device;
     use signinum_core::PixelFormat;
     use signinum_j2k_native::{
@@ -24225,7 +22976,7 @@ mod tests {
     #[test]
     fn runtime_initialization_error_classifies_null_queue_as_unavailable() {
         assert!(matches!(
-            runtime_initialization_error("Metal command queue is unavailable on this host"),
+            runtime_initialization_error(&MetalSupportError::CommandQueueUnavailable),
             crate::Error::MetalUnavailable
         ));
     }
@@ -24262,6 +23013,27 @@ mod tests {
             ),
             46
         );
+    }
+
+    #[test]
+    fn two_d_threads_per_group_clamps_empty_pipeline_limits() {
+        let threads = signinum_metal_support::two_d_threads_per_group(0, 0);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (1, 1, 1));
+    }
+
+    #[test]
+    fn one_d_threads_per_group_clamps_empty_pipeline_width() {
+        let threads = signinum_metal_support::one_d_threads_per_group(0);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (1, 1, 1));
+    }
+
+    #[test]
+    fn two_d_threads_per_group_preserves_simd_width_and_derives_height() {
+        let threads = signinum_metal_support::two_d_threads_per_group(32, 1024);
+
+        assert_eq!((threads.width, threads.height, threads.depth), (32, 32, 1));
     }
 
     #[test]
@@ -24429,17 +23201,16 @@ mod tests {
     }
 
     #[test]
-    fn with_runtime_for_device_reuses_cached_runtime_for_device() {
+    fn with_runtime_for_device_scopes_runtime_to_requested_device() {
         let Some(device) = Device::system_default() else {
             return;
         };
 
-        let first = with_runtime_for_device(&device, |runtime| Ok(std::ptr::from_ref(runtime)))
-            .expect("first Metal runtime");
-        let second = with_runtime_for_device(&device, |runtime| Ok(std::ptr::from_ref(runtime)))
-            .expect("second Metal runtime");
+        let runtime_device =
+            with_runtime_for_device(&device, |runtime| Ok(runtime.device.as_ptr() as usize))
+                .expect("Metal runtime");
 
-        assert_eq!(first, second);
+        assert_eq!(runtime_device, device.as_ptr() as usize);
     }
 
     #[test]

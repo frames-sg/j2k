@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use signinum_core::{BackendRequest, DeviceSubmission, Downscale, PixelFormat, Rect};
-use signinum_jpeg::adapter::{
-    JpegMetalFast420PacketV1, JpegMetalFast422PacketV1, JpegMetalFast444PacketV1,
-};
+use signinum_jpeg::adapter::{JpegFast420PacketV1, JpegFast422PacketV1, JpegFast444PacketV1};
 
 use crate::{session::SharedSession, Error, Surface};
 
@@ -56,9 +54,9 @@ pub(crate) struct QueuedRequest {
     pub(crate) fmt: PixelFormat,
     pub(crate) backend: BackendRequest,
     pub(crate) op: BatchOp,
-    pub(crate) fast444_packet: Option<Arc<JpegMetalFast444PacketV1>>,
-    pub(crate) fast422_packet: Option<Arc<JpegMetalFast422PacketV1>>,
-    pub(crate) fast420_packet: Option<Arc<JpegMetalFast420PacketV1>>,
+    pub(crate) fast444_packet: Option<Arc<JpegFast444PacketV1>>,
+    pub(crate) fast422_packet: Option<Arc<JpegFast422PacketV1>>,
+    pub(crate) fast420_packet: Option<Arc<JpegFast420PacketV1>>,
     pub(crate) output_slot: usize,
 }
 
@@ -69,9 +67,9 @@ impl QueuedRequest {
         fmt: PixelFormat,
         backend: BackendRequest,
         op: BatchOp,
-        fast444_packet: Option<JpegMetalFast444PacketV1>,
-        fast422_packet: Option<JpegMetalFast422PacketV1>,
-        fast420_packet: Option<JpegMetalFast420PacketV1>,
+        fast444_packet: Option<JpegFast444PacketV1>,
+        fast422_packet: Option<JpegFast422PacketV1>,
+        fast420_packet: Option<JpegFast420PacketV1>,
     ) -> Self {
         Self {
             input,
@@ -90,9 +88,9 @@ impl QueuedRequest {
         fmt: PixelFormat,
         backend: BackendRequest,
         op: BatchOp,
-        fast444_packet: Option<Arc<JpegMetalFast444PacketV1>>,
-        fast422_packet: Option<Arc<JpegMetalFast422PacketV1>>,
-        fast420_packet: Option<Arc<JpegMetalFast420PacketV1>>,
+        fast444_packet: Option<Arc<JpegFast444PacketV1>>,
+        fast422_packet: Option<Arc<JpegFast422PacketV1>>,
+        fast420_packet: Option<Arc<JpegFast420PacketV1>>,
     ) -> Self {
         Self {
             input,
@@ -147,7 +145,7 @@ impl DeviceSubmission for MetalSubmission {
     type Error = Error;
 
     fn wait(self) -> Result<Self::Output, Self::Error> {
-        let mut session = self.session.0.lock().expect("metal session");
+        let mut session = self.session.lock()?;
         flush_if_needed(&mut session);
         take_surface(&mut session, self.slot)
     }
@@ -161,7 +159,7 @@ pub(crate) fn flush_if_needed(session: &mut crate::session::SessionState) {
     let batches = group_compatible_requests(std::mem::take(&mut session.queued), session);
     for batch in batches {
         session.submissions = session.submissions.saturating_add(1);
-        match crate::decode_compatible_batch(&batch) {
+        match crate::decode_compatible_batch_with_session(&batch, session) {
             Ok(Some(results)) => {
                 for (request, result) in batch.into_iter().zip(results) {
                     session.completed[request.output_slot] = Some(result);
@@ -195,6 +193,10 @@ fn batched_decode_error(err: &Error) -> Error {
         Error::MetalUnavailable => Error::MetalUnavailable,
         Error::UnsupportedBackend { request } => Error::UnsupportedBackend { request: *request },
         Error::UnsupportedMetalRequest { reason } => Error::UnsupportedMetalRequest { reason },
+        Error::MetalRuntime { message } => Error::MetalRuntime {
+            message: message.clone(),
+        },
+        Error::MetalStatePoisoned { state } => Error::MetalStatePoisoned { state },
         _ => Error::MetalKernel {
             message: format!("batched JPEG Metal decode failed: {err}"),
         },

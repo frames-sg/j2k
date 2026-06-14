@@ -22,9 +22,8 @@ use signinum_j2k_native::{
     J2kPacketizationResolution, J2kPacketizationSubband, J2kSubBandType,
 };
 use signinum_j2k_native::{
-    EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, J2kEncodeDispatchReport, J2kEncodeStageAccelerator,
-    J2kForwardDwt53Job, J2kForwardDwt53Output, J2kForwardRctJob, J2kHtCodeBlockEncodeJob,
-    J2kHtj2kTileEncodeJob, J2kPacketizationEncodeJob, J2kTier1CodeBlockEncodeJob,
+    EncodedHtJ2kCodeBlock, J2kEncodeStageAccelerator, J2kHtj2kTileEncodeJob,
+    J2kPacketizationEncodeJob,
 };
 #[cfg(all(test, target_os = "macos"))]
 use std::cell::Cell;
@@ -39,7 +38,7 @@ use std::time::Instant;
 
 /// Encode-stage accelerator for JPEG 2000 Metal work.
 ///
-/// The type is wired into the native encoder hook interface and reports
+/// The type is wired into the public J2K encode-stage interface and reports
 /// dispatches for each required encode stage.
 #[derive(Debug, Clone)]
 pub struct MetalEncodeStageAccelerator {
@@ -217,9 +216,9 @@ fn metal_dispatch_option<T>(
     }
 }
 
-impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
-    fn dispatch_report(&self) -> J2kEncodeDispatchReport {
-        J2kEncodeDispatchReport {
+impl signinum_j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
+    fn dispatch_report(&self) -> signinum_j2k::J2kEncodeDispatchReport {
+        signinum_j2k::J2kEncodeDispatchReport {
             deinterleave: 0,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: 0,
@@ -238,7 +237,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_rct(
         &mut self,
-        job: J2kForwardRctJob<'_>,
+        job: signinum_j2k::J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if !self
@@ -267,8 +266,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_dwt53(
         &mut self,
-        job: J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<J2kForwardDwt53Output>, &'static str> {
+        job: signinum_j2k::J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -304,8 +303,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_block(
         &mut self,
-        job: J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedJ2kCodeBlock>, &'static str> {
+        job: signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -335,8 +334,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_blocks(
         &mut self,
-        jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedJ2kCodeBlock>>, &'static str> {
+        jobs: &[signinum_j2k::J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k::EncodedJ2kCodeBlock>>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -366,8 +365,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_block(
         &mut self,
-        job: J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<EncodedHtJ2kCodeBlock>, &'static str> {
+        job: signinum_j2k::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<signinum_j2k::EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -397,8 +396,8 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_blocks(
         &mut self,
-        jobs: &[J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<EncodedHtJ2kCodeBlock>>, &'static str> {
+        jobs: &[signinum_j2k::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<signinum_j2k::EncodedHtJ2kCodeBlock>>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -428,7 +427,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_htj2k_tile(
         &mut self,
-        job: J2kHtj2kTileEncodeJob<'_>,
+        job: signinum_j2k::J2kHtj2kTileEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         #[cfg(target_os = "macos")]
         {
@@ -436,11 +435,12 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 let _ = job;
                 return Ok(None);
             }
+            let native_job = job;
             self.auto_host_output_force_cpu_fallback = false;
-            let Some(options) = lossless_options_for_resident_htj2k_tile_job(job) else {
+            let Some(options) = lossless_options_for_resident_htj2k_tile_job(native_job) else {
                 return Ok(None);
             };
-            if !should_use_resident_htj2k_host_tile_for_auto(job) {
+            if !should_use_resident_htj2k_host_tile_for_auto(native_job) {
                 self.auto_host_output_force_cpu_fallback = true;
                 return Ok(None);
             }
@@ -509,7 +509,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_packetization(
         &mut self,
-        job: J2kPacketizationEncodeJob<'_>,
+        job: signinum_j2k::J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         self.auto_host_output_force_cpu_fallback = false;
@@ -522,8 +522,9 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(target_os = "macos")]
         {
+            let native_job = job;
             let encoded = metal_dispatch_option(
-                compute::encode_tier2_packetization(job),
+                compute::encode_tier2_packetization(native_job),
                 "Metal Tier-2 packetization encode kernel failed",
             )?;
             if encoded.is_some() {
@@ -656,6 +657,7 @@ impl MetalEncodedJ2k {
                 message: "J2K Metal codestream buffer is not CPU-readable".to_string(),
             });
         }
+        // SAFETY: Encoded Metal buffer views are bounds-checked before slice construction.
         Ok(unsafe { core::slice::from_raw_parts(ptr.add(self.byte_offset), self.byte_len) })
     }
 
@@ -675,7 +677,7 @@ impl MetalEncodedJ2k {
             EncodedJ2k {
                 codestream,
                 backend: BackendKind::Metal,
-                dispatch_report: J2kEncodeDispatchReport::default(),
+                dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
                 components: self.components,
@@ -1153,679 +1155,224 @@ pub struct MetalLosslessEncodeStageStats {
     pub code_block_count: usize,
 }
 
-impl MetalLosslessEncodeStageStats {
-    /// Return whether any non-zero timing was recorded.
-    pub fn has_timings(&self) -> bool {
-        self.plan_duration > Duration::ZERO
-            || self.prepare_submit_duration > Duration::ZERO
-            || self.coefficient_prep_duration > Duration::ZERO
-            || self.deinterleave_rct_duration > Duration::ZERO
-            || self.dwt53_duration > Duration::ZERO
-            || self.coefficient_extract_duration > Duration::ZERO
-            || self.ht_table_build_duration > Duration::ZERO
-            || self.ht_buffer_allocation_duration > Duration::ZERO
-            || self.ht_command_encode_duration > Duration::ZERO
-            || self.ht_block_encode_duration > Duration::ZERO
-            || self.classic_tier1_setup_duration > Duration::ZERO
-            || self.classic_block_encode_duration > Duration::ZERO
-            || self.classic_tier1_token_pack_duration > Duration::ZERO
-            || self.classic_packet_plan_duration > Duration::ZERO
-            || self.classic_packet_buffer_setup_duration > Duration::ZERO
-            || self.classic_command_buffer_commit_duration > Duration::ZERO
-            || self.result_harvest_duration > Duration::ZERO
-            || self.result_status_copy_duration > Duration::ZERO
-            || self.result_private_recycle_duration > Duration::ZERO
-            || self.result_shared_recycle_duration > Duration::ZERO
-            || self.result_codestream_collect_duration > Duration::ZERO
-            || self.packet_block_prep_duration > Duration::ZERO
-            || self.packetization_duration > Duration::ZERO
-            || self.codestream_assembly_duration > Duration::ZERO
-            || self.coefficient_prep_gpu_duration > Duration::ZERO
-            || self.coefficient_deinterleave_rct_gpu_duration > Duration::ZERO
-            || self.coefficient_dwt53_gpu_duration > Duration::ZERO
-            || self.coefficient_dwt53_vertical_gpu_duration > Duration::ZERO
-            || self.coefficient_dwt53_horizontal_gpu_duration > Duration::ZERO
-            || self.coefficient_extract_gpu_duration > Duration::ZERO
-            || self.coefficient_copy_gpu_duration > Duration::ZERO
-            || self.gpu_elapsed_wall_duration > Duration::ZERO
-            || self.classic_block_gpu_duration > Duration::ZERO
-            || self.classic_tier1_density_gpu_duration > Duration::ZERO
-            || self.classic_tier1_raw_pack_gpu_duration > Duration::ZERO
-            || self.classic_tier1_arithmetic_pack_gpu_duration > Duration::ZERO
-            || self.classic_tier1_symbol_plan_gpu_duration > Duration::ZERO
-            || self.classic_tier1_pass_plan_gpu_duration > Duration::ZERO
-            || self.classic_tier1_token_emit_gpu_duration > Duration::ZERO
-            || self.classic_tier1_split_token_emit_gpu_duration > Duration::ZERO
-            || self.classic_tier1_token_pack_gpu_duration > Duration::ZERO
-            || self.ht_block_gpu_duration > Duration::ZERO
-            || self.packet_block_prep_gpu_duration > Duration::ZERO
-            || self.packetization_gpu_duration > Duration::ZERO
-            || self.packet_payload_copy_gpu_duration > Duration::ZERO
-            || self.codestream_assembly_gpu_duration > Duration::ZERO
-            || self.codestream_payload_copy_gpu_duration > Duration::ZERO
-            || self.codestream_wait_duration > Duration::ZERO
-            || self.sync_wait_duration > Duration::ZERO
-            || self.host_readback_duration > Duration::ZERO
-    }
-
-    /// Accumulate another stage-stats value using saturating duration and counter additions.
-    pub fn add_assign(&mut self, other: Self) {
-        self.plan_duration = self.plan_duration.saturating_add(other.plan_duration);
-        self.prepare_submit_duration = self
-            .prepare_submit_duration
-            .saturating_add(other.prepare_submit_duration);
-        self.coefficient_prep_duration = self
-            .coefficient_prep_duration
-            .saturating_add(other.coefficient_prep_duration);
-        self.deinterleave_rct_duration = self
-            .deinterleave_rct_duration
-            .saturating_add(other.deinterleave_rct_duration);
-        self.dwt53_duration = self.dwt53_duration.saturating_add(other.dwt53_duration);
-        self.coefficient_extract_duration = self
-            .coefficient_extract_duration
-            .saturating_add(other.coefficient_extract_duration);
-        self.ht_table_build_duration = self
-            .ht_table_build_duration
-            .saturating_add(other.ht_table_build_duration);
-        self.ht_buffer_allocation_duration = self
-            .ht_buffer_allocation_duration
-            .saturating_add(other.ht_buffer_allocation_duration);
-        self.ht_command_encode_duration = self
-            .ht_command_encode_duration
-            .saturating_add(other.ht_command_encode_duration);
-        self.ht_block_encode_duration = self
-            .ht_block_encode_duration
-            .saturating_add(other.ht_block_encode_duration);
-        self.classic_tier1_setup_duration = self
-            .classic_tier1_setup_duration
-            .saturating_add(other.classic_tier1_setup_duration);
-        self.classic_block_encode_duration = self
-            .classic_block_encode_duration
-            .saturating_add(other.classic_block_encode_duration);
-        self.classic_tier1_token_pack_duration = self
-            .classic_tier1_token_pack_duration
-            .saturating_add(other.classic_tier1_token_pack_duration);
-        self.classic_packet_plan_duration = self
-            .classic_packet_plan_duration
-            .saturating_add(other.classic_packet_plan_duration);
-        self.classic_packet_buffer_setup_duration = self
-            .classic_packet_buffer_setup_duration
-            .saturating_add(other.classic_packet_buffer_setup_duration);
-        self.classic_command_buffer_commit_duration = self
-            .classic_command_buffer_commit_duration
-            .saturating_add(other.classic_command_buffer_commit_duration);
-        self.result_harvest_duration = self
-            .result_harvest_duration
-            .saturating_add(other.result_harvest_duration);
-        self.result_status_copy_duration = self
-            .result_status_copy_duration
-            .saturating_add(other.result_status_copy_duration);
-        self.result_private_recycle_duration = self
-            .result_private_recycle_duration
-            .saturating_add(other.result_private_recycle_duration);
-        self.result_shared_recycle_duration = self
-            .result_shared_recycle_duration
-            .saturating_add(other.result_shared_recycle_duration);
-        self.result_codestream_collect_duration = self
-            .result_codestream_collect_duration
-            .saturating_add(other.result_codestream_collect_duration);
-        self.packet_block_prep_duration = self
-            .packet_block_prep_duration
-            .saturating_add(other.packet_block_prep_duration);
-        self.packetization_duration = self
-            .packetization_duration
-            .saturating_add(other.packetization_duration);
-        self.codestream_assembly_duration = self
-            .codestream_assembly_duration
-            .saturating_add(other.codestream_assembly_duration);
-        self.coefficient_prep_gpu_duration = self
-            .coefficient_prep_gpu_duration
-            .saturating_add(other.coefficient_prep_gpu_duration);
-        self.coefficient_deinterleave_rct_gpu_duration = self
-            .coefficient_deinterleave_rct_gpu_duration
-            .saturating_add(other.coefficient_deinterleave_rct_gpu_duration);
-        self.coefficient_dwt53_gpu_duration = self
-            .coefficient_dwt53_gpu_duration
-            .saturating_add(other.coefficient_dwt53_gpu_duration);
-        self.coefficient_dwt53_vertical_gpu_duration = self
-            .coefficient_dwt53_vertical_gpu_duration
-            .saturating_add(other.coefficient_dwt53_vertical_gpu_duration);
-        self.coefficient_dwt53_horizontal_gpu_duration = self
-            .coefficient_dwt53_horizontal_gpu_duration
-            .saturating_add(other.coefficient_dwt53_horizontal_gpu_duration);
-        self.coefficient_extract_gpu_duration = self
-            .coefficient_extract_gpu_duration
-            .saturating_add(other.coefficient_extract_gpu_duration);
-        self.coefficient_copy_gpu_duration = self
-            .coefficient_copy_gpu_duration
-            .saturating_add(other.coefficient_copy_gpu_duration);
-        self.gpu_elapsed_wall_duration = self
-            .gpu_elapsed_wall_duration
-            .saturating_add(other.gpu_elapsed_wall_duration);
-        self.classic_block_gpu_duration = self
-            .classic_block_gpu_duration
-            .saturating_add(other.classic_block_gpu_duration);
-        self.classic_tier1_density_gpu_duration = self
-            .classic_tier1_density_gpu_duration
-            .saturating_add(other.classic_tier1_density_gpu_duration);
-        self.classic_tier1_raw_pack_gpu_duration = self
-            .classic_tier1_raw_pack_gpu_duration
-            .saturating_add(other.classic_tier1_raw_pack_gpu_duration);
-        self.classic_tier1_arithmetic_pack_gpu_duration = self
-            .classic_tier1_arithmetic_pack_gpu_duration
-            .saturating_add(other.classic_tier1_arithmetic_pack_gpu_duration);
-        self.classic_tier1_symbol_plan_gpu_duration = self
-            .classic_tier1_symbol_plan_gpu_duration
-            .saturating_add(other.classic_tier1_symbol_plan_gpu_duration);
-        self.classic_tier1_pass_plan_gpu_duration = self
-            .classic_tier1_pass_plan_gpu_duration
-            .saturating_add(other.classic_tier1_pass_plan_gpu_duration);
-        self.classic_tier1_token_emit_gpu_duration = self
-            .classic_tier1_token_emit_gpu_duration
-            .saturating_add(other.classic_tier1_token_emit_gpu_duration);
-        self.classic_tier1_split_token_emit_gpu_duration = self
-            .classic_tier1_split_token_emit_gpu_duration
-            .saturating_add(other.classic_tier1_split_token_emit_gpu_duration);
-        self.classic_tier1_token_pack_gpu_duration = self
-            .classic_tier1_token_pack_gpu_duration
-            .saturating_add(other.classic_tier1_token_pack_gpu_duration);
-        self.ht_block_gpu_duration = self
-            .ht_block_gpu_duration
-            .saturating_add(other.ht_block_gpu_duration);
-        self.packet_block_prep_gpu_duration = self
-            .packet_block_prep_gpu_duration
-            .saturating_add(other.packet_block_prep_gpu_duration);
-        self.packetization_gpu_duration = self
-            .packetization_gpu_duration
-            .saturating_add(other.packetization_gpu_duration);
-        self.packet_payload_copy_gpu_duration = self
-            .packet_payload_copy_gpu_duration
-            .saturating_add(other.packet_payload_copy_gpu_duration);
-        self.codestream_assembly_gpu_duration = self
-            .codestream_assembly_gpu_duration
-            .saturating_add(other.codestream_assembly_gpu_duration);
-        self.codestream_payload_copy_gpu_duration = self
-            .codestream_payload_copy_gpu_duration
-            .saturating_add(other.codestream_payload_copy_gpu_duration);
-        self.tier1_output_capacity_total = self
-            .tier1_output_capacity_total
-            .saturating_add(other.tier1_output_capacity_total);
-        self.max_tier1_output_capacity = self
-            .max_tier1_output_capacity
-            .max(other.max_tier1_output_capacity);
-        self.tier1_output_used_bytes_total = self
-            .tier1_output_used_bytes_total
-            .saturating_add(other.tier1_output_used_bytes_total);
-        self.max_tier1_output_used_bytes = self
-            .max_tier1_output_used_bytes
-            .max(other.max_tier1_output_used_bytes);
-        self.tier1_segment_capacity_total = self
-            .tier1_segment_capacity_total
-            .saturating_add(other.tier1_segment_capacity_total);
-        self.max_tier1_segment_capacity_per_block = self
-            .max_tier1_segment_capacity_per_block
-            .max(other.max_tier1_segment_capacity_per_block);
-        self.tier1_coding_pass_count_total = self
-            .tier1_coding_pass_count_total
-            .saturating_add(other.tier1_coding_pass_count_total);
-        self.max_tier1_coding_passes_per_block = self
-            .max_tier1_coding_passes_per_block
-            .max(other.max_tier1_coding_passes_per_block);
-        self.tier1_arithmetic_pass_count_total = self
-            .tier1_arithmetic_pass_count_total
-            .saturating_add(other.tier1_arithmetic_pass_count_total);
-        self.tier1_raw_pass_count_total = self
-            .tier1_raw_pass_count_total
-            .saturating_add(other.tier1_raw_pass_count_total);
-        self.tier1_cleanup_pass_count_total = self
-            .tier1_cleanup_pass_count_total
-            .saturating_add(other.tier1_cleanup_pass_count_total);
-        self.tier1_sigprop_pass_count_total = self
-            .tier1_sigprop_pass_count_total
-            .saturating_add(other.tier1_sigprop_pass_count_total);
-        self.tier1_magref_pass_count_total = self
-            .tier1_magref_pass_count_total
-            .saturating_add(other.tier1_magref_pass_count_total);
-        self.tier1_arithmetic_cleanup_pass_count_total = self
-            .tier1_arithmetic_cleanup_pass_count_total
-            .saturating_add(other.tier1_arithmetic_cleanup_pass_count_total);
-        self.tier1_arithmetic_sigprop_pass_count_total = self
-            .tier1_arithmetic_sigprop_pass_count_total
-            .saturating_add(other.tier1_arithmetic_sigprop_pass_count_total);
-        self.tier1_arithmetic_magref_pass_count_total = self
-            .tier1_arithmetic_magref_pass_count_total
-            .saturating_add(other.tier1_arithmetic_magref_pass_count_total);
-        self.tier1_raw_sigprop_pass_count_total = self
-            .tier1_raw_sigprop_pass_count_total
-            .saturating_add(other.tier1_raw_sigprop_pass_count_total);
-        self.tier1_raw_magref_pass_count_total = self
-            .tier1_raw_magref_pass_count_total
-            .saturating_add(other.tier1_raw_magref_pass_count_total);
-        self.tier1_full_scan_coeff_visit_count_total = self
-            .tier1_full_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_full_scan_coeff_visit_count_total);
-        self.tier1_arithmetic_scan_coeff_visit_count_total = self
-            .tier1_arithmetic_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_arithmetic_scan_coeff_visit_count_total);
-        self.tier1_raw_scan_coeff_visit_count_total = self
-            .tier1_raw_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_raw_scan_coeff_visit_count_total);
-        self.tier1_cleanup_scan_coeff_visit_count_total = self
-            .tier1_cleanup_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_cleanup_scan_coeff_visit_count_total);
-        self.tier1_sigprop_scan_coeff_visit_count_total = self
-            .tier1_sigprop_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_sigprop_scan_coeff_visit_count_total);
-        self.tier1_magref_scan_coeff_visit_count_total = self
-            .tier1_magref_scan_coeff_visit_count_total
-            .saturating_add(other.tier1_magref_scan_coeff_visit_count_total);
-        self.max_tier1_full_scan_coeff_visits_per_block = self
-            .max_tier1_full_scan_coeff_visits_per_block
-            .max(other.max_tier1_full_scan_coeff_visits_per_block);
-        self.tier1_sigprop_active_candidate_count_total = self
-            .tier1_sigprop_active_candidate_count_total
-            .saturating_add(other.tier1_sigprop_active_candidate_count_total);
-        self.tier1_sigprop_new_significant_count_total = self
-            .tier1_sigprop_new_significant_count_total
-            .saturating_add(other.tier1_sigprop_new_significant_count_total);
-        self.tier1_magref_active_candidate_count_total = self
-            .tier1_magref_active_candidate_count_total
-            .saturating_add(other.tier1_magref_active_candidate_count_total);
-        self.tier1_arithmetic_sigprop_active_candidate_count_total = self
-            .tier1_arithmetic_sigprop_active_candidate_count_total
-            .saturating_add(other.tier1_arithmetic_sigprop_active_candidate_count_total);
-        self.tier1_arithmetic_sigprop_new_significant_count_total = self
-            .tier1_arithmetic_sigprop_new_significant_count_total
-            .saturating_add(other.tier1_arithmetic_sigprop_new_significant_count_total);
-        self.tier1_raw_sigprop_active_candidate_count_total = self
-            .tier1_raw_sigprop_active_candidate_count_total
-            .saturating_add(other.tier1_raw_sigprop_active_candidate_count_total);
-        self.tier1_raw_sigprop_new_significant_count_total = self
-            .tier1_raw_sigprop_new_significant_count_total
-            .saturating_add(other.tier1_raw_sigprop_new_significant_count_total);
-        self.tier1_arithmetic_magref_active_candidate_count_total = self
-            .tier1_arithmetic_magref_active_candidate_count_total
-            .saturating_add(other.tier1_arithmetic_magref_active_candidate_count_total);
-        self.tier1_raw_magref_active_candidate_count_total = self
-            .tier1_raw_magref_active_candidate_count_total
-            .saturating_add(other.tier1_raw_magref_active_candidate_count_total);
-        self.tier1_cleanup_active_candidate_count_total = self
-            .tier1_cleanup_active_candidate_count_total
-            .saturating_add(other.tier1_cleanup_active_candidate_count_total);
-        self.tier1_cleanup_new_significant_count_total = self
-            .tier1_cleanup_new_significant_count_total
-            .saturating_add(other.tier1_cleanup_new_significant_count_total);
-        self.tier1_cleanup_rlc_stripe_count_total = self
-            .tier1_cleanup_rlc_stripe_count_total
-            .saturating_add(other.tier1_cleanup_rlc_stripe_count_total);
-        self.tier1_cleanup_rlc_zero_stripe_count_total = self
-            .tier1_cleanup_rlc_zero_stripe_count_total
-            .saturating_add(other.tier1_cleanup_rlc_zero_stripe_count_total);
-        self.tier1_symbol_plan_mq_symbol_count_total = self
-            .tier1_symbol_plan_mq_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_mq_symbol_count_total);
-        self.tier1_symbol_plan_raw_bit_count_total = self
-            .tier1_symbol_plan_raw_bit_count_total
-            .saturating_add(other.tier1_symbol_plan_raw_bit_count_total);
-        self.max_tier1_symbol_plan_mq_symbols_per_block = self
-            .max_tier1_symbol_plan_mq_symbols_per_block
-            .max(other.max_tier1_symbol_plan_mq_symbols_per_block);
-        self.max_tier1_symbol_plan_raw_bits_per_block = self
-            .max_tier1_symbol_plan_raw_bits_per_block
-            .max(other.max_tier1_symbol_plan_raw_bits_per_block);
-        self.tier1_symbol_plan_packed_token_bytes_total = self
-            .tier1_symbol_plan_packed_token_bytes_total
-            .saturating_add(other.tier1_symbol_plan_packed_token_bytes_total);
-        self.max_tier1_symbol_plan_packed_token_bytes_per_block = self
-            .max_tier1_symbol_plan_packed_token_bytes_per_block
-            .max(other.max_tier1_symbol_plan_packed_token_bytes_per_block);
-        self.tier1_symbol_plan_cleanup_mq_symbol_count_total = self
-            .tier1_symbol_plan_cleanup_mq_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_cleanup_mq_symbol_count_total);
-        self.tier1_symbol_plan_sigprop_mq_symbol_count_total = self
-            .tier1_symbol_plan_sigprop_mq_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_sigprop_mq_symbol_count_total);
-        self.tier1_symbol_plan_magref_mq_symbol_count_total = self
-            .tier1_symbol_plan_magref_mq_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_magref_mq_symbol_count_total);
-        self.tier1_symbol_plan_raw_sigprop_bit_count_total = self
-            .tier1_symbol_plan_raw_sigprop_bit_count_total
-            .saturating_add(other.tier1_symbol_plan_raw_sigprop_bit_count_total);
-        self.tier1_symbol_plan_raw_magref_bit_count_total = self
-            .tier1_symbol_plan_raw_magref_bit_count_total
-            .saturating_add(other.tier1_symbol_plan_raw_magref_bit_count_total);
-        self.tier1_symbol_plan_cleanup_sign_symbol_count_total = self
-            .tier1_symbol_plan_cleanup_sign_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_cleanup_sign_symbol_count_total);
-        self.tier1_symbol_plan_sigprop_sign_symbol_count_total = self
-            .tier1_symbol_plan_sigprop_sign_symbol_count_total
-            .saturating_add(other.tier1_symbol_plan_sigprop_sign_symbol_count_total);
-        self.tier1_symbol_plan_mq_symbol_hash_xor ^= other.tier1_symbol_plan_mq_symbol_hash_xor;
-        self.tier1_symbol_plan_raw_bit_hash_xor ^= other.tier1_symbol_plan_raw_bit_hash_xor;
-        self.tier1_pass_plan_mq_symbol_count_total = self
-            .tier1_pass_plan_mq_symbol_count_total
-            .saturating_add(other.tier1_pass_plan_mq_symbol_count_total);
-        self.tier1_pass_plan_raw_bit_count_total = self
-            .tier1_pass_plan_raw_bit_count_total
-            .saturating_add(other.tier1_pass_plan_raw_bit_count_total);
-        self.tier1_pass_plan_nonempty_mq_pass_count_total = self
-            .tier1_pass_plan_nonempty_mq_pass_count_total
-            .saturating_add(other.tier1_pass_plan_nonempty_mq_pass_count_total);
-        self.tier1_pass_plan_nonempty_raw_pass_count_total = self
-            .tier1_pass_plan_nonempty_raw_pass_count_total
-            .saturating_add(other.tier1_pass_plan_nonempty_raw_pass_count_total);
-        self.max_tier1_pass_plan_mq_symbols_per_pass = self
-            .max_tier1_pass_plan_mq_symbols_per_pass
-            .max(other.max_tier1_pass_plan_mq_symbols_per_pass);
-        self.max_tier1_pass_plan_raw_bits_per_pass = self
-            .max_tier1_pass_plan_raw_bits_per_pass
-            .max(other.max_tier1_pass_plan_raw_bits_per_pass);
-        self.tier1_token_emit_mq_symbol_count_total = self
-            .tier1_token_emit_mq_symbol_count_total
-            .saturating_add(other.tier1_token_emit_mq_symbol_count_total);
-        self.tier1_token_emit_raw_bit_count_total = self
-            .tier1_token_emit_raw_bit_count_total
-            .saturating_add(other.tier1_token_emit_raw_bit_count_total);
-        self.tier1_token_emit_token_bytes_total = self
-            .tier1_token_emit_token_bytes_total
-            .saturating_add(other.tier1_token_emit_token_bytes_total);
-        self.max_tier1_token_emit_token_bytes_per_block = self
-            .max_tier1_token_emit_token_bytes_per_block
-            .max(other.max_tier1_token_emit_token_bytes_per_block);
-        self.tier1_token_emit_segment_count_total = self
-            .tier1_token_emit_segment_count_total
-            .saturating_add(other.tier1_token_emit_segment_count_total);
-        self.max_tier1_token_emit_segments_per_block = self
-            .max_tier1_token_emit_segments_per_block
-            .max(other.max_tier1_token_emit_segments_per_block);
-        self.tier1_token_emit_mq_symbol_hash_xor ^= other.tier1_token_emit_mq_symbol_hash_xor;
-        self.tier1_token_emit_raw_bit_hash_xor ^= other.tier1_token_emit_raw_bit_hash_xor;
-        self.tier1_token_pack_output_bytes_total = self
-            .tier1_token_pack_output_bytes_total
-            .saturating_add(other.tier1_token_pack_output_bytes_total);
-        self.max_tier1_token_pack_output_bytes_per_block = self
-            .max_tier1_token_pack_output_bytes_per_block
-            .max(other.max_tier1_token_pack_output_bytes_per_block);
-        self.tier1_nonzero_block_count_total = self
-            .tier1_nonzero_block_count_total
-            .saturating_add(other.tier1_nonzero_block_count_total);
-        self.tier1_zero_block_count_total = self
-            .tier1_zero_block_count_total
-            .saturating_add(other.tier1_zero_block_count_total);
-        self.tier1_missing_bitplane_count_total = self
-            .tier1_missing_bitplane_count_total
-            .saturating_add(other.tier1_missing_bitplane_count_total);
-        self.max_tier1_missing_bitplanes_per_block = self
-            .max_tier1_missing_bitplanes_per_block
-            .max(other.max_tier1_missing_bitplanes_per_block);
-        self.tier1_segment_count_total = self
-            .tier1_segment_count_total
-            .saturating_add(other.tier1_segment_count_total);
-        self.max_tier1_segments_per_block = self
-            .max_tier1_segments_per_block
-            .max(other.max_tier1_segments_per_block);
-        self.packet_payload_copy_job_capacity_total = self
-            .packet_payload_copy_job_capacity_total
-            .saturating_add(other.packet_payload_copy_job_capacity_total);
-        self.max_packet_payload_copy_jobs_per_tile = self
-            .max_packet_payload_copy_jobs_per_tile
-            .max(other.max_packet_payload_copy_jobs_per_tile);
-        self.packet_payload_copy_job_count_total = self
-            .packet_payload_copy_job_count_total
-            .saturating_add(other.packet_payload_copy_job_count_total);
-        self.max_packet_payload_copy_jobs_used_per_tile = self
-            .max_packet_payload_copy_jobs_used_per_tile
-            .max(other.max_packet_payload_copy_jobs_used_per_tile);
-        self.packet_payload_copy_bytes_total = self
-            .packet_payload_copy_bytes_total
-            .saturating_add(other.packet_payload_copy_bytes_total);
-        self.max_packet_payload_copy_bytes_per_tile = self
-            .max_packet_payload_copy_bytes_per_tile
-            .max(other.max_packet_payload_copy_bytes_per_tile);
-        self.packet_payload_copy_small_job_count_total = self
-            .packet_payload_copy_small_job_count_total
-            .saturating_add(other.packet_payload_copy_small_job_count_total);
-        self.packet_payload_copy_medium_job_count_total = self
-            .packet_payload_copy_medium_job_count_total
-            .saturating_add(other.packet_payload_copy_medium_job_count_total);
-        self.packet_payload_copy_large_job_count_total = self
-            .packet_payload_copy_large_job_count_total
-            .saturating_add(other.packet_payload_copy_large_job_count_total);
-        self.packet_payload_copy_launched_stripe_count_total = self
-            .packet_payload_copy_launched_stripe_count_total
-            .saturating_add(other.packet_payload_copy_launched_stripe_count_total);
-        self.packet_payload_copy_active_stripe_count_total = self
-            .packet_payload_copy_active_stripe_count_total
-            .saturating_add(other.packet_payload_copy_active_stripe_count_total);
-        self.packet_output_capacity_total = self
-            .packet_output_capacity_total
-            .saturating_add(other.packet_output_capacity_total);
-        self.max_packet_output_capacity = self
-            .max_packet_output_capacity
-            .max(other.max_packet_output_capacity);
-        self.packet_output_used_bytes_total = self
-            .packet_output_used_bytes_total
-            .saturating_add(other.packet_output_used_bytes_total);
-        self.max_packet_output_used_bytes = self
-            .max_packet_output_used_bytes
-            .max(other.max_packet_output_used_bytes);
-        self.codestream_payload_copy_bytes_total = self
-            .codestream_payload_copy_bytes_total
-            .saturating_add(other.codestream_payload_copy_bytes_total);
-        self.codestream_payload_copy_launched_thread_count_total = self
-            .codestream_payload_copy_launched_thread_count_total
-            .saturating_add(other.codestream_payload_copy_launched_thread_count_total);
-        self.codestream_payload_copy_active_thread_count_total = self
-            .codestream_payload_copy_active_thread_count_total
-            .saturating_add(other.codestream_payload_copy_active_thread_count_total);
-        self.codestream_wait_duration = self
-            .codestream_wait_duration
-            .saturating_add(other.codestream_wait_duration);
-        self.sync_wait_duration = self
-            .sync_wait_duration
-            .saturating_add(other.sync_wait_duration);
-        self.host_readback_duration = self
-            .host_readback_duration
-            .saturating_add(other.host_readback_duration);
-        self.chunk_count = self.chunk_count.saturating_add(other.chunk_count);
-        self.tile_count = self.tile_count.saturating_add(other.tile_count);
-        self.code_block_count = self.code_block_count.saturating_add(other.code_block_count);
-    }
+/// Combine rule for one stage-stat field in
+/// [`MetalLosslessEncodeStageStats::add_assign`]: `dur` and `count` add with
+/// saturation, `max` keeps the per-batch maximum, `xor` folds hashes.
+macro_rules! stage_stat_combine {
+    (dur, $self:ident, $other:ident, $field:ident) => {
+        $self.$field = $self.$field.saturating_add($other.$field);
+    };
+    (count, $self:ident, $other:ident, $field:ident) => {
+        $self.$field = $self.$field.saturating_add($other.$field);
+    };
+    (max, $self:ident, $other:ident, $field:ident) => {
+        $self.$field = $self.$field.max($other.$field);
+    };
+    (xor, $self:ident, $other:ident, $field:ident) => {
+        $self.$field ^= $other.$field;
+    };
 }
 
-#[cfg(target_os = "macos")]
-impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStats {
-    fn from(stats: compute::J2kResidentEncodeStageStats) -> Self {
-        Self {
-            coefficient_prep_duration: stats.coefficient_prep_duration,
-            deinterleave_rct_duration: stats.deinterleave_rct_duration,
-            dwt53_duration: stats.dwt53_duration,
-            coefficient_extract_duration: stats.coefficient_extract_duration,
-            ht_table_build_duration: stats.ht_table_build_duration,
-            ht_buffer_allocation_duration: stats.ht_buffer_allocation_duration,
-            ht_command_encode_duration: stats.ht_command_encode_duration,
-            ht_block_encode_duration: stats.ht_block_encode_duration,
-            classic_tier1_setup_duration: stats.classic_tier1_setup_duration,
-            classic_block_encode_duration: stats.classic_block_encode_duration,
-            classic_tier1_token_pack_duration: stats.classic_tier1_token_pack_duration,
-            classic_packet_plan_duration: stats.classic_packet_plan_duration,
-            classic_packet_buffer_setup_duration: stats.classic_packet_buffer_setup_duration,
-            classic_command_buffer_commit_duration: stats.classic_command_buffer_commit_duration,
-            result_harvest_duration: stats.result_harvest_duration,
-            result_status_copy_duration: stats.result_status_copy_duration,
-            result_private_recycle_duration: stats.result_private_recycle_duration,
-            result_shared_recycle_duration: stats.result_shared_recycle_duration,
-            result_codestream_collect_duration: stats.result_codestream_collect_duration,
-            packet_block_prep_duration: stats.packet_block_prep_duration,
-            packetization_duration: stats.packetization_duration,
-            codestream_assembly_duration: stats.codestream_assembly_duration,
-            coefficient_prep_gpu_duration: stats.coefficient_prep_gpu_duration,
-            coefficient_deinterleave_rct_gpu_duration: stats
-                .coefficient_deinterleave_rct_gpu_duration,
-            coefficient_dwt53_gpu_duration: stats.coefficient_dwt53_gpu_duration,
-            coefficient_dwt53_vertical_gpu_duration: stats.coefficient_dwt53_vertical_gpu_duration,
-            coefficient_dwt53_horizontal_gpu_duration: stats
-                .coefficient_dwt53_horizontal_gpu_duration,
-            coefficient_extract_gpu_duration: stats.coefficient_extract_gpu_duration,
-            coefficient_copy_gpu_duration: stats.coefficient_copy_gpu_duration,
-            gpu_elapsed_wall_duration: stats.gpu_elapsed_wall_duration,
-            classic_block_gpu_duration: stats.classic_block_gpu_duration,
-            classic_tier1_density_gpu_duration: stats.classic_tier1_density_gpu_duration,
-            classic_tier1_raw_pack_gpu_duration: stats.classic_tier1_raw_pack_gpu_duration,
-            classic_tier1_arithmetic_pack_gpu_duration: stats
-                .classic_tier1_arithmetic_pack_gpu_duration,
-            classic_tier1_symbol_plan_gpu_duration: stats.classic_tier1_symbol_plan_gpu_duration,
-            classic_tier1_pass_plan_gpu_duration: stats.classic_tier1_pass_plan_gpu_duration,
-            classic_tier1_token_emit_gpu_duration: stats.classic_tier1_token_emit_gpu_duration,
-            classic_tier1_split_token_emit_gpu_duration: stats
-                .classic_tier1_split_token_emit_gpu_duration,
-            classic_tier1_token_pack_gpu_duration: stats.classic_tier1_token_pack_gpu_duration,
-            ht_block_gpu_duration: stats.ht_block_gpu_duration,
-            packet_block_prep_gpu_duration: stats.packet_block_prep_gpu_duration,
-            packetization_gpu_duration: stats.packetization_gpu_duration,
-            packet_payload_copy_gpu_duration: stats.packet_payload_copy_gpu_duration,
-            codestream_assembly_gpu_duration: stats.codestream_assembly_gpu_duration,
-            codestream_payload_copy_gpu_duration: stats.codestream_payload_copy_gpu_duration,
-            tier1_output_capacity_total: stats.tier1_output_capacity_total,
-            max_tier1_output_capacity: stats.max_tier1_output_capacity,
-            tier1_output_used_bytes_total: stats.tier1_output_used_bytes_total,
-            max_tier1_output_used_bytes: stats.max_tier1_output_used_bytes,
-            tier1_segment_capacity_total: stats.tier1_segment_capacity_total,
-            max_tier1_segment_capacity_per_block: stats.max_tier1_segment_capacity_per_block,
-            tier1_coding_pass_count_total: stats.tier1_coding_pass_count_total,
-            max_tier1_coding_passes_per_block: stats.max_tier1_coding_passes_per_block,
-            tier1_arithmetic_pass_count_total: stats.tier1_arithmetic_pass_count_total,
-            tier1_raw_pass_count_total: stats.tier1_raw_pass_count_total,
-            tier1_cleanup_pass_count_total: stats.tier1_cleanup_pass_count_total,
-            tier1_sigprop_pass_count_total: stats.tier1_sigprop_pass_count_total,
-            tier1_magref_pass_count_total: stats.tier1_magref_pass_count_total,
-            tier1_arithmetic_cleanup_pass_count_total: stats
-                .tier1_arithmetic_cleanup_pass_count_total,
-            tier1_arithmetic_sigprop_pass_count_total: stats
-                .tier1_arithmetic_sigprop_pass_count_total,
-            tier1_arithmetic_magref_pass_count_total: stats
-                .tier1_arithmetic_magref_pass_count_total,
-            tier1_raw_sigprop_pass_count_total: stats.tier1_raw_sigprop_pass_count_total,
-            tier1_raw_magref_pass_count_total: stats.tier1_raw_magref_pass_count_total,
-            tier1_full_scan_coeff_visit_count_total: stats.tier1_full_scan_coeff_visit_count_total,
-            tier1_arithmetic_scan_coeff_visit_count_total: stats
-                .tier1_arithmetic_scan_coeff_visit_count_total,
-            tier1_raw_scan_coeff_visit_count_total: stats.tier1_raw_scan_coeff_visit_count_total,
-            tier1_cleanup_scan_coeff_visit_count_total: stats
-                .tier1_cleanup_scan_coeff_visit_count_total,
-            tier1_sigprop_scan_coeff_visit_count_total: stats
-                .tier1_sigprop_scan_coeff_visit_count_total,
-            tier1_magref_scan_coeff_visit_count_total: stats
-                .tier1_magref_scan_coeff_visit_count_total,
-            max_tier1_full_scan_coeff_visits_per_block: stats
-                .max_tier1_full_scan_coeff_visits_per_block,
-            tier1_sigprop_active_candidate_count_total: stats
-                .tier1_sigprop_active_candidate_count_total,
-            tier1_sigprop_new_significant_count_total: stats
-                .tier1_sigprop_new_significant_count_total,
-            tier1_magref_active_candidate_count_total: stats
-                .tier1_magref_active_candidate_count_total,
-            tier1_arithmetic_sigprop_active_candidate_count_total: stats
-                .tier1_arithmetic_sigprop_active_candidate_count_total,
-            tier1_arithmetic_sigprop_new_significant_count_total: stats
-                .tier1_arithmetic_sigprop_new_significant_count_total,
-            tier1_raw_sigprop_active_candidate_count_total: stats
-                .tier1_raw_sigprop_active_candidate_count_total,
-            tier1_raw_sigprop_new_significant_count_total: stats
-                .tier1_raw_sigprop_new_significant_count_total,
-            tier1_arithmetic_magref_active_candidate_count_total: stats
-                .tier1_arithmetic_magref_active_candidate_count_total,
-            tier1_raw_magref_active_candidate_count_total: stats
-                .tier1_raw_magref_active_candidate_count_total,
-            tier1_cleanup_active_candidate_count_total: stats
-                .tier1_cleanup_active_candidate_count_total,
-            tier1_cleanup_new_significant_count_total: stats
-                .tier1_cleanup_new_significant_count_total,
-            tier1_cleanup_rlc_stripe_count_total: stats.tier1_cleanup_rlc_stripe_count_total,
-            tier1_cleanup_rlc_zero_stripe_count_total: stats
-                .tier1_cleanup_rlc_zero_stripe_count_total,
-            tier1_symbol_plan_mq_symbol_count_total: stats.tier1_symbol_plan_mq_symbol_count_total,
-            tier1_symbol_plan_raw_bit_count_total: stats.tier1_symbol_plan_raw_bit_count_total,
-            max_tier1_symbol_plan_mq_symbols_per_block: stats
-                .max_tier1_symbol_plan_mq_symbols_per_block,
-            max_tier1_symbol_plan_raw_bits_per_block: stats
-                .max_tier1_symbol_plan_raw_bits_per_block,
-            tier1_symbol_plan_packed_token_bytes_total: stats
-                .tier1_symbol_plan_packed_token_bytes_total,
-            max_tier1_symbol_plan_packed_token_bytes_per_block: stats
-                .max_tier1_symbol_plan_packed_token_bytes_per_block,
-            tier1_symbol_plan_cleanup_mq_symbol_count_total: stats
-                .tier1_symbol_plan_cleanup_mq_symbol_count_total,
-            tier1_symbol_plan_sigprop_mq_symbol_count_total: stats
-                .tier1_symbol_plan_sigprop_mq_symbol_count_total,
-            tier1_symbol_plan_magref_mq_symbol_count_total: stats
-                .tier1_symbol_plan_magref_mq_symbol_count_total,
-            tier1_symbol_plan_raw_sigprop_bit_count_total: stats
-                .tier1_symbol_plan_raw_sigprop_bit_count_total,
-            tier1_symbol_plan_raw_magref_bit_count_total: stats
-                .tier1_symbol_plan_raw_magref_bit_count_total,
-            tier1_symbol_plan_cleanup_sign_symbol_count_total: stats
-                .tier1_symbol_plan_cleanup_sign_symbol_count_total,
-            tier1_symbol_plan_sigprop_sign_symbol_count_total: stats
-                .tier1_symbol_plan_sigprop_sign_symbol_count_total,
-            tier1_symbol_plan_mq_symbol_hash_xor: stats.tier1_symbol_plan_mq_symbol_hash_xor,
-            tier1_symbol_plan_raw_bit_hash_xor: stats.tier1_symbol_plan_raw_bit_hash_xor,
-            tier1_pass_plan_mq_symbol_count_total: stats.tier1_pass_plan_mq_symbol_count_total,
-            tier1_pass_plan_raw_bit_count_total: stats.tier1_pass_plan_raw_bit_count_total,
-            tier1_pass_plan_nonempty_mq_pass_count_total: stats
-                .tier1_pass_plan_nonempty_mq_pass_count_total,
-            tier1_pass_plan_nonempty_raw_pass_count_total: stats
-                .tier1_pass_plan_nonempty_raw_pass_count_total,
-            max_tier1_pass_plan_mq_symbols_per_pass: stats.max_tier1_pass_plan_mq_symbols_per_pass,
-            max_tier1_pass_plan_raw_bits_per_pass: stats.max_tier1_pass_plan_raw_bits_per_pass,
-            tier1_token_emit_mq_symbol_count_total: stats.tier1_token_emit_mq_symbol_count_total,
-            tier1_token_emit_raw_bit_count_total: stats.tier1_token_emit_raw_bit_count_total,
-            tier1_token_emit_token_bytes_total: stats.tier1_token_emit_token_bytes_total,
-            max_tier1_token_emit_token_bytes_per_block: stats
-                .max_tier1_token_emit_token_bytes_per_block,
-            tier1_token_emit_segment_count_total: stats.tier1_token_emit_segment_count_total,
-            max_tier1_token_emit_segments_per_block: stats.max_tier1_token_emit_segments_per_block,
-            tier1_token_emit_mq_symbol_hash_xor: stats.tier1_token_emit_mq_symbol_hash_xor,
-            tier1_token_emit_raw_bit_hash_xor: stats.tier1_token_emit_raw_bit_hash_xor,
-            tier1_token_pack_output_bytes_total: stats.tier1_token_pack_output_bytes_total,
-            max_tier1_token_pack_output_bytes_per_block: stats
-                .max_tier1_token_pack_output_bytes_per_block,
-            tier1_nonzero_block_count_total: stats.tier1_nonzero_block_count_total,
-            tier1_zero_block_count_total: stats.tier1_zero_block_count_total,
-            tier1_missing_bitplane_count_total: stats.tier1_missing_bitplane_count_total,
-            max_tier1_missing_bitplanes_per_block: stats.max_tier1_missing_bitplanes_per_block,
-            tier1_segment_count_total: stats.tier1_segment_count_total,
-            max_tier1_segments_per_block: stats.max_tier1_segments_per_block,
-            packet_payload_copy_job_capacity_total: stats.packet_payload_copy_job_capacity_total,
-            max_packet_payload_copy_jobs_per_tile: stats.max_packet_payload_copy_jobs_per_tile,
-            packet_payload_copy_job_count_total: stats.packet_payload_copy_job_count_total,
-            max_packet_payload_copy_jobs_used_per_tile: stats
-                .max_packet_payload_copy_jobs_used_per_tile,
-            packet_payload_copy_bytes_total: stats.packet_payload_copy_bytes_total,
-            max_packet_payload_copy_bytes_per_tile: stats.max_packet_payload_copy_bytes_per_tile,
-            packet_payload_copy_small_job_count_total: stats
-                .packet_payload_copy_small_job_count_total,
-            packet_payload_copy_medium_job_count_total: stats
-                .packet_payload_copy_medium_job_count_total,
-            packet_payload_copy_large_job_count_total: stats
-                .packet_payload_copy_large_job_count_total,
-            packet_payload_copy_launched_stripe_count_total: stats
-                .packet_payload_copy_launched_stripe_count_total,
-            packet_payload_copy_active_stripe_count_total: stats
-                .packet_payload_copy_active_stripe_count_total,
-            packet_output_capacity_total: stats.packet_output_capacity_total,
-            max_packet_output_capacity: stats.max_packet_output_capacity,
-            packet_output_used_bytes_total: stats.packet_output_used_bytes_total,
-            max_packet_output_used_bytes: stats.max_packet_output_used_bytes,
-            codestream_payload_copy_bytes_total: stats.codestream_payload_copy_bytes_total,
-            codestream_payload_copy_launched_thread_count_total: stats
-                .codestream_payload_copy_launched_thread_count_total,
-            codestream_payload_copy_active_thread_count_total: stats
-                .codestream_payload_copy_active_thread_count_total,
-            code_block_count: stats.code_block_count,
-            ..Self::default()
+/// Contribution of one stage-stat field to
+/// [`MetalLosslessEncodeStageStats::has_timings`]: only `dur` fields count.
+macro_rules! stage_stat_timing_flag {
+    (dur, $any:ident, $self:ident, $field:ident) => {
+        $any = $any || $self.$field > Duration::ZERO;
+    };
+    ($class:ident, $any:ident, $self:ident, $field:ident) => {};
+}
+
+/// `From<compute::J2kResidentEncodeStageStats>` rule for one stage-stat
+/// field: `resident` fields copy from the compute-layer stats, `local`
+/// fields are facade-side only and keep their default.
+macro_rules! stage_stat_from_resident {
+    (resident, $out:ident, $stats:ident, $field:ident) => {
+        $out.$field = $stats.$field;
+    };
+    (local, $out:ident, $stats:ident, $field:ident) => {};
+}
+
+/// Generate the per-field `MetalLosslessEncodeStageStats` impls from the
+/// field table. The destructuring check at the end makes the table
+/// exhaustive: adding a struct field without a table entry fails to compile.
+macro_rules! j2k_metal_stage_stats_impls {
+    ($(($field:ident, $class:ident, $source:ident)),* $(,)?) => {
+        impl MetalLosslessEncodeStageStats {
+            /// Return whether any non-zero timing was recorded.
+            pub fn has_timings(&self) -> bool {
+                let mut any = false;
+                $(stage_stat_timing_flag!($class, any, self, $field);)*
+                any
+            }
+
+            /// Accumulate another stage-stats value using saturating duration and counter additions.
+            pub fn add_assign(&mut self, other: Self) {
+                $(stage_stat_combine!($class, self, other, $field);)*
+            }
         }
-    }
+
+        #[cfg(target_os = "macos")]
+        impl From<compute::J2kResidentEncodeStageStats> for MetalLosslessEncodeStageStats {
+            fn from(stats: compute::J2kResidentEncodeStageStats) -> Self {
+                let mut out = Self::default();
+                $(stage_stat_from_resident!($source, out, stats, $field);)*
+                out
+            }
+        }
+
+        const _: fn(MetalLosslessEncodeStageStats) = |stats| {
+            let MetalLosslessEncodeStageStats { $($field: _),* } = stats;
+        };
+    };
+}
+
+j2k_metal_stage_stats_impls! {
+    (plan_duration, dur, local),
+    (prepare_submit_duration, dur, local),
+    (coefficient_prep_duration, dur, resident),
+    (deinterleave_rct_duration, dur, resident),
+    (dwt53_duration, dur, resident),
+    (coefficient_extract_duration, dur, resident),
+    (ht_table_build_duration, dur, resident),
+    (ht_buffer_allocation_duration, dur, resident),
+    (ht_command_encode_duration, dur, resident),
+    (ht_block_encode_duration, dur, resident),
+    (classic_tier1_setup_duration, dur, resident),
+    (classic_block_encode_duration, dur, resident),
+    (classic_tier1_token_pack_duration, dur, resident),
+    (classic_packet_plan_duration, dur, resident),
+    (classic_packet_buffer_setup_duration, dur, resident),
+    (classic_command_buffer_commit_duration, dur, resident),
+    (result_harvest_duration, dur, resident),
+    (result_status_copy_duration, dur, resident),
+    (result_private_recycle_duration, dur, resident),
+    (result_shared_recycle_duration, dur, resident),
+    (result_codestream_collect_duration, dur, resident),
+    (packet_block_prep_duration, dur, resident),
+    (packetization_duration, dur, resident),
+    (codestream_assembly_duration, dur, resident),
+    (coefficient_prep_gpu_duration, dur, resident),
+    (coefficient_deinterleave_rct_gpu_duration, dur, resident),
+    (coefficient_dwt53_gpu_duration, dur, resident),
+    (coefficient_dwt53_vertical_gpu_duration, dur, resident),
+    (coefficient_dwt53_horizontal_gpu_duration, dur, resident),
+    (coefficient_extract_gpu_duration, dur, resident),
+    (coefficient_copy_gpu_duration, dur, resident),
+    (gpu_elapsed_wall_duration, dur, resident),
+    (classic_block_gpu_duration, dur, resident),
+    (classic_tier1_density_gpu_duration, dur, resident),
+    (classic_tier1_raw_pack_gpu_duration, dur, resident),
+    (classic_tier1_arithmetic_pack_gpu_duration, dur, resident),
+    (classic_tier1_symbol_plan_gpu_duration, dur, resident),
+    (classic_tier1_pass_plan_gpu_duration, dur, resident),
+    (classic_tier1_token_emit_gpu_duration, dur, resident),
+    (classic_tier1_split_token_emit_gpu_duration, dur, resident),
+    (classic_tier1_token_pack_gpu_duration, dur, resident),
+    (ht_block_gpu_duration, dur, resident),
+    (packet_block_prep_gpu_duration, dur, resident),
+    (packetization_gpu_duration, dur, resident),
+    (packet_payload_copy_gpu_duration, dur, resident),
+    (codestream_assembly_gpu_duration, dur, resident),
+    (codestream_payload_copy_gpu_duration, dur, resident),
+    (tier1_output_capacity_total, count, resident),
+    (max_tier1_output_capacity, max, resident),
+    (tier1_output_used_bytes_total, count, resident),
+    (max_tier1_output_used_bytes, max, resident),
+    (tier1_segment_capacity_total, count, resident),
+    (max_tier1_segment_capacity_per_block, max, resident),
+    (tier1_coding_pass_count_total, count, resident),
+    (max_tier1_coding_passes_per_block, max, resident),
+    (tier1_arithmetic_pass_count_total, count, resident),
+    (tier1_raw_pass_count_total, count, resident),
+    (tier1_cleanup_pass_count_total, count, resident),
+    (tier1_sigprop_pass_count_total, count, resident),
+    (tier1_magref_pass_count_total, count, resident),
+    (tier1_arithmetic_cleanup_pass_count_total, count, resident),
+    (tier1_arithmetic_sigprop_pass_count_total, count, resident),
+    (tier1_arithmetic_magref_pass_count_total, count, resident),
+    (tier1_raw_sigprop_pass_count_total, count, resident),
+    (tier1_raw_magref_pass_count_total, count, resident),
+    (tier1_full_scan_coeff_visit_count_total, count, resident),
+    (tier1_arithmetic_scan_coeff_visit_count_total, count, resident),
+    (tier1_raw_scan_coeff_visit_count_total, count, resident),
+    (tier1_cleanup_scan_coeff_visit_count_total, count, resident),
+    (tier1_sigprop_scan_coeff_visit_count_total, count, resident),
+    (tier1_magref_scan_coeff_visit_count_total, count, resident),
+    (max_tier1_full_scan_coeff_visits_per_block, max, resident),
+    (tier1_sigprop_active_candidate_count_total, count, resident),
+    (tier1_sigprop_new_significant_count_total, count, resident),
+    (tier1_magref_active_candidate_count_total, count, resident),
+    (tier1_arithmetic_sigprop_active_candidate_count_total, count, resident),
+    (tier1_arithmetic_sigprop_new_significant_count_total, count, resident),
+    (tier1_raw_sigprop_active_candidate_count_total, count, resident),
+    (tier1_raw_sigprop_new_significant_count_total, count, resident),
+    (tier1_arithmetic_magref_active_candidate_count_total, count, resident),
+    (tier1_raw_magref_active_candidate_count_total, count, resident),
+    (tier1_cleanup_active_candidate_count_total, count, resident),
+    (tier1_cleanup_new_significant_count_total, count, resident),
+    (tier1_cleanup_rlc_stripe_count_total, count, resident),
+    (tier1_cleanup_rlc_zero_stripe_count_total, count, resident),
+    (tier1_symbol_plan_mq_symbol_count_total, count, resident),
+    (tier1_symbol_plan_raw_bit_count_total, count, resident),
+    (max_tier1_symbol_plan_mq_symbols_per_block, max, resident),
+    (max_tier1_symbol_plan_raw_bits_per_block, max, resident),
+    (tier1_symbol_plan_packed_token_bytes_total, count, resident),
+    (max_tier1_symbol_plan_packed_token_bytes_per_block, max, resident),
+    (tier1_symbol_plan_cleanup_mq_symbol_count_total, count, resident),
+    (tier1_symbol_plan_sigprop_mq_symbol_count_total, count, resident),
+    (tier1_symbol_plan_magref_mq_symbol_count_total, count, resident),
+    (tier1_symbol_plan_raw_sigprop_bit_count_total, count, resident),
+    (tier1_symbol_plan_raw_magref_bit_count_total, count, resident),
+    (tier1_symbol_plan_cleanup_sign_symbol_count_total, count, resident),
+    (tier1_symbol_plan_sigprop_sign_symbol_count_total, count, resident),
+    (tier1_symbol_plan_mq_symbol_hash_xor, xor, resident),
+    (tier1_symbol_plan_raw_bit_hash_xor, xor, resident),
+    (tier1_pass_plan_mq_symbol_count_total, count, resident),
+    (tier1_pass_plan_raw_bit_count_total, count, resident),
+    (tier1_pass_plan_nonempty_mq_pass_count_total, count, resident),
+    (tier1_pass_plan_nonempty_raw_pass_count_total, count, resident),
+    (max_tier1_pass_plan_mq_symbols_per_pass, max, resident),
+    (max_tier1_pass_plan_raw_bits_per_pass, max, resident),
+    (tier1_token_emit_mq_symbol_count_total, count, resident),
+    (tier1_token_emit_raw_bit_count_total, count, resident),
+    (tier1_token_emit_token_bytes_total, count, resident),
+    (max_tier1_token_emit_token_bytes_per_block, max, resident),
+    (tier1_token_emit_segment_count_total, count, resident),
+    (max_tier1_token_emit_segments_per_block, max, resident),
+    (tier1_token_emit_mq_symbol_hash_xor, xor, resident),
+    (tier1_token_emit_raw_bit_hash_xor, xor, resident),
+    (tier1_token_pack_output_bytes_total, count, resident),
+    (max_tier1_token_pack_output_bytes_per_block, max, resident),
+    (tier1_nonzero_block_count_total, count, resident),
+    (tier1_zero_block_count_total, count, resident),
+    (tier1_missing_bitplane_count_total, count, resident),
+    (max_tier1_missing_bitplanes_per_block, max, resident),
+    (tier1_segment_count_total, count, resident),
+    (max_tier1_segments_per_block, max, resident),
+    (packet_payload_copy_job_capacity_total, count, resident),
+    (max_packet_payload_copy_jobs_per_tile, max, resident),
+    (packet_payload_copy_job_count_total, count, resident),
+    (max_packet_payload_copy_jobs_used_per_tile, max, resident),
+    (packet_payload_copy_bytes_total, count, resident),
+    (max_packet_payload_copy_bytes_per_tile, max, resident),
+    (packet_payload_copy_small_job_count_total, count, resident),
+    (packet_payload_copy_medium_job_count_total, count, resident),
+    (packet_payload_copy_large_job_count_total, count, resident),
+    (packet_payload_copy_launched_stripe_count_total, count, resident),
+    (packet_payload_copy_active_stripe_count_total, count, resident),
+    (packet_output_capacity_total, count, resident),
+    (max_packet_output_capacity, max, resident),
+    (packet_output_used_bytes_total, count, resident),
+    (max_packet_output_used_bytes, max, resident),
+    (codestream_payload_copy_bytes_total, count, resident),
+    (codestream_payload_copy_launched_thread_count_total, count, resident),
+    (codestream_payload_copy_active_thread_count_total, count, resident),
+    (codestream_wait_duration, dur, local),
+    (sync_wait_duration, dur, local),
+    (host_readback_duration, dur, local),
+    (chunk_count, count, local),
+    (tile_count, count, local),
+    (code_block_count, count, resident),
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1879,12 +1426,6 @@ pub struct MetalLosslessBufferEncodeBatchOutcome {
     pub outcomes: Vec<MetalLosslessBufferEncodeOutcome>,
     /// Batch-level resident encode metrics.
     pub stats: MetalLosslessEncodeBatchStats,
-}
-
-#[cfg(target_os = "macos")]
-/// Submitted single-tile Metal encode that resolves to host codestream bytes.
-pub struct SubmittedJ2kLosslessMetalEncode {
-    inner: SubmittedJ2kLosslessMetalEncodeBatch,
 }
 
 #[cfg(target_os = "macos")]
@@ -1964,12 +1505,6 @@ impl OwnedMetalLosslessEncodeTile {
 }
 
 #[cfg(not(target_os = "macos"))]
-/// Placeholder submitted single-tile encode for non-macOS builds.
-pub struct SubmittedJ2kLosslessMetalEncode {
-    _private: (),
-}
-
-#[cfg(not(target_os = "macos"))]
 /// Placeholder submitted multi-tile encode for non-macOS builds.
 pub struct SubmittedJ2kLosslessMetalEncodeBatch {
     _private: (),
@@ -1979,23 +1514,6 @@ pub struct SubmittedJ2kLosslessMetalEncodeBatch {
 /// Placeholder submitted Metal-buffer encode for non-macOS builds.
 pub struct SubmittedJ2kLosslessMetalBufferEncodeBatch {
     _private: (),
-}
-
-#[cfg(target_os = "macos")]
-impl DeviceSubmission for SubmittedJ2kLosslessMetalEncode {
-    type Output = EncodedJ2k;
-    type Error = crate::Error;
-
-    fn wait(self) -> Result<Self::Output, Self::Error> {
-        let mut encoded = self.inner.wait()?;
-        if encoded.len() != 1 {
-            return Err(crate::Error::MetalKernel {
-                message: "submitted J2K Metal single encode produced an unexpected batch length"
-                    .to_string(),
-            });
-        }
-        Ok(encoded.remove(0))
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2048,17 +1566,6 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl DeviceSubmission for SubmittedJ2kLosslessMetalEncode {
-    type Output = EncodedJ2k;
-    type Error = crate::Error;
-
-    fn wait(self) -> Result<Self::Output, Self::Error> {
-        let _ = self;
-        Err(crate::Error::MetalUnavailable)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
 impl DeviceSubmission for SubmittedJ2kLosslessMetalEncodeBatch {
     type Output = Vec<EncodedJ2k>;
     type Error = crate::Error;
@@ -2080,372 +1587,68 @@ impl DeviceSubmission for SubmittedJ2kLosslessMetalBufferEncodeBatch {
     }
 }
 
-#[cfg(target_os = "macos")]
-/// Encode one Metal-resident tile into host codestream bytes.
-pub fn encode_lossless_from_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<EncodedJ2k, crate::Error> {
-    submit_lossless_from_metal_buffer(tile, options, session)?.wait()
+/// Batched lossless encode request over Metal-resident tiles.
+///
+/// Collapses the former per-permutation entry points: pick the input
+/// staging mode and batch tuning here, then submit through
+/// [`submit_lossless_batch`], [`submit_lossless_batch_to_metal`], or
+/// [`encode_lossless_batch_with_report`].
+#[derive(Clone, Copy)]
+pub struct MetalLosslessEncodeBatchRequest<'a, 'b> {
+    /// Metal-resident tiles to encode.
+    pub tiles: &'a [MetalLosslessEncodeTile<'b>],
+    /// How tile samples reach the encoder's padded staging layout.
+    pub staging: MetalEncodeInputStaging,
+    /// Batch tuning knobs (inflight tiles, memory budget).
+    pub config: MetalLosslessEncodeConfig,
 }
 
 #[cfg(target_os = "macos")]
-/// Encode one Metal-resident tile into a Metal-backed codestream buffer.
-pub fn encode_lossless_from_metal_buffer_to_metal(
-    tile: MetalLosslessEncodeTile<'_>,
+/// Submit a lossless tile batch that resolves to host codestream bytes.
+pub fn submit_lossless_batch(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
-) -> Result<MetalEncodedJ2k, crate::Error> {
-    Ok(encode_lossless_from_metal_buffer_to_metal_with_report(tile, options, session)?.encoded)
-}
-
-#[cfg(target_os = "macos")]
-/// Submit one Metal-resident tile encode for later host-byte collection.
-pub fn submit_lossless_from_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncode, crate::Error> {
-    let inner = submit_lossless_from_metal_buffers(&[tile], options, session)?;
-    Ok(SubmittedJ2kLosslessMetalEncode { inner })
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one Metal-resident tile and return a host-byte timing report.
-pub fn encode_lossless_from_metal_buffer_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(*options);
-    encode_lossless_tile_with_report(
-        tile,
-        *options,
-        session,
-        MetalEncodeInputStaging::CopyAndPad,
-        &mut accelerator,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one Metal-resident tile into a Metal buffer with timing data.
-pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
-    let mut outcomes =
-        encode_lossless_from_metal_buffers_to_metal_with_report(&[tile], options, session)?;
-    if outcomes.len() != 1 {
-        return Err(crate::Error::MetalKernel {
-            message: "J2K Metal single buffer encode produced an unexpected batch length"
-                .to_string(),
-        });
-    }
-    Ok(outcomes.remove(0))
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one already padded Metal-resident tile into host codestream bytes.
-pub fn encode_lossless_from_padded_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<EncodedJ2k, crate::Error> {
-    submit_lossless_from_padded_metal_buffer(tile, options, session)?.wait()
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one already padded Metal-resident tile into a Metal-backed codestream.
-pub fn encode_lossless_from_padded_metal_buffer_to_metal(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalEncodedJ2k, crate::Error> {
-    Ok(
-        encode_lossless_from_padded_metal_buffer_to_metal_with_report(tile, options, session)?
-            .encoded,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Submit one already padded Metal-resident tile encode for host-byte collection.
-pub fn submit_lossless_from_padded_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncode, crate::Error> {
-    let inner = submit_lossless_from_padded_metal_buffers(&[tile], options, session)?;
-    Ok(SubmittedJ2kLosslessMetalEncode { inner })
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one already padded tile and return a host-byte timing report.
-pub fn encode_lossless_from_padded_metal_buffer_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(*options);
-    encode_lossless_tile_with_report(
-        tile,
-        *options,
-        session,
-        MetalEncodeInputStaging::AlreadyPaddedContiguous,
-        &mut accelerator,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode one already padded tile into a Metal buffer with timing data.
-pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
-    let mut outcomes =
-        encode_lossless_from_padded_metal_buffers_to_metal_with_report(&[tile], options, session)?;
-    if outcomes.len() != 1 {
-        return Err(crate::Error::MetalKernel {
-            message: "J2K Metal single buffer encode produced an unexpected batch length"
-                .to_string(),
-        });
-    }
-    Ok(outcomes.remove(0))
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple Metal-resident tiles into host codestream bytes.
-pub fn encode_lossless_from_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<EncodedJ2k>, crate::Error> {
-    submit_lossless_from_metal_buffers(tiles, options, session)?.wait()
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple Metal-resident tiles into Metal-backed codestream buffers.
-pub fn encode_lossless_from_metal_buffers_to_metal(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalEncodedJ2k>, crate::Error> {
-    Ok(
-        encode_lossless_from_metal_buffers_to_metal_with_report(tiles, options, session)?
-            .into_iter()
-            .map(|outcome| outcome.encoded)
-            .collect(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Submit multiple Metal-resident tile encodes for later host-byte collection.
-pub fn submit_lossless_from_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    submit_lossless_from_metal_buffers_with_config(
-        tiles,
-        options,
-        session,
-        MetalLosslessEncodeConfig::default(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Submit multiple Metal-resident tile encodes with explicit batch tuning.
-pub fn submit_lossless_from_metal_buffers_with_config(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
 ) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
     submit_lossless_tiles(
-        tiles,
+        request.tiles,
         *options,
         session,
-        MetalEncodeInputStaging::CopyAndPad,
-        config,
+        request.staging,
+        request.config,
     )
 }
 
 #[cfg(target_os = "macos")]
-/// Encode multiple Metal-resident tiles and return host-byte timing reports.
-pub fn encode_lossless_from_metal_buffers_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
+/// Submit a lossless tile batch that resolves to Metal-backed codestreams.
+pub fn submit_lossless_batch_to_metal(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    submit_lossless_tiles_to_metal_buffer_batch(
+        request.tiles,
+        *options,
+        session,
+        request.staging,
+        request.config,
+    )
+}
+
+#[cfg(target_os = "macos")]
+/// Encode a lossless tile batch and return host-byte timing reports.
+pub fn encode_lossless_batch_with_report(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
     encode_lossless_tiles_with_report(
-        tiles,
+        request.tiles,
         *options,
         session,
-        MetalEncodeInputStaging::CopyAndPad,
+        request.staging,
+        request.config,
     )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple Metal-resident tiles into Metal buffers with timing data.
-pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
-    Ok(encode_lossless_from_metal_buffers_to_metal_batch(
-        tiles,
-        options,
-        session,
-        MetalLosslessEncodeConfig::default(),
-    )?
-    .outcomes)
-}
-
-#[cfg(target_os = "macos")]
-/// Submit multiple tile encodes that resolve to Metal-backed codestream buffers.
-pub fn submit_lossless_from_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
-    submit_lossless_tiles_to_metal_buffer_batch(
-        tiles,
-        *options,
-        session,
-        MetalEncodeInputStaging::CopyAndPad,
-        config,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple tiles into Metal-backed codestream buffers with batch stats.
-pub fn encode_lossless_from_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    submit_lossless_from_metal_buffers_to_metal_batch(tiles, options, session, config)?.wait()
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple already padded Metal-resident tiles into host codestream bytes.
-pub fn encode_lossless_from_padded_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<EncodedJ2k>, crate::Error> {
-    submit_lossless_from_padded_metal_buffers(tiles, options, session)?.wait()
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple already padded tiles into Metal-backed codestream buffers.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalEncodedJ2k>, crate::Error> {
-    Ok(
-        encode_lossless_from_padded_metal_buffers_to_metal_with_report(tiles, options, session)?
-            .into_iter()
-            .map(|outcome| outcome.encoded)
-            .collect(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Submit already padded tile encodes for later host-byte collection.
-pub fn submit_lossless_from_padded_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    submit_lossless_from_padded_metal_buffers_with_config(
-        tiles,
-        options,
-        session,
-        MetalLosslessEncodeConfig::default(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Submit already padded tile encodes with explicit batch tuning.
-pub fn submit_lossless_from_padded_metal_buffers_with_config(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    submit_lossless_tiles(
-        tiles,
-        *options,
-        session,
-        MetalEncodeInputStaging::AlreadyPaddedContiguous,
-        config,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple already padded tiles and return host-byte timing reports.
-pub fn encode_lossless_from_padded_metal_buffers_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    encode_lossless_tiles_with_report(
-        tiles,
-        *options,
-        session,
-        MetalEncodeInputStaging::AlreadyPaddedContiguous,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode multiple already padded tiles into Metal buffers with timing data.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
-    Ok(encode_lossless_from_padded_metal_buffers_to_metal_batch(
-        tiles,
-        options,
-        session,
-        MetalLosslessEncodeConfig::default(),
-    )?
-    .outcomes)
-}
-
-#[cfg(target_os = "macos")]
-/// Submit already padded tile encodes that resolve to Metal-backed codestreams.
-pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
-    submit_lossless_tiles_to_metal_buffer_batch(
-        tiles,
-        *options,
-        session,
-        MetalEncodeInputStaging::AlreadyPaddedContiguous,
-        config,
-    )
-}
-
-#[cfg(target_os = "macos")]
-/// Encode already padded tiles into Metal-backed codestreams with batch stats.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    submit_lossless_from_padded_metal_buffers_to_metal_batch(tiles, options, session, config)?
-        .wait()
 }
 
 #[cfg(target_os = "macos")]
@@ -2472,14 +1675,11 @@ fn encode_lossless_tiles_with_report(
     options: J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
     staging: MetalEncodeInputStaging,
+    config: MetalLosslessEncodeConfig,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
     if should_try_resident_lossless_host_encode(options) {
         let batch = try_encode_resident_lossless_tiles_to_metal_buffer_batch(
-            tiles,
-            options,
-            session,
-            staging,
-            MetalLosslessEncodeConfig::default(),
+            tiles, options, session, staging, config,
         )?;
         if let Some(outcomes) = batch {
             return outcomes
@@ -2771,6 +1971,7 @@ fn host_memory_bytes() -> Option<usize> {
     let mut value = 0u64;
     let mut len = core::mem::size_of::<u64>();
     let name = b"hw.memsize\0";
+    // SAFETY: Encoded Metal buffer views are bounds-checked before slice construction.
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr().cast(),
@@ -3348,10 +2549,12 @@ fn lossless_device_encode_plan(
     }))
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy)]
-enum MetalEncodeInputStaging {
+/// How tile samples reach the encoder's padded staging layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetalEncodeInputStaging {
+    /// Copy the tile into freshly padded staging storage.
     CopyAndPad,
+    /// The tile is already padded and contiguous; encode it in place.
     AlreadyPaddedContiguous,
 }
 
@@ -4462,11 +3665,11 @@ struct PreparedResidentLosslessBatchItem {
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_planned_resident_ht_lossless_tiles_batch(
+fn prepare_planned_resident_lossless_tiles_batch(
     planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
 ) -> Result<Vec<PreparedResidentLosslessBatchItem>, crate::Error> {
-    struct HtBatchPlanInfo {
+    struct BatchPlanInfo {
         index: usize,
         coefficient_count: usize,
         bytes_per_sample: u8,
@@ -4487,7 +3690,7 @@ fn prepare_planned_resident_ht_lossless_tiles_batch(
             });
         }
 
-        plan_infos.push(HtBatchPlanInfo {
+        plan_infos.push(BatchPlanInfo {
             index: planned.index,
             coefficient_count: planned.coefficient_count,
             bytes_per_sample: planned.bytes_per_sample,
@@ -4533,13 +3736,11 @@ fn prepare_planned_resident_ht_lossless_tiles_batch(
 
 #[cfg(target_os = "macos")]
 fn submit_planned_resident_ht_lossless_tiles_batch(
-    mut planned: Vec<PlannedResidentLosslessBufferEncode>,
+    planned: Vec<PlannedResidentLosslessBufferEncode>,
     session: &crate::MetalBackendSession,
     inflight_tiles: usize,
     stats: &mut MetalLosslessEncodeBatchStats,
 ) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
-    let planned_len = planned.len();
-    let profile_stages = compute::metal_profile_stages_enabled();
     let code_block_counts = planned
         .iter()
         .map(|planned| planned.metadata.plan.code_blocks.len())
@@ -4549,6 +3750,72 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
         inflight_tiles,
         resident_lossless_code_block_chunk_cap(&code_block_counts),
     );
+    submit_planned_resident_lossless_tiles_chunked(
+        planned,
+        session,
+        stats,
+        "HT",
+        chunk_ranges,
+        true,
+        |session, batch_items| {
+            compute::submit_lossless_codestream_buffers_from_prepared_ht_batch(
+                session,
+                batch_items,
+                compute::ht_packet_output_capacity_mode_from_env(),
+            )
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn submit_planned_resident_classic_lossless_tiles_batch(
+    planned: Vec<PlannedResidentLosslessBufferEncode>,
+    session: &crate::MetalBackendSession,
+    inflight_tiles: usize,
+    stats: &mut MetalLosslessEncodeBatchStats,
+) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
+    let batch_limit = inflight_tiles.max(1);
+    let chunk_ranges = (0..planned.len())
+        .step_by(batch_limit)
+        .map(|start| start..(start + batch_limit).min(planned.len()))
+        .collect::<Vec<_>>();
+    submit_planned_resident_lossless_tiles_chunked(
+        planned,
+        session,
+        stats,
+        "classic",
+        chunk_ranges,
+        false,
+        |session, batch_items| {
+            compute::submit_lossless_codestream_buffers_from_prepared_classic_batch(
+                session,
+                batch_items,
+                compute::J2kClassicEncodeOutputCapacityMode::Tight,
+            )
+        },
+    )
+}
+
+/// Shared chunked submit driver for the per-family resident lossless batch
+/// paths. `time_prepare_in_submit` preserves each family's historical
+/// prepare_submit_duration semantics: HT (true) measures prepare + item
+/// build + submit, classic (false) measures only the submit call.
+#[cfg(target_os = "macos")]
+fn submit_planned_resident_lossless_tiles_chunked(
+    mut planned: Vec<PlannedResidentLosslessBufferEncode>,
+    session: &crate::MetalBackendSession,
+    stats: &mut MetalLosslessEncodeBatchStats,
+    family_name: &str,
+    chunk_ranges: Vec<std::ops::Range<usize>>,
+    time_prepare_in_submit: bool,
+    submit_chunk: impl Fn(
+        &crate::MetalBackendSession,
+        Vec<compute::J2kResidentBatchEncodeItem>,
+    )
+        -> Result<compute::J2kPendingResidentLosslessCodestreamBatch, crate::Error>,
+) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
+    let planned_len = planned.len();
+    let profile_stages = compute::metal_profile_stages_enabled();
     if profile_stages {
         stats.stage_stats.chunk_count = stats
             .stage_stats
@@ -4568,11 +3835,12 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
     for range in chunk_ranges {
         let take = range.len();
         let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
-        let prepare_submit_started = profile_stages.then(Instant::now);
+        let early_prepare_submit_started =
+            (profile_stages && time_prepare_in_submit).then(Instant::now);
         let prep_wall_started = profile_stages.then(Instant::now);
-        let prepared = prepare_planned_resident_ht_lossless_tiles_batch(chunk_planned, session)
+        let prepared = prepare_planned_resident_lossless_tiles_batch(chunk_planned, session)
             .map_err(|err| crate::Error::MetalKernel {
-                message: format!("J2K Metal resident HT batch encode failed: {err}"),
+                message: format!("J2K Metal resident {family_name} batch encode failed: {err}"),
             })?;
         if let Some(started) = prep_wall_started {
             add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
@@ -4588,7 +3856,7 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
             } = item;
             let metadata = prepared.metadata;
             let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
-            batch_items.push(compute::J2kResidentHtBatchEncodeItem {
+            batch_items.push(compute::J2kResidentBatchEncodeItem {
                 prepared: prepared.prepared,
                 resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
                     crate::Error::MetalKernel {
@@ -4613,11 +3881,12 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
         }
 
         let batch_started = Instant::now();
-        let pending = compute::submit_lossless_codestream_buffers_from_prepared_ht_batch(
-            session,
-            batch_items,
-            compute::ht_packet_output_capacity_mode_from_env(),
-        )?;
+        let prepare_submit_started = if time_prepare_in_submit {
+            early_prepare_submit_started
+        } else {
+            profile_stages.then(Instant::now)
+        };
+        let pending = submit_chunk(session, batch_items)?;
         if let Some(started) = prepare_submit_started {
             stats.stage_stats.prepare_submit_duration = stats
                 .stage_stats
@@ -4634,180 +3903,21 @@ fn submit_planned_resident_ht_lossless_tiles_batch(
 
     if !planned.is_empty() {
         return Err(crate::Error::MetalKernel {
-            message: "J2K Metal resident HT batch chunking left unsubmitted tiles".to_string(),
+            message: format!(
+                "J2K Metal resident {family_name} batch chunking left unsubmitted tiles"
+            ),
         });
     }
 
     if chunks.is_empty() && planned_len > 0 {
         return Err(crate::Error::MetalKernel {
-            message: "J2K Metal resident HT batch chunking produced no chunks".to_string(),
+            message: format!("J2K Metal resident {family_name} batch chunking produced no chunks"),
         });
     }
 
     Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(
         chunks,
     ))
-}
-
-#[cfg(target_os = "macos")]
-fn submit_planned_resident_classic_lossless_tiles_batch(
-    mut planned: Vec<PlannedResidentLosslessBufferEncode>,
-    session: &crate::MetalBackendSession,
-    inflight_tiles: usize,
-    stats: &mut MetalLosslessEncodeBatchStats,
-) -> Result<SubmittedResidentLosslessMetalBufferEncodeBatchKind, crate::Error> {
-    let planned_len = planned.len();
-    let profile_stages = compute::metal_profile_stages_enabled();
-
-    let batch_limit = inflight_tiles.max(1);
-    if profile_stages {
-        let chunk_count = planned_len.div_ceil(batch_limit);
-        stats.stage_stats.chunk_count = stats.stage_stats.chunk_count.saturating_add(chunk_count);
-        stats.stage_stats.tile_count = stats.stage_stats.tile_count.saturating_add(planned_len);
-    }
-    let mut chunks = Vec::new();
-    while !planned.is_empty() {
-        let take = planned.len().min(batch_limit);
-        stats.max_observed_inflight_tiles = stats.max_observed_inflight_tiles.max(take);
-        let chunk_planned = planned.drain(..take).collect::<Vec<_>>();
-        let prep_wall_started = profile_stages.then(Instant::now);
-        let prepared =
-            prepare_planned_resident_classic_lossless_tiles_batch(chunk_planned, session).map_err(
-                |err| crate::Error::MetalKernel {
-                    message: format!("J2K Metal resident classic batch encode failed: {err}"),
-                },
-            )?;
-        if let Some(started) = prep_wall_started {
-            add_resident_prep_wall_duration(stats, started.elapsed(), profile_stages);
-        }
-
-        let prepared_count = prepared.len();
-        let mut chunk_metadatas = Vec::with_capacity(prepared_count);
-        let mut chunk_prepare_durations = Vec::with_capacity(prepared_count);
-        let mut chunk_items = Vec::with_capacity(prepared_count);
-        for item in prepared {
-            let PreparedResidentLosslessBatchItem {
-                prepared,
-                prepare_duration,
-            } = item;
-            let metadata = prepared.metadata;
-            let codestream = resident_codestream_assembly_job_for_metadata(&metadata);
-            chunk_items.push(compute::J2kResidentClassicBatchEncodeItem {
-                prepared: prepared.prepared,
-                resolution_count: u32::try_from(metadata.plan.resolutions.len()).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode resolution count exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                num_layers: 1,
-                num_components: metadata.plan.components,
-                code_block_count: u32::try_from(metadata.plan.code_blocks.len()).map_err(|_| {
-                    crate::Error::MetalKernel {
-                        message: "J2K Metal resident encode code-block count exceeds u32"
-                            .to_string(),
-                    }
-                })?,
-                packet_descriptors: metadata.packet_descriptors.clone(),
-                resolutions: metadata.packetization_resolutions.clone(),
-                codestream,
-            });
-            chunk_prepare_durations.push(prepare_duration);
-            chunk_metadatas.push(metadata);
-        }
-        let batch_started = Instant::now();
-        let prepare_submit_started = profile_stages.then(Instant::now);
-        let pending = compute::submit_lossless_codestream_buffers_from_prepared_classic_batch(
-            session,
-            chunk_items,
-            compute::J2kClassicEncodeOutputCapacityMode::Tight,
-        )?;
-        if let Some(started) = prepare_submit_started {
-            stats.stage_stats.prepare_submit_duration = stats
-                .stage_stats
-                .prepare_submit_duration
-                .saturating_add(started.elapsed());
-        }
-        chunks.push(SubmittedResidentLosslessMetalBufferEncodeChunk {
-            metadatas: chunk_metadatas,
-            prepare_durations: chunk_prepare_durations,
-            pending,
-            batch_started,
-        });
-    }
-    Ok(SubmittedResidentLosslessMetalBufferEncodeBatchKind::Chunks(
-        chunks,
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn prepare_planned_resident_classic_lossless_tiles_batch(
-    planned: Vec<PlannedResidentLosslessBufferEncode>,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<PreparedResidentLosslessBatchItem>, crate::Error> {
-    struct ClassicBatchPlanInfo {
-        index: usize,
-        coefficient_count: usize,
-        bytes_per_sample: u8,
-        code_blocks: Vec<compute::J2kLosslessDeviceCodeBlock>,
-    }
-
-    let started = Instant::now();
-    let mut metadatas = Vec::with_capacity(planned.len());
-    let mut plan_infos = Vec::with_capacity(planned.len());
-    for planned in planned {
-        #[cfg(test)]
-        if planned.failure_injection_index == Some(planned.index) {
-            return Err(crate::Error::MetalKernel {
-                message: format!(
-                    "injected J2K Metal resident encode failure at tile {}",
-                    planned.index
-                ),
-            });
-        }
-
-        plan_infos.push(ClassicBatchPlanInfo {
-            index: planned.index,
-            coefficient_count: planned.coefficient_count,
-            bytes_per_sample: planned.bytes_per_sample,
-            code_blocks: planned.metadata.plan.code_blocks.clone(),
-        });
-        metadatas.push(planned.metadata);
-    }
-
-    let mut batch_items = Vec::with_capacity(metadatas.len());
-    for (metadata, plan_info) in metadatas.iter().zip(plan_infos) {
-        let tile = metadata.tile.as_tile();
-        batch_items.push(compute::J2kLosslessDeviceBatchPrepareItem {
-            tile_index: plan_info.index,
-            job: compute::J2kLosslessDevicePrepareJob {
-                input: tile.buffer,
-                input_byte_offset: tile.byte_offset,
-                input_width: tile.width,
-                input_height: tile.height,
-                input_pitch_bytes: tile.pitch_bytes,
-                output_width: tile.output_width,
-                output_height: tile.output_height,
-                components: metadata.components,
-                bytes_per_sample: plan_info.bytes_per_sample,
-                bit_depth: metadata.bit_depth,
-                num_decomposition_levels: metadata.plan.num_decomposition_levels,
-                coefficient_count: plan_info.coefficient_count,
-            },
-            code_blocks: plan_info.code_blocks,
-        });
-    }
-
-    let prepared = compute::prepare_lossless_device_code_blocks_batch(session, batch_items)?;
-    let prepare_duration = duration_share(started.elapsed(), prepared.len());
-    Ok(metadatas
-        .into_iter()
-        .zip(prepared)
-        .map(|(metadata, prepared)| PreparedResidentLosslessBatchItem {
-            prepared: PreparedResidentLosslessBufferEncode { metadata, prepared },
-            prepare_duration,
-        })
-        .collect())
 }
 
 #[cfg(target_os = "macos")]
@@ -5020,7 +4130,7 @@ fn encode_cpu_codestream_from_prepacketized_ht_tile(
     Ok(EncodedJ2k {
         codestream,
         backend: BackendKind::Cpu,
-        dispatch_report: J2kEncodeDispatchReport::default(),
+        dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
         width: samples.width,
         height: samples.height,
         components: samples.components,
@@ -5195,7 +4305,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
                 compute::encode_classic_tier1_prepared_device_code_blocks_resident(
                     session, prepared,
                 )?;
-            compute::encode_lossless_codestream_buffer_from_resident_classic_tier1(
+            compute::encode_lossless_codestream_buffer_from_resident_tier1(
                 session,
                 &resident_tier1,
                 packetization_job,
@@ -5205,7 +4315,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
         J2kBlockCodingMode::HighThroughput => {
             let resident_tier1 =
                 compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
-            compute::encode_lossless_codestream_buffer_from_resident_ht_tier1(
+            compute::encode_lossless_codestream_buffer_from_resident_tier1(
                 session,
                 &resident_tier1,
                 packetization_job,
@@ -5371,6 +4481,7 @@ fn encode_lossless_tile_with_report(
             reason: "J2K Metal encode input buffer is not host-visible",
         });
     }
+    // SAFETY: Encoded Metal buffer views are bounds-checked before slice construction.
     let data = unsafe { core::slice::from_raw_parts(ptr.add(source_byte_offset), len) };
     let samples = J2kLosslessSamples::new(
         data,
@@ -5416,290 +4527,35 @@ fn encode_lossless_tile_with_report(
 }
 
 #[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for single-tile Metal encode on non-macOS.
-pub fn encode_lossless_from_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<EncodedJ2k, crate::Error> {
-    submit_lossless_from_metal_buffer(tile, options, session)?.wait()
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_metal_buffer_to_metal(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalEncodedJ2k, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted Metal encode on non-macOS.
-pub fn submit_lossless_from_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncode, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported Metal encode on non-macOS.
-pub fn encode_lossless_from_metal_buffer_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_metal_buffer_to_metal_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for padded single-tile encode on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<EncodedJ2k, crate::Error> {
-    submit_lossless_from_padded_metal_buffer(tile, options, session)?.wait()
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for padded Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffer_to_metal(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalEncodedJ2k, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted padded encode on non-macOS.
-pub fn submit_lossless_from_padded_metal_buffer(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncode, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported padded encode on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffer_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported padded Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
-    tile: MetalLosslessEncodeTile<'_>,
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
-    let _ = (tile, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for multi-tile Metal encode on non-macOS.
-pub fn encode_lossless_from_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<EncodedJ2k>, crate::Error> {
-    submit_lossless_from_metal_buffers(tiles, options, session)?.wait()
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for multi-tile Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_metal_buffers_to_metal(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalEncodedJ2k>, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted multi-tile encode on non-macOS.
-pub fn submit_lossless_from_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
+/// Return `Error::MetalUnavailable` for submitted host-byte batch encode on non-macOS.
+pub fn submit_lossless_batch(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session);
+    let _ = (request, options, session);
     Err(crate::Error::MetalUnavailable)
 }
 
 #[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for configured multi-tile encode on non-macOS.
-pub fn submit_lossless_from_metal_buffers_with_config(
-    tiles: &[MetalLosslessEncodeTile<'_>],
+/// Return `Error::MetalUnavailable` for submitted Metal-buffer batch encode on non-macOS.
+pub fn submit_lossless_batch_to_metal(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session, config);
+) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
+    let _ = (request, options, session);
     Err(crate::Error::MetalUnavailable)
 }
 
 #[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported multi-tile encode on non-macOS.
-pub fn encode_lossless_from_metal_buffers_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
+/// Return `Error::MetalUnavailable` for reported batch encode on non-macOS.
+pub fn encode_lossless_batch_with_report(
+    request: MetalLosslessEncodeBatchRequest<'_, '_>,
     options: &J2kLosslessEncodeOptions,
     session: &crate::MetalBackendSession,
 ) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported multi-tile Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_metal_buffers_to_metal_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for Metal-buffer batch output on non-macOS.
-pub fn encode_lossless_from_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    let _ = (tiles, options, session, config);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted Metal-buffer batch output on non-macOS.
-pub fn submit_lossless_from_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session, config);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for padded multi-tile encode on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<EncodedJ2k>, crate::Error> {
-    submit_lossless_from_padded_metal_buffers(tiles, options, session)?.wait()
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for padded multi-tile Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalEncodedJ2k>, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted padded multi-tile encode on non-macOS.
-pub fn submit_lossless_from_padded_metal_buffers(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for configured padded multi-tile encode on non-macOS.
-pub fn submit_lossless_from_padded_metal_buffers_with_config(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session, config);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported padded multi-tile encode on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffers_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
-    let _ = (tiles, options, session);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for padded Metal-buffer batch output on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
-    let _ = (tiles, options, session, config);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for submitted padded Metal-buffer batch output on non-macOS.
-pub fn submit_lossless_from_padded_metal_buffers_to_metal_batch(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-    config: MetalLosslessEncodeConfig,
-) -> Result<SubmittedJ2kLosslessMetalBufferEncodeBatch, crate::Error> {
-    let _ = (tiles, options, session, config);
-    Err(crate::Error::MetalUnavailable)
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Return `Error::MetalUnavailable` for reported padded Metal-buffer output on non-macOS.
-pub fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
-    tiles: &[MetalLosslessEncodeTile<'_>],
-    options: &J2kLosslessEncodeOptions,
-    session: &crate::MetalBackendSession,
-) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
-    let _ = (tiles, options, session);
+    let _ = (request, options, session);
     Err(crate::Error::MetalUnavailable)
 }
 
@@ -5900,6 +4756,210 @@ fn validate_padded_contiguous_metal_encode_tile(
     Ok(())
 }
 
+// Pre-8c permutation shims: the public API collapsed to the request-based
+// entries, but the device tests keep their original entry-point coverage
+// (and the single-tile report tests their exact staged routing) through
+// these test-only equivalents of the removed wrappers.
+#[cfg(all(test, target_os = "macos"))]
+struct TestSubmittedSingleLosslessEncode {
+    inner: SubmittedJ2kLosslessMetalEncodeBatch,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl TestSubmittedSingleLosslessEncode {
+    fn wait(self) -> Result<EncodedJ2k, crate::Error> {
+        let mut encoded = self.inner.wait()?;
+        if encoded.len() != 1 {
+            return Err(crate::Error::MetalKernel {
+                message: "submitted J2K Metal single encode produced an unexpected batch length"
+                    .to_string(),
+            });
+        }
+        Ok(encoded.remove(0))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn submit_lossless_from_metal_buffer(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<TestSubmittedSingleLosslessEncode, crate::Error> {
+    Ok(TestSubmittedSingleLosslessEncode {
+        inner: submit_lossless_batch(
+            MetalLosslessEncodeBatchRequest {
+                tiles: &[tile],
+                staging: MetalEncodeInputStaging::CopyAndPad,
+                config: MetalLosslessEncodeConfig::default(),
+            },
+            options,
+            session,
+        )?,
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn submit_lossless_from_padded_metal_buffer(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<TestSubmittedSingleLosslessEncode, crate::Error> {
+    Ok(TestSubmittedSingleLosslessEncode {
+        inner: submit_lossless_batch(
+            MetalLosslessEncodeBatchRequest {
+                tiles: &[tile],
+                staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+                config: MetalLosslessEncodeConfig::default(),
+            },
+            options,
+            session,
+        )?,
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_metal_buffer(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<EncodedJ2k, crate::Error> {
+    submit_lossless_from_metal_buffer(tile, options, session)?.wait()
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_padded_metal_buffer_with_report(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<MetalLosslessEncodeOutcome, crate::Error> {
+    let mut accelerator = MetalEncodeStageAccelerator::for_host_output(*options);
+    encode_lossless_tile_with_report(
+        tile,
+        *options,
+        session,
+        MetalEncodeInputStaging::AlreadyPaddedContiguous,
+        &mut accelerator,
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_metal_buffers_to_metal_with_report(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
+    Ok(submit_lossless_batch_to_metal(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::CopyAndPad,
+            config: MetalLosslessEncodeConfig::default(),
+        },
+        options,
+        session,
+    )?
+    .wait()?
+    .outcomes)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<Vec<MetalLosslessBufferEncodeOutcome>, crate::Error> {
+    Ok(submit_lossless_batch_to_metal(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            config: MetalLosslessEncodeConfig::default(),
+        },
+        options,
+        session,
+    )?
+    .wait()?
+    .outcomes)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_metal_buffer_to_metal_with_report(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
+    let mut outcomes =
+        encode_lossless_from_metal_buffers_to_metal_with_report(&[tile], options, session)?;
+    if outcomes.len() != 1 {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal single buffer encode produced an unexpected batch length"
+                .to_string(),
+        });
+    }
+    Ok(outcomes.remove(0))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_padded_metal_buffer_to_metal_with_report(
+    tile: MetalLosslessEncodeTile<'_>,
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<MetalLosslessBufferEncodeOutcome, crate::Error> {
+    let mut outcomes =
+        encode_lossless_from_padded_metal_buffers_to_metal_with_report(&[tile], options, session)?;
+    if outcomes.len() != 1 {
+        return Err(crate::Error::MetalKernel {
+            message: "J2K Metal single buffer encode produced an unexpected batch length"
+                .to_string(),
+        });
+    }
+    Ok(outcomes.remove(0))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_padded_metal_buffers_with_report(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+) -> Result<Vec<MetalLosslessEncodeOutcome>, crate::Error> {
+    encode_lossless_batch_with_report(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            config: MetalLosslessEncodeConfig::default(),
+        },
+        options,
+        session,
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // shims keep the removed wrappers' exact signatures
+fn encode_lossless_from_padded_metal_buffers_to_metal_batch(
+    tiles: &[MetalLosslessEncodeTile<'_>],
+    options: &J2kLosslessEncodeOptions,
+    session: &crate::MetalBackendSession,
+    config: MetalLosslessEncodeConfig,
+) -> Result<MetalLosslessBufferEncodeBatchOutcome, crate::Error> {
+    submit_lossless_batch_to_metal(
+        MetalLosslessEncodeBatchRequest {
+            tiles,
+            staging: MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            config,
+        },
+        options,
+        session,
+    )?
+    .wait()
+}
+
 #[cfg(test)]
 mod tests {
     use super::MetalEncodeStageAccelerator;
@@ -5912,19 +4972,19 @@ mod tests {
     use signinum_core::DeviceSubmission;
     #[cfg(target_os = "macos")]
     use signinum_core::{BackendKind, PixelFormat};
+    use signinum_j2k::{
+        encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
+        J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob, J2kLosslessEncodeOptions,
+        J2kLosslessSamples,
+    };
     #[cfg(target_os = "macos")]
     use signinum_j2k::{
-        encode_j2k_lossless_with_accelerator, encode_j2k_lossy_with_accelerator,
-        EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessSamples,
+        encode_j2k_lossy_with_accelerator, J2kBlockCodingMode, J2kEncodeValidation,
         J2kLossyEncodeOptions, J2kLossySamples, J2kProgressionOrder,
     };
-    use signinum_j2k::{EncodedJ2k, J2kLosslessEncodeOptions};
-    use signinum_j2k_native::{
-        encode_with_accelerator, DecodeSettings, EncodeOptions, Image, J2kEncodeDispatchReport,
-        J2kEncodeStageAccelerator, J2kForwardRctJob,
-    };
     #[cfg(target_os = "macos")]
-    use signinum_j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle, J2kForwardDwt53Job};
+    use signinum_j2k_native::{forward_dwt53_reference, J2kCodeBlockStyle};
+    use signinum_j2k_native::{DecodeSettings, Image};
     use std::time::Duration;
 
     #[cfg(target_os = "macos")]
@@ -6049,28 +5109,13 @@ mod tests {
 
     #[test]
     fn submitted_lossless_metal_encode_public_api_is_available() {
-        fn assert_single_submission<
-            S: DeviceSubmission<Output = EncodedJ2k, Error = crate::Error>,
-        >() {
-        }
         fn assert_batch_submission<
             S: DeviceSubmission<Output = Vec<EncodedJ2k>, Error = crate::Error>,
         >() {
         }
-        fn assert_submit_single_fn(
-            _submit: for<'tile, 'options, 'session> fn(
-                super::MetalLosslessEncodeTile<'tile>,
-                &'options J2kLosslessEncodeOptions,
-                &'session crate::MetalBackendSession,
-            ) -> Result<
-                crate::SubmittedJ2kLosslessMetalEncode,
-                crate::Error,
-            >,
-        ) {
-        }
         fn assert_submit_batch_fn(
-            _submit: for<'slice, 'tile, 'options, 'session> fn(
-                &'slice [super::MetalLosslessEncodeTile<'tile>],
+            _submit: for<'tiles, 'tile, 'options, 'session> fn(
+                super::MetalLosslessEncodeBatchRequest<'tiles, 'tile>,
                 &'options J2kLosslessEncodeOptions,
                 &'session crate::MetalBackendSession,
             ) -> Result<
@@ -6080,12 +5125,8 @@ mod tests {
         ) {
         }
 
-        assert_single_submission::<crate::SubmittedJ2kLosslessMetalEncode>();
         assert_batch_submission::<crate::SubmittedJ2kLosslessMetalEncodeBatch>();
-        assert_submit_single_fn(crate::submit_lossless_from_metal_buffer);
-        assert_submit_single_fn(crate::submit_lossless_from_padded_metal_buffer);
-        assert_submit_batch_fn(crate::submit_lossless_from_metal_buffers);
-        assert_submit_batch_fn(crate::submit_lossless_from_padded_metal_buffers);
+        assert_submit_batch_fn(crate::submit_lossless_batch);
     }
 
     #[test]
@@ -6098,11 +5139,10 @@ mod tests {
         >() {
         }
         fn assert_submit_buffer_batch_fn(
-            _submit: for<'slice, 'tile, 'options, 'session> fn(
-                &'slice [super::MetalLosslessEncodeTile<'tile>],
+            _submit: for<'tiles, 'tile, 'options, 'session> fn(
+                super::MetalLosslessEncodeBatchRequest<'tiles, 'tile>,
                 &'options J2kLosslessEncodeOptions,
                 &'session crate::MetalBackendSession,
-                super::MetalLosslessEncodeConfig,
             ) -> Result<
                 crate::SubmittedJ2kLosslessMetalBufferEncodeBatch,
                 crate::Error,
@@ -6111,10 +5151,7 @@ mod tests {
         }
 
         assert_buffer_batch_submission::<crate::SubmittedJ2kLosslessMetalBufferEncodeBatch>();
-        assert_submit_buffer_batch_fn(crate::submit_lossless_from_metal_buffers_to_metal_batch);
-        assert_submit_buffer_batch_fn(
-            crate::submit_lossless_from_padded_metal_buffers_to_metal_batch,
-        );
+        assert_submit_buffer_batch_fn(crate::submit_lossless_batch_to_metal);
     }
 
     #[test]
@@ -6732,7 +5769,7 @@ mod tests {
             encoded: EncodedJ2k {
                 codestream: Vec::new(),
                 backend: signinum_core::BackendKind::Metal,
-                dispatch_report: J2kEncodeDispatchReport::default(),
+                dispatch_report: signinum_j2k::J2kEncodeDispatchReport::default(),
                 width: 0,
                 height: 0,
                 components: 1,
@@ -6803,17 +5840,21 @@ mod tests {
     #[test]
     fn metal_encode_stage_accelerator_preserves_cpu_codestream_validity() {
         let pixels: Vec<u8> = (0..8 * 8 * 3).map(|i| (i & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 8, 8, 3, 8, false).expect("valid RGB samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::Auto)
+            .with_max_decomposition_levels(Some(1));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with metal stage accelerator");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            signinum_core::BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal stage accelerator");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -6854,17 +5895,21 @@ mod tests {
     #[test]
     fn metal_forward_rct_dispatch_round_trips_rgb8_lossless_tile() {
         let pixels: Vec<u8> = (0..7 * 5 * 3).map(|i| ((i * 17) & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 0,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 7, 5, 3, 8, false).expect("valid RGB samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(0));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 7, 5, 3, 8, false, &options, &mut accelerator)
-                .expect("encode with metal forward RCT");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal forward RCT");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -6952,24 +5997,23 @@ mod tests {
             metal::MTLResourceOptions::StorageModeShared,
         );
 
-        let submitted: crate::SubmittedJ2kLosslessMetalEncode =
-            crate::submit_lossless_from_metal_buffer(
-                super::MetalLosslessEncodeTile {
-                    buffer: &buffer,
-                    byte_offset: 0,
-                    width: 7,
-                    height: 5,
-                    pitch_bytes: 7 * 3,
-                    output_width: 8,
-                    output_height: 8,
-                    format: PixelFormat::Rgb8,
-                },
-                &lossless_options! {
-                    backend: EncodeBackendPreference::RequireDevice,
-                },
-                &session,
-            )
-            .expect("submit Metal buffer lossless encode");
+        let submitted = super::submit_lossless_from_metal_buffer(
+            super::MetalLosslessEncodeTile {
+                buffer: &buffer,
+                byte_offset: 0,
+                width: 7,
+                height: 5,
+                pitch_bytes: 7 * 3,
+                output_width: 8,
+                output_height: 8,
+                format: PixelFormat::Rgb8,
+            },
+            &lossless_options! {
+                backend: EncodeBackendPreference::RequireDevice,
+            },
+            &session,
+        )
+        .expect("submit Metal buffer lossless encode");
         let encoded = submitted.wait().expect("wait Metal buffer lossless encode");
 
         assert_eq!(encoded.backend, BackendKind::Metal);
@@ -7080,13 +6124,6 @@ mod tests {
 
         assert_eq!(routed.backend, EncodeBackendPreference::Auto);
         assert_eq!(routed.validation, J2kEncodeValidation::External);
-
-        let prefer_device = super::host_output_encode_options(lossless_options! {
-            backend: EncodeBackendPreference::PreferDevice,
-            validation: J2kEncodeValidation::CpuRoundTrip,
-        });
-        assert_eq!(prefer_device.backend, EncodeBackendPreference::PreferDevice);
-        assert_eq!(prefer_device.validation, J2kEncodeValidation::External);
     }
 
     #[cfg(target_os = "macos")]
@@ -8615,18 +7652,22 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_forward_dwt53_dispatch_round_trips_gray8_lossless_tile() {
-        let pixels: Vec<u8> = (0..8 * 8).map(|i| ((i * 5) & 0xFF) as u8).collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 1,
-            ..EncodeOptions::default()
-        };
+        let pixels: Vec<u8> = (0..64 * 64).map(|i| ((i * 5) & 0xFF) as u8).collect();
+        let samples =
+            J2kLosslessSamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(1));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 8, 8, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with metal forward DWT 5/3");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with metal forward DWT 5/3");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");
@@ -8654,7 +7695,7 @@ mod tests {
         let encoded = encode_j2k_lossless_with_accelerator(
             samples,
             &lossless_options! {
-                backend: EncodeBackendPreference::PreferDevice,
+                backend: EncodeBackendPreference::Auto,
             },
             BackendKind::Metal,
             &mut accelerator,
@@ -8676,17 +7717,21 @@ mod tests {
         let pixels: Vec<u8> = (0..256 * 256)
             .map(|idx| ((idx * 17 + 3) & 0xFF) as u8)
             .collect();
-        let options = EncodeOptions {
-            reversible: true,
-            num_decomposition_levels: 0,
-            ..EncodeOptions::default()
-        };
+        let samples =
+            J2kLosslessSamples::new(&pixels, 256, 256, 1, 8, false).expect("valid gray samples");
+        let options = J2kLosslessEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::RequireDevice)
+            .with_max_decomposition_levels(Some(0));
         let mut accelerator = MetalEncodeStageAccelerator::default();
 
-        let codestream =
-            encode_with_accelerator(&pixels, 256, 256, 1, 8, false, &options, &mut accelerator)
-                .expect("encode with batched Metal classic Tier-1");
-        let decoded = Image::new(&codestream, &DecodeSettings::default())
+        let encoded = encode_j2k_lossless_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("encode with batched Metal classic Tier-1");
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
             .expect("codestream parses")
             .decode_native()
             .expect("codestream decodes");

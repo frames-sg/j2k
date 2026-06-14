@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(target_os = "macos")]
+use signinum_transcode::accelerator::TranscodeStageError;
 use signinum_transcode::accelerator::{
     DctGridToDwt53Job, DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator,
 };
@@ -13,8 +15,6 @@ use signinum_transcode_metal::weights::{Dwt53WeightRows, SparseDwt53WeightRows};
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(not(target_os = "macos"))]
 use signinum_transcode_metal::MetalTranscodeError;
-#[cfg(target_os = "macos")]
-use signinum_transcode_metal::METAL_UNAVAILABLE;
 
 #[test]
 fn explicit_metal_53_reports_unavailable_on_non_macos() {
@@ -31,7 +31,7 @@ fn explicit_metal_53_reports_unavailable_on_non_macos() {
     #[cfg(not(target_os = "macos"))]
     assert_eq!(
         result.expect_err("explicit Metal is unavailable off macOS"),
-        MetalTranscodeError::MetalUnavailable.as_static_str()
+        TranscodeStageError::DeviceUnavailable
     );
 
     #[cfg(target_os = "macos")]
@@ -53,7 +53,7 @@ fn explicit_metal_reversible_53_reports_unavailable_on_non_macos() {
     #[cfg(not(target_os = "macos"))]
     assert_eq!(
         result.expect_err("explicit Metal is unavailable off macOS"),
-        MetalTranscodeError::MetalUnavailable.as_static_str()
+        TranscodeStageError::DeviceUnavailable
     );
 
     #[cfg(target_os = "macos")]
@@ -80,7 +80,7 @@ fn auto_metal_53_falls_back_for_tiny_jobs() {
 }
 
 #[test]
-fn auto_metal_reversible_53_uses_rayon_for_tiny_jobs() {
+fn auto_metal_reversible_53_declines_tiny_jobs() {
     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
     let blocks = vec![[0i16; 64]];
     let output = accelerator
@@ -91,15 +91,17 @@ fn auto_metal_reversible_53_uses_rayon_for_tiny_jobs() {
             width: 8,
             height: 8,
         })
-        .expect("auto accelerator can use CPU/Rayon fallback for tiny reversible 5/3 job");
+        .expect("auto accelerator can decline tiny reversible 5/3 job");
 
-    assert!(output.is_some());
+    // `None` hands the job to the caller's scalar fallback — the same
+    // contract as the float 5/3 path and the CUDA accelerator.
+    assert!(output.is_none());
     assert_eq!(accelerator.reversible_dwt53_attempts(), 1);
     assert_eq!(accelerator.reversible_dwt53_dispatches(), 0);
 }
 
 #[test]
-fn auto_metal_reversible_53_batch_uses_rayon_for_tiny_jobs() {
+fn auto_metal_reversible_53_batch_declines_tiny_jobs() {
     let mut accelerator = MetalDctToWaveletStageAccelerator::for_auto();
     let blocks = vec![[0i16; 64]];
     let jobs = [DctGridToReversibleDwt53Job {
@@ -111,9 +113,9 @@ fn auto_metal_reversible_53_batch_uses_rayon_for_tiny_jobs() {
     }];
     let output = accelerator
         .dct_grid_to_reversible_dwt53_batch(&jobs)
-        .expect("auto accelerator can use CPU/Rayon fallback for tiny reversible 5/3 batch");
+        .expect("auto accelerator can decline tiny reversible 5/3 batch");
 
-    assert!(output.is_some());
+    assert!(output.is_none());
     assert_eq!(accelerator.reversible_dwt53_batch_attempts(), 1);
     assert_eq!(accelerator.reversible_dwt53_batch_dispatches(), 0);
 }
@@ -135,7 +137,7 @@ fn explicit_metal_dct53_matches_scalar_for_structured_cases() {
         }) {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
-            Err(message) if message == METAL_UNAVAILABLE => {
+            Err(TranscodeStageError::DeviceUnavailable) => {
                 eprintln!(
                     "skipping Metal 5/3 coefficient test because no Metal device is available"
                 );
@@ -181,7 +183,7 @@ fn explicit_metal_reversible_dct53_matches_rayon_for_structured_cases() {
         let actual = match accelerator.dct_grid_to_reversible_dwt53(job) {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal accelerator must not silently fall back"),
-            Err(message) if message == METAL_UNAVAILABLE => {
+            Err(TranscodeStageError::DeviceUnavailable) => {
                 eprintln!(
                     "skipping Metal reversible 5/3 test because no Metal device is available"
                 );
@@ -225,7 +227,7 @@ fn explicit_metal_reversible_dct53_batch_matches_rayon_for_structured_cases() {
         let actual = match accelerator.dct_grid_to_reversible_dwt53_batch(&jobs) {
             Ok(Some(output)) => output,
             Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
-            Err(message) if message == METAL_UNAVAILABLE => {
+            Err(TranscodeStageError::DeviceUnavailable) => {
                 eprintln!(
                     "skipping Metal reversible 5/3 batch test because no Metal device is available"
                 );

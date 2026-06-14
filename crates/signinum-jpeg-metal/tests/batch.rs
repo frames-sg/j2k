@@ -131,7 +131,7 @@ fn compatible_tile_submits_flush_once() {
         assert_eq!(surface.as_bytes(), expected.as_slice());
     }
 
-    assert_eq!(session.submissions(), 1);
+    assert_eq!(session.submissions().expect("session submissions"), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -157,7 +157,7 @@ fn jpeg_tile_batch_api_decodes_full_tiles_in_submission_order() {
         1
     );
     assert_eq!(batch.len(), 2);
-    assert_eq!(batch.submissions(), 0);
+    assert_eq!(batch.submissions().expect("batch submissions"), 0);
 
     let surfaces = batch.decode_all().expect("decode JPEG tile batch");
 
@@ -199,7 +199,7 @@ fn auto_small_restart_tile_batch_stays_cpu_surface() {
         assert_eq!(surface.as_bytes(), expected.as_slice());
     }
 
-    assert_eq!(session.submissions(), 1);
+    assert_eq!(session.submissions().expect("session submissions"), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -233,7 +233,7 @@ fn auto_restart_wsi_tile_batch_uses_metal_at_threshold() {
         assert_eq!(surface.as_bytes(), expected.as_slice());
     }
 
-    assert_eq!(session.submissions(), 1);
+    assert_eq!(session.submissions().expect("session submissions"), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -286,7 +286,7 @@ fn compatible_region_scaled_tile_submits_flush_once() {
         assert_eq!(surface.as_bytes(), expected.as_slice());
     }
 
-    assert_eq!(session.submissions(), 1);
+    assert_eq!(session.submissions().expect("session submissions"), 1);
 }
 
 #[test]
@@ -438,5 +438,5 @@ fn incompatible_shapes_split_batches() {
     let _ = full.wait().expect("full wait");
     let _ = scaled.wait().expect("scaled wait");
 
-    assert_eq!(session.submissions(), 2);
+    assert_eq!(session.submissions().expect("session submissions"), 2);
 }

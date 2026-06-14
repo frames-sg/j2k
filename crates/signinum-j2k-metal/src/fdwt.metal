@@ -49,6 +49,68 @@ inline float j2k_fdwt53_predict_col(
     return src[odd * full_width + x] - floor((top + bottom) * 0.5f);
 }
 
+inline void j2k_fdwt53_horizontal_step(
+    device const float *src,
+    device float *dst,
+    uint full_width,
+    uint current_width,
+    uint low_width,
+    uint2 gid
+) {
+    const uint row_base = gid.y * full_width;
+    if (gid.x < low_width) {
+        const uint even = gid.x * 2u;
+        const float left = gid.x > 0u
+            ? j2k_fdwt53_predict_row(src, row_base, current_width, gid.x - 1u)
+            : j2k_fdwt53_predict_row(src, row_base, current_width, 0u);
+        const float right = even + 1u < current_width
+            ? j2k_fdwt53_predict_row(src, row_base, current_width, gid.x)
+            : left;
+        dst[row_base + gid.x] =
+            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
+        return;
+    }
+
+    const uint high_index = gid.x - low_width;
+    dst[row_base + gid.x] = j2k_fdwt53_predict_row(
+        src,
+        row_base,
+        current_width,
+        high_index
+    );
+}
+
+inline void j2k_fdwt53_vertical_step(
+    device const float *src,
+    device float *dst,
+    uint full_width,
+    uint current_height,
+    uint low_height,
+    uint2 gid
+) {
+    if (gid.y < low_height) {
+        const uint even = gid.y * 2u;
+        const float top = gid.y > 0u
+            ? j2k_fdwt53_predict_col(src, gid.x, full_width, current_height, gid.y - 1u)
+            : j2k_fdwt53_predict_col(src, gid.x, full_width, current_height, 0u);
+        const float bottom = even + 1u < current_height
+            ? j2k_fdwt53_predict_col(src, gid.x, full_width, current_height, gid.y)
+            : top;
+        dst[gid.y * full_width + gid.x] =
+            src[even * full_width + gid.x] + floor((top + bottom) * 0.25f + 0.5f);
+        return;
+    }
+
+    const uint high_index = gid.y - low_height;
+    dst[gid.y * full_width + gid.x] = j2k_fdwt53_predict_col(
+        src,
+        gid.x,
+        full_width,
+        current_height,
+        high_index
+    );
+}
+
 kernel void j2k_forward_dwt53_horizontal(
     device const float *src [[buffer(0)]],
     device float *dst [[buffer(1)]],
@@ -59,26 +121,13 @@ kernel void j2k_forward_dwt53_horizontal(
         return;
     }
 
-    const uint row_base = gid.y * params.full_width;
-    if (gid.x < params.low_width) {
-        const uint even = gid.x * 2u;
-        const float left = gid.x > 0u
-            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x - 1u)
-            : j2k_fdwt53_predict_row(src, row_base, params.current_width, 0u);
-        const float right = even + 1u < params.current_width
-            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x)
-            : left;
-        dst[row_base + gid.x] =
-            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
-        return;
-    }
-
-    const uint high_index = gid.x - params.low_width;
-    dst[row_base + gid.x] = j2k_fdwt53_predict_row(
+    j2k_fdwt53_horizontal_step(
         src,
-        row_base,
+        dst,
+        params.full_width,
         params.current_width,
-        high_index
+        params.low_width,
+        gid
     );
 }
 
@@ -92,26 +141,13 @@ kernel void j2k_forward_dwt53_vertical(
         return;
     }
 
-    if (gid.y < params.low_height) {
-        const uint even = gid.y * 2u;
-        const float top = gid.y > 0u
-            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y - 1u)
-            : j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, 0u);
-        const float bottom = even + 1u < params.current_height
-            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y)
-            : top;
-        dst[gid.y * params.full_width + gid.x] =
-            src[even * params.full_width + gid.x] + floor((top + bottom) * 0.25f + 0.5f);
-        return;
-    }
-
-    const uint high_index = gid.y - params.low_height;
-    dst[gid.y * params.full_width + gid.x] = j2k_fdwt53_predict_col(
+    j2k_fdwt53_vertical_step(
         src,
-        gid.x,
+        dst,
         params.full_width,
         params.current_height,
-        high_index
+        params.low_height,
+        gid
     );
 }
 
@@ -135,26 +171,13 @@ kernel void j2k_forward_dwt53_horizontal_batched(
 
     device const float *src = gid.z == 0u ? src0 : (gid.z == 1u ? src1 : src2);
     device float *dst = gid.z == 0u ? dst0 : (gid.z == 1u ? dst1 : dst2);
-    const uint row_base = gid.y * params.full_width;
-    if (gid.x < params.low_width) {
-        const uint even = gid.x * 2u;
-        const float left = gid.x > 0u
-            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x - 1u)
-            : j2k_fdwt53_predict_row(src, row_base, params.current_width, 0u);
-        const float right = even + 1u < params.current_width
-            ? j2k_fdwt53_predict_row(src, row_base, params.current_width, gid.x)
-            : left;
-        dst[row_base + gid.x] =
-            src[row_base + even] + floor((left + right) * 0.25f + 0.5f);
-        return;
-    }
-
-    const uint high_index = gid.x - params.low_width;
-    dst[row_base + gid.x] = j2k_fdwt53_predict_row(
+    j2k_fdwt53_horizontal_step(
         src,
-        row_base,
+        dst,
+        params.full_width,
         params.current_width,
-        high_index
+        params.low_width,
+        gid.xy
     );
 }
 
@@ -178,25 +201,12 @@ kernel void j2k_forward_dwt53_vertical_batched(
 
     device const float *src = gid.z == 0u ? src0 : (gid.z == 1u ? src1 : src2);
     device float *dst = gid.z == 0u ? dst0 : (gid.z == 1u ? dst1 : dst2);
-    if (gid.y < params.low_height) {
-        const uint even = gid.y * 2u;
-        const float top = gid.y > 0u
-            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y - 1u)
-            : j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, 0u);
-        const float bottom = even + 1u < params.current_height
-            ? j2k_fdwt53_predict_col(src, gid.x, params.full_width, params.current_height, gid.y)
-            : top;
-        dst[gid.y * params.full_width + gid.x] =
-            src[even * params.full_width + gid.x] + floor((top + bottom) * 0.25f + 0.5f);
-        return;
-    }
-
-    const uint high_index = gid.y - params.low_height;
-    dst[gid.y * params.full_width + gid.x] = j2k_fdwt53_predict_col(
+    j2k_fdwt53_vertical_step(
         src,
-        gid.x,
+        dst,
         params.full_width,
         params.current_height,
-        high_index
+        params.low_height,
+        gid.xy
     );
 }

@@ -245,11 +245,7 @@ fn classify_corpus_input(dimensions: (u32, u32), mode: DecodeMode) -> CorpusInpu
     };
     let bytes = usize::try_from(dimensions.0)
         .ok()
-        .and_then(|width| {
-            usize::try_from(dimensions.1)
-                .ok()
-                .map(|height| (width, height))
-        })
+        .zip(usize::try_from(dimensions.1).ok())
         .and_then(|(width, height)| width.checked_mul(height))
         .and_then(|pixels| pixels.checked_mul(bpp));
     match bytes {

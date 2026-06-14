@@ -15,7 +15,6 @@ mod batch;
 mod classic;
 #[cfg(target_os = "macos")]
 mod compute;
-mod dicom;
 #[cfg(target_os = "macos")]
 mod direct;
 mod encode;
@@ -33,18 +32,18 @@ mod routing;
 mod store;
 
 use core::convert::Infallible;
-use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
     sync::{Mutex, OnceLock},
 };
+use std::{ops::Range, sync::Arc};
 
 use signinum_core::{
     copy_tight_pixels_to_strided_output, BackendKind, BackendRequest, BufferError, CodecError,
-    DecodeOutcome, DeviceSubmission, DeviceSurface, Downscale, ImageCodec, ImageDecode,
-    ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
+    DecodeOutcome, DeviceMemoryRange, DeviceSubmission, DeviceSurface, Downscale, ImageCodec,
+    ImageDecode, ImageDecodeDevice, ImageDecodeSubmit, PixelFormat, ReadySubmission, Rect,
     TileBatchDecodeDevice, TileBatchDecodeManyDevice, TileBatchDecodeSubmit,
 };
 use signinum_j2k::{
@@ -59,39 +58,22 @@ use signinum_j2k_native::{
 };
 
 #[cfg(target_os = "macos")]
+use metal::foreign_types::ForeignType;
+#[cfg(target_os = "macos")]
 use metal::{Buffer, Device, MTLResourceOptions};
+#[cfg(target_os = "macos")]
+use signinum_metal_support::{system_default_device, MetalSupportError};
 
 #[doc(hidden)]
 pub use batch::{benchmark_group_region_scaled_requests, BenchmarkGroupedRequests};
-#[doc(hidden)]
-pub use dicom::{
-    extract_dicom_encapsulated_frames, extract_dicom_encapsulated_frames_with_limit,
-    DicomFrameExtractError,
-};
 pub use encode::{
-    encode_lossless_from_metal_buffer, encode_lossless_from_metal_buffer_to_metal,
-    encode_lossless_from_metal_buffer_to_metal_with_report,
-    encode_lossless_from_metal_buffer_with_report, encode_lossless_from_metal_buffers,
-    encode_lossless_from_metal_buffers_to_metal, encode_lossless_from_metal_buffers_to_metal_batch,
-    encode_lossless_from_metal_buffers_to_metal_with_report,
-    encode_lossless_from_metal_buffers_with_report, encode_lossless_from_padded_metal_buffer,
-    encode_lossless_from_padded_metal_buffer_to_metal,
-    encode_lossless_from_padded_metal_buffer_to_metal_with_report,
-    encode_lossless_from_padded_metal_buffer_with_report,
-    encode_lossless_from_padded_metal_buffers, encode_lossless_from_padded_metal_buffers_to_metal,
-    encode_lossless_from_padded_metal_buffers_to_metal_batch,
-    encode_lossless_from_padded_metal_buffers_to_metal_with_report,
-    encode_lossless_from_padded_metal_buffers_with_report, submit_lossless_from_metal_buffer,
-    submit_lossless_from_metal_buffers, submit_lossless_from_metal_buffers_to_metal_batch,
-    submit_lossless_from_metal_buffers_with_config, submit_lossless_from_padded_metal_buffer,
-    submit_lossless_from_padded_metal_buffers,
-    submit_lossless_from_padded_metal_buffers_to_metal_batch,
-    submit_lossless_from_padded_metal_buffers_with_config, validate_lossless_roundtrip_on_metal,
-    validate_lossless_roundtrip_on_metal_with_session, MetalEncodeStageAccelerator,
-    MetalEncodedJ2k, MetalLosslessBufferEncodeBatchOutcome, MetalLosslessBufferEncodeOutcome,
-    MetalLosslessEncodeBatchStats, MetalLosslessEncodeConfig, MetalLosslessEncodeOutcome,
-    MetalLosslessEncodeResidency, MetalLosslessEncodeStageStats, MetalLosslessEncodeTile,
-    SubmittedJ2kLosslessMetalBufferEncodeBatch, SubmittedJ2kLosslessMetalEncode,
+    encode_lossless_batch_with_report, submit_lossless_batch, submit_lossless_batch_to_metal,
+    validate_lossless_roundtrip_on_metal, validate_lossless_roundtrip_on_metal_with_session,
+    MetalEncodeInputStaging, MetalEncodeStageAccelerator, MetalEncodedJ2k,
+    MetalLosslessBufferEncodeBatchOutcome, MetalLosslessBufferEncodeOutcome,
+    MetalLosslessEncodeBatchRequest, MetalLosslessEncodeBatchStats, MetalLosslessEncodeConfig,
+    MetalLosslessEncodeOutcome, MetalLosslessEncodeResidency, MetalLosslessEncodeStageStats,
+    MetalLosslessEncodeTile, SubmittedJ2kLosslessMetalBufferEncodeBatch,
     SubmittedJ2kLosslessMetalEncodeBatch,
 };
 
@@ -141,11 +123,23 @@ pub enum Error {
     /// Metal is not available on the current host.
     #[error("Metal is unavailable on this host")]
     MetalUnavailable,
+    /// Metal runtime creation or device setup failed.
+    #[error("Metal runtime error: {message}")]
+    MetalRuntime {
+        /// Runtime error message.
+        message: String,
+    },
     /// Metal kernel launch, validation, or completion failed.
     #[error("Metal kernel error: {message}")]
     MetalKernel {
         /// Kernel error message.
         message: String,
+    },
+    /// Shared Metal backend state was poisoned by a prior panic.
+    #[error("Metal state `{state}` is poisoned")]
+    MetalStatePoisoned {
+        /// Name of the poisoned state.
+        state: &'static str,
     },
 }
 
@@ -164,7 +158,6 @@ impl CodecError for Error {
             Self::UnsupportedBackend { .. }
                 | Self::UnsupportedMetalRequest { .. }
                 | Self::MetalUnavailable
-                | Self::MetalKernel { .. }
         ) || matches!(self, Self::Decode(inner) if inner.is_unsupported())
     }
 
@@ -195,12 +188,6 @@ struct DirectColorPlanCacheEntry {
     prepared: Arc<crate::compute::PreparedDirectColorPlan>,
 }
 
-#[cfg(target_os = "macos")]
-static DIRECT_GRAY_PLAN_CACHE: OnceLock<Mutex<HashMap<u64, DirectGrayPlanCacheEntry>>> =
-    OnceLock::new();
-#[cfg(target_os = "macos")]
-static DIRECT_COLOR_PLAN_CACHE: OnceLock<Mutex<HashMap<u64, DirectColorPlanCacheEntry>>> =
-    OnceLock::new();
 #[cfg(target_os = "macos")]
 const DIRECT_PLAN_CACHE_CAP: usize = 128;
 #[cfg(target_os = "macos")]
@@ -245,30 +232,75 @@ impl Surface {
         self.pitch_bytes
     }
 
-    /// Return the tightly packed surface bytes.
-    pub fn as_bytes(&self) -> &[u8] {
+    fn checked_storage_range(&self, storage_len: usize) -> Result<Range<usize>, Error> {
+        let len = self.byte_len();
+        let end = self
+            .byte_offset
+            .checked_add(len)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "J2K Metal surface byte range overflows usize".to_string(),
+            })?;
+        if end > storage_len {
+            return Err(Error::MetalKernel {
+                message: format!(
+                    "J2K Metal surface byte range {start}..{end} exceeds storage length {storage_len}",
+                    start = self.byte_offset
+                ),
+            });
+        }
+        Ok(self.byte_offset..end)
+    }
+
+    fn storage_bytes(&self) -> Result<&[u8], Error> {
         match &self.storage {
             Storage::Host(bytes) => {
-                let len = self.byte_len();
-                &bytes[self.byte_offset..self.byte_offset + len]
+                let range = self.checked_storage_range(bytes.len())?;
+                Ok(&bytes[range])
             }
             #[cfg(target_os = "macos")]
             Storage::Metal(buffer) => {
-                let len = self.byte_len();
+                let storage_len =
+                    usize::try_from(buffer.length()).map_err(|_| Error::MetalKernel {
+                        message: "J2K Metal buffer length does not fit usize".to_string(),
+                    })?;
+                let range = self.checked_storage_range(storage_len)?;
+                let contents = buffer.contents();
+                if contents.is_null() {
+                    return Err(Error::MetalKernel {
+                        message: "J2K Metal surface buffer is not host-addressable".to_string(),
+                    });
+                }
+                // SAFETY: Metal surface byte views are bounded by validated dimensions and formats.
                 unsafe {
-                    core::slice::from_raw_parts(
-                        buffer.contents().cast::<u8>().add(self.byte_offset),
-                        len,
-                    )
+                    Ok(core::slice::from_raw_parts(
+                        contents.cast::<u8>().add(range.start),
+                        range.len(),
+                    ))
                 }
             }
         }
     }
 
+    /// Return the tightly packed surface bytes.
+    ///
+    /// Metal-backed surfaces are expected to use host-addressable buffers. This
+    /// method panics only if the surface metadata is internally inconsistent;
+    /// fallible operations such as [`Self::download_into`] return those errors.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.storage_bytes()
+            .expect("validated J2K Metal surface byte range")
+    }
+
     /// Copy the tightly packed surface into a caller-provided strided buffer.
     pub fn download_into(&self, out: &mut [u8], stride: usize) -> Result<(), Error> {
-        copy_tight_pixels_to_strided_output(self.as_bytes(), self.dimensions, self.fmt, out, stride)
-            .map_err(Error::from)
+        copy_tight_pixels_to_strided_output(
+            self.storage_bytes()?,
+            self.dimensions,
+            self.fmt,
+            out,
+            stride,
+        )
+        .map_err(Error::from)
     }
 
     #[cfg(target_os = "macos")]
@@ -321,6 +353,18 @@ impl DeviceSurface for Surface {
         self.backend
     }
 
+    fn residency(&self) -> signinum_core::SurfaceResidency {
+        match self.residency {
+            SurfaceResidency::Host => signinum_core::SurfaceResidency::Host,
+            SurfaceResidency::MetalResidentDecode => {
+                signinum_core::SurfaceResidency::MetalResidentDecode
+            }
+            SurfaceResidency::CpuStagedMetalUpload => {
+                signinum_core::SurfaceResidency::CpuStagedMetalUpload
+            }
+        }
+    }
+
     fn dimensions(&self) -> (u32, u32) {
         self.dimensions
     }
@@ -332,6 +376,19 @@ impl DeviceSurface for Surface {
     fn byte_len(&self) -> usize {
         self.pitch_bytes * self.dimensions.1 as usize
     }
+
+    fn memory_range(&self) -> Option<DeviceMemoryRange> {
+        match &self.storage {
+            Storage::Host(_) => None,
+            #[cfg(target_os = "macos")]
+            Storage::Metal(buffer) => Some(DeviceMemoryRange::new(
+                BackendKind::Metal,
+                u64::try_from(buffer.as_ptr() as usize).ok()?,
+                self.byte_offset,
+                self.byte_len(),
+            )),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -339,25 +396,61 @@ impl DeviceSurface for Surface {
 /// Reusable Metal device session for J2K decode and encode submissions.
 pub struct MetalBackendSession {
     device: Device,
+    runtime: Arc<OnceLock<Result<Arc<crate::compute::MetalRuntime>, MetalSupportError>>>,
+    direct_gray_plan_cache: Arc<Mutex<HashMap<u64, DirectGrayPlanCacheEntry>>>,
+    direct_color_plan_cache: Arc<Mutex<HashMap<u64, DirectColorPlanCacheEntry>>>,
+    region_scaled_color_plan_cache:
+        Arc<Mutex<HashMap<u64, Arc<crate::compute::PreparedDirectColorPlan>>>>,
 }
 
 #[cfg(target_os = "macos")]
 impl MetalBackendSession {
     /// Create a session bound to an existing Metal device.
     pub fn new(device: Device) -> Self {
-        Self { device }
+        Self {
+            device,
+            runtime: Arc::new(OnceLock::new()),
+            direct_gray_plan_cache: Arc::new(Mutex::new(HashMap::new())),
+            direct_color_plan_cache: Arc::new(Mutex::new(HashMap::new())),
+            region_scaled_color_plan_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Create a session from the system default Metal device.
     pub fn system_default() -> Result<Self, Error> {
-        Device::system_default()
+        system_default_device()
             .map(Self::new)
-            .ok_or(Error::MetalUnavailable)
+            .map_err(|error| crate::compute::runtime_initialization_error(&error))
     }
 
     /// Metal device used by this session.
     pub fn device(&self) -> &metal::DeviceRef {
         self.device.as_ref()
+    }
+
+    pub(crate) fn runtime(&self) -> Result<Arc<crate::compute::MetalRuntime>, Error> {
+        match self.runtime.get_or_init(|| {
+            crate::compute::MetalRuntime::new_with_device(&self.device).map(Arc::new)
+        }) {
+            Ok(runtime) => Ok(runtime.clone()),
+            Err(error) => Err(crate::compute::runtime_initialization_error(error)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn direct_cache_ids_for_test(&self) -> (usize, usize, usize) {
+        (
+            Arc::as_ptr(&self.direct_gray_plan_cache) as usize,
+            Arc::as_ptr(&self.direct_color_plan_cache) as usize,
+            Arc::as_ptr(&self.region_scaled_color_plan_cache) as usize,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl signinum_core::AcceleratorSession for MetalBackendSession {
+    fn backend_kind(&self) -> BackendKind {
+        BackendKind::Metal
     }
 }
 
@@ -366,7 +459,7 @@ impl core::fmt::Debug for MetalBackendSession {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MetalBackendSession")
             .field("device", &self.device.name())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -389,17 +482,35 @@ impl MetalBackendSession {
 /// Shared batching session used by J2K Metal submit APIs.
 pub struct MetalSession {
     shared: batch::SharedSession,
+    #[cfg(target_os = "macos")]
+    backend: Option<MetalBackendSession>,
 }
 
 impl MetalSession {
-    /// Number of Metal or emulated submissions flushed through this session.
-    pub fn submissions(&self) -> u64 {
-        self.shared.0.lock().expect("J2K Metal session").submissions
+    /// Create a batching session backed by an explicit Metal backend session.
+    #[cfg(target_os = "macos")]
+    pub fn with_backend_session(backend: MetalBackendSession) -> Self {
+        Self {
+            shared: batch::SharedSession::default(),
+            backend: Some(backend),
+        }
     }
 
-    fn record_submit(&mut self) {
-        let mut session = self.shared.0.lock().expect("J2K Metal session");
+    /// Metal backend session owned by this batching session, if any.
+    #[cfg(target_os = "macos")]
+    pub fn backend_session(&self) -> Option<&MetalBackendSession> {
+        self.backend.as_ref()
+    }
+
+    /// Number of Metal or emulated submissions flushed through this session.
+    pub fn submissions(&self) -> Result<u64, Error> {
+        Ok(self.shared.lock()?.submissions)
+    }
+
+    fn record_submit(&mut self) -> Result<(), Error> {
+        let mut session = self.shared.lock()?;
         session.submissions = session.submissions.saturating_add(1);
+        Ok(())
     }
 }
 
@@ -451,7 +562,7 @@ impl MetalTileBatch {
     ///
     /// Queued requests normally do not increment this until `decode_all` waits
     /// on the first result.
-    pub fn submissions(&self) -> u64 {
+    pub fn submissions(&self) -> Result<u64, Error> {
         self.session.submissions()
     }
 
@@ -480,7 +591,7 @@ impl MetalTileBatch {
             fmt,
             backend,
             batch::BatchOp::Full,
-        );
+        )?;
         self.submissions.push(submission);
         Ok(slot)
     }
@@ -512,7 +623,7 @@ impl MetalTileBatch {
             fmt,
             backend,
             batch::BatchOp::Region(roi),
-        );
+        )?;
         self.submissions.push(submission);
         Ok(slot)
     }
@@ -544,7 +655,7 @@ impl MetalTileBatch {
             fmt,
             backend,
             batch::BatchOp::Scaled(scale),
-        );
+        )?;
         self.submissions.push(submission);
         Ok(slot)
     }
@@ -577,7 +688,7 @@ impl MetalTileBatch {
             fmt,
             backend,
             batch::BatchOp::RegionScaled { roi, scale },
-        );
+        )?;
         self.submissions.push(submission);
         Ok(slot)
     }
@@ -670,13 +781,13 @@ impl<'a> J2kDecoder<'a> {
 
         #[cfg(target_os = "macos")]
         {
-            if let Some(surface) =
-                self.decode_direct_to_surface_with_device(fmt, &session.device)?
-            {
-                Ok(surface)
-            } else {
-                self.decode_full_to_metal_surface_with_device(fmt, &session.device)
-            }
+            crate::compute::with_runtime_for_session(session, |_| {
+                if let Some(surface) = self.decode_direct_to_surface_with_session(fmt, session)? {
+                    Ok(surface)
+                } else {
+                    self.decode_full_to_metal_surface_with_device(fmt, &session.device)
+                }
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -877,12 +988,13 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_gray_plan(
+    fn ensure_prepared_direct_gray_plan_with_session(
         &mut self,
+        session: &MetalBackendSession,
     ) -> Result<Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
         let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
         if self.native_prepared_direct_gray_plan.is_none() {
-            if let Some((plan, prepared)) = cached_global_direct_gray_plan(cache_key) {
+            if let Some((plan, prepared)) = cached_session_direct_gray_plan(session, cache_key) {
                 self.native_direct_gray_plan = Some(plan);
                 self.native_prepared_direct_gray_plan = Some(prepared);
             }
@@ -909,7 +1021,7 @@ impl<'a> J2kDecoder<'a> {
                 }
             };
             let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
-            store_global_direct_gray_plan(cache_key, &plan, prepared.clone());
+            store_session_direct_gray_plan(session, cache_key, &plan, prepared.clone());
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
@@ -918,12 +1030,13 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn ensure_prepared_direct_color_plan(
+    fn ensure_prepared_direct_color_plan_with_session(
         &mut self,
+        session: &MetalBackendSession,
     ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
         let cache_key = direct_plan_cache_key(self.inner.bytes());
         if self.native_prepared_direct_color_plan.is_none() {
-            if let Some((plan, prepared)) = cached_global_direct_color_plan(cache_key) {
+            if let Some((plan, prepared)) = cached_session_direct_color_plan(session, cache_key) {
                 self.native_direct_color_plan = Some(plan);
                 self.native_prepared_direct_color_plan = Some(prepared);
             }
@@ -950,11 +1063,73 @@ impl<'a> J2kDecoder<'a> {
                 }
             };
             let prepared = Arc::new(crate::compute::prepare_direct_color_plan(&plan)?);
-            store_global_direct_color_plan(cache_key, &plan, prepared.clone());
+            store_session_direct_color_plan(session, cache_key, &plan, prepared.clone());
             self.native_direct_color_plan = Some(plan);
             self.native_prepared_direct_color_plan = Some(prepared);
         }
 
+        Ok(self.native_prepared_direct_color_plan.clone())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ensure_prepared_direct_gray_plan(
+        &mut self,
+    ) -> Result<Option<Arc<crate::compute::PreparedDirectGrayscalePlan>>, Error> {
+        if self.native_prepared_direct_gray_plan.is_none() {
+            self.ensure_native_image()?;
+            let (Some(image), native_context) =
+                (self.native_image.as_ref(), &mut self.native_context)
+            else {
+                return Err(Error::Decode(J2kError::Backend(
+                    "native image cache missing".to_string(),
+                )));
+            };
+            let plan = match image.build_direct_grayscale_plan_with_context(native_context) {
+                Ok(plan) => plan,
+                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
+                    return Ok(None);
+                }
+                Err(error) => {
+                    return Err(Error::Decode(J2kError::Backend(format!(
+                        "failed to build J2K MetalDirect grayscale plan: {error}"
+                    ))));
+                }
+            };
+            let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
+            self.native_direct_gray_plan = Some(plan);
+            self.native_prepared_direct_gray_plan = Some(prepared);
+        }
+        Ok(self.native_prepared_direct_gray_plan.clone())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ensure_prepared_direct_color_plan(
+        &mut self,
+    ) -> Result<Option<Arc<crate::compute::PreparedDirectColorPlan>>, Error> {
+        if self.native_prepared_direct_color_plan.is_none() {
+            self.ensure_native_image()?;
+            let (Some(image), native_context) =
+                (self.native_image.as_ref(), &mut self.native_context)
+            else {
+                return Err(Error::Decode(J2kError::Backend(
+                    "native image cache missing".to_string(),
+                )));
+            };
+            let plan = match image.build_direct_color_plan_with_context(native_context) {
+                Ok(plan) => plan,
+                Err(error) if direct::is_unsupported_direct_plan_error(&error.to_string()) => {
+                    return Ok(None);
+                }
+                Err(error) => {
+                    return Err(Error::Decode(J2kError::Backend(format!(
+                        "failed to build J2K MetalDirect color plan: {error}"
+                    ))));
+                }
+            };
+            let prepared = Arc::new(crate::compute::prepare_direct_color_plan(&plan)?);
+            self.native_direct_color_plan = Some(plan);
+            self.native_prepared_direct_color_plan = Some(prepared);
+        }
         Ok(self.native_prepared_direct_color_plan.clone())
     }
 
@@ -987,18 +1162,20 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn decode_direct_to_surface_with_device(
+    fn decode_direct_to_surface_with_session(
         &mut self,
         fmt: PixelFormat,
-        device: &Device,
+        session: &MetalBackendSession,
     ) -> Result<Option<Surface>, Error> {
         if matches!(fmt, PixelFormat::Gray8 | PixelFormat::Gray16) {
-            let Some(plan) = self.ensure_prepared_direct_gray_plan()? else {
+            let Some(plan) = self.ensure_prepared_direct_gray_plan_with_session(session)? else {
                 return Ok(None);
             };
             return Ok(Some(
                 crate::compute::execute_prepared_direct_grayscale_plan_with_device(
-                    &plan, fmt, device,
+                    &plan,
+                    fmt,
+                    &session.device,
                 )?,
             ));
         }
@@ -1007,11 +1184,13 @@ impl<'a> J2kDecoder<'a> {
             fmt,
             PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16
         ) {
-            let Some(plan) = self.ensure_prepared_direct_color_plan()? else {
+            let Some(plan) = self.ensure_prepared_direct_color_plan_with_session(session)? else {
                 return Ok(None);
             };
             return match crate::compute::execute_prepared_direct_color_plan_with_device(
-                &plan, fmt, device,
+                &plan,
+                fmt,
+                &session.device,
             ) {
                 Ok(surface) => Ok(Some(surface)),
                 Err(error) if is_direct_color_runtime_fallback_error(&error) => Ok(None),
@@ -1033,22 +1212,21 @@ impl<'a> J2kDecoder<'a> {
     }
 
     #[cfg(target_os = "macos")]
-    fn decode_region_scaled_direct_to_surface_with_device(
+    fn decode_region_scaled_direct_to_surface_with_session(
         &mut self,
         fmt: PixelFormat,
         roi: Rect,
         scale: Downscale,
-        device: &Device,
+        session: &MetalBackendSession,
     ) -> Result<Option<Surface>, Error> {
-        crate::hybrid::decode_region_scaled_direct_to_surface_with_device(
+        crate::hybrid::decode_region_scaled_direct_to_surface_with_session(
             self.inner.bytes(),
             fmt,
             roi,
             scale,
-            device,
+            session,
         )
     }
-
     #[cfg(target_os = "macos")]
     fn decode_full_to_metal_surface(&mut self, fmt: PixelFormat) -> Result<Surface, Error> {
         self.ensure_native_image()?;
@@ -1115,13 +1293,6 @@ impl<'a> J2kDecoder<'a> {
             return Ok(Vec::new());
         }
         if self.native_direct_gray_plan.is_none() {
-            let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
-            if let Some((plan, prepared)) = cached_global_direct_gray_plan(cache_key) {
-                self.native_direct_gray_plan = Some(plan);
-                self.native_prepared_direct_gray_plan = Some(prepared);
-            }
-        }
-        if self.native_direct_gray_plan.is_none() {
             self.ensure_native_image()?;
             let (Some(image), native_context) =
                 (self.native_image.as_ref(), &mut self.native_context)
@@ -1130,12 +1301,10 @@ impl<'a> J2kDecoder<'a> {
                     "native image cache missing".to_string(),
                 )));
             };
-            let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
             let plan = image
                 .build_direct_grayscale_plan_with_context(native_context)
                 .map_err(|error| J2kError::Backend(error.to_string()))?;
             let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
-            store_global_direct_gray_plan(cache_key, &plan, prepared.clone());
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
@@ -1179,13 +1348,6 @@ impl<'a> J2kDecoder<'a> {
             return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
         }
         if self.native_direct_gray_plan.is_none() {
-            let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
-            if let Some((plan, prepared)) = cached_global_direct_gray_plan(cache_key) {
-                self.native_direct_gray_plan = Some(plan);
-                self.native_prepared_direct_gray_plan = Some(prepared);
-            }
-        }
-        if self.native_direct_gray_plan.is_none() {
             self.ensure_native_image()?;
             let (Some(image), native_context) =
                 (self.native_image.as_ref(), &mut self.native_context)
@@ -1194,12 +1356,10 @@ impl<'a> J2kDecoder<'a> {
                     "native image cache missing".to_string(),
                 )));
             };
-            let cache_key = direct_gray_plan_cache_key(self.inner.bytes());
             let Ok(plan) = image.build_direct_grayscale_plan_with_context(native_context) else {
                 return self.decode_repeated_grayscale_cpu_to_surfaces(fmt, count);
             };
             let prepared = Arc::new(crate::compute::prepare_direct_grayscale_plan(&plan)?);
-            store_global_direct_gray_plan(cache_key, &plan, prepared.clone());
             self.native_direct_gray_plan = Some(plan);
             self.native_prepared_direct_gray_plan = Some(prepared);
         }
@@ -1357,29 +1517,30 @@ impl<'a> J2kDecoder<'a> {
             device,
         )
     }
-
     #[cfg(target_os = "macos")]
-    fn decode_region_scaled_to_metal_surface_with_device(
+    fn decode_region_scaled_to_metal_surface_with_session(
         &mut self,
         fmt: PixelFormat,
         roi: Rect,
         scale: Downscale,
         plan: DeviceDecodePlan,
-        device: &Device,
+        session: &MetalBackendSession,
     ) -> Result<Surface, Error> {
         if let Some(surface) =
-            self.decode_region_scaled_direct_to_surface_with_device(fmt, roi, scale, device)?
+            self.decode_region_scaled_direct_to_surface_with_session(fmt, roi, scale, session)?
         {
             return Ok(surface);
         }
-        crate::compute::decode_region_scaled_to_surface_with_device(
-            self.inner.bytes(),
-            plan.source_dims(),
-            fmt,
-            roi,
-            scale,
-            device,
-        )
+        crate::compute::with_runtime_for_session(session, |_| {
+            crate::compute::decode_region_scaled_to_surface_with_device(
+                self.inner.bytes(),
+                plan.source_dims(),
+                fmt,
+                roi,
+                scale,
+                &session.device,
+            )
+        })
     }
 
     pub(crate) fn decode_to_surface_impl(
@@ -1458,7 +1619,9 @@ impl<'a> J2kDecoder<'a> {
                 self.inner.info().dimensions,
                 DeviceDecodeRequest::Region { roi },
             )?;
-            self.decode_region_to_metal_surface_with_device(fmt, plan, &session.device)
+            crate::compute::with_runtime_for_session(session, |_| {
+                self.decode_region_to_metal_surface_with_device(fmt, plan, &session.device)
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1553,7 +1716,9 @@ impl<'a> J2kDecoder<'a> {
                 self.inner.info().dimensions,
                 DeviceDecodeRequest::Scaled { scale },
             )?;
-            self.decode_scaled_to_metal_surface_with_device(fmt, scale, plan, &session.device)
+            crate::compute::with_runtime_for_session(session, |_| {
+                self.decode_scaled_to_metal_surface_with_device(fmt, scale, plan, &session.device)
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1582,13 +1747,7 @@ impl<'a> J2kDecoder<'a> {
                 self.inner.info().dimensions,
                 DeviceDecodeRequest::RegionScaled { roi, scale },
             )?;
-            self.decode_region_scaled_to_metal_surface_with_device(
-                fmt,
-                roi,
-                scale,
-                plan,
-                &session.device,
-            )
+            self.decode_region_scaled_to_metal_surface_with_session(fmt, roi, scale, plan, session)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1611,27 +1770,27 @@ fn direct_gray_plan_cache_key(bytes: &[u8]) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn cached_global_direct_gray_plan(
+fn cached_session_direct_gray_plan(
+    session: &MetalBackendSession,
     key: u64,
 ) -> Option<(
     J2kDirectGrayscalePlan,
     Arc<crate::compute::PreparedDirectGrayscalePlan>,
 )> {
-    let cache = DIRECT_GRAY_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let guard = cache.lock().ok()?;
+    let guard = session.direct_gray_plan_cache.lock().ok()?;
     guard
         .get(&key)
         .map(|entry| (entry.plan.clone(), entry.prepared.clone()))
 }
 
 #[cfg(target_os = "macos")]
-fn store_global_direct_gray_plan(
+fn store_session_direct_gray_plan(
+    session: &MetalBackendSession,
     key: u64,
     plan: &J2kDirectGrayscalePlan,
     prepared: Arc<crate::compute::PreparedDirectGrayscalePlan>,
 ) {
-    let cache = DIRECT_GRAY_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = cache.lock() {
+    if let Ok(mut guard) = session.direct_gray_plan_cache.lock() {
         evict_one_direct_plan_if_needed(&mut guard);
         guard.insert(
             key,
@@ -1644,27 +1803,27 @@ fn store_global_direct_gray_plan(
 }
 
 #[cfg(target_os = "macos")]
-fn cached_global_direct_color_plan(
+fn cached_session_direct_color_plan(
+    session: &MetalBackendSession,
     key: u64,
 ) -> Option<(
     J2kDirectColorPlan,
     Arc<crate::compute::PreparedDirectColorPlan>,
 )> {
-    let cache = DIRECT_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let guard = cache.lock().ok()?;
+    let guard = session.direct_color_plan_cache.lock().ok()?;
     guard
         .get(&key)
         .map(|entry| (entry.plan.clone(), entry.prepared.clone()))
 }
 
 #[cfg(target_os = "macos")]
-fn store_global_direct_color_plan(
+fn store_session_direct_color_plan(
+    session: &MetalBackendSession,
     key: u64,
     plan: &J2kDirectColorPlan,
     prepared: Arc<crate::compute::PreparedDirectColorPlan>,
 ) {
-    let cache = DIRECT_COLOR_PLAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = cache.lock() {
+    if let Ok(mut guard) = session.direct_color_plan_cache.lock() {
         evict_one_direct_plan_if_needed(&mut guard);
         guard.insert(
             key,
@@ -1879,7 +2038,7 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         fmt: PixelFormat,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
-        session.record_submit();
+        session.record_submit()?;
         Ok(ReadySubmission::from_result(
             self.decode_to_surface_impl(fmt, backend),
         ))
@@ -1892,7 +2051,7 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         roi: Rect,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
-        session.record_submit();
+        session.record_submit()?;
         Ok(ReadySubmission::from_result(
             self.decode_region_to_surface_impl(fmt, roi, backend),
         ))
@@ -1905,7 +2064,7 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
-        session.record_submit();
+        session.record_submit()?;
         Ok(ReadySubmission::from_result(
             self.decode_scaled_to_surface_impl(fmt, scale, backend),
         ))
@@ -1919,7 +2078,7 @@ impl<'a> ImageDecodeSubmit<'a> for J2kDecoder<'a> {
         scale: Downscale,
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
-        session.record_submit();
+        session.record_submit()?;
         Ok(ReadySubmission::from_result(
             self.decode_region_scaled_to_surface_impl(fmt, roi, scale, backend),
         ))
@@ -1941,13 +2100,7 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
-        Ok(batch::queue_tile_request(
-            session,
-            input,
-            fmt,
-            backend,
-            batch::BatchOp::Full,
-        ))
+        batch::queue_tile_request(session, input, fmt, backend, batch::BatchOp::Full)
     }
 
     fn submit_tile_region_to_device(
@@ -1960,13 +2113,7 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
-        Ok(batch::queue_tile_request(
-            session,
-            input,
-            fmt,
-            backend,
-            batch::BatchOp::Region(roi),
-        ))
+        batch::queue_tile_request(session, input, fmt, backend, batch::BatchOp::Region(roi))
     }
 
     fn submit_tile_scaled_to_device(
@@ -1979,13 +2126,7 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
-        Ok(batch::queue_tile_request(
-            session,
-            input,
-            fmt,
-            backend,
-            batch::BatchOp::Scaled(scale),
-        ))
+        batch::queue_tile_request(session, input, fmt, backend, batch::BatchOp::Scaled(scale))
     }
 
     fn submit_tile_region_scaled_to_device(
@@ -1999,13 +2140,13 @@ impl TileBatchDecodeSubmit for Codec {
         backend: BackendRequest,
     ) -> Result<Self::SubmittedSurface, Self::Error> {
         let _ = (ctx, pool);
-        Ok(batch::queue_tile_request(
+        batch::queue_tile_request(
             session,
             input,
             fmt,
             backend,
             batch::BatchOp::RegionScaled { roi, scale },
-        ))
+        )
     }
 }
 
@@ -2117,6 +2258,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metal_runtime_failures_are_not_unsupported_errors() {
+        for err in [
+            Error::MetalRuntime {
+                message: "runtime".to_string(),
+            },
+            Error::MetalKernel {
+                message: "kernel".to_string(),
+            },
+            Error::MetalStatePoisoned {
+                state: "J2K Metal session",
+            },
+        ] {
+            assert!(!err.is_unsupported(), "{err:?}");
+        }
+    }
+
+    #[test]
     fn cpu_uploaded_surface_reports_host_residency() {
         let surface = upload_surface(
             vec![1, 2, 3],
@@ -2130,6 +2288,47 @@ mod tests {
         assert_eq!(surface.residency(), SurfaceResidency::Host);
         #[cfg(target_os = "macos")]
         assert!(surface.metal_buffer().is_none());
+    }
+
+    #[test]
+    fn download_into_reports_inconsistent_surface_storage_range() {
+        let surface = Surface {
+            backend: BackendKind::Cpu,
+            residency: SurfaceResidency::Host,
+            dimensions: (2, 1),
+            fmt: PixelFormat::Gray8,
+            pitch_bytes: 2,
+            byte_offset: 0,
+            storage: Storage::Host(vec![7]),
+        };
+        let mut out = [0_u8; 2];
+
+        let err = surface
+            .download_into(&mut out, 2)
+            .expect_err("inconsistent surface storage should be reported");
+
+        assert!(matches!(
+            err,
+            Error::MetalKernel { message }
+                if message == "J2K Metal surface byte range 0..2 exceeds storage length 1"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_backend_sessions_own_distinct_direct_plan_caches() {
+        let Some(device) = Device::system_default() else {
+            eprintln!("skipping session cache ownership test: no Metal device");
+            return;
+        };
+
+        let first = MetalBackendSession::new(device.clone());
+        let second = MetalBackendSession::new(device);
+
+        assert_ne!(
+            first.direct_cache_ids_for_test(),
+            second.direct_cache_ids_for_test()
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -188,6 +188,7 @@ mod tests {
             let captured = decoder.take_captured_planes();
             assert_eq!(captured.len(), components.planes().len());
             for (plane, buffer) in components.planes().iter().zip(captured.iter()) {
+                // SAFETY: SIMD lane captures operate on fixed-width stack buffers.
                 let captured = unsafe {
                     core::slice::from_raw_parts(
                         buffer.contents().cast::<f32>(),

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use signinum_core::BackendRequest;
 use signinum_jpeg::adapter::{
-    build_metal_fast420_packet, build_metal_fast422_packet, build_metal_fast444_packet,
-    JpegMetalFast420PacketV1, JpegMetalFast422PacketV1, JpegMetalFast444PacketV1,
+    build_fast420_packet, build_fast422_packet, build_fast444_packet, JpegFast420PacketV1,
+    JpegFast422PacketV1, JpegFast444PacketV1,
 };
 
 use crate::{batch, Error};
@@ -18,9 +18,9 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 pub(crate) type SharedFastPackets = (
-    Option<Arc<JpegMetalFast444PacketV1>>,
-    Option<Arc<JpegMetalFast422PacketV1>>,
-    Option<Arc<JpegMetalFast420PacketV1>>,
+    Option<Arc<JpegFast444PacketV1>>,
+    Option<Arc<JpegFast422PacketV1>>,
+    Option<Arc<JpegFast420PacketV1>>,
 );
 
 #[derive(Clone)]
@@ -34,15 +34,16 @@ pub(crate) struct CachedBatchShape {
 pub(crate) struct CachedFastPackets {
     digest: u64,
     input: Arc<[u8]>,
-    fast444_packet: Option<Arc<JpegMetalFast444PacketV1>>,
-    fast422_packet: Option<Arc<JpegMetalFast422PacketV1>>,
-    fast420_packet: Option<Arc<JpegMetalFast420PacketV1>>,
+    fast444_packet: Option<Arc<JpegFast444PacketV1>>,
+    fast422_packet: Option<Arc<JpegFast422PacketV1>>,
+    fast420_packet: Option<Arc<JpegFast420PacketV1>>,
 }
 
 #[derive(Clone)]
 struct CachedInputAlias {
     source_ptr: usize,
     source_len: usize,
+    digest: u64,
     input: Arc<[u8]>,
 }
 
@@ -51,12 +52,22 @@ pub(crate) struct SessionState {
     pub(crate) submissions: u64,
     pub(crate) queued: Vec<crate::batch::QueuedRequest>,
     pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) backend_session: Option<crate::MetalBackendSession>,
     batch_shapes: VecDeque<CachedBatchShape>,
     fast_packets: VecDeque<CachedFastPackets>,
     input_aliases: VecDeque<CachedInputAlias>,
 }
 
 impl SessionState {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_backend_session(backend_session: crate::MetalBackendSession) -> Self {
+        Self {
+            backend_session: Some(backend_session),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn queue_request(&mut self, request: crate::batch::QueuedRequest) -> usize {
         let slot = self.completed.len();
         self.completed.push(None);
@@ -67,12 +78,22 @@ impl SessionState {
     pub(crate) fn intern_input_slice(&mut self, input: &[u8]) -> Arc<[u8]> {
         let source_ptr = input.as_ptr() as usize;
         let source_len = input.len();
+        // Pointer identity alone is unsound: a caller may reuse one allocation
+        // for different payloads, so every hit is verified by digest plus byte
+        // equality, mirroring resolve_batch_shape/resolve_fast_packets.
+        let digest = digest_bytes(input);
         if let Some(entry) = self
             .input_aliases
-            .iter()
+            .iter_mut()
             .find(|entry| entry.source_ptr == source_ptr && entry.source_len == source_len)
         {
-            return Arc::clone(&entry.input);
+            if entry.digest == digest && entry.input.as_ref() == input {
+                return Arc::clone(&entry.input);
+            }
+            let refreshed = Arc::<[u8]>::from(input);
+            entry.digest = digest;
+            entry.input = Arc::clone(&refreshed);
+            return refreshed;
         }
 
         let input = Arc::<[u8]>::from(input);
@@ -82,6 +103,7 @@ impl SessionState {
         self.input_aliases.push_back(CachedInputAlias {
             source_ptr,
             source_len,
+            digest,
             input: Arc::clone(&input),
         });
         input
@@ -193,15 +215,9 @@ impl SessionState {
             );
         }
 
-        let fast444_packet = build_metal_fast444_packet(input.as_ref())
-            .ok()
-            .map(Arc::new);
-        let fast422_packet = build_metal_fast422_packet(input.as_ref())
-            .ok()
-            .map(Arc::new);
-        let fast420_packet = build_metal_fast420_packet(input.as_ref())
-            .ok()
-            .map(Arc::new);
+        let fast444_packet = build_fast444_packet(input.as_ref()).ok().map(Arc::new);
+        let fast422_packet = build_fast422_packet(input.as_ref()).ok().map(Arc::new);
+        let fast420_packet = build_fast420_packet(input.as_ref()).ok().map(Arc::new);
         if self.fast_packets.len() == FAST_PACKET_CACHE_SLOTS {
             self.fast_packets.pop_front();
         }
@@ -215,10 +231,29 @@ impl SessionState {
 
         (fast444_packet, fast422_packet, fast420_packet)
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn backend_session(&mut self) -> Result<&crate::MetalBackendSession, Error> {
+        if self.backend_session.is_none() {
+            self.backend_session = Some(crate::MetalBackendSession::system_default()?);
+        }
+        Ok(self
+            .backend_session
+            .as_ref()
+            .expect("backend session initialized"))
+    }
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct SharedSession(pub(crate) Arc<Mutex<SessionState>>);
+
+impl SharedSession {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, SessionState>, Error> {
+        self.0.lock().map_err(|_| Error::MetalStatePoisoned {
+            state: "JPEG Metal session",
+        })
+    }
+}
 
 fn digest_bytes(bytes: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET;
@@ -277,6 +312,37 @@ mod tests {
             .expect("fast422 shape");
 
         assert_eq!(shape.sampling_family, batch::SamplingFamily::Fast422);
+    }
+
+    #[test]
+    fn intern_input_slice_refreshes_when_buffer_is_overwritten() {
+        let mut session = SessionState::default();
+        let mut buffer = vec![0xAAu8; 64];
+
+        let first = session.intern_input_slice(&buffer);
+        assert_eq!(first.as_ref(), [0xAAu8; 64].as_slice());
+
+        // Reuse the same allocation (same pointer, same length) with new contents.
+        buffer.fill(0xBB);
+        let second = session.intern_input_slice(&buffer);
+        assert_eq!(
+            second.as_ref(),
+            [0xBBu8; 64].as_slice(),
+            "input-alias cache returned stale bytes for a reused buffer"
+        );
+        assert_eq!(session.input_aliases.len(), 1);
+    }
+
+    #[test]
+    fn intern_input_slice_reuses_interned_arc_for_unchanged_buffer() {
+        let mut session = SessionState::default();
+        let buffer = vec![0x42u8; 64];
+
+        let first = session.intern_input_slice(&buffer);
+        let second = session.intern_input_slice(&buffer);
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(session.input_aliases.len(), 1);
     }
 
     #[cfg(not(target_os = "macos"))]

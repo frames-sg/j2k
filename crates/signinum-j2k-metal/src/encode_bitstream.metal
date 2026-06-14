@@ -7384,6 +7384,75 @@ inline void j2k_packet_tree_encode(
     }
 }
 
+struct J2kPacketTreeScratch {
+    device uint *inc_value;
+    device uint *inc_current;
+    device uint *inc_known;
+    device uint *zbp_value;
+    device uint *zbp_current;
+    device uint *zbp_known;
+};
+
+inline J2kPacketTreeScratch j2k_packet_tree_scratch(
+    device uint *tree_scratch,
+    uint node_capacity
+) {
+    return {
+        tree_scratch,
+        tree_scratch + node_capacity,
+        tree_scratch + node_capacity * 2u,
+        tree_scratch + node_capacity * 3u,
+        tree_scratch + node_capacity * 4u,
+        tree_scratch + node_capacity * 5u,
+    };
+}
+
+inline J2kPacketDescriptor j2k_packet_descriptor_for_order(
+    device const J2kPacketDescriptor *descriptors,
+    uint descriptor_count,
+    uint packet_order_idx
+) {
+    return descriptor_count > 0u
+        ? descriptors[packet_order_idx]
+        : J2kPacketDescriptor{
+            packet_order_idx,
+            packet_order_idx,
+            0u,
+            packet_order_idx,
+            0u,
+            0u,
+            0u,
+            0u,
+        };
+}
+
+inline bool j2k_packet_append_header(
+    device uchar *out,
+    device const uchar *header,
+    thread J2kPacketBitWriter &writer,
+    uint output_capacity,
+    thread uint &out_len,
+    device J2kPacketEncodeStatus *status
+) {
+    if (writer.failed != 0u || out_len + writer.len > output_capacity) {
+        j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 3u, 0u);
+        return false;
+    }
+    for (uint idx = 0u; idx < writer.len; ++idx) {
+        out[out_len + idx] = header[idx];
+    }
+    out_len += writer.len;
+    if (writer.len > 0u && header[writer.len - 1u] == uchar(0xFFu)) {
+        if (out_len >= output_capacity) {
+            j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u);
+            return false;
+        }
+        out[out_len] = uchar(0u);
+        out_len += 1u;
+    }
+    return true;
+}
+
 kernel void j2k_encode_packetization(
     device const J2kPacketResolution *resolutions [[buffer(0)]],
     device const J2kPacketSubband *subbands [[buffer(1)]],
@@ -7405,21 +7474,18 @@ kernel void j2k_encode_packetization(
     j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 0u, 0u);
 
     const uint node_capacity = params.scratch_node_capacity;
-    device uint *inc_value = tree_scratch;
-    device uint *inc_current = tree_scratch + node_capacity;
-    device uint *inc_known = tree_scratch + node_capacity * 2u;
-    device uint *zbp_value = tree_scratch + node_capacity * 3u;
-    device uint *zbp_current = tree_scratch + node_capacity * 4u;
-    device uint *zbp_known = tree_scratch + node_capacity * 5u;
+    const J2kPacketTreeScratch scratch = j2k_packet_tree_scratch(tree_scratch, node_capacity);
 
     uint out_len = 0u;
     const uint packet_count =
         params.descriptor_count > 0u ? params.descriptor_count : params.resolution_count;
     for (uint packet_order_idx = 0u; packet_order_idx < packet_count; ++packet_order_idx) {
         const bool has_descriptor = params.descriptor_count > 0u;
-        const J2kPacketDescriptor descriptor = has_descriptor
-            ? descriptors[packet_order_idx]
-            : J2kPacketDescriptor{packet_order_idx, packet_order_idx, 0u, packet_order_idx, 0u, 0u, 0u, 0u};
+        const J2kPacketDescriptor descriptor = j2k_packet_descriptor_for_order(
+            descriptors,
+            params.descriptor_count,
+            packet_order_idx
+        );
         const uint packet_index = descriptor.packet_index;
         if (packet_index >= params.resolution_count) {
             j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 6u, 0u);
@@ -7461,9 +7527,9 @@ kernel void j2k_encode_packetization(
                         subband.num_cbs_y,
                         false,
                         descriptor.layer,
-                        inc_value,
-                        inc_current,
-                        inc_known,
+                        scratch.inc_value,
+                        scratch.inc_current,
+                        scratch.inc_known,
                         node_capacity,
                         level_offsets,
                         level_widths,
@@ -7484,9 +7550,9 @@ kernel void j2k_encode_packetization(
                         subband.num_cbs_y,
                         true,
                         descriptor.layer,
-                        zbp_value,
-                        zbp_current,
-                        zbp_known,
+                        scratch.zbp_value,
+                        scratch.zbp_current,
+                        scratch.zbp_known,
                         node_capacity,
                         z_level_offsets,
                         z_level_widths,
@@ -7512,9 +7578,9 @@ kernel void j2k_encode_packetization(
                             x,
                             y,
                             descriptor.layer + 1u,
-                            inc_value,
-                            inc_current,
-                            inc_known,
+                            scratch.inc_value,
+                            scratch.inc_current,
+                            scratch.inc_known,
                             level_offsets,
                             level_widths,
                             levels,
@@ -7527,9 +7593,9 @@ kernel void j2k_encode_packetization(
                             x,
                             y,
                             block.num_zero_bitplanes + 1u,
-                            zbp_value,
-                            zbp_current,
-                            zbp_known,
+                            scratch.zbp_value,
+                            scratch.zbp_current,
+                            scratch.zbp_known,
                             z_level_offsets,
                             z_level_widths,
                             z_levels,
@@ -7565,21 +7631,8 @@ kernel void j2k_encode_packetization(
             j2k_packet_writer_finish(writer);
         }
 
-        if (writer.failed != 0u || out_len + writer.len > params.output_capacity) {
-            j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 3u, 0u);
+        if (!j2k_packet_append_header(out, header, writer, params.output_capacity, out_len, status)) {
             return;
-        }
-        for (uint idx = 0u; idx < writer.len; ++idx) {
-            out[out_len + idx] = header[idx];
-        }
-        out_len += writer.len;
-        if (writer.len > 0u && header[writer.len - 1u] == uchar(0xFFu)) {
-            if (out_len >= params.output_capacity) {
-                j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u);
-                return;
-            }
-            out[out_len] = uchar(0u);
-            out_len += 1u;
         }
 
         if (any_data) {
@@ -7732,12 +7785,7 @@ kernel void j2k_encode_packetization_batched(
     j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 0u, 0u);
 
     const uint node_capacity = params.scratch_node_capacity;
-    device uint *inc_value = tree_scratch;
-    device uint *inc_current = tree_scratch + node_capacity;
-    device uint *inc_known = tree_scratch + node_capacity * 2u;
-    device uint *zbp_value = tree_scratch + node_capacity * 3u;
-    device uint *zbp_current = tree_scratch + node_capacity * 4u;
-    device uint *zbp_known = tree_scratch + node_capacity * 5u;
+    const J2kPacketTreeScratch scratch = j2k_packet_tree_scratch(tree_scratch, node_capacity);
 
     uint out_len = 0u;
     uint payload_copy_count = 0u;
@@ -7749,9 +7797,11 @@ kernel void j2k_encode_packetization_batched(
         params.descriptor_count > 0u ? params.descriptor_count : params.resolution_count;
     for (uint packet_order_idx = 0u; packet_order_idx < packet_count; ++packet_order_idx) {
         const bool has_descriptor = params.descriptor_count > 0u;
-        const J2kPacketDescriptor descriptor = has_descriptor
-            ? descriptors[packet_order_idx]
-            : J2kPacketDescriptor{packet_order_idx, packet_order_idx, 0u, packet_order_idx, 0u, 0u, 0u, 0u};
+        const J2kPacketDescriptor descriptor = j2k_packet_descriptor_for_order(
+            descriptors,
+            params.descriptor_count,
+            packet_order_idx
+        );
         const uint packet_index = descriptor.packet_index;
         if (packet_index >= params.resolution_count) {
             j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 6u, 0u);
@@ -7793,9 +7843,9 @@ kernel void j2k_encode_packetization_batched(
                         subband.num_cbs_y,
                         false,
                         descriptor.layer,
-                        inc_value,
-                        inc_current,
-                        inc_known,
+                        scratch.inc_value,
+                        scratch.inc_current,
+                        scratch.inc_known,
                         node_capacity,
                         level_offsets,
                         level_widths,
@@ -7816,9 +7866,9 @@ kernel void j2k_encode_packetization_batched(
                         subband.num_cbs_y,
                         true,
                         descriptor.layer,
-                        zbp_value,
-                        zbp_current,
-                        zbp_known,
+                        scratch.zbp_value,
+                        scratch.zbp_current,
+                        scratch.zbp_known,
                         node_capacity,
                         z_level_offsets,
                         z_level_widths,
@@ -7844,9 +7894,9 @@ kernel void j2k_encode_packetization_batched(
                             x,
                             y,
                             descriptor.layer + 1u,
-                            inc_value,
-                            inc_current,
-                            inc_known,
+                            scratch.inc_value,
+                            scratch.inc_current,
+                            scratch.inc_known,
                             level_offsets,
                             level_widths,
                             levels,
@@ -7859,9 +7909,9 @@ kernel void j2k_encode_packetization_batched(
                             x,
                             y,
                             block.num_zero_bitplanes + 1u,
-                            zbp_value,
-                            zbp_current,
-                            zbp_known,
+                            scratch.zbp_value,
+                            scratch.zbp_current,
+                            scratch.zbp_known,
                             z_level_offsets,
                             z_level_widths,
                             z_levels,
@@ -7897,21 +7947,8 @@ kernel void j2k_encode_packetization_batched(
             j2k_packet_writer_finish(writer);
         }
 
-        if (writer.failed != 0u || out_len + writer.len > params.output_capacity) {
-            j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 3u, 0u);
+        if (!j2k_packet_append_header(out, header, writer, params.output_capacity, out_len, status)) {
             return;
-        }
-        for (uint idx = 0u; idx < writer.len; ++idx) {
-            out[out_len + idx] = header[idx];
-        }
-        out_len += writer.len;
-        if (writer.len > 0u && header[writer.len - 1u] == uchar(0xFFu)) {
-            if (out_len >= params.output_capacity) {
-                j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u);
-                return;
-            }
-            out[out_len] = uchar(0u);
-            out_len += 1u;
         }
 
         if (any_data) {
@@ -8004,12 +8041,7 @@ kernel void j2k_encode_packetization_resident_classic_batched(
     j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 0u, 0u);
 
     const uint node_capacity = params.scratch_node_capacity;
-    device uint *inc_value = tree_scratch;
-    device uint *inc_current = tree_scratch + node_capacity;
-    device uint *inc_known = tree_scratch + node_capacity * 2u;
-    device uint *zbp_value = tree_scratch + node_capacity * 3u;
-    device uint *zbp_current = tree_scratch + node_capacity * 4u;
-    device uint *zbp_known = tree_scratch + node_capacity * 5u;
+    const J2kPacketTreeScratch scratch = j2k_packet_tree_scratch(tree_scratch, node_capacity);
 
     uint out_len = 0u;
     uint payload_copy_count = 0u;
@@ -8021,9 +8053,11 @@ kernel void j2k_encode_packetization_resident_classic_batched(
         params.descriptor_count > 0u ? params.descriptor_count : params.resolution_count;
     for (uint packet_order_idx = 0u; packet_order_idx < packet_count; ++packet_order_idx) {
         const bool has_descriptor = params.descriptor_count > 0u;
-        const J2kPacketDescriptor descriptor = has_descriptor
-            ? descriptors[packet_order_idx]
-            : J2kPacketDescriptor{packet_order_idx, packet_order_idx, 0u, packet_order_idx, 0u, 0u, 0u, 0u};
+        const J2kPacketDescriptor descriptor = j2k_packet_descriptor_for_order(
+            descriptors,
+            params.descriptor_count,
+            packet_order_idx
+        );
         const uint packet_index = descriptor.packet_index;
         if (packet_index >= params.resolution_count) {
             j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 6u, 0u);
@@ -8075,9 +8109,9 @@ kernel void j2k_encode_packetization_resident_classic_batched(
 	                        subband.num_cbs_y,
 	                        false,
 	                        descriptor.layer,
-	                        inc_value,
-	                        inc_current,
-	                        inc_known,
+	                        scratch.inc_value,
+	                        scratch.inc_current,
+	                        scratch.inc_known,
 	                        node_capacity,
 	                        level_offsets,
 	                        level_widths,
@@ -8101,9 +8135,9 @@ kernel void j2k_encode_packetization_resident_classic_batched(
 	                        subband.num_cbs_y,
 	                        true,
 	                        descriptor.layer,
-	                        zbp_value,
-	                        zbp_current,
-	                        zbp_known,
+	                        scratch.zbp_value,
+	                        scratch.zbp_current,
+	                        scratch.zbp_known,
 	                        node_capacity,
 	                        z_level_offsets,
 	                        z_level_widths,
@@ -8135,9 +8169,9 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                             x,
                             y,
                             descriptor.layer + 1u,
-                            inc_value,
-                            inc_current,
-                            inc_known,
+                            scratch.inc_value,
+                            scratch.inc_current,
+                            scratch.inc_known,
                             level_offsets,
                             level_widths,
                             levels,
@@ -8150,9 +8184,9 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                             x,
                             y,
 	                            block.num_zero_bitplanes + 1u,
-	                            zbp_value,
-	                            zbp_current,
-	                            zbp_known,
+	                            scratch.zbp_value,
+	                            scratch.zbp_current,
+	                            scratch.zbp_known,
 	                            z_level_offsets,
 	                            z_level_widths,
 	                            z_levels,
@@ -8200,21 +8234,8 @@ kernel void j2k_encode_packetization_resident_classic_batched(
             j2k_packet_writer_finish(writer);
         }
 
-        if (writer.failed != 0u || out_len + writer.len > params.output_capacity) {
-            j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 3u, 0u);
+        if (!j2k_packet_append_header(out, header, writer, params.output_capacity, out_len, status)) {
             return;
-        }
-        for (uint idx = 0u; idx < writer.len; ++idx) {
-            out[out_len + idx] = header[idx];
-        }
-        out_len += writer.len;
-        if (writer.len > 0u && header[writer.len - 1u] == uchar(0xFFu)) {
-            if (out_len >= params.output_capacity) {
-                j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u);
-                return;
-            }
-            out[out_len] = uchar(0u);
-            out_len += 1u;
         }
 
         if (any_data) {
