@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
+#[cfg(target_os = "macos")]
+use signinum_jpeg::adapter::decoder_bytes;
 use signinum_jpeg::adapter::{
     build_fast420_packet_for_decoder, build_fast422_packet_for_decoder,
-    build_fast444_packet_for_decoder, decoder_bytes, JpegFast420PacketV1, JpegFast422PacketV1,
+    build_fast444_packet_for_decoder, JpegFast420PacketV1, JpegFast422PacketV1,
     JpegFast444PacketV1,
 };
-use signinum_jpeg::{
-    ColorSpace as JpegColorSpace, Decoder as CpuDecoder, Rect as JpegRect, ScratchPool,
-};
+#[cfg(target_os = "macos")]
+use signinum_jpeg::ColorSpace as JpegColorSpace;
+use signinum_jpeg::{Decoder as CpuDecoder, Rect as JpegRect, ScratchPool};
 
 use crate::{batch, routing, Error, Surface};
 #[cfg(target_os = "macos")]

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use signinum_core::{BackendRequest, DeviceSurface, Downscale, PixelFormat, Rect};
+#[cfg(target_os = "macos")]
+use signinum_core::DeviceSurface;
+use signinum_core::{BackendRequest, Downscale, PixelFormat, Rect};
 use signinum_jpeg::{Decoder, ScratchPool};
 #[cfg(target_os = "macos")]
 use signinum_jpeg_metal::viewport::{
