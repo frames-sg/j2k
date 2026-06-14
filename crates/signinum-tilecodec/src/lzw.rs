@@ -60,21 +60,15 @@ impl TileDecompress for LzwCodec {
                 }
                 Ok(weezl::LzwStatus::Ok) => {}
                 Ok(weezl::LzwStatus::NoProgress) => {
-                    return Err(TileCodecError::Backend(
-                        "lzw decode failed: no progress before end marker".to_string(),
-                    ));
+                    return Err(crate::error::malformed_input("lzw decode", "no progress"));
                 }
-                Err(error) => {
-                    return Err(TileCodecError::Backend(format!(
-                        "lzw decode failed: {error:?}"
-                    )));
+                Err(_error) => {
+                    return Err(crate::error::malformed_input("lzw decode", "decoder error"));
                 }
             }
 
             if input_offset == input.len() {
-                return Err(TileCodecError::Backend(
-                    "lzw decode failed: missing end marker".to_string(),
-                ));
+                return Err(crate::error::truncated_input("lzw decode"));
             }
         }
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    bounded::{copy_scratch_to_output, read_to_scratch_bounded, BoundedReadError},
+    bounded::{read_to_output_bounded, BoundedReadError},
     pool::ZstdPool,
     TileCodecError,
 };
@@ -24,20 +24,13 @@ impl TileDecompress for ZstdCodec {
         out: &mut [u8],
     ) -> Result<usize, Self::Error> {
         pool.scratch.clear();
-        let mut decoder = zstd::stream::read::Decoder::new(input).map_err(|error| {
-            TileCodecError::Backend(format!("zstd decoder init failed: {error}"))
-        })?;
-        let written = match read_to_scratch_bounded(&mut decoder, &mut pool.scratch, out.len()) {
-            Ok(written) => written,
-            Err(BoundedReadError::OutputTooSmall(error)) => return Err(error.into()),
-            Err(BoundedReadError::Io(error)) => {
-                return Err(TileCodecError::Backend(format!(
-                    "zstd decode failed: {error}"
-                )));
+        let mut decoder = zstd::stream::read::Decoder::new(input)
+            .map_err(|error| crate::error::malformed_io_error(&error, "zstd decoder init"))?;
+        read_to_output_bounded(&mut decoder, &mut pool.scratch, out).map_err(|error| match error {
+            BoundedReadError::OutputTooSmall(error) => TileCodecError::Buffer(error),
+            BoundedReadError::Io(error) => {
+                crate::error::malformed_io_error(&error, "zstd decode failed")
             }
-        };
-
-        copy_scratch_to_output(&pool.scratch, out);
-        Ok(written)
+        })
     }
 }

@@ -22,7 +22,9 @@ impl From<BoundedReadError> for crate::TileCodecError {
     fn from(error: BoundedReadError) -> Self {
         match error {
             BoundedReadError::OutputTooSmall(error) => Self::Buffer(error),
-            BoundedReadError::Io(error) => Self::Backend(error.to_string()),
+            BoundedReadError::Io(error) => {
+                crate::error::input_or_backend_io_error(&error, "bounded decode")
+            }
         }
     }
 }
@@ -48,6 +50,15 @@ pub(crate) fn read_to_scratch_bounded<R: Read>(
     }
 
     Ok(scratch.len())
+}
+
+pub(crate) fn read_to_output_bounded<R: Read>(
+    reader: R,
+    scratch: &mut Vec<u8>,
+    out: &mut [u8],
+) -> Result<usize, BoundedReadError> {
+    read_to_scratch_bounded(reader, scratch, out.len())?;
+    Ok(copy_scratch_to_output(scratch, out))
 }
 
 pub(crate) fn observed_too_small(required: usize, have: usize) -> BufferError {
