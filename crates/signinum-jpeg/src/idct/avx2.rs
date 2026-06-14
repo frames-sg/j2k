@@ -48,14 +48,29 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
 
     let src = input.as_ptr();
-    let (r0l, r0h) = unsafe { widen(src.add(0)) };
-    let (r1l, r1h) = unsafe { widen(src.add(8)) };
-    let (r2l, r2h) = unsafe { widen(src.add(16)) };
-    let (r3l, r3h) = unsafe { widen(src.add(24)) };
-    let (r4l, r4h) = unsafe { widen(src.add(32)) };
-    let (r5l, r5h) = unsafe { widen(src.add(40)) };
-    let (r6l, r6h) = unsafe { widen(src.add(48)) };
-    let (r7l, r7h) = unsafe { widen(src.add(56)) };
+    // SAFETY: `input` contains exactly 64 i16 coefficients. The offsets below
+    // load eight coefficients each and stay within that fixed block.
+    let (
+        (r0l, r0h),
+        (r1l, r1h),
+        (r2l, r2h),
+        (r3l, r3h),
+        (r4l, r4h),
+        (r5l, r5h),
+        (r6l, r6h),
+        (r7l, r7h),
+    ) = unsafe {
+        (
+            widen(src.add(0)),
+            widen(src.add(8)),
+            widen(src.add(16)),
+            widen(src.add(24)),
+            widen(src.add(32)),
+            widen(src.add(40)),
+            widen(src.add(48)),
+            widen(src.add(56)),
+        )
+    };
 
     let round1 = _mm_set1_epi32(1 << (PASS1_SHIFT - 1));
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>(r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l, round1);
@@ -97,6 +112,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     );
 
     let store = output.as_mut_ptr();
+    // SAFETY: `output` contains 64 writable bytes, and each store writes one
+    // eight-byte row at offsets 0, 8, ..., 56.
     unsafe {
         store_row(store, fll0, flh0);
         store_row(store.add(8), fll1, flh1);
@@ -114,6 +131,8 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
 #[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn widen(src: *const i16) -> (__m128i, __m128i) {
+    // SAFETY: callers pass a pointer to at least eight readable i16 values;
+    // unaligned loads are intentional for JPEG coefficient blocks.
     let full = unsafe { core::ptr::read_unaligned(src.cast::<__m128i>()) };
     let lo = _mm_cvtepi16_epi32(full);
     let hi_shuffled = _mm_srli_si128::<8>(full);
@@ -125,8 +144,12 @@ unsafe fn widen(src: *const i16) -> (__m128i, __m128i) {
 #[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn store_row(dst: *mut u8, lo: __m128i, hi: __m128i) {
-    let i16_packed = _mm_packs_epi32(lo, hi); // [lo0..3, hi0..3] as i16
-    let u8_packed = _mm_packus_epi16(i16_packed, i16_packed); // low 8 lanes are our u8s
+    // Lanes are [lo0..3, hi0..3] as i16.
+    let i16_packed = _mm_packs_epi32(lo, hi);
+    // The low eight lanes are the saturated output row.
+    let u8_packed = _mm_packus_epi16(i16_packed, i16_packed);
+    // SAFETY: callers pass a pointer to eight writable bytes; the store writes
+    // only the low 64 bits and does not require alignment.
     unsafe {
         _mm_storel_epi64(dst.cast(), u8_packed);
     }
@@ -221,6 +244,7 @@ mod tests {
         idct_scalar(input, &mut scalar_out);
         let mut avx_out = [0u8; 64];
         if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: the runtime guard proves the required AVX2 feature.
             unsafe { idct_islow(input, &mut avx_out) };
         } else {
             // Running the test on a non-AVX2 host: copy scalar output so

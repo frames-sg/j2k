@@ -2859,6 +2859,7 @@ mod tests {
 
     // Shims over the collapsed batch API so every legacy entry shape
     // (source x op x target) keeps device coverage.
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
         output: &MetalBatchOutputBuffer,
@@ -2874,6 +2875,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_batch_into_metal_textures_with_session(
         inputs: &[&[u8]],
         output: &MetalBatchTextureOutput,
@@ -2889,6 +2891,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_batch_into_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         output: &MetalBatchOutputBuffer,
@@ -2904,6 +2907,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_batch_into_metal_textures_with_session(
         decoders: &[&Decoder<'_>],
         output: &MetalBatchTextureOutput,
@@ -2919,6 +2923,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_batch_into_resizable_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         output: &mut MetalBatchOutputBuffer,
@@ -2934,6 +2939,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_scaled_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
         scale: Downscale,
@@ -2950,6 +2956,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_scaled_batch_into_metal_textures_with_session(
         inputs: &[&[u8]],
         scale: Downscale,
@@ -2966,6 +2973,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_scaled_batch_into_resizable_metal_textures_with_session(
         inputs: &[&[u8]],
         scale: Downscale,
@@ -2982,6 +2990,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_scaled_batch_into_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         scale: Downscale,
@@ -2998,6 +3007,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_scaled_batch_into_metal_textures_with_session(
         decoders: &[&Decoder<'_>],
         scale: Downscale,
@@ -3014,6 +3024,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_scaled_batch_into_resizable_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         scale: Downscale,
@@ -3030,6 +3041,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_scaled_batch_into_resizable_metal_textures_with_session(
         decoders: &[&Decoder<'_>],
         scale: Downscale,
@@ -3046,6 +3058,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_region_scaled_batch_into_metal_buffer_with_session(
         inputs: &[&[u8]],
         roi: Rect,
@@ -3063,6 +3076,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_region_scaled_batch_into_metal_textures_with_session(
         inputs: &[&[u8]],
         roi: Rect,
@@ -3080,6 +3094,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_region_scaled_batch_into_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         roi: Rect,
@@ -3097,6 +3112,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_region_scaled_batch_into_metal_textures_with_session(
         decoders: &[&Decoder<'_>],
         roi: Rect,
@@ -3114,6 +3130,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_buffer_with_session(
         decoders: &[&Decoder<'_>],
         roi: Rect,
@@ -3131,6 +3148,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn decode_rgb8_decoder_region_scaled_batch_into_resizable_metal_textures_with_session(
         decoders: &[&Decoder<'_>],
         roi: Rect,
@@ -3148,9 +3166,10 @@ mod tests {
         )
     }
 
-    use signinum_jpeg::adapter::{
-        build_fast420_packet, build_fast422_packet, build_fast444_packet,
-    };
+    #[cfg(target_os = "macos")]
+    use signinum_jpeg::adapter::build_fast422_packet;
+    use signinum_jpeg::adapter::{build_fast420_packet, build_fast444_packet};
+    #[cfg(target_os = "macos")]
     use signinum_jpeg::{
         encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
     };
@@ -3158,6 +3177,7 @@ mod tests {
     const BASELINE_420: &[u8] = include_bytes!("../fixtures/jpeg/baseline_420_16x16.jpg");
     const BASELINE_420_RESTART: &[u8] =
         include_bytes!("../fixtures/jpeg/baseline_420_restart_32x16.jpg");
+    #[cfg(target_os = "macos")]
     const BASELINE_422: &[u8] = include_bytes!("../fixtures/jpeg/baseline_422_16x8.jpg");
     const BASELINE_444: &[u8] = include_bytes!("../fixtures/jpeg/baseline_444_8x8.jpg");
     #[cfg(not(target_os = "macos"))]

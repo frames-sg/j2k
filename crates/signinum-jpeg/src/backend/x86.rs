@@ -326,6 +326,9 @@ unsafe fn fill_rgb_row_pair_from_420_avx2(
         let cr_bottom = &mut cr_bottom[..width];
         upsample_h2v2_fancy_rows(prev_cb, curr_cb, next_cb, width, cb_top, cb_bottom);
         upsample_h2v2_fancy_rows(prev_cr, curr_cr, next_cr, width, cr_top, cr_bottom);
+        // SAFETY: This AVX2 helper is reached through the safe wrapper, which
+        // clamps both luma rows, both scratch chroma rows, and both RGB
+        // destination rows to the same pixel width.
         unsafe {
             fill_rgb_row_from_ycbcr_avx2(y_top, cb_top, cr_top, dst_top);
             fill_rgb_row_from_ycbcr_avx2(y_bottom, cb_bottom, cr_bottom, dst_bottom);
@@ -333,6 +336,9 @@ unsafe fn fill_rgb_row_pair_from_420_avx2(
     } else {
         upsample_h2v2_fancy_row(prev_cb, curr_cb, next_cb, width, false, cb_top);
         upsample_h2v2_fancy_row(prev_cr, curr_cr, next_cr, width, false, cr_top);
+        // SAFETY: This AVX2 helper is reached through the safe wrapper, which
+        // clamps the luma row, scratch chroma rows, and RGB destination row to
+        // the same pixel width.
         unsafe {
             fill_rgb_row_from_ycbcr_avx2(y_top, cb_top, cr_top, dst_top);
         }
