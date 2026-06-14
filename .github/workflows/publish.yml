@@ -17,142 +17,269 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
   CRATES_IO_INDEX_SETTLE_SECONDS: "130"
   DRY_RUN_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run-only }}
 
 jobs:
-  publish-signinum-core:
+  preflight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: scripts/publish-crate.sh signinum-core
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask release-integrity
 
-  publish-signinum-j2k-native:
+  publish-signinum-core:
     needs:
-      - publish-signinum-profile
+      - preflight
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: scripts/publish-crate.sh signinum-j2k-native
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh signinum-core
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-cuda-runtime:
     needs:
       - publish-signinum-core
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-cuda-runtime
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-profile:
     needs:
       - publish-signinum-cuda-runtime
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-profile
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+
+  publish-signinum-j2k-types:
+    needs:
+      - publish-signinum-profile
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh signinum-j2k-types
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+
+  publish-signinum-j2k-native:
+    needs:
+      - publish-signinum-j2k-types
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh signinum-j2k-native
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-jpeg:
     needs:
       - publish-signinum-j2k-native
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-jpeg
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-tilecodec:
     needs:
       - publish-signinum-jpeg
       - publish-signinum-j2k-native
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-tilecodec
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-j2k:
     needs:
       - publish-signinum-tilecodec
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-j2k
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-transcode:
     needs:
       - publish-signinum-j2k
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-transcode
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+
+  publish-signinum-transcode-cuda:
+    needs:
+      - publish-signinum-transcode
+      - publish-signinum-cuda-runtime
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh signinum-transcode-cuda
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
+
+  publish-signinum-metal-support:
+    needs:
+      - publish-signinum-transcode-cuda
+    runs-on: ubuntu-latest
+    environment: crates-io-publish
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: scripts/publish-crate.sh signinum-metal-support
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-jpeg-metal:
     needs:
-      - publish-signinum-transcode
+      - publish-signinum-metal-support
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-jpeg-metal
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-j2k-metal:
     needs:
       - publish-signinum-jpeg-metal
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-j2k-metal
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-transcode-metal:
     needs:
       - publish-signinum-transcode
+      - publish-signinum-metal-support
       - publish-signinum-j2k-metal
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-transcode-metal
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-jpeg-cuda:
     needs:
       - publish-signinum-cuda-runtime
+      - publish-signinum-transcode-cuda
       - publish-signinum-transcode-metal
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-jpeg-cuda
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-j2k-cuda:
     needs:
       - publish-signinum-jpeg-cuda
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-j2k-cuda
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum-cli:
     needs:
       - publish-signinum-j2k-cuda
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum-cli
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
 
   publish-signinum:
     needs:
       - publish-signinum-tilecodec
       - publish-signinum-transcode
+      - publish-signinum-transcode-cuda
+      - publish-signinum-metal-support
       - publish-signinum-jpeg-metal
       - publish-signinum-j2k-metal
       - publish-signinum-transcode-metal
@@ -160,7 +287,12 @@ jobs:
       - publish-signinum-j2k-cuda
       - publish-signinum-cli
     runs-on: ubuntu-latest
+    environment: crates-io-publish
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: scripts/publish-crate.sh signinum
+        env:
+          CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}

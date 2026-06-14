@@ -1,25 +1,28 @@
 # Security Policy
 
-## Reporting a Vulnerability
-
-JPEG decoders ingest adversarial byte streams from the wild. If you find a
-crash, memory-safety violation, or undefined behavior in `signinum`, please
-report it privately rather than opening a public issue.
-
-Use GitHub's private vulnerability reporting for the repository, or contact the
-maintainer through the repository owner profile if private reporting is not yet
-enabled.
-
-Please include:
-- A minimal reproducer (input bytes + API call).
-- Rust version, target triple, and cargo features used.
-- Expected vs. observed behavior.
-
-Reports are acknowledged within 7 days. Patches are issued as soon as possible,
-generally within 30 days for high-severity issues.
-
 ## Supported versions
 
-The supported stable line is the current `0.4.x` facade line. Experimental
-adapter and transcode crates receive security fixes in their latest `0.4.x`
-release while they remain part of the repository.
+The current supported development line is `0.5.x`.
+
+## Reporting vulnerabilities
+
+Report suspected vulnerabilities privately through GitHub private vulnerability
+reporting: <https://github.com/frames-sg/signinum/security/advisories/new>
+(repository **Security** tab → **Report a vulnerability**). Do not open public
+issues or publish proof-of-concept exploit details before triage.
+
+Response expectations:
+
+- Acknowledgment of a private report within **3 business days**.
+- Triage decision (accepted / declined / needs more information) within
+  **14 days** of acknowledgment.
+- Coordinated disclosure: we will agree on a publication date with the
+  reporter before any advisory or fix details are made public.
+
+## Baseline expectations
+
+- Unsupported input must fail explicitly.
+- Error responses must avoid sensitive internal details.
+- Device backends must not silently substitute a different explicit backend.
+- Unsafe Rust inventory is tracked in `docs/unsafe-audit.md`.
+- Fuzzing and malformed-input tests are part of release hardening.

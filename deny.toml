@@ -1,10 +1,17 @@
 [advisories]
 yanked     = "deny"
 ignore     = [
-    # Transitive via metal 0.33.0, the current Metal binding release.
+    # Transitive via metal 0.33, the Metal binding release pinned in
+    # [workspace.dependencies].
     # RUSTSEC-2024-0436 is an unmaintained advisory for paste, not a known
-    # memory-safety or code-execution vulnerability. Revisit when metal-rs
-    # removes paste or offers a maintained replacement path.
+    # memory-safety or code-execution vulnerability. Current metal 0.33 still
+    # depends on paste, and upstream closed paste removal as not planned.
+    # Review-by: 2026-12-31.
+    # Sources:
+    # - https://crates.io/crates/metal
+    # - https://github.com/gfx-rs/metal-rs/blob/master/Cargo.toml
+    # - https://rustsec.org/advisories/RUSTSEC-2024-0436.html
+    # - https://github.com/gfx-rs/metal-rs/issues/349
     "RUSTSEC-2024-0436",
 ]
 

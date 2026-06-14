@@ -1,5 +1,7 @@
 target/
 docs/superpowers/
+.codewhale/
+lcov.info
 **/*.rs.bk
 Cargo.lock.bak
 .vscode/

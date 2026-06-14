@@ -45,9 +45,10 @@ jobs:
     name: Linux CI on self-hosted CUDA runner
     runs-on: [self-hosted, Linux, X64, cuda]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - name: Show runner diagnostics
         run: |
@@ -72,8 +73,10 @@ jobs:
     name: Metal validation on Apple Silicon
     runs-on: [self-hosted, macOS, ARM64, metal]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo test -p signinum-jpeg-metal --all-targets
       - run: cargo test -p signinum-j2k-metal --all-targets
       - run: cargo bench -p signinum-jpeg-metal --no-run
@@ -98,13 +101,16 @@ jobs:
     name: CUDA API compatibility on x86_64
     runs-on: [self-hosted, Linux, X64, cuda]
     env:
+      NVCC: /usr/local/cuda/bin/nvcc
       SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
       SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
       SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - name: Assert CUDA runtime gate is set
         run: |
           test -n "${SIGNINUM_REQUIRE_CUDA_RUNTIME:-}" || { echo "SIGNINUM_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }
@@ -120,9 +126,6 @@ jobs:
           fi
           command -v nvcc
           nvcc --version
-          if command -v ldconfig >/dev/null 2>&1; then
-            ldconfig -p | grep -i nvjpeg || true
-          fi
       - run: cargo test -p signinum-cuda-runtime --all-targets
       - run: cargo test -p signinum-cuda-runtime --all-targets --features cuda-profiling
       - run: cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime
@@ -229,7 +232,7 @@ jobs:
           python3 -m json.tool target/decode_compare.json >/dev/null
       - name: Upload NVIDIA baseline comparison artifacts
         if: ${{ inputs.run-nvidia-baseline && always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nvidia-baseline-comparison
           path: |
@@ -329,7 +332,7 @@ jobs:
           fi
       - name: Upload CUDA HTJ2K decode RCA profile artifacts
         if: ${{ inputs.run-cuda-htj2k-decode-profile && always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cuda-htj2k-decode-rca-profile
           path: |
