@@ -8,11 +8,13 @@ use signinum_test_support::{
 };
 #[cfg(target_os = "macos")]
 use signinum_transcode::accelerator::TranscodeStageError;
+#[cfg(target_os = "macos")]
 use signinum_transcode::JpegToHtj2kError;
 #[cfg(target_os = "macos")]
 use signinum_transcode::{
     JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
 };
+#[cfg(target_os = "macos")]
 use signinum_transcode_metal::MetalDctToWaveletStageAccelerator;
 
 #[cfg(target_os = "macos")]

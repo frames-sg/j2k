@@ -1385,14 +1385,21 @@ pub enum Rgb8MetalBatchOp {
     /// Whole-tile downscale (half, quarter, or eighth).
     Scaled(Downscale),
     /// Scaled decode of one region, shared by every tile in the batch.
-    RegionScaled { roi: Rect, scale: Downscale },
+    RegionScaled {
+        /// Region of interest to decode from every source tile.
+        roi: Rect,
+        /// Downscale factor applied to the selected region.
+        scale: Downscale,
+    },
 }
 
 /// A batched RGB8 Metal decode request: what to decode and how.
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub struct Rgb8MetalBatchRequest<'a, 'b> {
+    /// Source JPEG bytes or prepared decoders for the batch.
     pub source: Rgb8MetalBatchSource<'a, 'b>,
+    /// Geometry operation applied to each source tile.
     pub op: Rgb8MetalBatchOp,
 }
 
