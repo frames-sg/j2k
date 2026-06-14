@@ -150,6 +150,7 @@ Stability values:
 | --- | --- | --- | --- |
 | `SIGNINUM_FUZZ_RUNS` | Number of runs passed to each `cargo xtask fuzz-run` target. | `1000` | Test/CI |
 | `SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS` | Optional libFuzzer max total time for `cargo xtask fuzz-run`. | Not passed | Test/CI |
+| `SIGNINUM_FUZZ_TARGET` | Target triple passed to `cargo fuzz run --target` by `cargo xtask fuzz-run`. | Nightly host target from `rustc -vV` | Test/CI |
 | `SIGNINUM_SEMVER_TOOLCHAIN` | Rust toolchain used by `cargo xtask semver`. | `stable` | Test/CI |
 
 CI overrides the fuzz defaults to 512 runs / 60 seconds for pull requests and
