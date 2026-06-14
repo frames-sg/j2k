@@ -6,8 +6,9 @@
 //! `cargo run -p signinum-jpeg --example decode_region`
 
 use signinum_jpeg::{Decoder, PixelFormat, Rect};
+use signinum_test_support::JPEG_BASELINE_420_16X16;
 
-const TILE: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+const TILE: &[u8] = JPEG_BASELINE_420_16X16;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decoder = Decoder::new(TILE)?;

@@ -3,12 +3,17 @@
 //! Bit-exact parity against libjpeg-turbo's ISLOW path.
 
 use signinum_jpeg::{Decoder, Downscale, PixelFormat, Rect};
+use signinum_test_support::{
+    crop_interleaved_bytes, crop_interleaved_u8, restart_coded_grayscale_jpeg,
+    scaled_rect_covering, PixelRect, JPEG_BASELINE_420_16X16, JPEG_BASELINE_420_16X16_RGB,
+    JPEG_GRAYSCALE_8X8, JPEG_GRAYSCALE_8X8_GRAY,
+};
 
-const BASELINE_420_JPG: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
-const BASELINE_420_RGB: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.rgb");
+const BASELINE_420_JPG: &[u8] = JPEG_BASELINE_420_16X16;
+const BASELINE_420_RGB: &[u8] = JPEG_BASELINE_420_16X16_RGB;
 
-const GRAYSCALE_8X8_JPG: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.jpg");
-const GRAYSCALE_8X8_GRAY: &[u8] = include_bytes!("../fixtures/conformance/grayscale_8x8.gray");
+const GRAYSCALE_8X8_JPG: &[u8] = JPEG_GRAYSCALE_8X8;
+const GRAYSCALE_8X8_GRAY: &[u8] = JPEG_GRAYSCALE_8X8_GRAY;
 
 #[test]
 fn baseline_420_16x16_matches_libjpeg_turbo_bit_exact() {
@@ -132,79 +137,23 @@ fn decode_full_rgb(dec: &Decoder<'_>) -> Vec<u8> {
 }
 
 fn crop_rgb8(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
-    let mut out = Vec::with_capacity((roi.w * roi.h * 3) as usize);
-    let row_stride = width * 3;
-    let crop_stride = roi.w as usize * 3;
-    for y in roi.y as usize..(roi.y + roi.h) as usize {
-        let row = &full[y * row_stride..(y + 1) * row_stride];
-        let x0 = roi.x as usize * 3;
-        out.extend_from_slice(&row[x0..x0 + crop_stride]);
-    }
-    out
+    crop_interleaved_bytes(full, width, 3, pixel_rect(roi))
 }
 
 fn crop_gray8(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {
-    let mut out = Vec::with_capacity((roi.w * roi.h) as usize);
-    for y in roi.y as usize..(roi.y + roi.h) as usize {
-        let row = &full[y * width..(y + 1) * width];
-        let x0 = roi.x as usize;
-        out.extend_from_slice(&row[x0..x0 + roi.w as usize]);
-    }
-    out
+    crop_interleaved_u8(full, width, 1, pixel_rect(roi))
 }
 
 fn scaled_rect_covering_half(roi: Rect) -> Rect {
-    let x0 = roi.x / 2;
-    let y0 = roi.y / 2;
-    let x1 = (roi.x + roi.w).div_ceil(2);
-    let y1 = (roi.y + roi.h).div_ceil(2);
+    let scaled = scaled_rect_covering(pixel_rect(roi), 2);
     Rect {
-        x: x0,
-        y: y0,
-        w: x1 - x0,
-        h: y1 - y0,
+        x: scaled.x,
+        y: scaled.y,
+        w: scaled.w,
+        h: scaled.h,
     }
 }
 
-fn restart_coded_grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0xff, 0xd8]);
-    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
-    bytes.extend(std::iter::repeat_n(16u8, 64));
-    bytes.extend_from_slice(&[
-        0xff,
-        0xc0,
-        0x00,
-        11,
-        8,
-        (height >> 8) as u8,
-        height as u8,
-        (width >> 8) as u8,
-        width as u8,
-        1,
-        1,
-        0x11,
-        0,
-    ]);
-    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
-
-    let mcu_cols = u32::from(width).div_ceil(8);
-    let mcu_rows = u32::from(height).div_ceil(8);
-    let mcu_count = (mcu_cols * mcu_rows) as usize;
-    for mcu in 0..mcu_count {
-        bytes.push(0x00);
-        if mcu + 1 != mcu_count {
-            bytes.extend_from_slice(&[0xff, 0xd0 | ((mcu as u8) & 0x07)]);
-        }
-    }
-
-    bytes.extend_from_slice(&[0xff, 0xd9]);
-    bytes
+fn pixel_rect(roi: Rect) -> PixelRect {
+    PixelRect::new(roi.x, roi.y, roi.w, roi.h)
 }

@@ -52,13 +52,64 @@ pub struct SamplingFactors {
     pub max_v: u8,
 }
 
+/// Error returned when constructing [`SamplingFactors`] from caller input.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SamplingFactorsError {
+    /// At least one component is required.
+    #[error("sampling metadata must contain at least one component")]
+    Empty,
+    /// This crate stores at most four component sampling entries.
+    #[error("sampling metadata supports at most four components, got {count}")]
+    TooManyComponents {
+        /// Supplied component count.
+        count: usize,
+    },
+    /// Component sampling factors are outside the JPEG legal range.
+    #[error("invalid sampling ({h}x{v}) for component {component}")]
+    InvalidSampling {
+        /// Component index in declaration order.
+        component: usize,
+        /// Horizontal sampling factor.
+        h: u8,
+        /// Vertical sampling factor.
+        v: u8,
+    },
+}
+
 impl SamplingFactors {
     /// Build sampling metadata from component `(H, V)` factors.
-    pub fn from_components(components: &[(u8, u8)]) -> Self {
-        assert!(
-            components.len() <= 4,
-            "sampling metadata supports at most four components"
-        );
+    ///
+    /// # Errors
+    /// Returns [`SamplingFactorsError`] when no components are supplied, more
+    /// than four components are supplied, or any sampling factor is outside
+    /// the JPEG legal range `1..=4`.
+    pub fn from_components(components: &[(u8, u8)]) -> Result<Self, SamplingFactorsError> {
+        if components.is_empty() {
+            return Err(SamplingFactorsError::Empty);
+        }
+        if components.len() > 4 {
+            return Err(SamplingFactorsError::TooManyComponents {
+                count: components.len(),
+            });
+        }
+        for (idx, &(h, v)) in components.iter().enumerate() {
+            if !(1..=4).contains(&h) || !(1..=4).contains(&v) {
+                return Err(SamplingFactorsError::InvalidSampling {
+                    component: idx,
+                    h,
+                    v,
+                });
+            }
+        }
+        Ok(Self::from_validated_components(components))
+    }
+
+    pub(crate) fn from_validated_components(components: &[(u8, u8)]) -> Self {
+        debug_assert!(!components.is_empty());
+        debug_assert!(components.len() <= 4);
+        debug_assert!(components
+            .iter()
+            .all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v)));
         let mut packed = [(0u8, 0u8); 4];
         let mut max_h = 0u8;
         let mut max_v = 0u8;
@@ -216,23 +267,43 @@ pub(crate) enum OutputFormat {
     Rgb8,
     Rgb8Scaled { factor: DownscaleFactor },
     Rgba8 { alpha: u8 },
+    Rgba8Scaled { alpha: u8, factor: DownscaleFactor },
     Gray8,
     Gray8Scaled { factor: DownscaleFactor },
+    Gray16,
+    Gray16Scaled { factor: DownscaleFactor },
+    Rgb16,
+    Rgb16Scaled { factor: DownscaleFactor },
+    Rgba16 { alpha: u16 },
+    Rgba16Scaled { alpha: u16, factor: DownscaleFactor },
 }
 
 impl OutputFormat {
     pub(crate) fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Rgb8 | Self::Rgb8Scaled { .. } => 3,
-            Self::Rgba8 { .. } => 4,
+            Self::Rgba8 { .. } | Self::Rgba8Scaled { .. } => 4,
             Self::Gray8 | Self::Gray8Scaled { .. } => 1,
+            Self::Gray16 | Self::Gray16Scaled { .. } => 2,
+            Self::Rgb16 | Self::Rgb16Scaled { .. } => 6,
+            Self::Rgba16 { .. } | Self::Rgba16Scaled { .. } => 8,
         }
     }
 
     pub(crate) fn downscale(self) -> DownscaleFactor {
         match self {
-            Self::Rgb8 | Self::Rgba8 { .. } | Self::Gray8 => DownscaleFactor::Full,
-            Self::Rgb8Scaled { factor } | Self::Gray8Scaled { factor } => factor,
+            Self::Rgb8
+            | Self::Rgba8 { .. }
+            | Self::Gray8
+            | Self::Gray16
+            | Self::Rgb16
+            | Self::Rgba16 { .. } => DownscaleFactor::Full,
+            Self::Rgb8Scaled { factor }
+            | Self::Rgba8Scaled { factor, .. }
+            | Self::Gray8Scaled { factor }
+            | Self::Gray16Scaled { factor }
+            | Self::Rgb16Scaled { factor }
+            | Self::Rgba16Scaled { factor, .. } => factor,
         }
     }
 }
@@ -440,6 +511,14 @@ mod tests {
             3
         );
         assert_eq!(OutputFormat::Rgba8 { alpha: 255 }.bytes_per_pixel(), 4);
+        assert_eq!(
+            OutputFormat::Rgba8Scaled {
+                alpha: 255,
+                factor: DownscaleFactor::Half,
+            }
+            .bytes_per_pixel(),
+            4
+        );
         assert_eq!(OutputFormat::Gray8.bytes_per_pixel(), 1);
         assert_eq!(
             OutputFormat::Gray8Scaled {
@@ -448,11 +527,40 @@ mod tests {
             .bytes_per_pixel(),
             1
         );
+        assert_eq!(OutputFormat::Gray16.bytes_per_pixel(), 2);
+        assert_eq!(
+            OutputFormat::Gray16Scaled {
+                factor: DownscaleFactor::Half
+            }
+            .bytes_per_pixel(),
+            2
+        );
+        assert_eq!(OutputFormat::Rgb16.bytes_per_pixel(), 6);
+        assert_eq!(
+            OutputFormat::Rgb16Scaled {
+                factor: DownscaleFactor::Half
+            }
+            .bytes_per_pixel(),
+            6
+        );
+        assert_eq!(
+            OutputFormat::Rgba16 { alpha: u16::MAX }.bytes_per_pixel(),
+            8
+        );
+        assert_eq!(
+            OutputFormat::Rgba16Scaled {
+                alpha: u16::MAX,
+                factor: DownscaleFactor::Half
+            }
+            .bytes_per_pixel(),
+            8
+        );
     }
 
     #[test]
     fn sampling_factors_store_components_without_heap_state() {
-        let sampling = SamplingFactors::from_components(&[(2, 2), (1, 1), (1, 1)]);
+        let sampling =
+            SamplingFactors::from_components(&[(2, 2), (1, 1), (1, 1)]).expect("sampling");
         assert_eq!(sampling.len(), 3);
         assert_eq!(sampling.component(0), Some((2, 2)));
         assert_eq!(sampling.component(1), Some((1, 1)));
@@ -463,11 +571,61 @@ mod tests {
     }
 
     #[test]
+    fn sampling_factors_reject_empty_component_list() {
+        assert!(matches!(
+            SamplingFactors::from_components(&[]),
+            Err(SamplingFactorsError::Empty)
+        ));
+    }
+
+    #[test]
+    fn sampling_factors_accept_supported_component_counts() {
+        for components in [
+            &[(1, 1)][..],
+            &[(2, 2), (1, 1), (1, 1)][..],
+            &[(1, 1), (1, 1), (1, 1), (1, 1)][..],
+        ] {
+            let sampling = SamplingFactors::from_components(components).expect("sampling");
+            assert_eq!(sampling.len(), components.len());
+            assert_eq!(sampling.components(), components);
+        }
+    }
+
+    #[test]
+    fn sampling_factors_reject_invalid_factors() {
+        assert!(matches!(
+            SamplingFactors::from_components(&[(0, 1)]),
+            Err(SamplingFactorsError::InvalidSampling {
+                component: 0,
+                h: 0,
+                v: 1
+            })
+        ));
+        assert!(matches!(
+            SamplingFactors::from_components(&[(1, 5)]),
+            Err(SamplingFactorsError::InvalidSampling {
+                component: 0,
+                h: 1,
+                v: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn sampling_factors_reject_more_than_four_components_without_panic() {
+        assert!(matches!(
+            SamplingFactors::from_components(&[(1, 1); 5]),
+            Err(SamplingFactorsError::TooManyComponents { count: 5 })
+        ));
+    }
+
+    #[test]
     fn info_to_core_info_preserves_metadata_for_device_adapters() {
         let info = Info {
             dimensions: (32, 16),
             color_space: ColorSpace::YCbCr,
-            sampling: SamplingFactors::from_components(&[(2, 2), (1, 1), (1, 1)]),
+            sampling: SamplingFactors::from_components(&[(2, 2), (1, 1), (1, 1)])
+                .expect("sampling"),
             sof_kind: SofKind::Baseline8,
             bit_depth: 8,
             restart_interval: Some(2),
@@ -510,7 +668,8 @@ mod tests {
             let info = Info {
                 dimensions: (64, 32),
                 color_space,
-                sampling: SamplingFactors::from_components(&[(1, 1), (1, 1), (1, 1), (1, 1)]),
+                sampling: SamplingFactors::from_components(&[(1, 1), (1, 1), (1, 1), (1, 1)])
+                    .expect("sampling"),
                 sof_kind: SofKind::Baseline8,
                 bit_depth: 8,
                 restart_interval: None,

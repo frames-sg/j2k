@@ -44,7 +44,7 @@ pub(crate) fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
         }
     }
     for row in 0..8 {
-        idct_1d_row(&work, output, row);
+        idct_1d_row::<u8>(&work, output, row);
     }
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn idct_islow_bottom_half_zero(input: &[i16; 64], output: &mut [u8; 6
         idct_1d_column_bottom_half_zero(input, &mut work, col);
     }
     for row in 0..8 {
-        idct_1d_row(&work, output, row);
+        idct_1d_row::<u8>(&work, output, row);
     }
 }
 
@@ -67,9 +67,59 @@ pub(crate) fn idct_islow_dc_only(dc_coeff: i16, output: &mut [u8; 64]) {
 
 /// Return the uniform output sample produced by the DC-only ISLOW path.
 pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
-    ((i32::from(dc_coeff) + 4) >> 3)
-        .wrapping_add(128)
-        .clamp(0, 255) as u8
+    idct_islow_dc_only_sample::<u8>(dc_coeff)
+}
+
+/// Inverse DCT of a 12-bit JPEG block, returning native 0..4095 sample values.
+pub(crate) fn idct_islow_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
+    let mut work = [Wrapping(0i32); 64];
+    if input[32..].iter().all(|&coeff| coeff == 0) {
+        for col in 0..8 {
+            idct_1d_column_bottom_half_zero(input, &mut work, col);
+        }
+    } else {
+        for col in 0..8 {
+            idct_1d_column(input, &mut work, col);
+        }
+    }
+    for row in 0..8 {
+        idct_1d_row::<u16>(&work, output, row);
+    }
+}
+
+/// Return the uniform native 12-bit sample produced by the DC-only ISLOW path.
+pub(crate) fn idct_islow_12bit_dc_only_sample(dc_coeff: i16) -> u16 {
+    idct_islow_dc_only_sample::<u16>(dc_coeff)
+}
+
+trait IdctSample: Copy {
+    const LEVEL_SHIFT: i32;
+    const MAX: i32;
+
+    fn from_clamped_i32(value: i32) -> Self;
+}
+
+impl IdctSample for u8 {
+    const LEVEL_SHIFT: i32 = 128;
+    const MAX: i32 = 255;
+
+    fn from_clamped_i32(value: i32) -> Self {
+        value as Self
+    }
+}
+
+impl IdctSample for u16 {
+    const LEVEL_SHIFT: i32 = 2048;
+    const MAX: i32 = 4095;
+
+    fn from_clamped_i32(value: i32) -> Self {
+        value as Self
+    }
+}
+
+fn idct_islow_dc_only_sample<T: IdctSample>(dc_coeff: i16) -> T {
+    let level_shifted = ((i32::from(dc_coeff) + 4) >> 3).wrapping_add(T::LEVEL_SHIFT);
+    T::from_clamped_i32(level_shifted.clamp(0, T::MAX))
 }
 
 fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
@@ -209,7 +259,7 @@ fn descale(v: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
     Wrapping(v.0 >> shift)
 }
 
-fn idct_1d_row(work: &[Wrapping<i32>; 64], output: &mut [u8; 64], row: usize) {
+fn idct_1d_row<T: IdctSample>(work: &[Wrapping<i32>; 64], output: &mut [T; 64], row: usize) {
     let base = row * 8;
     let p0 = work[base];
     let p1 = work[base + 1];
@@ -226,7 +276,7 @@ fn idct_1d_row(work: &[Wrapping<i32>; 64], output: &mut [u8; 64], row: usize) {
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
         let dc_shift = PASS1_BITS + 3;
         let rounding_dc = Wrapping(1i32 << (dc_shift - 1));
-        let pixel = descale_and_clamp(p0 + rounding_dc, dc_shift);
+        let pixel = descale_and_clamp::<T>(p0 + rounding_dc, dc_shift);
         for i in 0..8 {
             output[base + i] = pixel;
         }
@@ -275,20 +325,20 @@ fn idct_1d_row(work: &[Wrapping<i32>; 64], output: &mut [u8; 64], row: usize) {
     let tmp2 = tmp2 + z2 + z3;
     let tmp3 = tmp3 + z1 + z4;
 
-    output[base] = descale_and_clamp(tmp10 + tmp3 + rounding, shift);
-    output[base + 7] = descale_and_clamp(tmp10 - tmp3 + rounding, shift);
-    output[base + 1] = descale_and_clamp(tmp11 + tmp2 + rounding, shift);
-    output[base + 6] = descale_and_clamp(tmp11 - tmp2 + rounding, shift);
-    output[base + 2] = descale_and_clamp(tmp12 + tmp1 + rounding, shift);
-    output[base + 5] = descale_and_clamp(tmp12 - tmp1 + rounding, shift);
-    output[base + 3] = descale_and_clamp(tmp13 + tmp0 + rounding, shift);
-    output[base + 4] = descale_and_clamp(tmp13 - tmp0 + rounding, shift);
+    output[base] = descale_and_clamp::<T>(tmp10 + tmp3 + rounding, shift);
+    output[base + 7] = descale_and_clamp::<T>(tmp10 - tmp3 + rounding, shift);
+    output[base + 1] = descale_and_clamp::<T>(tmp11 + tmp2 + rounding, shift);
+    output[base + 6] = descale_and_clamp::<T>(tmp11 - tmp2 + rounding, shift);
+    output[base + 2] = descale_and_clamp::<T>(tmp12 + tmp1 + rounding, shift);
+    output[base + 5] = descale_and_clamp::<T>(tmp12 - tmp1 + rounding, shift);
+    output[base + 3] = descale_and_clamp::<T>(tmp13 + tmp0 + rounding, shift);
+    output[base + 4] = descale_and_clamp::<T>(tmp13 - tmp0 + rounding, shift);
 }
 
-fn descale_and_clamp(value: Wrapping<i32>, shift: usize) -> u8 {
+fn descale_and_clamp<T: IdctSample>(value: Wrapping<i32>, shift: usize) -> T {
     let shifted = value.0 >> shift;
-    let level_shifted = shifted.wrapping_add(128);
-    level_shifted.clamp(0, 255) as u8
+    let level_shifted = shifted.wrapping_add(T::LEVEL_SHIFT);
+    T::from_clamped_i32(level_shifted.clamp(0, T::MAX))
 }
 
 #[cfg(test)]

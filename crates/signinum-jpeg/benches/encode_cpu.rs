@@ -2,7 +2,7 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
@@ -65,8 +65,10 @@ impl<A> CountingAllocator<A> {
     }
 }
 
+// SAFETY: The wrapper forwards allocator contracts unchanged and only records counts.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: The wrapper forwards allocator contracts unchanged and only records counts.
         let ptr = unsafe { self.inner.alloc(layout) };
         if self.metering_enabled() && !ptr.is_null() {
             self.record_alloc(layout.size());
@@ -75,10 +77,12 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: The wrapper forwards allocator contracts unchanged and only records counts.
         unsafe { self.inner.dealloc(ptr, layout) };
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: The wrapper forwards allocator contracts unchanged and only records counts.
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
         if self.metering_enabled() && !new_ptr.is_null() {
             self.record_alloc(new_size);
@@ -122,8 +126,8 @@ impl EncodeCase {
         let encoded =
             encode_jpeg_baseline(self.samples(), self.options).expect("JPEG CPU encode bench");
         let output_bytes = encoded.data.len();
-        black_box(encoded.backend);
-        black_box(output_bytes)
+        std::hint::black_box(encoded.backend);
+        std::hint::black_box(output_bytes)
     }
 }
 
@@ -252,7 +256,7 @@ fn report_allocations(cases: &[EncodeCase]) {
     }
 
     for case in cases {
-        black_box(case.encode());
+        std::hint::black_box(case.encode());
     }
 
     for case in cases {
@@ -272,7 +276,7 @@ fn bench_encode_cpu(c: &mut Criterion) {
     for case in &cases {
         group.bench_function(case.name, |b| {
             b.iter(|| {
-                black_box(case.encode());
+                std::hint::black_box(case.encode());
             });
         });
     }

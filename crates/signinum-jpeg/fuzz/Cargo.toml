@@ -8,8 +8,8 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys    = "0.4"
-signinum-jpeg  = { path = "..", features = ["scalar-only"] }
+libfuzzer-sys = "0.4"
+signinum-jpeg = { path = ".." }
 
 [[bin]]
 name             = "parse_fuzz"

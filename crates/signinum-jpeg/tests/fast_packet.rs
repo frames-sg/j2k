@@ -1,9 +1,15 @@
-mod fixtures;
+use signinum_test_support as fixtures;
 
-use signinum_jpeg::adapter::metal_fast420::{
-    build_metal_fast420_packet, build_metal_fast422_packet, build_metal_fast444_packet,
-    build_metal_gray_packet, MetalFast420PacketError,
+use signinum_jpeg::adapter::{
+    build_device_plan,
+    fast_packet::{
+        build_fast420_packet, build_fast422_packet, build_fast444_packet, build_gray_packet,
+        FastPacketError, JpegEntropyCheckpointV1,
+    },
 };
+use signinum_jpeg::Decoder;
+
+const FAST_PACKET_MAX_NONRESTART_CHECKPOINTS: u32 = 2048;
 
 fn rewrite_three_component_ids(mut bytes: Vec<u8>, component_ids: [u8; 3]) -> Vec<u8> {
     assert_eq!(&bytes[..2], &[0xff, 0xd8], "fixture must start with SOI");
@@ -98,10 +104,64 @@ fn strip_dri_and_restart_markers(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+fn assert_fast_checkpoints_match_device_plan(
+    bytes: &[u8],
+    packet_total_mcus: u32,
+    packet_checkpoints: &[JpegEntropyCheckpointV1],
+) {
+    let decoder = Decoder::new(bytes).expect("device-plan decoder");
+    let cadence = packet_total_mcus
+        .div_ceil(FAST_PACKET_MAX_NONRESTART_CHECKPOINTS)
+        .max(1);
+    let device_plan = build_device_plan(&decoder, cadence).expect("device plan");
+
+    assert_eq!(packet_checkpoints.len(), device_plan.checkpoints.len());
+    for (packet, device) in packet_checkpoints
+        .iter()
+        .zip(device_plan.checkpoints.iter())
+    {
+        assert_eq!(packet.mcu_index, device.mcu_index);
+        assert_eq!(
+            packet.entropy_pos,
+            destuffed_entropy_offset(&device_plan.scan_bytes, device.scan_offset)
+        );
+        assert_eq!(packet.bit_acc, device.bit_accumulator);
+        assert_eq!(packet.bit_count, u32::from(device.bits_buffered));
+        assert_eq!(packet.y_prev_dc, device.prev_dc[0]);
+        assert_eq!(packet.cb_prev_dc, device.prev_dc[1]);
+        assert_eq!(packet.cr_prev_dc, device.prev_dc[2]);
+    }
+}
+
+fn destuffed_entropy_offset(scan_bytes: &[u8], target: usize) -> u32 {
+    let mut pos = 0usize;
+    let mut destuffed = 0u32;
+    while pos < target {
+        if scan_bytes[pos] != 0xff {
+            pos += 1;
+            destuffed += 1;
+            continue;
+        }
+        let marker = scan_bytes[pos + 1];
+        match marker {
+            0x00 => {
+                pos += 2;
+                destuffed += 1;
+            }
+            0xd0..=0xd7 | 0xd9 => {
+                pos += 2;
+            }
+            _ => panic!("unexpected entropy marker ff{marker:02x}"),
+        }
+    }
+    assert_eq!(pos, target, "device checkpoint split a marker pair");
+    destuffed
+}
+
 #[test]
 fn baseline_420_fixture_builds_fast420_packet() {
     let bytes = fixtures::minimal_baseline_420_jpeg();
-    let packet = build_metal_fast420_packet(&bytes).expect("fast420 packet");
+    let packet = build_fast420_packet(&bytes).expect("fast420 packet");
 
     assert_eq!(packet.dimensions, (16, 16));
     assert_eq!(packet.mcus_per_row, 1);
@@ -121,7 +181,7 @@ fn baseline_420_fixture_builds_fast420_packet() {
 #[test]
 fn baseline_420_restart_fixture_builds_fast420_packet() {
     let bytes = fixtures::baseline_420_restart_32x16_jpeg();
-    let packet = build_metal_fast420_packet(&bytes).expect("restart fast420 packet");
+    let packet = build_fast420_packet(&bytes).expect("restart fast420 packet");
 
     assert_eq!(packet.dimensions, (32, 16));
     assert_eq!(packet.mcus_per_row, 2);
@@ -137,12 +197,17 @@ fn baseline_420_restart_fixture_builds_fast420_packet() {
     assert_eq!(packet.entropy_checkpoints[0].entropy_pos, 0);
     assert_eq!(packet.entropy_checkpoints[0].bit_acc, 0);
     assert_eq!(packet.entropy_checkpoints[0].bit_count, 0);
+    assert_fast_checkpoints_match_device_plan(
+        &bytes,
+        packet.mcus_per_row * packet.mcu_rows,
+        &packet.entropy_checkpoints,
+    );
 }
 
 #[test]
 fn stripped_restart_fixture_builds_nonrestart_entropy_checkpoints() {
     let bytes = strip_dri_and_restart_markers(&fixtures::baseline_420_restart_32x16_jpeg());
-    let packet = build_metal_fast420_packet(&bytes).expect("nonrestart fast420 packet");
+    let packet = build_fast420_packet(&bytes).expect("nonrestart fast420 packet");
 
     assert_eq!(packet.restart_interval_mcus, 0);
     assert_eq!(packet.restart_offsets, vec![0]);
@@ -151,12 +216,17 @@ fn stripped_restart_fixture_builds_nonrestart_entropy_checkpoints() {
     assert_eq!(packet.entropy_checkpoints[0].entropy_pos, 0);
     assert_eq!(packet.entropy_checkpoints[1].mcu_index, 1);
     assert!(packet.entropy_checkpoints[1].entropy_pos > packet.entropy_checkpoints[0].entropy_pos);
+    assert_fast_checkpoints_match_device_plan(
+        &bytes,
+        packet.mcus_per_row * packet.mcu_rows,
+        &packet.entropy_checkpoints,
+    );
 }
 
 #[test]
 fn baseline_420_packet_accepts_zero_based_component_ids() {
     let bytes = rewrite_three_component_ids(fixtures::minimal_baseline_420_jpeg(), [0, 1, 2]);
-    let packet = build_metal_fast420_packet(&bytes).expect("fast420 packet");
+    let packet = build_fast420_packet(&bytes).expect("fast420 packet");
 
     assert_eq!(packet.dimensions, (16, 16));
     assert_eq!(packet.mcus_per_row, 1);
@@ -166,7 +236,7 @@ fn baseline_420_packet_accepts_zero_based_component_ids() {
 #[test]
 fn baseline_444_fixture_builds_fast444_packet() {
     let bytes = fixtures::baseline_444_8x8_jpeg();
-    let packet = build_metal_fast444_packet(&bytes).expect("fast444 packet");
+    let packet = build_fast444_packet(&bytes).expect("fast444 packet");
 
     assert_eq!(packet.dimensions, (8, 8));
     assert_eq!(packet.mcus_per_row, 1);
@@ -187,7 +257,7 @@ fn baseline_444_fixture_builds_fast444_packet() {
 #[test]
 fn baseline_444_packet_accepts_zero_based_component_ids() {
     let bytes = rewrite_three_component_ids(fixtures::baseline_444_8x8_jpeg(), [0, 1, 2]);
-    let packet = build_metal_fast444_packet(&bytes).expect("fast444 packet");
+    let packet = build_fast444_packet(&bytes).expect("fast444 packet");
 
     assert_eq!(packet.dimensions, (8, 8));
     assert_eq!(packet.mcus_per_row, 1);
@@ -197,7 +267,7 @@ fn baseline_444_packet_accepts_zero_based_component_ids() {
 #[test]
 fn baseline_422_fixture_builds_fast422_packet() {
     let bytes = fixtures::baseline_422_16x8_jpeg();
-    let packet = build_metal_fast422_packet(&bytes).expect("fast422 packet");
+    let packet = build_fast422_packet(&bytes).expect("fast422 packet");
 
     assert_eq!(packet.dimensions, (16, 8));
     assert_eq!(packet.mcus_per_row, 1);
@@ -217,7 +287,7 @@ fn baseline_422_fixture_builds_fast422_packet() {
 #[test]
 fn baseline_422_packet_accepts_zero_based_component_ids() {
     let bytes = rewrite_three_component_ids(fixtures::baseline_422_16x8_jpeg(), [0, 1, 2]);
-    let packet = build_metal_fast422_packet(&bytes).expect("fast422 packet");
+    let packet = build_fast422_packet(&bytes).expect("fast422 packet");
 
     assert_eq!(packet.dimensions, (16, 8));
     assert_eq!(packet.mcus_per_row, 1);
@@ -227,19 +297,18 @@ fn baseline_422_packet_accepts_zero_based_component_ids() {
 #[test]
 fn grayscale_fixture_is_rejected_for_fast420_subset() {
     let bytes = fixtures::grayscale_8x8_jpeg();
-    let error = build_metal_fast420_packet(&bytes).expect_err("grayscale must be rejected");
+    let error = build_fast420_packet(&bytes).expect_err("grayscale must be rejected");
 
     assert!(matches!(
         error,
-        MetalFast420PacketError::UnsupportedColorSpace(_)
-            | MetalFast420PacketError::UnsupportedSampling
+        FastPacketError::UnsupportedColorSpace(_) | FastPacketError::UnsupportedSampling
     ));
 }
 
 #[test]
 fn grayscale_fixture_builds_gray_packet() {
     let bytes = fixtures::grayscale_8x8_jpeg();
-    let packet = build_metal_gray_packet(&bytes).expect("gray packet");
+    let packet = build_gray_packet(&bytes).expect("gray packet");
 
     assert_eq!(packet.dimensions, (8, 8));
     assert_eq!(packet.mcus_per_row, 1);
@@ -256,7 +325,7 @@ fn grayscale_fixture_builds_gray_packet() {
 #[test]
 fn progressive_fixture_is_rejected_for_fast420_subset() {
     let bytes = fixtures::progressive_8x8_jpeg();
-    let error = build_metal_fast420_packet(&bytes).expect_err("progressive must be rejected");
+    let error = build_fast420_packet(&bytes).expect_err("progressive must be rejected");
 
-    assert!(matches!(error, MetalFast420PacketError::UnsupportedSof(_)));
+    assert!(matches!(error, FastPacketError::UnsupportedSof(_)));
 }

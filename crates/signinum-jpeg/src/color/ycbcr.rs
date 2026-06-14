@@ -9,11 +9,11 @@
 //!     G = Y - 0.34414 * (Cb - 128) - 0.71414 * (Cr - 128)
 //!     B = Y + 1.77200 * (Cb - 128)
 
-const FIX_1_40200: i32 = 91_881; // (int)(1.40200 * 65536 + 0.5)
-const FIX_0_34414: i32 = 22_554; // (int)(0.34414 * 65536 + 0.5)
-const FIX_0_71414: i32 = 46_802; // (int)(0.71414 * 65536 + 0.5)
-const FIX_1_77200: i32 = 116_130; // (int)(1.77200 * 65536 + 0.5)
-const ROUND: i32 = 1 << 15; // 0.5 in 16-bit fixed point
+pub(crate) const FIX_1_40200: i32 = 91_881; // (int)(1.40200 * 65536 + 0.5)
+pub(crate) const FIX_0_34414: i32 = 22_554; // (int)(0.34414 * 65536 + 0.5)
+pub(crate) const FIX_0_71414: i32 = 46_802; // (int)(0.71414 * 65536 + 0.5)
+pub(crate) const FIX_1_77200: i32 = 116_130; // (int)(1.77200 * 65536 + 0.5)
+pub(crate) const ROUND: i32 = 1 << 15; // 0.5 in 16-bit fixed point
 
 const fn clamp_to_u8(v: i32) -> u8 {
     if v < 0 {
@@ -22,6 +22,26 @@ const fn clamp_to_u8(v: i32) -> u8 {
         255
     } else {
         v as u8
+    }
+}
+
+const fn clamp_to_12bit(v: i32) -> u16 {
+    if v < 0 {
+        0
+    } else if v > 4095 {
+        4095
+    } else {
+        v as u16
+    }
+}
+
+const fn clamp_to_u16(v: i64) -> u16 {
+    if v < 0 {
+        0
+    } else if v > u16::MAX as i64 {
+        u16::MAX
+    } else {
+        v as u16
     }
 }
 
@@ -38,6 +58,40 @@ pub(crate) fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
     let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
 
     (clamp_to_u8(r), clamp_to_u8(g), clamp_to_u8(b))
+}
+
+/// Convert one 12-bit YCbCr pixel to RGB samples stored in `Rgb16` output.
+///
+/// Returned values are clamped to the native 12-bit range `[0, 4095]`, not
+/// scaled to the full `u16` range.
+pub(crate) fn ycbcr12_to_rgb16(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
+    let y = i32::from(y);
+    let cb_centered = i32::from(cb) - 2048;
+    let cr_centered = i32::from(cr) - 2048;
+    let r = y + ((FIX_1_40200 * cr_centered + ROUND) >> 16);
+    let g = y - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> 16);
+    let b = y + ((FIX_1_77200 * cb_centered + ROUND) >> 16);
+
+    (clamp_to_12bit(r), clamp_to_12bit(g), clamp_to_12bit(b))
+}
+
+/// Convert one 16-bit lossless YCbCr pixel to RGB samples stored in `Rgb16`
+/// output.
+///
+/// Returned values are clamped to the native 16-bit range `[0, 65535]`.
+pub(crate) fn ycbcr16_to_rgb16(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
+    let y = i64::from(y);
+    let cb_centered = i64::from(cb) - 32768;
+    let cr_centered = i64::from(cr) - 32768;
+    let r = y + ((i64::from(FIX_1_40200) * cr_centered + i64::from(ROUND)) >> 16);
+    let g = y
+        - ((i64::from(FIX_0_34414) * cb_centered
+            + i64::from(FIX_0_71414) * cr_centered
+            + i64::from(ROUND))
+            >> 16);
+    let b = y + ((i64::from(FIX_1_77200) * cb_centered + i64::from(ROUND)) >> 16);
+
+    (clamp_to_u16(r), clamp_to_u16(g), clamp_to_u16(b))
 }
 
 #[cfg(test)]
@@ -78,5 +132,21 @@ mod tests {
         assert!((r as i32 - 201).abs() <= 1, "R={r}, expected ≈201");
         assert!((g as i32 - 41).abs() <= 1, "G={g}, expected ≈41");
         assert!((b as i32 - 139).abs() <= 1, "B={b}, expected ≈139");
+    }
+
+    #[test]
+    fn ycbcr12_to_rgb16_uses_native_12_bit_range() {
+        assert_eq!(ycbcr12_to_rgb16(2048, 2048, 2048), (2048, 2048, 2048));
+        assert_eq!(ycbcr12_to_rgb16(2064, 2072, 2032), (2042, 2067, 2107));
+        assert_eq!(ycbcr12_to_rgb16(4095, 2048, 4095).0, 4095);
+        assert_eq!(ycbcr12_to_rgb16(0, 2048, 0).0, 0);
+    }
+
+    #[test]
+    fn ycbcr16_to_rgb16_uses_native_16_bit_range() {
+        assert_eq!(ycbcr16_to_rgb16(32768, 32768, 32768), (32768, 32768, 32768));
+        assert_eq!(ycbcr16_to_rgb16(33000, 35000, 40000), (43139, 27067, 36955));
+        assert_eq!(ycbcr16_to_rgb16(u16::MAX, 32768, u16::MAX).0, u16::MAX);
+        assert_eq!(ycbcr16_to_rgb16(0, 32768, 0).0, 0);
     }
 }

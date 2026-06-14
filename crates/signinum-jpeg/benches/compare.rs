@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::num::NonZeroUsize;
+
 use common::{
     centered_roi,
     classification::{should_bench_decode_rows_rgb, should_compare_full_frame, CorpusInputClass},
@@ -17,10 +19,12 @@ use common::{
     signinum_decode_tile_batch_scaled, signinum_decode_with_scratch, signinum_inspect, zune_decode,
     zune_decode_batch_region_scaled, zune_decode_batch_scaled, zune_decode_region,
     zune_decode_region_scaled, zune_decode_scaled, zune_inspect, DecodeMode,
-    SigninumTileBatchRgbScratch, TurboJpegDecoder,
+    SigninumTileBatchRegionScaledRgbSession, SigninumTileBatchRgbOutputBuffers,
+    SigninumTileBatchRgbScratch, SigninumTileBatchRgbSession, SigninumTileBatchScaledRgbSession,
+    TurboJpegBatchRgbOutputBuffers, TurboJpegDecoder,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
-use signinum_jpeg::{Decoder, Downscale, ScratchPool};
+use signinum_jpeg::{Decoder, Downscale, ScratchPool, TileBatchOptions};
 
 fn bench_compare(c: &mut Criterion) {
     let inputs = load_bench_inputs();
@@ -176,6 +180,107 @@ fn bench_compare(c: &mut Criterion) {
     }
     wsi_tile_batch_rgb.finish();
 
+    let mut wsi_tile_batch_session_rgb = c.benchmark_group("wsi_tile_batch_session_rgb");
+    for batch_size in [16usize, 64, 256] {
+        for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb) {
+            let bytes = &input.bytes;
+            let mut current_batch = SigninumTileBatchRgbScratch::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_free_batch/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| current_batch.run(bytes)),
+            );
+
+            for workers in [1usize, 2, 4] {
+                let bytes = &input.bytes;
+                let options = TileBatchOptions {
+                    workers: NonZeroUsize::new(workers),
+                };
+                let mut fixed_worker_batch =
+                    SigninumTileBatchRgbScratch::new_with_options(bytes, batch_size, options);
+                wsi_tile_batch_session_rgb.bench_function(
+                    format!(
+                        "current_free_batch_workers_{workers}/{}/{}",
+                        batch_size, input.name
+                    ),
+                    move |b| b.iter(|| fixed_worker_batch.run(bytes)),
+                );
+            }
+
+            let bytes = &input.bytes;
+            let mut session_batch = SigninumTileBatchRgbSession::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| session_batch.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            let mut output_session = SigninumTileBatchRgbOutputBuffers::new(bytes, batch_size);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session_output_buffers/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| output_session.run(bytes)),
+            );
+
+            if libjpeg_turbo_available() {
+                let bytes = &input.bytes;
+                let mut turbo_output_session =
+                    TurboJpegBatchRgbOutputBuffers::new(bytes, batch_size);
+                wsi_tile_batch_session_rgb.bench_function(
+                    format!("libjpeg-turbo_prealloc/{}/{}", batch_size, input.name),
+                    move |b| b.iter(|| turbo_output_session.run(bytes)),
+                );
+            }
+
+            let bytes = &input.bytes;
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| {
+                    b.iter(|| {
+                        signinum_decode_tile_batch_scaled(bytes, batch_size, Downscale::Quarter);
+                    });
+                },
+            );
+
+            let bytes = &input.bytes;
+            let mut scaled_session =
+                SigninumTileBatchScaledRgbSession::new(bytes, batch_size, Downscale::Quarter);
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("warm_session_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| b.iter(|| scaled_session.run(bytes)),
+            );
+
+            let bytes = &input.bytes;
+            wsi_tile_batch_session_rgb.bench_function(
+                format!("current_region_scaled_q4/{}/{}", batch_size, input.name),
+                move |b| {
+                    b.iter(|| {
+                        signinum_decode_tile_batch_region_scaled(
+                            bytes,
+                            batch_size,
+                            256,
+                            Downscale::Quarter,
+                        );
+                    });
+                },
+            );
+
+            let bytes = &input.bytes;
+            let mut region_scaled_session = SigninumTileBatchRegionScaledRgbSession::new(
+                bytes,
+                batch_size,
+                256,
+                Downscale::Quarter,
+            );
+            wsi_tile_batch_session_rgb.bench_function(
+                format!(
+                    "warm_session_region_scaled_q4/{}/{}",
+                    batch_size, input.name
+                ),
+                move |b| b.iter(|| region_scaled_session.run(bytes)),
+            );
+        }
+    }
+    wsi_tile_batch_session_rgb.finish();
+
     let mut wsi_region_rgb = c.benchmark_group("wsi_region_rgb");
     for input in inputs.iter().filter(|input| {
         input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
@@ -199,121 +304,66 @@ fn bench_compare(c: &mut Criterion) {
     }
     wsi_region_rgb.finish();
 
-    let mut wsi_scaled_rgb_q4 = c.benchmark_group("wsi_scaled_rgb_q4");
-    for input in inputs.iter().filter(|input| {
-        input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
-    }) {
-        wsi_scaled_rgb_q4.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_scaled(&input.bytes, Downscale::Quarter));
-        });
-        wsi_scaled_rgb_q4.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
-            b.iter(|| jpeg_decoder_decode_scaled(&input.bytes, Downscale::Quarter));
-        });
-        wsi_scaled_rgb_q4.bench_function(format!("zune-jpeg/{}", input.name), |b| {
-            b.iter(|| zune_decode_scaled(&input.bytes, Downscale::Quarter));
-        });
-        if libjpeg_turbo_available() {
-            let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
-            wsi_scaled_rgb_q4.bench_function(format!("libjpeg-turbo/{}", input.name), move |b| {
+    for (group_name, scale) in [
+        ("wsi_scaled_rgb_q4", Downscale::Quarter),
+        ("wsi_scaled_rgb_q8", Downscale::Eighth),
+    ] {
+        let mut group = c.benchmark_group(group_name);
+        for input in inputs.iter().filter(|input| {
+            input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
+        }) {
+            group.bench_function(format!("signinum/{}", input.name), |b| {
+                b.iter(|| signinum_decode_scaled(&input.bytes, scale));
+            });
+            group.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
+                b.iter(|| jpeg_decoder_decode_scaled(&input.bytes, scale));
+            });
+            group.bench_function(format!("zune-jpeg/{}", input.name), |b| {
+                b.iter(|| zune_decode_scaled(&input.bytes, scale));
+            });
+            if libjpeg_turbo_available() {
+                let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+                group.bench_function(format!("libjpeg-turbo/{}", input.name), move |b| {
+                    b.iter(|| {
+                        libjpeg_turbo_decode_scaled(&mut turbo, &input.bytes, scale);
+                    });
+                });
+            }
+        }
+        group.finish();
+    }
+
+    for (group_name, scale) in [
+        ("wsi_region_scaled_rgb_q4", Downscale::Quarter),
+        ("wsi_region_scaled_rgb_q8", Downscale::Eighth),
+    ] {
+        let mut group = c.benchmark_group(group_name);
+        for input in inputs.iter().filter(|input| {
+            input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
+        }) {
+            let roi = centered_roi(input.dimensions, 256);
+            group.bench_function(format!("signinum/{}", input.name), |b| {
+                b.iter(|| signinum_decode_region_scaled(&input.bytes, 256, scale));
+            });
+            group.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
                 b.iter(|| {
-                    libjpeg_turbo_decode_scaled(&mut turbo, &input.bytes, Downscale::Quarter);
+                    jpeg_decoder_decode_region_scaled(&input.bytes, 256, scale);
                 });
             });
-        }
-    }
-    wsi_scaled_rgb_q4.finish();
-
-    let mut wsi_scaled_rgb_q8 = c.benchmark_group("wsi_scaled_rgb_q8");
-    for input in inputs.iter().filter(|input| {
-        input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
-    }) {
-        wsi_scaled_rgb_q8.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_scaled(&input.bytes, Downscale::Eighth));
-        });
-        wsi_scaled_rgb_q8.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
-            b.iter(|| jpeg_decoder_decode_scaled(&input.bytes, Downscale::Eighth));
-        });
-        wsi_scaled_rgb_q8.bench_function(format!("zune-jpeg/{}", input.name), |b| {
-            b.iter(|| zune_decode_scaled(&input.bytes, Downscale::Eighth));
-        });
-        if libjpeg_turbo_available() {
-            let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
-            wsi_scaled_rgb_q8.bench_function(format!("libjpeg-turbo/{}", input.name), move |b| {
-                b.iter(|| libjpeg_turbo_decode_scaled(&mut turbo, &input.bytes, Downscale::Eighth));
+            group.bench_function(format!("zune-jpeg/{}", input.name), |b| {
+                b.iter(|| zune_decode_region_scaled(&input.bytes, 256, scale));
             });
-        }
-    }
-    wsi_scaled_rgb_q8.finish();
-
-    let mut wsi_region_scaled_rgb_q4 = c.benchmark_group("wsi_region_scaled_rgb_q4");
-    for input in inputs.iter().filter(|input| {
-        input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
-    }) {
-        let roi = centered_roi(input.dimensions, 256);
-        wsi_region_scaled_rgb_q4.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_region_scaled(&input.bytes, 256, Downscale::Quarter));
-        });
-        wsi_region_scaled_rgb_q4.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
-            b.iter(|| {
-                jpeg_decoder_decode_region_scaled(&input.bytes, 256, Downscale::Quarter);
-            });
-        });
-        wsi_region_scaled_rgb_q4.bench_function(format!("zune-jpeg/{}", input.name), |b| {
-            b.iter(|| zune_decode_region_scaled(&input.bytes, 256, Downscale::Quarter));
-        });
-        if libjpeg_turbo_available() {
-            let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
-            wsi_region_scaled_rgb_q4.bench_function(
-                format!("libjpeg-turbo/{}", input.name),
-                move |b| {
+            if libjpeg_turbo_available() {
+                let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+                group.bench_function(format!("libjpeg-turbo/{}", input.name), move |b| {
                     b.iter(|| {
-                        libjpeg_turbo_decode_region_scaled(
-                            &mut turbo,
-                            &input.bytes,
-                            roi,
-                            Downscale::Quarter,
-                        );
+                        libjpeg_turbo_decode_region_scaled(&mut turbo, &input.bytes, roi, scale);
                     });
-                },
-            );
+                });
+            }
         }
+        group.finish();
     }
-    wsi_region_scaled_rgb_q4.finish();
-
-    let mut wsi_region_scaled_rgb_q8 = c.benchmark_group("wsi_region_scaled_rgb_q8");
-    for input in inputs.iter().filter(|input| {
-        input.mode == DecodeMode::Rgb && input.input_class == CorpusInputClass::BoundedFullFrame
-    }) {
-        let roi = centered_roi(input.dimensions, 256);
-        wsi_region_scaled_rgb_q8.bench_function(format!("signinum/{}", input.name), |b| {
-            b.iter(|| signinum_decode_region_scaled(&input.bytes, 256, Downscale::Eighth));
-        });
-        wsi_region_scaled_rgb_q8.bench_function(format!("jpeg-decoder/{}", input.name), |b| {
-            b.iter(|| {
-                jpeg_decoder_decode_region_scaled(&input.bytes, 256, Downscale::Eighth);
-            });
-        });
-        wsi_region_scaled_rgb_q8.bench_function(format!("zune-jpeg/{}", input.name), |b| {
-            b.iter(|| zune_decode_region_scaled(&input.bytes, 256, Downscale::Eighth));
-        });
-        if libjpeg_turbo_available() {
-            let mut turbo = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
-            wsi_region_scaled_rgb_q8.bench_function(
-                format!("libjpeg-turbo/{}", input.name),
-                move |b| {
-                    b.iter(|| {
-                        libjpeg_turbo_decode_region_scaled(
-                            &mut turbo,
-                            &input.bytes,
-                            roi,
-                            Downscale::Eighth,
-                        );
-                    });
-                },
-            );
-        }
-    }
-    wsi_region_scaled_rgb_q8.finish();
 
     let mut wsi_tile_batch_scaled_rgb_q4 = c.benchmark_group("wsi_tile_batch_scaled_rgb_q4");
     for input in inputs.iter().filter(|input| input.mode == DecodeMode::Rgb) {

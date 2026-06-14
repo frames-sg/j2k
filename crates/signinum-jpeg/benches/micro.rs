@@ -6,9 +6,10 @@ use signinum_jpeg::bench_support::{
     BenchUpsampleH2V2Scratch,
 };
 use signinum_jpeg::Decoder;
+use signinum_test_support::JPEG_BASELINE_420_16X16;
 
 fn bench_micro(c: &mut Criterion) {
-    let small = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+    let small = JPEG_BASELINE_420_16X16;
 
     c.bench_function("micro/inspect_small", |b| {
         b.iter(|| {

@@ -12,10 +12,9 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
 
 use core::arch::x86_64::{
-    __m128i, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_loadl_epi64, _mm_mullo_epi32, _mm_packs_epi32,
-    _mm_packus_epi16, _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128,
-    _mm_storel_epi64, _mm_sub_epi32, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32,
-    _mm_unpacklo_epi64,
+    __m128i, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_packs_epi32, _mm_packus_epi16,
+    _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_storel_epi64,
+    _mm_sub_epi32, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
 };
 
 const CONST_BITS: i32 = 13;
@@ -115,10 +114,7 @@ pub(crate) unsafe fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
 #[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn widen(src: *const i16) -> (__m128i, __m128i) {
-    let vec = unsafe { _mm_loadl_epi64(src.cast()) }; // load 8 bytes = 4 i16 into lower 64
-                                                      // Actually the row is 8 i16 = 16 bytes, not 8. Use full 128-bit load.
     let full = unsafe { core::ptr::read_unaligned(src.cast::<__m128i>()) };
-    let _ = vec;
     let lo = _mm_cvtepi16_epi32(full);
     let hi_shuffled = _mm_srli_si128::<8>(full);
     let hi = _mm_cvtepi16_epi32(hi_shuffled);

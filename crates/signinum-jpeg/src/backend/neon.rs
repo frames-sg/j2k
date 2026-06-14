@@ -8,10 +8,19 @@ use core::arch::aarch64::{
 };
 
 use super::scalar;
-use crate::color::ycbcr::ycbcr_to_rgb;
+use crate::color::upsample::h2v2_fancy_sample_for_width;
+use crate::color::ycbcr::{
+    ycbcr_to_rgb, FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND,
+};
 
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
+    let width = gray_row.len().min(dst.len() / 3);
+    let gray_row = &gray_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(dst.len(), gray_row.len() * 3);
+    // SAFETY: NEON is mandatory on supported aarch64 targets for this backend,
+    // and the wrapper narrows source and destination slices to one pixel count.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_from_gray_neon(gray_row, dst);
     }
@@ -22,7 +31,9 @@ unsafe fn fill_rgb_row_from_gray_neon(gray_row: &[u8], dst: &mut [u8]) {
     let width = gray_row.len();
     let mut offset = 0;
     while offset + LANES <= width {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         let g = unsafe { vld1_u8(gray_row.as_ptr().add(offset)) };
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             vst3_u8(dst.as_mut_ptr().add(offset * 3), uint8x8x3_t(g, g, g));
         }
@@ -34,9 +45,21 @@ unsafe fn fill_rgb_row_from_gray_neon(gray_row: &[u8], dst: &mut [u8]) {
 }
 
 pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], dst: &mut [u8]) {
+    let width = r_row
+        .len()
+        .min(g_row.len())
+        .min(b_row.len())
+        .min(dst.len() / 3);
+    let r_row = &r_row[..width];
+    let g_row = &g_row[..width];
+    let b_row = &b_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(r_row.len(), g_row.len());
     debug_assert_eq!(r_row.len(), b_row.len());
     debug_assert_eq!(dst.len(), r_row.len() * 3);
+    // SAFETY: NEON is mandatory on supported aarch64 targets for this backend,
+    // and all source rows plus the destination share the same bounded width.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_from_rgb_neon(r_row, g_row, b_row, dst);
     }
@@ -47,9 +70,13 @@ unsafe fn fill_rgb_row_from_rgb_neon(r_row: &[u8], g_row: &[u8], b_row: &[u8], d
     let width = r_row.len();
     let mut offset = 0;
     while offset + LANES <= width {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         let r = unsafe { vld1_u8(r_row.as_ptr().add(offset)) };
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         let g = unsafe { vld1_u8(g_row.as_ptr().add(offset)) };
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         let b = unsafe { vld1_u8(b_row.as_ptr().add(offset)) };
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             vst3_u8(dst.as_mut_ptr().add(offset * 3), uint8x8x3_t(r, g, b));
         }
@@ -65,18 +92,25 @@ unsafe fn fill_rgb_row_from_rgb_neon(r_row: &[u8], g_row: &[u8], b_row: &[u8], d
     }
 }
 
-const FIX_1_40200: i32 = 91_881;
-const FIX_0_34414: i32 = 22_554;
-const FIX_0_71414: i32 = 46_802;
-const FIX_1_77200: i32 = 116_130;
-const ROUND: i32 = 1 << 15;
 const LANES: usize = 8;
 const UPSAMPLED_LANES: usize = LANES * 2;
 
 pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], dst: &mut [u8]) {
+    let width = y_row
+        .len()
+        .min(cb_row.len())
+        .min(cr_row.len())
+        .min(dst.len() / 3);
+    let y_row = &y_row[..width];
+    let cb_row = &cb_row[..width];
+    let cr_row = &cr_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(y_row.len(), cb_row.len());
     debug_assert_eq!(y_row.len(), cr_row.len());
     debug_assert_eq!(dst.len(), y_row.len() * 3);
+    // SAFETY: NEON is mandatory on supported aarch64 targets for this backend,
+    // and all source rows plus the destination share the same bounded width.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_from_ycbcr_neon(y_row, cb_row, cr_row, dst);
     }
@@ -105,6 +139,35 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     dst_top: &mut [u8],
     dst_bottom: Option<&mut [u8]>,
 ) {
+    let chroma_width = prev_cb
+        .len()
+        .min(curr_cb.len())
+        .min(next_cb.len())
+        .min(prev_cr.len())
+        .min(curr_cr.len())
+        .min(next_cr.len());
+    let bottom_width = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
+        (Some(row), Some(dst)) => row.len().min(dst.len() / 3),
+        _ => usize::MAX,
+    };
+    let width = y_top
+        .len()
+        .min(dst_top.len() / 3)
+        .min(bottom_width)
+        .min(chroma_width.saturating_mul(2));
+    if width == 0 {
+        return;
+    }
+    let y_top = &y_top[..width];
+    let y_bottom = y_bottom.and_then(|row| row.get(..width));
+    let prev_cb = &prev_cb[..chroma_width];
+    let curr_cb = &curr_cb[..chroma_width];
+    let next_cb = &next_cb[..chroma_width];
+    let prev_cr = &prev_cr[..chroma_width];
+    let curr_cr = &curr_cr[..chroma_width];
+    let next_cr = &next_cr[..chroma_width];
+    let dst_top = &mut dst_top[..width * 3];
+    let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), y_top.len() * 3);
     debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
     debug_assert!(dst_bottom
@@ -114,6 +177,10 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     debug_assert_eq!(prev_cb.len(), next_cb.len());
     debug_assert_eq!(prev_cr.len(), curr_cr.len());
     debug_assert_eq!(prev_cr.len(), next_cr.len());
+    // SAFETY: NEON is mandatory on supported aarch64 targets for this backend.
+    // The wrapper clamps luma, chroma, and destination slices so upsampled reads
+    // and RGB writes stay within the passed rows.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_pair_from_420_neon(
             y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
@@ -137,17 +204,53 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
     dst_top: &mut [u8],
     dst_bottom: Option<&mut [u8]>,
 ) {
-    let crop_end = crop_start + crop_width;
+    let chroma_width = prev_cb
+        .len()
+        .min(curr_cb.len())
+        .min(next_cb.len())
+        .min(prev_cr.len())
+        .min(curr_cr.len())
+        .min(next_cr.len());
+    let available_chroma = chroma_width.saturating_mul(2).saturating_sub(crop_start);
+    let available_top = y_top.len().saturating_sub(crop_start);
+    let bottom_available = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
+        (Some(row), Some(dst)) => row.len().saturating_sub(crop_start).min(dst.len() / 3),
+        _ => usize::MAX,
+    };
+    let width = crop_width
+        .min(available_top)
+        .min(dst_top.len() / 3)
+        .min(bottom_available)
+        .min(available_chroma);
+    if width == 0 {
+        return;
+    }
+    let Some(crop_end) = crop_start.checked_add(width) else {
+        return;
+    };
+    if y_top.get(crop_start..crop_end).is_none() {
+        return;
+    }
+    let y_bottom = y_bottom.and_then(|row| row.get(..));
+    let prev_cb = &prev_cb[..chroma_width];
+    let curr_cb = &curr_cb[..chroma_width];
+    let next_cb = &next_cb[..chroma_width];
+    let prev_cr = &prev_cr[..chroma_width];
+    let curr_cr = &curr_cr[..chroma_width];
+    let next_cr = &next_cr[..chroma_width];
+    let dst_top = &mut dst_top[..width * 3];
+    let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert!(crop_end <= y_top.len());
-    debug_assert_eq!(dst_top.len(), crop_width * 3);
-    debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
-    debug_assert!(dst_bottom
-        .as_ref()
-        .is_none_or(|row| row.len() == crop_width * 3));
+    debug_assert_eq!(dst_top.len(), width * 3);
+    debug_assert!(y_bottom.is_none_or(|row| crop_end <= row.len()));
+    debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
     debug_assert_eq!(prev_cb.len(), curr_cb.len());
     debug_assert_eq!(prev_cb.len(), next_cb.len());
     debug_assert_eq!(prev_cr.len(), curr_cr.len());
     debug_assert_eq!(prev_cr.len(), next_cr.len());
+    // SAFETY: NEON is mandatory on supported aarch64 targets for this backend.
+    // The crop range and output rows are clamped to validated luma/chroma spans.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_pair_from_420_cropped_neon(
             y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
@@ -173,6 +276,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon(
     let width = y_top.len();
     let chroma_width = curr_cb.len();
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_neon_dual(
                 y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, dst_top,
@@ -180,6 +284,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon(
             );
         }
     } else {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_neon_top_only(
                 y_top,
@@ -212,6 +317,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon(
     dst_bottom: Option<&mut [u8]>,
 ) {
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_cropped_neon_dual(
                 y_top, y_bottom, prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr, crop_start,
@@ -219,6 +325,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon(
             );
         }
     } else {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_cropped_neon_top_only(
                 y_top, prev_cb, curr_cb, prev_cr, curr_cr, crop_start, crop_width, dst_top,
@@ -271,6 +378,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
         if copy_width >= LANES
             && can_vectorize_cropped_420_chunk(y_top.len(), curr_cb.len(), aligned_x)
         {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
                     y_top,
@@ -314,6 +422,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
             break;
         }
 
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_pair_from_420_chunk16_interior_neon(
                 &y_top[x..x + UPSAMPLED_LANES],
@@ -336,6 +445,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_dual(
     if remaining >= LANES {
         let x = crop_start + out_x;
         if can_vectorize_cropped_420_chunk(y_top.len(), curr_cb.len(), x) {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
                     y_top,
@@ -415,6 +525,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
         if copy_width >= LANES
             && can_vectorize_cropped_420_chunk(y_top.len(), curr_cb.len(), aligned_x)
         {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
                     y_top,
@@ -454,6 +565,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
             break;
         }
 
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_from_420_chunk16_interior_neon(
                 &y_top[x..x + UPSAMPLED_LANES],
@@ -472,6 +584,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_neon_top_only(
     if remaining >= LANES {
         let x = crop_start + out_x;
         if can_vectorize_cropped_420_chunk(y_top.len(), curr_cb.len(), x) {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
                     y_top,
@@ -534,6 +647,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_dual(
     debug_assert!(copy_width <= UPSAMPLED_LANES);
     let mut tmp_top = [0u8; UPSAMPLED_LANES * 3];
     let mut tmp_bottom = [0u8; UPSAMPLED_LANES * 3];
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_pair_from_420_chunk16_interior_neon(
             &y_top[aligned_x..aligned_x + UPSAMPLED_LANES],
@@ -571,6 +685,7 @@ unsafe fn fill_rgb_row_pair_from_420_cropped_partial_chunk16_top_only(
     debug_assert!(src_skip + copy_width <= UPSAMPLED_LANES);
     debug_assert!(copy_width <= UPSAMPLED_LANES);
     let mut tmp_top = [0u8; UPSAMPLED_LANES * 3];
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_rgb_row_from_420_chunk16_interior_neon(
             &y_top[aligned_x..aligned_x + UPSAMPLED_LANES],
@@ -614,6 +729,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
         let chunk_width = (width - x).min(chunk_samples * 2);
 
         if can_vectorize_420_chunk(chroma_width, sample, chunk_width) {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_chunk16_interior_neon(
                     &y_top[x..x + UPSAMPLED_LANES],
@@ -634,6 +750,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
         }
 
         if sample == 0 {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_edge_neon_dual(
                     y_top,
@@ -651,7 +768,8 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
                 );
             }
         } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
-            crate::bench_support::record_420_dispatch_neon_tail_chunk();
+            record_420_dispatch_neon_tail_chunk();
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_tail_neon_dual(
                     y_top,
@@ -671,12 +789,13 @@ unsafe fn fill_rgb_row_pair_from_420_neon_dual(
                 );
             }
         } else {
-            crate::bench_support::record_420_dispatch_scalar_chunk();
+            record_420_dispatch_scalar_chunk();
             let mut cb_top = [0u8; UPSAMPLED_LANES];
             let mut cb_bot = [0u8; UPSAMPLED_LANES];
             let mut cr_top = [0u8; UPSAMPLED_LANES];
             let mut cr_bot = [0u8; UPSAMPLED_LANES];
 
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_upsampled_420_chunk(
                     prev_cb,
@@ -748,6 +867,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
         let chunk_width = (width - x).min(chunk_samples * 2);
 
         if can_vectorize_420_chunk(chroma_width, sample, chunk_width) {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_from_420_chunk16_interior_neon(
                     &y_top[x..x + UPSAMPLED_LANES],
@@ -764,6 +884,7 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
         }
 
         if sample == 0 {
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_edge_neon_top_only(
                     y_top,
@@ -777,7 +898,8 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
                 );
             }
         } else if can_use_tail_420_chunk(chroma_width, sample, chunk_width) {
-            crate::bench_support::record_420_dispatch_neon_tail_chunk();
+            record_420_dispatch_neon_tail_chunk();
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_rgb_row_pair_from_420_tail_neon_top_only(
                     y_top,
@@ -793,9 +915,10 @@ unsafe fn fill_rgb_row_pair_from_420_neon_top_only(
                 );
             }
         } else {
-            crate::bench_support::record_420_dispatch_scalar_chunk();
+            record_420_dispatch_scalar_chunk();
             let mut cb_top = [0u8; UPSAMPLED_LANES];
             let mut cr_top = [0u8; UPSAMPLED_LANES];
+            // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
             unsafe {
                 fill_upsampled_420_chunk(
                     prev_cb,
@@ -850,13 +973,19 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     let next_cr_head = load_head_window(next_cr, TAIL_WINDOW);
 
     let (cb_top, cb_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(&prev_cb_head, &curr_cb_head, &next_cb_head, 1) };
     let (cr_top, cr_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(&prev_cr_head, &curr_cr_head, &next_cr_head, 1) };
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_lo = unsafe { load_eight(&y_top_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_hi = unsafe { load_eight(&y_top_tail, LANES) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
 
     let top_cb = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
@@ -868,6 +997,7 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
         ycbcr_to_rgb(y_bottom[0], bottom_cb as u8, bottom_cr as u8);
 
     if chunk_width == UPSAMPLED_LANES {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut dst_top[..LANES * 3]);
             fill_chunk_from_vectors_u16(
@@ -894,6 +1024,7 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_dual(
     } else {
         let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
         let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
             fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
@@ -935,9 +1066,13 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     let prev_cr_head = load_head_window(prev_cr, TAIL_WINDOW);
     let curr_cr_head = load_head_window(curr_cr, TAIL_WINDOW);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cb = unsafe { upsampled_420_chunk16_u16(&prev_cb_head, &curr_cb_head, 1) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cr = unsafe { upsampled_420_chunk16_u16(&prev_cr_head, &curr_cr_head, 1) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_lo = unsafe { load_eight(&y_top_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
 
     let cb0 = ((u32::from(prev_cb[0]) + 3 * u32::from(curr_cb[0])) * 4 + 8) >> 4;
@@ -945,6 +1080,7 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
     let (r, g, b) = ycbcr_to_rgb(y_top[0], cb0 as u8, cr0 as u8);
 
     if chunk_width == UPSAMPLED_LANES {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst_top[..LANES * 3]);
             fill_chunk_from_vectors_u16(
@@ -957,6 +1093,7 @@ unsafe fn fill_rgb_row_pair_from_420_edge_neon_top_only(
         dst_top[..3].copy_from_slice(&[r, g, b]);
     } else {
         let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
             fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
@@ -994,16 +1131,23 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
     let next_cr_tail = load_tail_window(next_cr, sample_offset - 1, TAIL_WINDOW);
 
     let (cb_top, cb_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(&prev_cb_tail, &curr_cb_tail, &next_cb_tail, 1) };
     let (cr_top, cr_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(&prev_cr_tail, &curr_cr_tail, &next_cr_tail, 1) };
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_lo = unsafe { load_eight(&y_top_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_hi = unsafe { load_eight(&y_top_tail, LANES) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_lo = unsafe { load_eight(&y_bottom_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_hi = unsafe { load_eight(&y_bottom_tail, LANES) };
 
     if chunk_width == UPSAMPLED_LANES {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(
                 y_top_lo,
@@ -1051,6 +1195,7 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_dual(
     } else {
         let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
         let mut rgb_bottom = [0u8; UPSAMPLED_LANES * 3];
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut rgb_top[..LANES * 3]);
             fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut rgb_top[LANES * 3..]);
@@ -1112,12 +1257,17 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
     let prev_cr_tail = load_tail_window(prev_cr, sample_offset - 1, TAIL_WINDOW);
     let curr_cr_tail = load_tail_window(curr_cr, sample_offset - 1, TAIL_WINDOW);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cb = unsafe { upsampled_420_chunk16_u16(&prev_cb_tail, &curr_cb_tail, 1) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cr = unsafe { upsampled_420_chunk16_u16(&prev_cr_tail, &curr_cr_tail, 1) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_lo = unsafe { load_eight(&y_top_tail, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_hi = unsafe { load_eight(&y_top_tail, LANES) };
 
     if chunk_width == UPSAMPLED_LANES {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst_top[x * 3..x * 3 + LANES * 3]);
             fill_chunk_from_vectors_u16(
@@ -1140,6 +1290,7 @@ unsafe fn fill_rgb_row_pair_from_420_tail_neon_top_only(
         }
     } else {
         let mut rgb = [0u8; UPSAMPLED_LANES * 3];
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut rgb[..LANES * 3]);
             fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut rgb[LANES * 3..]);
@@ -1212,6 +1363,16 @@ fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: us
     out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width
 }
 
+fn record_420_dispatch_neon_tail_chunk() {
+    #[cfg(feature = "bench-internals")]
+    crate::bench_support::record_420_dispatch_neon_tail_chunk();
+}
+
+fn record_420_dispatch_scalar_chunk() {
+    #[cfg(feature = "bench-internals")]
+    crate::bench_support::record_420_dispatch_scalar_chunk();
+}
+
 #[target_feature(enable = "neon")]
 unsafe fn fill_rgb_row_from_420_chunk16_interior_neon(
     y_row: &[u8],
@@ -1225,10 +1386,15 @@ unsafe fn fill_rgb_row_from_420_chunk16_interior_neon(
     debug_assert_eq!(y_row.len(), UPSAMPLED_LANES);
     debug_assert_eq!(dst.len(), UPSAMPLED_LANES * 3);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cb = unsafe { upsampled_420_chunk16_u16(near_cb, curr_cb, sample_offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cr = unsafe { upsampled_420_chunk16_u16(near_cr, curr_cr, sample_offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_lo = unsafe { load_eight(y_row, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_hi = unsafe { load_eight(y_row, LANES) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_chunk_from_vectors_u16(y_lo, cb.0, cr.0, &mut dst[..LANES * 3]);
         fill_chunk_from_vectors_u16(y_hi, cb.1, cr.1, &mut dst[LANES * 3..]);
@@ -1256,14 +1422,21 @@ unsafe fn fill_rgb_row_pair_from_420_chunk16_interior_neon(
     debug_assert_eq!(dst_bottom.len(), UPSAMPLED_LANES * 3);
 
     let (cb_top, cb_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(prev_cb, curr_cb, next_cb, sample_offset) };
     let (cr_top, cr_bottom) =
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe { upsampled_420_chunk16_pair_u16(prev_cr, curr_cr, next_cr, sample_offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_lo = unsafe { load_eight(y_top, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_top_hi = unsafe { load_eight(y_top, LANES) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_lo = unsafe { load_eight(y_bottom, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_bottom_hi = unsafe { load_eight(y_bottom, LANES) };
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_chunk_from_vectors_u16(y_top_lo, cb_top.0, cr_top.0, &mut dst_top[..LANES * 3]);
         fill_chunk_from_vectors_u16(y_top_hi, cb_top.1, cr_top.1, &mut dst_top[LANES * 3..]);
@@ -1288,6 +1461,7 @@ unsafe fn fill_rgb_row_from_ycbcr_neon(y_row: &[u8], cb_row: &[u8], cr_row: &[u8
     let mut offset = 0;
 
     while offset + UPSAMPLED_LANES <= width {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_rgb_row_from_ycbcr_chunk16_neon(
                 &y_row[offset..offset + UPSAMPLED_LANES],
@@ -1306,6 +1480,7 @@ unsafe fn fill_rgb_row_from_ycbcr_neon(y_row: &[u8], cb_row: &[u8], cr_row: &[u8
     }
 
     while offset + LANES <= width {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_chunk(
                 y_row,
@@ -1338,9 +1513,13 @@ unsafe fn fill_chunk(
 ) {
     debug_assert_eq!(dst_chunk.len(), LANES * 3);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y = unsafe { load_eight(y_row, offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cb = unsafe { load_eight(cb_row, offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let cr = unsafe { load_eight(cr_row, offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe { fill_chunk_from_vectors(y, cb, cr, dst_chunk) };
 }
 
@@ -1352,30 +1531,10 @@ unsafe fn fill_chunk_from_vectors(
     dst_chunk: &mut [u8],
 ) {
     debug_assert_eq!(dst_chunk.len(), LANES * 3);
-    let y16 = vmovl_u8(y);
     let cb16 = vmovl_u8(cb);
     let cr16 = vmovl_u8(cr);
-
-    let y_lo = widen_low(y16);
-    let y_hi = widen_high(y16);
-    let cb_lo = subtract_bias(widen_low(cb16));
-    let cb_hi = subtract_bias(widen_high(cb16));
-    let cr_lo = subtract_bias(widen_low(cr16));
-    let cr_hi = subtract_bias(widen_high(cr16));
-
-    let (r_lo, g_lo, b_lo) = convert_half(y_lo, cb_lo, cr_lo);
-    let (r_hi, g_hi, b_hi) = convert_half(y_hi, cb_hi, cr_hi);
-
-    let r_bytes = pack_eight_u8(r_lo, r_hi);
-    let g_bytes = pack_eight_u8(g_lo, g_hi);
-    let b_bytes = pack_eight_u8(b_lo, b_hi);
-
-    unsafe {
-        vst3_u8(
-            dst_chunk.as_mut_ptr(),
-            uint8x8x3_t(r_bytes, g_bytes, b_bytes),
-        );
-    }
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
+    unsafe { fill_chunk_from_vectors_u16(y, cb16, cr16, dst_chunk) };
 }
 
 #[target_feature(enable = "neon")]
@@ -1402,6 +1561,7 @@ unsafe fn fill_chunk_from_vectors_u16(
     let g_bytes = pack_eight_u8(g_lo, g_hi);
     let b_bytes = pack_eight_u8(b_lo, b_hi);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         vst3_u8(
             dst_chunk.as_mut_ptr(),
@@ -1420,8 +1580,11 @@ unsafe fn fill_rgb_row_from_ycbcr_chunk16_neon(
     debug_assert_eq!(y_row.len(), UPSAMPLED_LANES);
     debug_assert_eq!(dst.len(), UPSAMPLED_LANES * 3);
 
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_lo = unsafe { load_eight(y_row, 0) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let y_hi = unsafe { load_eight(y_row, LANES) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         fill_chunk_from_vectors(
             y_lo,
@@ -1440,6 +1603,10 @@ unsafe fn fill_rgb_row_from_ycbcr_chunk16_neon(
 
 #[target_feature(enable = "neon")]
 unsafe fn load_eight(src: &[u8], offset: usize) -> uint8x8_t {
+    debug_assert!(offset <= src.len().saturating_sub(LANES));
+    // SAFETY: callers guarantee there are at least eight readable bytes at
+    // `offset`; `vld1_u8` accepts unaligned loads.
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe { vld1_u8(src.as_ptr().add(offset)) }
 }
 
@@ -1498,6 +1665,7 @@ unsafe fn fill_upsampled_420_chunk(
     out: &mut [u8],
 ) {
     if can_vectorize_420_chunk(curr.len(), sample_offset, out.len()) {
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         unsafe {
             fill_upsampled_420_chunk_neon(near, curr, sample_offset, out);
         }
@@ -1519,27 +1687,9 @@ fn fill_upsampled_420_chunk_scalar(
         return;
     }
 
-    let colsum = |i: usize| 3 * u32::from(curr[i]) + u32::from(near[i]);
-    for sample in 0..out.len().div_ceil(2) {
-        let global_sample = sample_offset + sample;
-        let this = colsum(global_sample);
-        let x = global_sample * 2;
-        let local_x = sample * 2;
-        out[local_x] = if x == 0 {
-            ((this * 4 + 8) >> 4) as u8
-        } else {
-            let last = colsum(global_sample - 1);
-            ((this * 3 + last + 8) >> 4) as u8
-        };
-        if local_x + 1 >= out.len() {
-            break;
-        }
-        out[local_x + 1] = if x + 1 == output_width - 1 {
-            ((this * 4 + 7) >> 4) as u8
-        } else {
-            let next = colsum((global_sample + 1).min(n - 1));
-            ((this * 3 + next + 7) >> 4) as u8
-        };
+    let output_x = sample_offset * 2;
+    for (local_x, slot) in out.iter_mut().enumerate() {
+        *slot = h2v2_fancy_sample_for_width(near, curr, output_width, output_x + local_x);
     }
 }
 
@@ -1559,6 +1709,7 @@ unsafe fn fill_upsampled_420_chunk_neon(
         sample_offset,
         out.len()
     ));
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     unsafe {
         vst1q_u8(
             out.as_mut_ptr(),
@@ -1569,6 +1720,7 @@ unsafe fn fill_upsampled_420_chunk_neon(
 
 #[target_feature(enable = "neon")]
 unsafe fn upsampled_420_chunk16(near: &[u8], curr: &[u8], sample_offset: usize) -> uint8x16_t {
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let lanes = unsafe { upsampled_420_chunk16_u16(near, curr, sample_offset) };
     let even8 = vqmovn_u16(lanes.0);
     let odd8 = vqmovn_u16(lanes.1);
@@ -1582,8 +1734,11 @@ unsafe fn upsampled_420_chunk16_u16(
     curr: &[u8],
     sample_offset: usize,
 ) -> core::arch::aarch64::uint16x8x2_t {
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let this = unsafe { colsum_eight(near, curr, sample_offset) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let prev = unsafe { colsum_eight(near, curr, sample_offset - 1) };
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let next = unsafe { colsum_eight(near, curr, sample_offset + 1) };
     let three_this = vaddq_u16(this, vaddq_u16(this, this));
 
@@ -1602,8 +1757,11 @@ unsafe fn upsampled_420_chunk16_pair_u16(
     core::arch::aarch64::uint16x8x2_t,
     core::arch::aarch64::uint16x8x2_t,
 ) {
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let curr_prev = vmovl_u8(unsafe { vld1_u8(curr.as_ptr().add(sample_offset - 1)) });
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let curr_this = vmovl_u8(unsafe { vld1_u8(curr.as_ptr().add(sample_offset)) });
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let curr_next = vmovl_u8(unsafe { vld1_u8(curr.as_ptr().add(sample_offset + 1)) });
 
     let three_prev = vaddq_u16(curr_prev, vaddq_u16(curr_prev, curr_prev));
@@ -1612,27 +1770,33 @@ unsafe fn upsampled_420_chunk16_pair_u16(
 
     let top_prev = vaddq_u16(
         three_prev,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(top_near.as_ptr().add(sample_offset - 1)) }),
     );
     let top_this = vaddq_u16(
         three_this,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(top_near.as_ptr().add(sample_offset)) }),
     );
     let top_next = vaddq_u16(
         three_next,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(top_near.as_ptr().add(sample_offset + 1)) }),
     );
 
     let bottom_prev = vaddq_u16(
         three_prev,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(bottom_near.as_ptr().add(sample_offset - 1)) }),
     );
     let bottom_this = vaddq_u16(
         three_this,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(bottom_near.as_ptr().add(sample_offset)) }),
     );
     let bottom_next = vaddq_u16(
         three_next,
+        // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
         vmovl_u8(unsafe { vld1_u8(bottom_near.as_ptr().add(sample_offset + 1)) }),
     );
 
@@ -1664,7 +1828,9 @@ unsafe fn upsampled_420_chunk16_pair_u16(
 
 #[target_feature(enable = "neon")]
 unsafe fn colsum_eight(near: &[u8], curr: &[u8], sample_offset: usize) -> uint16x8_t {
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let near16 = vmovl_u8(unsafe { vld1_u8(near.as_ptr().add(sample_offset)) });
+    // SAFETY: NEON pointer uses are bounded by row slicing, lane strides, or helper preconditions.
     let curr16 = vmovl_u8(unsafe { vld1_u8(curr.as_ptr().add(sample_offset)) });
     vaddq_u16(vaddq_u16(curr16, curr16), vaddq_u16(curr16, near16))
 }

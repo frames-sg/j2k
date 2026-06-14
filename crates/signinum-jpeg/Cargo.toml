@@ -1,7 +1,7 @@
 [package]
 name        = "signinum-jpeg"
 description = "JPEG decoder optimized for whole-slide images (WSI)"
-version = "0.4.4"
+version.workspace = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
@@ -13,7 +13,6 @@ readme                 = "README.md"
 [package.metadata.docs.rs]
 all-features = true
 targets = []
-build                  = "build.rs"
 
 [lib]
 name = "signinum_jpeg"
@@ -21,13 +20,18 @@ path = "src/lib.rs"
 
 [features]
 scalar-only  = []   # retained for fuzz/reference decode until native SIMD backends land
+# Opt-in for the comparison benches only: probes pkg-config for
+# libturbojpeg/libjpeg and emits link directives. Off by default so library
+# consumers never link a system JPEG.
+bench-libjpeg-turbo = []
+bench-internals = []
 
 [dependencies]
-signinum-core = { path = "../signinum-core", version = "=0.4.4" }
-signinum-profile = { path = "../signinum-profile", version = "=0.4.4" }
+signinum-core = { path = "../signinum-core", version = "=0.5.0" }
+signinum-profile = { path = "../signinum-profile", version = "=0.5.0" }
 thiserror = { workspace = true }
-memchr = { version = "2.7.6", default-features = false }
-rayon = "1"
+memchr = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -40,14 +44,17 @@ zune-jpeg = "0.5.15"
 [[bench]]
 name = "compare"
 harness = false
+required-features = ["bench-libjpeg-turbo"]
 
 [[bench]]
 name = "micro"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "fast420_breakdown"
 harness = false
+required-features = ["bench-libjpeg-turbo", "bench-internals"]
 
 [[bench]]
 name = "corpus_report"
@@ -56,6 +63,18 @@ harness = false
 [[bench]]
 name = "encode_cpu"
 harness = false
+
+[[test]]
+name = "fast420_profile"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "idct_parity"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "neon_hot_paths"
+required-features = ["bench-internals"]
 
 [lints.rust]
 # SIMD backends use tightly-scoped intrinsics in `src/backend/`; keep unsafe
@@ -69,6 +88,7 @@ unreachable_pub = "warn"
 
 [lints.clippy]
 pedantic                     = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks  = "warn"
 module_name_repetitions      = "allow"
 must_use_candidate           = "allow"
 # Style-only lints that conflict with the plan's explicit-over-idiomatic

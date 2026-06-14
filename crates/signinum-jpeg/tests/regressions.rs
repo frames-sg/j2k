@@ -3,9 +3,10 @@
 //! Regression coverage for structural decode bugs and allocation guardrails.
 
 use signinum_jpeg::{Decoder, Downscale, JpegError, PixelFormat, RowSink};
+use signinum_test_support::{minimal_grayscale_jpeg_with_dimensions, restart_coded_grayscale_jpeg};
 
-mod fixtures;
 use fixtures::minimal_baseline_420_jpeg;
+use signinum_test_support as fixtures;
 
 const R_ID: u8 = 0x52;
 const G_ID: u8 = 0x47;
@@ -133,7 +134,7 @@ impl RowSink<u8> for NullSink {
 
 #[test]
 fn decode_rows_does_not_use_full_image_scratch_cap() {
-    let bytes = minimal_grayscale_jpeg((65_000, 65_000));
+    let bytes = minimal_grayscale_jpeg_with_dimensions(65_000, 65_000);
     let dec = Decoder::new(&bytes).expect("header must parse before row decode");
 
     let err = dec
@@ -147,7 +148,7 @@ fn decode_rows_does_not_use_full_image_scratch_cap() {
 
 #[test]
 fn decode_into_handles_restart_marker_after_partial_entropy_byte() {
-    let bytes = grayscale_restart_jpeg();
+    let bytes = restart_coded_grayscale_jpeg(16, 8);
     let dec = Decoder::new(&bytes).expect("restart fixture must parse");
     let (width, height) = dec.info().dimensions;
     let stride = width as usize;
@@ -225,55 +226,6 @@ fn minimal_baseline_jpeg((width, height): (u16, u16)) -> Vec<u8> {
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0,
     ]);
     bytes.extend_from_slice(&[0x00, 0xff, 0xd9]);
-    bytes
-}
-
-fn minimal_grayscale_jpeg((width, height): (u16, u16)) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0xff, 0xd8]);
-    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
-    bytes.extend(std::iter::repeat_n(16u8, 64));
-    bytes.extend_from_slice(&[
-        0xff,
-        0xc0,
-        0x00,
-        11,
-        8,
-        (height >> 8) as u8,
-        height as u8,
-        (width >> 8) as u8,
-        width as u8,
-        1,
-        1,
-        0x11,
-        0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
-    bytes.extend_from_slice(&[0x00, 0xff, 0xd9]);
-    bytes
-}
-
-fn grayscale_restart_jpeg() -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0xff, 0xd8]);
-    bytes.extend_from_slice(&[0xff, 0xdb, 0x00, 67, 0x00]);
-    bytes.extend(std::iter::repeat_n(16u8, 64));
-    bytes.extend_from_slice(&[0xff, 0xc0, 0x00, 11, 8, 0, 8, 0, 16, 1, 1, 0x11, 0]);
-    bytes.extend_from_slice(&[0xff, 0xdd, 0x00, 0x04, 0x00, 0x01]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[
-        0xff, 0xc4, 0x00, 20, 0x10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    bytes.extend_from_slice(&[0xff, 0xda, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
-    bytes.extend_from_slice(&[0x00, 0xff, 0xd0, 0x00, 0xff, 0xd9]);
     bytes
 }
 

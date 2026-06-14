@@ -6,7 +6,7 @@
 use crate::error::{JpegError, MarkerKind, Warning};
 use crate::info::{ColorSpace, Info, McuGeometry, SamplingFactors, SofKind};
 use crate::parse::adobe_app14::{parse_adobe_app14, AdobeTransform};
-use crate::parse::markers::MarkerWalker;
+use crate::parse::markers::{next_marker_after_entropy, MarkerWalker};
 use crate::parse::scan::{parse_scan_header, ParsedScan};
 use crate::parse::sof::parse_sof;
 use crate::parse::tables::{parse_dht, parse_dqt, HuffmanTables, QuantTables};
@@ -533,26 +533,6 @@ fn collect_progressive_scans(
         scans.push(scan);
     }
     Ok(scans)
-}
-
-fn next_marker_after_entropy(bytes: &[u8], mut pos: usize) -> Option<(usize, u8)> {
-    while pos < bytes.len() {
-        let ff_rel = memchr(0xFF, &bytes[pos..])?;
-        let marker_prefix = pos + ff_rel;
-        let mut code_pos = marker_prefix + 1;
-        while code_pos < bytes.len() && bytes[code_pos] == 0xFF {
-            code_pos += 1;
-        }
-        if code_pos >= bytes.len() {
-            return None;
-        }
-        let code = bytes[code_pos];
-        match code {
-            0x00 | 0xD0..=0xD7 => pos = code_pos + 1,
-            _ => return Some((code_pos - 1, code)),
-        }
-    }
-    None
 }
 
 fn marker_payload(

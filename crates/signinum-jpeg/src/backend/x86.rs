@@ -8,15 +8,13 @@ use core::arch::x86_64::{
 };
 use core::cell::RefCell;
 
-use crate::color::upsample::{upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows};
+use crate::color::upsample::{
+    h2v2_fancy_sample, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
+};
+use crate::color::ycbcr::{FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND};
 
 use super::scalar;
 
-const FIX_1_40200: i32 = 91_881;
-const FIX_0_34414: i32 = 22_554;
-const FIX_0_71414: i32 = 46_802;
-const FIX_1_77200: i32 = 116_130;
-const ROUND: i32 = 1 << 15;
 const LANES: usize = 8;
 const RGB_UNROLL: usize = 8;
 
@@ -42,6 +40,9 @@ std::thread_local! {
 }
 
 pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
+    let width = gray_row.len().min(dst.len() / 3);
+    let gray_row = &gray_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(dst.len(), gray_row.len() * 3);
     let mut offset = 0;
     while offset + RGB_UNROLL <= gray_row.len() {
@@ -60,6 +61,15 @@ pub(crate) fn fill_rgb_row_from_gray(gray_row: &[u8], dst: &mut [u8]) {
 }
 
 pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], dst: &mut [u8]) {
+    let width = r_row
+        .len()
+        .min(g_row.len())
+        .min(b_row.len())
+        .min(dst.len() / 3);
+    let r_row = &r_row[..width];
+    let g_row = &g_row[..width];
+    let b_row = &b_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(r_row.len(), g_row.len());
     debug_assert_eq!(r_row.len(), b_row.len());
     debug_assert_eq!(dst.len(), r_row.len() * 3);
@@ -92,9 +102,20 @@ pub(crate) fn fill_rgb_row_from_rgb(r_row: &[u8], g_row: &[u8], b_row: &[u8], ds
 }
 
 pub(crate) fn fill_rgb_row_from_ycbcr(y_row: &[u8], cb_row: &[u8], cr_row: &[u8], dst: &mut [u8]) {
+    let width = y_row
+        .len()
+        .min(cb_row.len())
+        .min(cr_row.len())
+        .min(dst.len() / 3);
+    let y_row = &y_row[..width];
+    let cb_row = &cb_row[..width];
+    let cr_row = &cr_row[..width];
+    let dst = &mut dst[..width * 3];
     debug_assert_eq!(y_row.len(), cb_row.len());
     debug_assert_eq!(y_row.len(), cr_row.len());
     debug_assert_eq!(dst.len(), y_row.len() * 3);
+    // SAFETY: Backend dispatch selects this path only when AVX2 is available.
+    // All source rows and the destination are narrowed to the same pixel count.
     unsafe {
         fill_rgb_row_from_ycbcr_avx2(y_row, cb_row, cr_row, dst);
     }
@@ -113,6 +134,35 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     dst_top: &mut [u8],
     dst_bottom: Option<&mut [u8]>,
 ) {
+    let chroma_width = prev_cb
+        .len()
+        .min(curr_cb.len())
+        .min(next_cb.len())
+        .min(prev_cr.len())
+        .min(curr_cr.len())
+        .min(next_cr.len());
+    let bottom_width = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
+        (Some(row), Some(dst)) => row.len().min(dst.len() / 3),
+        _ => usize::MAX,
+    };
+    let width = y_top
+        .len()
+        .min(dst_top.len() / 3)
+        .min(bottom_width)
+        .min(chroma_width.saturating_mul(2));
+    if width == 0 {
+        return;
+    }
+    let y_top = &y_top[..width];
+    let y_bottom = y_bottom.and_then(|row| row.get(..width));
+    let prev_cb = &prev_cb[..chroma_width];
+    let curr_cb = &curr_cb[..chroma_width];
+    let next_cb = &next_cb[..chroma_width];
+    let prev_cr = &prev_cr[..chroma_width];
+    let curr_cr = &curr_cr[..chroma_width];
+    let next_cr = &next_cr[..chroma_width];
+    let dst_top = &mut dst_top[..width * 3];
+    let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), y_top.len() * 3);
     debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
     debug_assert!(dst_bottom
@@ -126,6 +176,9 @@ pub(crate) fn fill_rgb_row_pair_from_420(
     ROW_PAIR_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
         scratch.ensure_width(y_top.len());
+        // SAFETY: Backend dispatch selects this path only when AVX2 is
+        // available. The wrapper clamps luma, chroma, and destination rows so
+        // all upsampled reads and RGB writes fit the passed slices.
         unsafe {
             fill_rgb_row_pair_from_420_avx2(
                 y_top,
@@ -159,13 +212,45 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
     dst_top: &mut [u8],
     dst_bottom: Option<&mut [u8]>,
 ) {
-    let crop_end = crop_start + crop_width;
-    debug_assert!(crop_end <= y_top.len());
-    debug_assert_eq!(dst_top.len(), crop_width * 3);
-    debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
-    debug_assert!(dst_bottom
-        .as_ref()
-        .is_none_or(|row| row.len() == crop_width * 3));
+    let chroma_width = prev_cb
+        .len()
+        .min(curr_cb.len())
+        .min(next_cb.len())
+        .min(prev_cr.len())
+        .min(curr_cr.len())
+        .min(next_cr.len());
+    let available_chroma = chroma_width.saturating_mul(2).saturating_sub(crop_start);
+    let available_top = y_top.len().saturating_sub(crop_start);
+    let bottom_available = match (y_bottom.as_ref(), dst_bottom.as_ref()) {
+        (Some(row), Some(dst)) => row.len().saturating_sub(crop_start).min(dst.len() / 3),
+        _ => usize::MAX,
+    };
+    let width = crop_width
+        .min(available_top)
+        .min(dst_top.len() / 3)
+        .min(bottom_available)
+        .min(available_chroma);
+    if width == 0 {
+        return;
+    }
+    let Some(crop_end) = crop_start.checked_add(width) else {
+        return;
+    };
+    let Some(y_top_crop) = y_top.get(crop_start..crop_end) else {
+        return;
+    };
+    let y_bottom = y_bottom.and_then(|row| row.get(crop_start..crop_end));
+    let prev_cb = &prev_cb[..chroma_width];
+    let curr_cb = &curr_cb[..chroma_width];
+    let next_cb = &next_cb[..chroma_width];
+    let prev_cr = &prev_cr[..chroma_width];
+    let curr_cr = &curr_cr[..chroma_width];
+    let next_cr = &next_cr[..chroma_width];
+    let dst_top = &mut dst_top[..width * 3];
+    let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
+    debug_assert_eq!(dst_top.len(), width * 3);
+    debug_assert!(y_bottom.is_none_or(|row| row.len() == width));
+    debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
     debug_assert_eq!(prev_cb.len(), curr_cb.len());
     debug_assert_eq!(prev_cb.len(), next_cb.len());
     debug_assert_eq!(prev_cr.len(), curr_cr.len());
@@ -173,33 +258,34 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
 
     ROW_PAIR_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
-        scratch.ensure_width(crop_width);
+        scratch.ensure_width(width);
         let RowPairScratch {
             cb_top,
             cb_bottom,
             cr_top,
             cr_bottom,
         } = &mut *scratch;
-        let cb_top = &mut cb_top[..crop_width];
-        let cr_top = &mut cr_top[..crop_width];
+        let cb_top = &mut cb_top[..width];
+        let cr_top = &mut cr_top[..width];
         fill_cropped_h2v2_row(prev_cb, curr_cb, crop_start, cb_top);
         fill_cropped_h2v2_row(prev_cr, curr_cr, crop_start, cr_top);
+        // SAFETY: Backend dispatch selects this path only when AVX2 is
+        // available. `y_top_crop`, scratch chroma rows, and destination slices
+        // all have the same bounded pixel width.
         unsafe {
-            fill_rgb_row_from_ycbcr_avx2(&y_top[crop_start..crop_end], cb_top, cr_top, dst_top);
+            fill_rgb_row_from_ycbcr_avx2(y_top_crop, cb_top, cr_top, dst_top);
         }
 
         if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
-            let cb_bottom = &mut cb_bottom[..crop_width];
-            let cr_bottom = &mut cr_bottom[..crop_width];
+            let cb_bottom = &mut cb_bottom[..width];
+            let cr_bottom = &mut cr_bottom[..width];
             fill_cropped_h2v2_row(next_cb, curr_cb, crop_start, cb_bottom);
             fill_cropped_h2v2_row(next_cr, curr_cr, crop_start, cr_bottom);
+            // SAFETY: Backend dispatch selects this path only when AVX2 is
+            // available. The bottom luma, scratch chroma, and destination
+            // slices were clamped to the same bounded pixel width.
             unsafe {
-                fill_rgb_row_from_ycbcr_avx2(
-                    &y_bottom[crop_start..crop_end],
-                    cb_bottom,
-                    cr_bottom,
-                    dst_bottom,
-                );
+                fill_rgb_row_from_ycbcr_avx2(y_bottom, cb_bottom, cr_bottom, dst_bottom);
             }
         }
     });
@@ -207,34 +293,7 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
 
 fn fill_cropped_h2v2_row(near: &[u8], curr: &[u8], crop_start: usize, out: &mut [u8]) {
     for (local_x, slot) in out.iter_mut().enumerate() {
-        *slot = h2v2_sample(near, curr, crop_start + local_x);
-    }
-}
-
-fn h2v2_sample(near: &[u8], curr: &[u8], x: usize) -> u8 {
-    debug_assert_eq!(near.len(), curr.len());
-    let n = curr.len();
-    if n == 0 {
-        return 0;
-    }
-    let sample = (x / 2).min(n - 1);
-    let colsum = |idx: usize| 3 * u32::from(curr[idx]) + u32::from(near[idx]);
-    if n == 1 {
-        return ((4 * colsum(0) + 8) >> 4) as u8;
-    }
-
-    let this = colsum(sample);
-    match x {
-        0 => ((this * 4 + 8) >> 4) as u8,
-        _ if x == n * 2 - 1 => ((this * 4 + 7) >> 4) as u8,
-        _ if x.is_multiple_of(2) => {
-            let last = colsum(sample - 1);
-            ((this * 3 + last + 8) >> 4) as u8
-        }
-        _ => {
-            let next = colsum(sample + 1);
-            ((this * 3 + next + 7) >> 4) as u8
-        }
+        *slot = h2v2_fancy_sample(near, curr, crop_start + local_x);
     }
 }
 
@@ -311,6 +370,8 @@ unsafe fn fill_rgb_row_from_ycbcr_avx2(y_row: &[u8], cb_row: &[u8], cr_row: &[u8
     let mut offset = 0;
 
     while offset + (LANES * 2) <= width {
+        // SAFETY: The safe wrapper slices all input rows and `dst` to the same
+        // pixel count, and this loop only passes full eight-pixel chunks.
         unsafe {
             fill_chunk(
                 y_row,
@@ -331,6 +392,8 @@ unsafe fn fill_rgb_row_from_ycbcr_avx2(y_row: &[u8], cb_row: &[u8], cr_row: &[u8
     }
 
     while offset + LANES <= width {
+        // SAFETY: The safe wrapper slices all input rows and `dst` to the same
+        // pixel count, and this loop only passes a full eight-pixel chunk.
         unsafe {
             fill_chunk(
                 y_row,
@@ -363,8 +426,11 @@ unsafe fn fill_chunk(
 ) {
     debug_assert_eq!(dst_chunk.len(), LANES * 3);
 
+    // SAFETY: callers prove `offset + LANES <= row.len()` for each source row.
     let y = unsafe { load_eight(y_row, offset) };
+    // SAFETY: callers prove `offset + LANES <= row.len()` for each source row.
     let cb = unsafe { load_eight(cb_row, offset) };
+    // SAFETY: callers prove `offset + LANES <= row.len()` for each source row.
     let cr = unsafe { load_eight(cr_row, offset) };
 
     let bias = _mm256_set1_epi32(128);
@@ -388,6 +454,7 @@ unsafe fn fill_chunk(
     );
     let b = _mm256_add_epi32(y32, fixed_mul_shift(cb32, FIX_1_77200));
 
+    // SAFETY: `dst_chunk` is narrowed by the caller to exactly one RGB chunk.
     unsafe {
         store_rgb_chunk(dst_chunk, r, g, b);
     }
@@ -395,6 +462,9 @@ unsafe fn fill_chunk(
 
 #[target_feature(enable = "avx2")]
 unsafe fn load_eight(src: &[u8], offset: usize) -> __m128i {
+    debug_assert!(offset <= src.len().saturating_sub(LANES));
+    // SAFETY: the caller guarantees there are at least eight readable bytes at
+    // `offset`; `_mm_loadl_epi64` accepts unaligned loads.
     unsafe { _mm_loadl_epi64(src.as_ptr().add(offset).cast()) }
 }
 
@@ -411,8 +481,12 @@ fn fixed_mul_shift(values: __m256i, coefficient: i32) -> __m256i {
 
 #[target_feature(enable = "avx2")]
 unsafe fn store_rgb_chunk(dst_chunk: &mut [u8], r: __m256i, g: __m256i, b: __m256i) {
+    debug_assert_eq!(dst_chunk.len(), LANES * 3);
+    // SAFETY: packing only rearranges register values and does not dereference.
     let r_bytes = unsafe { pack_eight_u8(r) };
+    // SAFETY: packing only rearranges register values and does not dereference.
     let g_bytes = unsafe { pack_eight_u8(g) };
+    // SAFETY: packing only rearranges register values and does not dereference.
     let b_bytes = unsafe { pack_eight_u8(b) };
 
     for ((((r, g), b), pixel), _) in r_bytes

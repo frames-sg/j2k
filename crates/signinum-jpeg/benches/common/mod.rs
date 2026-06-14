@@ -4,6 +4,7 @@
 
 pub(crate) mod classification;
 mod libjpeg_turbo;
+pub(crate) mod report;
 
 pub(crate) use self::classification::DecodeMode;
 use self::classification::{classify_corpus_input, color_space_mode, CorpusInputClass};
@@ -11,10 +12,11 @@ pub(crate) use self::libjpeg_turbo::TurboJpegDecoder;
 use signinum_core::tile_batch_worker_count;
 use signinum_jpeg::{
     decode_tiles_into, decode_tiles_region_scaled_into, decode_tiles_scaled_into, Decoder,
-    DecoderContext, Downscale, JpegError, PixelFormat, Rect, RowSink, ScratchPool,
-    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    DecoderContext, Downscale, JpegBatchSession, JpegError, JpegOutputBuffer, PixelFormat, Rect,
+    RowSink, ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
-use std::fs;
+use signinum_test_support::{JPEG_BASELINE_420_16X16, JPEG_GRAYSCALE_8X8};
 use std::path::{Path, PathBuf};
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace as ZuneColorSpace;
@@ -35,14 +37,14 @@ pub(crate) fn load_bench_inputs() -> Vec<BenchInput> {
     let mut inputs = vec![
         BenchInput {
             name: "repo/baseline_420_16x16".to_string(),
-            bytes: include_bytes!("../../fixtures/conformance/baseline_420_16x16.jpg").to_vec(),
+            bytes: JPEG_BASELINE_420_16X16.to_vec(),
             dimensions: (16, 16),
             mode: DecodeMode::Rgb,
             input_class: CorpusInputClass::BoundedFullFrame,
         },
         BenchInput {
             name: "repo/grayscale_8x8".to_string(),
-            bytes: include_bytes!("../../fixtures/conformance/grayscale_8x8.jpg").to_vec(),
+            bytes: JPEG_GRAYSCALE_8X8.to_vec(),
             dimensions: (8, 8),
             mode: DecodeMode::Gray,
             input_class: CorpusInputClass::BoundedFullFrame,
@@ -53,9 +55,7 @@ pub(crate) fn load_bench_inputs() -> Vec<BenchInput> {
         .iter()
         .map(|input| input.name.clone())
         .collect::<Vec<_>>();
-    for path in
-        std::env::split_paths(&std::env::var_os("SIGNINUM_BENCH_INPUTS").unwrap_or_default())
-    {
+    for path in signinum_test_support::paths_from_env("SIGNINUM_BENCH_INPUTS") {
         collect_jpegs(&path, &mut inputs, &mut seen);
     }
 
@@ -64,35 +64,13 @@ pub(crate) fn load_bench_inputs() -> Vec<BenchInput> {
 }
 
 fn collect_jpegs(path: &Path, inputs: &mut Vec<BenchInput>, seen: &mut Vec<String>) {
-    if path.is_file() {
-        push_jpeg(path, inputs, seen);
-        return;
-    }
-    if !path.is_dir() {
-        return;
-    }
-
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let child = entry.path();
-            if child.is_dir() {
-                stack.push(child);
-            } else {
-                push_jpeg(&child, inputs, seen);
-            }
-        }
+    for path in signinum_test_support::collect_jpeg_paths(path) {
+        push_jpeg(&path, inputs, seen);
     }
 }
 
 fn push_jpeg(path: &Path, inputs: &mut Vec<BenchInput>, seen: &mut Vec<String>) {
-    if !is_jpeg(path) {
-        return;
-    }
-    let Ok(bytes) = fs::read(path) else {
+    let Ok(bytes) = std::fs::read(path) else {
         return;
     };
     let Ok(dec) = Decoder::new(&bytes) else {
@@ -127,12 +105,6 @@ fn relative_name(path: &Path) -> String {
         }
     }
     absolute.display().to_string()
-}
-
-fn is_jpeg(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
 }
 
 pub(crate) fn signinum_inspect(bytes: &[u8]) {
@@ -245,16 +217,26 @@ impl RowSink<u8> for NullSink {
 pub(crate) struct SigninumTileBatchRgbScratch {
     outputs: Vec<Vec<u8>>,
     stride: usize,
+    options: TileBatchOptions,
 }
 
 impl SigninumTileBatchRgbScratch {
     pub(crate) fn new(bytes: &[u8], batch_size: usize) -> Self {
+        Self::new_with_options(bytes, batch_size, TileBatchOptions::default())
+    }
+
+    pub(crate) fn new_with_options(
+        bytes: &[u8],
+        batch_size: usize,
+        options: TileBatchOptions,
+    ) -> Self {
         let info = Decoder::inspect(bytes).expect("signinum inspect tile batch");
         let stride = info.dimensions.0 as usize * 3;
         let len = stride * info.dimensions.1 as usize;
         Self {
             outputs: (0..batch_size).map(|_| vec![0u8; len]).collect(),
             stride,
+            options,
         }
     }
 
@@ -269,10 +251,191 @@ impl SigninumTileBatchRgbScratch {
                     stride: self.stride,
                 })
                 .collect::<Vec<_>>();
-            decode_tiles_into(&mut jobs, PixelFormat::Rgb8, TileBatchOptions::default())
+            decode_tiles_into(&mut jobs, PixelFormat::Rgb8, self.options)
                 .expect("signinum production tile batch")
         };
         std::hint::black_box(&outcomes);
+        std::hint::black_box(&self.outputs);
+    }
+}
+
+pub(crate) struct SigninumTileBatchRgbSession {
+    outputs: Vec<Vec<u8>>,
+    stride: usize,
+    session: JpegBatchSession,
+}
+
+impl SigninumTileBatchRgbSession {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize) -> Self {
+        let info = Decoder::inspect(bytes).expect("signinum inspect tile batch");
+        let stride = info.dimensions.0 as usize * 3;
+        let len = stride * info.dimensions.1 as usize;
+        let mut this = Self {
+            outputs: (0..batch_size).map(|_| vec![0u8; len]).collect(),
+            stride,
+            session: JpegBatchSession::default(),
+        };
+        this.run(bytes);
+        this
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        let outcomes = {
+            let mut jobs = self
+                .outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes,
+                    out: out.as_mut_slice(),
+                    stride: self.stride,
+                })
+                .collect::<Vec<_>>();
+            self.session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("signinum session tile batch")
+        };
+        std::hint::black_box(outcomes);
+        std::hint::black_box(&self.outputs);
+    }
+}
+
+pub(crate) struct SigninumTileBatchRgbOutputBuffers {
+    outputs: Vec<JpegOutputBuffer>,
+    session: JpegBatchSession,
+}
+
+impl SigninumTileBatchRgbOutputBuffers {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize) -> Self {
+        let info = Decoder::inspect(bytes).expect("signinum inspect tile batch");
+        let mut this = Self {
+            outputs: (0..batch_size)
+                .map(|_| {
+                    JpegOutputBuffer::new(info.dimensions, PixelFormat::Rgb8)
+                        .expect("JPEG output buffer")
+                })
+                .collect(),
+            session: JpegBatchSession::default(),
+        };
+        this.run(bytes);
+        this
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        let outcomes = {
+            let mut jobs = self
+                .outputs
+                .iter_mut()
+                .map(|out| {
+                    let stride = out.stride();
+                    TileDecodeJob {
+                        input: bytes,
+                        out: out.as_mut_slice(),
+                        stride,
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("signinum session tile batch with output buffers")
+        };
+        std::hint::black_box(outcomes);
+        std::hint::black_box(&self.outputs);
+    }
+}
+
+pub(crate) struct SigninumTileBatchScaledRgbSession {
+    outputs: Vec<JpegOutputBuffer>,
+    scale: Downscale,
+    session: JpegBatchSession,
+}
+
+impl SigninumTileBatchScaledRgbSession {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize, scale: Downscale) -> Self {
+        let info = Decoder::inspect(bytes).expect("signinum inspect scaled tile batch");
+        let dims = scaled_dims(info.dimensions, scale);
+        let mut this = Self {
+            outputs: (0..batch_size)
+                .map(|_| JpegOutputBuffer::new(dims, PixelFormat::Rgb8).expect("output buffer"))
+                .collect(),
+            scale,
+            session: JpegBatchSession::default(),
+        };
+        this.run(bytes);
+        this
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        let outcomes = {
+            let mut jobs = self
+                .outputs
+                .iter_mut()
+                .map(|out| {
+                    let stride = out.stride();
+                    TileScaledDecodeJob {
+                        input: bytes,
+                        out: out.as_mut_slice(),
+                        stride,
+                        scale: self.scale,
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.session
+                .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("signinum session scaled tile batch")
+        };
+        std::hint::black_box(outcomes);
+        std::hint::black_box(&self.outputs);
+    }
+}
+
+pub(crate) struct SigninumTileBatchRegionScaledRgbSession {
+    outputs: Vec<JpegOutputBuffer>,
+    roi: Rect,
+    scale: Downscale,
+    session: JpegBatchSession,
+}
+
+impl SigninumTileBatchRegionScaledRgbSession {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize, side: u32, scale: Downscale) -> Self {
+        let info = Decoder::inspect(bytes).expect("signinum inspect region-scaled tile batch");
+        let roi = centered_roi(info.dimensions, side);
+        let dims = {
+            let scaled = scaled_rect(roi, scale);
+            (scaled.w, scaled.h)
+        };
+        let mut this = Self {
+            outputs: (0..batch_size)
+                .map(|_| JpegOutputBuffer::new(dims, PixelFormat::Rgb8).expect("output buffer"))
+                .collect(),
+            roi,
+            scale,
+            session: JpegBatchSession::default(),
+        };
+        this.run(bytes);
+        this
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        let outcomes = {
+            let mut jobs = self
+                .outputs
+                .iter_mut()
+                .map(|out| {
+                    let stride = out.stride();
+                    TileRegionScaledDecodeJob {
+                        input: bytes,
+                        out: out.as_mut_slice(),
+                        stride,
+                        roi: self.roi.into(),
+                        scale: self.scale,
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.session
+                .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("signinum session region-scaled tile batch")
+        };
+        std::hint::black_box(outcomes);
         std::hint::black_box(&self.outputs);
     }
 }
@@ -346,14 +509,53 @@ pub(crate) fn libjpeg_turbo_decode_batch(
     }
 }
 
+pub(crate) struct TurboJpegBatchRgbOutputBuffers {
+    decoder: TurboJpegDecoder,
+    outputs: Vec<Vec<u8>>,
+    stride: usize,
+    dimensions: (usize, usize),
+}
+
+impl TurboJpegBatchRgbOutputBuffers {
+    pub(crate) fn new(bytes: &[u8], batch_size: usize) -> Self {
+        let mut decoder = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+        let info = decoder.prepare_rgb(bytes).expect("libjpeg-turbo prepare");
+        let stride = info.width as usize * 3;
+        let len = stride * info.height as usize;
+        let mut this = Self {
+            decoder,
+            outputs: (0..batch_size).map(|_| vec![0u8; len]).collect(),
+            stride,
+            dimensions: (info.width as usize, info.height as usize),
+        };
+        this.run(bytes);
+        this
+    }
+
+    pub(crate) fn run(&mut self, bytes: &[u8]) {
+        for out in &mut self.outputs {
+            self.decoder
+                .decode_prepared_rgb_into(
+                    bytes,
+                    out,
+                    self.stride,
+                    self.dimensions.0,
+                    self.dimensions.1,
+                )
+                .expect("libjpeg-turbo preallocated decode");
+        }
+        std::hint::black_box(&self.outputs);
+    }
+}
+
 pub(crate) fn signinum_decode_tile_batch_scaled(
     bytes: &[u8],
     batch_size: usize,
     factor: Downscale,
 ) {
     let info = Decoder::inspect(bytes).expect("signinum inspect");
-    let out_width = info.dimensions.0.div_ceil(scale_denominator(factor));
-    let out_height = info.dimensions.1.div_ceil(scale_denominator(factor));
+    let out_width = info.dimensions.0.div_ceil(factor.denominator());
+    let out_height = info.dimensions.1.div_ceil(factor.denominator());
     let stride = out_width as usize * 3;
     let len = stride * out_height as usize;
     let mut outputs = (0..batch_size).map(|_| vec![0u8; len]).collect::<Vec<_>>();
@@ -393,7 +595,7 @@ pub(crate) fn signinum_decode_tile_batch_region_scaled(
                 input: bytes,
                 out: out.as_mut_slice(),
                 stride,
-                roi,
+                roi: roi.into(),
                 scale: factor,
             })
             .collect::<Vec<_>>();
@@ -483,7 +685,7 @@ pub(crate) fn jpeg_decoder_decode_scaled(bytes: &[u8], factor: Downscale) {
         &out,
         info.width as usize,
         info.height as usize,
-        scale_denominator(factor) as usize,
+        factor.denominator() as usize,
     );
     std::hint::black_box(scaled);
 }
@@ -498,7 +700,7 @@ pub(crate) fn jpeg_decoder_decode_region_scaled(bytes: &[u8], side: u32, factor:
         &cropped,
         roi.w as usize,
         roi.h as usize,
-        scale_denominator(factor) as usize,
+        factor.denominator() as usize,
     );
     std::hint::black_box(scaled);
 }
@@ -546,7 +748,7 @@ pub(crate) fn zune_decode_scaled(bytes: &[u8], factor: Downscale) {
         &out,
         info.width.into(),
         info.height.into(),
-        scale_denominator(factor) as usize,
+        factor.denominator() as usize,
     );
     std::hint::black_box(scaled);
 }
@@ -567,7 +769,7 @@ pub(crate) fn zune_decode_region_scaled(bytes: &[u8], side: u32, factor: Downsca
         &cropped,
         roi.w as usize,
         roi.h as usize,
-        scale_denominator(factor) as usize,
+        factor.denominator() as usize,
     );
     std::hint::black_box(scaled);
 }
@@ -647,7 +849,7 @@ pub(crate) fn centered_roi((width, height): (u32, u32), side: u32) -> Rect {
 }
 
 pub(crate) fn scaled_rect(rect: Rect, factor: Downscale) -> Rect {
-    let denom = scale_denominator(factor);
+    let denom = factor.denominator();
     let x_end = rect.x + rect.w;
     let y_end = rect.y + rect.h;
     Rect {
@@ -658,14 +860,9 @@ pub(crate) fn scaled_rect(rect: Rect, factor: Downscale) -> Rect {
     }
 }
 
-fn scale_denominator(factor: Downscale) -> u32 {
-    match factor {
-        Downscale::None => 1,
-        Downscale::Half => 2,
-        Downscale::Quarter => 4,
-        Downscale::Eighth => 8,
-        _ => unreachable!("unsupported Downscale variant"),
-    }
+fn scaled_dims((width, height): (u32, u32), factor: Downscale) -> (u32, u32) {
+    let denom = factor.denominator();
+    (width.div_ceil(denom), height.div_ceil(denom))
 }
 
 fn crop_rgb(full: &[u8], width: usize, roi: Rect) -> Vec<u8> {

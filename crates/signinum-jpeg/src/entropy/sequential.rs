@@ -5,7 +5,9 @@
 //! color conversion.
 
 use crate::backend::Backend;
+#[cfg(feature = "bench-internals")]
 use crate::bench_support::{BenchBlockActivityCounts, BenchFast420Profile};
+use crate::color::cmyk::{inverted_cmyk_to_rgb, ycck_to_rgb};
 use crate::color::upsample::{
     upsample_1x1, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
 };
@@ -15,7 +17,7 @@ use crate::entropy::block::{
     BlockActivity, CoefficientBlock, ReducedIdctCoefficients,
 };
 use crate::entropy::huffman::HuffmanTable;
-use crate::error::{HuffmanFailure, JpegError, Warning};
+use crate::error::{JpegError, Warning};
 use crate::idct::downscale;
 use crate::info::{ColorSpace, DownscaleFactor, Rect, SamplingFactors};
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
@@ -27,7 +29,31 @@ use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr;
+#[cfg(feature = "bench-internals")]
 use std::time::Instant;
+
+trait Fast420Profiler {
+    fn record_activity(&mut self, activity: BlockActivity);
+}
+
+struct NoopFast420Profiler;
+
+impl Fast420Profiler for NoopFast420Profiler {
+    #[inline]
+    fn record_activity(&mut self, _activity: BlockActivity) {}
+}
+
+#[cfg(feature = "bench-internals")]
+impl Fast420Profiler for BenchBlockActivityCounts {
+    #[inline]
+    fn record_activity(&mut self, activity: BlockActivity) {
+        match activity {
+            BlockActivity::DcOnly => self.record_dc_only(),
+            BlockActivity::BottomHalfZero => self.record_bottom_half_zero(),
+            BlockActivity::General => self.record_general(),
+        }
+    }
+}
 
 /// Per-component decode context. One entry per component declared in the
 /// SOF, in scan order.
@@ -210,7 +236,7 @@ pub(crate) fn decode_scan_baseline<W: OutputWriter>(
         ColorSpace::YCbCr if is_ycbcr_420(plan) => OutputScratch::YCbCr420(ycbcr_420_rows),
         ColorSpace::YCbCr => OutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb => OutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => OutputScratch::Grayscale,
+        ColorSpace::Cmyk | ColorSpace::Ycck => OutputScratch::RgbGeneric(rgb_generic_rows),
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -365,7 +391,7 @@ pub(crate) fn decode_scan_baseline_rgb<W: OutputWriter + InterleavedRgbWriter>(
         ColorSpace::YCbCr if is_ycbcr_420(plan) => RgbOutputScratch::YCbCr420,
         ColorSpace::YCbCr => RgbOutputScratch::YCbCrGeneric(ycbcr_generic_rows),
         ColorSpace::Rgb => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
-        ColorSpace::Cmyk | ColorSpace::Ycck => RgbOutputScratch::None,
+        ColorSpace::Cmyk | ColorSpace::Ycck => RgbOutputScratch::RgbGeneric(rgb_generic_rows),
     };
     let mut prev_stripe: &mut StripeBuffer = stripe_a;
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
@@ -536,6 +562,7 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
     let mut curr_stripe: &mut StripeBuffer = stripe_b;
     let mut next_stripe: &mut StripeBuffer = stripe_c;
     let mut output_scratch = RgbOutputScratch::YCbCr420;
+    let mut profiler = NoopFast420Profiler;
 
     decode_mcu_row_fast_tile_420(
         y_comp,
@@ -552,6 +579,7 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
         0,
         mcus_per_row,
         curr_stripe,
+        &mut profiler,
     )?;
 
     let mut has_prev = false;
@@ -571,6 +599,7 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
             0,
             mcus_per_row,
             next_stripe,
+            &mut profiler,
         )?;
         emit_stripe_rgb(
             plan,
@@ -605,6 +634,7 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
     finish_fast_tile_scan(&mut br)
 }
 
+#[cfg(feature = "bench-internals")]
 pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
@@ -649,7 +679,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
     let mut output_scratch = RgbOutputScratch::YCbCr420;
 
     let mcu_start = Instant::now();
-    decode_mcu_row_fast_tile_420_profiled(
+    decode_mcu_row_fast_tile_420(
         y_comp,
         cb_comp,
         cr_comp,
@@ -671,7 +701,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
     let mut has_prev = false;
     for my in 1..mcu_rows {
         let mcu_start = Instant::now();
-        decode_mcu_row_fast_tile_420_profiled(
+        decode_mcu_row_fast_tile_420(
             y_comp,
             cb_comp,
             cr_comp,
@@ -893,7 +923,10 @@ fn mcu_row_intersects_rect(stripe_index: u32, mcu_height_px: u32, rect: Rect) ->
     y0 < rect_y1 && y1 > rect.y
 }
 
-fn finish_scan(br: &mut BitReader<'_>, validate_eoi: bool) -> Result<Vec<Warning>, JpegError> {
+pub(crate) fn finish_scan(
+    br: &mut BitReader<'_>,
+    validate_eoi: bool,
+) -> Result<Vec<Warning>, JpegError> {
     if !validate_eoi {
         return Ok(Vec::new());
     }
@@ -1276,6 +1309,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
         let mut prev_stripe: &mut StripeBuffer = stripe_a;
         let mut curr_stripe: &mut StripeBuffer = stripe_b;
         let mut next_stripe: &mut StripeBuffer = stripe_c;
+        let mut profiler = NoopFast420Profiler;
 
         decode_mcu_row_fast_tile_420(
             y_comp,
@@ -1292,6 +1326,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
             region_layout.stripe_mcu_start,
             region_layout.stripe_mcus_per_row,
             curr_stripe,
+            &mut profiler,
         )?;
 
         let mut has_prev = false;
@@ -1311,6 +1346,7 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
                 region_layout.stripe_mcu_start,
                 region_layout.stripe_mcus_per_row,
                 next_stripe,
+                &mut profiler,
             )?;
             if mcu_row_intersects_rect(my - 1, mcu_height_px, roi) {
                 emit_stripe_rgb_420_region(
@@ -1506,13 +1542,48 @@ pub(crate) fn decode_scan_fast_tile_rgb_region_scaled<W: OutputWriter + Interlea
     result
 }
 
+/// Release-mode precondition for the raw-pointer writes in [`deposit_block`]
+/// and [`deposit_dc_block`]: the stripe plane must carry the stride and
+/// capacity [`StripeBuffer::resize_for`] establishes for
+/// `stripe_mcus_per_row` MCUs of `h`×`v` `block_size`-pixel blocks. Asserted
+/// once per stripe row so the per-block deposits stay bounds-check free in
+/// the hot loop.
+fn assert_stripe_deposit_capacity(
+    stripe: &StripeBuffer,
+    plane_idx: usize,
+    h: u32,
+    v: u32,
+    stripe_mcus_per_row: u32,
+    block_size: u32,
+) {
+    let needed_cols = stripe_mcus_per_row as usize * h as usize * block_size as usize;
+    let needed_rows = v as usize * block_size as usize;
+    let stride = stripe.plane_strides[plane_idx];
+    let len = stripe.planes[plane_idx].len();
+    assert!(
+        stride >= needed_cols
+            && stride
+                .checked_mul(needed_rows)
+                .is_some_and(|needed| len >= needed),
+        "stripe plane {plane_idx} ({len} bytes, stride {stride}) is not sized for \
+         {stripe_mcus_per_row} MCUs of {h}x{v} blocks of {block_size}px; \
+         StripeBuffer::resize_for must run first"
+    );
+}
+
 fn deposit_block(plane: &mut [u8], stride: usize, x: u32, y: u32, block: &[u8; 64]) {
     let dst_row_start = (y as usize) * stride + (x as usize);
     debug_assert!(x as usize + 8 <= stride);
     debug_assert!(plane.len() >= dst_row_start + stride.saturating_mul(7) + 8);
+    // SAFETY: `plane`/`stride` come from a StripeBuffer sized by `resize_for`,
+    // and the caller's per-stripe `assert_stripe_deposit_capacity` check
+    // guarantees in release builds that every in-stripe (x, y) block start
+    // leaves room for 8 rows of 8 bytes at this stride.
+    // SAFETY: Destination pointers are derived from validated row starts and row widths.
     let mut dst = unsafe { plane.as_mut_ptr().add(dst_row_start) };
     let mut src = block.as_ptr();
     for _ in 0..8 {
+        // SAFETY: Destination pointers are derived from validated row starts and row widths.
         unsafe {
             ptr::copy_nonoverlapping(src, dst, 8);
             dst = dst.add(stride);
@@ -1525,8 +1596,12 @@ fn deposit_dc_block(plane: &mut [u8], stride: usize, x: u32, y: u32, pixel: u8) 
     let dst_row_start = (y as usize) * stride + (x as usize);
     debug_assert!(x as usize + 8 <= stride);
     debug_assert!(plane.len() >= dst_row_start + stride.saturating_mul(7) + 8);
+    // SAFETY: same contract as `deposit_block` — upheld by `resize_for` plus
+    // the caller's per-stripe `assert_stripe_deposit_capacity` check.
+    // SAFETY: Destination pointers are derived from validated row starts and row widths.
     let mut dst = unsafe { plane.as_mut_ptr().add(dst_row_start) };
     for _ in 0..8 {
+        // SAFETY: Destination pointers are derived from validated row starts and row widths.
         unsafe {
             ptr::write_bytes(dst, pixel, 8);
             dst = dst.add(stride);
@@ -1794,6 +1869,16 @@ fn decode_mcu_row(
 ) -> Result<(), JpegError> {
     let stripe_mcu_end = stripe_mcu_start + stripe_mcus_per_row;
     let block_size = downscale.output_block_size();
+    for comp in &plan.components {
+        assert_stripe_deposit_capacity(
+            stripe,
+            comp.output_index,
+            u32::from(comp.h),
+            u32::from(comp.v),
+            stripe_mcus_per_row,
+            block_size,
+        );
+    }
     let mut pixels_4x4 = [0u8; 16];
     let mut pixels_2x2 = [0u8; 4];
     for mx in 0..mcus_per_row {
@@ -2045,6 +2130,9 @@ fn decode_mcu_row_fast_rgb_444(
     mcus_since_restart: &mut u32,
     expected_rst: &mut u8,
 ) -> Result<(), JpegError> {
+    for plane_idx in 0..3 {
+        assert_stripe_deposit_capacity(stripe, plane_idx, 1, 1, mcus_per_row, 8);
+    }
     for mx in 0..mcus_per_row {
         if restart > 0 && *mcus_since_restart == u32::from(restart) {
             let _ = br.ensure_bits(1);
@@ -2510,8 +2598,12 @@ fn decode_mcu_row_fast_tile_420(
     stripe_mcu_start: u32,
     stripe_mcus_per_row: u32,
     stripe: &mut StripeBuffer,
+    profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
     let stripe_mcu_end = stripe_mcu_start + stripe_mcus_per_row;
+    assert_stripe_deposit_capacity(stripe, 0, 2, 2, stripe_mcus_per_row, 8);
+    assert_stripe_deposit_capacity(stripe, 1, 1, 1, stripe_mcus_per_row, 8);
+    assert_stripe_deposit_capacity(stripe, 2, 1, 1, stripe_mcus_per_row, 8);
     for mx in 0..mcus_per_row {
         let in_region = mx >= stripe_mcu_start && mx < stripe_mcu_end;
         if !in_region {
@@ -2535,6 +2627,7 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(y0_activity);
         idct_deposit_fast_tile_block(
             y0_activity,
             backend,
@@ -2554,6 +2647,7 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(y1_activity);
         idct_deposit_fast_tile_block(
             y1_activity,
             backend,
@@ -2573,6 +2667,7 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(y2_activity);
         idct_deposit_fast_tile_block(
             y2_activity,
             backend,
@@ -2592,6 +2687,7 @@ fn decode_mcu_row_fast_tile_420(
             y_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(y3_activity);
         idct_deposit_fast_tile_block(
             y3_activity,
             backend,
@@ -2611,6 +2707,7 @@ fn decode_mcu_row_fast_tile_420(
             cb_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(cb_activity);
         idct_deposit_fast_tile_block(
             cb_activity,
             backend,
@@ -2630,6 +2727,7 @@ fn decode_mcu_row_fast_tile_420(
             cr_comp.quant.as_ref(),
             coeff,
         )?;
+        profiler.record_activity(cr_activity);
         idct_deposit_fast_tile_block(
             cr_activity,
             backend,
@@ -2643,172 +2741,6 @@ fn decode_mcu_row_fast_tile_420(
     }
 
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn decode_mcu_row_fast_tile_420_profiled(
-    y_comp: &PreparedComponentPlan,
-    cb_comp: &PreparedComponentPlan,
-    cr_comp: &PreparedComponentPlan,
-    backend: Backend,
-    br: &mut BitReader<'_>,
-    y_dc: &mut i32,
-    cb_dc: &mut i32,
-    cr_dc: &mut i32,
-    coeff: &mut CoefficientBlock,
-    pixels: &mut [u8; 64],
-    mcus_per_row: u32,
-    stripe_mcu_start: u32,
-    stripe_mcus_per_row: u32,
-    stripe: &mut StripeBuffer,
-    counts: &mut BenchBlockActivityCounts,
-) -> Result<(), JpegError> {
-    let stripe_mcu_end = stripe_mcu_start + stripe_mcus_per_row;
-    for mx in 0..mcus_per_row {
-        let in_region = mx >= stripe_mcu_start && mx < stripe_mcu_end;
-        if !in_region {
-            for _ in 0..4 {
-                skip_block(br, &y_comp.dc_table, &y_comp.ac_table, y_dc)?;
-            }
-            skip_block(br, &cb_comp.dc_table, &cb_comp.ac_table, cb_dc)?;
-            skip_block(br, &cr_comp.dc_table, &cr_comp.ac_table, cr_dc)?;
-            continue;
-        }
-
-        let local_mx = mx - stripe_mcu_start;
-        let y_x = local_mx * 16;
-        let c_x = local_mx * 8;
-
-        let y0_activity = decode_block_with_activity(
-            br,
-            &y_comp.dc_table,
-            &y_comp.ac_table,
-            y_dc,
-            y_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, y0_activity);
-        idct_deposit_fast_tile_block(
-            y0_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[0],
-            stripe.plane_strides[0],
-            y_x,
-            0,
-        );
-
-        let y1_activity = decode_block_with_activity(
-            br,
-            &y_comp.dc_table,
-            &y_comp.ac_table,
-            y_dc,
-            y_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, y1_activity);
-        idct_deposit_fast_tile_block(
-            y1_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[0],
-            stripe.plane_strides[0],
-            y_x + 8,
-            0,
-        );
-
-        let y2_activity = decode_block_with_activity(
-            br,
-            &y_comp.dc_table,
-            &y_comp.ac_table,
-            y_dc,
-            y_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, y2_activity);
-        idct_deposit_fast_tile_block(
-            y2_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[0],
-            stripe.plane_strides[0],
-            y_x,
-            8,
-        );
-
-        let y3_activity = decode_block_with_activity(
-            br,
-            &y_comp.dc_table,
-            &y_comp.ac_table,
-            y_dc,
-            y_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, y3_activity);
-        idct_deposit_fast_tile_block(
-            y3_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[0],
-            stripe.plane_strides[0],
-            y_x + 8,
-            8,
-        );
-
-        let cb_activity = decode_block_with_activity(
-            br,
-            &cb_comp.dc_table,
-            &cb_comp.ac_table,
-            cb_dc,
-            cb_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, cb_activity);
-        idct_deposit_fast_tile_block(
-            cb_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[1],
-            stripe.plane_strides[1],
-            c_x,
-            0,
-        );
-
-        let cr_activity = decode_block_with_activity(
-            br,
-            &cr_comp.dc_table,
-            &cr_comp.ac_table,
-            cr_dc,
-            cr_comp.quant.as_ref(),
-            coeff,
-        )?;
-        record_profiled_activity(counts, cr_activity);
-        idct_deposit_fast_tile_block(
-            cr_activity,
-            backend,
-            coeff,
-            pixels,
-            &mut stripe.planes[2],
-            stripe.plane_strides[2],
-            c_x,
-            0,
-        );
-    }
-
-    Ok(())
-}
-
-fn record_profiled_activity(counts: &mut BenchBlockActivityCounts, activity: BlockActivity) {
-    match activity {
-        BlockActivity::DcOnly => counts.record_dc_only(),
-        BlockActivity::BottomHalfZero => counts.record_bottom_half_zero(),
-        BlockActivity::General => counts.record_general(),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3223,10 +3155,26 @@ fn emit_stripe<W: OutputWriter>(
             }
         }
         ColorSpace::Cmyk | ColorSpace::Ycck => {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::InvalidSymbol,
-            });
+            let OutputScratch::RgbGeneric(scratch) = output_scratch else {
+                unreachable!("CMYK/YCCK decode requires reusable row scratch");
+            };
+            for local_y in 0..stripe_rows {
+                fill_four_component_rgb_row(
+                    plan,
+                    prev,
+                    curr,
+                    next,
+                    local_y as u32,
+                    width,
+                    scratch,
+                )?;
+                writer.write_rgb_row(
+                    y_start + local_y as u32,
+                    &scratch.r[..width],
+                    &scratch.g[..width],
+                    &scratch.b[..width],
+                )?;
+            }
         }
     }
     Ok(())
@@ -3450,11 +3398,132 @@ fn emit_stripe_rgb<W: OutputWriter + InterleavedRgbWriter>(
             }
         }
         ColorSpace::Cmyk | ColorSpace::Ycck => {
-            return Err(JpegError::HuffmanDecode {
-                mcu: 0,
-                reason: HuffmanFailure::InvalidSymbol,
-            });
+            let RgbOutputScratch::RgbGeneric(scratch) = output_scratch else {
+                unreachable!("CMYK/YCCK RGB output requires reusable row scratch");
+            };
+            for local_y in 0..stripe_rows {
+                fill_four_component_rgb_row(
+                    plan,
+                    prev,
+                    curr,
+                    next,
+                    local_y as u32,
+                    width,
+                    scratch,
+                )?;
+                writer.with_rgb_rows(y_start + local_y as u32, 1, |dst, _| {
+                    backend.fill_rgb_row_from_rgb(
+                        &scratch.r[..width],
+                        &scratch.g[..width],
+                        &scratch.b[..width],
+                        dst,
+                    );
+                    Ok(())
+                })?;
+            }
         }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_four_component_rgb_row(
+    plan: &PreparedDecodePlan,
+    prev: Option<&StripeBuffer>,
+    curr: &StripeBuffer,
+    next: Option<&StripeBuffer>,
+    local_y: u32,
+    width: usize,
+    scratch: &mut RgbGenericRows,
+) -> Result<(), JpegError> {
+    let (c0_h, c0_v) = plan
+        .sampling
+        .component(0)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 0 })?;
+    let (c1_h, c1_v) = plan
+        .sampling
+        .component(1)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 1 })?;
+    let (c2_h, c2_v) = plan
+        .sampling
+        .component(2)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 2 })?;
+    let (k_h, k_v) = plan
+        .sampling
+        .component(3)
+        .map(|(h, v)| (u32::from(h), u32::from(v)))
+        .ok_or(JpegError::UnsupportedComponentCount { count: 3 })?;
+    let max_h = u32::from(plan.sampling.max_h);
+    let max_v = u32::from(plan.sampling.max_v);
+
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        0,
+        c0_h,
+        c0_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.r,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        1,
+        c1_h,
+        c1_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.g,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        2,
+        c2_h,
+        c2_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.b,
+    );
+    upsample_component_row_stripe(
+        prev,
+        curr,
+        next,
+        3,
+        k_h,
+        k_v,
+        max_h,
+        max_v,
+        local_y,
+        width,
+        &mut scratch.k,
+    );
+
+    for x in 0..width {
+        let (r, g, b) = match plan.color_space {
+            ColorSpace::Cmyk => {
+                inverted_cmyk_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x])
+            }
+            ColorSpace::Ycck => ycck_to_rgb(scratch.r[x], scratch.g[x], scratch.b[x], scratch.k[x]),
+            _ => unreachable!("four-component conversion requires CMYK/YCCK input"),
+        };
+        scratch.r[x] = r;
+        scratch.g[x] = g;
+        scratch.b[x] = b;
     }
 
     Ok(())
@@ -3629,13 +3698,11 @@ mod tests {
     use crate::Decoder;
     use alloc::sync::Arc;
     use alloc::vec;
-
-    const BASELINE_420_JPG: &[u8] =
-        include_bytes!("../../fixtures/conformance/baseline_420_16x16.jpg");
+    use signinum_test_support::JPEG_BASELINE_420_16X16;
 
     #[test]
     fn fast_tile_rgb_matches_generic_baseline_decode() {
-        let dec = Decoder::new(BASELINE_420_JPG).expect("fixture must parse");
+        let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
         assert!(dec.plan.matches_fast_tile_shape());
 
         let mut generic = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
@@ -3716,6 +3783,7 @@ mod tests {
         let mut y_dc = 0;
         let mut cb_dc = 0;
         let mut cr_dc = 0;
+        let mut profiler = NoopFast420Profiler;
 
         decode_mcu_row_fast_tile_420(
             &y_comp,
@@ -3732,6 +3800,7 @@ mod tests {
             0,
             1,
             &mut stripe,
+            &mut profiler,
         )
         .expect("second stripe row must still decode within stripe-local buffers");
 
@@ -3940,7 +4009,7 @@ mod tests {
 
         let plan = PreparedDecodePlan {
             components: vec![],
-            sampling: SamplingFactors::from_components(&[(1, 1), (1, 1), (1, 1)]),
+            sampling: SamplingFactors::from_validated_components(&[(1, 1), (1, 1), (1, 1)]),
             color_space: ColorSpace::YCbCr,
             restart_interval: None,
             dimensions: (width as u32, height),

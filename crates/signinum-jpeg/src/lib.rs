@@ -17,7 +17,7 @@ extern crate alloc;
 pub mod info;
 pub use info::{
     ColorSpace, ColorTransform, DecodeOptions, Info, McuGeometry, Rect, RestartIndex,
-    RestartSegment, SamplingFactors, SofKind,
+    RestartSegment, SamplingFactors, SamplingFactorsError, SofKind,
 };
 pub use signinum_core::{
     CacheStats, CodecContext, CompressedPayloadKind, CompressedTransferSyntax, DecodeRowsError,
@@ -28,6 +28,25 @@ pub use signinum_core::{
 
 pub mod context;
 pub use context::DecoderContext;
+
+pub mod batch_session;
+pub use batch_session::JpegBatchSession;
+
+pub mod capabilities;
+pub use capabilities::{
+    JpegBackendEligibility, JpegCapabilityReport, JpegCapabilityRequest, JpegDecodeOp,
+    JpegDecodeRequest, JpegResolvedDecode, JpegResolvedDecodePath,
+};
+
+pub mod output_buffer;
+pub use output_buffer::JpegOutputBuffer;
+
+pub mod segment;
+pub use segment::{
+    find_scan_ranges, is_sof_marker, iter_segments, parse_dri, parse_sof_info,
+    prepare_tiff_jpeg_tile, rewrite_sof_dimensions, DuplicateTablePolicy, JpegScanRanges,
+    JpegSegment, JpegSegmentIter, JpegSofInfo, JpegTilePrepareOptions, PreparedJpeg,
+};
 
 pub mod adapter;
 
@@ -42,6 +61,8 @@ pub(crate) mod parse;
 pub(crate) mod entropy;
 
 pub(crate) mod idct;
+
+pub(crate) mod lossless;
 
 pub(crate) mod internal;
 
@@ -64,16 +85,16 @@ pub mod transcode;
 
 pub mod decoder;
 pub use decoder::{
-    decode_tile_into, decode_tile_into_in_context, decode_tile_into_in_context_with_options,
-    decode_tile_region_into_in_context, decode_tile_region_into_in_context_with_options,
-    decode_tile_region_scaled_into_in_context,
+    decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,
+    decode_tile_into_in_context_with_options, decode_tile_region_into_in_context,
+    decode_tile_region_into_in_context_with_options, decode_tile_region_scaled_into_in_context,
     decode_tile_region_scaled_into_in_context_with_options, decode_tile_scaled_into_in_context,
     decode_tile_scaled_into_in_context_with_options, decode_tiles_into,
     decode_tiles_into_with_options, decode_tiles_region_scaled_into,
     decode_tiles_region_scaled_into_with_options, decode_tiles_scaled_into,
-    decode_tiles_scaled_into_with_options, ComponentRowWriter, DecodeOutcome, Decoder, JpegView,
-    TileBatchError, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
-    TileScaledDecodeJob,
+    decode_tiles_scaled_into_with_options, ComponentRowWriter, DecodeOutcome, DecodedTile, Decoder,
+    JpegView, PreparedJpegTileJob, TileBatchError, TileBatchOptions, TileDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use internal::scratch::ScratchPool;
@@ -82,5 +103,6 @@ pub use internal::scratch::ScratchPool;
 /// JPEG codec marker type for `signinum-core` trait integrations.
 pub struct JpegCodec;
 
+#[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_support;

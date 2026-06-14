@@ -4,19 +4,69 @@
 //! parallel output byte-for-byte across a worker pool. Validates the
 //! Phase 5 tile primitive under `std::thread::scope`.
 
-use signinum_jpeg::{
-    decode_tile_into_in_context, decode_tile_region_scaled_into_in_context, decode_tiles_into,
-    decode_tiles_into_with_options, decode_tiles_region_scaled_into, decode_tiles_scaled_into,
-    decode_tiles_scaled_into_with_options, ColorTransform, DecodeOptions, Decoder, DecoderContext,
-    Downscale, PixelFormat, Rect, RowSink, ScratchPool, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+use fixtures::{
+    cmyk_16x16_420_jpeg, cmyk_16x8_422_jpeg, cmyk_8x8_jpeg, extended_12bit_cmyk_16x16_420_jpeg,
+    extended_12bit_cmyk_16x8_422_jpeg, extended_12bit_cmyk_420_restart_32x16_jpeg,
+    extended_12bit_cmyk_422_restart_32x8_jpeg, extended_12bit_cmyk_8x8_jpeg,
+    extended_12bit_cmyk_restart_16x8_jpeg, extended_12bit_rgb_32x32_rgb16,
+    extended_12bit_rgb_32x8_rgb16, extended_12bit_rgb_420_32x32_jpeg,
+    extended_12bit_rgb_422_32x8_jpeg, extended_12bit_rgb_8x8_jpeg, extended_12bit_rgb_8x8_rgb16,
+    extended_12bit_ycbcr_420_32x32_jpeg, extended_12bit_ycbcr_420_32x32_rgb16,
+    extended_12bit_ycbcr_420_restart_32x32_jpeg, extended_12bit_ycbcr_420_restart_32x32_rgb16,
+    extended_12bit_ycbcr_422_32x8_jpeg, extended_12bit_ycbcr_422_32x8_rgb16,
+    extended_12bit_ycbcr_8x8_jpeg, extended_12bit_ycbcr_8x8_rgb16,
+    extended_12bit_ycck_16x16_420_jpeg, extended_12bit_ycck_16x8_422_jpeg,
+    extended_12bit_ycck_420_restart_32x16_jpeg, extended_12bit_ycck_422_restart_32x8_jpeg,
+    extended_12bit_ycck_8x8_jpeg, extended_12bit_ycck_restart_16x8_jpeg,
+    four_component_12bit_16x16_rgb16, four_component_12bit_16x8_rgb16,
+    four_component_12bit_32x16_rgb16, four_component_12bit_32x8_rgb16,
+    four_component_12bit_8x8_rgb16, four_component_16x16_rgb, four_component_16x8_rgb,
+    four_component_8x8_rgb, lossless_predictor_rgb_16bit_3x3_jpeg,
+    lossless_predictor_ycbcr_16bit_3x3_jpeg, lossless_predictor_ycbcr_3x3_jpeg,
+    lossless_restart_predictor_rgb_16bit_3x3_jpeg, lossless_restart_predictor_ycbcr_16bit_3x3_jpeg,
+    lossless_restart_predictor_ycbcr_3x3_jpeg, lossless_rgb_16bit_420_4x4_jpeg,
+    lossless_rgb_16bit_420_4x4_rgb16, lossless_rgb_16bit_420_restart_4x4_jpeg,
+    lossless_rgb_16bit_422_4x2_jpeg, lossless_rgb_16bit_422_4x2_rgb16,
+    lossless_rgb_16bit_422_restart_4x2_jpeg, lossless_rgb_8bit_420_4x4_jpeg,
+    lossless_rgb_8bit_420_4x4_rgb8, lossless_rgb_8bit_420_restart_4x4_jpeg,
+    lossless_rgb_8bit_422_4x2_jpeg, lossless_rgb_8bit_422_4x2_rgb8,
+    lossless_rgb_8bit_422_restart_4x2_jpeg, lossless_ycbcr_16bit_3x3_rgb16,
+    lossless_ycbcr_16bit_420_4x4_jpeg, lossless_ycbcr_16bit_420_4x4_rgb16,
+    lossless_ycbcr_16bit_420_restart_4x4_jpeg, lossless_ycbcr_16bit_422_4x2_jpeg,
+    lossless_ycbcr_16bit_422_4x2_rgb16, lossless_ycbcr_16bit_422_restart_4x2_jpeg,
+    lossless_ycbcr_3x3_rgb8, lossless_ycbcr_8bit_420_4x4_jpeg, lossless_ycbcr_8bit_420_4x4_rgb8,
+    lossless_ycbcr_8bit_420_restart_4x4_jpeg, lossless_ycbcr_8bit_422_4x2_jpeg,
+    lossless_ycbcr_8bit_422_4x2_rgb8, lossless_ycbcr_8bit_422_restart_4x2_jpeg,
+    progressive_12bit_cmyk_16x16_420_jpeg, progressive_12bit_cmyk_16x8_422_jpeg,
+    progressive_12bit_cmyk_420_restart_32x16_jpeg, progressive_12bit_cmyk_422_restart_32x8_jpeg,
+    progressive_12bit_cmyk_8x8_jpeg, progressive_12bit_cmyk_restart_16x8_jpeg,
+    progressive_12bit_grayscale_8x8_jpeg, progressive_12bit_rgb_420_32x32_jpeg,
+    progressive_12bit_rgb_422_32x8_jpeg, progressive_12bit_rgb_8x8_jpeg,
+    progressive_12bit_ycbcr_420_32x32_jpeg, progressive_12bit_ycbcr_422_32x8_jpeg,
+    progressive_12bit_ycbcr_8x8_jpeg, progressive_12bit_ycck_16x16_420_jpeg,
+    progressive_12bit_ycck_16x8_422_jpeg, progressive_12bit_ycck_420_restart_32x16_jpeg,
+    progressive_12bit_ycck_422_restart_32x8_jpeg, progressive_12bit_ycck_8x8_jpeg,
+    progressive_12bit_ycck_restart_16x8_jpeg, progressive_8x8_jpeg, ycck_16x16_420_jpeg,
+    ycck_16x8_422_jpeg, ycck_8x8_jpeg, LOSSLESS_RGB_16BIT_3X3_PIXELS,
 };
-mod fixtures;
-use fixtures::progressive_8x8_jpeg;
+use signinum_jpeg::{
+    decode_prepared_jpeg_tiles_rgb8, decode_tile_into_in_context,
+    decode_tile_into_in_context_with_options, decode_tile_region_scaled_into_in_context,
+    decode_tiles_into, decode_tiles_into_with_options, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, decode_tiles_scaled_into_with_options, prepare_tiff_jpeg_tile,
+    ColorTransform, DecodeOptions, Decoder, DecoderContext, Downscale, JpegBatchSession, JpegError,
+    JpegOutputBuffer, JpegTilePrepareOptions, PixelFormat, PreparedJpeg, PreparedJpegTileJob, Rect,
+    RowSink, ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
+};
+use signinum_test_support as fixtures;
+use signinum_test_support::{
+    rgb16le_to_rgba16le, rgb8_to_rgba8, u16_samples_to_le_bytes, JPEG_BASELINE_420_16X16,
+};
 use std::num::NonZeroUsize;
 use std::thread;
 
-const BASELINE_420: &[u8] = include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");
+const BASELINE_420: &[u8] = JPEG_BASELINE_420_16X16;
 
 const BATCH_SIZE: usize = 100;
 
@@ -48,6 +98,161 @@ fn decode_tile_rgb8_reference(bytes: &[u8]) -> (Vec<u8>, usize) {
     dec.decode_into(&mut out, stride, PixelFormat::Rgb8)
         .expect("fixture decode_into");
     (out, stride)
+}
+
+fn scaled_rect(rect: Rect, scale: Downscale) -> Rect {
+    let denom = scale.denominator();
+    Rect {
+        x: rect.x / denom,
+        y: rect.y / denom,
+        w: (rect.x + rect.w).div_ceil(denom) - rect.x / denom,
+        h: (rect.y + rect.h).div_ceil(denom) - rect.y / denom,
+    }
+}
+
+fn scaled_dims((width, height): (u32, u32), scale: Downscale) -> (u32, u32) {
+    let denom = scale.denominator();
+    (width.div_ceil(denom), height.div_ceil(denom))
+}
+
+fn assert_session_batch_decode(
+    session: &mut JpegBatchSession,
+    input: &[u8],
+    fmt: PixelFormat,
+    stride: usize,
+    expected: &[u8],
+    context: &str,
+) {
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, fmt)
+            .unwrap_or_else(|err| panic!("{context}: {err}"))
+    };
+
+    assert_eq!(outcomes.len(), outputs.len(), "{context}");
+    for output in outputs {
+        assert_eq!(output, expected, "{context}");
+    }
+}
+
+#[test]
+fn prepared_jpeg_batch_decode_returns_ordered_per_tile_results() {
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let prepared_a = prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+        .expect("prepared A");
+    let prepared_c = prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+        .expect("prepared C");
+    let mut out_a = vec![0u8; expected.len()];
+    let mut out_bad = vec![0u8; expected.len()];
+    let mut out_c = vec![0u8; expected.len()];
+
+    let results = {
+        let mut jobs = vec![
+            PreparedJpegTileJob {
+                input: prepared_a,
+                out: out_a.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+            PreparedJpegTileJob {
+                input: PreparedJpeg::Borrowed(&[]),
+                out: out_bad.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+            PreparedJpegTileJob {
+                input: prepared_c,
+                out: out_c.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default(),
+            },
+        ];
+        decode_prepared_jpeg_tiles_rgb8(&mut jobs)
+    };
+
+    assert_eq!(results.len(), 3);
+    assert!(results[0].is_ok());
+    assert!(matches!(results[1], Err(JpegError::Truncated { .. })));
+    assert!(results[2].is_ok());
+    assert_eq!(
+        results[0].as_ref().expect("first result").dimensions,
+        (16, 16)
+    );
+    assert_eq!(
+        results[2].as_ref().expect("third result").dimensions,
+        (16, 16)
+    );
+    assert_eq!(out_a, expected);
+    assert_eq!(out_c, expected);
+}
+
+#[test]
+fn prepared_jpeg_batch_decode_applies_per_job_decode_options() {
+    let prepared_rgb =
+        prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+            .expect("prepared RGB");
+    let prepared_ycbcr =
+        prepare_tiff_jpeg_tile(BASELINE_420, None, JpegTilePrepareOptions::default())
+            .expect("prepared YCbCr");
+    let stride = 16 * 3;
+    let mut expected_rgb = vec![0u8; stride * 16];
+    let mut expected_ycbcr = vec![0u8; stride * 16];
+    let mut ctx = DecoderContext::new();
+    let mut pool = ScratchPool::new();
+    decode_tile_into_in_context_with_options(
+        BASELINE_420,
+        &mut ctx,
+        &mut pool,
+        &mut expected_rgb,
+        stride,
+        PixelFormat::Rgb8,
+        DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
+    )
+    .expect("force RGB reference");
+    decode_tile_into_in_context_with_options(
+        BASELINE_420,
+        &mut ctx,
+        &mut pool,
+        &mut expected_ycbcr,
+        stride,
+        PixelFormat::Rgb8,
+        DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
+    )
+    .expect("force YCbCr reference");
+    assert_ne!(expected_rgb, expected_ycbcr);
+
+    let mut out_rgb = vec![0u8; expected_rgb.len()];
+    let mut out_ycbcr = vec![0u8; expected_ycbcr.len()];
+    {
+        let mut jobs = vec![
+            PreparedJpegTileJob {
+                input: prepared_rgb,
+                out: out_rgb.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
+            },
+            PreparedJpegTileJob {
+                input: prepared_ycbcr,
+                out: out_ycbcr.as_mut_slice(),
+                stride,
+                options: DecodeOptions::default().with_color_transform(ColorTransform::ForceYCbCr),
+            },
+        ];
+        let results = decode_prepared_jpeg_tiles_rgb8(&mut jobs);
+        assert!(results.iter().all(Result::is_ok));
+    }
+
+    assert_eq!(out_rgb, expected_rgb);
+    assert_eq!(out_ycbcr, expected_ycbcr);
 }
 
 #[test]
@@ -108,6 +313,1280 @@ fn production_batch_decode_progressive8_matches_single_tile_decode() {
 }
 
 #[test]
+fn session_batch_scaled_and_region_scaled_progressive8_matches_single_tile_decode() {
+    let bytes = progressive_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("progressive decoder");
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = scaled_dims(dec.info().dimensions, scale);
+    let scaled_roi = scaled_rect(roi, scale);
+    let scaled_stride = scaled_full.0 as usize * 3;
+    let region_stride = scaled_roi.w as usize * 3;
+    let mut expected_scaled = vec![0u8; scaled_stride * scaled_full.1 as usize];
+    let mut expected_region = vec![0u8; region_stride * scaled_roi.h as usize];
+    dec.decode_scaled_into(
+        &mut expected_scaled,
+        scaled_stride,
+        PixelFormat::Rgb8,
+        scale,
+    )
+    .expect("progressive scaled reference");
+    dec.decode_region_scaled_into(
+        &mut expected_region,
+        region_stride,
+        PixelFormat::Rgb8,
+        roi,
+        scale,
+    )
+    .expect("progressive region-scaled reference");
+
+    let mut actual_scaled = vec![0u8; expected_scaled.len()];
+    let mut actual_region = vec![0u8; expected_region.len()];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    {
+        let mut jobs = vec![TileScaledDecodeJob {
+            input: &bytes,
+            out: actual_scaled.as_mut_slice(),
+            stride: scaled_stride,
+            scale,
+        }];
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("progressive session scaled batch");
+    }
+    {
+        let mut jobs = vec![TileRegionScaledDecodeJob {
+            input: &bytes,
+            out: actual_region.as_mut_slice(),
+            stride: region_stride,
+            roi: roi.into(),
+            scale,
+        }];
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("progressive session region-scaled batch");
+    }
+
+    assert_eq!(actual_scaled, expected_scaled);
+    assert_eq!(actual_region, expected_region);
+}
+
+#[test]
+fn session_batch_scaled_and_region_scaled_progressive12_matches_single_tile_decode() {
+    let bytes = progressive_12bit_grayscale_8x8_jpeg();
+    let dec = Decoder::new(&bytes).expect("12-bit progressive decoder");
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = scaled_dims(dec.info().dimensions, scale);
+    let scaled_roi = scaled_rect(roi, scale);
+    let scaled_stride = scaled_full.0 as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let region_stride = scaled_roi.w as usize * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut expected_scaled = vec![0u8; scaled_stride * scaled_full.1 as usize];
+    let mut expected_region = vec![0u8; region_stride * scaled_roi.h as usize];
+    dec.decode_scaled_into(
+        &mut expected_scaled,
+        scaled_stride,
+        PixelFormat::Rgb16,
+        scale,
+    )
+    .expect("12-bit progressive scaled reference");
+    dec.decode_region_scaled_into(
+        &mut expected_region,
+        region_stride,
+        PixelFormat::Rgb16,
+        roi,
+        scale,
+    )
+    .expect("12-bit progressive region-scaled reference");
+
+    let mut actual_scaled = vec![0u8; expected_scaled.len()];
+    let mut actual_region = vec![0u8; expected_region.len()];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    {
+        let mut jobs = vec![TileScaledDecodeJob {
+            input: &bytes,
+            out: actual_scaled.as_mut_slice(),
+            stride: scaled_stride,
+            scale,
+        }];
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive session scaled batch");
+    }
+    {
+        let mut jobs = vec![TileRegionScaledDecodeJob {
+            input: &bytes,
+            out: actual_region.as_mut_slice(),
+            stride: region_stride,
+            roi: roi.into(),
+            scale,
+        }];
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive session region-scaled batch");
+    }
+
+    assert_eq!(actual_scaled, expected_scaled);
+    assert_eq!(actual_region, expected_region);
+}
+
+#[test]
+fn session_batch_decode_extended12_app14_rgb_matches_single_tile_decode() {
+    let bytes = extended_12bit_rgb_8x8_jpeg();
+    let expected = extended_12bit_rgb_8x8_rgb16();
+    let stride = 8 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    assert_session_batch_decode(
+        &mut session,
+        &bytes,
+        PixelFormat::Rgb16,
+        stride,
+        &expected,
+        "12-bit APP14 RGB session batch decode",
+    );
+}
+
+#[test]
+fn session_batch_decode_progressive12_app14_rgb_matches_single_tile_decode() {
+    let bytes = progressive_12bit_rgb_8x8_jpeg();
+    let expected = extended_12bit_rgb_8x8_rgb16();
+    let stride = 8 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    assert_session_batch_decode(
+        &mut session,
+        &bytes,
+        PixelFormat::Rgb16,
+        stride,
+        &expected,
+        "12-bit progressive APP14 RGB session batch decode",
+    );
+}
+
+#[test]
+fn session_batch_decode_lossless_app14_rgb16_matches_single_tile_decode() {
+    let expected = u16_samples_to_le_bytes(&LOSSLESS_RGB_16BIT_3X3_PIXELS);
+    let stride = 3 * PixelFormat::Rgb16.bytes_per_pixel();
+    let expected_rgba = rgb16le_to_rgba16le(&expected, u16::MAX);
+    let rgba_stride = 3 * PixelFormat::Rgba16.bytes_per_pixel();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for bytes in [
+        lossless_predictor_rgb_16bit_3x3_jpeg(1),
+        lossless_restart_predictor_rgb_16bit_3x3_jpeg(1),
+    ] {
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut rgba_outputs = vec![
+            vec![0u8; expected_rgba.len()],
+            vec![0u8; expected_rgba.len()],
+        ];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+                .expect("lossless SOF3 APP14 RGB16 session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in outputs {
+            assert_eq!(output, expected);
+        }
+
+        let outcomes = {
+            let mut jobs = rgba_outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride: rgba_stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .expect("lossless SOF3 APP14 RGBA16 session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in rgba_outputs {
+            assert_eq!(output, expected_rgba);
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_ycbcr_matches_single_tile_decode() {
+    let expected = lossless_ycbcr_3x3_rgb8();
+    let stride = 3 * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for bytes in [
+        lossless_predictor_ycbcr_3x3_jpeg(1),
+        lossless_restart_predictor_ycbcr_3x3_jpeg(1),
+    ] {
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("lossless SOF3 YCbCr session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in outputs {
+            assert_eq!(output, expected);
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_ycbcr16_matches_single_tile_decode() {
+    let expected = lossless_ycbcr_16bit_3x3_rgb16();
+    let stride = 3 * PixelFormat::Rgb16.bytes_per_pixel();
+    let expected_rgba = rgb16le_to_rgba16le(&expected, u16::MAX);
+    let rgba_stride = 3 * PixelFormat::Rgba16.bytes_per_pixel();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for bytes in [
+        lossless_predictor_ycbcr_16bit_3x3_jpeg(1),
+        lossless_restart_predictor_ycbcr_16bit_3x3_jpeg(1),
+    ] {
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut rgba_outputs = vec![
+            vec![0u8; expected_rgba.len()],
+            vec![0u8; expected_rgba.len()],
+        ];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+                .expect("lossless SOF3 16-bit YCbCr session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in outputs {
+            assert_eq!(output, expected);
+        }
+
+        let outcomes = {
+            let mut jobs = rgba_outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride: rgba_stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .expect("lossless SOF3 16-bit YCbCr RGBA16 session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), 2);
+        for output in rgba_outputs {
+            assert_eq!(output, expected_rgba);
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_422_rgb16_matches_single_tile_decode() {
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for (bytes, expected, label) in [
+        (
+            lossless_rgb_16bit_422_4x2_jpeg(4),
+            lossless_rgb_16bit_422_4x2_rgb16(),
+            "APP14 RGB",
+        ),
+        (
+            lossless_rgb_16bit_422_restart_4x2_jpeg(4),
+            lossless_rgb_16bit_422_4x2_rgb16(),
+            "APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_16bit_422_4x2_jpeg(4),
+            lossless_ycbcr_16bit_422_4x2_rgb16(),
+            "YCbCr",
+        ),
+        (
+            lossless_ycbcr_16bit_422_restart_4x2_jpeg(4),
+            lossless_ycbcr_16bit_422_4x2_rgb16(),
+            "YCbCr restart",
+        ),
+    ] {
+        let stride = 4 * PixelFormat::Rgb16.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+                .unwrap_or_else(|err| {
+                    panic!("lossless SOF3 16-bit 4:2:2 {label} session batch decode: {err}")
+                })
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_8bit_sampled_rgb8_matches_single_tile_decode() {
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for (bytes, expected, label) in [
+        (
+            lossless_rgb_8bit_422_4x2_jpeg(4),
+            lossless_rgb_8bit_422_4x2_rgb8(),
+            "4:2:2 APP14 RGB",
+        ),
+        (
+            lossless_rgb_8bit_422_restart_4x2_jpeg(4),
+            lossless_rgb_8bit_422_4x2_rgb8(),
+            "4:2:2 APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_8bit_422_4x2_jpeg(4),
+            lossless_ycbcr_8bit_422_4x2_rgb8(),
+            "4:2:2 YCbCr",
+        ),
+        (
+            lossless_ycbcr_8bit_422_restart_4x2_jpeg(4),
+            lossless_ycbcr_8bit_422_4x2_rgb8(),
+            "4:2:2 YCbCr restart",
+        ),
+        (
+            lossless_rgb_8bit_420_4x4_jpeg(4),
+            lossless_rgb_8bit_420_4x4_rgb8(),
+            "4:2:0 APP14 RGB",
+        ),
+        (
+            lossless_rgb_8bit_420_restart_4x4_jpeg(4),
+            lossless_rgb_8bit_420_4x4_rgb8(),
+            "4:2:0 APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_8bit_420_4x4_jpeg(4),
+            lossless_ycbcr_8bit_420_4x4_rgb8(),
+            "4:2:0 YCbCr",
+        ),
+        (
+            lossless_ycbcr_8bit_420_restart_4x4_jpeg(4),
+            lossless_ycbcr_8bit_420_4x4_rgb8(),
+            "4:2:0 YCbCr restart",
+        ),
+    ] {
+        let stride = 4 * PixelFormat::Rgb8.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .unwrap_or_else(|err| {
+                    panic!("lossless SOF3 8-bit sampled {label} session batch decode: {err}")
+                })
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_extended12_ycbcr444_matches_single_tile_decode() {
+    let bytes = extended_12bit_ycbcr_8x8_jpeg();
+    let expected = extended_12bit_ycbcr_8x8_rgb16();
+    let stride = 8 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit YCbCr session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_progressive12_ycbcr444_matches_single_tile_decode() {
+    let bytes = progressive_12bit_ycbcr_8x8_jpeg();
+    let expected = extended_12bit_ycbcr_8x8_rgb16();
+    let stride = 8 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive YCbCr session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_lossless_420_rgb16_matches_single_tile_decode() {
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    for (bytes, expected, label) in [
+        (
+            lossless_rgb_16bit_420_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+            "APP14 RGB",
+        ),
+        (
+            lossless_rgb_16bit_420_restart_4x4_jpeg(4),
+            lossless_rgb_16bit_420_4x4_rgb16(),
+            "APP14 RGB restart",
+        ),
+        (
+            lossless_ycbcr_16bit_420_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+            "YCbCr",
+        ),
+        (
+            lossless_ycbcr_16bit_420_restart_4x4_jpeg(4),
+            lossless_ycbcr_16bit_420_4x4_rgb16(),
+            "YCbCr restart",
+        ),
+    ] {
+        let stride = 4 * PixelFormat::Rgb16.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+                .unwrap_or_else(|err| {
+                    panic!("lossless SOF3 16-bit 4:2:0 {label} session batch decode: {err}")
+                })
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_extended12_ycbcr422_matches_single_tile_decode() {
+    let bytes = extended_12bit_ycbcr_422_32x8_jpeg();
+    let expected = extended_12bit_ycbcr_422_32x8_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit YCbCr 4:2:2 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_progressive12_ycbcr422_matches_single_tile_decode() {
+    let bytes = progressive_12bit_ycbcr_422_32x8_jpeg();
+    let expected = extended_12bit_ycbcr_422_32x8_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive YCbCr 4:2:2 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_extended12_ycbcr420_matches_single_tile_decode() {
+    let bytes = extended_12bit_ycbcr_420_32x32_jpeg();
+    let expected = extended_12bit_ycbcr_420_32x32_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit YCbCr 4:2:0 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_extended12_restart_ycbcr420_matches_single_tile_decode() {
+    let bytes = extended_12bit_ycbcr_420_restart_32x32_jpeg();
+    let expected = extended_12bit_ycbcr_420_restart_32x32_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit restart YCbCr 4:2:0 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_progressive12_ycbcr420_matches_single_tile_decode() {
+    let bytes = progressive_12bit_ycbcr_420_32x32_jpeg();
+    let expected = extended_12bit_ycbcr_420_32x32_rgb16();
+    let stride = 32 * PixelFormat::Rgb16.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: bytes.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb16)
+            .expect("12-bit progressive YCbCr 4:2:0 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_12bit_rgba16_matches_single_tile_decode() {
+    for (bytes, expected_rgb, width, label) in [
+        (
+            extended_12bit_rgb_8x8_jpeg(),
+            extended_12bit_rgb_8x8_rgb16(),
+            8,
+            "12-bit extended APP14 RGB",
+        ),
+        (
+            extended_12bit_rgb_422_32x8_jpeg(),
+            extended_12bit_rgb_32x8_rgb16(),
+            32,
+            "12-bit extended APP14 RGB 4:2:2",
+        ),
+        (
+            extended_12bit_rgb_420_32x32_jpeg(),
+            extended_12bit_rgb_32x32_rgb16(),
+            32,
+            "12-bit extended APP14 RGB 4:2:0",
+        ),
+        (
+            progressive_12bit_rgb_422_32x8_jpeg(),
+            extended_12bit_rgb_32x8_rgb16(),
+            32,
+            "12-bit progressive APP14 RGB 4:2:2",
+        ),
+        (
+            progressive_12bit_rgb_420_32x32_jpeg(),
+            extended_12bit_rgb_32x32_rgb16(),
+            32,
+            "12-bit progressive APP14 RGB 4:2:0",
+        ),
+        (
+            progressive_12bit_ycbcr_420_32x32_jpeg(),
+            extended_12bit_ycbcr_420_32x32_rgb16(),
+            32,
+            "12-bit progressive YCbCr 4:2:0",
+        ),
+    ] {
+        let expected = rgb16le_to_rgba16le(&expected_rgb, u16::MAX);
+        let stride = width * PixelFormat::Rgba16.bytes_per_pixel();
+        let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+        let mut session = JpegBatchSession::new(TileBatchOptions {
+            workers: NonZeroUsize::new(2),
+        });
+
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: bytes.as_slice(),
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+                .unwrap_or_else(|err| panic!("{label} RGBA16 session batch decode: {err}"))
+        };
+
+        assert_eq!(outcomes.len(), 2, "{label}");
+        for output in outputs {
+            assert_eq!(output, expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn session_batch_decode_12bit_cmyk_ycck_rgba16_matches_expected_pixels() {
+    let cases = [
+        (
+            extended_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            extended_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            extended_12bit_cmyk_restart_16x8_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_ycck_restart_16x8_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_cmyk_422_restart_32x8_jpeg(),
+            four_component_12bit_32x8_rgb16(),
+            32,
+        ),
+        (
+            extended_12bit_ycck_422_restart_32x8_jpeg(),
+            four_component_12bit_32x8_rgb16(),
+            32,
+        ),
+        (
+            extended_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            extended_12bit_cmyk_420_restart_32x16_jpeg(),
+            four_component_12bit_32x16_rgb16(),
+            32,
+        ),
+        (
+            extended_12bit_ycck_420_restart_32x16_jpeg(),
+            four_component_12bit_32x16_rgb16(),
+            32,
+        ),
+        (
+            progressive_12bit_cmyk_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            progressive_12bit_ycck_8x8_jpeg(),
+            four_component_12bit_8x8_rgb16(),
+            8,
+        ),
+        (
+            progressive_12bit_cmyk_restart_16x8_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_ycck_restart_16x8_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_cmyk_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_ycck_16x8_422_jpeg(),
+            four_component_12bit_16x8_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_cmyk_422_restart_32x8_jpeg(),
+            four_component_12bit_32x8_rgb16(),
+            32,
+        ),
+        (
+            progressive_12bit_ycck_422_restart_32x8_jpeg(),
+            four_component_12bit_32x8_rgb16(),
+            32,
+        ),
+        (
+            progressive_12bit_cmyk_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_ycck_16x16_420_jpeg(),
+            four_component_12bit_16x16_rgb16(),
+            16,
+        ),
+        (
+            progressive_12bit_cmyk_420_restart_32x16_jpeg(),
+            four_component_12bit_32x16_rgb16(),
+            32,
+        ),
+        (
+            progressive_12bit_ycck_420_restart_32x16_jpeg(),
+            four_component_12bit_32x16_rgb16(),
+            32,
+        ),
+    ];
+    let expected = cases
+        .iter()
+        .map(|(_, expected_rgb, _)| rgb16le_to_rgba16le(expected_rgb, u16::MAX))
+        .collect::<Vec<_>>();
+    let mut outputs = expected
+        .iter()
+        .map(|expected| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = cases
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|((input, _, width), out)| TileDecodeJob {
+                input: input.as_slice(),
+                out: out.as_mut_slice(),
+                stride: *width * PixelFormat::Rgba16.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgba16)
+            .expect("12-bit CMYK/YCCK RGBA16 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), cases.len());
+    for (output, expected) in outputs.iter().zip(expected.iter()) {
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn session_batch_decode_converts_cmyk_and_ycck() {
+    let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
+    let expected = four_component_8x8_rgb();
+    let expected_rgba = rgb8_to_rgba8(&expected, 255);
+    let stride = 8 * 3;
+    let rgba_stride = 8 * PixelFormat::Rgba8.bytes_per_pixel();
+    let mut outputs = vec![vec![0u8; expected.len()], vec![0u8; expected.len()]];
+    let mut rgba_outputs = vec![
+        vec![0u8; expected_rgba.len()],
+        vec![0u8; expected_rgba.len()],
+    ];
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = inputs
+            .iter()
+            .zip(outputs.iter_mut())
+            .map(|(input, out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("CMYK/YCCK session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in outputs {
+        assert_eq!(output, expected);
+    }
+
+    let outcomes = {
+        let mut jobs = inputs
+            .iter()
+            .zip(rgba_outputs.iter_mut())
+            .map(|(input, out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: rgba_stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgba8)
+            .expect("CMYK/YCCK RGBA8 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), 2);
+    for output in rgba_outputs {
+        assert_eq!(output, expected_rgba);
+    }
+}
+
+#[test]
+fn session_batch_decode_subsampled_cmyk_ycck_matches_expected_pixels() {
+    let cases = [
+        (
+            cmyk_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            "CMYK 4:2:2",
+        ),
+        (
+            ycck_16x8_422_jpeg(),
+            four_component_16x8_rgb(),
+            16,
+            "YCCK 4:2:2",
+        ),
+        (
+            cmyk_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            "CMYK 4:2:0",
+        ),
+        (
+            ycck_16x16_420_jpeg(),
+            four_component_16x16_rgb(),
+            16,
+            "YCCK 4:2:0",
+        ),
+    ];
+    let mut rgb_outputs = cases
+        .iter()
+        .map(|(_, expected, _, _)| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut rgba_outputs = cases
+        .iter()
+        .map(|(_, expected, _, _)| vec![0u8; expected.len() / 3 * 4])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let outcomes = {
+        let mut jobs = cases
+            .iter()
+            .zip(rgb_outputs.iter_mut())
+            .map(|((input, _, width, _), out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: *width * PixelFormat::Rgb8.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("subsampled CMYK/YCCK RGB8 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), cases.len());
+    for ((_, expected, _, label), output) in cases.iter().zip(rgb_outputs.iter()) {
+        assert_eq!(output, expected, "{label}");
+    }
+
+    let outcomes = {
+        let mut jobs = cases
+            .iter()
+            .zip(rgba_outputs.iter_mut())
+            .map(|((input, _, width, _), out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: *width * PixelFormat::Rgba8.bytes_per_pixel(),
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgba8)
+            .expect("subsampled CMYK/YCCK RGBA8 session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), cases.len());
+    for ((_, expected, _, label), output) in cases.iter().zip(rgba_outputs.iter()) {
+        assert_eq!(output, &rgb8_to_rgba8(expected, 255), "{label}");
+    }
+}
+
+#[test]
+fn session_batch_scaled_and_region_scaled_cmyk_ycck_match_free_batch() {
+    let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = (4, 4);
+    let scaled_roi = Rect {
+        x: roi.x / 2,
+        y: roi.y / 2,
+        w: (roi.x + roi.w).div_ceil(2) - roi.x / 2,
+        h: (roi.y + roi.h).div_ceil(2) - roi.y / 2,
+    };
+    let scaled_stride = scaled_full.0 * PixelFormat::Rgb8.bytes_per_pixel();
+    let region_stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+    let mut scaled_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; scaled_stride * scaled_full.1])
+        .collect::<Vec<_>>();
+    let mut scaled_expected = scaled_outputs.clone();
+    let mut region_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; region_stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut region_expected = region_outputs.clone();
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    };
+    let mut session = JpegBatchSession::new(options);
+
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_expected.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free CMYK/YCCK scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_outputs.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session CMYK/YCCK scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_expected.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free CMYK/YCCK region-scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_outputs.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session CMYK/YCCK region-scaled batch decode");
+    }
+
+    assert_eq!(scaled_outputs, scaled_expected);
+    assert_eq!(region_outputs, region_expected);
+}
+
+#[test]
+fn session_batch_rgba8_scaled_and_region_scaled_cmyk_ycck_match_free_batch() {
+    let inputs = [cmyk_8x8_jpeg(), ycck_8x8_jpeg()];
+    let scale = Downscale::Half;
+    let roi = Rect {
+        x: 1,
+        y: 1,
+        w: 6,
+        h: 6,
+    };
+    let scaled_full = (4, 4);
+    let scaled_roi = Rect {
+        x: roi.x / 2,
+        y: roi.y / 2,
+        w: (roi.x + roi.w).div_ceil(2) - roi.x / 2,
+        h: (roi.y + roi.h).div_ceil(2) - roi.y / 2,
+    };
+    let scaled_stride = scaled_full.0 * PixelFormat::Rgba8.bytes_per_pixel();
+    let region_stride = scaled_roi.w as usize * PixelFormat::Rgba8.bytes_per_pixel();
+    let mut scaled_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; scaled_stride * scaled_full.1])
+        .collect::<Vec<_>>();
+    let mut scaled_expected = scaled_outputs.clone();
+    let mut region_outputs = inputs
+        .iter()
+        .map(|_| vec![0u8; region_stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut region_expected = region_outputs.clone();
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    };
+    let mut session = JpegBatchSession::new(options);
+
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_expected.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgba8, options)
+            .expect("free CMYK/YCCK RGBA8 scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(scaled_outputs.iter_mut())
+            .map(|(input, out)| TileScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgba8)
+            .expect("session CMYK/YCCK RGBA8 scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_expected.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgba8, options)
+            .expect("free CMYK/YCCK RGBA8 region-scaled batch decode");
+    }
+    {
+        let mut jobs = inputs
+            .iter()
+            .zip(region_outputs.iter_mut())
+            .map(|(input, out)| TileRegionScaledDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgba8)
+            .expect("session CMYK/YCCK RGBA8 region-scaled batch decode");
+    }
+
+    assert_eq!(scaled_outputs, scaled_expected);
+    assert_eq!(region_outputs, region_expected);
+}
+
+#[test]
 fn production_batch_decode_parallel_preserves_order_and_output() {
     const JOBS: usize = 32;
     let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
@@ -134,6 +1613,244 @@ fn production_batch_decode_parallel_preserves_order_and_output() {
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");
     }
+}
+
+#[test]
+fn session_batch_decode_reuses_worker_state_across_calls_and_matches_free_batch() {
+    const JOBS: usize = 32;
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(4),
+    };
+    let mut session = JpegBatchSession::new(options);
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+
+    for pass in 0..3 {
+        for output in &mut outputs {
+            output.fill(pass as u8);
+        }
+        let outcomes = {
+            let mut jobs = outputs
+                .iter_mut()
+                .map(|out| TileDecodeJob {
+                    input: BASELINE_420,
+                    out: out.as_mut_slice(),
+                    stride,
+                })
+                .collect::<Vec<_>>();
+            session
+                .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+                .expect("session batch decode")
+        };
+
+        assert_eq!(outcomes.len(), JOBS);
+        assert_eq!(session.worker_count(), 4);
+        for (index, out) in outputs.iter().enumerate() {
+            assert_eq!(out, &expected, "pass {pass} tile {index} output diverged");
+        }
+    }
+}
+
+#[test]
+fn default_session_uses_available_workers_for_small_outputs() {
+    const JOBS: usize = 64;
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::default();
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session batch decode")
+    };
+
+    let available = thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    assert_eq!(outcomes.len(), JOBS);
+    assert_eq!(session.worker_count(), available.min(JOBS));
+}
+
+#[test]
+fn explicit_session_worker_count_is_not_small_output_capped() {
+    const JOBS: usize = 32;
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(8),
+    });
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session batch decode")
+    };
+
+    assert_eq!(outcomes.len(), JOBS);
+    assert_eq!(session.worker_count(), 8);
+}
+
+#[test]
+fn session_batch_decode_reports_first_failing_tile_index() {
+    let (expected, stride) = decode_tile_rgb8_reference(BASELINE_420);
+    let mut outputs = (0..3)
+        .map(|_| vec![0u8; expected.len()])
+        .collect::<Vec<_>>();
+    let mut session = JpegBatchSession::new(TileBatchOptions {
+        workers: NonZeroUsize::new(2),
+    });
+
+    let err = {
+        let inputs: [&[u8]; 3] = [BASELINE_420, b"not a jpeg", BASELINE_420];
+        let mut jobs = inputs
+            .into_iter()
+            .zip(outputs.iter_mut())
+            .map(|(input, out)| TileDecodeJob {
+                input,
+                out: out.as_mut_slice(),
+                stride,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_into(&mut jobs, PixelFormat::Rgb8)
+            .expect_err("bad tile fails")
+    };
+
+    assert_eq!(err.index, 1);
+}
+
+#[test]
+fn session_batch_scaled_and_region_scaled_decode_match_existing_batch_api() {
+    const JOBS: usize = 16;
+    let dec = Decoder::new(BASELINE_420).expect("fixture decoder");
+    let scale = Downscale::Quarter;
+    let roi = Rect {
+        x: 4,
+        y: 4,
+        w: 8,
+        h: 8,
+    };
+    let scaled_full = (
+        dec.info().dimensions.0.div_ceil(4),
+        dec.info().dimensions.1.div_ceil(4),
+    );
+    let scaled_roi = Rect {
+        x: roi.x / 4,
+        y: roi.y / 4,
+        w: (roi.x + roi.w).div_ceil(4) - roi.x / 4,
+        h: (roi.y + roi.h).div_ceil(4) - roi.y / 4,
+    };
+    let scaled_stride = scaled_full.0 as usize * 3;
+    let region_stride = scaled_roi.w as usize * 3;
+    let mut scaled_outputs = (0..JOBS)
+        .map(|_| vec![0u8; scaled_stride * scaled_full.1 as usize])
+        .collect::<Vec<_>>();
+    let mut scaled_expected = scaled_outputs.clone();
+    let mut region_outputs = (0..JOBS)
+        .map(|_| vec![0u8; region_stride * scaled_roi.h as usize])
+        .collect::<Vec<_>>();
+    let mut region_expected = region_outputs.clone();
+    let options = TileBatchOptions {
+        workers: NonZeroUsize::new(4),
+    };
+    let mut session = JpegBatchSession::new(options);
+
+    {
+        let mut jobs = scaled_expected
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free scaled batch decode");
+    }
+    {
+        let mut jobs = scaled_outputs
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: scaled_stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session scaled batch decode");
+    }
+    {
+        let mut jobs = region_expected
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8, options)
+            .expect("free region-scaled batch decode");
+    }
+    {
+        let mut jobs = region_outputs
+            .iter_mut()
+            .map(|out| TileRegionScaledDecodeJob {
+                input: BASELINE_420,
+                out: out.as_mut_slice(),
+                stride: region_stride,
+                roi: roi.into(),
+                scale,
+            })
+            .collect::<Vec<_>>();
+        session
+            .decode_tiles_region_scaled_into(&mut jobs, PixelFormat::Rgb8)
+            .expect("session region-scaled batch decode");
+    }
+
+    assert_eq!(scaled_outputs, scaled_expected);
+    assert_eq!(region_outputs, region_expected);
+}
+
+#[test]
+fn jpeg_output_buffer_resizes_without_reallocating_for_same_or_smaller_shape() {
+    let mut buffer = JpegOutputBuffer::new((16, 16), PixelFormat::Rgb8).expect("output buffer");
+    let initial_capacity = buffer.capacity();
+    assert_eq!(buffer.dimensions(), (16, 16));
+    assert_eq!(buffer.stride(), 16 * 3);
+    assert_eq!(buffer.as_mut_slice().len(), 16 * 16 * 3);
+
+    buffer
+        .resize((8, 8), PixelFormat::Rgb8)
+        .expect("smaller resize");
+
+    assert_eq!(buffer.capacity(), initial_capacity);
+    assert_eq!(buffer.dimensions(), (8, 8));
+    assert_eq!(buffer.as_mut_slice().len(), 8 * 8 * 3);
 }
 
 #[test]
@@ -367,7 +2084,7 @@ fn production_batch_region_scaled_decode_parallel_preserves_order_and_output() {
                 input: BASELINE_420,
                 out: out.as_mut_slice(),
                 stride,
-                roi,
+                roi: roi.into(),
                 scale: Downscale::Quarter,
             })
             .collect::<Vec<_>>();

@@ -10,12 +10,10 @@ mod common;
 
 use common::{
     libjpeg_turbo_available, libjpeg_turbo_decode_batch, load_bench_inputs,
+    report::{format_ms, median_ns, report_iterations, write_reports},
     signinum_decode_tile_batch_sequential, TurboJpegDecoder,
 };
 use signinum_jpeg::bench_support::{bench_profile_fast420_tile_batch, BenchFast420Profile};
-use std::fs;
-use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const TILE_BATCH: usize = 64;
 const DEFAULT_ITERS: usize = 3;
@@ -33,11 +31,7 @@ fn main() {
         inputs.retain(|input| !input.name.starts_with("repo/"));
     }
 
-    let iterations = std::env::var("SIGNINUM_REPORT_ITERS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|&iters| iters > 0)
-        .unwrap_or(DEFAULT_ITERS);
+    let iterations = report_iterations(DEFAULT_ITERS);
 
     let mut turbo = if libjpeg_turbo_available() {
         Some(TurboJpegDecoder::new().expect("create libjpeg-turbo decoder"))
@@ -70,40 +64,14 @@ fn main() {
         });
     }
 
-    let report_dir = PathBuf::from("target/bench-reports");
-    fs::create_dir_all(&report_dir).expect("create target/bench-reports");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after unix epoch")
-        .as_secs();
-
     let csv = render_csv(&rows);
     let markdown = render_markdown(&rows, iterations);
-    let csv_path = report_dir.join(format!("fast420-breakdown-{timestamp}.csv"));
-    let md_path = report_dir.join(format!("fast420-breakdown-{timestamp}.md"));
-    fs::write(&csv_path, &csv).expect("write CSV report");
-    fs::write(&md_path, &markdown).expect("write Markdown report");
-    fs::write(report_dir.join("fast420-breakdown-latest.csv"), &csv)
-        .expect("write latest CSV report");
-    fs::write(report_dir.join("fast420-breakdown-latest.md"), &markdown)
-        .expect("write latest Markdown report");
+    let paths = write_reports("target/bench-reports", "fast420-breakdown", &csv, &markdown);
 
-    println!("Wrote {}", csv_path.display());
-    println!("Wrote {}", md_path.display());
+    println!("Wrote {}", paths.csv.display());
+    println!("Wrote {}", paths.markdown.display());
     println!();
     println!("{markdown}");
-}
-
-fn median_ns(iterations: usize, mut f: impl FnMut()) -> u128 {
-    f();
-    let mut samples = Vec::with_capacity(iterations);
-    for _ in 0..iterations {
-        let start = Instant::now();
-        f();
-        samples.push(start.elapsed().as_nanos());
-    }
-    samples.sort_unstable();
-    samples[samples.len() / 2]
 }
 
 fn render_csv(rows: &[BreakdownRow]) -> String {
@@ -151,22 +119,22 @@ fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
     let (parse, mcu, rgb, finish, total) = aggregate_stage_ns(rows);
     md.push_str(&format!(
         "| profile parse/plan | {} ({:.1}%) |\n",
-        fmt_ms(parse),
+        format_ms(parse),
         pct(parse, total)
     ));
     md.push_str(&format!(
         "| profile MCU decode | {} ({:.1}%) |\n",
-        fmt_ms(mcu),
+        format_ms(mcu),
         pct(mcu, total)
     ));
     md.push_str(&format!(
         "| profile RGB emit | {} ({:.1}%) |\n",
-        fmt_ms(rgb),
+        format_ms(rgb),
         pct(rgb, total)
     ));
     md.push_str(&format!(
         "| profile finish | {} ({:.1}%) |\n",
-        fmt_ms(finish),
+        format_ms(finish),
         pct(finish, total)
     ));
     md.push('\n');
@@ -179,17 +147,17 @@ fn render_markdown(rows: &[BreakdownRow], iterations: usize) -> String {
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} ({:.1}%) | {} ({:.1}%) | {} ({:.1}%) | {}/{}/{} |\n",
             row.input_name,
-            fmt_ms(row.signinum_ns),
-            row.turbo_ns.map_or_else(|| "n/a".to_string(), fmt_ms),
+            format_ms(row.signinum_ns),
+            row.turbo_ns.map_or_else(|| "n/a".to_string(), format_ms),
             row.turbo_ns.map_or_else(
                 || "n/a".to_string(),
                 |turbo| format!("{}x", ratio(row.signinum_ns, turbo))
             ),
-            fmt_ms(row.profile.parse_plan_ns()),
+            format_ms(row.profile.parse_plan_ns()),
             pct(row.profile.parse_plan_ns(), row.profile.total_ns()),
-            fmt_ms(row.profile.mcu_decode_ns()),
+            format_ms(row.profile.mcu_decode_ns()),
             pct(row.profile.mcu_decode_ns(), row.profile.total_ns()),
-            fmt_ms(row.profile.rgb_emit_ns()),
+            format_ms(row.profile.rgb_emit_ns()),
             pct(row.profile.rgb_emit_ns(), row.profile.total_ns()),
             counts.dc_only_blocks(),
             counts.bottom_half_zero_blocks(),
@@ -233,8 +201,4 @@ fn pct(part: u128, total: u128) -> f64 {
     } else {
         part as f64 * 100.0 / total as f64
     }
-}
-
-fn fmt_ms(ns: u128) -> String {
-    format!("{:.3} ms", ns as f64 / 1_000_000.0)
 }

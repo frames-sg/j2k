@@ -366,6 +366,30 @@ fn avx2_ycbcr_rows_match_scalar_reference_for_tail_widths() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn avx2_ycbcr_rows_use_shortest_safe_prefix() {
+    if !std::is_x86_feature_detected!("avx2") {
+        return;
+    }
+
+    let y = [16u8, 40, 90, 200, 12, 24, 48, 96];
+    let cb = [128u8, 100, 200, 180, 90];
+    let cr = [128u8, 220, 10, 90, 70, 60, 50];
+    let mut expected = vec![0xAAu8; y.len() * 3];
+    let mut actual = expected.clone();
+
+    scalar::fill_rgb_row_from_ycbcr(
+        &y[..cb.len()],
+        &cb,
+        &cr[..cb.len()],
+        &mut expected[..cb.len() * 3],
+    );
+    super::x86::fill_rgb_row_from_ycbcr_for_test(&y, &cb, &cr, &mut actual);
+
+    assert_eq!(actual, expected);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn avx2_gray_rows_match_scalar_reference() {
     if !std::is_x86_feature_detected!("avx2") {
         return;
@@ -659,6 +683,60 @@ fn avx2_420_cropped_row_pair_matches_scalar_reference() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn avx2_420_row_pair_uses_shortest_safe_prefix() {
+    if !std::is_x86_feature_detected!("avx2") {
+        return;
+    }
+
+    let backend = super::Backend {
+        kind: super::BackendKind::Avx2,
+    };
+    let y_top = [16u8, 24, 32, 40, 48, 56, 64, 72, 80];
+    let y_bot = [80u8, 88, 96, 104];
+    let prev_cb = [120u8, 100, 140];
+    let curr_cb = [110u8, 90, 130];
+    let next_cb = [100u8, 80, 120];
+    let prev_cr = [130u8, 150, 170];
+    let curr_cr = [140u8, 160, 180];
+    let next_cr = [150u8, 170, 190];
+
+    let safe_width = y_bot.len();
+    let mut expected_top = vec![0xAAu8; y_top.len() * 3];
+    let mut expected_bot = vec![0xAAu8; y_bot.len() * 3];
+    scalar::fill_rgb_row_pair_from_420(
+        &y_top[..safe_width],
+        Some(&y_bot),
+        &prev_cb,
+        &curr_cb,
+        &next_cb,
+        &prev_cr,
+        &curr_cr,
+        &next_cr,
+        &mut expected_top[..safe_width * 3],
+        Some(&mut expected_bot),
+    );
+
+    let mut actual_top = vec![0xAAu8; y_top.len() * 3];
+    let mut actual_bot = vec![0xAAu8; y_bot.len() * 3];
+    backend.fill_rgb_row_pair_from_420(
+        &y_top,
+        Some(&y_bot),
+        &prev_cb,
+        &curr_cb,
+        &next_cb,
+        &prev_cr,
+        &curr_cr,
+        &next_cr,
+        &mut actual_top,
+        Some(&mut actual_bot),
+    );
+
+    assert_eq!(actual_top, expected_top);
+    assert_eq!(actual_bot, expected_bot);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn avx2_backend_prefers_cropped_420_region_when_available() {
     if !std::is_x86_feature_detected!("avx2") {
         return;
@@ -681,6 +759,26 @@ fn neon_ycbcr_rows_match_scalar_reference_for_tail_widths() {
     let mut actual = vec![0u8; y.len() * 3];
 
     scalar::fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut expected);
+    super::neon::fill_rgb_row_from_ycbcr_for_test(&y, &cb, &cr, &mut actual);
+
+    assert_eq!(actual, expected);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_ycbcr_rows_use_shortest_safe_prefix() {
+    let y = [16u8, 40, 90, 200, 12, 24, 48, 96];
+    let cb = [128u8, 100, 200, 180, 90];
+    let cr = [128u8, 220, 10, 90, 70, 60, 50];
+    let mut expected = vec![0xAAu8; y.len() * 3];
+    let mut actual = expected.clone();
+
+    scalar::fill_rgb_row_from_ycbcr(
+        &y[..cb.len()],
+        &cb,
+        &cr[..cb.len()],
+        &mut expected[..cb.len() * 3],
+    );
     super::neon::fill_rgb_row_from_ycbcr_for_test(&y, &cb, &cr, &mut actual);
 
     assert_eq!(actual, expected);
@@ -832,6 +930,56 @@ fn neon_420_row_pair_matches_scalar_reference_across_multiple_chunks() {
 
     let mut actual_top = vec![0u8; len * 3];
     let mut actual_bot = vec![0u8; len * 3];
+    backend.fill_rgb_row_pair_from_420(
+        &y_top,
+        Some(&y_bot),
+        &prev_cb,
+        &curr_cb,
+        &next_cb,
+        &prev_cr,
+        &curr_cr,
+        &next_cr,
+        &mut actual_top,
+        Some(&mut actual_bot),
+    );
+
+    assert_eq!(actual_top, expected_top);
+    assert_eq!(actual_bot, expected_bot);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_420_row_pair_uses_shortest_safe_prefix() {
+    let backend = super::Backend {
+        kind: super::BackendKind::Neon,
+    };
+    let y_top = [16u8, 24, 32, 40, 48, 56, 64, 72, 80];
+    let y_bot = [80u8, 88, 96, 104];
+    let prev_cb = [120u8, 100, 140];
+    let curr_cb = [110u8, 90, 130];
+    let next_cb = [100u8, 80, 120];
+    let prev_cr = [130u8, 150, 170];
+    let curr_cr = [140u8, 160, 180];
+    let next_cr = [150u8, 170, 190];
+
+    let safe_width = y_bot.len();
+    let mut expected_top = vec![0xAAu8; y_top.len() * 3];
+    let mut expected_bot = vec![0xAAu8; y_bot.len() * 3];
+    scalar::fill_rgb_row_pair_from_420(
+        &y_top[..safe_width],
+        Some(&y_bot),
+        &prev_cb,
+        &curr_cb,
+        &next_cb,
+        &prev_cr,
+        &curr_cr,
+        &next_cr,
+        &mut expected_top[..safe_width * 3],
+        Some(&mut expected_bot),
+    );
+
+    let mut actual_top = vec![0xAAu8; y_top.len() * 3];
+    let mut actual_bot = vec![0xAAu8; y_bot.len() * 3];
     backend.fill_rgb_row_pair_from_420(
         &y_top,
         Some(&y_bot),

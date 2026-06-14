@@ -2,7 +2,7 @@
 
 //! `Rgb8Writer` — 3-byte-per-pixel RGB output.
 
-use crate::color::ycbcr::ycbcr_to_rgb;
+use crate::backend::Backend;
 use crate::error::JpegError;
 use crate::output::{InterleavedRgbWriter, OutputWriter};
 
@@ -10,11 +10,27 @@ pub(crate) struct Rgb8Writer<'o> {
     out: &'o mut [u8],
     stride: usize,
     width: u32,
+    backend: Backend,
 }
 
 impl<'o> Rgb8Writer<'o> {
+    #[cfg(test)]
     pub(crate) fn new(out: &'o mut [u8], stride: usize, width: u32) -> Self {
-        Self { out, stride, width }
+        Self::new_with_backend(out, stride, width, Backend::detect())
+    }
+
+    pub(crate) fn new_with_backend(
+        out: &'o mut [u8],
+        stride: usize,
+        width: u32,
+        backend: Backend,
+    ) -> Self {
+        Self {
+            out,
+            stride,
+            width,
+            backend,
+        }
     }
 
     fn row_mut(&mut self, y: u32) -> &mut [u8] {
@@ -60,16 +76,7 @@ impl OutputWriter for Rgb8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 3];
-        for (((&r, &g), &b), pixel) in r_row
-            .iter()
-            .zip(g_row.iter())
-            .zip(b_row.iter())
-            .zip(dst.chunks_exact_mut(3))
-        {
-            pixel[0] = r;
-            pixel[1] = g;
-            pixel[2] = b;
-        }
+        self.backend.fill_rgb_row_from_rgb(r_row, g_row, b_row, dst);
         Ok(())
     }
 
@@ -83,17 +90,8 @@ impl OutputWriter for Rgb8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 3];
-        for (((&y_sample, &cb_sample), &cr_sample), pixel) in y_row
-            .iter()
-            .zip(cb_row.iter())
-            .zip(cr_row.iter())
-            .zip(dst.chunks_exact_mut(3))
-        {
-            let (r, g, b) = ycbcr_to_rgb(y_sample, cb_sample, cr_sample);
-            pixel[0] = r;
-            pixel[1] = g;
-            pixel[2] = b;
-        }
+        self.backend
+            .fill_rgb_row_from_ycbcr(y_row, cb_row, cr_row, dst);
         Ok(())
     }
 
@@ -101,11 +99,7 @@ impl OutputWriter for Rgb8Writer<'_> {
         let dst_start = (y as usize) * self.stride;
         let width = self.width as usize;
         let dst = &mut self.out[dst_start..dst_start + width * 3];
-        for (&gray, pixel) in gray_row.iter().zip(dst.chunks_exact_mut(3)) {
-            pixel[0] = gray;
-            pixel[1] = gray;
-            pixel[2] = gray;
-        }
+        self.backend.fill_rgb_row_from_gray(gray_row, dst);
         Ok(())
     }
 }
