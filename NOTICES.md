@@ -1,8 +1,6 @@
 # Notices
 
-`signinum` is an independent implementation. No source code is derived from
-any other project. The following prior work was used as **reference material**
-during design and verification:
+`signinum` is an independent implementation. The following prior work was used as **reference material** during design and verification, or is included as small test/data assets where noted:
 
 - **ITU-T Recommendation T.81 (09/92)** — *Information technology — Digital
   compression and coding of continuous-tone still images — Requirements and
@@ -16,3 +14,20 @@ during design and verification:
   maintainer's machine and are committed to the repo; the pinned version is
   recorded in `corpus/conformance/manifest.json`. No libjpeg-turbo source
   code is incorporated into `signinum`.
+
+- **OpenHTJ2K conformance fixtures** — Tiny HTONLY codestream fixtures in
+  `crates/signinum-j2k-native/fixtures/htj2k/` are copied from OpenHTJ2K
+  commit `ffe5acf9f1eedb87c36c3fd2134fdc1ddea5e75f`. The retained upstream
+  BSD 3-Clause license is in
+  `crates/signinum-j2k-native/fixtures/htj2k/LICENSE.OpenHTJ2K`.
+
+- **Compact ICC Profiles** <https://github.com/saucecontrol/Compact-ICC-Profiles>
+  — ICC profile assets in `crates/signinum-j2k-native/assets/` are used for
+  color-management tests. The profiles are available under CC0 1.0 Universal;
+  the retained license text is in
+  `crates/signinum-j2k-native/assets/LICENSE.txt`.
+
+- **OpenJPH** <https://github.com/aous72/OpenJPH> — HTJ2K lookup tables in
+  `crates/signinum-j2k-native/src/j2c/ht_tables.rs` and
+  `crates/signinum-j2k-native/src/j2c/ht_encode_tables.rs` are generated from
+  OpenJPH source tables. They are table data, not linked OpenJPH source files.

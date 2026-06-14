@@ -1,98 +1,81 @@
-# Release Notes
+# Release Policy
 
-## Current State
+The repository is staged for the `signinum` facade release. Runtime backend selection defaults to `Auto`; CPU remains the portable baseline while supported device paths are selected only with validation and benchmark evidence.
 
-The repository is staged for the `signinum` facade release. The stable release
-artifacts are `signinum`, `signinum-core`, `signinum-jpeg`, `signinum-j2k`,
-`signinum-tilecodec`, and `signinum-cli`. `signinum-cuda-runtime`,
-`signinum-profile`, and `signinum-j2k-native` are published support crates so
-the public runtime crates that depend on them can be installed from crates.io.
+## Versions and publish order
 
-Metal and CUDA adapter crates are published as pre-1.0 artifacts where their
-APIs changed for the facade boundary.
-Runtime backend selection defaults to `Auto`; supported compiled device paths
-may run before CPU fallback.
-CUDA explicit requests can produce CUDA device memory surfaces when built with
-`cuda-runtime` on a host with a CUDA driver. `signinum-jpeg-cuda` can use
-NVIDIA nvJPEG for full-frame RGB8 JPEG decode when `libnvjpeg` is installed;
-unsupported JPEG shapes use explicit CPU-staged upload APIs where exposed. The
-J2K CUDA adapter reserves explicit CUDA requests for CUDA-resident HTJ2K
-codestream decode and reports unsupported inputs instead of CPU-decoding and
-uploading pixels. NVIDIA performance claims require self-hosted GPU benchmark
-evidence.
+Release scripts must use manifest versions. Do not publish from stale hard-coded crate/version pairs.
 
-## Verification Gates
+Real publishes must run from tag `v<workspace.package.version>`. All publishable crates must share that workspace version. If a crate version is already on crates.io, the publish script fails by default; set `CRATES_IO_ALLOW_PUBLISHED_RERUN=true` only for an intentional idempotent rerun.
 
-Hosted CI must pass before release staging:
-
-1. `cargo fmt --all -- --check`
-2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-3. `cargo xtask test` on Linux x86_64, Linux aarch64, and Apple Silicon
-   macOS runners
-4. `cargo doc --workspace --all-features --no-deps` with rustdoc warnings
-   denied
-5. Benchmark compile checks for JPEG, JPEG Metal, J2K Metal, and tilecodec
-
-Runtime GPU validation is intentionally separate because hosted GitHub runners
-do not provide the required devices. Run `.github/workflows/gpu-validation.yml`
-on self-hosted runners before claiming Metal runtime validation:
-
-1. Apple Silicon Metal runner labels: `self-hosted`, `macOS`, `ARM64`,
-   `metal`
-2. x86_64 CUDA runner labels: `self-hosted`, `Linux`, `X64`, `cuda`
-3. Use the `run-timed-benchmarks` workflow input when a release needs measured
-   GPU benchmark timing rather than compile-only coverage
-4. Use `run-metal-validation=false` for CUDA-only signoff runs so a missing or
-   busy Metal runner does not keep a completed CUDA validation queued
-
-Passing the CUDA self-hosted job validates `cuda-runtime` device-memory output
-and the opt-in nvJPEG JPEG decode path on a CUDA runner. The CUDA diagnostics
-require `nvcc` and print `nvcc --version` before the tests run. Timed NVIDIA
-performance claims require the `run-timed-benchmarks` workflow input and
-recorded benchmark output.
-
-## Crates.io
-
-Crates.io publication is staged because workspace crates depend on each other.
-Before publishing, run `cargo xtask package` from a clean worktree. The package
-preflight runs `cargo package --list` for every publishable crate,
-then runs strict `cargo package --no-verify` only for crates that do not depend
-on unpublished workspace versions. Downstream crates such as
-`signinum-j2k-native`, `signinum-jpeg`, `signinum-tilecodec`, `signinum-j2k`,
-adapter crates, `signinum-cli`, and `signinum` cannot pass strict pre-publish
-packaging until the prior staged crates exist on crates.io, because Cargo
-resolves their versioned path dependencies against the registry during
-packaging.
-
-This is an unpublished workspace dependencies limit, not a package content
-failure. The publish workflow's dry-run mode mirrors that limit: it uses
-`cargo publish --dry-run` for registry-independent crates and
-`cargo package --list` for crates blocked only by unpublished workspace
-dependencies. Real publishes still run `cargo publish` in dependency order.
-
-The crates.io publish order uses the current manifest versions and is enforced
-by `.github/workflows/publish.yml`:
+Publish in this order:
 
 1. `signinum-core`
 2. `signinum-cuda-runtime`
 3. `signinum-profile`
-4. `signinum-j2k-native`
-5. `signinum-jpeg`
-6. `signinum-tilecodec`
-7. `signinum-j2k`
-8. `signinum-transcode`
-9. `signinum-jpeg-metal`
-10. `signinum-j2k-metal`
-11. `signinum-transcode-metal`
-12. `signinum-jpeg-cuda`
-13. `signinum-j2k-cuda`
-14. `signinum-cli`
-15. `signinum`
+4. `signinum-j2k-types`
+5. `signinum-j2k-native`
+6. `signinum-jpeg`
+7. `signinum-tilecodec`
+8. `signinum-j2k`
+9. `signinum-transcode`
+10. `signinum-transcode-cuda`
+11. `signinum-metal-support`
+12. `signinum-jpeg-metal`
+13. `signinum-j2k-metal`
+14. `signinum-transcode-metal`
+15. `signinum-jpeg-cuda`
+16. `signinum-j2k-cuda`
+17. `signinum-cli`
+18. `signinum`
 
-Every package in this list must have a fresh manifest version before a
-metadata-refresh release, because crates.io package metadata is immutable after
-publication. `signinum-transcode` and `signinum-transcode-metal` remain
-experimental API crates even when published; downstream applications should pin
-minor versions and treat their reports and accelerator heuristics as evolving
-surfaces. `signinum-j2k-compare` remains `publish = false`; it is a local parity
-oracle helper, not a released runtime dependency.
+Publish preflight must account for staged unpublished workspace dependencies.
+Use package listing and dry-run checks according to dependency availability:
+
+```bash
+cargo package --list
+cargo publish --dry-run
+```
+
+Some downstream packages may be validated with `cargo package --list` while
+strict dry-run publishing is blocked by unpublished workspace dependencies.
+
+Run this before publishing:
+
+```bash
+cargo xtask release-integrity
+```
+
+The integrity gate parses cargo metadata, manifests, `.github/workflows/publish.yml`, and this release document. It fails if a publishable workspace crate is missing from publish order, docs.rs metadata, semver/doc gates, or release docs, or if a workspace crate is neither publishable nor explicitly `publish = false`.
+
+## Required gates
+
+Hosted CI must pass before release staging:
+
+- formatting
+- tests
+- clippy
+- release integrity
+- package validation
+- semver checks for stable packages
+- docs and stable API inventory
+- benchmark target compilation
+- unsafe audit
+- bounded fuzz run
+- coverage via `cargo llvm-cov --fail-under-lines 80`
+
+Metal runtime validation runs on macOS where available. J2K Metal Criterion
+bench signoff is reset until new narrow profiling benches are added.
+
+CUDA validation requires a self-hosted CUDA environment for runtime and NVIDIA performance evidence. CUDA paths use Signinum-owned CUDA kernels, cuda-runtime integration, and CUDA device memory surfaces for supported shapes. NVIDIA performance claims require recorded self-hosted benchmark output.
+
+Coverage exclusions are limited to hardware-only GPU paths that cannot execute on hosted CI: `signinum-cuda-runtime`, CUDA adapter crates, Metal adapter crates, and `signinum-metal-support`. Those paths still require the Metal/CUDA validation gates before release.
+
+## Published and unpublished crates
+
+Published crates must declare package README files and docs.rs metadata.
+Unpublished tooling and oracle helpers remain local even when versioned with the
+workspace.
+
+`signinum-test-support` is an unpublished dev helper. Comparator crates and
+automation-only tooling are not runtime API.

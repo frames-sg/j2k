@@ -14,8 +14,8 @@ cargo doc --workspace --no-deps
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Comparator benchmarks may need optional system libraries. See
-`docs/bench.md` for setup and skip behavior.
+Comparator benchmarks may need optional system libraries. The workspace README
+defines benchmark publication and no-silent-skip behavior.
 
 ## Pull Requests
 
@@ -38,4 +38,4 @@ surface behavior should update:
 - README quick-start or examples when user-facing behavior changes
 - API docs for affected public items
 - integration tests covering caller-visible behavior
-- `docs/bench.md` when benchmark methodology changes
+- the README benchmark policy when benchmark methodology changes

@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 8 * * *"
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,20 +20,121 @@ env:
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
+  gpu-path-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Non-PR events do not require GPU path policy
+        if: ${{ github.event_name != 'pull_request' }}
+        run: echo "GPU path policy only applies to pull requests."
+      - name: Require GPU validation for GPU path changes
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          api_url = os.environ["GITHUB_API_URL"].rstrip("/")
+          repo = os.environ["REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          pr_number = os.environ["PR_NUMBER"]
+          head_sha = os.environ["HEAD_SHA"]
+
+          gpu_prefixes = (
+              "crates/signinum-cuda-runtime/",
+              "crates/signinum-jpeg-cuda/",
+              "crates/signinum-j2k-cuda/",
+              "crates/signinum-transcode-cuda/",
+              "crates/signinum-metal-support/",
+              "crates/signinum-jpeg-metal/",
+              "crates/signinum-j2k-metal/",
+              "crates/signinum-transcode-metal/",
+          )
+          gpu_exact_paths = {
+              ".github/CODEOWNERS",
+              ".github/workflows/gpu-validation.yml",
+          }
+
+          def get_json(path):
+              request = urllib.request.Request(
+                  f"{api_url}/repos/{repo}{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          changed_files = []
+          page = 1
+          while True:
+              files = get_json(f"/pulls/{pr_number}/files?per_page=100&page={page}")
+              changed_files.extend(item["filename"] for item in files)
+              if len(files) < 100:
+                  break
+              page += 1
+
+          gpu_changes = [
+              path
+              for path in changed_files
+              if path in gpu_exact_paths or path.startswith(gpu_prefixes)
+          ]
+          if not gpu_changes:
+              print("No GPU path changes detected.")
+              sys.exit(0)
+
+          encoded_sha = urllib.parse.quote(head_sha, safe="")
+          runs = get_json(
+              f"/actions/workflows/gpu-validation.yml/runs?head_sha={encoded_sha}&per_page=50"
+          ).get("workflow_runs", [])
+          for run in runs:
+              if run.get("head_sha") == head_sha and run.get("conclusion") == "success":
+                  print(
+                      "GPU path changes detected and gpu-validation.yml succeeded "
+                      f"for head SHA {head_sha}."
+                  )
+                  sys.exit(0)
+
+          print("GPU path changes require a successful gpu-validation.yml run.")
+          print(f"Head SHA: {head_sha}")
+          print("Changed GPU paths:")
+          for path in gpu_changes:
+              print(f"  - {path}")
+          sys.exit(1)
+          PY
+
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt }
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+          components: rustfmt
       - run: cargo xtask fmt
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+          components: clippy
       - run: cargo xtask clippy
 
   semver:
@@ -41,30 +147,75 @@ jobs:
           - signinum-jpeg
           - signinum-j2k
           - signinum-tilecodec
+          - signinum-jpeg-metal
+          - signinum-j2k-metal
+          - signinum-jpeg-cuda
+          - signinum-j2k-cuda
+          - signinum-transcode
+          - signinum-transcode-cuda
+          - signinum-metal-support
+          - signinum-transcode-metal
+          - signinum-j2k-native
+          - signinum-cuda-runtime
+          - signinum-profile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239
         with:
           package: ${{ matrix.package }}
           baseline-rev: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          release-type: patch
+          release-type: minor
 
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask doc
+
+  stable-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-public-api@0.52.0
+      - run: cargo xtask stable-api
+
+  release-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask release-integrity
+
+  unsafe-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - run: cargo xtask unsafe-audit
 
   typos:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: crate-ci/typos@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: crate-ci/typos@d80b8e26878e372a041833cd67163dbdb6a4336e
 
   test:
     strategy:
@@ -73,15 +224,15 @@ jobs:
         include:
           - { os: ubuntu-latest,      rust: stable, arch: x86_64 }
           - { os: ubuntu-latest,      rust: beta,   arch: x86_64 }
-          - { os: ubuntu-latest,      rust: "1.88", arch: x86_64 }
+          - { os: ubuntu-latest,      rust: "1.96", arch: x86_64 }
           - { os: ubuntu-24.04-arm,   rust: stable, arch: aarch64 }
-          - { os: ubuntu-24.04-arm,   rust: "1.88", arch: aarch64 }
+          - { os: ubuntu-24.04-arm,   rust: "1.96", arch: aarch64 }
           - { os: macos-latest,       rust: stable, arch: aarch64 }
-          - { os: macos-latest,       rust: "1.88", arch: aarch64 }
+          - { os: macos-latest,       rust: "1.96", arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: ${{ matrix.rust }}
       - run: cargo xtask test
@@ -93,53 +244,110 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask release-cpu
 
   release-metal:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask release-metal
 
   no-std:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask no-std
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+          components: miri
+      - run: cargo xtask miri
 
   bench-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask bench-build
 
   fuzz-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask fuzz-build
+
+  fuzz-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-fuzz
+      - run: cargo xtask fuzz-run
+        env:
+          SIGNINUM_FUZZ_RUNS: "512"
+          SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: "60"
+
+  fuzz-run-long:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
+        with:
+          tool: cargo-fuzz
+      - run: cargo xtask fuzz-run
+        env:
+          SIGNINUM_FUZZ_RUNS: "20000"
+          SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: "900"
 
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
       - run: cargo xtask package
 
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@91534edaf9fd796a162759d80d49cdff574bff2c
+        with:
+          tool: cargo-llvm-cov
       - run: cargo xtask coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: signinum-lcov
@@ -149,7 +357,9 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
         with: { command: check licenses advisories bans sources }

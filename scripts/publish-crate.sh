@@ -3,7 +3,101 @@ set -euo pipefail
 
 crate="${1:?usage: publish-crate.sh <crate>}"
 dry_run="${DRY_RUN_ONLY:-false}"
-version="$(cargo pkgid -p "$crate" | sed 's/.*#//')"
+
+publishable_crates=(
+  signinum-core
+  signinum-cuda-runtime
+  signinum-profile
+  signinum-j2k-types
+  signinum-j2k-native
+  signinum-jpeg
+  signinum-tilecodec
+  signinum-j2k
+  signinum-transcode
+  signinum-transcode-cuda
+  signinum-metal-support
+  signinum-jpeg-metal
+  signinum-j2k-metal
+  signinum-transcode-metal
+  signinum-jpeg-cuda
+  signinum-j2k-cuda
+  signinum-cli
+  signinum
+)
+
+workspace_version() {
+  awk '
+    /^\[workspace.package\]/ { in_workspace_package = 1; next }
+    /^\[/ && in_workspace_package { exit }
+    in_workspace_package && $1 == "version" {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' Cargo.toml
+}
+
+crate_version() {
+  cargo pkgid -p "$1" | sed 's/.*#//'
+}
+
+is_publishable_crate() {
+  local requested="$1"
+  local publishable
+  for publishable in "${publishable_crates[@]}"; do
+    if [[ "$publishable" == "$requested" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_publishable_crate() {
+  if ! is_publishable_crate "$1"; then
+    echo "${1}: not in the publishable release set; run cargo xtask release-integrity" >&2
+    exit 1
+  fi
+}
+
+require_release_preflight() {
+  local expected_version="$1"
+  local actual_workspace_version
+  local expected_tag
+  local actual_tag
+  local publishable
+  local publishable_version
+
+  actual_workspace_version="$(workspace_version)"
+  if [[ -z "$actual_workspace_version" ]]; then
+    echo "failed to read workspace.package.version from Cargo.toml" >&2
+    exit 1
+  fi
+  if [[ "$expected_version" != "$actual_workspace_version" ]]; then
+    echo "${crate}: package version ${expected_version} does not match workspace version ${actual_workspace_version}" >&2
+    exit 1
+  fi
+
+  expected_tag="v${actual_workspace_version}"
+  actual_tag="${GITHUB_REF_NAME:-}"
+  if [[ -z "$actual_tag" ]]; then
+    actual_tag="$(git describe --tags --exact-match 2>/dev/null || true)"
+  fi
+  if [[ "$actual_tag" != "$expected_tag" ]]; then
+    echo "real publish requires tag ${expected_tag}; current tag is ${actual_tag:-<none>}" >&2
+    exit 1
+  fi
+
+  for publishable in "${publishable_crates[@]}"; do
+    publishable_version="$(crate_version "$publishable")"
+    if [[ "$publishable_version" != "$actual_workspace_version" ]]; then
+      echo "${publishable}: version ${publishable_version} does not match workspace version ${actual_workspace_version}" >&2
+      exit 1
+    fi
+  done
+}
+
+require_publishable_crate "$crate"
+version="$(crate_version "$crate")"
 
 has_unpublished_workspace_dependency() {
   case "$1" in
@@ -12,6 +106,7 @@ has_unpublished_workspace_dependency() {
       signinum-tilecodec | \
       signinum-j2k | \
       signinum-transcode | \
+      signinum-transcode-cuda | \
       signinum-jpeg-metal | \
       signinum-j2k-metal | \
       signinum-transcode-metal | \
@@ -38,11 +133,20 @@ if [[ "$dry_run" == "true" ]]; then
   exit 0
 fi
 
+require_release_preflight "$version"
 : "${CRATES_IO_API_TOKEN:?CRATES_IO_API_TOKEN is required for a real publish}"
 
 if cargo info "${crate}@${version}" --registry crates-io >/dev/null 2>&1; then
-  echo "${crate} ${version} is already published; skipping"
-  exit 0
+  case "${CRATES_IO_ALLOW_PUBLISHED_RERUN:-false}" in
+    true | 1)
+      echo "${crate} ${version} is already published; idempotent rerun allowed"
+      exit 0
+      ;;
+    *)
+      echo "${crate} ${version} is already published; set CRATES_IO_ALLOW_PUBLISHED_RERUN=true for an idempotent rerun" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 export CARGO_REGISTRY_TOKEN="$CRATES_IO_API_TOKEN"

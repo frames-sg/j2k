@@ -1,21 +1,26 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 mod perf_guard;
+mod process;
 
 const PUBLISHABLE_PACKAGES: &[&str] = &[
     "signinum-core",
     "signinum-cuda-runtime",
     "signinum-profile",
+    "signinum-j2k-types",
     "signinum-j2k-native",
     "signinum-jpeg",
     "signinum-tilecodec",
     "signinum-j2k",
     "signinum-transcode",
+    "signinum-transcode-cuda",
+    "signinum-metal-support",
     "signinum-jpeg-metal",
     "signinum-j2k-metal",
     "signinum-transcode-metal",
@@ -26,14 +31,17 @@ const PUBLISHABLE_PACKAGES: &[&str] = &[
 ];
 
 const REGISTRY_INDEPENDENT_PACKAGES: &[&str] =
-    &["signinum-core", "signinum-cuda-runtime", "signinum-profile"];
+    &["signinum-core", "signinum-profile", "signinum-j2k-types"];
 
 const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
+    "signinum-cuda-runtime",
+    "signinum-metal-support",
     "signinum-j2k-native",
     "signinum-jpeg",
     "signinum-tilecodec",
     "signinum-j2k",
     "signinum-transcode",
+    "signinum-transcode-cuda",
     "signinum-jpeg-metal",
     "signinum-j2k-metal",
     "signinum-transcode-metal",
@@ -46,6 +54,7 @@ const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
 const CPU_RELEASE_PACKAGES: &[&str] = &[
     "signinum-core",
     "signinum-jpeg",
+    "signinum-j2k-types",
     "signinum-j2k-native",
     "signinum-j2k",
     "signinum-tilecodec",
@@ -64,8 +73,11 @@ const STABLE_SEMVER_PACKAGES: &[&str] = &[
     "signinum-jpeg-cuda",
     "signinum-j2k-cuda",
     "signinum-transcode",
+    "signinum-transcode-cuda",
+    "signinum-metal-support",
     "signinum-transcode-metal",
     "signinum-j2k-native",
+    "signinum-j2k-types",
     "signinum-cuda-runtime",
     "signinum-profile",
 ];
@@ -81,8 +93,11 @@ const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
     "signinum-jpeg-cuda",
     "signinum-j2k-cuda",
     "signinum-transcode",
+    "signinum-transcode-cuda",
+    "signinum-metal-support",
     "signinum-transcode-metal",
     "signinum-j2k-native",
+    "signinum-j2k-types",
     "signinum-cuda-runtime",
     "signinum-profile",
 ];
@@ -121,10 +136,13 @@ fn run() -> Result<(), String> {
         "stable-api" => stable_api(env::args().skip(2)),
         "semver" => semver(),
         "deny" => deny(),
+        "miri" => miri(),
         "machete" => machete(),
         "no-std" => no_std(),
         "unsafe-audit" => verify_unsafe_audit(),
         "downstream-smoke" => downstream_smoke(),
+        "repo-lint" => repo_lint(),
+        "release-integrity" => release_integrity(),
         "release-cpu" => release_cpu(),
         "release-metal" => release_metal(),
         "coverage" => coverage(),
@@ -144,6 +162,18 @@ fn ci() -> Result<(), String> {
     test()?;
     doc()?;
     verify_unsafe_audit()
+}
+
+fn repo_lint() -> Result<(), String> {
+    run_cargo(&[
+        "test",
+        "-p",
+        "xtask",
+        "--test",
+        "repo_lint",
+        "--",
+        "--nocapture",
+    ])
 }
 
 fn fmt() -> Result<(), String> {
@@ -264,10 +294,24 @@ fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
     ];
     test_args.extend_from_slice(extra_args);
     run_cargo(&test_args)?;
+    test_facade_cuda_stub()?;
 
     let mut doc_args = vec!["test", "--workspace", "--all-features", "--doc"];
     doc_args.extend_from_slice(extra_args);
     run_cargo(&doc_args)
+}
+
+fn test_facade_cuda_stub() -> Result<(), String> {
+    run_cargo(&[
+        "test",
+        "-p",
+        "signinum",
+        "--features",
+        "cuda",
+        "--test",
+        "facade",
+        "facade_auto_j2k_lossless_encode_falls_back_to_cpu_with_stub_cuda_adapters",
+    ])
 }
 
 fn test_package_without_benches(package: &str, no_run: bool) -> Result<(), String> {
@@ -369,7 +413,14 @@ fn bench_build() -> Result<(), String> {
         "encode_cpu",
         "--no-run",
     ])?;
-    run_cargo(&["bench", "-p", "signinum-jpeg", "--no-run"])?;
+    run_cargo(&[
+        "bench",
+        "-p",
+        "signinum-jpeg",
+        "--features",
+        "bench-libjpeg-turbo",
+        "--no-run",
+    ])?;
     run_cargo(&["bench", "-p", "signinum-jpeg-metal", "--no-run"])?;
     run_cargo(&[
         "bench",
@@ -564,6 +615,11 @@ fn fuzz_build() -> Result<(), String> {
         "check",
         "--manifest-path",
         "crates/signinum-tilecodec/fuzz/Cargo.toml",
+    ])?;
+    run_cargo(&[
+        "check",
+        "--manifest-path",
+        "crates/signinum-transcode/fuzz/Cargo.toml",
     ])
 }
 
@@ -573,6 +629,7 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/signinum-jpeg", "decode_fuzz"),
     ("crates/signinum-jpeg", "parse_fuzz"),
     ("crates/signinum-tilecodec", "decompress_fuzz"),
+    ("crates/signinum-transcode", "jpeg_to_htj2k_fuzz"),
 ];
 
 fn fuzz_run() -> Result<(), String> {
@@ -692,6 +749,10 @@ fn semver() -> Result<(), String> {
     let toolchain = env::var("SIGNINUM_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "stable".to_string());
     let toolchain_arg = format!("+{toolchain}");
     for package in STABLE_SEMVER_PACKAGES {
+        if !crates_io_package_exists(package)? {
+            eprintln!("skipping semver baseline for unpublished package `{package}`");
+            continue;
+        }
         run_program(
             OsString::from("cargo"),
             &[
@@ -709,8 +770,47 @@ fn semver() -> Result<(), String> {
     Ok(())
 }
 
+fn crates_io_package_exists(package: &str) -> Result<bool, String> {
+    let cargo = cargo();
+    let display = cargo.to_string_lossy().into_owned();
+    let output = process::command_output(
+        cargo,
+        &["info", package, "--registry", "crates-io"],
+        process::CommandContext::new(),
+    )?;
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("could not find") || combined.contains("not found in registry") {
+        Ok(false)
+    } else {
+        Err(format!(
+            "`{display} info {package} --registry crates-io` exited with {}:\n{}",
+            output.status,
+            combined.trim()
+        ))
+    }
+}
+
 fn deny() -> Result<(), String> {
     run_cargo(&["deny", "check", "licenses", "advisories", "bans", "sources"])
+}
+
+fn miri() -> Result<(), String> {
+    run_nightly_cargo(&["miri", "test", "-p", "signinum-core"])?;
+    run_nightly_cargo(&["miri", "test", "-p", "signinum-tilecodec"])?;
+    run_nightly_cargo(&[
+        "miri",
+        "test",
+        "-p",
+        "signinum-j2k-native",
+        "--no-default-features",
+        "inspect::",
+    ])
 }
 
 fn machete() -> Result<(), String> {
@@ -738,6 +838,35 @@ fn verify_unsafe_audit() -> Result<(), String> {
     let audit_path = Path::new("docs/unsafe-audit.md");
     let audit = fs::read_to_string(audit_path)
         .map_err(|err| format!("failed to read {}: {err}", audit_path.display()))?;
+    if !audit.contains("| Path | Scope | Invariants | Regression guards |") {
+        return Err(
+            "docs/unsafe-audit.md must include Path/Scope/Invariants/Regression guards columns"
+                .to_string(),
+        );
+    }
+    let mut malformed_rows = Vec::new();
+    for line in audit.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("| `crates/") {
+            continue;
+        }
+        let cells = trimmed.split('|').map(str::trim).collect::<Vec<_>>();
+        if cells.len() < 6
+            || cells[1].is_empty()
+            || cells[2].is_empty()
+            || cells[3].is_empty()
+            || cells[4].is_empty()
+            || cells[3].eq_ignore_ascii_case("tbd")
+            || cells[4].eq_ignore_ascii_case("tbd")
+        {
+            malformed_rows.push(trimmed.to_string());
+        }
+    }
+    if !malformed_rows.is_empty() {
+        return Err(format!(
+            "docs/unsafe-audit.md has unsafe rows missing invariants or regression guards: {malformed_rows:?}"
+        ));
+    }
     let mut missing = Vec::new();
     for path in rust_sources(Path::new("crates"))? {
         let source = fs::read_to_string(&path)
@@ -761,6 +890,401 @@ fn verify_unsafe_audit() -> Result<(), String> {
 fn downstream_smoke() -> Result<(), String> {
     run_cargo(&["test", "-p", "signinum", "--examples"])?;
     run_cargo(&["test", "-p", "signinum-transcode", "--examples"])
+}
+
+fn release_integrity() -> Result<(), String> {
+    let metadata = cargo_metadata()?;
+    let workspace_version = workspace_version()?;
+    let publishable_set = str_set(PUBLISHABLE_PACKAGES);
+    let docs_set = str_set(STABLE_DOC_LIBRARY_PACKAGES);
+    let semver_set = str_set(STABLE_SEMVER_PACKAGES);
+    let mut errors = Vec::new();
+
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "cargo metadata did not contain a packages array".to_string())?;
+    let workspace_members = metadata
+        .get("workspace_members")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "cargo metadata did not contain a workspace_members array".to_string())?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut workspace_names = BTreeSet::new();
+
+    let unpublished_members = packages
+        .iter()
+        .filter(|package| {
+            package
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| workspace_members.contains(id))
+                && publish_false(package)
+        })
+        .filter_map(|package| package.get("name").and_then(serde_json::Value::as_str))
+        .collect::<BTreeSet<_>>();
+
+    for package in packages {
+        let id = package
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !workspace_members.contains(id) {
+            continue;
+        }
+
+        let name = package_name(package)?;
+        workspace_names.insert(name.to_string());
+        let listed_publishable = publishable_set.contains(name);
+        let explicitly_unpublished = publish_false(package);
+
+        if listed_publishable && explicitly_unpublished {
+            errors.push(format!(
+                "`{name}` is listed as publishable but has `publish = false`"
+            ));
+            continue;
+        }
+        if !listed_publishable && !explicitly_unpublished {
+            errors.push(format!(
+                "`{name}` is neither in PUBLISHABLE_PACKAGES nor explicitly `publish = false`"
+            ));
+            continue;
+        }
+        if !listed_publishable {
+            continue;
+        }
+
+        validate_unpublished_dependencies(name, package, &unpublished_members, &mut errors);
+
+        let version = package
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if version != workspace_version {
+            errors.push(format!(
+                "`{name}` version {version} does not match workspace version {workspace_version}"
+            ));
+        }
+        if package
+            .get("readme")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            errors.push(format!("`{name}` is publishable but has no package README"));
+        }
+        if !has_docs_rs_metadata(package) {
+            errors.push(format!(
+                "`{name}` is publishable but missing [package.metadata.docs.rs] with all-features and empty targets"
+            ));
+        }
+        if has_lib_target(package) {
+            if !docs_set.contains(name) {
+                errors.push(format!(
+                    "`{name}` has a library target but is missing from STABLE_DOC_LIBRARY_PACKAGES"
+                ));
+            }
+            if !semver_set.contains(name) {
+                errors.push(format!(
+                    "`{name}` has a library target but is missing from STABLE_SEMVER_PACKAGES"
+                ));
+            }
+        } else if name != "signinum-cli" {
+            errors.push(format!(
+                "`{name}` is publishable but has no library target and no explicit release-integrity exemption"
+            ));
+        }
+    }
+
+    for package in PUBLISHABLE_PACKAGES {
+        if !workspace_names.contains(*package) {
+            errors.push(format!(
+                "`{package}` is listed in PUBLISHABLE_PACKAGES but is not a workspace member"
+            ));
+        }
+    }
+    for package in STABLE_DOC_LIBRARY_PACKAGES {
+        if !publishable_set.contains(package) {
+            errors.push(format!(
+                "`{package}` is in STABLE_DOC_LIBRARY_PACKAGES but is not publishable"
+            ));
+        }
+    }
+    for package in STABLE_SEMVER_PACKAGES {
+        if !publishable_set.contains(package) {
+            errors.push(format!(
+                "`{package}` is in STABLE_SEMVER_PACKAGES but is not publishable"
+            ));
+        }
+    }
+
+    validate_publish_workflow(&mut errors)?;
+    validate_publish_script(&mut errors)?;
+    validate_release_docs(&mut errors)?;
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "release integrity violations:\n- {}",
+            errors.join("\n- ")
+        ))
+    }
+}
+
+fn validate_unpublished_dependencies(
+    name: &str,
+    package: &serde_json::Value,
+    unpublished_members: &BTreeSet<&str>,
+    errors: &mut Vec<String>,
+) {
+    let dependencies = package
+        .get("dependencies")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for dependency in dependencies {
+        let dep_name = dependency
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !unpublished_members.contains(dep_name) {
+            continue;
+        }
+        let kind = dependency
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("normal");
+        let req = dependency
+            .get("req")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("*");
+        if kind != "dev" {
+            errors.push(format!(
+                "`{name}` has a {kind} dependency on unpublished crate `{dep_name}`; \
+                 cargo publish cannot resolve it"
+            ));
+        } else if req != "*" {
+            errors.push(format!(
+                "`{name}` has a versioned dev-dependency `{dep_name} = \"{req}\"` on an \
+                 unpublished crate; drop the version so cargo publish strips the path-only dev-dep"
+            ));
+        }
+    }
+}
+
+fn cargo_metadata() -> Result<serde_json::Value, String> {
+    let data = command_output_os(cargo(), &["metadata", "--no-deps", "--format-version", "1"])?;
+    serde_json::from_str(&data).map_err(|err| format!("failed to parse cargo metadata: {err}"))
+}
+
+fn package_name(package: &serde_json::Value) -> Result<&str, String> {
+    package
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "cargo metadata package missing name".to_string())
+}
+
+fn publish_false(package: &serde_json::Value) -> bool {
+    package
+        .get("publish")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty)
+}
+
+fn has_lib_target(package: &serde_json::Value) -> bool {
+    package
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|targets| {
+            targets.iter().any(|target| {
+                target
+                    .get("kind")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|kind| {
+                        kind.iter()
+                            .any(|entry| entry.as_str().is_some_and(|entry| entry == "lib"))
+                    })
+            })
+        })
+}
+
+fn has_docs_rs_metadata(package: &serde_json::Value) -> bool {
+    let Some(docs_rs) = package
+        .get("metadata")
+        .and_then(|metadata| metadata.get("docs"))
+        .and_then(|docs| docs.get("rs"))
+    else {
+        return false;
+    };
+
+    docs_rs
+        .get("all-features")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        && docs_rs
+            .get("targets")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+}
+
+fn validate_publish_workflow(errors: &mut Vec<String>) -> Result<(), String> {
+    let workflow_path = Path::new(".github/workflows/publish.yml");
+    let workflow = fs::read_to_string(workflow_path)
+        .map_err(|err| format!("failed to read {}: {err}", workflow_path.display()))?;
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow)
+        .map_err(|err| format!("failed to parse {}: {err}", workflow_path.display()))?;
+    let mut crates = Vec::new();
+    collect_publish_workflow_crates(&workflow, &mut crates);
+
+    let expected = PUBLISHABLE_PACKAGES
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if crates != expected {
+        errors.push(format!(
+            "{} publish order is {:?}, expected {:?}",
+            workflow_path.display(),
+            crates,
+            expected
+        ));
+    }
+
+    let seen = crates.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for package in PUBLISHABLE_PACKAGES {
+        if !seen.contains(package) {
+            errors.push(format!(
+                "{} is missing publish job for `{package}`",
+                workflow_path.display()
+            ));
+        }
+    }
+    for package in crates {
+        if !PUBLISHABLE_PACKAGES.contains(&package.as_str()) {
+            errors.push(format!(
+                "{} publishes unknown workspace crate `{package}`",
+                workflow_path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_publish_workflow_crates(value: &serde_yaml_ng::Value, crates: &mut Vec<String>) {
+    match value {
+        serde_yaml_ng::Value::String(text) => {
+            for line in text.lines() {
+                if let Some(package) = publish_crate_from_run_line(line) {
+                    crates.push(package);
+                }
+            }
+        }
+        serde_yaml_ng::Value::Sequence(items) => {
+            for item in items {
+                collect_publish_workflow_crates(item, crates);
+            }
+        }
+        serde_yaml_ng::Value::Mapping(map) => {
+            for value in map.values() {
+                collect_publish_workflow_crates(value, crates);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn publish_crate_from_run_line(line: &str) -> Option<String> {
+    let marker = "scripts/publish-crate.sh";
+    let after = line.split_once(marker)?.1;
+    after
+        .split_whitespace()
+        .next()
+        .map(|package| package.trim_matches(['"', '\'']).to_string())
+}
+
+fn validate_publish_script(errors: &mut Vec<String>) -> Result<(), String> {
+    let script_path = Path::new("scripts/publish-crate.sh");
+    let script = fs::read_to_string(script_path)
+        .map_err(|err| format!("failed to read {}: {err}", script_path.display()))?;
+    let crates = shell_array_values(&script, "publishable_crates").ok_or_else(|| {
+        format!(
+            "{} does not define the publishable_crates shell array",
+            script_path.display()
+        )
+    })?;
+    let expected = PUBLISHABLE_PACKAGES
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if crates != expected {
+        errors.push(format!(
+            "{} publishable_crates is {:?}, expected {:?}",
+            script_path.display(),
+            crates,
+            expected
+        ));
+    }
+    Ok(())
+}
+
+fn shell_array_values(script: &str, name: &str) -> Option<Vec<String>> {
+    let marker = format!("{name}=(");
+    let mut values = Vec::new();
+    let mut in_array = false;
+    for raw_line in script.lines() {
+        let line = raw_line.trim();
+        if !in_array {
+            if line == marker {
+                in_array = true;
+            }
+            continue;
+        }
+        if line == ")" {
+            return Some(values);
+        }
+        let line = line.split('#').next()?.trim();
+        if line.is_empty() {
+            continue;
+        }
+        values.extend(
+            line.split_whitespace()
+                .map(|entry| entry.trim_matches(['"', '\'']).to_string()),
+        );
+    }
+    None
+}
+
+fn validate_release_docs(errors: &mut Vec<String>) -> Result<(), String> {
+    let release_doc_path = Path::new("docs/release.md");
+    let release_doc = fs::read_to_string(release_doc_path)
+        .map_err(|err| format!("failed to read {}: {err}", release_doc_path.display()))?;
+    for package in PUBLISHABLE_PACKAGES {
+        if !release_doc.contains(&format!("`{package}`")) {
+            errors.push(format!(
+                "{} does not document publishable crate `{package}`",
+                release_doc_path.display()
+            ));
+        }
+    }
+    for required in [
+        "cargo xtask release-integrity",
+        "CRATES_IO_ALLOW_PUBLISHED_RERUN",
+        "v<workspace.package.version>",
+    ] {
+        if !release_doc.contains(required) {
+            errors.push(format!(
+                "{} does not document `{required}`",
+                release_doc_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn str_set(values: &[&'static str]) -> BTreeSet<&'static str> {
+    values.iter().copied().collect()
 }
 
 fn release_cpu() -> Result<(), String> {
@@ -812,11 +1336,18 @@ fn coverage() -> Result<(), String> {
         "llvm-cov",
         "--workspace",
         "--all-features",
+        "--ignore-filename-regex",
+        GPU_COVERAGE_EXCLUSION_REGEX,
         "--lcov",
         "--output-path",
         "lcov.info",
+        "--fail-under-lines",
+        "80",
     ])
 }
+
+const GPU_COVERAGE_EXCLUSION_REGEX: &str =
+    "crates/signinum-cuda-runtime/|crates/signinum-.*-cuda/|crates/signinum-.*-metal/|crates/signinum-metal-support/";
 
 fn package() -> Result<(), String> {
     ensure_clean_worktree()?;
@@ -835,18 +1366,7 @@ fn package() -> Result<(), String> {
 }
 
 fn ensure_clean_worktree() -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .map_err(|err| format!("failed to start `git status --porcelain`: {err}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`git status --porcelain` exited with {}",
-            output.status
-        ));
-    }
-
-    let status = String::from_utf8_lossy(&output.stdout);
+    let status = process::command_output_os(OsString::from("git"), &["status", "--porcelain"])?;
     if status.trim().is_empty() {
         Ok(())
     } else {
@@ -868,22 +1388,14 @@ fn run_cargo_with_env(args: &[&str], envs: &[(&str, &str)]) -> Result<(), String
     run_program(cargo(), args, envs)
 }
 
+fn run_nightly_cargo(args: &[&str]) -> Result<(), String> {
+    let mut rustup_args = vec!["run", "nightly", "cargo"];
+    rustup_args.extend_from_slice(args);
+    run_program(OsString::from("rustup"), &rustup_args, &[])
+}
+
 fn run_program(program: OsString, args: &[&str], envs: &[(&str, &str)]) -> Result<(), String> {
-    let display = program.to_string_lossy();
-    eprintln!("+ {} {}", display, args.join(" "));
-    let mut command = Command::new(&program);
-    command.args(args);
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-    let status = command
-        .status()
-        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{display}` exited with {status}"))
-    }
+    process::run_command(program, args, process::CommandContext::new().envs(envs))
 }
 
 fn run_program_in_dir_owned(
@@ -892,22 +1404,13 @@ fn run_program_in_dir_owned(
     args: &[String],
     envs: &[(&str, &str)],
 ) -> Result<(), String> {
-    let display = program.to_string_lossy();
-    eprintln!("+ cd {dir} && {} {}", display, args.join(" "));
-    let mut command = Command::new(&program);
-    command.args(args);
-    command.current_dir(dir);
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-    let status = command
-        .status()
-        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{display}` exited with {status}"))
-    }
+    process::run_command_owned(
+        program,
+        args,
+        process::CommandContext::new()
+            .current_dir(Path::new(dir))
+            .envs(envs),
+    )
 }
 
 fn cargo() -> OsString {
@@ -919,38 +1422,11 @@ fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn command_output_allow_failure(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|err| format!("failed to start `{program}`: {err}"))?;
-    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if text.is_empty() {
-        text = stderr;
-    } else if !stderr.is_empty() {
-        text.push('\n');
-        text.push_str(&stderr);
-    }
-    if text.is_empty() {
-        Err(format!(
-            "`{program}` exited with {} and no output",
-            output.status
-        ))
-    } else {
-        Ok(text)
-    }
+    process::command_output_allow_failure(program, args)
 }
 
 fn command_output_os(program: OsString, args: &[&str]) -> Result<String, String> {
-    let display = program.to_string_lossy();
-    let output = Command::new(&program)
-        .args(args)
-        .output()
-        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
-    if !output.status.success() {
-        return Err(format!("`{display}` exited with {}", output.status));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    process::command_output_os(program, args)
 }
 
 fn host_description() -> String {
@@ -1124,13 +1600,16 @@ fn print_help() {
            stable-api    check the generated 1.0 public API inventory snapshot\n\
            semver        check stable library crates across the 1.0 major-release boundary\n\
            deny          run cargo-deny\n\
+           miri          run selected CPU/no_std crates under Miri\n\
            machete       run cargo-machete unused-dependency scan\n\
            no-std        check no_std-compatible codec crates\n\
            unsafe-audit  verify docs/unsafe-audit.md lists unsafe Rust sources\n\
            downstream-smoke run facade and transcode examples used by integration docs\n\
+           repo-lint     run repository policy checks owned by xtask\n\
+           release-integrity validate publish membership, docs.rs metadata, workflow order, and release docs\n\
            release-cpu   run release-mode CPU codec tests\n\
            release-metal run release-mode Metal tests on macOS\n\
-           coverage      generate lcov.info with cargo-llvm-cov\n\
+           coverage      generate lcov.info with cargo-llvm-cov and fail below 80% line coverage\n\
            package       preflight publishable package contents from a clean worktree; strict for registry-independent crates and list-only for staged dependencies"
     );
 }

@@ -4,8 +4,9 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
+
+use crate::process::{self, CommandContext};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BenchEstimate {
@@ -431,25 +432,58 @@ pub(crate) fn compare_estimates(
 }
 
 fn is_enforced_perf_id(id: &str) -> bool {
-    id.starts_with("jpeg_cpu_encode_runtime/")
-        || (matches!(
-            id,
-            stable_id if stable_id.starts_with("htj2k_cleanup_decode/")
-                || stable_id.starts_with("htj2k_cleanup_encode/")
-                || stable_id.starts_with("htj2k_cleanup_encode_distribution/")
-                || stable_id.starts_with("htj2k_refinement_fixture_decode/")
-                || stable_id.starts_with("htj2k_refinement_block_decode/")
-                || stable_id.starts_with("htj2k_refinement_sigprop_phase/")
-                || stable_id.starts_with("htj2k_cpuupload_decode_batch/")
-                || stable_id.starts_with("j2k_public_decode/htj2k_")
-                || stable_id.contains("_htj2k_")
-                || stable_id.contains("/htj2k_")
-        ) && !id.starts_with("htj2k_cleanup_encode_parallel_")
-            && !id.starts_with("htj2k_region_scaled_plan_build/")
-            && !id.starts_with("htj2k_feeder_coalesce/")
-            && !id.starts_with("htj2k_metal_route/")
-            && !id.starts_with("wsi_tile_batch_region_scaled_rgb_q4/")
-            && !id.starts_with("wsi_tile_batch_region_scaled_rgb_q4/signinum-cpu-staged-metal_"))
+    let id = CriterionPerfId::new(id);
+    if REPORT_ONLY_PERF_GROUPS.contains(&id.group) {
+        return false;
+    }
+    ENFORCED_PERF_GROUPS.contains(&id.group)
+        || (id.group == "j2k_public_decode"
+            && id.first_case_segment().is_some_and(segment_has_htj2k_token))
+        || id.has_htj2k_token()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CriterionPerfId<'a> {
+    group: &'a str,
+    rest: &'a str,
+}
+
+impl<'a> CriterionPerfId<'a> {
+    fn new(id: &'a str) -> Self {
+        let (group, rest) = id.split_once('/').unwrap_or((id, ""));
+        Self { group, rest }
+    }
+
+    fn first_case_segment(self) -> Option<&'a str> {
+        self.rest.split('/').find(|segment| !segment.is_empty())
+    }
+
+    fn has_htj2k_token(self) -> bool {
+        self.rest.split('/').any(segment_has_htj2k_token)
+    }
+}
+
+const ENFORCED_PERF_GROUPS: &[&str] = &[
+    "jpeg_cpu_encode_runtime",
+    "htj2k_cleanup_decode",
+    "htj2k_cleanup_encode",
+    "htj2k_cleanup_encode_distribution",
+    "htj2k_refinement_fixture_decode",
+    "htj2k_refinement_block_decode",
+    "htj2k_refinement_sigprop_phase",
+    "htj2k_cpuupload_decode_batch",
+];
+
+const REPORT_ONLY_PERF_GROUPS: &[&str] = &[
+    "htj2k_cleanup_encode_parallel_batch_size",
+    "htj2k_region_scaled_plan_build",
+    "htj2k_feeder_coalesce",
+    "htj2k_metal_route",
+    "wsi_tile_batch_region_scaled_rgb_q4",
+];
+
+fn segment_has_htj2k_token(segment: &str) -> bool {
+    segment.split('_').any(|token| token == "htj2k")
 }
 
 pub(crate) fn discover_estimates(criterion_root: &Path) -> Result<Vec<BenchEstimate>, String> {
@@ -583,7 +617,14 @@ fn emit_report(outcomes: &[RegressionOutcome], threshold_percent: f64) {
 fn run_benches(workdir: &Path, target_dir: &Path, quick: bool) -> Result<(), String> {
     for bench in BENCH_COMMANDS {
         let args = bench_args(*bench, quick);
-        run_program_with_target(cargo(), &args, workdir, target_dir, bench.env)?;
+        process::run_command(
+            cargo(),
+            &args,
+            CommandContext::new()
+                .current_dir(workdir)
+                .target_dir(target_dir)
+                .envs(bench.env),
+        )?;
     }
     Ok(())
 }
@@ -612,13 +653,13 @@ fn recreate_baseline_worktree(
     baseline_ref: &str,
 ) -> Result<(), String> {
     if worktree.exists() {
-        run_program(
+        process::run_command(
             OsString::from("git"),
             &["worktree", "remove", "--force", path_str(worktree)?],
-            root,
+            CommandContext::new().current_dir(root),
         )?;
     }
-    run_program(
+    process::run_command(
         OsString::from("git"),
         &[
             "worktree",
@@ -627,7 +668,7 @@ fn recreate_baseline_worktree(
             path_str(worktree)?,
             baseline_ref,
         ],
-        root,
+        CommandContext::new().current_dir(root),
     )
 }
 
@@ -640,73 +681,9 @@ fn reset_dir(path: &Path) -> Result<(), String> {
 }
 
 fn repo_root() -> Result<PathBuf, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|err| format!("failed to start `git rev-parse --show-toplevel`: {err}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`git rev-parse --show-toplevel` exited with {}",
-            output.status
-        ));
-    }
-    let path = String::from_utf8(output.stdout)
-        .map_err(|err| format!("git root path was not UTF-8: {err}"))?;
-    Ok(PathBuf::from(path.trim()))
-}
-
-fn run_program_with_target(
-    program: OsString,
-    args: &[&str],
-    workdir: &Path,
-    target_dir: &Path,
-    extra_env: &[(&str, &str)],
-) -> Result<(), String> {
-    let display = program.to_string_lossy();
-    let env_display = extra_env
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    eprintln!(
-        "+ CARGO_TARGET_DIR={}{}{} {} {}",
-        target_dir.display(),
-        if env_display.is_empty() { "" } else { " " },
-        env_display,
-        display,
-        args.join(" ")
-    );
-    let mut command = Command::new(&program);
-    command
-        .args(args)
-        .current_dir(workdir)
-        .env("CARGO_TARGET_DIR", target_dir);
-    for (key, value) in extra_env {
-        command.env(key, value);
-    }
-    let status = command
-        .status()
-        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{display}` exited with {status}"))
-    }
-}
-
-fn run_program(program: OsString, args: &[&str], workdir: &Path) -> Result<(), String> {
-    let display = program.to_string_lossy();
-    eprintln!("+ {} {}", display, args.join(" "));
-    let status = Command::new(&program)
-        .args(args)
-        .current_dir(workdir)
-        .status()
-        .map_err(|err| format!("failed to start `{display}`: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{display}` exited with {status}"))
-    }
+    let path =
+        process::command_output_os(OsString::from("git"), &["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(path))
 }
 
 impl PerfGuardOptions {
@@ -1062,9 +1039,6 @@ mod tests {
         assert!(!is_enforced_perf_id(
             "htj2k_feeder_coalesce/signinum-metal-resident"
         ));
-        assert!(is_enforced_perf_id(
-            "j2k_public_cpu_encode_matrix/rgb8_512_htj2k_external"
-        ));
         assert!(!is_enforced_perf_id(
             "htj2k_cleanup_encode_parallel_batch_size/rayon_par_iter_global_blocks/128"
         ));
@@ -1076,6 +1050,13 @@ mod tests {
         ));
         assert!(!is_enforced_perf_id(
             "htj2k_metal_route/signinum-metal-resident_htj2k_rgb_512_batch_16"
+        ));
+        assert!(!is_enforced_perf_id(
+            "j2k_public_decode/nothtj2k_accidental_substring"
+        ));
+        assert!(is_enforced_perf_id("j2k_public_decode/htj2k_rgb8_lossless"));
+        assert!(is_enforced_perf_id(
+            "j2k_public_cpu_encode_matrix/rgb8_512_htj2k_external"
         ));
     }
 
