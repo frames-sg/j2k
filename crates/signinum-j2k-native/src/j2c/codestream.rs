@@ -8,6 +8,7 @@ use super::build::SubBandType;
 use super::DecodeSettings;
 use crate::error::{bail, err, DecodingError, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
+use crate::{MAX_J2K_SPEC_COMPONENTS, MAX_NATIVE_DECODE_COMPONENTS};
 
 const MAX_LAYER_COUNT: u8 = 32;
 const MAX_RESOLUTION_COUNT: u8 = 32;
@@ -274,7 +275,8 @@ impl ComponentInfo {
         let n_ll = self.coding_style.parameters.num_decomposition_levels;
 
         let sb_index = match sub_band_type {
-            // TODO: Shouldn't be reached.
+            // LL only has a quantization entry at resolution 0; non-zero LL
+            // lookups fall through to the missing-step error below.
             SubBandType::LowLow => u16::MAX,
             SubBandType::HighLow => 0,
             SubBandType::LowHigh => 1,
@@ -590,8 +592,12 @@ impl SizeData {
     }
 
     /// The total number of tiles.
+    ///
+    /// Saturating: `size_marker` rejects grids beyond `MAX_TILES`, so any
+    /// validated header stays far below the saturation point; saturation only
+    /// keeps unvalidated values panic-free.
     pub(crate) fn num_tiles(&self) -> u32 {
-        self.num_x_tiles() * self.num_y_tiles()
+        self.num_x_tiles().saturating_mul(self.num_y_tiles())
     }
 
     /// Return the overall width of the image.
@@ -609,7 +615,7 @@ impl SizeData {
 
 /// SIZ marker (A.5.1).
 fn size_marker(reader: &mut BitReader<'_>) -> Result<SizeData> {
-    let size_data = size_marker_inner(reader).ok_or(MarkerError::ParseFailure("SIZ"))?;
+    let size_data = size_marker_inner(reader)?;
 
     if size_data.tile_width == 0
         || size_data.tile_height == 0
@@ -656,46 +662,75 @@ fn size_marker(reader: &mut BitReader<'_>) -> Result<SizeData> {
         }
     }
 
-    const MAX_DIMENSIONS: usize = 60000;
-
-    if size_data.image_width() as usize > MAX_DIMENSIONS
-        || size_data.image_height() as usize > MAX_DIMENSIONS
+    if size_data.image_width() > crate::MAX_J2K_IMAGE_DIMENSION
+        || size_data.image_height() > crate::MAX_J2K_IMAGE_DIMENSION
     {
         bail!(ValidationError::ImageTooLarge);
+    }
+
+    // Isot is a u16, so no conforming codestream addresses more than 65,536
+    // tiles (the encoder enforces the same ceiling). Rejecting here also stops
+    // crafted SIZ values from overflowing num_tiles() or driving the eager
+    // per-tile allocation in tile parsing.
+    let num_tiles = u64::from(size_data.num_x_tiles()) * u64::from(size_data.num_y_tiles());
+    if num_tiles > crate::MAX_J2K_TILE_COUNT {
+        bail!(ValidationError::TooManyTiles);
     }
 
     Ok(size_data)
 }
 
-fn size_marker_inner(reader: &mut BitReader<'_>) -> Option<SizeData> {
-    // Length.
-    let _ = reader.read_u16()?;
-    // Decoder capabilities.
-    let _ = reader.read_u16()?;
+fn read_siz_byte(reader: &mut BitReader<'_>) -> Result<u8> {
+    reader
+        .read_byte()
+        .ok_or(MarkerError::ParseFailure("SIZ").into())
+}
 
-    let xsiz = reader.read_u32()?;
-    let ysiz = reader.read_u32()?;
-    let x_osiz = reader.read_u32()?;
-    let y_osiz = reader.read_u32()?;
-    let xt_siz = reader.read_u32()?;
-    let yt_siz = reader.read_u32()?;
-    let xto_siz = reader.read_u32()?;
-    let yto_siz = reader.read_u32()?;
-    let csiz = reader.read_u16()?;
+fn read_siz_u16(reader: &mut BitReader<'_>) -> Result<u16> {
+    reader
+        .read_u16()
+        .ok_or(MarkerError::ParseFailure("SIZ").into())
+}
+
+fn read_siz_u32(reader: &mut BitReader<'_>) -> Result<u32> {
+    reader
+        .read_u32()
+        .ok_or(MarkerError::ParseFailure("SIZ").into())
+}
+
+fn size_marker_inner(reader: &mut BitReader<'_>) -> Result<SizeData> {
+    // Length.
+    let _ = read_siz_u16(reader)?;
+    // Decoder capabilities.
+    let _ = read_siz_u16(reader)?;
+
+    let xsiz = read_siz_u32(reader)?;
+    let ysiz = read_siz_u32(reader)?;
+    let x_osiz = read_siz_u32(reader)?;
+    let y_osiz = read_siz_u32(reader)?;
+    let xt_siz = read_siz_u32(reader)?;
+    let yt_siz = read_siz_u32(reader)?;
+    let xto_siz = read_siz_u32(reader)?;
+    let yto_siz = read_siz_u32(reader)?;
+    let csiz = read_siz_u16(reader)?;
 
     if x_osiz >= xsiz || y_osiz >= ysiz {
-        return None;
+        bail!(ValidationError::InvalidDimensions);
     }
 
     if csiz == 0 {
-        return None;
+        bail!(ValidationError::InvalidComponentMetadata);
+    }
+
+    if csiz > MAX_J2K_SPEC_COMPONENTS || csiz > MAX_NATIVE_DECODE_COMPONENTS {
+        bail!(ValidationError::TooManyChannels);
     }
 
     let mut components = Vec::with_capacity(csiz as usize);
     for _ in 0..csiz {
-        let ssiz = reader.read_byte()?;
-        let x_rsiz = reader.read_byte()?;
-        let y_rsiz = reader.read_byte()?;
+        let ssiz = read_siz_byte(reader)?;
+        let x_rsiz = read_siz_byte(reader)?;
+        let y_rsiz = read_siz_byte(reader)?;
 
         let precision = (ssiz & 0x7F) + 1;
         // No idea how to process signed images, but as far as I can tell
@@ -704,7 +739,7 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Option<SizeData> {
 
         // In theory up to 38 is allowed, but we don't support more than that.
         if precision as u32 > BITPLANE_BIT_SIZE {
-            return None;
+            bail!(ValidationError::InvalidComponentMetadata);
         }
 
         components.push(ComponentSizeInfo {
@@ -736,7 +771,7 @@ fn size_marker_inner(reader: &mut BitReader<'_>) -> Option<SizeData> {
         y_shrink_factor = vr as u32;
     }
 
-    Some(SizeData {
+    Ok(SizeData {
         reference_grid_width: xsiz,
         reference_grid_height: ysiz,
         image_area_x_offset: x_osiz,
@@ -880,8 +915,9 @@ fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Option<PpmMarkerData<'a>> {
     let mut reader = BitReader::new(ppm_data);
     let sequence_idx = reader.read_byte()?;
 
-    // TODO: Handle case where next packet doesn't have nppm parameter.
-
+    // This parser handles complete packet payloads carried by the current PPM
+    // marker. Continuations across multiple PPM markers are rejected by normal
+    // length parsing until a multi-marker accumulator is added.
     while !reader.at_end() {
         let packet_len = reader.read_u16()? as usize;
         let data = reader.read_bytes(packet_len)?;

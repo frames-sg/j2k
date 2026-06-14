@@ -81,6 +81,7 @@ pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps

@@ -24,16 +24,18 @@ use crate::math::SimdBuffer;
 use crate::profile;
 use crate::reader::BitReader;
 use crate::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, decode_j2k_code_block_scalar,
-    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob,
-    HtOwnedSubBandPlan, HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob,
-    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob,
-    J2kSubBandDecodeJob, J2kSubBandType, J2kWaveletTransform,
+    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i32, checked_decode_byte_len3,
+    checked_decode_sample_count, decode_j2k_code_block_scalar, HtCodeBlockBatchJob,
+    HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
+    HtSubBandDecodeJob, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockSegment,
+    J2kCodeBlockStyle, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob,
+    J2kOwnedSubBandPlan, J2kRect, J2kStoreComponentJob, J2kSubBandDecodeJob, J2kSubBandType,
+    J2kWaveletTransform,
 };
 #[cfg(feature = "parallel")]
 use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
+use core::mem::size_of;
 use core::ops::{DerefMut, Range};
 
 pub(crate) fn decode<'a>(
@@ -54,7 +56,7 @@ pub(crate) fn decode<'a>(
         bail!(TileError::Invalid);
     }
 
-    ctx.reset(header, &tiles[0]);
+    ctx.reset(header, &tiles[0])?;
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism;
     let (tile_ctx, storage) = (&mut ctx.tile_decode_context, &mut ctx.storage);
 
@@ -724,9 +726,10 @@ impl Default for DecoderContext<'_> {
 }
 
 impl DecoderContext<'_> {
-    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) {
-        self.tile_decode_context.reset(header, initial_tile);
+    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) -> Result<()> {
+        self.tile_decode_context.reset(header, initial_tile)?;
         self.storage.reset();
+        Ok(())
     }
 
     pub(crate) fn set_output_region(&mut self, output_region: Option<(u32, u32, u32, u32)>) {
@@ -1006,7 +1009,7 @@ pub(crate) struct TileDecodeContext {
 
 impl TileDecodeContext {
     /// Reset the context for processing a new image.
-    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) {
+    fn reset(&mut self, header: &Header<'_>, initial_tile: &Tile<'_>) -> Result<()> {
         // Bitplane decode context and buffers will be reset in the
         // corresponding methods. IDWT output and scratch buffer will be
         // overridden on demand, so those don't need to be reset either.
@@ -1019,13 +1022,22 @@ impl TileDecodeContext {
                 header.size_data.image_height(),
             ));
 
-        // TODO: SIMD Buffers should be reused across runs!
+        let sample_count = checked_decode_sample_count(output_width, output_height)?;
+        checked_decode_byte_len3(
+            sample_count,
+            initial_tile.component_infos.len(),
+            size_of::<f32>(),
+        )?;
+
+        // Allocate per component here; the surrounding context reuses the
+        // higher-level vectors while `SimdBuffer` owns its initialized storage.
         for info in &initial_tile.component_infos {
             self.channel_data.push(ComponentData {
-                container: SimdBuffer::zeros(output_width as usize * output_height as usize),
+                container: SimdBuffer::zeros(sample_count),
                 bit_depth: info.size_info.precision,
             });
         }
+        Ok(())
     }
 }
 
@@ -2247,6 +2259,7 @@ mod tests {
     use crate::error::DecodingError;
     use crate::j2c::codestream::CodeBlockStyle;
     use crate::j2c::rect::IntRect;
+    use alloc::vec;
 
     fn classic_test_style() -> CodeBlockStyle {
         CodeBlockStyle {

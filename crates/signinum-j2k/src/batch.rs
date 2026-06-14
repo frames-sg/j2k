@@ -21,50 +21,20 @@ use crate::parse::parse_image_info;
 use crate::{CpuDecodeParallelism, J2kCodec, J2kContext, J2kError, J2kScratchPool};
 
 /// One full-tile decode request for [`decode_tiles_into`].
-pub struct TileDecodeJob<'i, 'o> {
-    /// Compressed J2K/HTJ2K tile bytes.
-    pub input: &'i [u8],
-    /// Caller-owned output buffer for this tile.
-    pub out: &'o mut [u8],
-    /// Distance in bytes between output rows.
-    pub stride: usize,
-}
+pub type TileDecodeJob<'i, 'o> = signinum_core::TileDecodeJob<'i, 'o>;
+
+/// One ROI tile decode request for [`decode_tiles_region_into`].
+pub type TileRegionDecodeJob<'i, 'o> = signinum_core::TileRegionDecodeJob<'i, 'o>;
+
+/// One scaled tile decode request for [`decode_tiles_scaled_into`].
+pub type TileScaledDecodeJob<'i, 'o> = signinum_core::TileScaledDecodeJob<'i, 'o>;
 
 /// One ROI+scaled tile decode request for [`decode_tiles_region_scaled_into`].
-pub struct TileRegionScaledDecodeJob<'i, 'o> {
-    /// Compressed J2K/HTJ2K tile bytes.
-    pub input: &'i [u8],
-    /// Caller-owned output buffer for this tile.
-    pub out: &'o mut [u8],
-    /// Distance in bytes between output rows.
-    pub stride: usize,
-    /// Region of interest in source-image coordinates.
-    pub roi: Rect,
-    /// Downscale factor applied to the region decode.
-    pub scale: Downscale,
-}
+pub type TileRegionScaledDecodeJob<'i, 'o> = signinum_core::TileRegionScaledDecodeJob<'i, 'o>;
 
 /// Error returned by J2K CPU tile batches, annotated with the first failing
 /// tile index from the caller's input order.
-#[derive(Debug)]
-pub struct TileBatchError {
-    /// Index of the first failing tile in input order.
-    pub index: usize,
-    /// Decode error reported for that tile.
-    pub source: J2kError,
-}
-
-impl core::fmt::Display for TileBatchError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "tile {} decode failed: {}", self.index, self.source)
-    }
-}
-
-impl std::error::Error for TileBatchError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+pub type TileBatchError = signinum_core::TileBatchError<J2kError>;
 
 type BatchOutcome = DecodeOutcome<Infallible>;
 type J2kIndexedBatchResult = IndexedBatchResult<BatchOutcome, J2kError>;
@@ -81,6 +51,36 @@ pub fn decode_tile_into_in_context(
     fmt: PixelFormat,
 ) -> Result<BatchOutcome, J2kError> {
     <J2kCodec as TileBatchDecode>::decode_tile(ctx, pool, bytes, out, stride, fmt)
+}
+
+/// One-shot parse-plus-ROI-decode of an independent J2K/HTJ2K tile into the
+/// caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// caller-owned [`J2kScratchPool`].
+pub fn decode_tile_region_into_in_context(
+    bytes: &[u8],
+    ctx: &mut DecoderContext<J2kContext>,
+    pool: &mut J2kScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+) -> Result<BatchOutcome, J2kError> {
+    <J2kCodec as TileBatchDecode>::decode_tile_region(ctx, pool, bytes, out, stride, fmt, roi)
+}
+
+/// One-shot parse-plus-scaled-decode of an independent J2K/HTJ2K tile into the
+/// caller's buffer, reusing both caller-owned [`DecoderContext`] and
+/// caller-owned [`J2kScratchPool`].
+pub fn decode_tile_scaled_into_in_context(
+    bytes: &[u8],
+    ctx: &mut DecoderContext<J2kContext>,
+    pool: &mut J2kScratchPool,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    scale: Downscale,
+) -> Result<BatchOutcome, J2kError> {
+    <J2kCodec as TileBatchDecode>::decode_tile_scaled(ctx, pool, bytes, out, stride, fmt, scale)
 }
 
 /// One-shot parse-plus-ROI-scaled-decode of an independent J2K/HTJ2K tile
@@ -139,6 +139,86 @@ pub fn decode_tiles_into(
             }
             results
         });
+
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
+}
+
+/// Decode independent J2K/HTJ2K tile regions into caller-owned output buffers
+/// using a scoped CPU worker pool.
+pub fn decode_tiles_region_into(
+    jobs: &mut [TileRegionDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+) -> Result<Vec<BatchOutcome>, TileBatchError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let job_count = jobs.len();
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
+    let chunk_size = job_count.div_ceil(worker_count);
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+            let start_index = chunk_index * chunk_size;
+            let inner_parallelism = inner_parallelism_for_batch(job_count);
+            handles.push(scope.spawn(move || {
+                decode_tile_region_job_chunk(start_index, chunk, fmt, inner_parallelism)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(job_count);
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        results
+    });
+
+    collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
+        index,
+        source,
+    })
+}
+
+/// Decode independent J2K/HTJ2K tiles at reduced resolution into caller-owned
+/// output buffers using a scoped CPU worker pool.
+pub fn decode_tiles_scaled_into(
+    jobs: &mut [TileScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    options: TileBatchOptions,
+) -> Result<Vec<BatchOutcome>, TileBatchError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let job_count = jobs.len();
+    let worker_count = tile_batch_worker_count(job_count, options, available_tile_batch_workers());
+    let chunk_size = job_count.div_ceil(worker_count);
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (chunk_index, chunk) in jobs.chunks_mut(chunk_size).enumerate() {
+            let start_index = chunk_index * chunk_size;
+            let inner_parallelism = inner_parallelism_for_batch(job_count);
+            handles.push(scope.spawn(move || {
+                decode_tile_scaled_job_chunk(start_index, chunk, fmt, inner_parallelism)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(job_count);
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        results
+    });
 
     collect_indexed_batch_results(job_count, results, |index, source| TileBatchError {
         index,
@@ -220,6 +300,46 @@ fn decode_tile_job_chunk(
     for (local_index, job) in jobs.iter_mut().enumerate() {
         let outcome =
             decode_tile_into_in_context(job.input, &mut ctx, &mut pool, job.out, job.stride, fmt);
+        results.push((start_index + local_index, outcome));
+    }
+    results
+}
+
+fn decode_tile_region_job_chunk(
+    start_index: usize,
+    jobs: &mut [TileRegionDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    inner_parallelism: CpuDecodeParallelism,
+) -> Vec<J2kIndexedBatchResult> {
+    let mut ctx = DecoderContext::<J2kContext>::new();
+    ctx.codec_mut()
+        .set_cpu_decode_parallelism(inner_parallelism);
+    let mut pool = J2kScratchPool::new();
+    let mut results = Vec::with_capacity(jobs.len());
+    for (local_index, job) in jobs.iter_mut().enumerate() {
+        let outcome = decode_tile_region_into_in_context(
+            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.roi,
+        );
+        results.push((start_index + local_index, outcome));
+    }
+    results
+}
+
+fn decode_tile_scaled_job_chunk(
+    start_index: usize,
+    jobs: &mut [TileScaledDecodeJob<'_, '_>],
+    fmt: PixelFormat,
+    inner_parallelism: CpuDecodeParallelism,
+) -> Vec<J2kIndexedBatchResult> {
+    let mut ctx = DecoderContext::<J2kContext>::new();
+    ctx.codec_mut()
+        .set_cpu_decode_parallelism(inner_parallelism);
+    let mut pool = J2kScratchPool::new();
+    let mut results = Vec::with_capacity(jobs.len());
+    for (local_index, job) in jobs.iter_mut().enumerate() {
+        let outcome = decode_tile_scaled_into_in_context(
+            job.input, &mut ctx, &mut pool, job.out, job.stride, fmt, job.scale,
+        );
         results.push((start_index + local_index, outcome));
     }
     results
@@ -325,7 +445,7 @@ fn build_repeated_direct_color_region_plan(
 
 fn decode_tile_region_scaled_shared_direct_color_u8_in_context(
     job: &mut TileRegionScaledDecodeJob<'_, '_>,
-    ctx: &mut DecoderContext<J2kContext>,
+    _ctx: &mut DecoderContext<J2kContext>,
     fmt: PixelFormat,
     scratch: &mut J2kDirectCpuScratch,
     shared_direct_plan: Option<&DirectColorRegionCache>,
@@ -346,7 +466,6 @@ fn decode_tile_region_scaled_shared_direct_color_u8_in_context(
 
     let decoded = job.roi.scaled_covering(job.scale);
     validate_buffer((decoded.w, decoded.h), job.out.len(), job.stride, fmt)?;
-    ctx.codec_mut().record_tile_decode();
     execute_direct_color_plan_u8_into(
         &shared_direct_plan.plan,
         shared_direct_plan.output_region,
@@ -360,7 +479,7 @@ fn decode_tile_region_scaled_shared_direct_color_u8_in_context(
 
 fn decode_tile_region_scaled_direct_color_u8_in_context(
     job: &mut TileRegionScaledDecodeJob<'_, '_>,
-    ctx: &mut DecoderContext<J2kContext>,
+    _ctx: &mut DecoderContext<J2kContext>,
     fmt: PixelFormat,
     scratch: &mut J2kDirectCpuScratch,
     cache: &mut Option<DirectColorRegionCache>,
@@ -396,7 +515,6 @@ fn decode_tile_region_scaled_direct_color_u8_in_context(
     let cache = cache
         .as_ref()
         .ok_or_else(|| J2kError::Backend("internal direct color plan cache missing".to_string()))?;
-    ctx.codec_mut().record_tile_decode();
     execute_direct_color_plan_u8_into(
         &cache.plan,
         cache.output_region,
@@ -650,6 +768,7 @@ fn is_unsupported_direct_color_plan_error(error: NativeDecodeError) -> bool {
 mod tests {
     use super::*;
     use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
+    use signinum_test_support::wrap_codestream_jp2;
 
     fn encode_rgb_codestream(htj2k: bool) -> Vec<u8> {
         let pixels = (0..16 * 16 * 3)
@@ -667,36 +786,12 @@ mod tests {
         }
     }
 
-    fn wrap_codestream_jp2(codestream: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p',
-            b'2', b' ',
-        ]);
-        bytes.extend_from_slice(&[
-            0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-        ]);
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-        bytes.extend_from_slice(&3_u16.to_be_bytes());
-        bytes.extend_from_slice(&[7, 7, 0, 0]);
-        bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-        bytes.extend_from_slice(&16_u32.to_be_bytes());
-
-        let len = (8 + codestream.len()) as u32;
-        bytes.extend_from_slice(&len.to_be_bytes());
-        bytes.extend_from_slice(b"jp2c");
-        bytes.extend_from_slice(codestream);
-        bytes
-    }
-
     #[test]
     fn htj2k_eligibility_accepts_raw_and_jp2_wrapped_inputs() {
         let raw_htj2k = encode_rgb_codestream(true);
-        let jp2_htj2k = wrap_codestream_jp2(&raw_htj2k);
+        let jp2_htj2k = wrap_codestream_jp2(&raw_htj2k, 16, 16, 3, 8, 16);
         let raw_classic = encode_rgb_codestream(false);
-        let jp2_classic = wrap_codestream_jp2(&raw_classic);
+        let jp2_classic = wrap_codestream_jp2(&raw_classic, 16, 16, 3, 8, 16);
 
         assert!(input_declares_htj2k(&raw_htj2k));
         assert!(input_declares_htj2k(&jp2_htj2k));

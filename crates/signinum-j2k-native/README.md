@@ -1,14 +1,9 @@
 # signinum-j2k-native
 
-Implementation crate for `signinum-j2k`.
+Native JPEG 2000 / HTJ2K engine used by Signinum J2K APIs and adapters.
 
-Most users should install `signinum-j2k` instead:
+This crate owns codestream parsing, native encode/decode helpers, packetization
+support, HTJ2K table helpers, and header inspection helpers used by higher-level
+crates.
 
-```sh
-cargo add signinum-j2k
-```
-
-This crate contains the pure-Rust JPEG 2000 / HTJ2K engine used by the public
-`signinum-j2k` stable `0.4.x` API. It is published so `signinum-j2k` can be consumed
-from crates.io, but downstream users should prefer the stable `signinum-j2k`
-wrapper unless they intentionally need engine-level APIs.
+Most application code should use `signinum` or `signinum-j2k` instead.

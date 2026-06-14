@@ -2,15 +2,10 @@
 
 use super::{ParsedCod, ParsedComponentInfo, ParsedSiz};
 use crate::J2kError;
-use signinum_core::{InputError, TileLayout};
-
-const MARKER_SOC: u8 = 0x4F;
-const MARKER_CAP: u8 = 0x50;
-const MARKER_SIZ: u8 = 0x51;
-const MARKER_COD: u8 = 0x52;
-const MARKER_SOT: u8 = 0x90;
-const MARKER_SOD: u8 = 0x93;
-const MARKER_EOC: u8 = 0xD9;
+use signinum_core::{InputError, TileLayout, Unsupported};
+use signinum_j2k_native::{
+    inspect_j2k_codestream_header, looks_like_j2k_codestream, J2kCodestreamHeaderError,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CodestreamInfo {
@@ -19,233 +14,71 @@ pub(crate) struct CodestreamInfo {
 }
 
 pub(crate) fn looks_like_codestream(input: &[u8]) -> bool {
-    input.len() >= 2 && input[0] == 0xFF && input[1] == MARKER_SOC
+    looks_like_j2k_codestream(input)
 }
 
 pub(crate) fn parse_codestream(input: &[u8]) -> Result<CodestreamInfo, J2kError> {
-    if input.len() < 2 {
-        return Err(InputError::TooShort {
-            need: 2,
-            have: input.len(),
-        }
-        .into());
-    }
-    if !looks_like_codestream(input) {
-        return Err(J2kError::InvalidMarker {
-            offset: 0,
-            marker: input[1],
-        });
-    }
-
-    let mut offset = 2usize;
-    let mut siz = None;
-    let mut cod = None;
-    let mut high_throughput_cap = false;
-    let mut terminated = false;
-
-    while offset < input.len() {
-        let marker = read_marker(input, &mut offset)?;
-        match marker {
-            MARKER_SOT | MARKER_SOD | MARKER_EOC => {
-                terminated = true;
-                break;
-            }
-            MARKER_SIZ => {
-                let payload = read_segment_payload(input, &mut offset, "SIZ")?;
-                siz = Some(parse_siz(payload)?);
-            }
-            MARKER_COD => {
-                let payload = read_segment_payload(input, &mut offset, "COD")?;
-                cod = Some(parse_cod(payload)?);
-            }
-            MARKER_CAP => {
-                let _ = read_segment_payload(input, &mut offset, "CAP")?;
-                high_throughput_cap = true;
-            }
-            _ => {
-                let _ = read_segment_payload(input, &mut offset, "segment")?;
-            }
-        }
-    }
-
-    if !terminated {
-        return Err(InputError::TruncatedAt {
-            offset,
-            segment: "main header terminator",
-        }
-        .into());
-    }
+    let header = inspect_j2k_codestream_header(input).map_err(map_header_error)?;
+    let components = u8::try_from(header.components).map_err(|_| {
+        J2kError::Unsupported(Unsupported {
+            what: "component count > 255",
+        })
+    })?;
+    let component_info = header
+        .component_info
+        .into_iter()
+        .map(|component| ParsedComponentInfo {
+            bit_depth: component.bit_depth,
+            signed: component.signed,
+            x_rsiz: component.x_rsiz,
+            y_rsiz: component.y_rsiz,
+        })
+        .collect();
 
     Ok(CodestreamInfo {
-        siz: siz.ok_or(J2kError::MissingRequiredMarker { marker: "SIZ" })?,
-        cod: cod
-            .ok_or(J2kError::MissingRequiredMarker { marker: "COD" })?
-            .with_high_throughput_cap(high_throughput_cap),
-    })
-}
-
-fn read_marker(input: &[u8], offset: &mut usize) -> Result<u8, J2kError> {
-    if *offset + 2 > input.len() {
-        return Err(InputError::TruncatedAt {
-            offset: *offset,
-            segment: "marker",
-        }
-        .into());
-    }
-    if input[*offset] != 0xFF {
-        return Err(J2kError::InvalidMarker {
-            offset: *offset,
-            marker: input[*offset],
-        });
-    }
-    let marker = input[*offset + 1];
-    *offset += 2;
-    Ok(marker)
-}
-
-fn read_segment_payload<'a>(
-    input: &'a [u8],
-    offset: &mut usize,
-    segment: &'static str,
-) -> Result<&'a [u8], J2kError> {
-    if *offset + 2 > input.len() {
-        return Err(InputError::TruncatedAt {
-            offset: *offset,
-            segment,
-        }
-        .into());
-    }
-    let length = u16::from_be_bytes([input[*offset], input[*offset + 1]]) as usize;
-    if length < 2 {
-        return Err(J2kError::InvalidBox {
-            offset: *offset,
-            what: "segment length smaller than header",
-        });
-    }
-    let start = *offset + 2;
-    let end = *offset + length;
-    if end > input.len() {
-        return Err(InputError::TruncatedAt {
-            offset: *offset,
-            segment,
-        }
-        .into());
-    }
-    *offset = end;
-    Ok(&input[start..end])
-}
-
-#[allow(clippy::similar_names)]
-fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kError> {
-    if payload.len() < 36 {
-        return Err(J2kError::InvalidSiz {
-            what: "payload shorter than fixed SIZ header",
-        });
-    }
-    let x_size = read_u32(payload, 2);
-    let y_size = read_u32(payload, 6);
-    let x_origin = read_u32(payload, 10);
-    let y_origin = read_u32(payload, 14);
-    let tile_width = read_u32(payload, 18);
-    let tile_height = read_u32(payload, 22);
-    let tile_x_origin = read_u32(payload, 26);
-    let tile_y_origin = read_u32(payload, 30);
-    let component_count = read_u16(payload, 34);
-
-    let component_bytes = usize::from(component_count) * 3;
-    if payload.len() < 36 + component_bytes {
-        return Err(J2kError::InvalidSiz {
-            what: "component descriptors truncated",
-        });
-    }
-    if component_count == 0 {
-        return Err(J2kError::InvalidSiz {
-            what: "component count must be non-zero",
-        });
-    }
-    if component_count > u16::from(u8::MAX) {
-        return Err(J2kError::Unsupported(signinum_core::Unsupported {
-            what: "component count > 255",
-        }));
-    }
-    if x_size <= x_origin || y_size <= y_origin {
-        return Err(J2kError::InvalidSiz {
-            what: "image origin must be smaller than image size",
-        });
-    }
-    if tile_width == 0 || tile_height == 0 {
-        return Err(J2kError::InvalidSiz {
-            what: "tile size must be non-zero",
-        });
-    }
-    if tile_x_origin > x_size || tile_y_origin > y_size {
-        return Err(J2kError::InvalidSiz {
-            what: "tile origin must be within image bounds",
-        });
-    }
-
-    let width = x_size - x_origin;
-    let height = y_size - y_origin;
-    let tiles_x = (x_size - tile_x_origin).div_ceil(tile_width);
-    let tiles_y = (y_size - tile_y_origin).div_ceil(tile_height);
-    let mut bit_depth = 0u8;
-    let mut component_info = Vec::with_capacity(usize::from(component_count));
-    for idx in 0..usize::from(component_count) {
-        let ssiz = payload[36 + idx * 3];
-        let precision = (ssiz & 0x7F) + 1;
-        bit_depth = bit_depth.max(precision);
-        component_info.push(ParsedComponentInfo {
-            bit_depth: precision,
-            signed: ssiz & 0x80 != 0,
-            x_rsiz: payload[36 + idx * 3 + 1],
-            y_rsiz: payload[36 + idx * 3 + 2],
-        });
-    }
-
-    Ok(ParsedSiz {
-        dimensions: (width, height),
-        components: component_count as u8,
-        bit_depth,
-        tile_layout: TileLayout {
-            tile_width,
-            tile_height,
-            tiles_x,
-            tiles_y,
+        siz: ParsedSiz {
+            dimensions: header.dimensions,
+            components,
+            bit_depth: header.bit_depth,
+            tile_layout: TileLayout {
+                tile_width: header.tile_size.0,
+                tile_height: header.tile_size.1,
+                tiles_x: header.tile_count.0,
+                tiles_y: header.tile_count.1,
+            },
+            component_info,
         },
-        component_info,
+        cod: ParsedCod {
+            resolution_levels: header.resolution_levels,
+            has_mct: header.has_mct,
+            reversible: header.reversible,
+            high_throughput: header.high_throughput,
+        },
     })
 }
 
-fn parse_cod(payload: &[u8]) -> Result<ParsedCod, J2kError> {
-    if payload.len() < 10 {
-        return Err(J2kError::InvalidCod {
-            what: "payload shorter than fixed COD header",
-        });
+fn map_header_error(error: J2kCodestreamHeaderError) -> J2kError {
+    match error {
+        J2kCodestreamHeaderError::TooShort { need, have } => {
+            InputError::TooShort { need, have }.into()
+        }
+        J2kCodestreamHeaderError::TruncatedAt { offset, segment } => {
+            InputError::TruncatedAt { offset, segment }.into()
+        }
+        J2kCodestreamHeaderError::InvalidMarker { offset, marker } => {
+            J2kError::InvalidMarker { offset, marker }
+        }
+        J2kCodestreamHeaderError::MissingRequiredMarker { marker } => {
+            J2kError::MissingRequiredMarker { marker }
+        }
+        J2kCodestreamHeaderError::InvalidSegment { offset, what } => {
+            J2kError::InvalidBox { offset, what }
+        }
+        J2kCodestreamHeaderError::InvalidSiz { what } => J2kError::InvalidSiz { what },
+        J2kCodestreamHeaderError::InvalidCod { what } => J2kError::InvalidCod { what },
+        J2kCodestreamHeaderError::Unsupported { what } => {
+            J2kError::Unsupported(Unsupported { what })
+        }
+        error => J2kError::Backend(error.to_string()),
     }
-    Ok(ParsedCod {
-        resolution_levels: payload[5].saturating_add(1),
-        has_mct: payload[4] != 0,
-        reversible: payload[9] == 1,
-        high_throughput: payload[8] & 0x40 != 0,
-    })
-}
-
-impl ParsedCod {
-    const fn with_high_throughput_cap(mut self, high_throughput_cap: bool) -> Self {
-        self.high_throughput |= high_throughput_cap;
-        self
-    }
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
 }

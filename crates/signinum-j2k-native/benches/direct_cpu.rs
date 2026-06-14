@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use signinum_j2k_native::{
     encode_htj2k, execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into,
     CpuDecodeParallelism, DecodeSettings, DecoderContext, EncodeOptions, Image,
@@ -103,14 +103,14 @@ fn bench_direct_color_plan_97(c: &mut Criterion) {
         let mut out = vec![0_u8; rgb_len];
         b.iter(|| {
             execute_direct_color_plan_rgb8_into(
-                black_box(&plan),
+                std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
                 rgb_stride,
             )
             .expect("execute RGB direct 9/7 plan");
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
     group.finish();
@@ -131,7 +131,7 @@ fn bench_full_decode(c: &mut Criterion) {
             let decoded = gray_image
                 .decode_with_context(&mut context)
                 .expect("decode HTJ2K 9/7 gray");
-            black_box(decoded.data.len());
+            std::hint::black_box(decoded.data.len());
         });
     });
     group.bench_function("htj2k_rgb8_512x512_97_reuse_context", |b| {
@@ -140,7 +140,7 @@ fn bench_full_decode(c: &mut Criterion) {
             let decoded = rgb_image
                 .decode_with_context(&mut context)
                 .expect("decode HTJ2K 9/7 RGB");
-            black_box(decoded.data.len());
+            std::hint::black_box(decoded.data.len());
         });
     });
     group.bench_function("htj2k_rgb8_512x512_97_serial_context", |b| {
@@ -150,7 +150,7 @@ fn bench_full_decode(c: &mut Criterion) {
             let decoded = rgb_image
                 .decode_with_context(&mut context)
                 .expect("decode HTJ2K 9/7 RGB");
-            black_box(decoded.data.len());
+            std::hint::black_box(decoded.data.len());
         });
     });
     group.finish();
@@ -170,14 +170,14 @@ fn bench_direct_color_plan(c: &mut Criterion) {
             let mut scratch = J2kDirectCpuScratch::new();
             let mut out = vec![0_u8; rgb_len];
             execute_direct_color_plan_rgb8_into(
-                black_box(&plan),
+                std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
                 rgb_stride,
             )
             .expect("execute RGB direct plan");
-            black_box(out);
+            std::hint::black_box(out);
         });
     });
     group.bench_function("htj2k_rgb8_roi256_q4_reuse_scratch", |b| {
@@ -185,14 +185,14 @@ fn bench_direct_color_plan(c: &mut Criterion) {
         let mut out = vec![0_u8; rgb_len];
         b.iter(|| {
             execute_direct_color_plan_rgb8_into(
-                black_box(&plan),
+                std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
                 rgb_stride,
             )
             .expect("execute RGB direct plan");
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
     group.bench_function("htj2k_rgba8_roi256_q4_reuse_scratch", |b| {
@@ -200,14 +200,14 @@ fn bench_direct_color_plan(c: &mut Criterion) {
         let mut out = vec![0_u8; rgba_len];
         b.iter(|| {
             execute_direct_color_plan_rgba8_into(
-                black_box(&plan),
+                std::hint::black_box(&plan),
                 output_region,
                 &mut scratch,
                 &mut out,
                 rgba_stride,
             )
             .expect("execute RGBA direct plan");
-            black_box(&out);
+            std::hint::black_box(&out);
         });
     });
     group.finish();

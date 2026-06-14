@@ -81,7 +81,7 @@ pub(crate) fn emit_profile_row(_op: &str, _path: &str, _fields: &[(&str, u128)])
 #[cfg(feature = "std")]
 thread_local! {
     static PROFILE_SUMMARY: RefCell<signinum_profile::ProfileSummary> =
-        RefCell::new(signinum_profile::ProfileSummary::default());
+        RefCell::new(signinum_profile::ProfileSummary::default().emit_on_drop());
 }
 
 #[cfg(all(test, feature = "std"))]

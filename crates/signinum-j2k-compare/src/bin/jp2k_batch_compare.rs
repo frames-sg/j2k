@@ -2,11 +2,12 @@
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use signinum_core::tile_batch_worker_count;
 use signinum_j2k::{decode_tiles_into, J2kDecoder, PixelFormat, TileBatchOptions, TileDecodeJob};
-use signinum_j2k_compare::{grok, openjpeg};
+use signinum_j2k_compare::{
+    grok, measure_repeated, openjpeg, parse_positive_usize, sample_stats, usize_to_f64,
+};
 
 const DEFAULT_BATCH_SIZES: &[usize] = &[1, 16, 512, 1024];
 const DEFAULT_REPEATS: usize = 3;
@@ -209,22 +210,16 @@ fn measure_signinum(
     workers: Option<NonZeroUsize>,
 ) -> Result<Measurement, String> {
     let format = tiles[0].format;
-    let mut samples = Vec::with_capacity(repeats);
-    let mut decoded_bytes_per_repeat = decode_signinum_once(tiles, format, workers)?;
-    std::hint::black_box(decoded_bytes_per_repeat);
-    for _ in 0..repeats {
-        let started = Instant::now();
-        decoded_bytes_per_repeat = decode_signinum_once(tiles, format, workers)?;
-        samples.push(started.elapsed().as_secs_f64() * 1000.0);
-        std::hint::black_box(decoded_bytes_per_repeat);
-    }
-    Ok(measurement(
+    let (samples, decoded_bytes_per_repeat) = measure_repeated(repeats, 1000.0, || {
+        decode_signinum_once(tiles, format, workers)
+    })?;
+    measurement(
         "signinum",
         tiles.len(),
         repeats,
         samples,
         decoded_bytes_per_repeat,
-    ))
+    )
 }
 
 fn decode_signinum_once(
@@ -260,22 +255,16 @@ fn measure_external(
         ExternalDecoder::OpenJpeg => "openjpeg",
         ExternalDecoder::Grok => "grok",
     };
-    let mut samples = Vec::with_capacity(repeats);
-    let mut decoded_bytes_per_repeat = decode_external_once(tiles, workers, decoder)?;
-    std::hint::black_box(decoded_bytes_per_repeat);
-    for _ in 0..repeats {
-        let started = Instant::now();
-        decoded_bytes_per_repeat = decode_external_once(tiles, workers, decoder)?;
-        samples.push(started.elapsed().as_secs_f64() * 1000.0);
-        std::hint::black_box(decoded_bytes_per_repeat);
-    }
-    Ok(measurement(
+    let (samples, decoded_bytes_per_repeat) = measure_repeated(repeats, 1000.0, || {
+        decode_external_once(tiles, workers, decoder)
+    })?;
+    measurement(
         decoder_name,
         tiles.len(),
         repeats,
         samples,
         decoded_bytes_per_repeat,
-    ))
+    )
 }
 
 fn decode_external_once(
@@ -331,19 +320,18 @@ fn measurement(
     repeats: usize,
     samples: Vec<f64>,
     decoded_bytes_per_repeat: usize,
-) -> Measurement {
-    let median_ms = median(samples.clone());
-    let mean_ms = samples.iter().sum::<f64>() / usize_to_f64(samples.len());
-    Measurement {
+) -> Result<Measurement, String> {
+    let stats = sample_stats(&samples)?;
+    Ok(Measurement {
         decoder,
         batch_size,
         repeats,
         sample_ms: samples,
-        median_ms,
-        mean_ms,
-        tiles_per_second_median: usize_to_f64(batch_size) / (median_ms / 1000.0),
+        median_ms: stats.median,
+        mean_ms: stats.mean,
+        tiles_per_second_median: usize_to_f64(batch_size) / (stats.median / 1000.0),
         decoded_bytes_per_repeat,
-    }
+    })
 }
 
 fn stride(tile: &TileInput, format: PixelFormat) -> usize {
@@ -354,21 +342,23 @@ fn output_len(tile: &TileInput, format: PixelFormat) -> usize {
     stride(tile, format) * tile.dimensions.1 as usize
 }
 
-fn parse_positive_usize(value: &str, label: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|err| format!("invalid {label} {value:?}: {err}"))?;
-    if parsed == 0 {
-        return Err(format!("{label} must be > 0"));
+#[cfg(test)]
+mod tests {
+    use signinum_j2k_compare::{parse_positive_usize, sample_stats};
+
+    #[test]
+    fn shared_parse_positive_usize_rejects_zero() {
+        assert_eq!(parse_positive_usize("3", "threads"), Ok(3));
+        assert_eq!(
+            parse_positive_usize("0", "threads"),
+            Err("threads must be > 0".to_string())
+        );
     }
-    Ok(parsed)
-}
 
-fn median(mut samples: Vec<f64>) -> f64 {
-    samples.sort_by(f64::total_cmp);
-    samples[samples.len() / 2]
-}
-
-fn usize_to_f64(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+    #[test]
+    fn shared_sample_stats_reports_mean_and_median() {
+        let stats = sample_stats(&[9.0, 1.0, 5.0]).expect("stats");
+        assert!((stats.median - 5.0).abs() < f64::EPSILON);
+        assert!((stats.mean - 5.0).abs() < f64::EPSILON);
+    }
 }

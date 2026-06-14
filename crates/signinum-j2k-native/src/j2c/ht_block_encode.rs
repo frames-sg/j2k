@@ -1,6 +1,7 @@
 //! Scalar HTJ2K cleanup-only block encoding.
 
 use alloc::{vec, vec::Vec};
+use core::convert::Infallible;
 
 use super::bitplane_encode::EncodedCodeBlock;
 use super::ht_encode_tables::{
@@ -676,8 +677,186 @@ fn process_sample(
     }
 }
 
+/// Per-quad operations that differ between the byte-emitting encoder and the
+/// distribution collector; the quad-pair walking logic itself is shared by
+/// `first_quad_pair` / `non_initial_quad_pair`.
+trait QuadSink {
+    type Error;
+
+    #[allow(clippy::too_many_arguments)]
+    fn quad_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        e_q: &[i32; 8],
+        s: &[u32; 8],
+        lep: usize,
+        lcxp: usize,
+        e_val: &mut [u8; 513],
+        cx_val: &mut [u8; 513],
+    ) -> Result<i32, Self::Error>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn quad_non_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        max_e: i32,
+        e_q: &[i32; 8],
+        s: &[u32; 8],
+    ) -> Result<i32, Self::Error>;
+
+    fn initial_uvlc_pair(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error>;
+
+    fn initial_uvlc_lone(&mut self, u_q0: i32) -> Result<(), Self::Error>;
+
+    fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error>;
+}
+
+struct EncodeQuadSink<'a> {
+    mel: &'a mut MelEncoder,
+    vlc: &'a mut VlcEncoder,
+    ms: &'a mut MagSgnEncoder,
+}
+
+impl QuadSink for EncodeQuadSink<'_> {
+    type Error = &'static str;
+
+    #[inline]
+    fn quad_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        e_q: &[i32; 8],
+        s: &[u32; 8],
+        lep: usize,
+        lcxp: usize,
+        e_val: &mut [u8; 513],
+        cx_val: &mut [u8; 513],
+    ) -> Result<i32, Self::Error> {
+        encode_quad_initial_row(
+            offset, c_q, rho, e_qmax, e_q, s, lep, lcxp, e_val, cx_val, self.mel, self.vlc, self.ms,
+        )
+    }
+
+    #[inline]
+    fn quad_non_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        max_e: i32,
+        e_q: &[i32; 8],
+        s: &[u32; 8],
+    ) -> Result<i32, Self::Error> {
+        encode_quad_non_initial_row(
+            offset, c_q, rho, e_qmax, max_e, e_q, s, self.mel, self.vlc, self.ms,
+        )
+    }
+
+    #[inline]
+    fn initial_uvlc_pair(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error> {
+        if u_q0 > 0 && u_q1 > 0 {
+            self.mel.encode(u_q0.min(u_q1) > 2)?;
+        }
+        encode_uvlc(u_q0, u_q1, self.vlc)
+    }
+
+    #[inline]
+    fn initial_uvlc_lone(&mut self, u_q0: i32) -> Result<(), Self::Error> {
+        encode_uvlc(u_q0, 0, self.vlc)
+    }
+
+    #[inline]
+    fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error> {
+        encode_uvlc_non_initial(u_q0, u_q1, self.vlc)
+    }
+}
+
+struct CollectQuadSink<'a> {
+    distribution: &'a mut HtCleanupEncodeDistribution,
+}
+
+impl QuadSink for CollectQuadSink<'_> {
+    type Error = Infallible;
+
+    #[inline]
+    fn quad_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        e_q: &[i32; 8],
+        _s: &[u32; 8],
+        lep: usize,
+        lcxp: usize,
+        e_val: &mut [u8; 513],
+        cx_val: &mut [u8; 513],
+    ) -> Result<i32, Self::Error> {
+        Ok(collect_quad_initial_row(
+            offset,
+            c_q,
+            rho,
+            e_qmax,
+            e_q,
+            lep,
+            lcxp,
+            e_val,
+            cx_val,
+            self.distribution,
+        ))
+    }
+
+    #[inline]
+    fn quad_non_initial(
+        &mut self,
+        offset: usize,
+        c_q: usize,
+        rho: i32,
+        e_qmax: i32,
+        max_e: i32,
+        e_q: &[i32; 8],
+        _s: &[u32; 8],
+    ) -> Result<i32, Self::Error> {
+        Ok(collect_quad_non_initial_row(
+            offset,
+            c_q,
+            rho,
+            e_qmax,
+            max_e,
+            e_q,
+            self.distribution,
+        ))
+    }
+
+    #[inline]
+    fn initial_uvlc_pair(&mut self, _u_q0: i32, _u_q1: i32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    #[inline]
+    fn initial_uvlc_lone(&mut self, _u_q0: i32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    #[inline]
+    fn non_initial_uvlc(&mut self, _u_q0: i32, _u_q1: i32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn encode_first_quad_pair(
+#[allow(clippy::inline_always)] // per-quad-pair hot path: keep each sink monomorphization fused
+#[inline(always)]
+fn first_quad_pair<S: QuadSink>(
     coefficients: &(impl CleanupCoefficientSource + ?Sized),
     stride: usize,
     height: usize,
@@ -691,10 +870,8 @@ fn encode_first_quad_pair(
     e_q: &mut [i32; 8],
     e_qmax: &mut [i32; 2],
     s: &mut [u32; 8],
-    mel: &mut MelEncoder,
-    vlc: &mut VlcEncoder,
-    ms: &mut MagSgnEncoder,
-) -> Result<(), &'static str> {
+    sink: &mut S,
+) -> Result<(), S::Error> {
     let lep = x / 2;
     let lcxp = x / 2;
 
@@ -748,8 +925,8 @@ fn encode_first_quad_pair(
         *sp += 1;
     }
 
-    let u_q0 = encode_quad_initial_row(
-        0, *c_q0, rho[0], e_qmax[0], e_q, s, lep, lcxp, e_val, cx_val, mel, vlc, ms,
+    let u_q0 = sink.quad_initial(
+        0, *c_q0, rho[0], e_qmax[0], e_q, s, lep, lcxp, e_val, cx_val,
     )?;
 
     if x + 2 < stride {
@@ -804,7 +981,7 @@ fn encode_first_quad_pair(
         }
 
         let c_q1 = ((rho[0] >> 1) | (rho[0] & 1)) as usize;
-        let u_q1 = encode_quad_initial_row(
+        let u_q1 = sink.quad_initial(
             4,
             c_q1,
             rho[1],
@@ -815,18 +992,12 @@ fn encode_first_quad_pair(
             lcxp + 1,
             e_val,
             cx_val,
-            mel,
-            vlc,
-            ms,
         )?;
 
-        if u_q0 > 0 && u_q1 > 0 {
-            mel.encode(u_q0.min(u_q1) > 2)?;
-        }
-        encode_uvlc(u_q0, u_q1, &mut *vlc)?;
+        sink.initial_uvlc_pair(u_q0, u_q1)?;
         *c_q0 = ((rho[1] >> 1) | (rho[1] & 1)) as usize;
     } else {
-        encode_uvlc(u_q0, 0, &mut *vlc)?;
+        sink.initial_uvlc_lone(u_q0)?;
         *c_q0 = 0;
     }
 
@@ -836,6 +1007,212 @@ fn encode_first_quad_pair(
     *s = [0; 8];
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always)] // per-quad-pair hot path: keep each sink monomorphization fused
+#[inline(always)]
+fn non_initial_quad_pair<S: QuadSink>(
+    coefficients: &(impl CleanupCoefficientSource + ?Sized),
+    stride: usize,
+    width: usize,
+    height: usize,
+    y: usize,
+    p: u32,
+    sp: &mut usize,
+    x: usize,
+    e_val: &mut [u8; 513],
+    cx_val: &mut [u8; 513],
+    lep: &mut usize,
+    lcxp: &mut usize,
+    max_e: &mut i32,
+    c_q0: &mut usize,
+    rho: &mut [i32; 2],
+    e_q: &mut [i32; 8],
+    e_qmax: &mut [i32; 2],
+    s: &mut [u32; 8],
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    process_sample(
+        0,
+        coefficients.aligned_value(*sp),
+        p,
+        &mut rho[0],
+        e_q,
+        &mut e_qmax[0],
+        s,
+    );
+    process_sample(
+        1,
+        if y + 1 < height {
+            coefficients.aligned_value(*sp + stride)
+        } else {
+            0
+        },
+        p,
+        &mut rho[0],
+        e_q,
+        &mut e_qmax[0],
+        s,
+    );
+    *sp += 1;
+
+    if x + 1 < width {
+        process_sample(
+            2,
+            coefficients.aligned_value(*sp),
+            p,
+            &mut rho[0],
+            e_q,
+            &mut e_qmax[0],
+            s,
+        );
+        process_sample(
+            3,
+            if y + 1 < height {
+                coefficients.aligned_value(*sp + stride)
+            } else {
+                0
+            },
+            p,
+            &mut rho[0],
+            e_q,
+            &mut e_qmax[0],
+            s,
+        );
+        *sp += 1;
+    }
+
+    let prev_max = *max_e;
+    let u_q0 = sink.quad_non_initial(0, *c_q0, rho[0], e_qmax[0], prev_max, e_q, s)?;
+
+    e_val[*lep] = e_val[*lep].max(e_q[1] as u8);
+    *lep += 1;
+    *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
+    e_val[*lep] = e_q[3] as u8;
+    cx_val[*lcxp] |= ((rho[0] & 2) >> 1) as u8;
+    *lcxp += 1;
+    let c_q1 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
+    cx_val[*lcxp] = ((rho[0] & 8) >> 3) as u8;
+
+    let mut u_q1 = 0;
+    if x + 2 < width {
+        process_sample(
+            4,
+            coefficients.aligned_value(*sp),
+            p,
+            &mut rho[1],
+            e_q,
+            &mut e_qmax[1],
+            s,
+        );
+        process_sample(
+            5,
+            if y + 1 < height {
+                coefficients.aligned_value(*sp + stride)
+            } else {
+                0
+            },
+            p,
+            &mut rho[1],
+            e_q,
+            &mut e_qmax[1],
+            s,
+        );
+        *sp += 1;
+
+        if x + 3 < width {
+            process_sample(
+                6,
+                coefficients.aligned_value(*sp),
+                p,
+                &mut rho[1],
+                e_q,
+                &mut e_qmax[1],
+                s,
+            );
+            process_sample(
+                7,
+                if y + 1 < height {
+                    coefficients.aligned_value(*sp + stride)
+                } else {
+                    0
+                },
+                p,
+                &mut rho[1],
+                e_q,
+                &mut e_qmax[1],
+                s,
+            );
+            *sp += 1;
+        }
+
+        let mut c_q1_local = c_q1;
+        c_q1_local |= ((rho[0] & 4) >> 1) as usize;
+        c_q1_local |= ((rho[0] & 8) >> 2) as usize;
+
+        u_q1 = sink.quad_non_initial(4, c_q1_local, rho[1], e_qmax[1], *max_e, e_q, s)?;
+
+        e_val[*lep] = e_val[*lep].max(e_q[5] as u8);
+        *lep += 1;
+        *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
+        e_val[*lep] = e_q[7] as u8;
+        cx_val[*lcxp] |= ((rho[1] & 2) >> 1) as u8;
+        *lcxp += 1;
+        *c_q0 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
+        cx_val[*lcxp] = ((rho[1] & 8) >> 3) as u8;
+
+        *c_q0 |= ((rho[1] & 4) >> 1) as usize;
+        *c_q0 |= ((rho[1] & 8) >> 2) as usize;
+    } else {
+        *c_q0 = 0;
+    }
+
+    sink.non_initial_uvlc(u_q0, u_q1)?;
+
+    *rho = [0; 2];
+    *e_q = [0; 8];
+    *e_qmax = [0; 2];
+    *s = [0; 8];
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_first_quad_pair(
+    coefficients: &(impl CleanupCoefficientSource + ?Sized),
+    stride: usize,
+    height: usize,
+    p: u32,
+    sp: &mut usize,
+    x: usize,
+    e_val: &mut [u8; 513],
+    cx_val: &mut [u8; 513],
+    c_q0: &mut usize,
+    rho: &mut [i32; 2],
+    e_q: &mut [i32; 8],
+    e_qmax: &mut [i32; 2],
+    s: &mut [u32; 8],
+    mel: &mut MelEncoder,
+    vlc: &mut VlcEncoder,
+    ms: &mut MagSgnEncoder,
+) -> Result<(), &'static str> {
+    first_quad_pair(
+        coefficients,
+        stride,
+        height,
+        p,
+        sp,
+        x,
+        e_val,
+        cx_val,
+        c_q0,
+        rho,
+        e_q,
+        e_qmax,
+        s,
+        &mut EncodeQuadSink { mel, vlc, ms },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,154 +1239,27 @@ fn encode_non_initial_quad_pair(
     vlc: &mut VlcEncoder,
     ms: &mut MagSgnEncoder,
 ) -> Result<(), &'static str> {
-    process_sample(
-        0,
-        coefficients.aligned_value(*sp),
+    non_initial_quad_pair(
+        coefficients,
+        stride,
+        width,
+        height,
+        y,
         p,
-        &mut rho[0],
+        sp,
+        x,
+        e_val,
+        cx_val,
+        lep,
+        lcxp,
+        max_e,
+        c_q0,
+        rho,
         e_q,
-        &mut e_qmax[0],
+        e_qmax,
         s,
-    );
-    process_sample(
-        1,
-        if y + 1 < height {
-            coefficients.aligned_value(*sp + stride)
-        } else {
-            0
-        },
-        p,
-        &mut rho[0],
-        e_q,
-        &mut e_qmax[0],
-        s,
-    );
-    *sp += 1;
-
-    if x + 1 < width {
-        process_sample(
-            2,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        process_sample(
-            3,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        *sp += 1;
-    }
-
-    let prev_max = *max_e;
-    let u_q0 = encode_quad_non_initial_row(
-        0, *c_q0, rho[0], e_qmax[0], prev_max, e_q, s, *lep, *lcxp, e_val, cx_val, mel, vlc, ms,
-    )?;
-
-    e_val[*lep] = e_val[*lep].max(e_q[1] as u8);
-    *lep += 1;
-    *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
-    e_val[*lep] = e_q[3] as u8;
-    cx_val[*lcxp] |= ((rho[0] & 2) >> 1) as u8;
-    *lcxp += 1;
-    let c_q1 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
-    cx_val[*lcxp] = ((rho[0] & 8) >> 3) as u8;
-
-    let mut u_q1 = 0;
-    if x + 2 < width {
-        process_sample(
-            4,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        process_sample(
-            5,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        *sp += 1;
-
-        if x + 3 < width {
-            process_sample(
-                6,
-                coefficients.aligned_value(*sp),
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            process_sample(
-                7,
-                if y + 1 < height {
-                    coefficients.aligned_value(*sp + stride)
-                } else {
-                    0
-                },
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            *sp += 1;
-        }
-
-        let mut c_q1_local = c_q1;
-        c_q1_local |= ((rho[0] & 4) >> 1) as usize;
-        c_q1_local |= ((rho[0] & 8) >> 2) as usize;
-
-        u_q1 = encode_quad_non_initial_row(
-            4, c_q1_local, rho[1], e_qmax[1], *max_e, e_q, s, *lep, *lcxp, e_val, cx_val, mel, vlc,
-            ms,
-        )?;
-
-        e_val[*lep] = e_val[*lep].max(e_q[5] as u8);
-        *lep += 1;
-        *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
-        e_val[*lep] = e_q[7] as u8;
-        cx_val[*lcxp] |= ((rho[1] & 2) >> 1) as u8;
-        *lcxp += 1;
-        *c_q0 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
-        cx_val[*lcxp] = ((rho[1] & 8) >> 3) as u8;
-
-        *c_q0 |= ((rho[1] & 4) >> 1) as usize;
-        *c_q0 |= ((rho[1] & 8) >> 2) as usize;
-    } else {
-        *c_q0 = 0;
-    }
-
-    encode_uvlc_non_initial(u_q0, u_q1, &mut *vlc)?;
-
-    *rho = [0; 2];
-    *e_q = [0; 8];
-    *e_qmax = [0; 2];
-    *s = [0; 8];
-
-    Ok(())
+        &mut EncodeQuadSink { mel, vlc, ms },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1029,148 +1279,25 @@ fn collect_first_quad_pair(
     s: &mut [u32; 8],
     distribution: &mut HtCleanupEncodeDistribution,
 ) {
-    let lep = x / 2;
-    let lcxp = x / 2;
-
-    process_sample(
-        0,
-        coefficients.aligned_value(*sp),
+    match first_quad_pair(
+        coefficients,
+        stride,
+        height,
         p,
-        &mut rho[0],
-        e_q,
-        &mut e_qmax[0],
-        s,
-    );
-    process_sample(
-        1,
-        if height > 1 {
-            coefficients.aligned_value(*sp + stride)
-        } else {
-            0
-        },
-        p,
-        &mut rho[0],
-        e_q,
-        &mut e_qmax[0],
-        s,
-    );
-    *sp += 1;
-
-    if x + 1 < stride {
-        process_sample(
-            2,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        process_sample(
-            3,
-            if height > 1 {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        *sp += 1;
-    }
-
-    let u_q0 = collect_quad_initial_row(
-        0,
-        *c_q0,
-        rho[0],
-        e_qmax[0],
-        e_q,
-        lep,
-        lcxp,
+        sp,
+        x,
         e_val,
         cx_val,
-        distribution,
-    );
-
-    if x + 2 < stride {
-        process_sample(
-            4,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        process_sample(
-            5,
-            if height > 1 {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        *sp += 1;
-
-        if x + 3 < stride {
-            process_sample(
-                6,
-                coefficients.aligned_value(*sp),
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            process_sample(
-                7,
-                if height > 1 {
-                    coefficients.aligned_value(*sp + stride)
-                } else {
-                    0
-                },
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            *sp += 1;
-        }
-
-        let c_q1 = ((rho[0] >> 1) | (rho[0] & 1)) as usize;
-        let u_q1 = collect_quad_initial_row(
-            4,
-            c_q1,
-            rho[1],
-            e_qmax[1],
-            e_q,
-            lep + 1,
-            lcxp + 1,
-            e_val,
-            cx_val,
-            distribution,
-        );
-
-        let _ = (u_q0, u_q1);
-        *c_q0 = ((rho[1] >> 1) | (rho[1] & 1)) as usize;
-    } else {
-        let _ = u_q0;
-        *c_q0 = 0;
+        c_q0,
+        rho,
+        e_q,
+        e_qmax,
+        s,
+        &mut CollectQuadSink { distribution },
+    ) {
+        Ok(()) => {}
+        Err(err) => match err {},
     }
-
-    *rho = [0; 2];
-    *e_q = [0; 8];
-    *e_qmax = [0; 2];
-    *s = [0; 8];
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1195,156 +1322,30 @@ fn collect_non_initial_quad_pair(
     s: &mut [u32; 8],
     distribution: &mut HtCleanupEncodeDistribution,
 ) {
-    process_sample(
-        0,
-        coefficients.aligned_value(*sp),
+    match non_initial_quad_pair(
+        coefficients,
+        stride,
+        width,
+        height,
+        y,
         p,
-        &mut rho[0],
+        sp,
+        x,
+        e_val,
+        cx_val,
+        lep,
+        lcxp,
+        max_e,
+        c_q0,
+        rho,
         e_q,
-        &mut e_qmax[0],
+        e_qmax,
         s,
-    );
-    process_sample(
-        1,
-        if y + 1 < height {
-            coefficients.aligned_value(*sp + stride)
-        } else {
-            0
-        },
-        p,
-        &mut rho[0],
-        e_q,
-        &mut e_qmax[0],
-        s,
-    );
-    *sp += 1;
-
-    if x + 1 < width {
-        process_sample(
-            2,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        process_sample(
-            3,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[0],
-            e_q,
-            &mut e_qmax[0],
-            s,
-        );
-        *sp += 1;
+        &mut CollectQuadSink { distribution },
+    ) {
+        Ok(()) => {}
+        Err(err) => match err {},
     }
-
-    let prev_max = *max_e;
-    let u_q0 =
-        collect_quad_non_initial_row(0, *c_q0, rho[0], e_qmax[0], prev_max, e_q, distribution);
-
-    e_val[*lep] = e_val[*lep].max(e_q[1] as u8);
-    *lep += 1;
-    *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
-    e_val[*lep] = e_q[3] as u8;
-    cx_val[*lcxp] |= ((rho[0] & 2) >> 1) as u8;
-    *lcxp += 1;
-    let c_q1 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
-    cx_val[*lcxp] = ((rho[0] & 8) >> 3) as u8;
-
-    let mut u_q1 = 0;
-    if x + 2 < width {
-        process_sample(
-            4,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        process_sample(
-            5,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut rho[1],
-            e_q,
-            &mut e_qmax[1],
-            s,
-        );
-        *sp += 1;
-
-        if x + 3 < width {
-            process_sample(
-                6,
-                coefficients.aligned_value(*sp),
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            process_sample(
-                7,
-                if y + 1 < height {
-                    coefficients.aligned_value(*sp + stride)
-                } else {
-                    0
-                },
-                p,
-                &mut rho[1],
-                e_q,
-                &mut e_qmax[1],
-                s,
-            );
-            *sp += 1;
-        }
-
-        let mut c_q1_local = c_q1;
-        c_q1_local |= ((rho[0] & 4) >> 1) as usize;
-        c_q1_local |= ((rho[0] & 8) >> 2) as usize;
-
-        u_q1 = collect_quad_non_initial_row(
-            4,
-            c_q1_local,
-            rho[1],
-            e_qmax[1],
-            *max_e,
-            e_q,
-            distribution,
-        );
-
-        e_val[*lep] = e_val[*lep].max(e_q[5] as u8);
-        *lep += 1;
-        *max_e = i32::from(e_val[*lep].max(e_val[*lep + 1])) - 1;
-        e_val[*lep] = e_q[7] as u8;
-        cx_val[*lcxp] |= ((rho[1] & 2) >> 1) as u8;
-        *lcxp += 1;
-        *c_q0 = usize::from(cx_val[*lcxp]) + (usize::from(cx_val[*lcxp + 1]) << 2);
-        cx_val[*lcxp] = ((rho[1] & 8) >> 3) as u8;
-
-        *c_q0 |= ((rho[1] & 4) >> 1) as usize;
-        *c_q0 |= ((rho[1] & 8) >> 2) as usize;
-    } else {
-        *c_q0 = 0;
-    }
-
-    let _ = (u_q0, u_q1);
-
-    *rho = [0; 2];
-    *e_q = [0; 8];
-    *e_qmax = [0; 2];
-    *s = [0; 8];
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1462,10 +1463,6 @@ fn encode_quad_non_initial_row(
     max_e: i32,
     e_q: &[i32; 8],
     s: &[u32; 8],
-    _lep: usize,
-    _lcxp: usize,
-    _e_val: &mut [u8; 513],
-    _cx_val: &mut [u8; 513],
     mel: &mut MelEncoder,
     vlc: &mut VlcEncoder,
     ms: &mut MagSgnEncoder,
@@ -1694,6 +1691,7 @@ mod tests {
         assert!(distribution.mag_sign_encoded_samples > 0);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     #[ignore = "prints HT cleanup encode rho/e_q/u_q distribution for manual tuning"]
     fn ht_cleanup_encode_distribution_report() {

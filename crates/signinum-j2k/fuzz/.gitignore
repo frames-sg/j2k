@@ -1,3 +1,11 @@
 target
-corpus
 artifacts
+corpus/*
+!corpus/parse_fuzz/
+!corpus/decode_fuzz/
+corpus/parse_fuzz/*
+corpus/decode_fuzz/*
+!corpus/parse_fuzz/high_csiz_16385.j2c
+!corpus/parse_fuzz/spec_max_csiz_16384.j2c
+!corpus/decode_fuzz/max_tile_grid_small_payload.j2c
+!corpus/decode_fuzz/tile_component_structural_bomb.j2c

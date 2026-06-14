@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use signinum_j2k_native::{
     decode_ht_code_block_scalar, decode_ht_sigprop_benchmark_state,
     prepare_ht_sigprop_benchmark_state, DecodeSettings, DecoderContext, HtCodeBlockDecodeJob,
@@ -126,9 +126,9 @@ fn bench_htj2k_refinement_sigprop_phase(c: &mut Criterion) {
 
     group.bench_function("ds0_ht_09_b11_sigprop_only", |b| {
         b.iter(|| {
-            decode_ht_sigprop_benchmark_state(black_box(&mut state), &mut output)
+            decode_ht_sigprop_benchmark_state(std::hint::black_box(&mut state), &mut output)
                 .expect("decode HTJ2K SigProp phase");
-            black_box(&output);
+            std::hint::black_box(&output);
         });
     });
 
@@ -156,9 +156,12 @@ fn bench_htj2k_cpuupload_decode_batch(c: &mut Criterion) {
             &count,
             |b, _| {
                 b.iter(|| {
-                    decode_scalar_ht_batch(black_box(&jobs), black_box(&mut outputs))
-                        .expect("decode HTJ2K scalar batch");
-                    black_box(&outputs);
+                    decode_scalar_ht_batch(
+                        std::hint::black_box(&jobs),
+                        std::hint::black_box(&mut outputs),
+                    )
+                    .expect("decode HTJ2K scalar batch");
+                    std::hint::black_box(&outputs);
                 });
             },
         );

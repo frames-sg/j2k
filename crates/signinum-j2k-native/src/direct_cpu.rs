@@ -228,7 +228,7 @@ fn execute_direct_color_plan_u8_into(
     }
 
     let [plane0, plane1, plane2, ..] = scratch.component_planes.as_mut_slice() else {
-        unreachable!();
+        bail!(DecodingError::CodeBlockDecodeFailure);
     };
     if plan.mct {
         apply_inverse_mct(plan.transform, plan.bit_depths, plane0, plane1, plane2)?;
@@ -655,6 +655,7 @@ fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::{encode_htj2k, DecodeSettings, DecoderContext, EncodeOptions, Image};
+    use alloc::vec;
 
     fn direct_htj2k_rgb_plan() -> (J2kDirectColorPlan, J2kRect) {
         let pixels = (0..16 * 16 * 3)

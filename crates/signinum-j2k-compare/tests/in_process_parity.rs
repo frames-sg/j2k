@@ -2,10 +2,10 @@
 
 use signinum_core::{Downscale, PixelFormat, Rect};
 use signinum_j2k::J2kDecoder;
-use signinum_test_support::gradient_u8;
+use signinum_test_support::{gradient_u8, write_pnm};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -223,7 +223,7 @@ fn openjpeg_encode_jp2(name: &str, pixels: &[u8], width: u32, height: u32) -> Op
     let unique = next_temp_suffix();
     let src_path = dir.join(format!("{name}-{unique}.ppm"));
     let out_path = dir.join(format!("{name}-{unique}.jp2"));
-    write_ppm(&src_path, pixels, width, height).ok()?;
+    write_pnm(&src_path, pixels, width, height, 3).ok()?;
     let status = Command::new(bin)
         .arg("-i")
         .arg(&src_path)
@@ -278,10 +278,4 @@ fn openjpeg_temp_dir() -> PathBuf {
         dir
     })
     .clone()
-}
-
-fn write_ppm(path: &Path, pixels: &[u8], width: u32, height: u32) -> std::io::Result<()> {
-    let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
-    bytes.extend_from_slice(pixels);
-    fs::write(path, bytes)
 }

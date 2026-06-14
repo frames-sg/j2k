@@ -1052,24 +1052,16 @@ fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> Option<usize
     Some(scup)
 }
 
-#[inline(never)]
-fn decode_cleanup_symbols(
-    coded_data: &[u8],
-    lcup: usize,
-    scup: usize,
-    width: u32,
-    height: u32,
-    sstr: usize,
+/// Decodes the first (initial) cleanup quad row into `scratch`, advancing the
+/// shared MEL/VLC state; the trailing sentinel pair is written after the row.
+#[inline(always)]
+fn decode_cleanup_symbols_first_row(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
     scratch: &mut [u16],
+    width: u32,
 ) -> Option<()> {
-    let quad_rows = height.div_ceil(2) as usize;
-    if scratch.len() < sstr * (quad_rows + 1) {
-        return None;
-    }
-
-    let mut mel = MelDecoder::new(coded_data, lcup, scup);
-    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
-    let mut run = mel.get_run()?;
     let mut c_q = 0u32;
     let mut row_offset = 0usize;
     let mut x = 0u32;
@@ -1078,10 +1070,10 @@ fn decode_cleanup_symbols(
         let mut vlc_val = vlc.fetch();
         let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
         if c_q == 0 {
-            run -= 2;
-            t0 = if run == -1 { t0 } else { 0 };
-            if run < 0 {
-                run = mel.get_run()?;
+            *run -= 2;
+            t0 = if *run == -1 { t0 } else { 0 };
+            if *run < 0 {
+                *run = mel.get_run()?;
             }
         }
         scratch[row_offset] = t0 as u16;
@@ -1091,10 +1083,10 @@ fn decode_cleanup_symbols(
 
         let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
         if c_q == 0 && x < width {
-            run -= 2;
-            t1 = if run == -1 { t1 } else { 0 };
-            if run < 0 {
-                run = mel.get_run()?;
+            *run -= 2;
+            t1 = if *run == -1 { t1 } else { 0 };
+            if *run < 0 {
+                *run = mel.get_run()?;
             }
         }
         if x >= width {
@@ -1107,12 +1099,12 @@ fn decode_cleanup_symbols(
 
         let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
         if uvlc_mode == 0xC0 {
-            run -= 2;
-            if run == -1 {
+            *run -= 2;
+            if *run == -1 {
                 uvlc_mode += 0x40;
             }
-            if run < 0 {
-                run = mel.get_run()?;
+            if *run < 0 {
+                *run = mel.get_run()?;
             }
         }
 
@@ -1133,71 +1125,113 @@ fn decode_cleanup_symbols(
     scratch[row_offset] = 0;
     scratch[row_offset + 1] = 0;
 
-    for y in (2..height).step_by(2) {
-        let row_base = (y >> 1) as usize * sstr;
-        let prev_base = row_base - sstr;
-        let mut x = 0u32;
-        let mut c_q = 0u32;
-        let mut row_offset = row_base;
+    Some(())
+}
 
-        while x < width {
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
+/// Decodes one non-initial cleanup quad row (`y >= 2`, even) into `scratch`,
+/// reading the previous quad row's context and advancing the shared MEL/VLC
+/// state; the trailing sentinel pair is written after the row.
+#[inline(always)]
+fn decode_cleanup_symbols_row(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    scratch: &mut [u16],
+    width: u32,
+    y: u32,
+    sstr: usize,
+) -> Option<()> {
+    let row_base = (y >> 1) as usize * sstr;
+    let prev_base = row_base - sstr;
+    let mut x = 0u32;
+    let mut c_q = 0u32;
+    let mut row_offset = row_base;
 
-            let mut vlc_val = vlc.fetch();
-            let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 {
-                run -= 2;
-                t0 = if run == -1 { t0 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
+    while x < width {
+        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
+        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
+
+        let mut vlc_val = vlc.fetch();
+        let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 {
+            *run -= 2;
+            t0 = if *run == -1 { t0 } else { 0 };
+            if *run < 0 {
+                *run = mel.get_run()?;
             }
-            scratch[row_offset] = t0 as u16;
-            x += 2;
-
-            c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-            c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
-            vlc_val = vlc.advance(t0 & 0x7);
-
-            let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 && x < width {
-                run -= 2;
-                t1 = if run == -1 { t1 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-            if x >= width {
-                t1 = 0;
-            }
-            scratch[row_offset + 2] = t1 as u16;
-            x += 2;
-
-            c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-            c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
-            vlc_val = vlc.advance(t1 & 0x7);
-
-            let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-            let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-            vlc_val = vlc.advance(uvlc_entry & 0x7);
-            uvlc_entry >>= 3;
-            let mut len = uvlc_entry & 0xF;
-            let tmp = vlc_val & ((1_u32 << len) - 1);
-            let _ = vlc.advance(len);
-            uvlc_entry >>= 4;
-            len = uvlc_entry & 0x7;
-            uvlc_entry >>= 3;
-            scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-            scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-
-            row_offset += 4;
         }
+        scratch[row_offset] = t0 as u16;
+        x += 2;
 
-        scratch[row_offset] = 0;
-        scratch[row_offset + 1] = 0;
+        c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+        c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
+        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
+        c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
+        vlc_val = vlc.advance(t0 & 0x7);
+
+        let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
+        if c_q == 0 && x < width {
+            *run -= 2;
+            t1 = if *run == -1 { t1 } else { 0 };
+            if *run < 0 {
+                *run = mel.get_run()?;
+            }
+        }
+        if x >= width {
+            t1 = 0;
+        }
+        scratch[row_offset + 2] = t1 as u16;
+        x += 2;
+
+        c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+        c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
+        vlc_val = vlc.advance(t1 & 0x7);
+
+        let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+        let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
+        vlc_val = vlc.advance(uvlc_entry & 0x7);
+        uvlc_entry >>= 3;
+        let mut len = uvlc_entry & 0xF;
+        let tmp = vlc_val & ((1_u32 << len) - 1);
+        let _ = vlc.advance(len);
+        uvlc_entry >>= 4;
+        len = uvlc_entry & 0x7;
+        uvlc_entry >>= 3;
+        scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+        scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+        row_offset += 4;
+    }
+
+    scratch[row_offset] = 0;
+    scratch[row_offset + 1] = 0;
+
+    Some(())
+}
+
+#[inline(never)]
+fn decode_cleanup_symbols(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    width: u32,
+    height: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+) -> Option<()> {
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+
+    let mut mel = MelDecoder::new(coded_data, lcup, scup);
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let mut run = mel.get_run()?;
+
+    decode_cleanup_symbols_first_row(&mut mel, &mut vlc, &mut run, scratch, width)?;
+
+    for y in (2..height).step_by(2) {
+        decode_cleanup_symbols_row(&mut mel, &mut vlc, &mut run, scratch, width, y, sstr)?;
     }
 
     Some(())
@@ -1451,109 +1485,32 @@ fn decode_magnitude_sign_phase(
     }
     v_n_scratch[..v_n_width].fill(0);
 
-    let p = 30 - missing_msbs;
-    let mmsbp2 = missing_msbs + 2;
     let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
-    let mut prev_v_n = 0u32;
-    let mut x = 0u32;
-    let mut sp = 0usize;
-    let mut vp = 0usize;
-    let mut dp = 0usize;
-    let second_row_present = height > 1;
 
-    while x < width {
-        let inf = u32::from(scratch[sp]);
-        let uq = u32::from(scratch[sp + 1]);
-        if uq > mmsbp2 {
-            return None;
-        }
-
-        let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
-        decoded_data[dp] = val0;
-
-        let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
-        if second_row_present {
-            decoded_data[dp + stride as usize] = val1;
-        }
-        v_n_scratch[vp] = prev_v_n | v_n1;
-        prev_v_n = 0;
-        dp += 1;
-        x += 1;
-
-        if x >= width {
-            vp += 1;
-            break;
-        }
-
-        let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
-        decoded_data[dp] = val2;
-
-        let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
-        if second_row_present {
-            decoded_data[dp + stride as usize] = val3;
-        }
-        prev_v_n = v_n3;
-        dp += 1;
-        x += 1;
-        sp += 2;
-        vp += 1;
-    }
-    v_n_scratch[vp] = prev_v_n;
+    decode_magnitude_sign_first_row_from_cleanup(
+        &mut magsgn,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+    )?;
 
     for y in (2..height).step_by(2) {
-        let row_base = (y >> 1) as usize * sstr;
-        let mut sp = row_base;
-        let mut vp = 0usize;
-        let mut dp = (y * stride) as usize;
-        let mut prev_v_n = 0u32;
-        let mut x = 0u32;
-        let second_row_present = y + 1 < height;
-
-        while x < width {
-            let inf = u32::from(scratch[sp]);
-            let u_q = u32::from(scratch[sp + 1]);
-            let mut gamma = inf & 0xF0;
-            gamma &= gamma.wrapping_sub(0x10);
-            let mut emax = v_n_scratch[vp] | v_n_scratch[vp + 1];
-            emax = 31 - (emax | 2).leading_zeros();
-            let kappa = if gamma != 0 { emax } else { 1 };
-            let uq = u_q + kappa;
-            if uq > mmsbp2 {
-                return None;
-            }
-
-            let (val0, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 0, uq, p);
-            decoded_data[dp] = val0;
-
-            let (val1, v_n1) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 1, uq, p);
-            if second_row_present {
-                decoded_data[dp + stride as usize] = val1;
-            }
-            v_n_scratch[vp] = prev_v_n | v_n1;
-            prev_v_n = 0;
-            dp += 1;
-            x += 1;
-
-            if x >= width {
-                vp += 1;
-                break;
-            }
-
-            let (val2, _) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 2, uq, p);
-            decoded_data[dp] = val2;
-
-            let (val3, v_n3) = decode_mag_sgn_sample_with_vn(&mut magsgn, inf, 3, uq, p);
-            if second_row_present {
-                decoded_data[dp + stride as usize] = val3;
-            }
-            prev_v_n = v_n3;
-            dp += 1;
-            x += 1;
-            sp += 2;
-            vp += 1;
-        }
-
-        v_n_scratch[vp] = prev_v_n;
+        decode_magnitude_sign_row_from_cleanup(
+            &mut magsgn,
+            scratch,
+            decoded_data,
+            v_n_scratch,
+            missing_msbs,
+            width,
+            height,
+            y,
+            stride,
+            sstr,
+        )?;
     }
 
     Some(())
@@ -1746,69 +1703,9 @@ fn decode_cleanup_and_magnitude_sign_phase(
     let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let mut magsgn = ForwardBitReader::<0xFF>::new(&coded_data[..lcup - scup]);
     let mut run = mel.get_run()?;
-    let mut c_q = 0u32;
-    let mut row_offset = 0usize;
-    let mut x = 0u32;
 
     let phase_start = observer.phase_start();
-    while x < width {
-        let mut vlc_val = vlc.fetch();
-        let mut t0 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 {
-            run -= 2;
-            t0 = if run == -1 { t0 } else { 0 };
-            if run < 0 {
-                run = mel.get_run()?;
-            }
-        }
-        scratch[row_offset] = t0 as u16;
-        x += 2;
-        c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
-        vlc_val = vlc.advance(t0 & 0x7);
-
-        let mut t1 = u32::from(VLC_TABLE0[(c_q + (vlc_val & 0x7F)) as usize]);
-        if c_q == 0 && x < width {
-            run -= 2;
-            t1 = if run == -1 { t1 } else { 0 };
-            if run < 0 {
-                run = mel.get_run()?;
-            }
-        }
-        if x >= width {
-            t1 = 0;
-        }
-        scratch[row_offset + 2] = t1 as u16;
-        x += 2;
-        c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
-        vlc_val = vlc.advance(t1 & 0x7);
-
-        let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-        if uvlc_mode == 0xC0 {
-            run -= 2;
-            if run == -1 {
-                uvlc_mode += 0x40;
-            }
-            if run < 0 {
-                run = mel.get_run()?;
-            }
-        }
-
-        let mut uvlc_entry = u32::from(UVLC_TABLE0[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-        vlc_val = vlc.advance(uvlc_entry & 0x7);
-        uvlc_entry >>= 3;
-        let mut len = uvlc_entry & 0xF;
-        let tmp = vlc_val & ((1_u32 << len) - 1);
-        let _ = vlc.advance(len);
-        uvlc_entry >>= 4;
-        len = uvlc_entry & 0x7;
-        uvlc_entry >>= 3;
-        scratch[row_offset + 1] = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-        scratch[row_offset + 3] = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
-
-        row_offset += 4;
-    }
-    scratch[row_offset] = 0;
-    scratch[row_offset + 1] = 0;
+    decode_cleanup_symbols_first_row(&mut mel, &mut vlc, &mut run, scratch, width)?;
     observer.add_cleanup_us(phase_start);
 
     let phase_start = observer.phase_start();
@@ -1825,71 +1722,8 @@ fn decode_cleanup_and_magnitude_sign_phase(
     observer.add_mag_sgn_us(phase_start);
 
     for y in (2..height).step_by(2) {
-        let row_base = (y >> 1) as usize * sstr;
-        let prev_base = row_base - sstr;
-        let mut x = 0u32;
-        let mut c_q = 0u32;
-        let mut row_offset = row_base;
-
         let phase_start = observer.phase_start();
-        while x < width {
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base)]) & 0xA0) << 2;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x20) << 4;
-
-            let mut vlc_val = vlc.fetch();
-            let mut t0 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 {
-                run -= 2;
-                t0 = if run == -1 { t0 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-            scratch[row_offset] = t0 as u16;
-            x += 2;
-
-            c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-            c_q |= u32::from(scratch[prev_base + (row_offset - row_base)]) & 0x80;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0xA0) << 2;
-            c_q |= (u32::from(scratch[prev_base + (row_offset - row_base) + 4]) & 0x20) << 4;
-            vlc_val = vlc.advance(t0 & 0x7);
-
-            let mut t1 = u32::from(VLC_TABLE1[(c_q + (vlc_val & 0x7F)) as usize]);
-            if c_q == 0 && x < width {
-                run -= 2;
-                t1 = if run == -1 { t1 } else { 0 };
-                if run < 0 {
-                    run = mel.get_run()?;
-                }
-            }
-            if x >= width {
-                t1 = 0;
-            }
-            scratch[row_offset + 2] = t1 as u16;
-            x += 2;
-
-            c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-            c_q |= u32::from(scratch[prev_base + (row_offset - row_base) + 2]) & 0x80;
-            vlc_val = vlc.advance(t1 & 0x7);
-
-            let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-            let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-            vlc_val = vlc.advance(uvlc_entry & 0x7);
-            uvlc_entry >>= 3;
-            let mut len = uvlc_entry & 0xF;
-            let tmp = vlc_val & ((1_u32 << len) - 1);
-            let _ = vlc.advance(len);
-            uvlc_entry >>= 4;
-            len = uvlc_entry & 0x7;
-            uvlc_entry >>= 3;
-            scratch[row_offset + 1] = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-            scratch[row_offset + 3] = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-
-            row_offset += 4;
-        }
-
-        scratch[row_offset] = 0;
-        scratch[row_offset + 1] = 0;
+        decode_cleanup_symbols_row(&mut mel, &mut vlc, &mut run, scratch, width, y, sstr)?;
         observer.add_cleanup_us(phase_start);
 
         let phase_start = observer.phase_start();

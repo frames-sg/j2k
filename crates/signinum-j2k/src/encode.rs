@@ -3,12 +3,14 @@
 use alloc::vec::Vec;
 
 use signinum_core::{BackendKind, Unsupported};
-use signinum_j2k_native::{
-    DecodeSettings, EncodeOptions, EncodeProgressionOrder, Image, J2kEncodeDispatchReport,
-    J2kEncodeStageAccelerator,
-};
+use signinum_j2k_native::{DecodeSettings, EncodeOptions, EncodeProgressionOrder, Image};
 
-use crate::J2kError;
+use crate::{
+    adapter::encode_stage::{
+        J2kEncodeDispatchReport, J2kEncodeStageAccelerator, NativeEncodeStageAdapter,
+    },
+    J2kError,
+};
 
 /// Backend preference for JPEG 2000 lossless encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -18,23 +20,8 @@ pub enum EncodeBackendPreference {
     Auto,
     /// Require the pure Rust CPU encoder.
     CpuOnly,
-    /// Legacy name for adaptive accelerated routing.
-    ///
-    /// Prefer [`EncodeBackendPreference::ACCELERATED`] or
-    /// [`J2kLosslessEncodeOptions::with_accelerated_backend`].
-    PreferDevice,
     /// Require a device encoder and fail if unavailable or unsupported.
     RequireDevice,
-}
-
-impl EncodeBackendPreference {
-    /// Adaptive accelerated route: CPU-only stages stay on CPU and device-shaped
-    /// stages run on Metal/CUDA only after benchmark gates approve that shape.
-    pub const ACCELERATED: Self = Self::Auto;
-    /// Explicit portable CPU route.
-    pub const CPU_ONLY: Self = Self::CpuOnly;
-    /// Strict device diagnostic/conformance route.
-    pub const STRICT_DEVICE: Self = Self::RequireDevice;
 }
 
 /// Supported JPEG 2000 progression orders for the lossless encode facade.
@@ -148,19 +135,19 @@ impl J2kLosslessEncodeOptions {
     /// Return options using adaptive accelerated routing.
     #[must_use]
     pub const fn with_accelerated_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::ACCELERATED)
+        self.with_backend(EncodeBackendPreference::Auto)
     }
 
     /// Return options using the portable CPU route.
     #[must_use]
     pub const fn with_cpu_only_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::CPU_ONLY)
+        self.with_backend(EncodeBackendPreference::CpuOnly)
     }
 
     /// Return options requiring a strict device route.
     #[must_use]
     pub const fn with_strict_device_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::STRICT_DEVICE)
+        self.with_backend(EncodeBackendPreference::RequireDevice)
     }
 
     /// Return options with a different code-block coding mode.
@@ -306,19 +293,19 @@ impl J2kLossyEncodeOptions {
     /// Return options using adaptive accelerated routing.
     #[must_use]
     pub fn with_accelerated_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::ACCELERATED)
+        self.with_backend(EncodeBackendPreference::Auto)
     }
 
     /// Return options using the portable CPU route.
     #[must_use]
     pub fn with_cpu_only_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::CPU_ONLY)
+        self.with_backend(EncodeBackendPreference::CpuOnly)
     }
 
     /// Return options requiring a strict device route.
     #[must_use]
     pub fn with_strict_device_backend(self) -> Self {
-        self.with_backend(EncodeBackendPreference::STRICT_DEVICE)
+        self.with_backend(EncodeBackendPreference::RequireDevice)
     }
 
     /// Return options with a different code-block coding mode.
@@ -389,6 +376,58 @@ pub struct J2kLosslessSamples<'a> {
     pub signed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SampleGeometry {
+    expected_bytes: usize,
+}
+
+fn validate_sample_geometry(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    components: u8,
+    bit_depth: u8,
+    component_what: &'static str,
+    bit_depth_what: &'static str,
+) -> Result<SampleGeometry, J2kError> {
+    if width == 0 || height == 0 {
+        return Err(J2kError::InvalidSamples {
+            what: "dimensions must be non-zero".to_string(),
+        });
+    }
+    if !(1..=4).contains(&components) {
+        return Err(J2kError::Unsupported(Unsupported {
+            what: component_what,
+        }));
+    }
+    if bit_depth == 0 || bit_depth > 16 {
+        return Err(J2kError::Unsupported(Unsupported {
+            what: bit_depth_what,
+        }));
+    }
+    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let expected_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(components as usize))
+        .and_then(|samples| samples.checked_mul(bytes_per_sample))
+        .ok_or(J2kError::DimensionOverflow { width, height })?;
+    if data.len() != expected_bytes {
+        let what = if data.len() < expected_bytes {
+            format!(
+                "pixel data too short: expected {expected_bytes} bytes, got {}",
+                data.len()
+            )
+        } else {
+            format!(
+                "pixel data has trailing bytes: expected {expected_bytes} bytes, got {}",
+                data.len()
+            )
+        };
+        return Err(J2kError::InvalidSamples { what });
+    }
+    Ok(SampleGeometry { expected_bytes })
+}
+
 impl<'a> J2kLosslessSamples<'a> {
     /// Validate and construct a sample descriptor.
     pub fn new(
@@ -399,31 +438,16 @@ impl<'a> J2kLosslessSamples<'a> {
         bit_depth: u8,
         signed: bool,
     ) -> Result<Self, J2kError> {
-        if width == 0 || height == 0 {
-            return Err(J2kError::Backend("invalid dimensions".to_string()));
-        }
-        if !(1..=4).contains(&components) {
-            return Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossless encode supports 1-4 component samples",
-            }));
-        }
-        if bit_depth == 0 || bit_depth > 16 {
-            return Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossless encode supports 1-16 bits per sample",
-            }));
-        }
-        let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
-        let expected = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|px| px.checked_mul(components as usize))
-            .and_then(|samples| samples.checked_mul(bytes_per_sample))
-            .ok_or(J2kError::DimensionOverflow { width, height })?;
-        if data.len() != expected {
-            return Err(J2kError::Backend(format!(
-                "pixel data too short: expected {expected} bytes, got {}",
-                data.len()
-            )));
-        }
+        let geometry = validate_sample_geometry(
+            data,
+            width,
+            height,
+            components,
+            bit_depth,
+            "JPEG 2000 lossless encode supports 1-4 component samples",
+            "JPEG 2000 lossless encode supports 1-16 bits per sample",
+        )?;
+        debug_assert_eq!(geometry.expected_bytes, data.len());
         Ok(Self {
             data,
             width,
@@ -462,31 +486,16 @@ impl<'a> J2kLossySamples<'a> {
         bit_depth: u8,
         signed: bool,
     ) -> Result<Self, J2kError> {
-        if width == 0 || height == 0 {
-            return Err(J2kError::Backend("invalid dimensions".to_string()));
-        }
-        if !(1..=4).contains(&components) {
-            return Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossy encode supports 1-4 component samples",
-            }));
-        }
-        if bit_depth == 0 || bit_depth > 16 {
-            return Err(J2kError::Unsupported(Unsupported {
-                what: "JPEG 2000 lossy encode supports 1-16 bits per sample; 17-38 bit encode is not supported",
-            }));
-        }
-        let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
-        let expected = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|px| px.checked_mul(components as usize))
-            .and_then(|samples| samples.checked_mul(bytes_per_sample))
-            .ok_or(J2kError::DimensionOverflow { width, height })?;
-        if data.len() != expected {
-            return Err(J2kError::Backend(format!(
-                "pixel data too short: expected {expected} bytes, got {}",
-                data.len()
-            )));
-        }
+        let geometry = validate_sample_geometry(
+            data,
+            width,
+            height,
+            components,
+            bit_depth,
+            "JPEG 2000 lossy encode supports 1-4 component samples",
+            "JPEG 2000 lossy encode supports 1-16 bits per sample; 17-38 bit encode is not supported",
+        )?;
+        debug_assert_eq!(geometry.expected_bytes, data.len());
         Ok(Self {
             data,
             width,
@@ -591,10 +600,9 @@ pub fn encode_j2k_lossless(
 
 /// Encode interleaved samples with an optional device encode-stage accelerator.
 ///
-/// Accelerators return CPU fallback by reporting no dispatch. `Auto` and
-/// `PreferDevice` accept that fallback; `RequireDevice` requires at least one
-/// dispatch. Any accelerator error or codestream validation error is returned to
-/// the caller.
+/// Accelerators return CPU fallback by reporting no dispatch. `Auto` accepts
+/// that fallback; `RequireDevice` requires at least one dispatch. Any
+/// accelerator error or codestream validation error is returned to the caller.
 pub fn encode_j2k_lossless_with_accelerator(
     samples: J2kLosslessSamples<'_>,
     options: &J2kLosslessEncodeOptions,
@@ -694,9 +702,7 @@ pub fn encode_j2k_lossy_with_accelerator(
 
 fn resolve_encode_backend(preference: EncodeBackendPreference) -> Result<BackendKind, J2kError> {
     match preference {
-        EncodeBackendPreference::Auto
-        | EncodeBackendPreference::CpuOnly
-        | EncodeBackendPreference::PreferDevice => Ok(BackendKind::Cpu),
+        EncodeBackendPreference::Auto | EncodeBackendPreference::CpuOnly => Ok(BackendKind::Cpu),
         EncodeBackendPreference::RequireDevice => Err(J2kError::Unsupported(Unsupported {
             what: "device JPEG 2000 lossless encode backend is unavailable",
         })),
@@ -716,9 +722,7 @@ fn resolve_accelerated_encode_backend(
         EncodeBackendPreference::RequireDevice => Err(J2kError::Unsupported(Unsupported {
             what: required_stages.missing_message(dispatch),
         })),
-        EncodeBackendPreference::Auto
-        | EncodeBackendPreference::CpuOnly
-        | EncodeBackendPreference::PreferDevice => Ok(BackendKind::Cpu),
+        EncodeBackendPreference::Auto | EncodeBackendPreference::CpuOnly => Ok(BackendKind::Cpu),
     }
 }
 
@@ -745,6 +749,7 @@ fn encode_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossless_options(samples, options);
+    let mut native_accelerator = NativeEncodeStageAdapter::new(accelerator);
     signinum_j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -753,7 +758,7 @@ fn encode_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        accelerator,
+        &mut native_accelerator,
     )
     .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossless encode failed: {err}")))
 }
@@ -788,6 +793,7 @@ fn encode_lossy_with_native_accelerator(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> Result<Vec<u8>, J2kError> {
     let options = native_lossy_options(samples, options, quantization_scale)?;
+    let mut native_accelerator = NativeEncodeStageAdapter::new(accelerator);
     signinum_j2k_native::encode_with_accelerator(
         samples.data,
         samples.width,
@@ -796,7 +802,7 @@ fn encode_lossy_with_native_accelerator(
         samples.bit_depth,
         samples.signed,
         &options,
-        accelerator,
+        &mut native_accelerator,
     )
     .map_err(|err| J2kError::Backend(format!("JPEG 2000 lossy encode failed: {err}")))
 }
@@ -860,10 +866,10 @@ fn encode_lossy_to_byte_target(
     }
 
     if best.codestream.len() as u64 > target_bytes.saturating_add(tolerance) {
-        return Err(J2kError::Backend(format!(
-            "JPEG 2000 lossy rate target unreachable: target {target_bytes} bytes, best {} bytes",
-            best.codestream.len()
-        )));
+        return Err(J2kError::RateTargetUnreachable {
+            target: format!("{target_bytes} bytes"),
+            best: format!("{} bytes", best.codestream.len()),
+        });
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
@@ -903,9 +909,10 @@ fn encode_lossy_to_psnr_target(
     };
     let mut best_psnr = decoded_psnr(samples, &best.codestream)?;
     if best_psnr + tolerance < target_psnr_db {
-        return Err(J2kError::Backend(format!(
-            "JPEG 2000 lossy PSNR target unreachable: target {target_psnr_db:.3} dB, best {best_psnr:.3} dB"
-        )));
+        return Err(J2kError::RateTargetUnreachable {
+            target: format!("{target_psnr_db:.3} dB"),
+            best: format!("{best_psnr:.3} dB"),
+        });
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
@@ -1014,7 +1021,7 @@ fn lossy_quality_layer_byte_targets(
     Ok(targets)
 }
 
-fn native_progression_order(progression: J2kProgressionOrder) -> EncodeProgressionOrder {
+pub(crate) fn native_progression_order(progression: J2kProgressionOrder) -> EncodeProgressionOrder {
     match progression {
         J2kProgressionOrder::Lrcp => EncodeProgressionOrder::Lrcp,
         J2kProgressionOrder::Rlcp => EncodeProgressionOrder::Rlcp,
@@ -1395,9 +1402,9 @@ fn validate_lossy_roundtrip(
         || decoded.num_components != samples.components
         || decoded.bit_depth != samples.bit_depth
     {
-        return Err(J2kError::Backend(
-            "JPEG 2000 lossy encode failed round-trip geometry validation".to_string(),
-        ));
+        return Err(J2kError::InvalidSamples {
+            what: "JPEG 2000 lossy encode failed round-trip geometry validation".to_string(),
+        });
     }
 
     Ok(Some(psnr_from_decoded(samples, &decoded.data)?))
@@ -1413,11 +1420,13 @@ fn decoded_psnr(samples: J2kLossySamples<'_>, codestream: &[u8]) -> Result<f64, 
 
 fn psnr_from_decoded(samples: J2kLossySamples<'_>, decoded: &[u8]) -> Result<f64, J2kError> {
     if decoded.len() != samples.data.len() {
-        return Err(J2kError::Backend(format!(
-            "JPEG 2000 lossy encode validation length mismatch: expected {} bytes, got {} bytes",
-            samples.data.len(),
-            decoded.len()
-        )));
+        return Err(J2kError::InvalidSamples {
+            what: format!(
+                "JPEG 2000 lossy encode validation length mismatch: expected {} bytes, got {} bytes",
+                samples.data.len(),
+                decoded.len()
+            ),
+        });
     }
     let bytes_per_sample = if samples.bit_depth <= 8 {
         1usize
@@ -1514,9 +1523,9 @@ fn validate_lossless_roundtrip(
         || decoded.num_components != samples.components
         || decoded.bit_depth != samples.bit_depth
     {
-        return Err(J2kError::Backend(
-            "JPEG 2000 lossless encode failed round-trip geometry validation".to_string(),
-        ));
+        return Err(J2kError::InvalidSamples {
+            what: "JPEG 2000 lossless encode failed round-trip geometry validation".to_string(),
+        });
     }
     if decoded.data != samples.data {
         let mismatch = decoded
@@ -1524,7 +1533,8 @@ fn validate_lossless_roundtrip(
             .iter()
             .zip(samples.data.iter())
             .position(|(actual, expected)| actual != expected);
-        return Err(J2kError::Backend(match mismatch {
+        return Err(J2kError::InvalidSamples {
+            what: match mismatch {
             Some(index) => format!(
                 "JPEG 2000 lossless encode failed round-trip validation at byte {index}: expected {}, got {}",
                 samples.data[index], decoded.data[index]
@@ -1534,7 +1544,7 @@ fn validate_lossless_roundtrip(
                 samples.data.len(),
                 decoded.data.len()
             ),
-        }));
+        }});
     }
     Ok(())
 }

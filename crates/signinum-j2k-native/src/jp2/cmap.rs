@@ -7,6 +7,10 @@ use crate::jp2::ImageBoxes;
 use crate::reader::BitReader;
 
 pub(crate) fn parse(boxes: &mut ImageBoxes, data: &[u8]) -> Result<()> {
+    if data.is_empty() || !data.len().is_multiple_of(4) {
+        bail!(FormatError::InvalidBox);
+    }
+
     let mut reader = BitReader::new(data);
     let mut entries = Vec::with_capacity(data.len() / 4);
 

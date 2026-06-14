@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use signinum_j2k::{
-    decode_tiles_into, decode_tiles_region_scaled_into, Downscale, J2kDecoder, PixelFormat, Rect,
-    TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
+    decode_tiles_scaled_into, Downscale, J2kDecoder, PixelFormat, Rect, TileBatchOptions,
+    TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 use signinum_j2k_native::{encode, encode_htj2k, EncodeOptions};
+use signinum_test_support::wrap_codestream_jp2;
 use std::num::NonZeroUsize;
 
 fn encode_codestream(
@@ -57,39 +59,6 @@ fn ht_rgb_fixture() -> Vec<u8> {
 
 fn ht_rgb_jp2_fixture() -> Vec<u8> {
     wrap_codestream_jp2(&ht_rgb_fixture(), 16, 16, 3, 8, 16)
-}
-
-fn wrap_codestream_jp2(
-    codestream: &[u8],
-    width: u32,
-    height: u32,
-    components: u16,
-    bit_depth: u8,
-    colorspace_enum: u32,
-) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&[0, 0, 0, 12, b'j', b'P', b' ', b' ', 0x0D, 0x0A, 0x87, 0x0A]);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 20, b'f', b't', b'y', b'p', b'j', b'p', b'2', b' ', 0, 0, 0, 0, b'j', b'p', b'2',
-        b' ',
-    ]);
-
-    let bpc = bit_depth.saturating_sub(1);
-    bytes.extend_from_slice(&[
-        0, 0, 0, 45, b'j', b'p', b'2', b'h', 0, 0, 0, 22, b'i', b'h', b'd', b'r',
-    ]);
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&components.to_be_bytes());
-    bytes.extend_from_slice(&[bpc, 7, 0, 0]);
-    bytes.extend_from_slice(&[0, 0, 0, 15, b'c', b'o', b'l', b'r', 1, 0, 0]);
-    bytes.extend_from_slice(&colorspace_enum.to_be_bytes());
-
-    let len = (8 + codestream.len()) as u32;
-    bytes.extend_from_slice(&len.to_be_bytes());
-    bytes.extend_from_slice(b"jp2c");
-    bytes.extend_from_slice(codestream);
-    bytes
 }
 
 fn decode_rgb8_reference(bytes: &[u8]) -> (Vec<u8>, usize) {
@@ -294,6 +263,94 @@ fn production_batch_region_scaled_decode_parallel_preserves_order_and_output() {
     assert_eq!(outcomes.len(), JOBS);
     for outcome in &outcomes {
         assert_eq!(outcome.decoded, scaled_roi);
+    }
+    for (index, out) in outputs.iter().enumerate() {
+        assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+#[test]
+fn production_batch_region_decode_parallel_preserves_order_and_output() {
+    const JOBS: usize = 12;
+    let codestream = rgb_fixture();
+    let roi = Rect {
+        x: 1,
+        y: 0,
+        w: 2,
+        h: 3,
+    };
+    let stride = roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut pool = signinum_j2k::J2kScratchPool::new();
+    let mut expected = vec![0_u8; stride * roi.h as usize];
+    decoder
+        .decode_region_into(&mut pool, &mut expected, stride, PixelFormat::Rgb8, roi)
+        .expect("decode reference");
+
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0_u8; expected.len()])
+        .collect::<Vec<_>>();
+    let options = TileBatchOptions::new(NonZeroUsize::new(3));
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileRegionDecodeJob {
+                input: codestream.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+                roi,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_region_into(&mut jobs, PixelFormat::Rgb8, options).expect("batch decode")
+    };
+
+    assert_eq!(outcomes.len(), JOBS);
+    for outcome in &outcomes {
+        assert_eq!(outcome.decoded, roi);
+    }
+    for (index, out) in outputs.iter().enumerate() {
+        assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+#[test]
+fn production_batch_scaled_decode_parallel_preserves_order_and_output() {
+    const JOBS: usize = 12;
+    let codestream = ht_rgb_fixture();
+    let scale = Downscale::Half;
+    let scaled = Rect::full((16, 16)).scaled_covering(scale);
+    let stride = scaled.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
+
+    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
+    let mut pool = signinum_j2k::J2kScratchPool::new();
+    let mut expected = vec![0_u8; stride * scaled.h as usize];
+    decoder
+        .decode_scaled_into(&mut pool, &mut expected, stride, PixelFormat::Rgb8, scale)
+        .expect("decode reference");
+
+    let mut outputs = (0..JOBS)
+        .map(|_| vec![0_u8; expected.len()])
+        .collect::<Vec<_>>();
+    let options = TileBatchOptions::new(NonZeroUsize::new(3));
+
+    let outcomes = {
+        let mut jobs = outputs
+            .iter_mut()
+            .map(|out| TileScaledDecodeJob {
+                input: codestream.as_slice(),
+                out: out.as_mut_slice(),
+                stride,
+                scale,
+            })
+            .collect::<Vec<_>>();
+        decode_tiles_scaled_into(&mut jobs, PixelFormat::Rgb8, options).expect("batch decode")
+    };
+
+    assert_eq!(outcomes.len(), JOBS);
+    for outcome in &outcomes {
+        assert_eq!(outcome.decoded, scaled);
     }
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");
