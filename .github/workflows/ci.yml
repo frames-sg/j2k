@@ -123,7 +123,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: "1.96"
           components: rustfmt
       - run: cargo xtask fmt
 
@@ -138,26 +138,6 @@ jobs:
       - run: cargo xtask clippy
 
   semver:
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - signinum
-          - signinum-core
-          - signinum-jpeg
-          - signinum-j2k
-          - signinum-tilecodec
-          - signinum-jpeg-metal
-          - signinum-j2k-metal
-          - signinum-jpeg-cuda
-          - signinum-j2k-cuda
-          - signinum-transcode
-          - signinum-transcode-cuda
-          - signinum-metal-support
-          - signinum-transcode-metal
-          - signinum-j2k-native
-          - signinum-cuda-runtime
-          - signinum-profile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -165,12 +145,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
-      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239
-        with:
-          package: ${{ matrix.package }}
-          baseline-rev: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          release-type: minor
+          toolchain: "1.96"
+      - run: cargo install cargo-semver-checks --version 0.48.0 --locked
+      - run: cargo xtask semver
 
   docs:
     runs-on: ubuntu-latest
@@ -191,6 +168,7 @@ jobs:
       - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912
         with:
           tool: cargo-public-api@0.52.0
+      - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
       - run: cargo xtask stable-api
 
   release-integrity:
