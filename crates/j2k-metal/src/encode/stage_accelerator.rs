@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::compute;
+use j2k::adapter::encode_stage;
 #[cfg(target_os = "macos")]
 use j2k::{EncodeBackendPreference, J2kLosslessEncodeOptions};
 #[cfg(target_os = "macos")]
@@ -194,9 +195,9 @@ pub(super) fn metal_dispatch_option<T>(
     }
 }
 
-impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
-    fn dispatch_report(&self) -> j2k::J2kEncodeDispatchReport {
-        j2k::J2kEncodeDispatchReport {
+impl encode_stage::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
+    fn dispatch_report(&self) -> encode_stage::J2kEncodeDispatchReport {
+        encode_stage::J2kEncodeDispatchReport {
             deinterleave: 0,
             forward_rct: self.forward_rct_dispatches,
             forward_ict: 0,
@@ -215,7 +216,7 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_rct(
         &mut self,
-        job: j2k::J2kForwardRctJob<'_>,
+        job: encode_stage::J2kForwardRctJob<'_>,
     ) -> core::result::Result<bool, &'static str> {
         self.forward_rct_attempts = self.forward_rct_attempts.saturating_add(1);
         if !self
@@ -244,8 +245,8 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_forward_dwt53(
         &mut self,
-        job: j2k::J2kForwardDwt53Job<'_>,
-    ) -> core::result::Result<Option<j2k::J2kForwardDwt53Output>, &'static str> {
+        job: encode_stage::J2kForwardDwt53Job<'_>,
+    ) -> core::result::Result<Option<encode_stage::J2kForwardDwt53Output>, &'static str> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -281,8 +282,8 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_block(
         &mut self,
-        job: j2k::J2kTier1CodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<j2k::EncodedJ2kCodeBlock>, &'static str> {
+        job: encode_stage::J2kTier1CodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<encode_stage::EncodedJ2kCodeBlock>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -312,8 +313,8 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_tier1_code_blocks(
         &mut self,
-        jobs: &[j2k::J2kTier1CodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<j2k::EncodedJ2kCodeBlock>>, &'static str> {
+        jobs: &[encode_stage::J2kTier1CodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<encode_stage::EncodedJ2kCodeBlock>>, &'static str> {
         self.tier1_code_block_attempts = self.tier1_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -343,8 +344,8 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_block(
         &mut self,
-        job: j2k::J2kHtCodeBlockEncodeJob<'_>,
-    ) -> core::result::Result<Option<j2k::EncodedHtJ2kCodeBlock>, &'static str> {
+        job: encode_stage::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> core::result::Result<Option<encode_stage::EncodedHtJ2kCodeBlock>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(1);
         if !self
             .dispatch_stages
@@ -374,8 +375,8 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_ht_code_blocks(
         &mut self,
-        jobs: &[j2k::J2kHtCodeBlockEncodeJob<'_>],
-    ) -> core::result::Result<Option<Vec<j2k::EncodedHtJ2kCodeBlock>>, &'static str> {
+        jobs: &[encode_stage::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> core::result::Result<Option<Vec<encode_stage::EncodedHtJ2kCodeBlock>>, &'static str> {
         self.ht_code_block_attempts = self.ht_code_block_attempts.saturating_add(jobs.len());
         if !self
             .dispatch_stages
@@ -405,7 +406,7 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_htj2k_tile(
         &mut self,
-        job: j2k::J2kHtj2kTileEncodeJob<'_>,
+        job: encode_stage::J2kHtj2kTileEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         #[cfg(target_os = "macos")]
         {
@@ -487,7 +488,7 @@ impl j2k::J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
 
     fn encode_packetization(
         &mut self,
-        job: j2k::J2kPacketizationEncodeJob<'_>,
+        job: encode_stage::J2kPacketizationEncodeJob<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, &'static str> {
         self.packetization_attempts = self.packetization_attempts.saturating_add(1);
         self.auto_host_output_force_cpu_fallback = false;

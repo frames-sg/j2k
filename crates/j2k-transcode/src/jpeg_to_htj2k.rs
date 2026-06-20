@@ -5,16 +5,16 @@
 use core::fmt;
 use std::time::Instant;
 
-use j2k::adapter::encode_stage::NativeEncodeStageAdapter;
-use j2k::{
+use j2k::adapter::encode_stage::{
     CpuOnlyJ2kEncodeStageAccelerator, IrreversibleQuantizationSubbandScales,
     J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Level,
-    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, J2kProgressionOrder,
+    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output, NativeEncodeStageAdapter,
     PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
     PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
     PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
     PrequantizedHtj2k97Image,
 };
+use j2k::J2kProgressionOrder;
 use j2k_jpeg::transcode::{
     extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctComponent, JpegDctImage,
 };
@@ -4085,7 +4085,7 @@ mod tests {
         PreencodedHtj2k97CompactResolution, PreencodedHtj2k97CompactSubband,
         PreencodedHtj2k97Resolution, PreencodedHtj2k97Subband,
     };
-    use j2k::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
+    use j2k::adapter::encode_stage::{EncodedHtJ2kCodeBlock, J2kHtCodeBlockEncodeJob};
     use j2k_jpeg::transcode::JpegDctCodingMode;
     use j2k_jpeg::ColorSpace;
 

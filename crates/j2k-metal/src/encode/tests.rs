@@ -3,11 +3,12 @@
 use super::MetalEncodeStageAccelerator;
 #[cfg(target_os = "macos")]
 use crate::compute;
-#[cfg(target_os = "macos")]
-use j2k::J2kForwardDwt53Job;
+use j2k::adapter::encode_stage::{
+    J2kEncodeDispatchReport, J2kEncodeStageAccelerator, J2kForwardDwt53Job, J2kForwardRctJob,
+};
 use j2k::{
     encode_j2k_lossless_with_accelerator, EncodeBackendPreference, EncodedJ2k,
-    J2kEncodeStageAccelerator, J2kForwardRctJob, J2kLosslessEncodeOptions, J2kLosslessSamples,
+    J2kLosslessEncodeOptions, J2kLosslessSamples,
 };
 #[cfg(target_os = "macos")]
 use j2k::{
@@ -805,7 +806,7 @@ fn lossless_encode_outcome_exposes_host_readback_duration() {
         encoded: EncodedJ2k {
             codestream: Vec::new(),
             backend: j2k_core::BackendKind::Metal,
-            dispatch_report: j2k::J2kEncodeDispatchReport::default(),
+            dispatch_report: J2kEncodeDispatchReport::default(),
             width: 0,
             height: 0,
             components: 1,

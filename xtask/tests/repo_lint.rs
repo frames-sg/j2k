@@ -381,7 +381,7 @@ mod architecture_policy {
 
         for package in [
             "j2k",
-            "j2k",
+            "j2k-jpeg",
             "j2k-transcode",
             "j2k-metal",
             "j2k-cuda",

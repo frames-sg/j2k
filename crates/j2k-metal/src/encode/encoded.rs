@@ -81,7 +81,7 @@ impl MetalEncodedJ2k {
             EncodedJ2k {
                 codestream,
                 backend: BackendKind::Metal,
-                dispatch_report: j2k::J2kEncodeDispatchReport::default(),
+                dispatch_report: j2k::adapter::encode_stage::J2kEncodeDispatchReport::default(),
                 width: self.width,
                 height: self.height,
                 components: self.components,
