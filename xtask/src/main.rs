@@ -10,102 +10,97 @@ mod perf_guard;
 mod process;
 
 const PUBLISHABLE_PACKAGES: &[&str] = &[
-    "signinum-core",
-    "signinum-cuda-runtime",
-    "signinum-profile",
-    "signinum-j2k-types",
-    "signinum-j2k-native",
-    "signinum-jpeg",
-    "signinum-tilecodec",
-    "signinum-j2k",
-    "signinum-transcode",
-    "signinum-transcode-cuda",
-    "signinum-metal-support",
-    "signinum-jpeg-metal",
-    "signinum-j2k-metal",
-    "signinum-transcode-metal",
-    "signinum-jpeg-cuda",
-    "signinum-j2k-cuda",
-    "signinum-cli",
-    "signinum",
+    "j2k-core",
+    "j2k-profile",
+    "j2k-types",
+    "j2k-cuda-runtime",
+    "j2k-metal-support",
+    "j2k-native",
+    "j2k-jpeg",
+    "j2k-tilecodec",
+    "j2k",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-transcode-metal",
+    "j2k-jpeg-cuda",
+    "j2k-cuda",
+    "j2k-cli",
 ];
 
-const REGISTRY_INDEPENDENT_PACKAGES: &[&str] =
-    &["signinum-core", "signinum-profile", "signinum-j2k-types"];
+const REGISTRY_INDEPENDENT_PACKAGES: &[&str] = &["j2k-core", "j2k-profile", "j2k-types"];
 
 const STAGED_DEPENDENCY_PACKAGES: &[&str] = &[
-    "signinum-cuda-runtime",
-    "signinum-metal-support",
-    "signinum-j2k-native",
-    "signinum-jpeg",
-    "signinum-tilecodec",
-    "signinum-j2k",
-    "signinum-transcode",
-    "signinum-transcode-cuda",
-    "signinum-jpeg-metal",
-    "signinum-j2k-metal",
-    "signinum-transcode-metal",
-    "signinum-jpeg-cuda",
-    "signinum-j2k-cuda",
-    "signinum-cli",
-    "signinum",
+    "j2k-cuda-runtime",
+    "j2k-metal-support",
+    "j2k-native",
+    "j2k-jpeg",
+    "j2k-tilecodec",
+    "j2k",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-transcode-metal",
+    "j2k-jpeg-cuda",
+    "j2k-cuda",
+    "j2k-cli",
 ];
 
 const CPU_RELEASE_PACKAGES: &[&str] = &[
-    "signinum-core",
-    "signinum-jpeg",
-    "signinum-j2k-types",
-    "signinum-j2k-native",
-    "signinum-j2k",
-    "signinum-tilecodec",
-    "signinum-cli",
-    "signinum",
+    "j2k-core",
+    "j2k-jpeg",
+    "j2k-types",
+    "j2k-native",
+    "j2k",
+    "j2k-tilecodec",
+    "j2k-cli",
 ];
 
 const STABLE_SEMVER_PACKAGES: &[&str] = &[
-    "signinum",
-    "signinum-core",
-    "signinum-jpeg",
-    "signinum-j2k",
-    "signinum-tilecodec",
-    "signinum-jpeg-metal",
-    "signinum-j2k-metal",
-    "signinum-jpeg-cuda",
-    "signinum-j2k-cuda",
-    "signinum-transcode",
-    "signinum-transcode-cuda",
-    "signinum-metal-support",
-    "signinum-transcode-metal",
-    "signinum-j2k-native",
-    "signinum-j2k-types",
-    "signinum-cuda-runtime",
-    "signinum-profile",
+    "j2k",
+    "j2k-core",
+    "j2k-jpeg",
+    "j2k-tilecodec",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-jpeg-cuda",
+    "j2k-cuda",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-metal-support",
+    "j2k-transcode-metal",
+    "j2k-native",
+    "j2k-types",
+    "j2k-cuda-runtime",
+    "j2k-profile",
 ];
 
 const STABLE_DOC_LIBRARY_PACKAGES: &[&str] = &[
-    "signinum",
-    "signinum-core",
-    "signinum-jpeg",
-    "signinum-j2k",
-    "signinum-tilecodec",
-    "signinum-jpeg-metal",
-    "signinum-j2k-metal",
-    "signinum-jpeg-cuda",
-    "signinum-j2k-cuda",
-    "signinum-transcode",
-    "signinum-transcode-cuda",
-    "signinum-metal-support",
-    "signinum-transcode-metal",
-    "signinum-j2k-native",
-    "signinum-j2k-types",
-    "signinum-cuda-runtime",
-    "signinum-profile",
+    "j2k",
+    "j2k-core",
+    "j2k-jpeg",
+    "j2k-tilecodec",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-jpeg-cuda",
+    "j2k-cuda",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-metal-support",
+    "j2k-transcode-metal",
+    "j2k-native",
+    "j2k-types",
+    "j2k-cuda-runtime",
+    "j2k-profile",
 ];
 
 const STABLE_API_SNAPSHOT: &str = "docs/stable-api-1.0.public-api.txt";
 const CARGO_PUBLIC_API_VERSION: &str = "0.52.0";
 
 const NO_STD_TARGET: &str = "aarch64-unknown-none";
+const NO_STD_CORE_PORTABLE_TARGET: &str = "wasm32-unknown-unknown";
 
 fn main() -> ExitCode {
     match run() {
@@ -196,9 +191,9 @@ fn clippy_strict() -> Result<(), String> {
     let mut args = vec![
         "clippy",
         "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "-p",
-        "signinum-j2k",
+        "j2k",
         "--all-targets",
         "--all-features",
         "--no-deps",
@@ -272,15 +267,15 @@ fn test() -> Result<(), String> {
         return test_workspace_without_benches(&[]);
     }
 
-    test_workspace_without_benches(&["--exclude", "signinum-j2k-metal"])?;
+    test_workspace_without_benches(&["--exclude", "j2k-metal"])?;
     if skip_j2k_metal_runtime_on_hosted_github_macos() {
         eprintln!(
-            "skipping signinum-j2k-metal runtime tests on GitHub-hosted macOS; \
+            "skipping j2k-metal runtime tests on GitHub-hosted macOS; \
              self-hosted gpu-validation runs the Metal runtime suite"
         );
-        return test_package_without_benches("signinum-j2k-metal", true);
+        return test_package_without_benches("j2k-metal", true);
     }
-    test_package_without_benches("signinum-j2k-metal", false)
+    test_package_without_benches("j2k-metal", false)
 }
 
 fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
@@ -305,12 +300,10 @@ fn test_facade_cuda_stub() -> Result<(), String> {
     run_cargo(&[
         "test",
         "-p",
-        "signinum",
-        "--features",
-        "cuda",
+        "j2k",
         "--test",
-        "facade",
-        "facade_auto_j2k_lossless_encode_falls_back_to_cpu_with_stub_cuda_adapters",
+        "encode_lossless",
+        "accelerator_facade_auto_falls_back_when_no_stage_dispatches",
     ])
 }
 
@@ -362,7 +355,7 @@ fn doc() -> Result<(), String> {
     }
 
     run_cargo_with_env(
-        &["doc", "-p", "signinum-cli", "--no-deps"],
+        &["doc", "-p", "j2k-cli", "--no-deps"],
         &[("RUSTDOCFLAGS", "-D warnings -D missing_docs")],
     )
 }
@@ -372,18 +365,11 @@ fn typos() -> Result<(), String> {
 }
 
 fn bench_build() -> Result<(), String> {
+    run_cargo(&["bench", "-p", "j2k", "--bench", "public_api", "--no-run"])?;
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k",
-        "--bench",
-        "public_api",
-        "--no-run",
-    ])?;
-    run_cargo(&[
-        "bench",
-        "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "--bench",
         "tier1_bitplane",
         "--no-run",
@@ -391,7 +377,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "--bench",
         "htj2k_sigprop_phase",
         "--no-run",
@@ -399,16 +385,15 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "--bench",
         "direct_cpu",
         "--no-run",
     ])?;
-    run_cargo(&["bench", "-p", "signinum", "--bench", "facade", "--no-run"])?;
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-jpeg",
+        "j2k-jpeg",
         "--bench",
         "encode_cpu",
         "--no-run",
@@ -416,16 +401,16 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-jpeg",
+        "j2k-jpeg",
         "--features",
         "bench-libjpeg-turbo",
         "--no-run",
     ])?;
-    run_cargo(&["bench", "-p", "signinum-jpeg-metal", "--no-run"])?;
+    run_cargo(&["bench", "-p", "j2k-jpeg-metal", "--no-run"])?;
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-jpeg-cuda",
+        "j2k-jpeg-cuda",
         "--bench",
         "device_decode",
         "--features",
@@ -435,7 +420,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k-cuda",
+        "j2k-cuda",
         "--bench",
         "encode_stages",
         "--features",
@@ -445,7 +430,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k-cuda",
+        "j2k-cuda",
         "--bench",
         "htj2k_decode",
         "--features",
@@ -455,7 +440,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-j2k-cuda",
+        "j2k-cuda",
         "--bench",
         "htj2k_encode",
         "--features",
@@ -465,7 +450,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-tilecodec",
+        "j2k-tilecodec",
         "--bench",
         "compare",
         "--no-run",
@@ -473,7 +458,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-transcode",
+        "j2k-transcode",
         "--bench",
         "dct53",
         "--no-run",
@@ -481,7 +466,7 @@ fn bench_build() -> Result<(), String> {
     run_cargo(&[
         "bench",
         "-p",
-        "signinum-transcode-metal",
+        "j2k-transcode-metal",
         "--bench",
         "dct97",
         "--no-run",
@@ -490,21 +475,12 @@ fn bench_build() -> Result<(), String> {
 
 fn j2k_bench_signoff() -> Result<(), String> {
     run_cargo_with_env(
-        &[
-            "test",
-            "-p",
-            "signinum-j2k-compare",
-            "--test",
-            "in_process_parity",
-        ],
-        &[
-            ("SIGNINUM_REQUIRE_OPENJPEG", "1"),
-            ("SIGNINUM_REQUIRE_GROK", "1"),
-        ],
+        &["test", "-p", "j2k-compare", "--test", "in_process_parity"],
+        &[("J2K_REQUIRE_OPENJPEG", "1"), ("J2K_REQUIRE_GROK", "1")],
     )?;
     run_cargo_with_env(
-        &["test", "-p", "signinum-j2k", "--test", "openjpeg_parity"],
-        &[("SIGNINUM_REQUIRE_OPENJPEG", "1")],
+        &["test", "-p", "j2k", "--test", "openjpeg_parity"],
+        &[("J2K_REQUIRE_OPENJPEG", "1")],
     )
 }
 
@@ -523,12 +499,12 @@ struct BenchmarkReport {
 }
 
 fn bench_report(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let mut command = env::var("SIGNINUM_BENCH_COMMAND").unwrap_or_else(|_| "not recorded".into());
-    let mut input_source = env::var("SIGNINUM_BENCH_INPUT_SOURCE")
-        .or_else(|_| env::var("SIGNINUM_BENCH_INPUTS"))
+    let mut command = env::var("J2K_BENCH_COMMAND").unwrap_or_else(|_| "not recorded".into());
+    let mut input_source = env::var("J2K_BENCH_INPUT_SOURCE")
+        .or_else(|_| env::var("J2K_BENCH_INPUTS"))
         .unwrap_or_else(|_| "not recorded".into());
     let mut out_path = None::<PathBuf>;
-    let mut skipped_rows = env::var("SIGNINUM_BENCH_SKIPPED_ROWS")
+    let mut skipped_rows = env::var("J2K_BENCH_SKIPPED_ROWS")
         .ok()
         .map(|rows| split_semicolon_list(&rows))
         .unwrap_or_default();
@@ -577,8 +553,7 @@ fn bench_report(args: impl Iterator<Item = String>) -> Result<(), String> {
             .unwrap_or_else(|err| format!("unavailable: {err}")),
         workspace_version: workspace_version()?,
         input_source,
-        compare_threads: env::var("SIGNINUM_J2K_COMPARE_THREADS")
-            .unwrap_or_else(|_| "not set".to_string()),
+        compare_threads: env::var("J2K_COMPARE_THREADS").unwrap_or_else(|_| "not set".to_string()),
         comparator_versions: comparator_versions(),
         skipped_rows,
     };
@@ -601,40 +576,36 @@ fn bench_report(args: impl Iterator<Item = String>) -> Result<(), String> {
 }
 
 fn fuzz_build() -> Result<(), String> {
+    run_cargo(&["check", "--manifest-path", "crates/j2k/fuzz/Cargo.toml"])?;
     run_cargo(&[
         "check",
         "--manifest-path",
-        "crates/signinum-j2k/fuzz/Cargo.toml",
+        "crates/j2k-jpeg/fuzz/Cargo.toml",
     ])?;
     run_cargo(&[
         "check",
         "--manifest-path",
-        "crates/signinum-jpeg/fuzz/Cargo.toml",
+        "crates/j2k-tilecodec/fuzz/Cargo.toml",
     ])?;
     run_cargo(&[
         "check",
         "--manifest-path",
-        "crates/signinum-tilecodec/fuzz/Cargo.toml",
-    ])?;
-    run_cargo(&[
-        "check",
-        "--manifest-path",
-        "crates/signinum-transcode/fuzz/Cargo.toml",
+        "crates/j2k-transcode/fuzz/Cargo.toml",
     ])
 }
 
 const FUZZ_TARGETS: &[(&str, &str)] = &[
-    ("crates/signinum-j2k", "decode_fuzz"),
-    ("crates/signinum-j2k", "parse_fuzz"),
-    ("crates/signinum-jpeg", "decode_fuzz"),
-    ("crates/signinum-jpeg", "parse_fuzz"),
-    ("crates/signinum-tilecodec", "decompress_fuzz"),
-    ("crates/signinum-transcode", "jpeg_to_htj2k_fuzz"),
+    ("crates/j2k", "decode_fuzz"),
+    ("crates/j2k", "parse_fuzz"),
+    ("crates/j2k-jpeg", "decode_fuzz"),
+    ("crates/j2k-jpeg", "parse_fuzz"),
+    ("crates/j2k-tilecodec", "decompress_fuzz"),
+    ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),
 ];
 
 fn fuzz_run() -> Result<(), String> {
-    let runs = env::var("SIGNINUM_FUZZ_RUNS").unwrap_or_else(|_| "1000".to_string());
-    let max_total_time = env::var("SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS").ok();
+    let runs = env::var("J2K_FUZZ_RUNS").unwrap_or_else(|_| "1000".to_string());
+    let max_total_time = env::var("J2K_FUZZ_MAX_TOTAL_TIME_SECONDS").ok();
     let fuzz_target = fuzz_target_triple()?;
 
     for (crate_dir, target) in FUZZ_TARGETS {
@@ -656,7 +627,7 @@ fn fuzz_run() -> Result<(), String> {
 }
 
 fn fuzz_target_triple() -> Result<String, String> {
-    if let Ok(target) = env::var("SIGNINUM_FUZZ_TARGET") {
+    if let Ok(target) = env::var("J2K_FUZZ_TARGET") {
         if !target.trim().is_empty() {
             return Ok(target);
         }
@@ -729,7 +700,7 @@ fn render_stable_api_snapshot() -> Result<String, String> {
     let mut out = String::new();
     writeln!(
         &mut out,
-        "# Signinum 1.0 Public API Snapshot\n\n\
+        "# J2K 1.0 Public API Snapshot\n\n\
          This file is generated by `cargo xtask stable-api --write` from \
          `cargo public-api -p <package> --all-features -sss --color never`.\n\
          It is generated on macOS so target-gated Metal APIs are included; \
@@ -767,8 +738,8 @@ fn render_stable_api_snapshot() -> Result<String, String> {
 
     writeln!(
         &mut out,
-        "## `signinum-cli`\n\n\
-         `signinum-cli` is a binary package. Its stable command, stdout/stderr, \
+        "## `j2k-cli`\n\n\
+         `j2k-cli` is a binary package. Its stable command, stdout/stderr, \
          and exit-code contract is documented in `docs/stable-api-1.0.md`.\n"
     )
     .unwrap();
@@ -777,7 +748,7 @@ fn render_stable_api_snapshot() -> Result<String, String> {
 }
 
 fn semver() -> Result<(), String> {
-    let toolchain = env::var("SIGNINUM_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
+    let toolchain = env::var("J2K_SEMVER_TOOLCHAIN").unwrap_or_else(|_| "1.96".to_string());
     let toolchain_arg = format!("+{toolchain}");
     for package in STABLE_SEMVER_PACKAGES {
         if !crates_io_package_exists(package)? {
@@ -832,13 +803,13 @@ fn deny() -> Result<(), String> {
 }
 
 fn miri() -> Result<(), String> {
-    run_nightly_cargo(&["miri", "test", "-p", "signinum-core"])?;
-    run_nightly_cargo(&["miri", "test", "-p", "signinum-tilecodec"])?;
+    run_nightly_cargo(&["miri", "test", "-p", "j2k-core"])?;
+    run_nightly_cargo(&["miri", "test", "-p", "j2k-tilecodec"])?;
     run_nightly_cargo(&[
         "miri",
         "test",
         "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "--no-default-features",
         "inspect::",
     ])
@@ -854,14 +825,26 @@ fn no_std() -> Result<(), String> {
         &["target", "add", NO_STD_TARGET],
         &[],
     )?;
-    run_cargo(&["check", "-p", "signinum-core", "--target", NO_STD_TARGET])?;
+    run_cargo(&["check", "-p", "j2k-core", "--target", NO_STD_TARGET])?;
     run_cargo(&[
         "check",
         "-p",
-        "signinum-j2k-native",
+        "j2k-native",
         "--no-default-features",
         "--target",
         NO_STD_TARGET,
+    ])?;
+    run_program(
+        OsString::from("rustup"),
+        &["target", "add", NO_STD_CORE_PORTABLE_TARGET],
+        &[],
+    )?;
+    run_cargo(&[
+        "check",
+        "-p",
+        "j2k-core",
+        "--target",
+        NO_STD_CORE_PORTABLE_TARGET,
     ])
 }
 
@@ -919,8 +902,8 @@ fn verify_unsafe_audit() -> Result<(), String> {
 }
 
 fn downstream_smoke() -> Result<(), String> {
-    run_cargo(&["test", "-p", "signinum", "--examples"])?;
-    run_cargo(&["test", "-p", "signinum-transcode", "--examples"])
+    run_cargo(&["test", "-p", "j2k", "--examples"])?;
+    run_cargo(&["test", "-p", "j2k-transcode", "--examples"])
 }
 
 fn release_integrity() -> Result<(), String> {
@@ -1021,7 +1004,7 @@ fn release_integrity() -> Result<(), String> {
                     "`{name}` has a library target but is missing from STABLE_SEMVER_PACKAGES"
                 ));
             }
-        } else if name != "signinum-cli" {
+        } else if name != "j2k-cli" {
             errors.push(format!(
                 "`{name}` is publishable but has no library target and no explicit release-integrity exemption"
             ));
@@ -1334,23 +1317,23 @@ fn release_metal() -> Result<(), String> {
     }
     if skip_j2k_metal_runtime_on_hosted_github_macos() {
         eprintln!(
-            "skipping signinum-j2k-metal release runtime tests on GitHub-hosted macOS; \
+            "skipping j2k-metal release runtime tests on GitHub-hosted macOS; \
              self-hosted gpu-validation runs the Metal runtime suite"
         );
         run_cargo_with_env(
-            &["test", "--release", "-p", "signinum-jpeg-metal"],
+            &["test", "--release", "-p", "j2k-jpeg-metal"],
             &[("RUST_TEST_THREADS", "1")],
         )?;
-        return run_cargo(&["test", "--release", "-p", "signinum-j2k-metal", "--no-run"]);
+        return run_cargo(&["test", "--release", "-p", "j2k-metal", "--no-run"]);
     }
     run_cargo_with_env(
         &[
             "test",
             "--release",
             "-p",
-            "signinum-jpeg-metal",
+            "j2k-jpeg-metal",
             "-p",
-            "signinum-j2k-metal",
+            "j2k-metal",
         ],
         &[("RUST_TEST_THREADS", "1")],
     )
@@ -1359,7 +1342,7 @@ fn release_metal() -> Result<(), String> {
 fn skip_j2k_metal_runtime_on_hosted_github_macos() -> bool {
     env::consts::OS == "macos"
         && env::var_os("GITHUB_ACTIONS").is_some()
-        && env::var_os("SIGNINUM_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS").is_none()
+        && env::var_os("J2K_RUN_HOSTED_J2K_METAL_RUNTIME_TESTS").is_none()
 }
 
 fn coverage() -> Result<(), String> {
@@ -1378,7 +1361,7 @@ fn coverage() -> Result<(), String> {
 }
 
 const GPU_COVERAGE_EXCLUSION_REGEX: &str =
-    "crates/signinum-cuda-runtime/|crates/signinum-.*-cuda/|crates/signinum-.*-metal/|crates/signinum-metal-support/";
+    "crates/j2k-cuda-runtime/|crates/j2k-.*-cuda/|crates/j2k-.*-metal/|crates/j2k-metal-support/";
 
 fn package() -> Result<(), String> {
     ensure_clean_worktree()?;
@@ -1506,17 +1489,13 @@ fn comparator_versions() -> Vec<(String, String)> {
     vec![
         (
             "OpenJPEG".to_string(),
-            comparator_command_version(
-                "SIGNINUM_OPENJPEG_DECOMPRESS_BIN",
-                "opj_decompress",
-                &["-h"],
-            ),
+            comparator_command_version("J2K_OPENJPEG_DECOMPRESS_BIN", "opj_decompress", &["-h"]),
         ),
         (
             "Grok".to_string(),
-            env::var("SIGNINUM_GROK_ROOT")
+            env::var("J2K_GROK_ROOT")
                 .map(|root| format!("configured root: {root}"))
-                .unwrap_or_else(|_| "unavailable: SIGNINUM_GROK_ROOT not set".to_string()),
+                .unwrap_or_else(|_| "unavailable: J2K_GROK_ROOT not set".to_string()),
         ),
         (
             "libjpeg-turbo".to_string(),
@@ -1561,7 +1540,7 @@ fn render_benchmark_report(report: &BenchmarkReport) -> String {
     writeln!(&mut out, "- input source: {}", report.input_source).unwrap();
     writeln!(
         &mut out,
-        "- SIGNINUM_J2K_COMPARE_THREADS: {}",
+        "- J2K_COMPARE_THREADS: {}",
         report.compare_threads
     )
     .unwrap();
@@ -1648,10 +1627,10 @@ fn print_help() {
            typos         run typos\n\
            bench-build   compile benchmark targets\n\
            bench-report  print or write a benchmark publication report\n\
-           j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
-           j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
+          j2k-bench-signoff run required OpenJPEG/Grok parity and J2K compare bench compile gates\n\
+          j2k-perf-guard compare CPU J2K Criterion medians against a baseline git ref\n\
            fuzz-build    compile fuzz harnesses\n\
-           fuzz-run      run scheduled fuzz targets with SIGNINUM_FUZZ_RUNS\n\
+           fuzz-run      run scheduled fuzz targets with J2K_FUZZ_RUNS\n\
            stable-api    check the generated 1.0 public API inventory snapshot\n\
            semver        check stable library crates across the 1.0 major-release boundary\n\
            deny          run cargo-deny\n\
@@ -1786,7 +1765,7 @@ mod tests {
 
     #[test]
     fn discover_estimates_reads_criterion_median_point_estimates() {
-        let root = temp_dir("signinum-perf-guard-test");
+        let root = temp_dir("j2k-perf-guard-test");
         let estimate_path = root
             .join("target")
             .join("criterion")
@@ -1816,44 +1795,43 @@ mod tests {
 
     #[test]
     fn sync_benchmark_sources_overlays_current_bench_files() {
-        let root = temp_dir("signinum-perf-guard-sync-test");
+        let root = temp_dir("j2k-perf-guard-sync-test");
         let source = root.join("source");
         let target = root.join("target");
-        let jpeg_manifest = "crates/signinum-jpeg/Cargo.toml";
-        let cuda_manifest = "crates/signinum-j2k-cuda/Cargo.toml";
-        let public_bench = "crates/signinum-j2k/benches/public_api.rs";
-        let jpeg_encode_bench = "crates/signinum-jpeg/benches/encode_cpu.rs";
-        let cuda_decode_bench = "crates/signinum-j2k-cuda/benches/htj2k_decode.rs";
-        let cuda_encode_bench = "crates/signinum-j2k-cuda/benches/htj2k_encode.rs";
-        let native_bench = "crates/signinum-j2k-native/benches/tier1_bitplane.rs";
-        let native_sigprop_bench = "crates/signinum-j2k-native/benches/htj2k_sigprop_phase.rs";
-        let native_fixture =
-            "crates/signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k";
-        fs::create_dir_all(source.join("crates/signinum-j2k/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/signinum-jpeg/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/signinum-j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/signinum-j2k-native/benches")).unwrap();
-        fs::create_dir_all(source.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-jpeg")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k-cuda")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-jpeg/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k-cuda/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k-native/benches")).unwrap();
-        fs::create_dir_all(target.join("crates/signinum-j2k-native/fixtures/htj2k")).unwrap();
+        let jpeg_manifest = "crates/j2k-jpeg/Cargo.toml";
+        let cuda_manifest = "crates/j2k-cuda/Cargo.toml";
+        let public_bench = "crates/j2k/benches/public_api.rs";
+        let jpeg_encode_bench = "crates/j2k-jpeg/benches/encode_cpu.rs";
+        let cuda_decode_bench = "crates/j2k-cuda/benches/htj2k_decode.rs";
+        let cuda_encode_bench = "crates/j2k-cuda/benches/htj2k_encode.rs";
+        let native_bench = "crates/j2k-native/benches/tier1_bitplane.rs";
+        let native_sigprop_bench = "crates/j2k-native/benches/htj2k_sigprop_phase.rs";
+        let native_fixture = "crates/j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k";
+        fs::create_dir_all(source.join("crates/j2k/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/j2k-jpeg/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/j2k-cuda/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/j2k-native/benches")).unwrap();
+        fs::create_dir_all(source.join("crates/j2k-native/fixtures/htj2k")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-jpeg")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-cuda")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-jpeg/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-cuda/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-native/benches")).unwrap();
+        fs::create_dir_all(target.join("crates/j2k-native/fixtures/htj2k")).unwrap();
         fs::write(
             source.join(jpeg_manifest),
-            "[package]\nname = \"signinum-jpeg\"\n\n[[bench]]\nname = \"encode_cpu\"\nharness = false\n",
+            "[package]\nname = \"j2k-jpeg\"\n\n[[bench]]\nname = \"encode_cpu\"\nharness = false\n",
         )
         .unwrap();
         fs::write(
             target.join(jpeg_manifest),
-            "[package]\nname = \"signinum-jpeg\"\n",
+            "[package]\nname = \"j2k-jpeg\"\n",
         )
         .unwrap();
         fs::write(
             target.join(cuda_manifest),
-            "[package]\nname = \"signinum-j2k-cuda\"\n",
+            "[package]\nname = \"j2k-cuda\"\n",
         )
         .unwrap();
         fs::write(source.join(public_bench), "current public bench").unwrap();

@@ -71,10 +71,10 @@ mod source_policy {
     fn adapter_crates_do_not_import_codec_private_modules() {
         let root = repo_root();
         let adapter_crates = [
-            "crates/signinum-jpeg-metal",
-            "crates/signinum-jpeg-cuda",
-            "crates/signinum-j2k-metal",
-            "crates/signinum-j2k-cuda",
+            "crates/j2k-jpeg-metal",
+            "crates/j2k-jpeg-cuda",
+            "crates/j2k-metal",
+            "crates/j2k-cuda",
         ];
 
         for crate_dir in adapter_crates {
@@ -91,12 +91,12 @@ mod source_policy {
     }
 
     #[test]
-    fn production_signinum_cuda_code_does_not_reference_nvjpeg() {
+    fn production_j2k_cuda_code_does_not_reference_nvjpeg() {
         let root = repo_root();
         let checked_dirs = [
-            "crates/signinum-cuda-runtime/src",
-            "crates/signinum-jpeg-cuda/src",
-            "crates/signinum-jpeg-cuda/benches",
+            "crates/j2k-cuda-runtime/src",
+            "crates/j2k-jpeg-cuda/src",
+            "crates/j2k-jpeg-cuda/benches",
         ];
 
         for dir in checked_dirs {
@@ -107,7 +107,7 @@ mod source_policy {
                 !["nvjpeg", "nvJPEG", "Nvjpeg", "NVJPEG"]
                     .iter()
                     .any(|token| source.contains(token)),
-                "production Signinum CUDA source {} still references nvJPEG; JPEG CUDA decode must use Signinum-owned paths only",
+                "production J2K CUDA source {} still references nvJPEG; JPEG CUDA decode must use J2K-owned paths only",
                 path.strip_prefix(root).unwrap_or(&path).display()
             );
             }
@@ -119,7 +119,7 @@ mod source_policy {
         let root = repo_root();
         let expected_modules = [
             (
-                "crates/signinum-jpeg-cuda",
+                "crates/j2k-jpeg-cuda",
                 [
                     "codec.rs",
                     "decoder.rs",
@@ -131,7 +131,7 @@ mod source_policy {
                 .as_slice(),
             ),
             (
-                "crates/signinum-j2k-cuda",
+                "crates/j2k-cuda",
                 [
                     "codec.rs",
                     "decoder.rs",
@@ -174,8 +174,8 @@ mod source_policy {
     #[test]
     fn reusable_benchmark_generators_live_in_test_support() {
         let root = repo_root();
-        let support = fs::read_to_string(root.join("crates/signinum-test-support/src/lib.rs"))
-            .expect("read signinum-test-support");
+        let support = fs::read_to_string(root.join("crates/j2k-test-support/src/lib.rs"))
+            .expect("read j2k-test-support");
 
         for required in [
             "pub fn gradient_u8",
@@ -184,7 +184,7 @@ mod source_policy {
         ] {
             assert!(
                 support.contains(required),
-                "signinum-test-support must expose reusable generator `{required}`"
+                "j2k-test-support must expose reusable generator `{required}`"
             );
         }
     }
@@ -194,20 +194,14 @@ mod architecture_policy {
     use super::*;
 
     #[test]
-    fn workspace_contains_public_signinum_facade_crate() {
+    fn workspace_contains_public_j2k_crate() {
         let root = repo_root();
-        let manifest_path = root.join("crates/signinum/Cargo.toml");
+        let manifest_path = root.join("crates/j2k/Cargo.toml");
         let manifest = fs::read_to_string(&manifest_path).unwrap_or_else(|err| {
             panic!("read {}: {err}", manifest_path.display());
         });
 
-        for required in [
-            "name = \"signinum\"",
-            "signinum-core",
-            "signinum-jpeg",
-            "signinum-j2k",
-            "signinum-tilecodec",
-        ] {
+        for required in ["name = \"j2k\"", "j2k-core", "j2k-native", "j2k-types"] {
             assert!(
                 manifest.contains(required),
                 "{} must contain `{required}`",
@@ -221,48 +215,33 @@ mod architecture_policy {
         let root_manifest =
             fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
         assert!(
-            root_manifest.contains("\"crates/signinum\""),
-            "workspace members must include the public signinum facade crate"
+            root_manifest.contains("\"crates/j2k\""),
+            "workspace members must include the public j2k crate"
         );
     }
 
     #[test]
-    fn signinum_facade_uses_explicit_upstream_reexports() {
+    fn j2k_public_crate_uses_explicit_upstream_reexports() {
         let root = repo_root();
-        let facade_path = root.join("crates/signinum/src/lib.rs");
-        let facade = fs::read_to_string(&facade_path).unwrap_or_else(|err| {
-            panic!("read {}: {err}", facade_path.display());
+        let public_api_path = root.join("crates/j2k/src/lib.rs");
+        let public_api = fs::read_to_string(&public_api_path).unwrap_or_else(|err| {
+            panic!("read {}: {err}", public_api_path.display());
         });
 
-        let glob_reexports = facade
+        let glob_reexports = public_api
             .lines()
             .enumerate()
             .filter_map(|(idx, line)| {
                 let trimmed = line.trim();
-                (trimmed.starts_with("pub use signinum_") && trimmed.ends_with("::*;"))
+                (trimmed.starts_with("pub use j2k_") && trimmed.ends_with("::*;"))
                     .then(|| format!("{}:{}", idx + 1, trimmed))
             })
             .collect::<Vec<_>>();
         assert!(
             glob_reexports.is_empty(),
-            "signinum facade must explicitly list upstream reexports:\n{}",
+            "j2k public crate must explicitly list upstream reexports:\n{}",
             glob_reexports.join("\n")
         );
-
-        let root_reexports = facade
-            .split("pub mod prelude")
-            .next()
-            .expect("facade root reexports");
-        let public_root = root_reexports
-            .split("pub mod tilecodec")
-            .nth(1)
-            .expect("facade root-level public uses");
-        for required in ["TileBatchDecodeDevice", "TileBatchDecodeSubmit"] {
-            assert!(
-                public_root.contains(required),
-                "signinum facade root must re-export {required}"
-            );
-        }
     }
 
     #[test]
@@ -297,7 +276,7 @@ mod architecture_policy {
             fs::read_to_string(root.join("docs/architecture.md")).expect("read architecture docs");
 
         for required in [
-            "`signinum-test-support`",
+            "`j2k-test-support`",
             "dev helper",
             "`xtask`",
             "workspace tool",
@@ -323,15 +302,9 @@ mod architecture_policy {
         let publishable = const_array_block(&xtask, "PUBLISHABLE_PACKAGES");
 
         for (manifest, package) in [
-            (
-                "crates/signinum-test-support/Cargo.toml",
-                "signinum-test-support",
-            ),
+            ("crates/j2k-test-support/Cargo.toml", "j2k-test-support"),
             ("xtask/Cargo.toml", "xtask"),
-            (
-                "tests/nvidia-baseline/Cargo.toml",
-                "signinum-nvidia-baseline",
-            ),
+            ("tests/nvidia-baseline/Cargo.toml", "j2k-nvidia-baseline"),
         ] {
             let source = fs::read_to_string(root.join(manifest))
                 .unwrap_or_else(|err| panic!("read {manifest}: {err}"));
@@ -346,8 +319,8 @@ mod architecture_policy {
         }
 
         assert!(
-            workspace.contains("\"crates/signinum-test-support\""),
-            "root workspace must include signinum-test-support for shared test helpers"
+            workspace.contains("\"crates/j2k-test-support\""),
+            "root workspace must include j2k-test-support for shared test helpers"
         );
         assert!(
             workspace.contains("\"xtask\""),
@@ -360,27 +333,26 @@ mod architecture_policy {
     }
 
     #[test]
-    fn public_crates_do_not_reexport_signinum_j2k_native() {
+    fn public_crates_do_not_reexport_j2k_native() {
         let root = repo_root();
         let mut offenders = Vec::new();
 
         for crate_dir in [
-            "crates/signinum/src",
-            "crates/signinum-j2k/src",
-            "crates/signinum-transcode/src",
-            "crates/signinum-j2k-metal/src",
-            "crates/signinum-j2k-cuda/src",
-            "crates/signinum-transcode-metal/src",
-            "crates/signinum-transcode-cuda/src",
+            "crates/j2k/src",
+            "crates/j2k/src",
+            "crates/j2k-transcode/src",
+            "crates/j2k-metal/src",
+            "crates/j2k-cuda/src",
+            "crates/j2k-transcode-metal/src",
+            "crates/j2k-transcode-cuda/src",
         ] {
             for path in rust_sources(&root.join(crate_dir)) {
                 let source = fs::read_to_string(&path)
                     .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
                 for (line_idx, line) in source.lines().enumerate() {
                     let trimmed = line.trim_start();
-                    if trimmed.starts_with("pub use signinum_j2k_native")
-                        || trimmed.starts_with("pub type ")
-                            && trimmed.contains("signinum_j2k_native")
+                    if trimmed.starts_with("pub use j2k_native")
+                        || trimmed.starts_with("pub type ") && trimmed.contains("j2k_native")
                     {
                         offenders.push(format!(
                             "{}:{}:{}",
@@ -401,26 +373,26 @@ mod architecture_policy {
     }
 
     #[test]
-    fn rendered_public_api_does_not_expose_signinum_j2k_native() {
+    fn rendered_public_api_does_not_expose_j2k_native() {
         let root = repo_root();
         let stable_api_snapshot =
             fs::read_to_string(root.join("docs/stable-api-1.0.public-api.txt"))
                 .expect("read stable API snapshot");
 
         for package in [
-            "signinum",
-            "signinum-j2k",
-            "signinum-transcode",
-            "signinum-j2k-metal",
-            "signinum-j2k-cuda",
-            "signinum-transcode-metal",
-            "signinum-transcode-cuda",
+            "j2k",
+            "j2k",
+            "j2k-transcode",
+            "j2k-metal",
+            "j2k-cuda",
+            "j2k-transcode-metal",
+            "j2k-transcode-cuda",
         ] {
             let api = cargo_public_api(root, package)
                 .unwrap_or_else(|| stable_api_snapshot_section(&stable_api_snapshot, package));
             assert!(
-                !api.contains("signinum_j2k_native"),
-                "public API for package {package} exposes signinum_j2k_native:\n{api}"
+                !api.contains("j2k_native"),
+                "public API for package {package} exposes j2k_native:\n{api}"
             );
         }
     }
@@ -485,8 +457,8 @@ mod docs_and_workflows_policy {
             "\"--workspace\"",
             "\"--all-features\"",
             "\"--no-deps\"",
-            "\"signinum-jpeg-metal\"",
-            "\"signinum-j2k-metal\"",
+            "\"j2k-jpeg-metal\"",
+            "\"j2k-metal\"",
             "\"--no-run\"",
         ] {
             assert!(xtask.contains(required), "xtask must contain `{required}`");
@@ -523,22 +495,22 @@ mod docs_and_workflows_policy {
         );
 
         for package in [
-            "signinum",
-            "signinum-core",
-            "signinum-jpeg",
-            "signinum-j2k",
-            "signinum-tilecodec",
-            "signinum-jpeg-metal",
-            "signinum-j2k-metal",
-            "signinum-jpeg-cuda",
-            "signinum-j2k-cuda",
-            "signinum-transcode",
-            "signinum-transcode-cuda",
-            "signinum-metal-support",
-            "signinum-transcode-metal",
-            "signinum-j2k-native",
-            "signinum-cuda-runtime",
-            "signinum-profile",
+            "j2k",
+            "j2k-core",
+            "j2k-jpeg",
+            "j2k",
+            "j2k-tilecodec",
+            "j2k-jpeg-metal",
+            "j2k-metal",
+            "j2k-jpeg-cuda",
+            "j2k-cuda",
+            "j2k-transcode",
+            "j2k-transcode-cuda",
+            "j2k-metal-support",
+            "j2k-transcode-metal",
+            "j2k-native",
+            "j2k-cuda-runtime",
+            "j2k-profile",
         ] {
             assert!(
                 semver_packages.contains(&format!("\"{package}\"")),
@@ -546,7 +518,7 @@ mod docs_and_workflows_policy {
             );
         }
 
-        let package = "signinum-cli";
+        let package = "j2k-cli";
         assert!(
             !semver_job.contains(package),
             "CI semver job must not gate experimental or CLI crate `{package}`"
@@ -600,8 +572,8 @@ mod docs_and_workflows_policy {
             "\"--no-deps\"",
             "\"clippy::pedantic\"",
             "\"clippy::nursery\"",
-            "\"signinum-j2k-native\"",
-            "\"signinum-j2k\"",
+            "\"j2k-native\"",
+            "\"j2k\"",
         ] {
             assert!(xtask.contains(required), "xtask must contain `{required}`");
         }
@@ -685,10 +657,10 @@ mod docs_and_workflows_policy {
             .expect("read CI workflow");
 
         for required in [
-            "SIGNINUM_FUZZ_RUNS: \"512\"",
-            "SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: \"60\"",
-            "SIGNINUM_FUZZ_RUNS: \"20000\"",
-            "SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: \"900\"",
+            "J2K_FUZZ_RUNS: \"512\"",
+            "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"60\"",
+            "J2K_FUZZ_RUNS: \"20000\"",
+            "J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: \"900\"",
         ] {
             assert!(
                 workflow.contains(required),
@@ -753,14 +725,14 @@ mod docs_and_workflows_policy {
         for required in [
             "pull-requests: read",
             "actions: read",
-            "crates/signinum-cuda-runtime/",
-            "crates/signinum-jpeg-cuda/",
-            "crates/signinum-j2k-cuda/",
-            "crates/signinum-transcode-cuda/",
-            "crates/signinum-metal-support/",
-            "crates/signinum-jpeg-metal/",
-            "crates/signinum-j2k-metal/",
-            "crates/signinum-transcode-metal/",
+            "crates/j2k-cuda-runtime/",
+            "crates/j2k-jpeg-cuda/",
+            "crates/j2k-cuda/",
+            "crates/j2k-transcode-cuda/",
+            "crates/j2k-metal-support/",
+            "crates/j2k-jpeg-metal/",
+            "crates/j2k-metal/",
+            "crates/j2k-transcode-metal/",
             "gpu-validation.yml/runs?head_sha=",
             "run.get(\"conclusion\") == \"success\"",
             "No GPU path changes detected.",
@@ -772,14 +744,14 @@ mod docs_and_workflows_policy {
         }
         for required in [
             ".github/workflows/gpu-validation.yml",
-            "crates/signinum-cuda-runtime/",
-            "crates/signinum-jpeg-cuda/",
-            "crates/signinum-j2k-cuda/",
-            "crates/signinum-transcode-cuda/",
-            "crates/signinum-metal-support/",
-            "crates/signinum-jpeg-metal/",
-            "crates/signinum-j2k-metal/",
-            "crates/signinum-transcode-metal/",
+            "crates/j2k-cuda-runtime/",
+            "crates/j2k-jpeg-cuda/",
+            "crates/j2k-cuda/",
+            "crates/j2k-transcode-cuda/",
+            "crates/j2k-metal-support/",
+            "crates/j2k-jpeg-metal/",
+            "crates/j2k-metal/",
+            "crates/j2k-transcode-metal/",
         ] {
             assert!(
                 codeowners.contains(required),
@@ -802,10 +774,10 @@ mod docs_and_workflows_policy {
             "metal",
             "cuda",
             "NVCC: /usr/local/cuda/bin/nvcc",
-            "cargo test -p signinum-jpeg-metal",
-            "cargo test -p signinum-j2k-metal",
-            "cargo test -p signinum-jpeg-cuda",
-            "cargo test -p signinum-j2k-cuda",
+            "cargo test -p j2k-jpeg-metal",
+            "cargo test -p j2k-metal",
+            "cargo test -p j2k-jpeg-cuda",
+            "cargo test -p j2k-cuda",
         ] {
             assert!(
                 workflow.contains(required),
@@ -828,20 +800,20 @@ mod docs_and_workflows_policy {
         for required in [
             "runs-on: [self-hosted, Linux, X64, cuda]",
             "NVCC: /usr/local/cuda/bin/nvcc",
-            "SIGNINUM_REQUIRE_CUDA_RUNTIME",
-        "SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
-        "SIGNINUM_GPU_BENCH_DIM",
-        "SIGNINUM_GPU_BENCH_BATCH",
-        "SIGNINUM_GPU_BENCH_BATCH_DIM",
+            "J2K_REQUIRE_CUDA_RUNTIME",
+        "J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE",
+        "J2K_GPU_BENCH_DIM",
+        "J2K_GPU_BENCH_BATCH",
+        "J2K_GPU_BENCH_BATCH_DIM",
         "uname -a",
         "rustc -Vv",
         "cargo -V",
         "nvidia-smi",
         "CUDA runtime validation requires a working CUDA driver",
-        "cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime",
-        "cargo test -p signinum-j2k-cuda --all-targets --features cuda-runtime",
-        "cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime --no-run",
-        "cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot",
+        "cargo test -p j2k-jpeg-cuda --all-targets --features cuda-runtime",
+        "cargo test -p j2k-cuda --all-targets --features cuda-runtime",
+        "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run",
+        "cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot",
     ] {
         assert!(
             cuda_job.contains(required),
@@ -853,17 +825,13 @@ mod docs_and_workflows_policy {
         );
     }
 
-        let forbidden_j2k_metal_compare_bench = [
-            "cargo bench -p ",
-            "signinum-j2k-metal",
-            " --bench compare --no-run",
-        ]
-        .concat();
+        let forbidden_j2k_metal_compare_bench =
+            ["cargo bench -p ", "j2k-metal", " --bench compare --no-run"].concat();
         for forbidden in [
             forbidden_j2k_metal_compare_bench.as_str(),
-            "cargo bench -p signinum-jpeg --no-run",
-            "cargo test -p signinum-jpeg-metal",
-            "cargo test -p signinum-j2k-metal",
+            "cargo bench -p j2k-jpeg --no-run",
+            "cargo test -p j2k-jpeg-metal",
+            "cargo test -p j2k-metal",
         ] {
             assert!(
                 !cuda_job.contains(forbidden),
@@ -880,7 +848,7 @@ mod docs_and_workflows_policy {
     fn cuda_build_scripts_do_not_probe_default_nvcc() {
         let root = repo_root();
         for relative in [
-            "crates/signinum-cuda-runtime/build.rs",
+            "crates/j2k-cuda-runtime/build.rs",
             "tests/nvidia-baseline/build.rs",
         ] {
             let source = fs::read_to_string(root.join(relative))
@@ -906,9 +874,9 @@ mod docs_and_workflows_policy {
         for required in [
             "run-cuda-htj2k-decode-profile",
             "CUDA HTJ2K decode RCA profile",
-            "SIGNINUM_REQUIRE_CUDA_BENCH: \"1\"",
-            "SIGNINUM_J2K_PROFILE_STAGES: summary",
-            "SIGNINUM_J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json",
+            "J2K_REQUIRE_CUDA_BENCH: \"1\"",
+            "J2K_PROFILE_STAGES: summary",
+            "J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json",
             "/proc/sys/kernel/perf_event_paranoid",
             "cargo install samply --version 0.13.1 --locked",
             "samply record --save-only -o target/cuda_htj2k_decode_samply.json.gz",
@@ -949,10 +917,10 @@ mod docs_and_workflows_policy {
             "target/transcode_compare_level1.json",
             "target/transcode_compare_level2.json",
             "tests/nvidia-baseline/scripts/assert_transcode_perf.py",
-            "SIGNINUM_LEVEL1_CUDA_HT_MIN_MPS",
-            "SIGNINUM_LEVEL2_CUDA_HT_MIN_MPS",
+            "J2K_LEVEL1_CUDA_HT_MIN_MPS",
+            "J2K_LEVEL2_CUDA_HT_MIN_MPS",
             "--bin decode_compare",
-            "--jpeg-dir \"${SIGNINUM_BENCH_JPEG_DIR}\"",
+            "--jpeg-dir \"${J2K_BENCH_JPEG_DIR}\"",
             "--min-inputs 100",
             "target/decode_compare.json",
             "target/decode_compare.csv",
@@ -974,7 +942,7 @@ mod docs_and_workflows_policy {
     fn nvidia_codec_comparator_stays_test_only() {
         let root = repo_root();
         let needles = [
-            "signinum-nvidia-baseline",
+            "j2k-nvidia-baseline",
             "nvjpeg2000",
             "nvjpeg2k",
             "nvidia-baseline",
@@ -1035,19 +1003,19 @@ mod release_policy {
         );
 
         for package in [
-            "signinum-core",
-            "signinum-cuda-runtime",
-            "signinum-profile",
-            "signinum-j2k-native",
-            "signinum-tilecodec",
-            "signinum-jpeg",
-            "signinum-j2k",
-            "signinum-jpeg-metal",
-            "signinum-jpeg-cuda",
-            "signinum-j2k-metal",
-            "signinum-j2k-cuda",
-            "signinum-cli",
-            "signinum",
+            "j2k-core",
+            "j2k-cuda-runtime",
+            "j2k-profile",
+            "j2k-native",
+            "j2k-tilecodec",
+            "j2k-jpeg",
+            "j2k",
+            "j2k-jpeg-metal",
+            "j2k-jpeg-cuda",
+            "j2k-metal",
+            "j2k-cuda",
+            "j2k-cli",
+            "j2k",
         ] {
             assert!(
                 publishable.contains(&format!("\"{package}\"")),
@@ -1059,7 +1027,7 @@ mod release_policy {
             );
         }
 
-        let package = "signinum-j2k-compare";
+        let package = "j2k-compare";
         assert!(
             !publishable.contains(&format!("\"{package}\"")),
             "xtask package gate must not package local comparator package {package}"
@@ -1080,9 +1048,9 @@ mod release_policy {
         "release docs must describe publishing the current manifest versions instead of stale hard-coded versions"
     );
         assert!(
-            !release.contains("`signinum-j2k` `1.1.0`")
-                && !release.contains("`signinum-j2k-native` `0.3.0`")
-                && !release.contains("`signinum` `1.0.0`"),
+            !release.contains("`j2k` `1.1.0`")
+                && !release.contains("`j2k-native` `0.3.0`")
+                && !release.contains("`j2k` `1.0.0`"),
             "release docs must not carry stale pre-facade publish versions"
         );
     }
@@ -1112,19 +1080,18 @@ mod release_policy {
     #[test]
     fn j2k_compare_stays_unpublished_and_out_of_j2k_package_deps() {
         let root = repo_root();
-        let compare_manifest =
-            fs::read_to_string(root.join("crates/signinum-j2k-compare/Cargo.toml"))
-                .expect("read signinum-j2k-compare manifest");
-        let j2k_manifest = fs::read_to_string(root.join("crates/signinum-j2k/Cargo.toml"))
-            .expect("read signinum-j2k manifest");
+        let compare_manifest = fs::read_to_string(root.join("crates/j2k-compare/Cargo.toml"))
+            .expect("read j2k-compare manifest");
+        let j2k_manifest =
+            fs::read_to_string(root.join("crates/j2k/Cargo.toml")).expect("read j2k manifest");
 
         assert!(
             compare_manifest.contains("publish = false"),
-            "signinum-j2k-compare must remain an unpublished local oracle helper"
+            "j2k-compare must remain an unpublished local oracle helper"
         );
         assert!(
-            !j2k_manifest.contains("signinum-j2k-compare"),
-            "signinum-j2k must not package a dev-dependency on signinum-j2k-compare"
+            !j2k_manifest.contains("j2k-compare"),
+            "j2k must not package a dev-dependency on j2k-compare"
         );
     }
 
@@ -1149,8 +1116,8 @@ mod release_policy {
             );
         }
         assert!(
-            staged_packages.contains("\"signinum-cuda-runtime\""),
-            "signinum-cuda-runtime depends on staged signinum-core and must not run strict package verification before publication"
+            staged_packages.contains("\"j2k-cuda-runtime\""),
+            "j2k-cuda-runtime depends on staged j2k-core and must not run strict package verification before publication"
         );
         assert!(
         xtask.contains("\"--list\"") && xtask.contains("unpublished workspace dependencies"),
@@ -1158,7 +1125,7 @@ mod release_policy {
     );
         assert!(
         publish_script.contains("dry-run package list only")
-            && publish_script.contains("signinum-cli")
+            && publish_script.contains("j2k-cli")
             && publish_script.contains("cargo package -p \"$crate\" --list"),
         "publish workflow dry-run must not fail downstream crates only because staged dependency versions are not published yet"
     );
@@ -1199,7 +1166,7 @@ mod public_docs_policy {
     use super::*;
 
     #[test]
-    fn supported_signinum_env_vars_are_documented() {
+    fn supported_j2k_env_vars_are_documented() {
         let root = repo_root();
         let docs_path = root.join("docs/env-vars.md");
         let docs = fs::read_to_string(&docs_path)
@@ -1220,8 +1187,8 @@ mod public_docs_policy {
             }
             let source = fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-            for token in signinum_env_tokens(&source) {
-                if is_internal_signinum_token(&token) {
+            for token in j2k_env_tokens(&source) {
+                if is_internal_j2k_token(&token) {
                     continue;
                 }
                 if !docs.contains(&format!("`{token}`")) {
@@ -1235,17 +1202,17 @@ mod public_docs_policy {
 
         assert!(
             missing.is_empty(),
-            "supported SIGNINUM_* environment variables must be documented in docs/env-vars.md:\n{}",
+            "supported J2K_* environment variables must be documented in docs/env-vars.md:\n{}",
             missing.join("\n")
         );
         assert!(
-            !docs.contains("SIGNINUM_JPEG_METAL_SPLIT_FAST420_BATCH"),
+            !docs.contains("J2K_JPEG_METAL_SPLIT_FAST420_BATCH"),
             "removed experiment-only JPEG Metal fast420 split switch must not be documented as supported"
         );
     }
 
     #[test]
-    fn public_docs_describe_facade_auto_and_cuda_runtime_surface_scope() {
+    fn public_docs_describe_public_crate_auto_and_cuda_runtime_surface_scope() {
         let root = repo_root();
         let readme = fs::read_to_string(root.join("README.md")).expect("read README");
         let changelog = fs::read_to_string(root.join("CHANGELOG.md")).expect("read changelog");
@@ -1259,9 +1226,9 @@ mod public_docs_policy {
             ("docs/release.md", release.as_str()),
         ] {
             assert!(
-                docs.contains("facade release")
+                docs.contains("public crate release")
                     && docs.contains("Runtime backend selection defaults to `Auto`"),
-                "{name} must name the facade release posture and Auto backend policy"
+                "{name} must name the public crate release posture and Auto backend policy"
             );
         }
 
@@ -1273,7 +1240,7 @@ mod public_docs_policy {
             assert!(
             docs.contains("cuda-runtime")
                 && docs.contains("CUDA device memory")
-                && docs.contains("Signinum-owned CUDA")
+                && docs.contains("J2K-owned CUDA")
                 && docs.contains("NVIDIA performance"),
             "{name} must describe CUDA device-memory output and owned CUDA scope without overclaiming NVIDIA performance"
         );
@@ -1292,12 +1259,12 @@ mod public_docs_policy {
         for required in [
             "Which crate should I use?",
             "Fast Path For LLM-Assisted Use",
-            "cargo add signinum",
+            "cargo add j2k",
             "statumen",
             "wsi-dicom",
-            "signinum-jpeg",
-            "signinum-j2k",
-            "signinum-cli",
+            "j2k-jpeg",
+            "j2k",
+            "j2k-cli",
         ] {
             assert!(
                 readme.contains(required),
@@ -1315,6 +1282,40 @@ mod public_docs_policy {
                 "README.md must use current package names only"
             );
         }
+    }
+
+    #[test]
+    fn active_repo_text_does_not_reintroduce_signinum_names() {
+        let root = repo_root();
+        let mut offenders = Vec::new();
+
+        for path in repo_text_files(root) {
+            if is_archived_handoff(&path)
+                || is_allowed_signinum_history_reference(root, &path)
+                || path.ends_with("xtask/tests/repo_lint.rs")
+            {
+                continue;
+            }
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            for (line_idx, line) in source.lines().enumerate() {
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("signinum") {
+                    offenders.push(format!(
+                        "{}:{}:{}",
+                        path.strip_prefix(root).unwrap_or(&path).display(),
+                        line_idx + 1,
+                        line
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "active repo text must not reintroduce signinum names after the j2k rename:\n{}",
+            offenders.join("\n")
+        );
     }
 
     #[test]
@@ -1433,14 +1434,15 @@ mod public_docs_policy {
     }
 
     #[test]
-    fn facade_and_transcode_examples_are_publicly_linked() {
+    fn public_codec_and_transcode_examples_are_publicly_linked() {
         let root = repo_root();
         let readme = fs::read_to_string(root.join("README.md")).expect("read README");
 
         for example in [
-            "crates/signinum/examples/inspect_and_decode.rs",
-            "crates/signinum/examples/tile_decompress.rs",
-            "crates/signinum-transcode/examples/jpeg_to_htj2k.rs",
+            "crates/j2k/examples/decode_generated.rs",
+            "crates/j2k-jpeg/examples/inspect.rs",
+            "crates/j2k-tilecodec/examples/decompress.rs",
+            "crates/j2k-transcode/examples/jpeg_to_htj2k.rs",
         ] {
             assert!(
                 root.join(example).exists(),
@@ -1458,13 +1460,13 @@ mod public_docs_policy {
 
         for required in [
             "published benchmark",
-            "SIGNINUM_J2K_COMPARE_THREADS",
-            "SIGNINUM_REQUIRE_OPENJPEG=1",
-            "SIGNINUM_REQUIRE_GROK=1",
+            "J2K_COMPARE_THREADS",
+            "J2K_REQUIRE_OPENJPEG=1",
+            "J2K_REQUIRE_GROK=1",
             "comparator availability",
             "comparator version",
             "input source",
-            "signinum-generated",
+            "j2k-generated",
         ] {
             assert!(
                 readme.contains(required),
@@ -1481,23 +1483,23 @@ mod public_docs_policy {
     #[test]
     fn j2k_metal_bench_surface_stays_clean_after_reset() {
         let root = repo_root();
-        let cargo_toml = fs::read_to_string(root.join("crates/signinum-j2k-metal/Cargo.toml"))
+        let cargo_toml = fs::read_to_string(root.join("crates/j2k-metal/Cargo.toml"))
             .expect("read J2K Metal manifest");
         let readme = fs::read_to_string(root.join("README.md")).expect("read README");
         let xtask = fs::read_to_string(root.join("xtask/src/main.rs")).expect("read xtask");
-        let openjpeg = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/openjpeg.rs"))
+        let openjpeg = fs::read_to_string(root.join("crates/j2k-compare/src/openjpeg.rs"))
             .expect("read OpenJPEG comparator");
-        let grok = fs::read_to_string(root.join("crates/signinum-j2k-compare/src/grok.rs"))
+        let grok = fs::read_to_string(root.join("crates/j2k-compare/src/grok.rs"))
             .expect("read Grok comparator");
 
         assert!(
-        !cargo_toml.contains("[[bench]]"),
-        "signinum-j2k-metal bench targets must stay reset until new profiling benches are added"
-    );
+            !cargo_toml.contains("[[bench]]"),
+            "j2k-metal bench targets must stay reset until new profiling benches are added"
+        );
 
         for forbidden in [
             "criterion =",
-            "signinum-j2k-compare =",
+            "j2k-compare =",
             "name = \"device_upload\"",
             "name = \"compare\"",
             "name = \"encode_stages\"",
@@ -1505,11 +1507,11 @@ mod public_docs_policy {
         ] {
             assert!(
                 !cargo_toml.contains(forbidden),
-                "signinum-j2k-metal manifest must not contain legacy bench entry `{forbidden}`"
+                "j2k-metal manifest must not contain legacy bench entry `{forbidden}`"
             );
         }
 
-        let benches_dir = root.join("crates/signinum-j2k-metal/benches");
+        let benches_dir = root.join("crates/j2k-metal/benches");
         if benches_dir.exists() {
             let stale_entries: Vec<_> = fs::read_dir(&benches_dir)
                 .expect("read J2K Metal benches dir")
@@ -1523,19 +1525,18 @@ mod public_docs_policy {
                 .collect();
             assert!(
                 stale_entries.is_empty(),
-                "signinum-j2k-metal benches dir must stay empty after reset: {stale_entries:?}"
+                "j2k-metal benches dir must stay empty after reset: {stale_entries:?}"
             );
         }
 
-        let removed_j2k_metal_bench_command =
-            ["cargo bench -p ", "signinum-j2k-metal", " --bench"].concat();
+        let removed_j2k_metal_bench_command = ["cargo bench -p ", "j2k-metal", " --bench"].concat();
         assert!(
             !readme.contains(&removed_j2k_metal_bench_command),
-            "README.md must not publish removed signinum-j2k-metal bench commands"
+            "README.md must not publish removed j2k-metal bench commands"
         );
         assert!(
             !xtask.contains(&removed_j2k_metal_bench_command),
-            "xtask must not run removed signinum-j2k-metal bench commands"
+            "xtask must not run removed j2k-metal bench commands"
         );
         assert!(
             openjpeg.contains("pub fn version"),
@@ -1701,21 +1702,21 @@ fn workflow_job<'a>(workflow: &'a str, job_name: &str) -> &'a str {
 
 fn publishable_crate_dirs() -> &'static [&'static str] {
     &[
-        "crates/signinum-core",
-        "crates/signinum-cuda-runtime",
-        "crates/signinum-profile",
-        "crates/signinum-j2k-native",
-        "crates/signinum-jpeg",
-        "crates/signinum-tilecodec",
-        "crates/signinum-j2k",
-        "crates/signinum-transcode",
-        "crates/signinum-jpeg-metal",
-        "crates/signinum-j2k-metal",
-        "crates/signinum-transcode-metal",
-        "crates/signinum-jpeg-cuda",
-        "crates/signinum-j2k-cuda",
-        "crates/signinum-cli",
-        "crates/signinum",
+        "crates/j2k-core",
+        "crates/j2k-cuda-runtime",
+        "crates/j2k-profile",
+        "crates/j2k-native",
+        "crates/j2k-jpeg",
+        "crates/j2k-tilecodec",
+        "crates/j2k",
+        "crates/j2k-transcode",
+        "crates/j2k-jpeg-metal",
+        "crates/j2k-metal",
+        "crates/j2k-transcode-metal",
+        "crates/j2k-jpeg-cuda",
+        "crates/j2k-cuda",
+        "crates/j2k-cli",
+        "crates/j2k",
     ]
 }
 
@@ -1921,6 +1922,7 @@ fn is_repo_text_file(path: &Path) -> bool {
                 | "json"
                 | "lock"
                 | "md"
+                | "py"
                 | "rs"
                 | "sh"
                 | "tex"
@@ -1938,11 +1940,19 @@ fn is_archived_handoff(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with("HANDOFF-"))
 }
 
-fn signinum_env_tokens(source: &str) -> BTreeSet<String> {
+fn is_allowed_signinum_history_reference(root: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative_text = relative.to_string_lossy().replace('\\', "/");
+    relative_text == "CHANGELOG.md"
+        || relative_text.contains("/migration")
+        || relative_text.contains("migration/")
+}
+
+fn j2k_env_tokens(source: &str) -> BTreeSet<String> {
     let mut tokens = BTreeSet::new();
     for line in source.lines() {
         let mut rest = line;
-        while let Some(start) = rest.find("SIGNINUM_") {
+        while let Some(start) = rest.find("J2K_") {
             let token_start = start;
             let token_end = rest[token_start..]
                 .find(|ch: char| !(ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_'))
@@ -1954,12 +1964,39 @@ fn signinum_env_tokens(source: &str) -> BTreeSet<String> {
     tokens
 }
 
-fn is_internal_signinum_token(token: &str) -> bool {
-    token == "SIGNINUM_"
-        || token.starts_with("SIGNINUM_SIGNPOST_")
+fn is_internal_j2k_token(token: &str) -> bool {
+    token == "J2K_"
+        || token.starts_with("J2K_SIGNPOST_")
+        || token.starts_with("J2K_BATCH_")
+        || token.starts_with("J2K_CLASSIC_")
+        || token.starts_with("J2K_DECODE_")
+        || token.starts_with("J2K_ENCODE_")
+        || token.starts_with("J2K_FDWT97_")
+        || token.starts_with("J2K_GPU_ENCODE_")
+        || token.starts_with("J2K_HOST_")
+        || token.starts_with("J2K_HT_")
+        || token.starts_with("J2K_IDWT_")
+        || token.starts_with("J2K_KERNELS_")
+        || token.starts_with("J2K_MCT_")
+        || token.starts_with("J2K_NOT_")
+        || token.starts_with("J2K_OUTPUT_")
+        || token.starts_with("J2K_PACKET_")
+        || token.starts_with("J2K_PLAN_")
+        || token.starts_with("J2K_STATUS_")
+        || token.starts_with("J2K_STORE_")
+        || token.starts_with("J2K_UVLC_")
         || matches!(
             token,
-            "SIGNINUM_JPEG_ZIGZAG" | "SIGNINUM_PROFILE_TEST_STAGE_MODE"
+            "J2K_JPEG_ZIGZAG"
+                | "J2K_IMAGE_DIMENSION"
+                | "J2K_LOSSY_97_QUANTIZATION_SCALE"
+                | "J2K_PI"
+                | "J2K_PLAN"
+                | "J2K_PROFILE_TEST_STAGE_MODE"
+                | "J2K_REFINEMENT_FIXTURE"
+                | "J2K_SPEC_COMPONENTS"
+                | "J2K_TILE_COUNT"
+                | "J2K_YCBCR"
         )
 }
 

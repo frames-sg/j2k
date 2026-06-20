@@ -20,14 +20,14 @@ use std::{
     time::Instant,
 };
 
-use report_format::{csv_f64_or_inf, escape_csv, escape_json, json_f64_or_inf};
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_core::{BackendKind, DeviceSurface, PixelFormat};
-use signinum_j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
-use signinum_nvidia_baseline::{
+use j2k_core::{BackendKind, DeviceSurface, PixelFormat};
+use j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions, Image};
+use j2k_nvidia_baseline::{
     nvidia_j2k_decode_available, psnr_u8, write_text_artifact, NvBaselineError, NvBaselineSession,
     NvJ2kDecodeFormat,
 };
+use report_format::{csv_f64_or_inf, escape_csv, escape_json, json_f64_or_inf};
 
 const DEFAULT_FIXTURE_DIM: u32 = 512;
 const DEFAULT_WARMUP: usize = 2;
@@ -62,9 +62,9 @@ fn main() {
         std::process::exit(2);
     }
 
-    let require_nvidia = std::env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some();
+    let require_nvidia = std::env::var_os("J2K_REQUIRE_NV_BASELINE_BUILD").is_some();
     if require_nvidia && !nvidia_j2k_decode_available() {
-        eprintln!("SIGNINUM_REQUIRE_NV_BASELINE_BUILD set, but nvJPEG2000 decode is unavailable");
+        eprintln!("J2K_REQUIRE_NV_BASELINE_BUILD set, but nvJPEG2000 decode is unavailable");
         std::process::exit(1);
     }
 
@@ -86,13 +86,13 @@ fn should_exit_for_failed_required_report(
     config: &Config,
     require_nvidia: bool,
 ) -> bool {
-    if config.is_signinum_cuda_profile() {
+    if config.is_j2k_cuda_profile() {
         return report
             .profile
             .as_ref()
             .is_some_and(|profile| profile.status.has_failure());
     }
-    if config.compare_signinum_cuda_batch
+    if config.compare_j2k_cuda_batch
         && report
             .profile
             .as_ref()
@@ -115,11 +115,11 @@ struct Config {
     iterations: usize,
     min_inputs: usize,
     max_inputs: Option<usize>,
-    profile_signinum_cuda_only: bool,
-    profile_signinum_cuda_batch: bool,
-    compare_signinum_cuda_batch: bool,
-    collect_signinum_stage_timings: bool,
-    skip_signinum_download: bool,
+    profile_j2k_cuda_only: bool,
+    profile_j2k_cuda_batch: bool,
+    compare_j2k_cuda_batch: bool,
+    collect_j2k_stage_timings: bool,
+    skip_j2k_download: bool,
 }
 
 impl Config {
@@ -142,22 +142,22 @@ impl Config {
             iterations: DEFAULT_ITERATIONS,
             min_inputs: 1,
             max_inputs: None,
-            profile_signinum_cuda_only: false,
-            profile_signinum_cuda_batch: false,
-            compare_signinum_cuda_batch: false,
-            collect_signinum_stage_timings: false,
-            skip_signinum_download: false,
+            profile_j2k_cuda_only: false,
+            profile_j2k_cuda_batch: false,
+            compare_j2k_cuda_batch: false,
+            collect_j2k_stage_timings: false,
+            skip_j2k_download: false,
         };
         let mut iter = args.into_iter().map(Into::into);
         while let Some(arg) = iter.next() {
             match arg.as_str() {
-                "--profile-signinum-cuda-only" => config.profile_signinum_cuda_only = true,
-                "--profile-signinum-cuda-batch" => config.profile_signinum_cuda_batch = true,
-                "--compare-signinum-cuda-batch" => config.compare_signinum_cuda_batch = true,
-                "--collect-signinum-stage-timings" => {
-                    config.collect_signinum_stage_timings = true;
+                "--profile-j2k-cuda-only" => config.profile_j2k_cuda_only = true,
+                "--profile-j2k-cuda-batch" => config.profile_j2k_cuda_batch = true,
+                "--compare-j2k-cuda-batch" => config.compare_j2k_cuda_batch = true,
+                "--collect-j2k-stage-timings" => {
+                    config.collect_j2k_stage_timings = true;
                 }
-                "--skip-signinum-download" => config.skip_signinum_download = true,
+                "--skip-j2k-download" => config.skip_j2k_download = true,
                 "--json" => config.json = Some(next_path(&mut iter, "--json")?),
                 "--csv" => config.csv = Some(next_path(&mut iter, "--csv")?),
                 "--jpeg-dir" => config.jpeg_dir = Some(next_path(&mut iter, "--jpeg-dir")?),
@@ -192,28 +192,25 @@ impl Config {
         if config.min_inputs == 0 {
             return Err("--min-inputs must be > 0".to_string());
         }
-        if config.skip_signinum_download && !config.is_signinum_cuda_profile() {
+        if config.skip_j2k_download && !config.is_j2k_cuda_profile() {
             return Err(
-                "--skip-signinum-download requires --profile-signinum-cuda-only or --profile-signinum-cuda-batch"
+                "--skip-j2k-download requires --profile-j2k-cuda-only or --profile-j2k-cuda-batch"
                     .to_string(),
             );
         }
-        if config.profile_signinum_cuda_only && config.profile_signinum_cuda_batch {
+        if config.profile_j2k_cuda_only && config.profile_j2k_cuda_batch {
             return Err(
-                "--profile-signinum-cuda-only conflicts with --profile-signinum-cuda-batch"
-                    .to_string(),
+                "--profile-j2k-cuda-only conflicts with --profile-j2k-cuda-batch".to_string(),
             );
         }
-        if config.compare_signinum_cuda_batch && config.is_signinum_cuda_profile() {
-            return Err(
-                "--compare-signinum-cuda-batch conflicts with profile-only modes".to_string(),
-            );
+        if config.compare_j2k_cuda_batch && config.is_j2k_cuda_profile() {
+            return Err("--compare-j2k-cuda-batch conflicts with profile-only modes".to_string());
         }
         Ok(config)
     }
 
-    fn is_signinum_cuda_profile(&self) -> bool {
-        self.profile_signinum_cuda_only || self.profile_signinum_cuda_batch
+    fn is_j2k_cuda_profile(&self) -> bool {
+        self.profile_j2k_cuda_only || self.profile_j2k_cuda_batch
     }
 }
 
@@ -236,7 +233,7 @@ where
 }
 
 fn usage() -> String {
-    "usage: decode_compare [--profile-signinum-cuda-only] [--profile-signinum-cuda-batch] [--compare-signinum-cuda-batch] [--collect-signinum-stage-timings] [--skip-signinum-download] [--fixture-dim n] [--jpeg-dir path] [--warmup n] [--iterations n] [--min-inputs n] [--max-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
+    "usage: decode_compare [--profile-j2k-cuda-only] [--profile-j2k-cuda-batch] [--compare-j2k-cuda-batch] [--collect-j2k-stage-timings] [--skip-j2k-download] [--fixture-dim n] [--jpeg-dir path] [--warmup n] [--iterations n] [--min-inputs n] [--max-inputs n] [--json path] [--csv path] [file.j2k ...]".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +265,7 @@ impl DecodeCaseFormat {
     }
 
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    const fn signinum(self) -> PixelFormat {
+    const fn j2k(self) -> PixelFormat {
         match self {
             Self::Gray8 => PixelFormat::Gray8,
             Self::Rgb8 => PixelFormat::Rgb8,
@@ -474,7 +471,7 @@ struct CudaStageBreakdown {
 
 impl CudaStageBreakdown {
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    fn from_report(report: &signinum_j2k_cuda::CudaHtj2kProfileReport) -> Self {
+    fn from_report(report: &j2k_cuda::CudaHtj2kProfileReport) -> Self {
         Self {
             parse_us: report.parse_us,
             plan_us: report.plan_us,
@@ -584,9 +581,9 @@ struct Row {
     height: u32,
     codestream_bytes: usize,
     cpu: TimedStatus,
-    signinum_cuda: TimedStatus,
+    j2k_cuda: TimedStatus,
     nvidia: TimedStatus,
-    signinum_cuda_psnr_vs_cpu: Option<f64>,
+    j2k_cuda_psnr_vs_cpu: Option<f64>,
     nvidia_psnr_vs_cpu: Option<f64>,
 }
 
@@ -596,7 +593,7 @@ impl Row {
     }
 
     fn has_required_failure(&self) -> bool {
-        self.cpu.has_failure() || self.signinum_cuda.has_failure() || self.nvidia.has_failure()
+        self.cpu.has_failure() || self.j2k_cuda.has_failure() || self.nvidia.has_failure()
     }
 }
 
@@ -659,11 +656,11 @@ impl ProfileMeasurement {
 }
 
 fn run_comparison(inputs: &[DecodeInput], config: &Config) -> DecodeReport {
-    if config.profile_signinum_cuda_batch {
-        return DecodeReport::profile(Vec::new(), run_signinum_cuda_batch(inputs, config));
+    if config.profile_j2k_cuda_batch {
+        return DecodeReport::profile(Vec::new(), run_j2k_cuda_batch(inputs, config));
     }
-    if config.profile_signinum_cuda_only {
-        let rows = run_signinum_cuda_only(inputs, config);
+    if config.profile_j2k_cuda_only {
+        let rows = run_j2k_cuda_only(inputs, config);
         let profile = serial_profile_measurement(&rows, inputs, config);
         return DecodeReport::profile(rows, profile);
     }
@@ -674,7 +671,7 @@ fn run_comparison(inputs: &[DecodeInput], config: &Config) -> DecodeReport {
         .map(|input| timed_best(config, || decode_cpu(input)))
         .collect::<Vec<_>>();
 
-    // Keep the nvJPEG2000 decode session isolated from Signinum's CUDA Driver
+    // Keep the nvJPEG2000 decode session isolated from J2K's CUDA Driver
     // context. Some CUDA runtime/nvJPEG2000 stacks fail decode after another
     // Driver API context has been made current in the same process.
     let mut nvidia_session = NvBaselineSession::new().ok();
@@ -686,23 +683,23 @@ fn run_comparison(inputs: &[DecodeInput], config: &Config) -> DecodeReport {
         })
         .collect::<Vec<_>>();
 
-    if config.compare_signinum_cuda_batch {
+    if config.compare_j2k_cuda_batch {
         return run_batch_correctness_comparison(inputs, config, cpu_results, nvidia_results);
     }
 
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
+    let mut j2k_cuda_session = j2k_cuda::CudaSession::default();
     for ((input, cpu), nvidia) in inputs.iter().zip(cpu_results).zip(nvidia_results) {
         #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-        let signinum_cuda = timed_best(config, || {
-            decode_signinum_cuda(&mut signinum_cuda_session, input, true, false)
+        let j2k_cuda = timed_best(config, || {
+            decode_j2k_cuda(&mut j2k_cuda_session, input, true, false)
         });
         #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-        let signinum_cuda = timed_best(config, || decode_signinum_cuda(input));
+        let j2k_cuda = timed_best(config, || decode_j2k_cuda(input));
         let cpu_pixels = cpu.result.as_ref().map(|result| result.pixels.as_slice());
-        let signinum_cuda_psnr_vs_cpu = cpu_pixels
+        let j2k_cuda_psnr_vs_cpu = cpu_pixels
             .zip(
-                signinum_cuda
+                j2k_cuda
                     .result
                     .as_ref()
                     .map(|result| result.pixels.as_slice()),
@@ -723,9 +720,9 @@ fn run_comparison(inputs: &[DecodeInput], config: &Config) -> DecodeReport {
             height: input.height,
             codestream_bytes: input.bytes.len(),
             cpu,
-            signinum_cuda,
+            j2k_cuda,
             nvidia,
-            signinum_cuda_psnr_vs_cpu,
+            j2k_cuda_psnr_vs_cpu,
             nvidia_psnr_vs_cpu,
         });
     }
@@ -738,65 +735,62 @@ fn run_batch_correctness_comparison(
     cpu_results: Vec<TimedStatus>,
     nvidia_results: Vec<TimedStatus>,
 ) -> DecodeReport {
-    let profile = run_signinum_cuda_batch_correctness(inputs, config);
+    let profile = run_j2k_cuda_batch_correctness(inputs, config);
     let rows = batch_correctness_rows(inputs, cpu_results, nvidia_results, &profile.status);
     DecodeReport::profile(rows, profile)
 }
 
-fn run_signinum_cuda_batch(inputs: &[DecodeInput], config: &Config) -> ProfileMeasurement {
+fn run_j2k_cuda_batch(inputs: &[DecodeInput], config: &Config) -> ProfileMeasurement {
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    let signinum_cuda = {
-        let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
+    let j2k_cuda = {
+        let mut j2k_cuda_session = j2k_cuda::CudaSession::default();
         timed_best(config, || {
-            decode_signinum_cuda_batch(
-                &mut signinum_cuda_session,
+            decode_j2k_cuda_batch(
+                &mut j2k_cuda_session,
                 inputs,
-                config.collect_signinum_stage_timings,
-                config.skip_signinum_download,
+                config.collect_j2k_stage_timings,
+                config.skip_j2k_download,
             )
         })
     };
     #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-    let signinum_cuda = timed_best(config, || decode_signinum_cuda_batch(inputs));
+    let j2k_cuda = timed_best(config, || decode_j2k_cuda_batch(inputs));
     ProfileMeasurement {
-        label: "signinum_cuda_decode_real_batch",
-        execution_mode: "signinum_cuda_batch",
+        label: "j2k_cuda_decode_real_batch",
+        execution_mode: "j2k_cuda_batch",
         timing_scope: "aggregate_batch",
-        download_policy: signinum_download_policy(config),
+        download_policy: j2k_download_policy(config),
         input_count: inputs.len(),
         megapixels: input_megapixels(inputs),
         codestream_bytes: input_codestream_bytes(inputs),
-        status: signinum_cuda,
+        status: j2k_cuda,
     }
 }
 
-fn run_signinum_cuda_batch_correctness(
-    inputs: &[DecodeInput],
-    config: &Config,
-) -> ProfileMeasurement {
+fn run_j2k_cuda_batch_correctness(inputs: &[DecodeInput], config: &Config) -> ProfileMeasurement {
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    let signinum_cuda = {
-        let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
+    let j2k_cuda = {
+        let mut j2k_cuda_session = j2k_cuda::CudaSession::default();
         timed_best(config, || {
-            decode_signinum_cuda_batch(
-                &mut signinum_cuda_session,
+            decode_j2k_cuda_batch(
+                &mut j2k_cuda_session,
                 inputs,
-                config.collect_signinum_stage_timings,
+                config.collect_j2k_stage_timings,
                 false,
             )
         })
     };
     #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-    let signinum_cuda = timed_best(config, || decode_signinum_cuda_batch(inputs));
+    let j2k_cuda = timed_best(config, || decode_j2k_cuda_batch(inputs));
     ProfileMeasurement {
-        label: "signinum_cuda_decode_batch_correctness",
-        execution_mode: "signinum_cuda_batch",
+        label: "j2k_cuda_decode_batch_correctness",
+        execution_mode: "j2k_cuda_batch",
         timing_scope: "aggregate_batch_correctness",
         download_policy: "download",
         input_count: inputs.len(),
         megapixels: input_megapixels(inputs),
         codestream_bytes: input_codestream_bytes(inputs),
-        status: signinum_cuda,
+        status: j2k_cuda,
     }
 }
 
@@ -804,9 +798,9 @@ fn batch_correctness_rows(
     inputs: &[DecodeInput],
     cpu_results: Vec<TimedStatus>,
     nvidia_results: Vec<TimedStatus>,
-    signinum_batch: &TimedStatus,
+    j2k_batch: &TimedStatus,
 ) -> Vec<Row> {
-    let batch_split_error = signinum_batch
+    let batch_split_error = j2k_batch
         .result
         .as_ref()
         .and_then(|result| validate_batch_pixel_len(inputs, result.pixels.len()).err());
@@ -817,7 +811,7 @@ fn batch_correctness_rows(
         .zip(cpu_results)
         .zip(nvidia_results)
         .map(|((input, cpu), nvidia)| {
-            let signinum_pixels = signinum_batch.result.as_ref().and_then(|result| {
+            let j2k_pixels = j2k_batch.result.as_ref().and_then(|result| {
                 if batch_split_error.is_some() {
                     return None;
                 }
@@ -827,16 +821,16 @@ fn batch_correctness_rows(
                 batch_offset = end;
                 result.pixels.get(start..end)
             });
-            let signinum_cuda = if signinum_batch.has_failure() {
-                TimedStatus::failed(signinum_batch.status.clone())
+            let j2k_cuda = if j2k_batch.has_failure() {
+                TimedStatus::failed(j2k_batch.status.clone())
             } else if let Some(error) = &batch_split_error {
                 TimedStatus::failed(format!("batch-output-split:{error}"))
             } else {
                 TimedStatus::ok_without_result()
             };
             let cpu_pixels = cpu.result.as_ref().map(|result| result.pixels.as_slice());
-            let signinum_cuda_psnr_vs_cpu = cpu_pixels
-                .zip(signinum_pixels)
+            let j2k_cuda_psnr_vs_cpu = cpu_pixels
+                .zip(j2k_pixels)
                 .and_then(|(cpu, cuda)| psnr_u8(cpu, cuda));
             let nvidia_psnr_vs_cpu = cpu_pixels
                 .zip(
@@ -854,9 +848,9 @@ fn batch_correctness_rows(
                 height: input.height,
                 codestream_bytes: input.bytes.len(),
                 cpu,
-                signinum_cuda,
+                j2k_cuda,
                 nvidia,
-                signinum_cuda_psnr_vs_cpu,
+                j2k_cuda_psnr_vs_cpu,
                 nvidia_psnr_vs_cpu,
             }
         })
@@ -868,9 +862,8 @@ fn validate_batch_pixel_len(inputs: &[DecodeInput], actual: usize) -> Result<(),
         .iter()
         .map(input_pixel_bytes)
         .try_fold(0usize, |sum, len| {
-            sum.checked_add(len?).ok_or_else(|| {
-                "aggregate Signinum CUDA batch output byte count overflowed".to_string()
-            })
+            sum.checked_add(len?)
+                .ok_or_else(|| "aggregate J2K CUDA batch output byte count overflowed".to_string())
         })?;
     if actual != expected {
         return Err(format!("expected {expected} bytes, got {actual}"));
@@ -887,22 +880,22 @@ fn input_pixel_bytes(input: &DecodeInput) -> Result<usize, String> {
         .ok_or_else(|| "input pixel byte count overflowed".to_string())
 }
 
-fn run_signinum_cuda_only(inputs: &[DecodeInput], config: &Config) -> Vec<Row> {
+fn run_j2k_cuda_only(inputs: &[DecodeInput], config: &Config) -> Vec<Row> {
     let mut rows = Vec::with_capacity(inputs.len());
     #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-    let mut signinum_cuda_session = signinum_j2k_cuda::CudaSession::default();
+    let mut j2k_cuda_session = j2k_cuda::CudaSession::default();
     for input in inputs {
         #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-        let signinum_cuda = timed_best(config, || {
-            decode_signinum_cuda(
-                &mut signinum_cuda_session,
+        let j2k_cuda = timed_best(config, || {
+            decode_j2k_cuda(
+                &mut j2k_cuda_session,
                 input,
-                config.collect_signinum_stage_timings,
-                config.skip_signinum_download,
+                config.collect_j2k_stage_timings,
+                config.skip_j2k_download,
             )
         });
         #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-        let signinum_cuda = timed_best(config, || decode_signinum_cuda(input));
+        let j2k_cuda = timed_best(config, || decode_j2k_cuda(input));
         rows.push(Row {
             label: input.label.clone(),
             format: input.format,
@@ -910,9 +903,9 @@ fn run_signinum_cuda_only(inputs: &[DecodeInput], config: &Config) -> Vec<Row> {
             height: input.height,
             codestream_bytes: input.bytes.len(),
             cpu: TimedStatus::failed("skipped"),
-            signinum_cuda,
+            j2k_cuda,
             nvidia: TimedStatus::failed("skipped"),
-            signinum_cuda_psnr_vs_cpu: None,
+            j2k_cuda_psnr_vs_cpu: None,
             nvidia_psnr_vs_cpu: None,
         });
     }
@@ -925,26 +918,26 @@ fn serial_profile_measurement(
     config: &Config,
 ) -> ProfileMeasurement {
     ProfileMeasurement {
-        label: "signinum_cuda_decode_serial_reused_session",
-        execution_mode: "signinum_cuda_serial_reused_session",
+        label: "j2k_cuda_decode_serial_reused_session",
+        execution_mode: "j2k_cuda_serial_reused_session",
         timing_scope: "sum_of_per_input_best",
-        download_policy: signinum_download_policy(config),
+        download_policy: j2k_download_policy(config),
         input_count: inputs.len(),
         megapixels: input_megapixels(inputs),
         codestream_bytes: input_codestream_bytes(inputs),
-        status: sum_signinum_cuda_rows(rows),
+        status: sum_j2k_cuda_rows(rows),
     }
 }
 
-fn sum_signinum_cuda_rows(rows: &[Row]) -> TimedStatus {
+fn sum_j2k_cuda_rows(rows: &[Row]) -> TimedStatus {
     let mut wall_ms = 0.0;
     let mut gpu_ms = None;
     let mut stage_ms = None;
     let mut download_ms = None;
     let mut cuda_profile = None;
     for row in rows {
-        let Some(result) = row.signinum_cuda.result.as_ref() else {
-            return TimedStatus::failed(format!("{}: {}", row.label, row.signinum_cuda.status));
+        let Some(result) = row.j2k_cuda.result.as_ref() else {
+            return TimedStatus::failed(format!("{}: {}", row.label, row.j2k_cuda.status));
         };
         wall_ms += result.wall_ms;
         gpu_ms = optional_sum(gpu_ms, result.gpu_ms);
@@ -995,8 +988,8 @@ fn input_codestream_bytes(inputs: &[DecodeInput]) -> usize {
     inputs.iter().map(|input| input.bytes.len()).sum()
 }
 
-fn signinum_download_policy(config: &Config) -> &'static str {
-    if config.skip_signinum_download {
+fn j2k_download_policy(config: &Config) -> &'static str {
+    if config.skip_j2k_download {
         "no_download"
     } else {
         "download"
@@ -1062,30 +1055,29 @@ fn decode_cpu(input: &DecodeInput) -> Result<TimedPixels, String> {
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-fn decode_signinum_cuda(
-    session: &mut signinum_j2k_cuda::CudaSession,
+fn decode_j2k_cuda(
+    session: &mut j2k_cuda::CudaSession,
     input: &DecodeInput,
     collect_stage_timings: bool,
     skip_download: bool,
 ) -> Result<TimedPixels, String> {
     let started = Instant::now();
-    let mut decoder =
-        signinum_j2k_cuda::J2kDecoder::new(&input.bytes).map_err(|error| error.to_string())?;
+    let mut decoder = j2k_cuda::J2kDecoder::new(&input.bytes).map_err(|error| error.to_string())?;
     let (surface, report) = if collect_stage_timings {
         let (surface, report) = decoder
-            .decode_to_device_with_session_and_profile(input.format.signinum(), session)
-            .map_err(|error| format!("signinum cuda decode: {error}"))?;
+            .decode_to_device_with_session_and_profile(input.format.j2k(), session)
+            .map_err(|error| format!("j2k cuda decode: {error}"))?;
         (surface, Some(report))
     } else {
         let surface = decoder
-            .decode_to_device_with_session(input.format.signinum(), session)
-            .map_err(|error| format!("signinum cuda decode: {error}"))?;
+            .decode_to_device_with_session(input.format.j2k(), session)
+            .map_err(|error| format!("j2k cuda decode: {error}"))?;
         (surface, None)
     };
     if surface.backend_kind() != BackendKind::Cuda
-        || surface.residency() != signinum_j2k_cuda::SurfaceResidency::CudaResidentDecode
+        || surface.residency() != j2k_cuda::SurfaceResidency::CudaResidentDecode
     {
-        return Err("signinum cuda decode did not return a CUDA-resident surface".to_string());
+        return Err("j2k cuda decode did not return a CUDA-resident surface".to_string());
     }
     let stride = input.width as usize * input.format.components();
     if skip_download {
@@ -1093,7 +1085,7 @@ fn decode_signinum_cuda(
             wall_ms: elapsed_ms(started),
             gpu_ms: report
                 .as_ref()
-                .map(|report| us_to_ms(signinum_cuda_kernel_us(report))),
+                .map(|report| us_to_ms(j2k_cuda_kernel_us(report))),
             stage_ms: report.as_ref().map(|report| us_to_ms(report.total_us)),
             download_ms: None,
             cuda_profile: report.as_ref().map(CudaStageBreakdown::from_report),
@@ -1104,13 +1096,13 @@ fn decode_signinum_cuda(
     let download_started = Instant::now();
     surface
         .download_into(&mut pixels, stride)
-        .map_err(|error| format!("signinum cuda download: {error}"))?;
+        .map_err(|error| format!("j2k cuda download: {error}"))?;
     let download_ms = elapsed_ms(download_started);
     Ok(TimedPixels {
         wall_ms: elapsed_ms(started),
         gpu_ms: report
             .as_ref()
-            .map(|report| us_to_ms(signinum_cuda_kernel_us(report))),
+            .map(|report| us_to_ms(j2k_cuda_kernel_us(report))),
         stage_ms: report.as_ref().map(|report| us_to_ms(report.total_us)),
         download_ms: Some(download_ms),
         cuda_profile: report.as_ref().map(CudaStageBreakdown::from_report),
@@ -1119,8 +1111,8 @@ fn decode_signinum_cuda(
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-fn decode_signinum_cuda_batch(
-    session: &mut signinum_j2k_cuda::CudaSession,
+fn decode_j2k_cuda_batch(
+    session: &mut j2k_cuda::CudaSession,
     inputs: &[DecodeInput],
     collect_stage_timings: bool,
     skip_download: bool,
@@ -1137,7 +1129,7 @@ fn decode_signinum_cuda_batch(
         });
     };
     if inputs.iter().any(|input| input.format != first.format) {
-        return Err("signinum cuda batch decode requires a single output format".to_string());
+        return Err("j2k cuda batch decode requires a single output format".to_string());
     }
     let input_bytes = inputs
         .iter()
@@ -1145,50 +1137,48 @@ fn decode_signinum_cuda_batch(
         .collect::<Vec<_>>();
     let (surfaces, report) = if collect_stage_timings {
         let (surfaces, report) =
-            signinum_j2k_cuda::J2kDecoder::decode_batch_to_device_with_session_and_profile(
+            j2k_cuda::J2kDecoder::decode_batch_to_device_with_session_and_profile(
                 &input_bytes,
-                first.format.signinum(),
+                first.format.j2k(),
                 session,
             )
-            .map_err(|error| format!("signinum cuda batch decode: {error}"))?;
+            .map_err(|error| format!("j2k cuda batch decode: {error}"))?;
         (surfaces, Some(report))
     } else {
-        let surfaces = signinum_j2k_cuda::J2kDecoder::decode_batch_to_device_with_session(
+        let surfaces = j2k_cuda::J2kDecoder::decode_batch_to_device_with_session(
             &input_bytes,
-            first.format.signinum(),
+            first.format.j2k(),
             session,
         )
-        .map_err(|error| format!("signinum cuda batch decode: {error}"))?;
+        .map_err(|error| format!("j2k cuda batch decode: {error}"))?;
         (surfaces, None)
     };
     if surfaces.len() != inputs.len() {
-        return Err("signinum cuda batch decode returned unexpected surface count".to_string());
+        return Err("j2k cuda batch decode returned unexpected surface count".to_string());
     }
     let mut pixels = Vec::new();
     let mut download_ms = None;
     for (surface, input) in surfaces.iter().zip(inputs) {
         if surface.backend_kind() != BackendKind::Cuda
-            || surface.residency() != signinum_j2k_cuda::SurfaceResidency::CudaResidentDecode
+            || surface.residency() != j2k_cuda::SurfaceResidency::CudaResidentDecode
         {
-            return Err(
-                "signinum cuda batch decode did not return CUDA-resident surfaces".to_string(),
-            );
+            return Err("j2k cuda batch decode did not return CUDA-resident surfaces".to_string());
         }
         if surface.dimensions() != (input.width, input.height) {
-            return Err("signinum cuda batch decode returned unexpected shape".to_string());
+            return Err("j2k cuda batch decode returned unexpected shape".to_string());
         }
     }
     if !skip_download {
         let download_started = Instant::now();
-        pixels = signinum_j2k_cuda::Surface::download_batch_tight(&surfaces)
-            .map_err(|error| format!("signinum cuda batch download: {error}"))?;
+        pixels = j2k_cuda::Surface::download_batch_tight(&surfaces)
+            .map_err(|error| format!("j2k cuda batch download: {error}"))?;
         download_ms = Some(elapsed_ms(download_started));
     }
     Ok(TimedPixels {
         wall_ms: elapsed_ms(started),
         gpu_ms: report
             .as_ref()
-            .map(|report| us_to_ms(signinum_cuda_kernel_us(report))),
+            .map(|report| us_to_ms(j2k_cuda_kernel_us(report))),
         stage_ms: report.as_ref().map(|report| us_to_ms(report.total_us)),
         download_ms,
         cuda_profile: report.as_ref().map(CudaStageBreakdown::from_report),
@@ -1197,19 +1187,19 @@ fn decode_signinum_cuda_batch(
 }
 
 #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-fn decode_signinum_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
+fn decode_j2k_cuda(input: &DecodeInput) -> Result<TimedPixels, String> {
     let _ = input;
     Err("not-built".to_string())
 }
 
 #[cfg(any(target_os = "macos", not(feature = "nvjpeg2000")))]
-fn decode_signinum_cuda_batch(inputs: &[DecodeInput]) -> Result<TimedPixels, String> {
+fn decode_j2k_cuda_batch(inputs: &[DecodeInput]) -> Result<TimedPixels, String> {
     let _ = inputs;
     Err("not-built".to_string())
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-fn signinum_cuda_kernel_us(report: &signinum_j2k_cuda::CudaHtj2kProfileReport) -> u128 {
+fn j2k_cuda_kernel_us(report: &j2k_cuda::CudaHtj2kProfileReport) -> u128 {
     [
         report.ht_cleanup_us,
         report.ht_refine_us,
@@ -1271,7 +1261,7 @@ fn clean_profile_zero(value: f64) -> f64 {
 fn print_report(report: &DecodeReport, config: &Config) {
     if report.rows.is_empty() {
         if let Some(profile) = &report.profile {
-            print_signinum_cuda_profile_report(profile, config);
+            print_j2k_cuda_profile_report(profile, config);
             return;
         }
     }
@@ -1286,7 +1276,7 @@ fn print_report(report: &DecodeReport, config: &Config) {
     );
     if let Some(profile) = &report.profile {
         println!(
-            "signinum_cuda: execution_mode={} timing_scope={} download_policy={}",
+            "j2k_cuda: execution_mode={} timing_scope={} download_policy={}",
             profile.execution_mode, profile.timing_scope, profile.download_policy
         );
     }
@@ -1309,10 +1299,10 @@ fn print_report(report: &DecodeReport, config: &Config) {
             row.label,
             row.format.label(),
             status_ms(&row.cpu),
-            status_ms(&row.signinum_cuda),
-            status_gpu_ms(&row.signinum_cuda),
-            status_stage_ms(&row.signinum_cuda),
-            status_download_ms(&row.signinum_cuda),
+            status_ms(&row.j2k_cuda),
+            status_gpu_ms(&row.j2k_cuda),
+            status_stage_ms(&row.j2k_cuda),
+            status_download_ms(&row.j2k_cuda),
             status_ms(&row.nvidia),
             status_gpu_ms(&row.nvidia),
             fmt_optional(row.nvidia_psnr_vs_cpu)
@@ -1320,11 +1310,11 @@ fn print_report(report: &DecodeReport, config: &Config) {
     }
     if let Some(profile) = &report.profile {
         println!();
-        print_signinum_cuda_profile_report(profile, config);
+        print_j2k_cuda_profile_report(profile, config);
     }
 }
 
-fn print_signinum_cuda_profile_report(profile: &ProfileMeasurement, config: &Config) {
+fn print_j2k_cuda_profile_report(profile: &ProfileMeasurement, config: &Config) {
     println!(
         "inputs: {} codestream(s), {:.2} MP total",
         profile.input_count, profile.megapixels
@@ -1475,13 +1465,13 @@ fn json_report(report: &DecodeReport, config: &Config) -> String {
         ));
         json.push_str(&json_status("cpu", &row.cpu, true));
         json.push_str(",\n");
-        json.push_str(&json_status("signinum_cuda", &row.signinum_cuda, true));
+        json.push_str(&json_status("j2k_cuda", &row.j2k_cuda, true));
         json.push_str(",\n");
         json.push_str(&json_status("nvidia_nvjpeg2000", &row.nvidia, true));
         json.push_str(",\n");
         json.push_str(&format!(
-            "      \"signinum_cuda_psnr_vs_cpu\": {},\n",
-            json_optional(row.signinum_cuda_psnr_vs_cpu)
+            "      \"j2k_cuda_psnr_vs_cpu\": {},\n",
+            json_optional(row.j2k_cuda_psnr_vs_cpu)
         ));
         json.push_str(&format!(
             "      \"nvidia_psnr_vs_cpu\": {}\n",
@@ -1591,7 +1581,7 @@ fn csv_report(report: &DecodeReport) -> String {
     }
 
     let mut csv = String::from(
-        "label,format,width,height,codestream_bytes,cpu_status,cpu_wall_ms,signinum_cuda_status,signinum_cuda_wall_ms,signinum_cuda_gpu_ms,signinum_cuda_stage_ms,signinum_cuda_download_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,signinum_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu\n",
+        "label,format,width,height,codestream_bytes,cpu_status,cpu_wall_ms,j2k_cuda_status,j2k_cuda_wall_ms,j2k_cuda_gpu_ms,j2k_cuda_stage_ms,j2k_cuda_download_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,j2k_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu\n",
     );
     for row in &report.rows {
         csv.push_str(&format!(
@@ -1603,15 +1593,15 @@ fn csv_report(report: &DecodeReport) -> String {
             row.codestream_bytes,
             escape_csv(&row.cpu.status),
             csv_ms(&row.cpu),
-            escape_csv(&row.signinum_cuda.status),
-            csv_ms(&row.signinum_cuda),
-            csv_gpu_ms(&row.signinum_cuda),
-            csv_stage_ms(&row.signinum_cuda),
-            csv_download_ms(&row.signinum_cuda),
+            escape_csv(&row.j2k_cuda.status),
+            csv_ms(&row.j2k_cuda),
+            csv_gpu_ms(&row.j2k_cuda),
+            csv_stage_ms(&row.j2k_cuda),
+            csv_download_ms(&row.j2k_cuda),
             escape_csv(&row.nvidia.status),
             csv_ms(&row.nvidia),
             csv_gpu_ms(&row.nvidia),
-            csv_optional(row.signinum_cuda_psnr_vs_cpu),
+            csv_optional(row.j2k_cuda_psnr_vs_cpu),
             csv_optional(row.nvidia_psnr_vs_cpu),
         ));
     }
@@ -1620,7 +1610,7 @@ fn csv_report(report: &DecodeReport) -> String {
 
 fn csv_combined_report(report: &DecodeReport, profile: &ProfileMeasurement) -> String {
     let mut csv = format!(
-        "row_type,timing_scope,execution_mode,download_policy,input_count,label,status,format,width,height,megapixels,codestream_bytes,mp_s,wall_ms,gpu_ms,stage_ms,download_ms,cpu_status,cpu_wall_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,signinum_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu,{}\n",
+        "row_type,timing_scope,execution_mode,download_policy,input_count,label,status,format,width,height,megapixels,codestream_bytes,mp_s,wall_ms,gpu_ms,stage_ms,download_ms,cpu_status,cpu_wall_ms,nvidia_status,nvidia_wall_ms,nvidia_gpu_ms,j2k_cuda_psnr_vs_cpu,nvidia_psnr_vs_cpu,{}\n",
         cuda_profile_csv_header()
     );
     let cuda_profile = profile
@@ -1670,7 +1660,7 @@ fn csv_combined_report(report: &DecodeReport, profile: &ProfileMeasurement) -> S
             profile.download_policy.to_string(),
             String::new(),
             escape_csv(&row.label),
-            escape_csv(&row.signinum_cuda.status),
+            escape_csv(&row.j2k_cuda.status),
             row.format.label().to_string(),
             row.width.to_string(),
             row.height.to_string(),
@@ -1686,7 +1676,7 @@ fn csv_combined_report(report: &DecodeReport, profile: &ProfileMeasurement) -> S
             escape_csv(&row.nvidia.status),
             csv_ms(&row.nvidia),
             csv_gpu_ms(&row.nvidia),
-            csv_optional(row.signinum_cuda_psnr_vs_cpu),
+            csv_optional(row.j2k_cuda_psnr_vs_cpu),
             csv_optional(row.nvidia_psnr_vs_cpu),
         ];
         fields.extend((0..24).map(|_| String::new()));
@@ -1811,9 +1801,9 @@ mod tests {
     #[test]
     fn config_parses_artifact_flags() {
         let config = Config::from_args([
-            "--profile-signinum-cuda-batch",
-            "--collect-signinum-stage-timings",
-            "--skip-signinum-download",
+            "--profile-j2k-cuda-batch",
+            "--collect-j2k-stage-timings",
+            "--skip-j2k-download",
             "--fixture-dim",
             "256",
             "--jpeg-dir",
@@ -1831,10 +1821,10 @@ mod tests {
         ])
         .expect("config parses");
 
-        assert!(!config.profile_signinum_cuda_only);
-        assert!(config.profile_signinum_cuda_batch);
-        assert!(config.collect_signinum_stage_timings);
-        assert!(config.skip_signinum_download);
+        assert!(!config.profile_j2k_cuda_only);
+        assert!(config.profile_j2k_cuda_batch);
+        assert!(config.collect_j2k_stage_timings);
+        assert!(config.skip_j2k_download);
         assert_eq!(config.fixture_dim, 256);
         assert_eq!(
             config.jpeg_dir.as_deref(),
@@ -1852,11 +1842,8 @@ mod tests {
 
     #[test]
     fn profile_modes_conflict() {
-        let error = Config::from_args([
-            "--profile-signinum-cuda-only",
-            "--profile-signinum-cuda-batch",
-        ])
-        .expect_err("profile modes conflict");
+        let error = Config::from_args(["--profile-j2k-cuda-only", "--profile-j2k-cuda-batch"])
+            .expect_err("profile modes conflict");
 
         assert!(error.contains("conflicts"));
     }
@@ -1871,36 +1858,32 @@ mod tests {
     }
 
     #[test]
-    fn skip_signinum_download_requires_profile_only_mode() {
-        let error = Config::from_args(["--skip-signinum-download"])
+    fn skip_j2k_download_requires_profile_only_mode() {
+        let error = Config::from_args(["--skip-j2k-download"])
             .expect_err("skip download is only valid in profile-only mode");
 
-        assert!(error.contains("--profile-signinum-cuda"));
+        assert!(error.contains("--profile-j2k-cuda"));
     }
 
     #[test]
-    fn skip_signinum_download_accepts_batch_profile_mode() {
-        let config =
-            Config::from_args(["--profile-signinum-cuda-batch", "--skip-signinum-download"])
-                .expect("batch profile can skip download");
+    fn skip_j2k_download_accepts_batch_profile_mode() {
+        let config = Config::from_args(["--profile-j2k-cuda-batch", "--skip-j2k-download"])
+            .expect("batch profile can skip download");
 
-        assert!(config.profile_signinum_cuda_batch);
-        assert!(config.skip_signinum_download);
+        assert!(config.profile_j2k_cuda_batch);
+        assert!(config.skip_j2k_download);
     }
 
     #[test]
     fn batch_correctness_mode_is_not_a_profile_only_mode() {
-        let config = Config::from_args(["--compare-signinum-cuda-batch"])
+        let config = Config::from_args(["--compare-j2k-cuda-batch"])
             .expect("batch correctness comparison parses");
 
-        assert!(config.compare_signinum_cuda_batch);
-        assert!(!config.is_signinum_cuda_profile());
+        assert!(config.compare_j2k_cuda_batch);
+        assert!(!config.is_j2k_cuda_profile());
 
-        let error = Config::from_args([
-            "--compare-signinum-cuda-batch",
-            "--profile-signinum-cuda-batch",
-        ])
-        .expect_err("batch correctness conflicts with profile-only batch mode");
+        let error = Config::from_args(["--compare-j2k-cuda-batch", "--profile-j2k-cuda-batch"])
+            .expect_err("batch correctness conflicts with profile-only batch mode");
         assert!(error.contains("conflicts"));
     }
 
@@ -1920,9 +1903,9 @@ mod tests {
                 cuda_profile: None,
                 pixels: vec![0],
             }),
-            signinum_cuda: TimedStatus::failed("not-built"),
+            j2k_cuda: TimedStatus::failed("not-built"),
             nvidia: TimedStatus::failed("not-built"),
-            signinum_cuda_psnr_vs_cpu: None,
+            j2k_cuda_psnr_vs_cpu: None,
             nvidia_psnr_vs_cpu: None,
         };
 
@@ -1931,7 +1914,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacts_include_signinum_cuda_download_time_when_recorded() {
+    fn artifacts_include_j2k_cuda_download_time_when_recorded() {
         let row = Row {
             label: "tile-1".to_string(),
             format: DecodeCaseFormat::Rgb8,
@@ -1939,7 +1922,7 @@ mod tests {
             height: 256,
             codestream_bytes: 100,
             cpu: TimedStatus::failed("skipped"),
-            signinum_cuda: TimedStatus::ok(TimedPixels {
+            j2k_cuda: TimedStatus::ok(TimedPixels {
                 wall_ms: 1.0,
                 gpu_ms: Some(0.25),
                 stage_ms: Some(0.5),
@@ -1948,7 +1931,7 @@ mod tests {
                 pixels: vec![0],
             }),
             nvidia: TimedStatus::failed("skipped"),
-            signinum_cuda_psnr_vs_cpu: None,
+            j2k_cuda_psnr_vs_cpu: None,
             nvidia_psnr_vs_cpu: None,
         };
         let config = Config::from_args(std::iter::empty::<&str>()).expect("empty config parses");
@@ -1958,7 +1941,7 @@ mod tests {
         assert!(json.contains("\"download_ms\": 0.125000"));
 
         let csv = csv_report(&DecodeReport::rows(vec![row]));
-        assert!(csv.contains("signinum_cuda_download_ms"));
+        assert!(csv.contains("j2k_cuda_download_ms"));
         assert!(csv.contains(",0.125000,"));
     }
 
@@ -1967,8 +1950,8 @@ mod tests {
         let report = DecodeReport::profile(
             Vec::new(),
             ProfileMeasurement {
-                label: "signinum_cuda_decode_real_batch",
-                execution_mode: "signinum_cuda_batch",
+                label: "j2k_cuda_decode_real_batch",
+                execution_mode: "j2k_cuda_batch",
                 timing_scope: "aggregate_batch",
                 download_policy: "no_download",
                 input_count: 2,
@@ -1987,20 +1970,19 @@ mod tests {
 
         let csv = csv_report(&report);
         assert_eq!(csv.lines().count(), 2);
-        assert!(csv.contains("aggregate_batch,signinum_cuda_batch,no_download"));
-        assert!(csv.contains("signinum_cuda_decode_real_batch"));
+        assert!(csv.contains("aggregate_batch,j2k_cuda_batch,no_download"));
+        assert!(csv.contains("j2k_cuda_decode_real_batch"));
     }
 
     #[test]
     fn batch_profile_json_does_not_emit_per_input_timings() {
-        let config =
-            Config::from_args(["--profile-signinum-cuda-batch", "--skip-signinum-download"])
-                .expect("config parses");
+        let config = Config::from_args(["--profile-j2k-cuda-batch", "--skip-j2k-download"])
+            .expect("config parses");
         let report = DecodeReport::profile(
             Vec::new(),
             ProfileMeasurement {
-                label: "signinum_cuda_decode_real_batch",
-                execution_mode: "signinum_cuda_batch",
+                label: "j2k_cuda_decode_real_batch",
+                execution_mode: "j2k_cuda_batch",
                 timing_scope: "aggregate_batch",
                 download_policy: "no_download",
                 input_count: 2,
@@ -2019,15 +2001,15 @@ mod tests {
 
         let json = json_report(&report, &config);
         assert!(json.contains("\"profile\": {"));
-        assert!(json.contains("\"execution_mode\": \"signinum_cuda_batch\""));
+        assert!(json.contains("\"execution_mode\": \"j2k_cuda_batch\""));
         assert!(json.contains("\"timing_scope\": \"aggregate_batch\""));
         assert!(json.contains("\"download_policy\": \"no_download\""));
-        assert!(!json.contains("\"signinum_cuda\": {\"status\": \"ok\", \"wall_ms\""));
+        assert!(!json.contains("\"j2k_cuda\": {\"status\": \"ok\", \"wall_ms\""));
     }
 
     #[test]
     fn batch_correctness_report_keeps_aggregate_timing_separate_from_rows() {
-        let config = Config::from_args(["--compare-signinum-cuda-batch"]).expect("config parses");
+        let config = Config::from_args(["--compare-j2k-cuda-batch"]).expect("config parses");
         let report = DecodeReport::profile(
             vec![Row {
                 label: "tile-1".to_string(),
@@ -2043,7 +2025,7 @@ mod tests {
                     cuda_profile: None,
                     pixels: vec![0],
                 }),
-                signinum_cuda: TimedStatus::ok_without_result(),
+                j2k_cuda: TimedStatus::ok_without_result(),
                 nvidia: TimedStatus::ok(TimedPixels {
                     wall_ms: 1.0,
                     gpu_ms: Some(0.5),
@@ -2052,12 +2034,12 @@ mod tests {
                     cuda_profile: None,
                     pixels: vec![0],
                 }),
-                signinum_cuda_psnr_vs_cpu: Some(99.0),
+                j2k_cuda_psnr_vs_cpu: Some(99.0),
                 nvidia_psnr_vs_cpu: Some(51.0),
             }],
             ProfileMeasurement {
-                label: "signinum_cuda_decode_batch_correctness",
-                execution_mode: "signinum_cuda_batch",
+                label: "j2k_cuda_decode_batch_correctness",
+                execution_mode: "j2k_cuda_batch",
                 timing_scope: "aggregate_batch_correctness",
                 download_policy: "download",
                 input_count: 1,
@@ -2076,12 +2058,12 @@ mod tests {
 
         let json = json_report(&report, &config);
         assert!(json.contains("\"timing_scope\": \"aggregate_batch_correctness\""));
-        assert!(json.contains("\"signinum_cuda\": {\"status\": \"ok\"}"));
-        assert!(!json.contains("\"signinum_cuda\": {\"status\": \"ok\", \"wall_ms\""));
+        assert!(json.contains("\"j2k_cuda\": {\"status\": \"ok\"}"));
+        assert!(!json.contains("\"j2k_cuda\": {\"status\": \"ok\", \"wall_ms\""));
 
         let csv = csv_report(&report);
-        assert!(csv.contains("aggregate_batch_correctness,signinum_cuda_batch,download"));
-        assert!(csv.contains("correctness,per_input_correctness,signinum_cuda_batch,download"));
+        assert!(csv.contains("aggregate_batch_correctness,j2k_cuda_batch,download"));
+        assert!(csv.contains("correctness,per_input_correctness,j2k_cuda_batch,download"));
         assert!(csv.contains(",99.000000,51.000000"));
     }
 
@@ -2090,8 +2072,8 @@ mod tests {
         let report = DecodeReport::profile(
             Vec::new(),
             ProfileMeasurement {
-                label: "signinum_cuda_decode_serial_reused_session",
-                execution_mode: "signinum_cuda_serial_reused_session",
+                label: "j2k_cuda_decode_serial_reused_session",
+                execution_mode: "j2k_cuda_serial_reused_session",
                 timing_scope: "sum_of_per_input_best",
                 download_policy: "download",
                 input_count: 2,
@@ -2109,9 +2091,9 @@ mod tests {
         );
 
         let csv = csv_report(&report);
-        assert!(csv.contains("signinum_cuda_decode_serial_reused_session"));
+        assert!(csv.contains("j2k_cuda_decode_serial_reused_session"));
         assert!(csv.contains("sum_of_per_input_best"));
-        assert!(csv.contains("signinum_cuda_serial_reused_session"));
+        assert!(csv.contains("j2k_cuda_serial_reused_session"));
     }
 
     #[test]
@@ -2121,12 +2103,12 @@ mod tests {
 
     #[test]
     fn failed_profile_report_requires_nonzero_exit_without_nvidia_requirement() {
-        let config = Config::from_args(["--profile-signinum-cuda-batch"]).expect("config parses");
+        let config = Config::from_args(["--profile-j2k-cuda-batch"]).expect("config parses");
         let report = DecodeReport::profile(
             Vec::new(),
             ProfileMeasurement {
-                label: "signinum_cuda_decode_real_batch",
-                execution_mode: "signinum_cuda_batch",
+                label: "j2k_cuda_decode_real_batch",
+                execution_mode: "j2k_cuda_batch",
                 timing_scope: "aggregate_batch",
                 download_policy: "download",
                 input_count: 2,
@@ -2143,16 +2125,13 @@ mod tests {
 
     #[test]
     fn profile_artifacts_include_cuda_stage_breakdown() {
-        let config = Config::from_args([
-            "--profile-signinum-cuda-batch",
-            "--collect-signinum-stage-timings",
-        ])
-        .expect("config parses");
+        let config = Config::from_args(["--profile-j2k-cuda-batch", "--collect-j2k-stage-timings"])
+            .expect("config parses");
         let report = DecodeReport::profile(
             Vec::new(),
             ProfileMeasurement {
-                label: "signinum_cuda_decode_real_batch",
-                execution_mode: "signinum_cuda_batch",
+                label: "j2k_cuda_decode_real_batch",
+                execution_mode: "j2k_cuda_batch",
                 timing_scope: "aggregate_batch",
                 download_policy: "download",
                 input_count: 2,

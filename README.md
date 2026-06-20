@@ -1,64 +1,59 @@
-# Signinum
+# J2K
 
-Signinum is a Rust image-codec workspace focused on JPEG, JPEG 2000, HTJ2K,
-tile decompression, and GPU adapter experiments. The current public target is
-the `signinum` facade release.
+J2K is a Rust image-codec workspace focused on JPEG 2000 / HTJ2K,
+tile-oriented imaging workloads, and GPU adapter experiments. The current
+public crate release centers on `j2k`.
 
 Runtime backend selection defaults to `Auto`: CPU remains the portable baseline,
 and Metal or CUDA paths are selected only for supported shapes with validation
 and benchmark evidence. Explicit device requests are strict. Unsupported device
 shapes return errors instead of silently changing the requested backend.
 
-CUDA paths use Signinum-owned CUDA kernels and `cuda-runtime` support for CUDA
+CUDA paths use J2K-owned CUDA kernels and `cuda-runtime` support for CUDA
 device memory surfaces where implemented. NVIDIA performance claims require
 self-hosted benchmark evidence; hosted CI is not treated as NVIDIA performance
 evidence.
 
 ## Which crate should I use?
 
-Use `cargo add signinum` for application code. It re-exports the stable facade
-surface for JPEG, J2K/HTJ2K, and tile decompression.
+Use `cargo add j2k` for JPEG 2000 / HTJ2K application code. Lower-level
+`j2k-*` crates remain public implementation and integration crates.
 
 Use lower-level crates only when you need a specific integration point:
 
 | Need | Crate |
 | --- | --- |
-| Facade decode/decompress APIs | `signinum` |
-| Shared traits and backend types | `signinum-core` |
-| JPEG inspect/decode and fixture/fallback encode | `signinum-jpeg` |
-| JPEG 2000 and HTJ2K inspect/decode/encode | `signinum-j2k` |
-| Native J2K engine support | `signinum-j2k-native` |
-| JPEG to HTJ2K transcode | `signinum-transcode` |
-| CUDA adapters | `signinum-jpeg-cuda`, `signinum-j2k-cuda`, `signinum-transcode-cuda` |
-| Metal adapters | `signinum-jpeg-metal`, `signinum-j2k-metal`, `signinum-transcode-metal` |
-| Tile compression codecs | `signinum-tilecodec` |
-| Command-line inspection | `signinum-cli` |
+| JPEG 2000 / HTJ2K inspect, decode, encode, and recode | `j2k` |
+| Shared traits and backend types | `j2k-core` |
+| JPEG inspect/decode and fixture/fallback encode | `j2k-jpeg` |
+| JPEG 2000 and HTJ2K inspect/decode/encode | `j2k` |
+| Native J2K engine support | `j2k-native` |
+| JPEG to HTJ2K transcode | `j2k-transcode` |
+| CUDA adapters | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` |
+| Metal adapters | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` |
+| Tile compression codecs | `j2k-tilecodec` |
+| Command-line inspection | `j2k-cli` |
 
 The names `statumen` and `wsi-dicom` are not current package names.
 
 ## Fast Path For LLM-Assisted Use
 
-For normal decode work, start with the facade crate:
+For normal JPEG 2000 / HTJ2K work, start with the public codec crate:
 
 ```bash
-cargo add signinum
+cargo add j2k
 ```
 
-Then use the codec module matching the input format:
-
-- `signinum::jpeg` for JPEG
-- `signinum::j2k` for JPEG 2000 / HTJ2K
-- `signinum::tilecodec` for raw tile decompression helpers
-
-The public decode traits live in `signinum-core` and are implemented by codec
-crates: `ImageDecode`, `ImageDecodeRows`, `TileBatchDecode`,
-`TileBatchDecodeDevice`, and device-surface traits.
+The shared decode traits live in `j2k-core` and are implemented by codec
+crates: `ImageDecode`, `ImageDecodeRows`, `TileBatchDecode`, and
+device-surface traits.
 
 Runnable examples:
 
-- `crates/signinum/examples/inspect_and_decode.rs`
-- `crates/signinum/examples/tile_decompress.rs`
-- `crates/signinum-transcode/examples/jpeg_to_htj2k.rs`
+- `crates/j2k/examples/decode_generated.rs`
+- `crates/j2k-jpeg/examples/inspect.rs`
+- `crates/j2k-tilecodec/examples/decompress.rs`
+- `crates/j2k-transcode/examples/jpeg_to_htj2k.rs`
 
 ## Current backend posture
 
@@ -71,13 +66,13 @@ resident Metal surfaces only for supported adapter paths.
 
 CUDA adapters require a CUDA driver and adapter support. CUDA device memory
 surfaces are available for supported paths; unsupported explicit CUDA requests
-fail clearly. Signinum-owned CUDA kernels are used for CUDA codec stages. NVIDIA
+fail clearly. J2K-owned CUDA kernels are used for CUDA codec stages. NVIDIA
 performance claims require recorded self-hosted benchmark output.
 
 ## Public API and support policy
 
-Stable APIs are the `signinum` facade, `signinum-core` traits and value types,
-`signinum-jpeg`, `signinum-j2k`, and `signinum-tilecodec`. Experimental APIs are
+Stable APIs are `j2k`, `j2k-core` traits and value types, `j2k-jpeg`,
+and `j2k-tilecodec`. Experimental APIs are
 the Metal adapters, CUDA adapters, transcode crates, and backend encode-stage
 adapter SPI.
 
@@ -102,7 +97,7 @@ Reference files:
 
 - [docs/architecture.md](docs/architecture.md) - workspace layer rules and crate
   dependency graph
-- [docs/env-vars.md](docs/env-vars.md) - supported `SIGNINUM_*`
+- [docs/env-vars.md](docs/env-vars.md) - supported `J2K_*`
   environment variables
 - [docs/release.md](docs/release.md) - release and package validation policy
 - [docs/stable-api-1.0.md](docs/stable-api-1.0.md) - stable API snapshot policy
@@ -115,21 +110,21 @@ A published benchmark must identify:
 - host hardware and OS
 - exact command
 - input source
-- whether input is signinum-generated or external
+- whether input is j2k-generated or external
 - comparator availability
 - comparator version
 - skipped paths and skip reason
-- thread count, including `SIGNINUM_J2K_COMPARE_THREADS` when applicable
+- thread count, including `J2K_COMPARE_THREADS` when applicable
 
 Public OpenJPEG and Grok comparison claims require explicit comparator gates and
 cannot silently skip:
 
 ```bash
-SIGNINUM_REQUIRE_OPENJPEG=1
-SIGNINUM_REQUIRE_GROK=1
+J2K_REQUIRE_OPENJPEG=1
+J2K_REQUIRE_GROK=1
 ```
 
-Signinum-generated J2K/HTJ2K codestreams require native decoder round trips.
+J2K-generated J2K/HTJ2K codestreams require native decoder round trips.
 OpenJPEG and Grok comparisons are used where those tools support the feature.
 Missing comparators cannot convert a parity signoff into a pass.
 

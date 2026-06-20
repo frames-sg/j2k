@@ -4,16 +4,16 @@
 use std::time::Instant;
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_core::PixelFormat;
+use j2k_core::PixelFormat;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_jpeg::{
+use j2k_jpeg::{
     encode_jpeg_baseline, Decoder as JpegDecoder, JpegBackend, JpegEncodeOptions, JpegSamples,
     JpegSubsampling,
 };
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_jpeg_cuda::{Codec as JpegCudaCodec, CudaSession};
+use j2k_jpeg_cuda::{Codec as JpegCudaCodec, CudaSession};
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_nvidia_baseline::{nvidia_decode_jpeg_rgb, NvBaselineSession, NvJpegDecodeTiming};
+use j2k_nvidia_baseline::{nvidia_decode_jpeg_rgb, NvBaselineSession, NvJpegDecodeTiming};
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 const DEFAULT_DIM: u32 = 2048;
@@ -25,7 +25,7 @@ const DEFAULT_WARMUP: usize = 10;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::from_env();
-    let (jpeg, input_label) = if let Some(path) = std::env::var_os("SIGNINUM_CUDA_BENCH_JPEG") {
+    let (jpeg, input_label) = if let Some(path) = std::env::var_os("J2K_CUDA_BENCH_JPEG") {
         let jpeg = std::fs::read(&path)?;
         let info = JpegDecoder::inspect(&jpeg)?;
         config.width = info.dimensions.0;
@@ -113,21 +113,21 @@ struct Config {
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 impl Config {
     fn from_env() -> Self {
-        let (width, height) = std::env::var("SIGNINUM_GPU_BENCH_DIM")
+        let (width, height) = std::env::var("J2K_GPU_BENCH_DIM")
             .ok()
             .map_or((DEFAULT_DIM, DEFAULT_DIM), |value| parse_dimensions(&value));
         Self {
             width,
             height,
-            quality: std::env::var("SIGNINUM_JPEG_COMPARE_QUALITY")
+            quality: std::env::var("J2K_JPEG_COMPARE_QUALITY")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(90),
-            iterations: std::env::var("SIGNINUM_JPEG_COMPARE_ITERS")
+            iterations: std::env::var("J2K_JPEG_COMPARE_ITERS")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(DEFAULT_ITERS),
-            warmup: std::env::var("SIGNINUM_JPEG_COMPARE_WARMUP")
+            warmup: std::env::var("J2K_JPEG_COMPARE_WARMUP")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(DEFAULT_WARMUP),
@@ -139,17 +139,15 @@ impl Config {
 
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 fn subsampling_from_env() -> JpegSubsampling {
-    let value = std::env::var("SIGNINUM_JPEG_COMPARE_SUBSAMPLING")
-        .or_else(|_| std::env::var("SIGNINUM_CUDA_BENCH_SUBSAMPLING"))
+    let value = std::env::var("J2K_JPEG_COMPARE_SUBSAMPLING")
+        .or_else(|_| std::env::var("J2K_CUDA_BENCH_SUBSAMPLING"))
         .unwrap_or_else(|_| "420".to_string());
     match value.trim().to_ascii_lowercase().as_str() {
         "420" | "4:2:0" | "ybr420" => JpegSubsampling::Ybr420,
         "422" | "4:2:2" | "ybr422" => JpegSubsampling::Ybr422,
         "444" | "4:4:4" | "ybr444" => JpegSubsampling::Ybr444,
         other => {
-            panic!(
-                "unsupported SIGNINUM_JPEG_COMPARE_SUBSAMPLING={other}; expected 420, 422, or 444"
-            )
+            panic!("unsupported J2K_JPEG_COMPARE_SUBSAMPLING={other}; expected 420, 422, or 444")
         }
     }
 }
@@ -174,13 +172,13 @@ enum Pattern {
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
 impl Pattern {
     fn from_env() -> Self {
-        match std::env::var("SIGNINUM_JPEG_COMPARE_PATTERN")
+        match std::env::var("J2K_JPEG_COMPARE_PATTERN")
             .unwrap_or_else(|_| "stress".to_string())
             .as_str()
         {
             "smooth" => Self::Smooth,
             "stress" => Self::Stress,
-            other => panic!("unsupported SIGNINUM_JPEG_COMPARE_PATTERN={other}"),
+            other => panic!("unsupported J2K_JPEG_COMPARE_PATTERN={other}"),
         }
     }
 
@@ -325,17 +323,17 @@ fn parse_dimensions(value: &str) -> (u32, u32) {
             width
                 .trim()
                 .parse()
-                .expect("SIGNINUM_GPU_BENCH_DIM width must be u32"),
+                .expect("J2K_GPU_BENCH_DIM width must be u32"),
             height
                 .trim()
                 .parse()
-                .expect("SIGNINUM_GPU_BENCH_DIM height must be u32"),
+                .expect("J2K_GPU_BENCH_DIM height must be u32"),
         )
     } else {
         let square = value
             .trim()
             .parse()
-            .expect("SIGNINUM_GPU_BENCH_DIM must be u32 or WIDTHxHEIGHT");
+            .expect("J2K_GPU_BENCH_DIM must be u32 or WIDTHxHEIGHT");
         (square, square)
     }
 }

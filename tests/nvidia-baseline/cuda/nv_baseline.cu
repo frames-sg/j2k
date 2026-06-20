@@ -3,7 +3,7 @@
 // NVIDIA GPU baseline for the JPEG -> HTJ2K transcode comparison: nvJPEG decodes
 // the JPEG to RGB on the GPU, then nvJPEG2000 encodes it to a High-Throughput
 // JPEG 2000 (HTJ2K) codestream on the GPU. This is the apples-to-apples NVIDIA
-// path against signinum's coefficient-domain transcode (which skips the pixel
+// path against j2k's coefficient-domain transcode (which skips the pixel
 // round-trip). Exposes a tiny C ABI surface for the Rust wrapper.
 //
 // Compiled by build.rs with nvcc only when the `nvjpeg2000` feature is on and

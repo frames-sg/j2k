@@ -1,11 +1,11 @@
 # GPU and accelerator surfaces require maintainer review.
-.github/CODEOWNERS @frames-sg/signinum-maintainers
-.github/workflows/gpu-validation.yml @frames-sg/signinum-maintainers
-crates/signinum-cuda-runtime/ @frames-sg/signinum-maintainers
-crates/signinum-jpeg-cuda/ @frames-sg/signinum-maintainers
-crates/signinum-j2k-cuda/ @frames-sg/signinum-maintainers
-crates/signinum-transcode-cuda/ @frames-sg/signinum-maintainers
-crates/signinum-metal-support/ @frames-sg/signinum-maintainers
-crates/signinum-jpeg-metal/ @frames-sg/signinum-maintainers
-crates/signinum-j2k-metal/ @frames-sg/signinum-maintainers
-crates/signinum-transcode-metal/ @frames-sg/signinum-maintainers
+.github/CODEOWNERS @frames-sg/j2k-maintainers
+.github/workflows/gpu-validation.yml @frames-sg/j2k-maintainers
+crates/j2k-cuda-runtime/ @frames-sg/j2k-maintainers
+crates/j2k-jpeg-cuda/ @frames-sg/j2k-maintainers
+crates/j2k-cuda/ @frames-sg/j2k-maintainers
+crates/j2k-transcode-cuda/ @frames-sg/j2k-maintainers
+crates/j2k-metal-support/ @frames-sg/j2k-maintainers
+crates/j2k-jpeg-metal/ @frames-sg/j2k-maintainers
+crates/j2k-metal/ @frames-sg/j2k-maintainers
+crates/j2k-transcode-metal/ @frames-sg/j2k-maintainers

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // JPEG -> HTJ2K transcode throughput comparison:
-//   signinum  — coefficient-domain batch transcode (CUDA transform with CPU or CUDA HT encode)
+//   j2k  — coefficient-domain batch transcode (CUDA transform with CPU or CUDA HT encode)
 //   NVIDIA    — reused-session serial nvJPEG decode + nvJPEG2000 HT encode
 //
 // Reports the four metric families requested: end-to-end throughput (MP/s),
@@ -9,7 +9,7 @@
 //
 // Usage:
 //   transcode_compare <file.jpg> [more.jpg ...]
-//   transcode_compare              # falls back to SIGNINUM_BENCH_JPEG_DIR/*.jpg
+//   transcode_compare              # falls back to J2K_BENCH_JPEG_DIR/*.jpg
 //
 // The NVIDIA columns show "n/a (not built)" unless this crate was compiled with
 // --features nvjpeg2000 on a host with nvcc + libnvjpeg + libnvjpeg2k.
@@ -18,29 +18,29 @@ mod report_format;
 
 use std::{path::PathBuf, time::Instant};
 
-use report_format::{
-    csv_f64_or_blank, escape_csv as csv_escape, escape_json as json_escape, json_f64_or_null,
-};
-use signinum_j2k::IrreversibleQuantizationSubbandScales;
+use j2k::IrreversibleQuantizationSubbandScales;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_j2k_cuda::CudaEncodeStageAccelerator;
+use j2k_cuda::CudaEncodeStageAccelerator;
 #[cfg(all(not(target_os = "macos"), feature = "nvjpeg2000"))]
-use signinum_j2k_native::J2kEncodeStageAccelerator;
-use signinum_j2k_native::{DecodeSettings, Image};
-use signinum_nvidia_baseline::{
+use j2k_native::J2kEncodeStageAccelerator;
+use j2k_native::{DecodeSettings, Image};
+use j2k_nvidia_baseline::{
     nvidia_decode_jpeg_rgb, psnr_u8, write_text_artifact, ycbcr_to_rgb_round_nearest,
     NvBaselineError, NvBaselineSession,
 };
-use signinum_transcode::{
+use j2k_transcode::{
     EncodedTranscodeBatch, JpegTileBatchInput, JpegToHtj2kError, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder, JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
+use report_format::{
+    csv_f64_or_blank, escape_csv as csv_escape, escape_json as json_escape, json_f64_or_null,
+};
 
-// The signinum GPU backend is platform-selected: Metal on macOS, CUDA elsewhere.
+// The j2k GPU backend is platform-selected: Metal on macOS, CUDA elsewhere.
 #[cfg(not(target_os = "macos"))]
-use signinum_transcode_cuda::CudaDctToWaveletStageAccelerator as BenchAccelerator;
+use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator as BenchAccelerator;
 #[cfg(target_os = "macos")]
-use signinum_transcode_metal::MetalDctToWaveletStageAccelerator as BenchAccelerator;
+use j2k_transcode_metal::MetalDctToWaveletStageAccelerator as BenchAccelerator;
 
 const BACKEND_NAME: &str = if cfg!(target_os = "macos") {
     "Metal"
@@ -63,7 +63,7 @@ fn main() {
     let jpegs = match load_inputs(&config) {
         Ok(jpegs) if !jpegs.is_empty() => jpegs,
         Ok(_) => {
-            eprintln!("no JPEG inputs found; pass file paths or set SIGNINUM_BENCH_JPEG_DIR");
+            eprintln!("no JPEG inputs found; pass file paths or set J2K_BENCH_JPEG_DIR");
             std::process::exit(2);
         }
         Err(error) => {
@@ -92,45 +92,45 @@ fn main() {
         megapixels
     );
 
-    if config.profile_signinum_cuda_only {
+    if config.profile_j2k_cuda_only {
         let scale = config
             .quant_scales
             .first()
             .copied()
             .unwrap_or(JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE);
         let options = lossy_options_for_config(&config, scale);
-        let signinum_cuda_ht = run_signinum(&jpegs, &options, &config);
-        print_signinum_cuda_profile_report(
+        let j2k_cuda_ht = run_j2k(&jpegs, &options, &config);
+        print_j2k_cuda_profile_report(
             &jpegs,
             megapixels,
             corpus_hash(&jpegs),
             &config,
             scale,
-            &signinum_cuda_ht,
+            &j2k_cuda_ht,
         );
         if let Err(error) =
-            write_signinum_profile_artifacts(&config, &jpegs, megapixels, scale, &signinum_cuda_ht)
+            write_j2k_profile_artifacts(&config, &jpegs, megapixels, scale, &j2k_cuda_ht)
         {
             eprintln!("failed to write benchmark artifacts: {error}");
             std::process::exit(2);
         }
-        enforce_required_signinum_result(&signinum_cuda_ht);
+        enforce_required_j2k_result(&j2k_cuda_ht);
         return;
     }
 
     let nvidia = run_nvidia(&jpegs, &config);
-    let rd_points = run_signinum_rd_sweep(&jpegs, &config, &nvidia);
+    let rd_points = run_j2k_rd_sweep(&jpegs, &config, &nvidia);
     let selected_index = select_rd_point(&rd_points, &config, &nvidia);
-    let signinum_cpu_ht = rd_points
+    let j2k_cpu_ht = rd_points
         .get(selected_index)
-        .map_or_else(SigninumResult::default, |point| point.result.clone());
+        .map_or_else(J2KResult::default, |point| point.result.clone());
     let selected_scale = rd_points
         .get(selected_index)
         .map_or(JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE, |point| {
             point.scale
         });
     let selected_options = lossy_options_for_config(&config, selected_scale);
-    let signinum_cuda_ht = run_signinum(&jpegs, &selected_options, &config);
+    let j2k_cuda_ht = run_j2k(&jpegs, &selected_options, &config);
 
     print_report(
         &jpegs,
@@ -139,8 +139,8 @@ fn main() {
         &config,
         &rd_points,
         selected_index,
-        &signinum_cpu_ht,
-        &signinum_cuda_ht,
+        &j2k_cpu_ht,
+        &j2k_cuda_ht,
         &nvidia,
     );
     if let Err(error) = write_artifacts(
@@ -149,17 +149,17 @@ fn main() {
         megapixels,
         &rd_points,
         selected_index,
-        &signinum_cuda_ht,
+        &j2k_cuda_ht,
         &nvidia,
     ) {
         eprintln!("failed to write benchmark artifacts: {error}");
         std::process::exit(2);
     }
-    if let Err(error) = validate_rate_match(&config, &signinum_cpu_ht, &signinum_cuda_ht, &nvidia) {
+    if let Err(error) = validate_rate_match(&config, &j2k_cpu_ht, &j2k_cuda_ht, &nvidia) {
         eprintln!("{error}");
         std::process::exit(1);
     }
-    enforce_required_results(&signinum_cuda_ht, &nvidia);
+    enforce_required_results(&j2k_cuda_ht, &nvidia);
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +170,7 @@ struct BenchmarkConfig {
     decomposition_levels: u8,
     match_nvidia_bytes: bool,
     match_tolerance: f64,
-    profile_signinum_cuda_only: bool,
+    profile_j2k_cuda_only: bool,
     warmup: usize,
     iterations: usize,
     min_tiles: Option<usize>,
@@ -187,7 +187,7 @@ impl Default for BenchmarkConfig {
             decomposition_levels: 1,
             match_nvidia_bytes: false,
             match_tolerance: 0.02,
-            profile_signinum_cuda_only: false,
+            profile_j2k_cuda_only: false,
             warmup: WARMUP,
             iterations: ITERATIONS,
             min_tiles: None,
@@ -210,7 +210,7 @@ impl BenchmarkConfig {
             let arg_s = arg.to_string_lossy();
             match arg_s.as_ref() {
                 "--match-nvidia-bytes" => config.match_nvidia_bytes = true,
-                "--profile-signinum-cuda-only" => config.profile_signinum_cuda_only = true,
+                "--profile-j2k-cuda-only" => config.profile_j2k_cuda_only = true,
                 "--quant-scales" => {
                     let value = iter
                         .next()
@@ -267,10 +267,9 @@ impl BenchmarkConfig {
                 _ => config.input_paths.push(arg),
             }
         }
-        if config.profile_signinum_cuda_only && config.match_nvidia_bytes {
+        if config.profile_j2k_cuda_only && config.match_nvidia_bytes {
             return Err(
-                "--profile-signinum-cuda-only cannot be combined with --match-nvidia-bytes"
-                    .to_string(),
+                "--profile-j2k-cuda-only cannot be combined with --match-nvidia-bytes".to_string(),
             );
         }
         Ok(config)
@@ -278,7 +277,7 @@ impl BenchmarkConfig {
 }
 
 fn usage() -> String {
-    "usage: transcode_compare [--profile-signinum-cuda-only] [--quant-scales a,b,c] [--subband-scales ll,hl,lh,hh] [--decomposition-levels n] [--match-nvidia-bytes] [--match-tolerance frac] [--warmup n] [--iterations n] [--min-tiles n] [--json path] [--csv path] [file.jpg ...]".to_string()
+    "usage: transcode_compare [--profile-j2k-cuda-only] [--quant-scales a,b,c] [--subband-scales ll,hl,lh,hh] [--decomposition-levels n] [--match-nvidia-bytes] [--match-tolerance frac] [--warmup n] [--iterations n] [--min-tiles n] [--json path] [--csv path] [file.jpg ...]".to_string()
 }
 
 fn parse_f32_list(value: &str) -> Result<Vec<f32>, String> {
@@ -350,7 +349,7 @@ struct JpegInput {
 fn load_inputs(config: &BenchmarkConfig) -> std::io::Result<Vec<JpegInput>> {
     let mut paths = config.input_paths.clone();
     if paths.is_empty() {
-        if let Some(dir) = std::env::var_os("SIGNINUM_BENCH_JPEG_DIR") {
+        if let Some(dir) = std::env::var_os("J2K_BENCH_JPEG_DIR") {
             for entry in std::fs::read_dir(dir)? {
                 let path = entry?.path();
                 if path.extension().is_some_and(|ext| {
@@ -365,7 +364,7 @@ fn load_inputs(config: &BenchmarkConfig) -> std::io::Result<Vec<JpegInput>> {
     if paths.is_empty() {
         // Bundled sanity fixture (tiny/unrepresentative — for a smoke test only).
         let bytes = include_bytes!(
-            "../../../../crates/signinum-transcode-cuda/tests/fixtures/conformance/baseline_420_16x16.jpg"
+            "../../../../crates/j2k-transcode-cuda/tests/fixtures/conformance/baseline_420_16x16.jpg"
         )
         .to_vec();
         eprintln!("warning: no inputs given; using the bundled 16x16 fixture (not representative)");
@@ -429,7 +428,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 #[derive(Clone, Default)]
-struct SigninumResult {
+struct J2KResult {
     ran: bool,
     used_gpu: bool,
     best_wall_s: f64,
@@ -461,7 +460,7 @@ struct SigninumResult {
 #[derive(Clone)]
 struct RdPoint {
     scale: f32,
-    result: SigninumResult,
+    result: J2KResult,
     quality: Option<QualitySummary>,
 }
 
@@ -483,7 +482,7 @@ fn lossy_options_for_config(config: &BenchmarkConfig, scale: f32) -> JpegToHtj2k
     options
 }
 
-fn run_signinum_rd_sweep(
+fn run_j2k_rd_sweep(
     jpegs: &[JpegInput],
     config: &BenchmarkConfig,
     nvidia: &NvidiaResult,
@@ -494,7 +493,7 @@ fn run_signinum_rd_sweep(
         .copied()
         .map(|scale| {
             let options = lossy_options_for_config(config, scale);
-            let result = run_signinum_transform_cpu_encode(jpegs, &options, config);
+            let result = run_j2k_transform_cpu_encode(jpegs, &options, config);
             let quality = quality_summary(jpegs, &result.codestreams);
             if config.match_nvidia_bytes && nvidia.ran {
                 let delta = byte_delta_fraction(result.output_bytes, nvidia.output_bytes);
@@ -535,7 +534,7 @@ fn select_rd_point(points: &[RdPoint], config: &BenchmarkConfig, nvidia: &Nvidia
         byte_delta_fraction(points[selected].result.output_bytes, nvidia.output_bytes).abs();
     if delta > config.match_tolerance {
         eprintln!(
-            "warning: closest Signinum RD point is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
+            "warning: closest J2K RD point is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
             delta * 100.0,
             config.match_tolerance * 100.0
         );
@@ -545,8 +544,8 @@ fn select_rd_point(points: &[RdPoint], config: &BenchmarkConfig, nvidia: &Nvidia
 
 fn validate_rate_match(
     config: &BenchmarkConfig,
-    selected_cpu_ht: &SigninumResult,
-    cuda_ht: &SigninumResult,
+    selected_cpu_ht: &J2KResult,
+    cuda_ht: &J2KResult,
     nvidia: &NvidiaResult,
 ) -> Result<(), String> {
     if !(config.match_nvidia_bytes && nvidia.ran) {
@@ -557,7 +556,7 @@ fn validate_rate_match(
         byte_delta_fraction(selected_cpu_ht.output_bytes, nvidia.output_bytes).abs();
     if selected_delta > config.match_tolerance {
         return Err(format!(
-            "selected Signinum RD point is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
+            "selected J2K RD point is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
             selected_delta * 100.0,
             config.match_tolerance * 100.0
         ));
@@ -567,7 +566,7 @@ fn validate_rate_match(
         let cuda_delta = byte_delta_fraction(cuda_ht.output_bytes, nvidia.output_bytes).abs();
         if cuda_delta > config.match_tolerance {
             return Err(format!(
-                "Signinum CUDA HT row is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
+                "J2K CUDA HT row is {:.2}% from NVIDIA bytes, outside {:.2}% tolerance",
                 cuda_delta * 100.0,
                 config.match_tolerance * 100.0
             ));
@@ -584,38 +583,38 @@ fn byte_delta_fraction(candidate: usize, target: usize) -> f64 {
     (candidate as f64 - target as f64) / target as f64
 }
 
-fn run_signinum(
+fn run_j2k(
     jpegs: &[JpegInput],
     options: &JpegToHtj2kOptions,
     config: &BenchmarkConfig,
-) -> SigninumResult {
+) -> J2KResult {
     let inputs: Vec<JpegTileBatchInput<'_>> = jpegs
         .iter()
         .map(|j| JpegTileBatchInput { bytes: &j.bytes })
         .collect();
     // Warm up (and detect whether the GPU path is available).
     let used_gpu = true;
-    let mut session = SigninumBenchSession::new(true, true);
+    let mut session = J2KBenchSession::new(true, true);
     for iteration in 0..config.warmup.max(1) {
         match session.transcode_batch(&inputs, options) {
-            Ok((batch, encode_metrics)) => validate_signinum_cuda_dispatch(&batch, encode_metrics),
+            Ok((batch, encode_metrics)) => validate_j2k_cuda_dispatch(&batch, encode_metrics),
             Err(error) => {
                 assert!(
-                    !signinum_cuda_required(),
-                    "signinum: explicit {BACKEND_NAME} path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                    ! j2k_cuda_required(),
+                    "j2k: explicit {BACKEND_NAME} path failed under J2K_REQUIRE_CUDA_RUNTIME=1: {error:?}"
                 );
                 if iteration == 0 {
                     eprintln!(
-                        "signinum: explicit {BACKEND_NAME} CUDA HT path unavailable; reporting CUDA HT row as n/a"
+                        "j2k: explicit {BACKEND_NAME} CUDA HT path unavailable; reporting CUDA HT row as n/a"
                     );
                 }
-                return SigninumResult::default();
+                return J2KResult::default();
             }
         }
     }
 
     let mut best_wall_s = f64::INFINITY;
-    let mut last = SigninumResult::default();
+    let mut last = J2KResult::default();
     for _ in 0..config.iterations {
         let start = Instant::now();
         let batch = session.transcode_batch(&inputs, options);
@@ -624,26 +623,26 @@ fn run_signinum(
             Ok(batch) => batch,
             Err(error) => {
                 assert!(
-                    !signinum_cuda_required(),
-                    "signinum: explicit {BACKEND_NAME} path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                    ! j2k_cuda_required(),
+                    "j2k: explicit {BACKEND_NAME} path failed under J2K_REQUIRE_CUDA_RUNTIME=1: {error:?}"
                 );
-                return SigninumResult::default();
+                return J2KResult::default();
             }
         };
-        validate_signinum_cuda_dispatch(&batch, encode_metrics);
+        validate_j2k_cuda_dispatch(&batch, encode_metrics);
         if elapsed < best_wall_s {
             best_wall_s = elapsed;
-            last = signinum_result_from_batch(&batch, used_gpu, elapsed, encode_metrics);
+            last = j2k_result_from_batch(&batch, used_gpu, elapsed, encode_metrics);
         }
     }
     last
 }
 
-fn run_signinum_transform_cpu_encode(
+fn run_j2k_transform_cpu_encode(
     jpegs: &[JpegInput],
     options: &JpegToHtj2kOptions,
     config: &BenchmarkConfig,
-) -> SigninumResult {
+) -> J2KResult {
     let inputs: Vec<JpegTileBatchInput<'_>> = jpegs
         .iter()
         .map(|j| JpegTileBatchInput { bytes: &j.bytes })
@@ -654,18 +653,18 @@ fn run_signinum_transform_cpu_encode(
     for iteration in 0..config.warmup.max(1) {
         match transcoder
             .transcode_batch_with_accelerator(&inputs, options, &mut accelerator)
-            .and_then(reject_failed_signinum_tiles)
+            .and_then(reject_failed_j2k_tiles)
         {
-            Ok(batch) => validate_signinum_transform_dispatch(&batch),
+            Ok(batch) => validate_j2k_transform_dispatch(&batch),
             Err(error) => {
                 assert!(
-                    !signinum_cuda_required(),
-                    "signinum: explicit {BACKEND_NAME} transform path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                    ! j2k_cuda_required(),
+                    "j2k: explicit {BACKEND_NAME} transform path failed under J2K_REQUIRE_CUDA_RUNTIME=1: {error:?}"
                 );
                 used_gpu = false;
                 if iteration == 0 {
                     eprintln!(
-                        "signinum: explicit {BACKEND_NAME} transform unavailable; measuring scalar CPU fallback"
+                        "j2k: explicit {BACKEND_NAME} transform unavailable; measuring scalar CPU fallback"
                     );
                 }
                 break;
@@ -674,53 +673,48 @@ fn run_signinum_transform_cpu_encode(
     }
 
     let mut best_wall_s = f64::INFINITY;
-    let mut last = SigninumResult::default();
+    let mut last = J2KResult::default();
     for _ in 0..config.iterations {
         let start = Instant::now();
         let batch = if used_gpu {
             transcoder
                 .transcode_batch_with_accelerator(&inputs, options, &mut accelerator)
-                .and_then(reject_failed_signinum_tiles)
+                .and_then(reject_failed_j2k_tiles)
         } else {
             transcoder
                 .transcode_batch(&inputs, options)
-                .and_then(reject_failed_signinum_tiles)
+                .and_then(reject_failed_j2k_tiles)
         };
         let elapsed = start.elapsed().as_secs_f64();
         let batch = match batch {
             Ok(batch) => batch,
             Err(error) => {
                 assert!(
-                    !signinum_cuda_required(),
-                    "signinum: explicit {BACKEND_NAME} transform path failed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1: {error:?}"
+                    ! j2k_cuda_required(),
+                    "j2k: explicit {BACKEND_NAME} transform path failed under J2K_REQUIRE_CUDA_RUNTIME=1: {error:?}"
                 );
-                return SigninumResult::default();
+                return J2KResult::default();
             }
         };
         if used_gpu {
-            validate_signinum_transform_dispatch(&batch);
+            validate_j2k_transform_dispatch(&batch);
         }
         if elapsed < best_wall_s {
             best_wall_s = elapsed;
-            last = signinum_result_from_batch(
-                &batch,
-                used_gpu,
-                elapsed,
-                EncodeBenchMetrics::default(),
-            );
+            last = j2k_result_from_batch(&batch, used_gpu, elapsed, EncodeBenchMetrics::default());
         }
     }
     last
 }
 
-fn signinum_result_from_batch(
+fn j2k_result_from_batch(
     batch: &EncodedTranscodeBatch,
     used_gpu: bool,
     elapsed: f64,
     encode_metrics: EncodeBenchMetrics,
-) -> SigninumResult {
+) -> J2KResult {
     let t = &batch.report.timings;
-    SigninumResult {
+    J2KResult {
         ran: true,
         used_gpu,
         best_wall_s: elapsed,
@@ -770,7 +764,7 @@ fn signinum_result_from_batch(
     }
 }
 
-struct SigninumBenchSession {
+struct J2KBenchSession {
     use_gpu: bool,
     transcoder: JpegToHtj2kTranscoder,
     transform_accelerator: Option<BenchAccelerator>,
@@ -778,7 +772,7 @@ struct SigninumBenchSession {
     encode_accelerator: Option<CudaEncodeStageAccelerator>,
 }
 
-impl SigninumBenchSession {
+impl J2KBenchSession {
     fn new(use_gpu: bool, resident_ht_encode: bool) -> Self {
         Self {
             use_gpu,
@@ -803,7 +797,7 @@ impl SigninumBenchSession {
             return self
                 .transcoder
                 .transcode_batch(inputs, options)
-                .and_then(reject_failed_signinum_tiles)
+                .and_then(reject_failed_j2k_tiles)
                 .map(|batch| (batch, EncodeBenchMetrics::default()));
         }
 
@@ -819,10 +813,10 @@ impl SigninumBenchSession {
         let accelerator = self
             .transform_accelerator
             .as_mut()
-            .expect("GPU signinum session has a transform accelerator");
+            .expect("GPU j2k session has a transform accelerator");
         self.transcoder
             .transcode_batch_with_accelerator(inputs, options, accelerator)
-            .and_then(reject_failed_signinum_tiles)
+            .and_then(reject_failed_j2k_tiles)
             .map(|batch| (batch, EncodeBenchMetrics::default()))
     }
 
@@ -835,11 +829,11 @@ impl SigninumBenchSession {
         let transform_accelerator = self
             .transform_accelerator
             .as_mut()
-            .expect("GPU signinum session has a transform accelerator");
+            .expect("GPU j2k session has a transform accelerator");
         let encode_accelerator = self
             .encode_accelerator
             .as_mut()
-            .expect("CUDA signinum session has an encode accelerator");
+            .expect("CUDA j2k session has an encode accelerator");
         let before = encode_accelerator.dispatch_report();
         encode_accelerator.reset_collected_stage_timings();
         let batch = self.transcoder.transcode_batch_with_accelerators(
@@ -848,7 +842,7 @@ impl SigninumBenchSession {
             transform_accelerator,
             encode_accelerator,
         )?;
-        let batch = reject_failed_signinum_tiles(batch)?;
+        let batch = reject_failed_j2k_tiles(batch)?;
         let encode_timings = encode_accelerator.collected_stage_timings();
         let dispatch = encode_accelerator
             .dispatch_report()
@@ -873,10 +867,10 @@ impl SigninumBenchSession {
         let accelerator = self
             .transform_accelerator
             .as_mut()
-            .expect("GPU signinum session has a transform accelerator");
+            .expect("GPU j2k session has a transform accelerator");
         self.transcoder
             .transcode_batch_with_accelerator(inputs, options, accelerator)
-            .and_then(reject_failed_signinum_tiles)
+            .and_then(reject_failed_j2k_tiles)
             .map(|batch| (batch, EncodeBenchMetrics::default()))
     }
 }
@@ -895,42 +889,42 @@ fn new_bench_accelerator(_resident_ht_encode: bool) -> BenchAccelerator {
     BenchAccelerator::new_explicit()
 }
 
-fn reject_failed_signinum_tiles(
+fn reject_failed_j2k_tiles(
     batch: EncodedTranscodeBatch,
 ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
     if batch.report.failed_tiles == 0 {
         Ok(batch)
     } else {
         Err(JpegToHtj2kError::Validation(
-            "signinum benchmark produced one or more failed tiles",
+            "j2k benchmark produced one or more failed tiles",
         ))
     }
 }
 
-fn signinum_cuda_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_CUDA_RUNTIME").is_some()
+fn j2k_cuda_required() -> bool {
+    std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn signinum_cuda_stage_timings_disabled() -> bool {
-    std::env::var_os("SIGNINUM_CUDA_DISABLE_STAGE_TIMINGS").is_some()
+fn j2k_cuda_stage_timings_disabled() -> bool {
+    std::env::var_os("J2K_CUDA_DISABLE_STAGE_TIMINGS").is_some()
 }
 
 fn nvidia_baseline_required() -> bool {
-    std::env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some()
+    std::env::var_os("J2K_REQUIRE_NV_BASELINE_BUILD").is_some()
 }
 
-fn enforce_required_signinum_result(signinum: &SigninumResult) {
-    if signinum_cuda_required() && !(signinum.ran && signinum.used_gpu) {
-        eprintln!("signinum: required CUDA benchmark did not produce a GPU result");
+fn enforce_required_j2k_result(j2k: &J2KResult) {
+    if j2k_cuda_required() && !(j2k.ran && j2k.used_gpu) {
+        eprintln!("j2k: required CUDA benchmark did not produce a GPU result");
         std::process::exit(1);
     }
 }
 
-fn enforce_required_results(signinum: &SigninumResult, nvidia: &NvidiaResult) {
+fn enforce_required_results(j2k: &J2KResult, nvidia: &NvidiaResult) {
     let mut failed = false;
-    if signinum_cuda_required() && !(signinum.ran && signinum.used_gpu) {
-        eprintln!("signinum: required CUDA benchmark did not produce a GPU result");
+    if j2k_cuda_required() && !(j2k.ran && j2k.used_gpu) {
+        eprintln!("j2k: required CUDA benchmark did not produce a GPU result");
         failed = true;
     }
     if nvidia_baseline_required() && !nvidia.ran {
@@ -945,23 +939,23 @@ fn enforce_required_results(signinum: &SigninumResult, nvidia: &NvidiaResult) {
     }
 }
 
-fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: EncodeBenchMetrics) {
+fn validate_j2k_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: EncodeBenchMetrics) {
     #[cfg(not(target_os = "macos"))]
     {
-        validate_signinum_transform_dispatch(batch);
-        if !signinum_cuda_required() {
+        validate_j2k_transform_dispatch(batch);
+        if !j2k_cuda_required() {
             return;
         }
         assert_eq!(
             batch.report.failed_tiles, 0,
-            "signinum: CUDA benchmark produced failed tiles under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA benchmark produced failed tiles under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
         let ht_code_block_dispatches = encode
             .ht_code_block_dispatches
             .saturating_add(batch.report.timings.dwt97_batch_ht_codeblock_dispatches);
         assert!(
             ht_code_block_dispatches != 0,
-            "signinum: CUDA HT encode dispatched zero code-block batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA HT encode dispatched zero code-block batches under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
     }
 
@@ -969,33 +963,33 @@ fn validate_signinum_cuda_dispatch(batch: &EncodedTranscodeBatch, encode: Encode
     let _ = (batch, encode);
 }
 
-fn validate_signinum_transform_dispatch(batch: &EncodedTranscodeBatch) {
+fn validate_j2k_transform_dispatch(batch: &EncodedTranscodeBatch) {
     #[cfg(not(target_os = "macos"))]
     {
-        if !signinum_cuda_required() {
+        if !j2k_cuda_required() {
             return;
         }
         assert_eq!(
             batch.report.failed_tiles, 0,
-            "signinum: CUDA transform benchmark produced failed tiles under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA transform benchmark produced failed tiles under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
         assert!(
             batch.report.timings.accelerator_dispatches != 0,
-            "signinum: CUDA transform dispatched zero batches under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA transform dispatched zero batches under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
         assert_eq!(
             batch.report.timings.cpu_fallback_jobs, 0,
-            "signinum: CUDA transform used CPU fallback jobs under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA transform used CPU fallback jobs under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
         assert_eq!(
             batch.report.timings.accelerator_dispatched_jobs,
             batch.report.transformed_components,
-            "signinum: CUDA transform dispatched jobs do not cover all transformed components under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+            "j2k: CUDA transform dispatched jobs do not cover all transformed components under J2K_REQUIRE_CUDA_RUNTIME=1"
         );
-        if !signinum_cuda_stage_timings_disabled() {
+        if !j2k_cuda_stage_timings_disabled() {
             assert!(
                 batch.report.timings.dwt97_batch_quantize_codeblock_us != 0,
-                "signinum: CUDA fused 9/7 code-block quantize stage was not timed under SIGNINUM_REQUIRE_CUDA_RUNTIME=1"
+                "j2k: CUDA fused 9/7 code-block quantize stage was not timed under J2K_REQUIRE_CUDA_RUNTIME=1"
             );
         }
     }
@@ -1156,7 +1150,7 @@ fn best_psnr_and_mse(recon: &[u8], source_rgb: &[u8]) -> Option<(f64, RgbMseSumm
 }
 
 fn rgb_mse_summary(a: &[u8], b: &[u8]) -> Option<RgbMseSummary> {
-    if a.len() != b.len() || a.is_empty() || a.len() % 3 != 0 {
+    if a.len() != b.len() || a.is_empty() || !a.len().is_multiple_of(3) {
         return None;
     }
     let mut sum_sq = 0f64;
@@ -1208,8 +1202,8 @@ fn print_report(
     config: &BenchmarkConfig,
     rd_points: &[RdPoint],
     selected_index: usize,
-    signinum_cpu_ht: &SigninumResult,
-    signinum_cuda_ht: &SigninumResult,
+    j2k_cpu_ht: &J2KResult,
+    j2k_cuda_ht: &J2KResult,
     nvidia: &NvidiaResult,
 ) {
     let labels: Vec<&str> = jpegs.iter().map(|j| j.label.as_str()).take(4).collect();
@@ -1237,7 +1231,7 @@ fn print_report(
     );
 
     if rd_points.len() > 1 || config.match_nvidia_bytes {
-        println!("Signinum RD sweep (CUDA transform + CPU HT, PSNR not rate matched):");
+        println!("J2K RD sweep (CUDA transform + CPU HT, PSNR not rate matched):");
         for (idx, point) in rd_points.iter().enumerate() {
             let selected = if idx == selected_index { "*" } else { " " };
             let delta = if nvidia.ran {
@@ -1268,13 +1262,13 @@ fn print_report(
     println!("{}", "-".repeat(76));
 
     // End-to-end throughput.
-    let sig_cpu_mps = if signinum_cpu_ht.ran && signinum_cpu_ht.best_wall_s > 0.0 {
-        megapixels / signinum_cpu_ht.best_wall_s
+    let sig_cpu_mps = if j2k_cpu_ht.ran && j2k_cpu_ht.best_wall_s > 0.0 {
+        megapixels / j2k_cpu_ht.best_wall_s
     } else {
         0.0
     };
-    let sig_cuda_mps = if signinum_cuda_ht.ran && signinum_cuda_ht.best_wall_s > 0.0 {
-        megapixels / signinum_cuda_ht.best_wall_s
+    let sig_cuda_mps = if j2k_cuda_ht.ran && j2k_cuda_ht.best_wall_s > 0.0 {
+        megapixels / j2k_cuda_ht.best_wall_s
     } else {
         0.0
     };
@@ -1286,8 +1280,8 @@ fn print_report(
     println!(
         "{:<24}{:>18}{:>18}{:>16}",
         "end-to-end MP/s",
-        fmt_mps_ran(signinum_cpu_ht.ran, sig_cpu_mps),
-        fmt_mps_ran(signinum_cuda_ht.ran, sig_cuda_mps),
+        fmt_mps_ran(j2k_cpu_ht.ran, sig_cpu_mps),
+        fmt_mps_ran(j2k_cuda_ht.ran, sig_cuda_mps),
         fmt_mps(nvidia, nv_mps),
     );
 
@@ -1295,39 +1289,31 @@ fn print_report(
     println!(
         "{:<24}{:>18}{:>18}{:>16}",
         "wall-clock (ms)",
-        fmt_ms(signinum_cpu_ht.ran, signinum_cpu_ht.best_wall_s * 1000.0),
-        fmt_ms(signinum_cuda_ht.ran, signinum_cuda_ht.best_wall_s * 1000.0),
+        fmt_ms(j2k_cpu_ht.ran, j2k_cpu_ht.best_wall_s * 1000.0),
+        fmt_ms(j2k_cuda_ht.ran, j2k_cuda_ht.best_wall_s * 1000.0),
         fmt_ms(nvidia.ran, nvidia.best_wall_s * 1000.0),
     );
 
     // GPU-only.
-    let sig_cpu_gpu_ms = (signinum_cpu_ht.transform_gpu_stage_us
-        + signinum_cpu_ht.encode_cuda_stage_us) as f64
-        / 1000.0;
-    let sig_cuda_gpu_ms = (signinum_cuda_ht.transform_gpu_stage_us
-        + signinum_cuda_ht.encode_cuda_stage_us) as f64
-        / 1000.0;
+    let sig_cpu_gpu_ms =
+        (j2k_cpu_ht.transform_gpu_stage_us + j2k_cpu_ht.encode_cuda_stage_us) as f64 / 1000.0;
+    let sig_cuda_gpu_ms =
+        (j2k_cuda_ht.transform_gpu_stage_us + j2k_cuda_ht.encode_cuda_stage_us) as f64 / 1000.0;
     let nv_gpu_ms = nvidia.decode_ms + nvidia.encode_ms;
     println!(
         "{:<24}{:>18}{:>18}{:>16}",
         "GPU-only (ms)",
-        fmt_ms(
-            signinum_cpu_ht.ran && signinum_cpu_ht.used_gpu,
-            sig_cpu_gpu_ms
-        ),
-        fmt_ms(
-            signinum_cuda_ht.ran && signinum_cuda_ht.used_gpu,
-            sig_cuda_gpu_ms,
-        ),
+        fmt_ms(j2k_cpu_ht.ran && j2k_cpu_ht.used_gpu, sig_cpu_gpu_ms),
+        fmt_ms(j2k_cuda_ht.ran && j2k_cuda_ht.used_gpu, sig_cuda_gpu_ms,),
         fmt_ms(nvidia.ran, nv_gpu_ms),
     );
 
     // Per-stage breakdown.
     println!("\nper-stage (ms):");
-    print_signinum_stages("signinum CUDA transform + CPU HT encode", signinum_cpu_ht);
-    print_signinum_stages(
-        "signinum CUDA transform + CUDA HT block encode + CPU packetization",
-        signinum_cuda_ht,
+    print_j2k_stages("j2k CUDA transform + CPU HT encode", j2k_cpu_ht);
+    print_j2k_stages(
+        "j2k CUDA transform + CUDA HT block encode + CPU packetization",
+        j2k_cuda_ht,
     );
     if nvidia.ran {
         println!(
@@ -1342,8 +1328,8 @@ fn print_report(
     println!("\noutput size + quality:");
     println!(
         "  bytes:  sig CPU HT {}   sig CUDA HT {}   NVIDIA {}",
-        signinum_cpu_ht.output_bytes,
-        signinum_cuda_ht.output_bytes,
+        j2k_cpu_ht.output_bytes,
+        j2k_cuda_ht.output_bytes,
         if nvidia.ran {
             nvidia.output_bytes.to_string()
         } else {
@@ -1352,8 +1338,8 @@ fn print_report(
     );
 
     // PSNR vs the nvJPEG-decoded source (best-effort; needs the NVIDIA baseline).
-    let sig_cpu_quality = quality_summary(jpegs, &signinum_cpu_ht.codestreams);
-    let sig_cuda_quality = quality_summary(jpegs, &signinum_cuda_ht.codestreams);
+    let sig_cpu_quality = quality_summary(jpegs, &j2k_cpu_ht.codestreams);
+    let sig_cuda_quality = quality_summary(jpegs, &j2k_cuda_ht.codestreams);
     let nv_quality = if nvidia.ran {
         quality_summary(jpegs, &nvidia.codestreams)
     } else {
@@ -1379,17 +1365,17 @@ fn print_report(
     );
 }
 
-fn print_signinum_cuda_profile_report(
+fn print_j2k_cuda_profile_report(
     jpegs: &[JpegInput],
     megapixels: f64,
     corpus_hash: u64,
     config: &BenchmarkConfig,
     scale: f32,
-    signinum: &SigninumResult,
+    j2k: &J2KResult,
 ) {
     let labels: Vec<&str> = jpegs.iter().map(|j| j.label.as_str()).take(4).collect();
-    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
-        megapixels / signinum.best_wall_s
+    let mp_s = if j2k.ran && j2k.best_wall_s > 0.0 {
+        megapixels / j2k.best_wall_s
     } else {
         0.0
     };
@@ -1400,7 +1386,7 @@ fn print_signinum_cuda_profile_report(
     );
     println!("corpus hash: {corpus_hash:016x}");
     println!(
-        "profile: signinum CUDA HT only, scale {:.4}, decomposition levels {}, subband scales LL {:.3} HL {:.3} LH {:.3} HH {:.3}",
+        "profile: j2k CUDA HT only, scale {:.4}, decomposition levels {}, subband scales LL {:.3} HL {:.3} LH {:.3} HH {:.3}",
         scale,
         config.decomposition_levels,
         config.subband_scales.low_low,
@@ -1413,66 +1399,64 @@ fn print_signinum_cuda_profile_report(
         config.iterations
     );
     println!(
-        "PROFILE_RESULT signinum_cuda_ht_only mp_s={:.3} wall_ms={:.3} gpu_ms={:.3} bytes={} transform_dispatches={} transform_jobs={} cpu_fallback_jobs={} encode_dispatches={} ht_codeblock_dispatches={} packetization_dispatches={}",
+        "PROFILE_RESULT j2k_cuda_ht_only mp_s={:.3} wall_ms={:.3} gpu_ms={:.3} bytes={} transform_dispatches={} transform_jobs={} cpu_fallback_jobs={} encode_dispatches={} ht_codeblock_dispatches={} packetization_dispatches={}",
         mp_s,
-        signinum.best_wall_s * 1000.0,
-        result_gpu_ms(signinum),
-        signinum.output_bytes,
-        signinum.transform_dispatches,
-        signinum.transform_dispatched_jobs,
-        signinum.transform_cpu_fallback_jobs,
-        signinum.encode_dispatches,
-        signinum.encode_ht_code_block_dispatches,
-        signinum.encode_packetization_dispatches,
+        j2k.best_wall_s * 1000.0,
+        result_gpu_ms( j2k),
+        j2k.output_bytes,
+        j2k.transform_dispatches,
+        j2k.transform_dispatched_jobs,
+        j2k.transform_cpu_fallback_jobs,
+        j2k.encode_dispatches,
+        j2k.encode_ht_code_block_dispatches,
+        j2k.encode_packetization_dispatches,
     );
-    print_signinum_stages(
-        "signinum CUDA transform + CUDA HT block encode + CPU packetization",
-        signinum,
+    print_j2k_stages(
+        "j2k CUDA transform + CUDA HT block encode + CPU packetization",
+        j2k,
     );
 }
 
-fn print_signinum_stages(label: &str, signinum: &SigninumResult) {
+fn print_j2k_stages(label: &str, j2k: &J2KResult) {
     println!(
         "  {label}: extract {:.3}  repack {:.3}  transform wall {:.3}  encode wall {:.3}",
-        us_ms(signinum.extract_us),
-        us_ms(signinum.repack_us),
-        us_ms(signinum.transform_wall_us),
-        us_ms(signinum.encode_wall_us),
+        us_ms(j2k.extract_us),
+        us_ms(j2k.repack_us),
+        us_ms(j2k.transform_wall_us),
+        us_ms(j2k.encode_wall_us),
     );
     println!(
         "    GPU transform: pack/upload {:.3}  idct+row {:.3}  column {:.3}  quantize {:.3}  readback {:.3}",
-        us_ms(signinum.pack_upload_us),
-        us_ms(signinum.idct_row_lift_us),
-        us_ms(signinum.column_lift_us),
-        us_ms(signinum.quantize_us),
-        us_ms(signinum.readback_us),
+        us_ms( j2k.pack_upload_us),
+        us_ms( j2k.idct_row_lift_us),
+        us_ms( j2k.column_lift_us),
+        us_ms( j2k.quantize_us),
+        us_ms( j2k.readback_us),
     );
     println!(
         "    transform dispatches: {}  jobs: {}  CPU fallback jobs: {}",
-        signinum.transform_dispatches,
-        signinum.transform_dispatched_jobs,
-        signinum.transform_cpu_fallback_jobs,
+        j2k.transform_dispatches, j2k.transform_dispatched_jobs, j2k.transform_cpu_fallback_jobs,
     );
-    if signinum.encode_dispatches > 0 {
+    if j2k.encode_dispatches > 0 {
         println!(
             "    CUDA HT encode: total {:.3}  dispatches {}  HT code-block {}  packetization {}",
-            us_ms(signinum.encode_cuda_stage_us),
-            signinum.encode_dispatches,
-            signinum.encode_ht_code_block_dispatches,
-            signinum.encode_packetization_dispatches,
+            us_ms(j2k.encode_cuda_stage_us),
+            j2k.encode_dispatches,
+            j2k.encode_ht_code_block_dispatches,
+            j2k.encode_packetization_dispatches,
         );
-        if signinum.encode_cuda_ht_kernel_us
-            + signinum.encode_cuda_ht_status_readback_us
-            + signinum.encode_cuda_ht_compact_us
-            + signinum.encode_cuda_ht_output_readback_us
+        if j2k.encode_cuda_ht_kernel_us
+            + j2k.encode_cuda_ht_status_readback_us
+            + j2k.encode_cuda_ht_compact_us
+            + j2k.encode_cuda_ht_output_readback_us
             > 0
         {
             println!(
                 "      resident split: kernel {:.3}  status {:.3}  compact {:.3}  output {:.3}",
-                us_ms(signinum.encode_cuda_ht_kernel_us),
-                us_ms(signinum.encode_cuda_ht_status_readback_us),
-                us_ms(signinum.encode_cuda_ht_compact_us),
-                us_ms(signinum.encode_cuda_ht_output_readback_us),
+                us_ms(j2k.encode_cuda_ht_kernel_us),
+                us_ms(j2k.encode_cuda_ht_status_readback_us),
+                us_ms(j2k.encode_cuda_ht_compact_us),
+                us_ms(j2k.encode_cuda_ht_output_readback_us),
             );
         }
     } else {
@@ -1538,7 +1522,7 @@ fn nv_status(nvidia: &NvidiaResult) -> String {
     }
 }
 
-fn result_gpu_ms(result: &SigninumResult) -> f64 {
+fn result_gpu_ms(result: &J2KResult) -> f64 {
     (result.transform_gpu_stage_us + result.encode_cuda_stage_us) as f64 / 1000.0
 }
 
@@ -1566,7 +1550,7 @@ fn write_artifacts(
     megapixels: f64,
     rd_points: &[RdPoint],
     selected_index: usize,
-    signinum_cuda_ht: &SigninumResult,
+    j2k_cuda_ht: &J2KResult,
     nvidia: &NvidiaResult,
 ) -> std::io::Result<()> {
     if let Some(path) = &config.csv_path {
@@ -1577,7 +1561,7 @@ fn write_artifacts(
                 megapixels,
                 rd_points,
                 selected_index,
-                signinum_cuda_ht,
+                j2k_cuda_ht,
                 nvidia,
             ),
         )?;
@@ -1591,7 +1575,7 @@ fn write_artifacts(
                 megapixels,
                 rd_points,
                 selected_index,
-                signinum_cuda_ht,
+                j2k_cuda_ht,
                 nvidia,
             ),
         )?;
@@ -1599,88 +1583,85 @@ fn write_artifacts(
     Ok(())
 }
 
-fn write_signinum_profile_artifacts(
+fn write_j2k_profile_artifacts(
     config: &BenchmarkConfig,
     jpegs: &[JpegInput],
     megapixels: f64,
     scale: f32,
-    signinum: &SigninumResult,
+    j2k: &J2KResult,
 ) -> std::io::Result<()> {
     if let Some(path) = &config.csv_path {
-        write_text_artifact(
-            path,
-            signinum_profile_csv_report(jpegs, megapixels, scale, signinum),
-        )?;
+        write_text_artifact(path, j2k_profile_csv_report(jpegs, megapixels, scale, j2k))?;
     }
     if let Some(path) = &config.json_path {
         write_text_artifact(
             path,
-            signinum_profile_json_report(config, jpegs, megapixels, scale, signinum),
+            j2k_profile_json_report(config, jpegs, megapixels, scale, j2k),
         )?;
     }
     Ok(())
 }
 
-fn signinum_profile_csv_report(
+fn j2k_profile_csv_report(
     jpegs: &[JpegInput],
     megapixels: f64,
     scale: f32,
-    signinum: &SigninumResult,
+    j2k: &J2KResult,
 ) -> String {
-    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
-        megapixels / signinum.best_wall_s
+    let mp_s = if j2k.ran && j2k.best_wall_s > 0.0 {
+        megapixels / j2k.best_wall_s
     } else {
         0.0
     };
     format!(
-        "row,ran,used_gpu,scale,tiles,megapixels,mp_s,bytes,wall_ms,gpu_ms,extract_ms,repack_ms,transform_wall_ms,encode_wall_ms,encode_cuda_ht_kernel_ms,encode_cuda_ht_status_readback_ms,encode_cuda_ht_compact_ms,encode_cuda_ht_output_readback_ms,pack_upload_ms,idct_row_lift_ms,column_lift_ms,quantize_ms,readback_ms,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\nsigninum_cuda_ht_only,{},{},{:.6},{},{:.8},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{}\n",
-        signinum.ran,
-        signinum.used_gpu,
+        "row,ran,used_gpu,scale,tiles,megapixels,mp_s,bytes,wall_ms,gpu_ms,extract_ms,repack_ms,transform_wall_ms,encode_wall_ms,encode_cuda_ht_kernel_ms,encode_cuda_ht_status_readback_ms,encode_cuda_ht_compact_ms,encode_cuda_ht_output_readback_ms,pack_upload_ms,idct_row_lift_ms,column_lift_ms,quantize_ms,readback_ms,transform_dispatches,transform_jobs,cpu_fallback_jobs,encode_dispatches,ht_codeblock_dispatches,packetization_dispatches\nj2k_cuda_ht_only,{},{},{:.6},{},{:.8},{:.6},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{},{},{}\n",
+        j2k.ran,
+        j2k.used_gpu,
         scale,
         jpegs.len(),
         megapixels,
         mp_s,
-        signinum.output_bytes,
-        signinum.best_wall_s * 1000.0,
-        result_gpu_ms(signinum),
-        us_ms(signinum.extract_us),
-        us_ms(signinum.repack_us),
-        us_ms(signinum.transform_wall_us),
-        us_ms(signinum.encode_wall_us),
-        us_ms(signinum.encode_cuda_ht_kernel_us),
-        us_ms(signinum.encode_cuda_ht_status_readback_us),
-        us_ms(signinum.encode_cuda_ht_compact_us),
-        us_ms(signinum.encode_cuda_ht_output_readback_us),
-        us_ms(signinum.pack_upload_us),
-        us_ms(signinum.idct_row_lift_us),
-        us_ms(signinum.column_lift_us),
-        us_ms(signinum.quantize_us),
-        us_ms(signinum.readback_us),
-        signinum.transform_dispatches,
-        signinum.transform_dispatched_jobs,
-        signinum.transform_cpu_fallback_jobs,
-        signinum.encode_dispatches,
-        signinum.encode_ht_code_block_dispatches,
-        signinum.encode_packetization_dispatches,
+        j2k.output_bytes,
+        j2k.best_wall_s * 1000.0,
+        result_gpu_ms( j2k),
+        us_ms( j2k.extract_us),
+        us_ms( j2k.repack_us),
+        us_ms( j2k.transform_wall_us),
+        us_ms( j2k.encode_wall_us),
+        us_ms( j2k.encode_cuda_ht_kernel_us),
+        us_ms( j2k.encode_cuda_ht_status_readback_us),
+        us_ms( j2k.encode_cuda_ht_compact_us),
+        us_ms( j2k.encode_cuda_ht_output_readback_us),
+        us_ms( j2k.pack_upload_us),
+        us_ms( j2k.idct_row_lift_us),
+        us_ms( j2k.column_lift_us),
+        us_ms( j2k.quantize_us),
+        us_ms( j2k.readback_us),
+        j2k.transform_dispatches,
+        j2k.transform_dispatched_jobs,
+        j2k.transform_cpu_fallback_jobs,
+        j2k.encode_dispatches,
+        j2k.encode_ht_code_block_dispatches,
+        j2k.encode_packetization_dispatches,
     )
 }
 
 #[allow(clippy::format_push_string)]
-fn signinum_profile_json_report(
+fn j2k_profile_json_report(
     config: &BenchmarkConfig,
     jpegs: &[JpegInput],
     megapixels: f64,
     scale: f32,
-    signinum: &SigninumResult,
+    j2k: &J2KResult,
 ) -> String {
-    let mp_s = if signinum.ran && signinum.best_wall_s > 0.0 {
-        megapixels / signinum.best_wall_s
+    let mp_s = if j2k.ran && j2k.best_wall_s > 0.0 {
+        megapixels / j2k.best_wall_s
     } else {
         0.0
     };
     let mut out = String::new();
     out.push_str("{\n");
-    out.push_str("  \"mode\": \"signinum_cuda_ht_only\",\n");
+    out.push_str("  \"mode\": \"j2k_cuda_ht_only\",\n");
     out.push_str(&format!("  \"tile_count\": {},\n", jpegs.len()));
     out.push_str(&format!("  \"megapixels\": {megapixels:.8},\n"));
     out.push_str(&format!(
@@ -1715,31 +1696,31 @@ fn signinum_profile_json_report(
     out.push_str("],\n");
     out.push_str(&format!(
         "  \"result\": {{\"ran\": {}, \"used_gpu\": {}, \"mp_s\": {:.6}, \"bytes\": {}, \"wall_ms\": {:.6}, \"gpu_ms\": {:.6}, \"extract_ms\": {:.6}, \"repack_ms\": {:.6}, \"transform_wall_ms\": {:.6}, \"encode_wall_ms\": {:.6}, \"encode_cuda_ht_kernel_ms\": {:.6}, \"encode_cuda_ht_status_readback_ms\": {:.6}, \"encode_cuda_ht_compact_ms\": {:.6}, \"encode_cuda_ht_output_readback_ms\": {:.6}, \"pack_upload_ms\": {:.6}, \"idct_row_lift_ms\": {:.6}, \"column_lift_ms\": {:.6}, \"quantize_ms\": {:.6}, \"readback_ms\": {:.6}, \"transform_dispatches\": {}, \"transform_jobs\": {}, \"cpu_fallback_jobs\": {}, \"encode_dispatches\": {}, \"ht_codeblock_dispatches\": {}, \"packetization_dispatches\": {}}}\n",
-        signinum.ran,
-        signinum.used_gpu,
+        j2k.ran,
+        j2k.used_gpu,
         mp_s,
-        signinum.output_bytes,
-        signinum.best_wall_s * 1000.0,
-        result_gpu_ms(signinum),
-        us_ms(signinum.extract_us),
-        us_ms(signinum.repack_us),
-        us_ms(signinum.transform_wall_us),
-        us_ms(signinum.encode_wall_us),
-        us_ms(signinum.encode_cuda_ht_kernel_us),
-        us_ms(signinum.encode_cuda_ht_status_readback_us),
-        us_ms(signinum.encode_cuda_ht_compact_us),
-        us_ms(signinum.encode_cuda_ht_output_readback_us),
-        us_ms(signinum.pack_upload_us),
-        us_ms(signinum.idct_row_lift_us),
-        us_ms(signinum.column_lift_us),
-        us_ms(signinum.quantize_us),
-        us_ms(signinum.readback_us),
-        signinum.transform_dispatches,
-        signinum.transform_dispatched_jobs,
-        signinum.transform_cpu_fallback_jobs,
-        signinum.encode_dispatches,
-        signinum.encode_ht_code_block_dispatches,
-        signinum.encode_packetization_dispatches,
+        j2k.output_bytes,
+        j2k.best_wall_s * 1000.0,
+        result_gpu_ms( j2k),
+        us_ms( j2k.extract_us),
+        us_ms( j2k.repack_us),
+        us_ms( j2k.transform_wall_us),
+        us_ms( j2k.encode_wall_us),
+        us_ms( j2k.encode_cuda_ht_kernel_us),
+        us_ms( j2k.encode_cuda_ht_status_readback_us),
+        us_ms( j2k.encode_cuda_ht_compact_us),
+        us_ms( j2k.encode_cuda_ht_output_readback_us),
+        us_ms( j2k.pack_upload_us),
+        us_ms( j2k.idct_row_lift_us),
+        us_ms( j2k.column_lift_us),
+        us_ms( j2k.quantize_us),
+        us_ms( j2k.readback_us),
+        j2k.transform_dispatches,
+        j2k.transform_dispatched_jobs,
+        j2k.transform_cpu_fallback_jobs,
+        j2k.encode_dispatches,
+        j2k.encode_ht_code_block_dispatches,
+        j2k.encode_packetization_dispatches,
     ));
     out.push_str("}\n");
     out
@@ -1751,7 +1732,7 @@ fn csv_report(
     megapixels: f64,
     rd_points: &[RdPoint],
     selected_index: usize,
-    signinum_cuda_ht: &SigninumResult,
+    j2k_cuda_ht: &J2KResult,
     nvidia: &NvidiaResult,
 ) -> String {
     let mut out = String::from(
@@ -1760,7 +1741,7 @@ fn csv_report(
     for (idx, point) in rd_points.iter().enumerate() {
         append_csv_result(
             &mut out,
-            "signinum_cuda_transform_cpu_ht",
+            "j2k_cuda_transform_cpu_ht",
             idx == selected_index,
             Some(point.scale),
             &point.result,
@@ -1768,13 +1749,13 @@ fn csv_report(
             nvidia,
         );
     }
-    let cuda_quality = quality_summary(jpegs, &signinum_cuda_ht.codestreams);
+    let cuda_quality = quality_summary(jpegs, &j2k_cuda_ht.codestreams);
     append_csv_result(
         &mut out,
-        "signinum_cuda_transform_cuda_ht_block_cpu_packet",
+        "j2k_cuda_transform_cuda_ht_block_cpu_packet",
         false,
         rd_points.get(selected_index).map(|point| point.scale),
-        signinum_cuda_ht,
+        j2k_cuda_ht,
         cuda_quality.as_ref(),
         nvidia,
     );
@@ -1839,7 +1820,7 @@ fn append_csv_result(
     row: &str,
     selected: bool,
     scale: Option<f32>,
-    result: &SigninumResult,
+    result: &J2KResult,
     quality: Option<&QualitySummary>,
     nvidia: &NvidiaResult,
 ) {
@@ -1883,7 +1864,7 @@ fn json_report(
     megapixels: f64,
     rd_points: &[RdPoint],
     selected_index: usize,
-    signinum_cuda_ht: &SigninumResult,
+    j2k_cuda_ht: &J2KResult,
     nvidia: &NvidiaResult,
 ) -> String {
     let mut out = String::new();
@@ -1930,7 +1911,7 @@ fn json_report(
             out.push_str(",\n");
         }
         out.push_str("    ");
-        append_json_signinum_result(
+        append_json_j2k_result(
             &mut out,
             point.scale,
             &point.result,
@@ -1939,16 +1920,16 @@ fn json_report(
         );
     }
     out.push_str("\n  ],\n");
-    out.push_str("  \"signinum_cuda_ht_experimental\": ");
-    let cuda_quality = quality_summary(jpegs, &signinum_cuda_ht.codestreams);
-    append_json_signinum_result(
+    out.push_str("  \"j2k_cuda_ht_experimental\": ");
+    let cuda_quality = quality_summary(jpegs, &j2k_cuda_ht.codestreams);
+    append_json_j2k_result(
         &mut out,
         rd_points
             .get(selected_index)
             .map_or(JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE, |point| {
                 point.scale
             }),
-        signinum_cuda_ht,
+        j2k_cuda_ht,
         cuda_quality.as_ref(),
         nvidia,
     );
@@ -1978,10 +1959,10 @@ fn json_report(
 }
 
 #[allow(clippy::format_push_string)]
-fn append_json_signinum_result(
+fn append_json_j2k_result(
     out: &mut String,
     scale: f32,
-    result: &SigninumResult,
+    result: &J2KResult,
     quality: Option<&QualitySummary>,
     nvidia: &NvidiaResult,
 ) {
@@ -2042,10 +2023,10 @@ mod tests {
             path("--subband-scales"),
             path("0.9,1.0,1.1,1.3"),
             path("--match-nvidia-bytes"),
-            path("--profile-signinum-cuda-only"),
+            path("--profile-j2k-cuda-only"),
         ])
         .expect_err("profile-only mode rejects NVIDIA byte matching");
-        assert!(error.contains("--profile-signinum-cuda-only"));
+        assert!(error.contains("--profile-j2k-cuda-only"));
 
         let config = BenchmarkConfig::parse([
             path("--quant-scales"),
@@ -2054,7 +2035,7 @@ mod tests {
             path("0.9,1.0,1.1,1.3"),
             path("--decomposition-levels"),
             path("3"),
-            path("--profile-signinum-cuda-only"),
+            path("--profile-j2k-cuda-only"),
             path("--match-tolerance"),
             path("0.015"),
             path("--warmup"),
@@ -2076,7 +2057,7 @@ mod tests {
         assert_eq!(config.subband_scales.low_high.to_bits(), 1.1f32.to_bits());
         assert_eq!(config.decomposition_levels, 3);
         assert!(!config.match_nvidia_bytes);
-        assert!(config.profile_signinum_cuda_only);
+        assert!(config.profile_j2k_cuda_only);
         assert_eq!(config.match_tolerance, 0.015);
         assert_eq!(config.warmup, 3);
         assert_eq!(config.iterations, 75);
@@ -2095,17 +2076,17 @@ mod tests {
         let points = vec![
             RdPoint {
                 scale: 1.5,
-                result: SigninumResult {
+                result: J2KResult {
                     output_bytes: 900,
-                    ..SigninumResult::default()
+                    ..J2KResult::default()
                 },
                 quality: None,
             },
             RdPoint {
                 scale: 1.9,
-                result: SigninumResult {
+                result: J2KResult {
                     output_bytes: 1010,
-                    ..SigninumResult::default()
+                    ..J2KResult::default()
                 },
                 quality: None,
             },
@@ -2131,21 +2112,21 @@ mod tests {
             output_bytes: 1_000,
             ..NvidiaResult::default()
         };
-        let selected = SigninumResult {
+        let selected = J2KResult {
             ran: true,
             output_bytes: 900,
-            ..SigninumResult::default()
+            ..J2KResult::default()
         };
-        let cuda_ht = SigninumResult {
+        let cuda_ht = J2KResult {
             ran: true,
             used_gpu: true,
             output_bytes: 1_000,
-            ..SigninumResult::default()
+            ..J2KResult::default()
         };
 
         let error = validate_rate_match(&config, &selected, &cuda_ht, &nvidia)
             .expect_err("selected RD point outside tolerance must fail");
-        assert!(error.contains("selected Signinum RD point"));
+        assert!(error.contains("selected J2K RD point"));
     }
 
     #[test]
@@ -2160,21 +2141,21 @@ mod tests {
             output_bytes: 1_000,
             ..NvidiaResult::default()
         };
-        let selected = SigninumResult {
+        let selected = J2KResult {
             ran: true,
             output_bytes: 1_000,
-            ..SigninumResult::default()
+            ..J2KResult::default()
         };
-        let cuda_ht = SigninumResult {
+        let cuda_ht = J2KResult {
             ran: true,
             used_gpu: true,
             output_bytes: 950,
-            ..SigninumResult::default()
+            ..J2KResult::default()
         };
 
         let error = validate_rate_match(&config, &selected, &cuda_ht, &nvidia)
             .expect_err("CUDA HT row outside tolerance must fail");
-        assert!(error.contains("Signinum CUDA HT row"));
+        assert!(error.contains("J2K CUDA HT row"));
     }
 
     #[test]
@@ -2189,11 +2170,11 @@ mod tests {
     fn csv_report_marks_missing_nvidia_status_without_zero_delta() {
         let point = RdPoint {
             scale: 1.9,
-            result: SigninumResult {
+            result: J2KResult {
                 ran: true,
                 used_gpu: true,
                 output_bytes: 123,
-                ..SigninumResult::default()
+                ..J2KResult::default()
             },
             quality: None,
         };
@@ -2202,7 +2183,7 @@ mod tests {
             0.0,
             &[point],
             0,
-            &SigninumResult::default(),
+            &J2KResult::default(),
             &NvidiaResult {
                 error: Some(NvBaselineError::NotBuilt),
                 ..NvidiaResult::default()
@@ -2213,7 +2194,7 @@ mod tests {
             "row,selected,ran,used_gpu,nvidia_ran,nvidia_status,scale,bytes,byte_delta_vs_nvidia"
         ));
         assert!(csv.contains(
-            "signinum_cuda_transform_cpu_ht,true,true,true,false,n/a (not built),1.900000,123,"
+            "j2k_cuda_transform_cpu_ht,true,true,true,false,n/a (not built),1.900000,123,"
         ));
         assert!(!csv.contains(",123,0.00000000,"));
     }
@@ -2225,7 +2206,7 @@ mod tests {
             0.0,
             &[],
             0,
-            &SigninumResult::default(),
+            &J2KResult::default(),
             &NvidiaResult {
                 ran: true,
                 output_bytes: 623,
@@ -2257,7 +2238,7 @@ mod tests {
             0.0,
             &[],
             0,
-            &SigninumResult::default(),
+            &J2KResult::default(),
             &NvidiaResult::default(),
         );
 
@@ -2274,7 +2255,7 @@ mod tests {
             0.0,
             &[],
             0,
-            &SigninumResult::default(),
+            &J2KResult::default(),
             &NvidiaResult::default(),
         );
 

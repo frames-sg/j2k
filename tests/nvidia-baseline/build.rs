@@ -14,14 +14,14 @@ use std::process::Command;
 //   CUDA_LIB_DIR        (default: /usr/local/cuda/targets/x86_64-linux/lib)
 //   NVJPEG2K_LIB_DIR    (default: CUDA_LIB_DIR)
 //   NVJPEG2K_INCLUDE_DIR (passed to nvcc as -I if set)
-// Set SIGNINUM_REQUIRE_NV_BASELINE_BUILD=1 to make an nvcc failure fatal.
+// Set J2K_REQUIRE_NV_BASELINE_BUILD=1 to make an nvcc failure fatal.
 fn main() {
     println!("cargo:rerun-if-changed=cuda/nv_baseline.cu");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=CUDA_LIB_DIR");
     println!("cargo:rerun-if-env-changed=NVJPEG2K_LIB_DIR");
     println!("cargo:rerun-if-env-changed=NVJPEG2K_INCLUDE_DIR");
-    println!("cargo:rerun-if-env-changed=SIGNINUM_REQUIRE_NV_BASELINE_BUILD");
+    println!("cargo:rerun-if-env-changed=J2K_REQUIRE_NV_BASELINE_BUILD");
     println!("cargo:rustc-check-cfg=cfg(nvbaseline_built)");
 
     if env::var_os("CARGO_FEATURE_NVJPEG2000").is_none() {
@@ -29,7 +29,7 @@ fn main() {
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
-    let strict = env::var_os("SIGNINUM_REQUIRE_NV_BASELINE_BUILD").is_some();
+    let strict = env::var_os("J2K_REQUIRE_NV_BASELINE_BUILD").is_some();
     let nvcc = configured_nvcc(strict);
 
     let object = out_dir.join("nv_baseline.o");
@@ -45,7 +45,7 @@ fn main() {
         Err(message) => {
             assert!(
                 !strict,
-                "SIGNINUM_REQUIRE_NV_BASELINE_BUILD set, but nvJPEG2000 decode APIs are unavailable: {message}"
+                "J2K_REQUIRE_NV_BASELINE_BUILD set, but nvJPEG2000 decode APIs are unavailable: {message}"
             );
             return;
         }
@@ -72,7 +72,7 @@ fn main() {
     if !compiled {
         assert!(
             !strict,
-            "SIGNINUM_REQUIRE_NV_BASELINE_BUILD set, but nvcc failed to compile cuda/nv_baseline.cu"
+            "J2K_REQUIRE_NV_BASELINE_BUILD set, but nvcc failed to compile cuda/nv_baseline.cu"
         );
         // No nvcc / NVIDIA headers: leave `nvbaseline_built` unset; the binary
         // prints rebuild instructions instead of linking against absent libs.

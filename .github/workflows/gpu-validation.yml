@@ -77,24 +77,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - run: cargo test -p signinum-jpeg-metal --all-targets
-      - run: cargo test -p signinum-j2k-metal --all-targets
-      - run: cargo bench -p signinum-jpeg-metal --no-run
-      - run: cargo bench -p signinum --bench facade --features metal --no-run
+      - run: cargo test -p j2k-jpeg-metal --all-targets
+      - run: cargo test -p j2k-metal --all-targets
+      - run: cargo bench -p j2k-jpeg-metal --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
-          SIGNINUM_GPU_BENCH_DIM: "1024"
-          SIGNINUM_GPU_BENCH_BATCH: "64"
-          SIGNINUM_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p signinum-jpeg-metal --bench device_upload -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          J2K_GPU_BENCH_DIM: "1024"
+          J2K_GPU_BENCH_BATCH: "64"
+          J2K_GPU_BENCH_BATCH_DIM: "1024"
+        run: cargo bench -p j2k-jpeg-metal --bench device_upload -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p signinum-jpeg-metal --bench compare -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        run: cargo bench -p signinum --bench facade --features metal -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+        run: cargo bench -p j2k-jpeg-metal --bench compare -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
 
   # cuda-x86_64-compatibility is THE authoritative CUDA parity gate.
   # It must be run (via workflow_dispatch) before merging any change to the
-  # CUDA encode path (crates/signinum-j2k-cuda, crates/signinum-cuda-runtime).
+  # CUDA encode path (crates/j2k-cuda, crates/j2k-cuda-runtime).
   # The job is workflow_dispatch-only; do not add push/pull_request triggers
   # without a policy decision — these are cost-sensitive self-hosted GPU runners.
   cuda-x86_64-compatibility:
@@ -102,9 +99,9 @@ jobs:
     runs-on: [self-hosted, Linux, X64, cuda]
     env:
       NVCC: /usr/local/cuda/bin/nvcc
-      SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
-      SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
-      SIGNINUM_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
+      J2K_REQUIRE_CUDA_RUNTIME: "1"
+      J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
+      J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE: "1"
       RUST_TEST_THREADS: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -113,7 +110,7 @@ jobs:
           toolchain: stable
       - name: Assert CUDA runtime gate is set
         run: |
-          test -n "${SIGNINUM_REQUIRE_CUDA_RUNTIME:-}" || { echo "SIGNINUM_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }
+          test -n "${J2K_REQUIRE_CUDA_RUNTIME:-}" || { echo "J2K_REQUIRE_CUDA_RUNTIME not set — parity tests would silently skip"; exit 1; }
       - name: Show CUDA runner diagnostics
         run: |
           uname -a
@@ -126,51 +123,51 @@ jobs:
           fi
           command -v nvcc
           nvcc --version
-      - run: cargo test -p signinum-cuda-runtime --all-targets
-      - run: cargo test -p signinum-cuda-runtime --all-targets --features cuda-profiling
-      - run: cargo test -p signinum-jpeg-cuda --all-targets --features cuda-runtime
-      - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-runtime
+      - run: cargo test -p j2k-cuda-runtime --all-targets
+      - run: cargo test -p j2k-cuda-runtime --all-targets --features cuda-profiling
+      - run: cargo test -p j2k-jpeg-cuda --all-targets --features cuda-runtime
+      - run: cargo test -p j2k-cuda --all-targets --features cuda-runtime
       - name: Run HTJ2K encode parity tests with executed-count floor
         run: |
-          out=$(cargo test -p signinum-j2k-cuda --features cuda-runtime --test htj2k_encode_parity -- --nocapture 2>&1)
+          out=$(cargo test -p j2k-cuda --features cuda-runtime --test htj2k_encode_parity -- --nocapture 2>&1)
           echo "$out"
           passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | head -n1)
           echo "parity tests passed: ${passed:-0}"
           test "${passed:-0}" -ge 8 || { echo "Expected at least 8 executed parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
-      - run: cargo test -p signinum-transcode-cuda --all-targets --features cuda-runtime
+      - run: cargo test -p j2k-transcode-cuda --all-targets --features cuda-runtime
       - name: Run JPEG->HTJ2K transcode parity tests with executed-count floor
         run: |
-          out=$(cargo test -p signinum-transcode-cuda --features cuda-runtime --test reversible_dwt53_parity --test dwt97_parity --test dwt97_batch_parity --test htj2k97_codeblock_parity --test jpeg_to_htj2k -- --nocapture 2>&1)
+          out=$(cargo test -p j2k-transcode-cuda --features cuda-runtime --test reversible_dwt53_parity --test dwt97_parity --test dwt97_batch_parity --test htj2k97_codeblock_parity --test jpeg_to_htj2k -- --nocapture 2>&1)
           echo "$out"
           passed=$(echo "$out" | sed -n 's/^test result: ok\. \([0-9]\+\) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')
           echo "transcode parity tests passed: ${passed:-0}"
           test "${passed:-0}" -ge 7 || { echo "Expected at least 7 executed transcode parity tests, got ${passed:-0} — tests may have silently skipped"; exit 1; }
-      - run: cargo test -p signinum-j2k-cuda --all-targets --features cuda-profiling
+      - run: cargo test -p j2k-cuda --all-targets --features cuda-profiling
       # Opt-in test-only NVIDIA codec comparator. Requires a separately-installed
       # library (set NVJPEG2K_LIB_DIR / NVJPEG2K_INCLUDE_DIR if it is not under
-      # /usr/local/cuda). Set the repo variable SIGNINUM_BENCH_SVS to an .svs on
-      # the runner to extract real WSI tiles; or SIGNINUM_BENCH_JPEG_DIR to a
+      # /usr/local/cuda). Set the repo variable J2K_BENCH_SVS to an .svs on
+      # the runner to extract real WSI tiles; or J2K_BENCH_JPEG_DIR to a
       # pre-extracted tile directory. With neither, it runs the committed pancreas
       # tile corpus and requires at least 100 benchmark tiles.
       - name: NVIDIA baseline comparison
         if: ${{ inputs.run-nvidia-baseline }}
         env:
-          SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
-          SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
-          SIGNINUM_REQUIRE_NV_BASELINE_BUILD: "1"
-          SIGNINUM_BENCH_SVS: ${{ vars.SIGNINUM_BENCH_SVS }}
-          SIGNINUM_BENCH_JPEG_DIR: ${{ vars.SIGNINUM_BENCH_JPEG_DIR }}
+          J2K_REQUIRE_CUDA_RUNTIME: "1"
+          J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
+          J2K_REQUIRE_NV_BASELINE_BUILD: "1"
+          J2K_BENCH_SVS: ${{ vars.J2K_BENCH_SVS }}
+          J2K_BENCH_JPEG_DIR: ${{ vars.J2K_BENCH_JPEG_DIR }}
         run: |
           set -e
-          DIR="${SIGNINUM_BENCH_JPEG_DIR:-}"
-          if [ -z "$DIR" ] && [ -n "${SIGNINUM_BENCH_SVS:-}" ]; then
-            if [ ! -f "${SIGNINUM_BENCH_SVS}" ]; then
-              echo "Configured SIGNINUM_BENCH_SVS does not exist: ${SIGNINUM_BENCH_SVS}" >&2
+          DIR="${J2K_BENCH_JPEG_DIR:-}"
+          if [ -z "$DIR" ] && [ -n "${J2K_BENCH_SVS:-}" ]; then
+            if [ ! -f "${J2K_BENCH_SVS}" ]; then
+              echo "Configured J2K_BENCH_SVS does not exist: ${J2K_BENCH_SVS}" >&2
               exit 1
             fi
-            echo "extracting benchmark tiles from ${SIGNINUM_BENCH_SVS}"
+            echo "extracting benchmark tiles from ${J2K_BENCH_SVS}"
             cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --bin svs_extract -- \
-              "${SIGNINUM_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" \
+              "${J2K_BENCH_SVS}" "${RUNNER_TEMP:-/tmp}/svs_bench_tiles" \
               --limit 256 --stride 51 --quality 85 --min-tissue 0.6
             DIR="${RUNNER_TEMP:-/tmp}/svs_bench_tiles"
           fi
@@ -178,8 +175,8 @@ jobs:
           if [ -z "$DIR" ]; then
             DIR="tests/nvidia-baseline/benchtiles/pancreas"
           fi
-          export SIGNINUM_BENCH_JPEG_DIR="$DIR"
-          echo "benchmark JPEG dir: ${SIGNINUM_BENCH_JPEG_DIR}"
+          export J2K_BENCH_JPEG_DIR="$DIR"
+          echo "benchmark JPEG dir: ${J2K_BENCH_JPEG_DIR}"
           cargo test --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets
           cargo clippy --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --all-targets -- -D warnings
           cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
@@ -196,8 +193,8 @@ jobs:
           python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
             --json target/transcode_compare_level1.json \
             --label cuda-htj2k-transcode-level1-rate-match \
-            --min-cuda-ht-mps "${SIGNINUM_LEVEL1_CUDA_HT_MIN_MPS:-350}" \
-            --min-cuda-ht-speedup-vs-nvidia "${SIGNINUM_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-4.0}" \
+            --min-cuda-ht-mps "${J2K_LEVEL1_CUDA_HT_MIN_MPS:-350}" \
+            --min-cuda-ht-speedup-vs-nvidia "${J2K_LEVEL1_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-4.0}" \
             --max-byte-delta-abs 0.20 \
             --min-ht-codeblock-dispatches 1
           cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin transcode_compare -- \
@@ -215,14 +212,14 @@ jobs:
           python3 tests/nvidia-baseline/scripts/assert_transcode_perf.py \
             --json target/transcode_compare_level2.json \
             --label cuda-htj2k-transcode-level2-rate-match \
-            --min-cuda-ht-mps "${SIGNINUM_LEVEL2_CUDA_HT_MIN_MPS:-60}" \
-            --min-cuda-ht-speedup-vs-nvidia "${SIGNINUM_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-1.10}" \
+            --min-cuda-ht-mps "${J2K_LEVEL2_CUDA_HT_MIN_MPS:-60}" \
+            --min-cuda-ht-speedup-vs-nvidia "${J2K_LEVEL2_CUDA_HT_MIN_SPEEDUP_VS_NVIDIA:-1.10}" \
             --max-byte-delta-abs 0.20 \
             --min-ht-codeblock-dispatches 1
           cp target/transcode_compare_level2.json target/transcode_compare.json
           cp target/transcode_compare_level2.csv target/transcode_compare.csv
           cargo run --release --manifest-path tests/nvidia-baseline/Cargo.toml --features nvjpeg2000 --bin decode_compare -- \
-            --jpeg-dir "${SIGNINUM_BENCH_JPEG_DIR}" \
+            --jpeg-dir "${J2K_BENCH_JPEG_DIR}" \
             --warmup 2 \
             --iterations 10 \
             --min-inputs 100 \
@@ -245,45 +242,44 @@ jobs:
             target/decode_compare.json
             target/decode_compare.csv
           if-no-files-found: warn
-      - run: cargo clippy -p signinum-cuda-runtime --all-targets -- -D warnings
-      - run: cargo clippy -p signinum-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
-      - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-runtime -- -D warnings
-      - run: cargo clippy -p signinum-transcode-cuda --all-targets --features cuda-runtime -- -D warnings
-      - run: cargo clippy -p signinum-j2k-cuda --all-targets --features cuda-profiling -- -D warnings
-      - run: cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
-      - run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime --no-run
-      - run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
-      - run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
-      - run: cargo bench -p signinum --bench facade --features cuda-runtime --no-run
+      - run: cargo clippy -p j2k-cuda-runtime --all-targets -- -D warnings
+      - run: cargo clippy -p j2k-cuda-runtime --all-targets --features cuda-profiling -- -D warnings
+      - run: cargo clippy -p j2k-cuda --all-targets --features cuda-runtime -- -D warnings
+      - run: cargo clippy -p j2k-transcode-cuda --all-targets --features cuda-runtime -- -D warnings
+      - run: cargo clippy -p j2k-cuda --all-targets --features cuda-profiling -- -D warnings
+      - run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime --no-run
+      - run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime --no-run
+      - run: cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime --no-run
+      - run: cargo bench -p j2k-cuda --bench htj2k_encode --features cuda-runtime --no-run
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-          SIGNINUM_GPU_BENCH_DIM: "4096"
-          SIGNINUM_GPU_BENCH_BATCH: "64"
-          SIGNINUM_GPU_BENCH_BATCH_DIM: "1024"
-        run: cargo bench -p signinum-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          J2K_REQUIRE_CUDA_BENCH: "1"
+          J2K_GPU_BENCH_DIM: "4096"
+          J2K_GPU_BENCH_BATCH: "64"
+          J2K_GPU_BENCH_BATCH_DIM: "1024"
+        run: cargo bench -p j2k-jpeg-cuda --bench device_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          J2K_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p j2k-cuda --bench encode_stages --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          J2K_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
       - name: CUDA HTJ2K decode RCA profile
         if: ${{ inputs.run-cuda-htj2k-decode-profile }}
         env:
-          SIGNINUM_REQUIRE_CUDA_RUNTIME: "1"
-          SIGNINUM_REQUIRE_CUDA_HTJ2K_STRICT: "1"
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-          SIGNINUM_J2K_PROFILE_STAGES: summary
-          SIGNINUM_J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json
+          J2K_REQUIRE_CUDA_RUNTIME: "1"
+          J2K_REQUIRE_CUDA_HTJ2K_STRICT: "1"
+          J2K_REQUIRE_CUDA_BENCH: "1"
+          J2K_PROFILE_STAGES: summary
+          J2K_CUDA_TRACE: ${{ github.workspace }}/target/cuda_htj2k_decode_trace.json
         run: |
           set -o pipefail
           mkdir -p target
           samply_status_file=target/cuda_htj2k_decode_samply_status.txt
           bench_cmd=(
-            cargo bench -p signinum-j2k-cuda --bench htj2k_decode --features cuda-runtime,cuda-profiling --
+            cargo bench -p j2k-cuda --bench htj2k_decode --features cuda-runtime,cuda-profiling --
             --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
           )
           if ! command -v samply >/dev/null 2>&1; then
@@ -316,7 +312,7 @@ jobs:
                   echo "samply_status=blocked"
                   echo "perf_event_paranoid=${current_perf_event_paranoid}"
                   echo "reason=passwordless sudo unavailable and /proc/sys/kernel/perf_event_paranoid is not writable"
-                  echo "fallback=cargo bench with SIGNINUM_J2K_PROFILE_STAGES and SIGNINUM_J2K_CUDA_TRACE"
+                  echo "fallback=cargo bench with J2K_PROFILE_STAGES and J2K_CUDA_TRACE"
                 } | tee "${samply_status_file}"
               fi
             fi
@@ -344,9 +340,5 @@ jobs:
           if-no-files-found: warn
       - if: ${{ inputs.run-timed-benchmarks }}
         env:
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum-j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
-      - if: ${{ inputs.run-timed-benchmarks }}
-        env:
-          SIGNINUM_REQUIRE_CUDA_BENCH: "1"
-        run: cargo bench -p signinum --bench facade --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2
+          J2K_REQUIRE_CUDA_BENCH: "1"
+        run: cargo bench -p j2k-cuda --bench htj2k_encode --features cuda-runtime -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2

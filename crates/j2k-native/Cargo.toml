@@ -1,0 +1,55 @@
+[package]
+name = "j2k-native"
+description = "Pure-Rust JPEG 2000 codec engine for j2k"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[features]
+default = ["std", "simd", "parallel"]
+logging = ["dep:log"]
+parallel = ["dep:rayon", "std"]
+simd = ["fearless_simd", "std"]
+std = ["j2k-profile/std"]
+
+[lib]
+name = "j2k_native"
+path = "src/lib.rs"
+
+[dependencies]
+fearless_simd = { version = "0.4", optional = true }
+libm = { version = "0.2", default-features = false }
+log = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.0", default-features = false }
+j2k-types = { path = "../j2k-types", version = "=0.6.0" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "tier1_bitplane"
+harness = false
+
+[[bench]]
+name = "htj2k_sigprop_phase"
+harness = false
+
+[[bench]]
+name = "direct_cpu"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = "allow"

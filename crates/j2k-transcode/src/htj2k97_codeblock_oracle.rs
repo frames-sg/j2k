@@ -1,0 +1,513 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Shared scalar oracle: float 9/7 bands into prequantized HTJ2K code-blocks.
+//!
+//! This module uses the native encoder's public irreversible 9/7 quantization
+//! step helper plus the native code-block layout rules, so both GPU backends can
+//! compare their fused code-block kernels against one authoritative CPU
+//! reference instead of each re-deriving the math.
+//!
+//! The re-derivation is anchored to native truth by a codestream pin test (see
+//! the module tests): encoding the oracle's prequantized output reproduces the
+//! native precomputed-DWT codestream byte-for-byte.
+
+use crate::accelerator::Htj2k97CodeBlockOptions;
+use crate::dct97_2d::Dwt97TwoDimensional;
+use j2k::{
+    J2kSubBandType, PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component,
+    PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband,
+};
+use j2k_native::irreversible_quantization_step_for_subband;
+
+/// Quantize one level of float 9/7 bands into a prequantized HTJ2K component.
+///
+/// Resolution nesting matches the native encoder for a single decomposition
+/// level: resolution 0 holds `[LL]`, resolution 1 holds `[HL, LH, HH]`.
+#[must_use]
+pub fn prequantized_component_from_dwt97(
+    dwt: &Dwt97TwoDimensional<f64>,
+    options: Htj2k97CodeBlockOptions,
+    x_rsiz: u8,
+    y_rsiz: u8,
+) -> PrequantizedHtj2k97Component {
+    PrequantizedHtj2k97Component {
+        x_rsiz,
+        y_rsiz,
+        resolutions: vec![
+            PrequantizedHtj2k97Resolution {
+                subbands: vec![quantize_codeblock_subband(
+                    &dwt.ll,
+                    dwt.low_width,
+                    dwt.low_height,
+                    J2kSubBandType::LowLow,
+                    options,
+                )],
+            },
+            PrequantizedHtj2k97Resolution {
+                subbands: vec![
+                    quantize_codeblock_subband(
+                        &dwt.hl,
+                        dwt.high_width,
+                        dwt.low_height,
+                        J2kSubBandType::HighLow,
+                        options,
+                    ),
+                    quantize_codeblock_subband(
+                        &dwt.lh,
+                        dwt.low_width,
+                        dwt.high_height,
+                        J2kSubBandType::LowHigh,
+                        options,
+                    ),
+                    quantize_codeblock_subband(
+                        &dwt.hh,
+                        dwt.high_width,
+                        dwt.high_height,
+                        J2kSubBandType::HighHigh,
+                        options,
+                    ),
+                ],
+            },
+        ],
+    }
+}
+
+/// Quantize a single float subband and slice it into code-block-major layout.
+///
+/// Code-blocks are emitted outer `cby`, inner `cbx`; each block's coefficients
+/// are row-major, matching the native encoder's `copy_code_block_coefficients`.
+#[must_use]
+pub fn quantize_codeblock_subband(
+    coefficients: &[f64],
+    width: usize,
+    height: usize,
+    sub_band_type: J2kSubBandType,
+    options: Htj2k97CodeBlockOptions,
+) -> PrequantizedHtj2k97Subband {
+    let quantized = quantize_subband_coefficients(coefficients, sub_band_type, options);
+    let cb_width = htj2k97_code_block_dim(options.code_block_width_exp);
+    let cb_height = htj2k97_code_block_dim(options.code_block_height_exp);
+    let num_cbs_x = width.div_ceil(cb_width);
+    let num_cbs_y = height.div_ceil(cb_height);
+    let mut code_blocks = Vec::with_capacity(num_cbs_x * num_cbs_y);
+
+    for cby in 0..num_cbs_y {
+        for cbx in 0..num_cbs_x {
+            let x0 = cbx * cb_width;
+            let y0 = cby * cb_height;
+            let block_width = (width - x0).min(cb_width);
+            let block_height = (height - y0).min(cb_height);
+            let mut block_coefficients = Vec::with_capacity(block_width * block_height);
+            for y in 0..block_height {
+                let row_start = (y0 + y) * width + x0;
+                block_coefficients
+                    .extend_from_slice(&quantized[row_start..row_start + block_width]);
+            }
+            code_blocks.push(PrequantizedHtj2k97CodeBlock {
+                coefficients: block_coefficients,
+                width: block_width as u32,
+                height: block_height as u32,
+            });
+        }
+    }
+
+    PrequantizedHtj2k97Subband {
+        sub_band_type,
+        num_cbs_x: num_cbs_x as u32,
+        num_cbs_y: num_cbs_y as u32,
+        total_bitplanes: htj2k97_subband_total_bitplanes(options, sub_band_type),
+        code_blocks,
+    }
+}
+
+/// Deadzone quantization step size `Δ` for a subband.
+///
+/// `Δ = 2^(range_bits − exponent) · (1 + mantissa/2048)`, with
+/// `range_bits = bit_depth + {LL:0, HL:1, LH:1, HH:2}` and the shared
+/// `(exponent, mantissa)` derived by this module's quantizer.
+#[must_use]
+pub fn htj2k97_subband_delta(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+) -> f64 {
+    let log_gain = match sub_band_type {
+        J2kSubBandType::LowLow => 0,
+        J2kSubBandType::HighLow | J2kSubBandType::LowHigh => 1,
+        J2kSubBandType::HighHigh => 2,
+    };
+    let range_bits = i32::from(options.bit_depth) + log_gain;
+    let (exponent, mantissa) = htj2k97_step(options, sub_band_type);
+    pow2i_f64(range_bits - i32::from(exponent)) * (1.0 + f64::from(mantissa) / 2048.0)
+}
+
+/// Total declared bitplanes for every code-block in a subband.
+///
+/// `saturating(guard_bits + exponent - 1)`. The exponent is derived from the
+/// effective global plus per-subband quantization profile, so callers must pass
+/// the actual subband kind.
+#[must_use]
+pub fn htj2k97_subband_total_bitplanes(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+) -> u8 {
+    let (exponent, _) = htj2k97_step(options, sub_band_type);
+    options
+        .guard_bits
+        .saturating_add(exponent)
+        .saturating_sub(1)
+}
+
+/// Validate 9/7 code-block options against the numeric limits both GPU
+/// backends must agree on, returning the decoded `(cb_width, cb_height)`.
+///
+/// One shared implementation keeps Metal and CUDA from drifting: the same
+/// options must be accepted or rejected identically by every backend. Errors
+/// are backend-neutral static strings for the caller's unsupported-job error.
+///
+/// # Errors
+/// Rejects zero/oversized bit depths and guard bits, non-finite or
+/// non-positive quantization scales, code-block dimensions beyond the HTJ2K
+/// limits (sides ≤ 1024, area ≤ 4096), and subband deltas or total bitplane
+/// counts outside the supported range.
+pub fn validate_htj2k97_codeblock_options(
+    options: Htj2k97CodeBlockOptions,
+) -> Result<(usize, usize), &'static str> {
+    if options.bit_depth == 0
+        || options.bit_depth > 30
+        || options.guard_bits > 30
+        || !options.irreversible_quantization_scale.is_finite()
+        || options.irreversible_quantization_scale <= 0.0
+    {
+        return Err("9/7 code-block options are outside supported numeric range");
+    }
+    let subband_scales = options.irreversible_quantization_subband_scales;
+    if [
+        subband_scales.low_low,
+        subband_scales.high_low,
+        subband_scales.low_high,
+        subband_scales.high_high,
+    ]
+    .iter()
+    .any(|scale| !scale.is_finite() || *scale <= 0.0)
+    {
+        return Err("9/7 code-block quantization options are outside supported range");
+    }
+
+    let cb_width = checked_code_block_dim(options.code_block_width_exp)?;
+    let cb_height = checked_code_block_dim(options.code_block_height_exp)?;
+    if cb_width > 1024
+        || cb_height > 1024
+        || cb_width
+            .checked_mul(cb_height)
+            .is_none_or(|area| area > 4096)
+    {
+        return Err("9/7 code-block dimensions exceed HTJ2K limits");
+    }
+
+    for subband in [
+        J2kSubBandType::LowLow,
+        J2kSubBandType::HighLow,
+        J2kSubBandType::LowHigh,
+        J2kSubBandType::HighHigh,
+    ] {
+        let delta = htj2k97_subband_delta(options, subband);
+        if !delta.is_finite()
+            || delta <= 0.0
+            || htj2k97_subband_total_bitplanes(options, subband) > 30
+        {
+            return Err("9/7 code-block quantization options are outside supported range");
+        }
+    }
+
+    Ok((cb_width, cb_height))
+}
+
+fn checked_code_block_dim(exp_minus_two: u8) -> Result<usize, &'static str> {
+    1usize
+        .checked_shl(u32::from(exp_minus_two) + 2)
+        .ok_or("9/7 code-block dimension exponent is unsupported")
+}
+
+fn quantize_subband_coefficients(
+    coefficients: &[f64],
+    sub_band_type: J2kSubBandType,
+    options: Htj2k97CodeBlockOptions,
+) -> Vec<i32> {
+    let delta = htj2k97_subband_delta(options, sub_band_type);
+    let inv_delta = 1.0 / delta;
+
+    coefficients
+        .iter()
+        .map(|&coefficient| {
+            // Deadzone quantization: q = sign(c) · floor(|c| · (1/Δ)), sign(0) = +1.
+            let sign = if coefficient < 0.0 { -1 } else { 1 };
+            sign * (coefficient.abs() * inv_delta).floor() as i32
+        })
+        .collect()
+}
+
+/// Shared `(exponent, mantissa)` for the irreversible 9/7 quantizer.
+fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> (u8, u16) {
+    let step = irreversible_quantization_step_for_subband(
+        options.bit_depth,
+        options.guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+        sub_band_type,
+    );
+    (step.exponent, step.mantissa)
+}
+
+fn pow2i_f64(exp: i32) -> f64 {
+    2.0f64.powi(exp)
+}
+
+fn htj2k97_code_block_dim(exp_minus_two: u8) -> usize {
+    1usize
+        .checked_shl(u32::from(exp_minus_two) + 2)
+        .unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use j2k::{IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Image};
+    use j2k_native::{
+        encode_precomputed_htj2k_97, encode_prequantized_htj2k_97, EncodeOptions,
+        J2kForwardDwt97Level, J2kForwardDwt97Output, PrecomputedHtj2k97Component,
+        PrecomputedHtj2k97Image,
+    };
+
+    // Boundary-free coefficients on a 0.25 grid: exact in both f32 and f64, and
+    // every product with the scale-1.0 inverse deltas (4, 2, 1) lands on an exact
+    // integer/half-integer. So the f64 oracle and native's f32 quantizer agree
+    // bit-for-bit here and the codestream pin is exact, not merely close.
+    fn sample_band(len: usize, offset: f64) -> Vec<f64> {
+        (0..len)
+            .map(|idx| ((idx % 17) as f64 - 8.0) * 0.5 + offset)
+            .collect()
+    }
+
+    #[test]
+    fn oracle_prequantized_component_matches_native_precomputed_codestream() {
+        let width = 17u32;
+        let height = 13u32;
+        let low_width = width.div_ceil(2) as usize;
+        let low_height = height.div_ceil(2) as usize;
+        let high_width = (width / 2) as usize;
+        let high_height = (height / 2) as usize;
+
+        let ll = sample_band(low_width * low_height, 0.25);
+        let hl = sample_band(high_width * low_height, -0.75);
+        let lh = sample_band(low_width * high_height, 1.25);
+        let hh = sample_band(high_width * high_height, -1.5);
+
+        let options = EncodeOptions {
+            num_decomposition_levels: 1,
+            reversible: false,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        };
+
+        // Native precomputed-DWT path quantizes the f32 bands internally.
+        let precomputed_image = PrecomputedHtj2k97Image {
+            width,
+            height,
+            bit_depth: 8,
+            signed: false,
+            components: vec![PrecomputedHtj2k97Component {
+                x_rsiz: 1,
+                y_rsiz: 1,
+                dwt: J2kForwardDwt97Output {
+                    ll: ll.iter().map(|&v| v as f32).collect(),
+                    ll_width: low_width as u32,
+                    ll_height: low_height as u32,
+                    levels: vec![J2kForwardDwt97Level {
+                        hl: hl.iter().map(|&v| v as f32).collect(),
+                        lh: lh.iter().map(|&v| v as f32).collect(),
+                        hh: hh.iter().map(|&v| v as f32).collect(),
+                        width,
+                        height,
+                        low_width: low_width as u32,
+                        low_height: low_height as u32,
+                        high_width: high_width as u32,
+                        high_height: high_height as u32,
+                    }],
+                },
+            }],
+        };
+
+        // Oracle prequantized path (f64) over the same bands.
+        let dwt = Dwt97TwoDimensional {
+            ll,
+            hl,
+            lh,
+            hh,
+            low_width,
+            low_height,
+            high_width,
+            high_height,
+        };
+        let codeblock_options = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+        };
+        let component = prequantized_component_from_dwt97(&dwt, codeblock_options, 1, 1);
+        let prequantized_image = PrequantizedHtj2k97Image {
+            width,
+            height,
+            bit_depth: 8,
+            signed: false,
+            components: vec![component],
+        };
+
+        let expected = encode_precomputed_htj2k_97(&precomputed_image, &options)
+            .expect("native precomputed 9/7 encode");
+        let native_prequantized_image = native_prequantized_image(prequantized_image);
+        let actual = encode_prequantized_htj2k_97(&native_prequantized_image, &options)
+            .expect("oracle prequantized 9/7 encode");
+
+        assert_eq!(
+            actual, expected,
+            "oracle prequantized component must reproduce the native precomputed-DWT codestream"
+        );
+    }
+
+    #[test]
+    fn shared_validator_accepts_standard_options_and_returns_dims() {
+        let options = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+        };
+        assert_eq!(validate_htj2k97_codeblock_options(options), Ok((64, 64)));
+    }
+
+    #[test]
+    fn shared_validator_rejects_out_of_spec_options_on_every_backend() {
+        let valid = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 4,
+            code_block_height_exp: 4,
+            irreversible_quantization_scale: 1.0,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+        };
+
+        // Each case was accepted by the old Metal-only validator.
+        let oversized_bit_depth = Htj2k97CodeBlockOptions {
+            bit_depth: 31,
+            ..valid
+        };
+        let oversized_guard_bits = Htj2k97CodeBlockOptions {
+            guard_bits: 31,
+            ..valid
+        };
+        // 1024x1024: each side passes the per-side cap, area breaks the
+        // HTJ2K 4096 limit.
+        let oversized_area = Htj2k97CodeBlockOptions {
+            code_block_width_exp: 8,
+            code_block_height_exp: 8,
+            ..valid
+        };
+        for options in [oversized_bit_depth, oversized_guard_bits, oversized_area] {
+            assert!(
+                validate_htj2k97_codeblock_options(options).is_err(),
+                "options must be rejected: {options:?}"
+            );
+        }
+
+        // guard_bits == 0 stays accepted (the old Metal validator rejected it,
+        // CUDA and the native encoder accept it).
+        let zero_guard_bits = Htj2k97CodeBlockOptions {
+            guard_bits: 0,
+            ..valid
+        };
+        assert!(validate_htj2k97_codeblock_options(zero_guard_bits).is_ok());
+    }
+
+    #[test]
+    fn oracle_subband_profile_changes_only_selected_delta_and_bitplanes() {
+        let mut options = Htj2k97CodeBlockOptions {
+            bit_depth: 8,
+            guard_bits: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            irreversible_quantization_scale: 1.9,
+            irreversible_quantization_subband_scales:
+                IrreversibleQuantizationSubbandScales::default(),
+        };
+        let high_low_delta = htj2k97_subband_delta(options, J2kSubBandType::HighLow);
+        let high_high_delta = htj2k97_subband_delta(options, J2kSubBandType::HighHigh);
+        let default_hh_bitplanes =
+            htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh);
+
+        options.irreversible_quantization_subband_scales.high_high = 1.5;
+
+        assert_eq!(
+            htj2k97_subband_delta(options, J2kSubBandType::HighLow).to_bits(),
+            high_low_delta.to_bits()
+        );
+        assert!(htj2k97_subband_delta(options, J2kSubBandType::HighHigh) > high_high_delta);
+        assert_ne!(
+            htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh),
+            default_hh_bitplanes
+        );
+    }
+
+    fn native_prequantized_image(
+        image: PrequantizedHtj2k97Image,
+    ) -> j2k_native::PrequantizedHtj2k97Image {
+        j2k_native::PrequantizedHtj2k97Image {
+            width: image.width,
+            height: image.height,
+            bit_depth: image.bit_depth,
+            signed: image.signed,
+            components: image
+                .components
+                .into_iter()
+                .map(|component| j2k_native::PrequantizedHtj2k97Component {
+                    x_rsiz: component.x_rsiz,
+                    y_rsiz: component.y_rsiz,
+                    resolutions: component
+                        .resolutions
+                        .into_iter()
+                        .map(|resolution| j2k_native::PrequantizedHtj2k97Resolution {
+                            subbands: resolution
+                                .subbands
+                                .into_iter()
+                                .map(|subband| j2k_native::PrequantizedHtj2k97Subband {
+                                    sub_band_type: subband.sub_band_type,
+                                    num_cbs_x: subband.num_cbs_x,
+                                    num_cbs_y: subband.num_cbs_y,
+                                    total_bitplanes: subband.total_bitplanes,
+                                    code_blocks: subband
+                                        .code_blocks
+                                        .into_iter()
+                                        .map(|block| j2k_native::PrequantizedHtj2k97CodeBlock {
+                                            coefficients: block.coefficients,
+                                            width: block.width,
+                                            height: block.height,
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}

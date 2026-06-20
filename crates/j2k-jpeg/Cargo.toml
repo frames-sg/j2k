@@ -1,0 +1,112 @@
+[package]
+name        = "j2k-jpeg"
+description = "JPEG decoder optimized for whole-slide images (WSI)"
+version.workspace = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme                 = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[lib]
+name = "j2k_jpeg"
+path = "src/lib.rs"
+
+[features]
+scalar-only  = []   # retained for fuzz/reference decode until native SIMD backends land
+# Opt-in for the comparison benches only: probes pkg-config for
+# libturbojpeg/libjpeg and emits link directives. Off by default so library
+# consumers never link a system JPEG.
+bench-libjpeg-turbo = []
+bench-internals = []
+
+[dependencies]
+j2k-core = { path = "../j2k-core", version = "=0.6.0" }
+j2k-profile = { path = "../j2k-profile", version = "=0.6.0" }
+thiserror = { workspace = true }
+memchr = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+j2k-test-support = { path = "../j2k-test-support" }
+jpeg-decoder = { version = "0.3.2", default-features = false }
+zune-core = "0.5.1"
+zune-jpeg = "0.5.15"
+
+[[bench]]
+name = "compare"
+harness = false
+required-features = ["bench-libjpeg-turbo"]
+
+[[bench]]
+name = "micro"
+harness = false
+required-features = ["bench-internals"]
+
+[[bench]]
+name = "fast420_breakdown"
+harness = false
+required-features = ["bench-libjpeg-turbo", "bench-internals"]
+
+[[bench]]
+name = "corpus_report"
+harness = false
+
+[[bench]]
+name = "encode_cpu"
+harness = false
+
+[[test]]
+name = "fast420_profile"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "idct_parity"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "neon_hot_paths"
+required-features = ["bench-internals"]
+
+[lints.rust]
+# SIMD backends use tightly-scoped intrinsics in `src/backend/`; keep unsafe
+# explicit there while the rest of the crate remains safe Rust.
+unsafe_code     = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+# `missing_docs` remains disabled for now because CI uses `-D warnings` and the
+# public surface is still being documented crate-by-crate after the 1.0
+# workspace integration.
+
+[lints.clippy]
+pedantic                     = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks  = "warn"
+module_name_repetitions      = "allow"
+must_use_candidate           = "allow"
+# Style-only lints that conflict with the plan's explicit-over-idiomatic
+# choices in the marker/header parser (individual SOF-code OR patterns,
+# mixed `as` casts with compile-time-safe ranges, doc strings referring
+# to bit-precision acronyms, etc.). Promote these back to `warn` as the
+# post-integration documentation pass closes out.
+match_same_arms              = "allow"
+manual_range_patterns        = "allow"
+cast_possible_truncation     = "allow"
+cast_lossless                = "allow"
+too_many_lines               = "allow"
+collapsible_if               = "allow"
+doc_markdown                 = "allow"
+no_effect_underscore_binding = "allow"
+cast_sign_loss               = "allow"
+cast_possible_wrap           = "allow"
+missing_errors_doc           = "allow"
+missing_panics_doc           = "allow"
+needless_pass_by_value       = "allow"
+similar_names                = "allow"

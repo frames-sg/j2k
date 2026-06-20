@@ -434,6 +434,220 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "j2k"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k-core",
+ "j2k-native",
+ "j2k-test-support",
+ "j2k-types",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-cli"
+version = "0.6.0"
+dependencies = [
+ "j2k",
+ "j2k-jpeg",
+ "j2k-test-support",
+]
+
+[[package]]
+name = "j2k-compare"
+version = "0.2.0"
+dependencies = [
+ "cc",
+ "j2k",
+ "j2k-core",
+ "j2k-test-support",
+ "openjpeg-sys",
+]
+
+[[package]]
+name = "j2k-core"
+version = "0.6.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-cuda"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k",
+ "j2k-core",
+ "j2k-cuda-runtime",
+ "j2k-native",
+ "j2k-profile",
+ "j2k-test-support",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-cuda-runtime"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "libloading",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-jpeg"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k-core",
+ "j2k-profile",
+ "j2k-test-support",
+ "jpeg-decoder",
+ "memchr",
+ "proptest",
+ "rayon",
+ "thiserror",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "j2k-jpeg-cuda"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k-core",
+ "j2k-cuda-runtime",
+ "j2k-jpeg",
+ "j2k-profile",
+ "j2k-test-support",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-jpeg-metal"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k-core",
+ "j2k-jpeg",
+ "j2k-metal-support",
+ "j2k-profile",
+ "j2k-test-support",
+ "jpeg-decoder",
+ "jpeg-encoder",
+ "metal",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-metal"
+version = "0.6.0"
+dependencies = [
+ "cc",
+ "j2k",
+ "j2k-core",
+ "j2k-metal-support",
+ "j2k-native",
+ "j2k-profile",
+ "j2k-test-support",
+ "libc",
+ "metal",
+ "rayon",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-metal-support"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "metal",
+]
+
+[[package]]
+name = "j2k-native"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "fearless_simd",
+ "j2k-profile",
+ "j2k-types",
+ "libm",
+ "log",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-profile"
+version = "0.6.0"
+
+[[package]]
+name = "j2k-test-support"
+version = "0.6.0"
+dependencies = [
+ "j2k-native",
+]
+
+[[package]]
+name = "j2k-tilecodec"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "flate2",
+ "j2k-core",
+ "thiserror",
+ "weezl",
+ "zstd",
+]
+
+[[package]]
+name = "j2k-transcode"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k",
+ "j2k-jpeg",
+ "j2k-native",
+ "j2k-test-support",
+ "proptest",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-transcode-cuda"
+version = "0.6.0"
+dependencies = [
+ "j2k-cuda-runtime",
+ "j2k-jpeg",
+ "j2k-native",
+ "j2k-test-support",
+ "j2k-transcode",
+]
+
+[[package]]
+name = "j2k-transcode-metal"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "j2k-core",
+ "j2k-jpeg",
+ "j2k-metal-support",
+ "j2k-native",
+ "j2k-test-support",
+ "j2k-transcode",
+ "metal",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-types"
+version = "0.6.0"
+
+[[package]]
 name = "jobserver"
 version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -876,238 +1090,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signinum"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "flate2",
- "signinum-core",
- "signinum-j2k",
- "signinum-j2k-cuda",
- "signinum-j2k-metal",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-jpeg-cuda",
- "signinum-jpeg-metal",
- "signinum-test-support",
- "signinum-tilecodec",
-]
-
-[[package]]
-name = "signinum-cli"
-version = "0.5.0"
-dependencies = [
- "signinum-j2k",
- "signinum-jpeg",
- "signinum-test-support",
-]
-
-[[package]]
-name = "signinum-core"
-version = "0.5.0"
-dependencies = [
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-cuda-runtime"
-version = "0.5.0"
-dependencies = [
- "libloading",
- "signinum-core",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "proptest",
- "signinum-core",
- "signinum-j2k-native",
- "signinum-j2k-types",
- "signinum-test-support",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k-compare"
-version = "0.2.0"
-dependencies = [
- "cc",
- "openjpeg-sys",
- "signinum-core",
- "signinum-j2k",
- "signinum-test-support",
-]
-
-[[package]]
-name = "signinum-j2k-cuda"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "signinum-core",
- "signinum-cuda-runtime",
- "signinum-j2k",
- "signinum-j2k-native",
- "signinum-profile",
- "signinum-test-support",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k-metal"
-version = "0.5.0"
-dependencies = [
- "cc",
- "libc",
- "metal",
- "rayon",
- "signinum-core",
- "signinum-j2k",
- "signinum-j2k-native",
- "signinum-metal-support",
- "signinum-profile",
- "signinum-test-support",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k-native"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "fearless_simd",
- "libm",
- "log",
- "rayon",
- "signinum-j2k-types",
- "signinum-profile",
-]
-
-[[package]]
-name = "signinum-j2k-types"
-version = "0.5.0"
-
-[[package]]
-name = "signinum-jpeg"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "jpeg-decoder",
- "memchr",
- "proptest",
- "rayon",
- "signinum-core",
- "signinum-profile",
- "signinum-test-support",
- "thiserror",
- "zune-core",
- "zune-jpeg",
-]
-
-[[package]]
-name = "signinum-jpeg-cuda"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "signinum-core",
- "signinum-cuda-runtime",
- "signinum-jpeg",
- "signinum-profile",
- "signinum-test-support",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-jpeg-metal"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "jpeg-decoder",
- "jpeg-encoder",
- "metal",
- "signinum-core",
- "signinum-jpeg",
- "signinum-metal-support",
- "signinum-profile",
- "signinum-test-support",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-metal-support"
-version = "0.5.0"
-dependencies = [
- "metal",
- "signinum-core",
-]
-
-[[package]]
-name = "signinum-profile"
-version = "0.5.0"
-
-[[package]]
-name = "signinum-test-support"
-version = "0.5.0"
-dependencies = [
- "signinum-j2k-native",
-]
-
-[[package]]
-name = "signinum-tilecodec"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "flate2",
- "signinum-core",
- "thiserror",
- "weezl",
- "zstd",
-]
-
-[[package]]
-name = "signinum-transcode"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "proptest",
- "rayon",
- "signinum-j2k",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-test-support",
-]
-
-[[package]]
-name = "signinum-transcode-cuda"
-version = "0.5.0"
-dependencies = [
- "signinum-cuda-runtime",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-test-support",
- "signinum-transcode",
-]
-
-[[package]]
-name = "signinum-transcode-metal"
-version = "0.5.0"
-dependencies = [
- "criterion",
- "metal",
- "rayon",
- "signinum-core",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-metal-support",
- "signinum-test-support",
- "signinum-transcode",
-]
 
 [[package]]
 name = "simd-adler32"

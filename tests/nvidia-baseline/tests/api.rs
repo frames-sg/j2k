@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(not(nvbaseline_built))]
-use signinum_nvidia_baseline::{
+use j2k_nvidia_baseline::{
     nvidia_decode_j2k_interleaved, nvidia_j2k_decode_available, NvBaselineError,
 };
-use signinum_nvidia_baseline::{NvBaselineSession, NvJ2kDecodeFormat};
+use j2k_nvidia_baseline::{NvBaselineSession, NvJ2kDecodeFormat};
 
 #[cfg(not(nvbaseline_built))]
 #[test]

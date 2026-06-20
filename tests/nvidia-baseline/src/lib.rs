@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking signinum's
+//! NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking j2k's
 //! coefficient-domain JPEG → HTJ2K transcode against the conventional
 //! decode-to-pixels-then-encode pipeline.
 //!
@@ -413,11 +413,8 @@ fn nvidia_decode_j2k_with_session(
     codestream: &[u8],
     format: NvJ2kDecodeFormat,
 ) -> Result<NvJ2kDecodeResult, NvBaselineError> {
-    let image = signinum_j2k_native::Image::new(
-        codestream,
-        &signinum_j2k_native::DecodeSettings::default(),
-    )
-    .map_err(|_| NvBaselineError::Stage(241))?;
+    let image = j2k_native::Image::new(codestream, &j2k_native::DecodeSettings::default())
+        .map_err(|_| NvBaselineError::Stage(241))?;
     let dims = (image.width(), image.height());
     let mut capacity = (dims.0 as usize)
         .saturating_mul(dims.1 as usize)
@@ -597,7 +594,7 @@ mod tests {
     #[test]
     fn write_text_artifact_creates_parent_directories() {
         let path = std::env::temp_dir()
-            .join(format!("signinum-nvb-artifact-{}", std::process::id()))
+            .join(format!("j2k-nvb-artifact-{}", std::process::id()))
             .join("nested")
             .join("report.json");
 

@@ -1,36 +1,35 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/signinum",
-    "crates/signinum-core",
-    "crates/signinum-cuda-runtime",
-    "crates/signinum-profile",
-    "crates/signinum-j2k-compare",
-    "crates/signinum-j2k-native",
-    "crates/signinum-j2k-types",
-    "crates/signinum-j2k",
-    "crates/signinum-j2k-cuda",
-    "crates/signinum-j2k-metal",
-    "crates/signinum-metal-support",
-    "crates/signinum-jpeg",
-    "crates/signinum-jpeg-cuda",
-    "crates/signinum-jpeg-metal",
-    "crates/signinum-transcode",
-    "crates/signinum-transcode-metal",
-    "crates/signinum-transcode-cuda",
-    "crates/signinum-test-support",
-    "crates/signinum-tilecodec",
-    "crates/signinum-cli",
+    "crates/j2k",
+    "crates/j2k-core",
+    "crates/j2k-compare",
+    "crates/j2k-cuda",
+    "crates/j2k-cuda-runtime",
+    "crates/j2k-jpeg",
+    "crates/j2k-jpeg-cuda",
+    "crates/j2k-jpeg-metal",
+    "crates/j2k-metal",
+    "crates/j2k-metal-support",
+    "crates/j2k-native",
+    "crates/j2k-profile",
+    "crates/j2k-test-support",
+    "crates/j2k-tilecodec",
+    "crates/j2k-transcode",
+    "crates/j2k-transcode-cuda",
+    "crates/j2k-transcode-metal",
+    "crates/j2k-types",
+    "crates/j2k-cli",
     "xtask",
 ]
 
 [workspace.package]
-version      = "0.5.0"
+version = "0.6.0"
 edition      = "2021"
 rust-version = "1.96"
 license      = "Apache-2.0"
-repository   = "https://github.com/frames-sg/signinum"
-homepage     = "https://github.com/frames-sg/signinum"
+repository   = "https://github.com/frames-sg/j2k"
+homepage     = "https://github.com/frames-sg/j2k"
 keywords     = ["pathology", "wsi", "jpeg", "jpeg2000", "tiff"]
 categories   = ["multimedia::images"]
 

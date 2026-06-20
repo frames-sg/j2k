@@ -1,0 +1,11 @@
+{
+  "input_count": 64,
+  "megapixels": 4.194304,
+  "warmup": 1,
+  "iterations": 5,
+  "max_inputs": 64,
+  "profile": {"label": "j2k_cuda_decode_real_batch", "execution_mode": "j2k_cuda_batch", "timing_scope": "aggregate_batch", "download_policy": "download", "input_count": 64, "megapixels": 4.194304, "codestream_bytes": 3755036, "mp_s": 442.449172, "status": {"status": "ok", "wall_ms": 9.479742, "gpu_ms": 4.001000, "stage_ms": 6.351000, "download_ms": 1.070317, "bytes": 12582912, "cuda_profile": {"parse_us": 9, "plan_us": 1538, "flatten_us": 384, "h2d_us": 419, "ht_cleanup_us": 1996, "ht_refine_us": 0, "dequant_us": 0, "idwt_us": 1184, "mct_us": 0, "store_us": 821, "total_us": 6351, "wall_total_us": 8400, "table_upload_us": 0, "payload_upload_us": 417, "status_d2h_us": 43, "output_d2h_us": 0, "block_count": 4800, "payload_bytes": 3729641, "dispatch_count": 12, "ht_dispatch_count": 1, "dequant_dispatch_count": 0, "idwt_dispatch_count": 10, "mct_dispatch_count": 0, "store_dispatch_count": 1}}},
+  "rows": [
+
+  ]
+}
