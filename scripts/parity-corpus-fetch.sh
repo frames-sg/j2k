@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-manifest="${SIGNINUM_PARITY_CORPUS_MANIFEST:-${1:-corpus/wsi-samples/manifest.json}}"
-out_dir="${SIGNINUM_PARITY_CORPUS_DIR:-${2:-corpus/wsi-samples}}"
+manifest="${J2K_PARITY_CORPUS_MANIFEST:-${1:-corpus/wsi-samples/manifest.json}}"
+out_dir="${J2K_PARITY_CORPUS_DIR:-${2:-corpus/wsi-samples}}"
 
 python3 - "$manifest" "$out_dir" <<'PY'
 import hashlib
@@ -13,7 +13,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-MAX_DOWNLOAD_BYTES = int(os.environ.get("SIGNINUM_PARITY_CORPUS_MAX_BYTES", str(512 * 1024 * 1024)))
+MAX_DOWNLOAD_BYTES = int(os.environ.get("J2K_PARITY_CORPUS_MAX_BYTES", str(512 * 1024 * 1024)))
 
 
 def fail(message):

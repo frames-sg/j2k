@@ -10,7 +10,7 @@ Aperio SVS). The slide stores its tiles as JPEG 2000 with YCbCr components
 (Aperio compression `33003`), so they are not usable as JPEG input directly.
 
 Each tile here was produced by `svs_extract`:
-1. decode the J2K tile to component samples (`signinum-j2k-native`),
+1. decode the J2K tile to component samples (`j2k-native`),
 2. convert YCbCr → RGB,
 3. keep only tiles with ≥ 60% tissue coverage and visible structure (skipping
    flat stroma and bright glass/background),

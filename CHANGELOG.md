@@ -3,22 +3,22 @@
 This changelog tracks the current staged release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [0.5.0]
+## [0.6.0]
 
-- Stages the `signinum` facade release.
+- Stages the `j2k` facade release.
 - Keeps CPU decode as the portable correctness baseline.
 - Treats Runtime backend selection defaults to `Auto` as the public backend
   policy.
 - Adds resident Metal and CUDA device memory surfaces for supported adapter
   paths through cuda-runtime integration.
-- Uses Signinum-owned CUDA kernels for supported CUDA codec stages.
+- Uses J2K-owned CUDA kernels for supported CUDA codec stages.
 - Requires recorded benchmark evidence before NVIDIA performance claims.
 - Consolidates shared J2K encode-stage, CUDA submit, Metal runtime, tilecodec,
   JPEG output, and test-support helpers.
 
 ### Breaking API Changes
 
-- Collapses the 26 `signinum-j2k-metal` lossless encode/submit permutations
+- Collapses the 26 `j2k-metal` lossless encode/submit permutations
   (`{encode,submit}_lossless_from_{padded_,}metal_buffer{,s}` x
   to-metal/with-report/with-config/to-metal-batch) into three request-based
   entry points: `submit_lossless_batch` (host codestream bytes),
@@ -32,7 +32,7 @@ and stale roadmap entries have been removed from the public documentation set.
   may use the resident batch path where the removed wrapper always used
   the per-tile staged pipeline; the report's stage-residency fields can
   differ accordingly.
-- Collapses the 24 `signinum-jpeg-metal` `Codec::decode_rgb8_*_with_session`
+- Collapses the 24 `j2k-jpeg-metal` `Codec::decode_rgb8_*_with_session`
   batch permutations (full/scaled/region-scaled x bytes/decoders x
   reusable/resizable buffer/textures) into two request-based entry points:
   `decode_rgb8_batch_into_buffer_with_session` and
@@ -43,10 +43,10 @@ and stale roadmap entries have been removed from the public documentation set.
   `decode_rgb8_decoder_batch_into_resizable_metal_textures_with_session` and
   the two region-scaled resizable forms. Unsupported-batch error reasons no
   longer distinguish byte vs decoder sources.
-- Introduces the `signinum-j2k-types` contract crate: the 49 encode-stage
-  job/output/report types shared by `signinum-j2k` and `signinum-j2k-native`
+- Introduces the `j2k-types` contract crate: the 49 encode-stage
+  job/output/report types shared by `j2k` and `j2k-native`
   are defined once there (both crates re-export them at their existing
-  paths), and the `signinum-j2k` adapter's `*_from_native`/`*_to_native`
+  paths), and the `j2k` adapter's `*_from_native`/`*_to_native`
   encode-stage converter functions are removed since both sides now use the
   same types.
 - Widens transcode accelerator errors: `DctToWaveletStageAccelerator` methods
@@ -83,9 +83,9 @@ and stale roadmap entries have been removed from the public documentation set.
 - Moves repository policy checks into `cargo xtask repo-lint` and pins public
   API, release-integrity, environment-variable, workflow, and packaging
   invariants there.
-- Documents supported `SIGNINUM_*` environment variables and removes the
+- Documents supported `J2K_*` environment variables and removes the
   experiment-only JPEG Metal fast420 split selector from the runtime surface.
-- Routes env-gated Metal timing output through `signinum-profile`.
+- Routes env-gated Metal timing output through `j2k-profile`.
 - Adds stricter J2K component-plane validation before output writes and removes
   stale generated-table dead-code suppression.
 - Refreshes the stable public API inventory after facade and profile surface

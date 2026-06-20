@@ -1,15 +1,15 @@
 [package]
-name = "signinum-nvidia-baseline"
-description = "NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking signinum's coefficient-domain JPEG to HTJ2K transcode"
-version = "0.5.0"
+name = "j2k-nvidia-baseline"
+description = "NVIDIA GPU codec baseline (nvJPEG + nvJPEG2000) for benchmarking j2k's coefficient-domain JPEG to HTJ2K transcode"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.96"
 license = "Apache-2.0"
-repository = "https://github.com/frames-sg/signinum"
+repository = "https://github.com/frames-sg/j2k"
 publish = false
 
 [lib]
-name = "signinum_nvidia_baseline"
+name = "j2k_nvidia_baseline"
 path = "src/lib.rs"
 
 [[bin]]
@@ -28,29 +28,29 @@ path = "src/bin/jpeg_decode_compare.rs"
 default = []
 # Compile + link the C++ nvJPEG/nvJPEG2000 baseline. Runner-only: requires nvcc,
 # libnvjpeg, and a separately-installed libnvjpeg2k. Also turns on the CUDA path
-# for the signinum side of the comparison.
+# for the j2k side of the comparison.
 nvjpeg2000 = [
-    "dep:signinum-jpeg-cuda",
-    "signinum-jpeg-cuda/cuda-runtime",
-    "signinum-transcode-cuda/cuda-runtime",
-    "dep:signinum-j2k-cuda",
-    "signinum-j2k-cuda/cuda-runtime",
+    "dep:j2k-jpeg-cuda",
+    "j2k-jpeg-cuda/cuda-runtime",
+    "j2k-transcode-cuda/cuda-runtime",
+    "dep:j2k-cuda",
+    "j2k-cuda/cuda-runtime",
 ]
 
 [dependencies]
-signinum-core = { path = "../../crates/signinum-core", version = "=0.5.0" }
-signinum-transcode = { path = "../../crates/signinum-transcode", version = "=0.5.0" }
-signinum-transcode-cuda = { path = "../../crates/signinum-transcode-cuda", version = "=0.5.0" }
-signinum-jpeg-cuda = { path = "../../crates/signinum-jpeg-cuda", version = "=0.5.0", optional = true }
-signinum-j2k-cuda = { path = "../../crates/signinum-j2k-cuda", version = "=0.5.0", optional = true }
-signinum-jpeg = { path = "../../crates/signinum-jpeg", version = "=0.5.0" }
-signinum-j2k = { path = "../../crates/signinum-j2k", version = "=0.5.0" }
-signinum-j2k-native = { path = "../../crates/signinum-j2k-native", version = "=0.5.0" }
+j2k-core = { path = "../../crates/j2k-core", version = "=0.6.0" }
+j2k-transcode = { path = "../../crates/j2k-transcode", version = "=0.6.0" }
+j2k-transcode-cuda = { path = "../../crates/j2k-transcode-cuda", version = "=0.6.0" }
+j2k-jpeg-cuda = { path = "../../crates/j2k-jpeg-cuda", version = "=0.6.0", optional = true }
+j2k-cuda = { path = "../../crates/j2k-cuda", version = "=0.6.0", optional = true }
+j2k-jpeg = { path = "../../crates/j2k-jpeg", version = "=0.6.0" }
+j2k = { path = "../../crates/j2k", version = "=0.6.0" }
+j2k-native = { path = "../../crates/j2k-native", version = "=0.6.0" }
 
-# Metal backend for the signinum side of the comparison on macOS (the runner is
+# Metal backend for the j2k side of the comparison on macOS (the runner is
 # Linux/CUDA, so this is target-gated to keep the runner build untouched).
 [target.'cfg(target_os = "macos")'.dependencies]
-signinum-transcode-metal = { path = "../../crates/signinum-transcode-metal", version = "=0.5.0" }
+j2k-transcode-metal = { path = "../../crates/j2k-transcode-metal", version = "=0.6.0" }
 
 [lints.rust]
 unsafe_code = "allow"

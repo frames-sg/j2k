@@ -62,70 +62,70 @@ const DEFAULT_THRESHOLD_PERCENT: f64 = 10.0;
 const MIN_ABSOLUTE_REGRESSION_NS: f64 = 100.0;
 const BENCH_COMMANDS: &[BenchCommand] = &[
     BenchCommand {
-        package: "signinum-j2k",
+        package: "j2k",
         bench: "public_api",
         filter: None,
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-jpeg",
+        package: "j2k-jpeg",
         bench: "encode_cpu",
         filter: Some("jpeg_cpu_encode_runtime/"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "tier1_bitplane",
         filter: Some("htj2k_cleanup_decode/"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "tier1_bitplane",
         filter: Some("htj2k_refinement_fixture_decode"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "tier1_bitplane",
         filter: Some("htj2k_refinement_block_decode"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "tier1_bitplane",
         filter: Some("htj2k_cleanup_encode/"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "tier1_bitplane",
         filter: Some("htj2k_cleanup_encode_distribution"),
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-native",
+        package: "j2k-native",
         bench: "htj2k_sigprop_phase",
         filter: None,
         features: None,
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-cuda",
+        package: "j2k-cuda",
         bench: "htj2k_decode",
         filter: Some("j2k_cuda_htj2k_"),
         features: Some("cuda-runtime"),
         env: &[],
     },
     BenchCommand {
-        package: "signinum-j2k-cuda",
+        package: "j2k-cuda",
         bench: "htj2k_encode",
         filter: Some("j2k_cuda_htj2k_"),
         features: Some("cuda-runtime"),
@@ -133,27 +133,27 @@ const BENCH_COMMANDS: &[BenchCommand] = &[
     },
 ];
 const BENCH_SOURCE_FILES: &[&str] = &[
-    "crates/signinum-j2k/benches/public_api.rs",
-    "crates/signinum-jpeg/benches/encode_cpu.rs",
-    "crates/signinum-j2k-native/benches/tier1_bitplane.rs",
-    "crates/signinum-j2k-native/benches/htj2k_sigprop_phase.rs",
-    "crates/signinum-j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k",
-    "crates/signinum-j2k-cuda/benches/htj2k_decode.rs",
-    "crates/signinum-j2k-cuda/benches/htj2k_encode.rs",
+    "crates/j2k/benches/public_api.rs",
+    "crates/j2k-jpeg/benches/encode_cpu.rs",
+    "crates/j2k-native/benches/tier1_bitplane.rs",
+    "crates/j2k-native/benches/htj2k_sigprop_phase.rs",
+    "crates/j2k-native/fixtures/htj2k/openhtj2k_ds0_ht_09_b11.j2k",
+    "crates/j2k-cuda/benches/htj2k_decode.rs",
+    "crates/j2k-cuda/benches/htj2k_encode.rs",
 ];
 const BENCH_MANIFEST_STANZAS: &[BenchManifestStanza] = &[
     BenchManifestStanza {
-        path: "crates/signinum-jpeg/Cargo.toml",
+        path: "crates/j2k-jpeg/Cargo.toml",
         bench_name: "encode_cpu",
         stanza: "[[bench]]\nname = \"encode_cpu\"\nharness = false\n",
     },
     BenchManifestStanza {
-        path: "crates/signinum-j2k-cuda/Cargo.toml",
+        path: "crates/j2k-cuda/Cargo.toml",
         bench_name: "htj2k_decode",
         stanza: "[[bench]]\nname = \"htj2k_decode\"\nharness = false\n",
     },
     BenchManifestStanza {
-        path: "crates/signinum-j2k-cuda/Cargo.toml",
+        path: "crates/j2k-cuda/Cargo.toml",
         bench_name: "htj2k_encode",
         stanza: "[[bench]]\nname = \"htj2k_encode\"\nharness = false\nrequired-features = [\"cuda-runtime\"]\n",
     },
@@ -162,7 +162,7 @@ const BENCH_MANIFEST_STANZAS: &[BenchManifestStanza] = &[
 pub(crate) fn j2k_perf_guard(args: impl Iterator<Item = String>) -> Result<(), String> {
     let options = PerfGuardOptions::parse(args)?;
     let root = repo_root()?;
-    let perf_root = root.join("target").join("signinum-perf");
+    let perf_root = root.join("target").join("j2k-perf");
     fs::create_dir_all(&perf_root)
         .map_err(|err| format!("failed to create {}: {err}", perf_root.display()))?;
 
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn estimate_snapshot_round_trips_sorted_estimates() {
-        let root = temp_dir("signinum-perf-snapshot-test");
+        let root = temp_dir("j2k-perf-snapshot-test");
         let path = root.join("baselines").join("htj2k.json");
         let estimates = vec![
             BenchEstimate {
@@ -879,28 +879,28 @@ mod tests {
     fn perf_guard_tracks_htj2k_maturation_benchmarks() {
         let expected = [
             BenchCommand {
-                package: "signinum-jpeg",
+                package: "j2k-jpeg",
                 bench: "encode_cpu",
                 filter: Some("jpeg_cpu_encode_runtime/"),
                 features: None,
                 env: &[],
             },
             BenchCommand {
-                package: "signinum-j2k-native",
+                package: "j2k-native",
                 bench: "tier1_bitplane",
                 filter: Some("htj2k_cleanup_encode/"),
                 features: None,
                 env: &[],
             },
             BenchCommand {
-                package: "signinum-j2k-native",
+                package: "j2k-native",
                 bench: "tier1_bitplane",
                 filter: Some("htj2k_cleanup_decode/"),
                 features: None,
                 env: &[],
             },
             BenchCommand {
-                package: "signinum-j2k-native",
+                package: "j2k-native",
                 bench: "htj2k_sigprop_phase",
                 filter: None,
                 features: None,
@@ -924,7 +924,7 @@ mod tests {
         ] {
             assert!(
                 BENCH_COMMANDS.iter().any(|command| {
-                    command.package == "signinum-j2k-cuda"
+                    command.package == "j2k-cuda"
                         && command.bench == bench
                         && command.filter == Some(filter)
                         && command.features == Some("cuda-runtime")
@@ -973,7 +973,7 @@ mod tests {
     #[test]
     fn filtered_bench_command_passes_filter_before_quick_flag() {
         let command = BenchCommand {
-            package: "signinum-j2k-native",
+            package: "j2k-native",
             bench: "tier1_bitplane",
             filter: Some("htj2k_cleanup_encode/"),
             features: None,
@@ -985,7 +985,7 @@ mod tests {
             vec![
                 "bench",
                 "-p",
-                "signinum-j2k-native",
+                "j2k-native",
                 "--bench",
                 "tier1_bitplane",
                 "--",
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn feature_bench_command_passes_features_before_filter_separator() {
         let command = BenchCommand {
-            package: "signinum-j2k-cuda",
+            package: "j2k-cuda",
             bench: "htj2k_encode",
             filter: Some("j2k_cuda_htj2k_"),
             features: Some("cuda-runtime"),
@@ -1010,7 +1010,7 @@ mod tests {
             vec![
                 "bench",
                 "-p",
-                "signinum-j2k-cuda",
+                "j2k-cuda",
                 "--bench",
                 "htj2k_encode",
                 "--features",
@@ -1031,13 +1031,13 @@ mod tests {
             "htj2k_cleanup_encode/encode_64x64/2459041792"
         ));
         assert!(!is_enforced_perf_id(
-            "wsi_tile_batch_region_scaled_rgb_q4/signinum_htj2k_rgb_512_batch_16"
+            "wsi_tile_batch_region_scaled_rgb_q4/j2k_htj2k_rgb_512_batch_16"
         ));
         assert!(!is_enforced_perf_id(
-            "htj2k_region_scaled_plan_build/signinum-metal-resident"
+            "htj2k_region_scaled_plan_build/j2k-metal-resident"
         ));
         assert!(!is_enforced_perf_id(
-            "htj2k_feeder_coalesce/signinum-metal-resident"
+            "htj2k_feeder_coalesce/j2k-metal-resident"
         ));
         assert!(!is_enforced_perf_id(
             "htj2k_cleanup_encode_parallel_batch_size/rayon_par_iter_global_blocks/128"
@@ -1046,10 +1046,10 @@ mod tests {
             "tier1_bitplane_encode/encode_64x64/default"
         ));
         assert!(!is_enforced_perf_id(
-            "wsi_tile_batch_region_scaled_rgb_q4/signinum-cpu-staged-metal_htj2k_rgb_512_batch_16"
+            "wsi_tile_batch_region_scaled_rgb_q4/j2k-cpu-staged-metal_htj2k_rgb_512_batch_16"
         ));
         assert!(!is_enforced_perf_id(
-            "htj2k_metal_route/signinum-metal-resident_htj2k_rgb_512_batch_16"
+            "htj2k_metal_route/j2k-metal-resident_htj2k_rgb_512_batch_16"
         ));
         assert!(!is_enforced_perf_id(
             "j2k_public_decode/nothtj2k_accidental_substring"
@@ -1070,7 +1070,7 @@ mod tests {
             ),
             estimate("tier1_bitplane_encode/encode_64x64/default", 1_000.0),
             estimate(
-                "wsi_tile_batch_region_scaled_rgb_q4/signinum-cpu-staged-metal_htj2k_rgb_512_batch_16",
+                "wsi_tile_batch_region_scaled_rgb_q4/j2k-cpu-staged-metal_htj2k_rgb_512_batch_16",
                 1_000.0,
             ),
         ];

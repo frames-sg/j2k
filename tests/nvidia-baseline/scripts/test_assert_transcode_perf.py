@@ -36,7 +36,7 @@ def base_report(cuda_wall_ms=16.196893, cuda_dispatches=1, nvidia_wall_ms=144.68
                 "ht_codeblock_dispatches": 0,
             }
         ],
-        "signinum_cuda_ht_experimental": {
+        "j2k_cuda_ht_experimental": {
             "scale": 1.9,
             "ran": True,
             "used_gpu": True,
@@ -99,7 +99,7 @@ class AssertTranscodePerfTest(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("signinum CUDA HT MP/s", result.stderr)
+        self.assertIn("j2k CUDA HT MP/s", result.stderr)
 
     def test_fails_when_cuda_ht_did_not_dispatch(self):
         result = self.run_gate(

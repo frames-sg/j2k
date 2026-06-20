@@ -42,7 +42,7 @@ def assert_gate(args):
 
     try:
         cuda_ht = require_result(
-            report, "signinum_cuda_ht_experimental", "signinum CUDA HT"
+            report, "j2k_cuda_ht_experimental", "j2k CUDA HT"
         )
     except ValueError as error:
         failures.append(str(error))
@@ -62,35 +62,35 @@ def assert_gate(args):
     cuda_mps = None
     if cuda_ht is not None:
         if cuda_ht.get("used_gpu") is not True:
-            failures.append("signinum CUDA HT did not report used_gpu=true")
+            failures.append("j2k CUDA HT did not report used_gpu=true")
         try:
-            cuda_mps = result_mps(report, cuda_ht, "signinum CUDA HT")
+            cuda_mps = result_mps(report, cuda_ht, "j2k CUDA HT")
         except ValueError as error:
             failures.append(str(error))
 
         if args.min_cuda_ht_mps is not None and cuda_mps is not None:
             if cuda_mps < args.min_cuda_ht_mps:
                 failures.append(
-                    "signinum CUDA HT MP/s "
+                    "j2k CUDA HT MP/s "
                     f"{cuda_mps:.3f} below threshold {args.min_cuda_ht_mps:.3f}"
                 )
 
         if args.max_byte_delta_abs is not None:
             byte_delta = cuda_ht.get("byte_delta_vs_nvidia")
             if not isinstance(byte_delta, (int, float)) or not math.isfinite(byte_delta):
-                failures.append("signinum CUDA HT byte_delta_vs_nvidia is missing or non-finite")
+                failures.append("j2k CUDA HT byte_delta_vs_nvidia is missing or non-finite")
             elif abs(float(byte_delta)) > args.max_byte_delta_abs:
                 failures.append(
-                    "signinum CUDA HT byte delta "
+                    "j2k CUDA HT byte delta "
                     f"{float(byte_delta):.6f} outside +/-{args.max_byte_delta_abs:.6f}"
                 )
 
         dispatches = cuda_ht.get("ht_codeblock_dispatches")
         if not isinstance(dispatches, int):
-            failures.append("signinum CUDA HT code-block dispatch count is missing")
+            failures.append("j2k CUDA HT code-block dispatch count is missing")
         elif dispatches < args.min_ht_codeblock_dispatches:
             failures.append(
-                "signinum CUDA HT code-block dispatches "
+                "j2k CUDA HT code-block dispatches "
                 f"{dispatches} below threshold {args.min_ht_codeblock_dispatches}"
             )
 
@@ -107,7 +107,7 @@ def assert_gate(args):
             speedup = cuda_mps / nvidia_mps
             if speedup < args.min_cuda_ht_speedup_vs_nvidia:
                 failures.append(
-                    "signinum CUDA HT speedup vs NVIDIA "
+                    "j2k CUDA HT speedup vs NVIDIA "
                     f"{speedup:.3f} below threshold "
                     f"{args.min_cuda_ht_speedup_vs_nvidia:.3f}"
                 )
@@ -119,7 +119,7 @@ def assert_gate(args):
 
     parts = [f"{args.label}: PASS"]
     if cuda_mps is not None:
-        parts.append(f"signinum_cuda_ht_mps={cuda_mps:.3f}")
+        parts.append(f"j2k_cuda_ht_mps={cuda_mps:.3f}")
     if nvidia is not None:
         parts.append(f"nvidia_mps={result_mps(report, nvidia, 'NVIDIA'):.3f}")
     print(" ".join(parts))

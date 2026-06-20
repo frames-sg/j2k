@@ -53,14 +53,14 @@ jobs:
           head_sha = os.environ["HEAD_SHA"]
 
           gpu_prefixes = (
-              "crates/signinum-cuda-runtime/",
-              "crates/signinum-jpeg-cuda/",
-              "crates/signinum-j2k-cuda/",
-              "crates/signinum-transcode-cuda/",
-              "crates/signinum-metal-support/",
-              "crates/signinum-jpeg-metal/",
-              "crates/signinum-j2k-metal/",
-              "crates/signinum-transcode-metal/",
+              "crates/j2k-cuda-runtime/",
+              "crates/j2k-jpeg-cuda/",
+              "crates/j2k-cuda/",
+              "crates/j2k-transcode-cuda/",
+              "crates/j2k-metal-support/",
+              "crates/j2k-jpeg-metal/",
+              "crates/j2k-metal/",
+              "crates/j2k-transcode-metal/",
           )
           gpu_exact_paths = {
               ".github/CODEOWNERS",
@@ -289,8 +289,8 @@ jobs:
           tool: cargo-fuzz
       - run: cargo xtask fuzz-run
         env:
-          SIGNINUM_FUZZ_RUNS: "512"
-          SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: "60"
+          J2K_FUZZ_RUNS: "512"
+          J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "60"
 
   fuzz-run-long:
     if: ${{ github.event_name == 'schedule' }}
@@ -305,8 +305,8 @@ jobs:
           tool: cargo-fuzz
       - run: cargo xtask fuzz-run
         env:
-          SIGNINUM_FUZZ_RUNS: "20000"
-          SIGNINUM_FUZZ_MAX_TOTAL_TIME_SECONDS: "900"
+          J2K_FUZZ_RUNS: "20000"
+          J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "900"
 
   package:
     runs-on: ubuntu-latest
@@ -331,7 +331,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: signinum-lcov
+          name: j2k-lcov
           path: lcov.info
           if-no-files-found: ignore
 

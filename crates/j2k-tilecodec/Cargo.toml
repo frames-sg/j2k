@@ -1,0 +1,36 @@
+[package]
+name        = "j2k-tilecodec"
+description = "Tile decompression codecs for pathology image containers"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme                 = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[lib]
+name = "j2k_tilecodec"
+path = "src/lib.rs"
+
+[dependencies]
+j2k-core = { path = "../j2k-core", version = "=0.6.0" }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+zstd = { workspace = true }
+weezl = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "compare"
+harness = false
+
+[lints]
+workspace = true

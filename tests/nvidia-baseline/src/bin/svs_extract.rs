@@ -4,7 +4,7 @@
 //
 // Many GDC SVS files store their tiles as JPEG 2000 (Aperio compression 33003 /
 // 33005), not JPEG, so they cannot feed a JPEG -> HTJ2K transcode benchmark
-// directly. This tool decodes each tile (J2K via signinum-j2k-native; original
+// directly. This tool decodes each tile (J2K via j2k-native; original
 // JPEG passed through) to RGB and re-encodes a deterministic, tissue-only subset
 // as baseline JPEG into an output directory for `transcode_compare`.
 //
@@ -20,9 +20,9 @@
 
 use std::path::Path;
 
-use signinum_j2k_native::{DecodeSettings, Image};
-use signinum_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples};
-use signinum_nvidia_baseline::ycbcr_to_rgb_round_nearest;
+use j2k_jpeg::encoder::{encode_jpeg_baseline, JpegEncodeOptions, JpegSamples};
+use j2k_native::{DecodeSettings, Image};
+use j2k_nvidia_baseline::ycbcr_to_rgb_round_nearest;
 
 fn main() {
     let mut args = std::env::args().skip(1);

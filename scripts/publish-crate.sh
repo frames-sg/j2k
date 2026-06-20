@@ -5,24 +5,23 @@ crate="${1:?usage: publish-crate.sh <crate>}"
 dry_run="${DRY_RUN_ONLY:-false}"
 
 publishable_crates=(
-  signinum-core
-  signinum-cuda-runtime
-  signinum-profile
-  signinum-j2k-types
-  signinum-j2k-native
-  signinum-jpeg
-  signinum-tilecodec
-  signinum-j2k
-  signinum-transcode
-  signinum-transcode-cuda
-  signinum-metal-support
-  signinum-jpeg-metal
-  signinum-j2k-metal
-  signinum-transcode-metal
-  signinum-jpeg-cuda
-  signinum-j2k-cuda
-  signinum-cli
-  signinum
+ j2k-core
+ j2k-profile
+ j2k-types
+ j2k-cuda-runtime
+ j2k-metal-support
+ j2k-native
+ j2k-jpeg
+ j2k-tilecodec
+ j2k
+ j2k-transcode
+ j2k-transcode-cuda
+ j2k-jpeg-metal
+ j2k-metal
+ j2k-transcode-metal
+ j2k-jpeg-cuda
+ j2k-cuda
+ j2k-cli
 )
 
 workspace_version() {
@@ -101,19 +100,20 @@ version="$(crate_version "$crate")"
 
 has_unpublished_workspace_dependency() {
   case "$1" in
-    signinum-j2k-native | \
-      signinum-jpeg | \
-      signinum-tilecodec | \
-      signinum-j2k | \
-      signinum-transcode | \
-      signinum-transcode-cuda | \
-      signinum-jpeg-metal | \
-      signinum-j2k-metal | \
-      signinum-transcode-metal | \
-      signinum-jpeg-cuda | \
-      signinum-j2k-cuda | \
-      signinum-cli | \
-      signinum)
+   j2k-cuda-runtime | \
+     j2k-metal-support | \
+     j2k-native | \
+     j2k-jpeg | \
+     j2k-tilecodec | \
+     j2k | \
+     j2k-transcode | \
+     j2k-transcode-cuda | \
+     j2k-jpeg-metal | \
+     j2k-metal | \
+     j2k-transcode-metal | \
+     j2k-jpeg-cuda | \
+     j2k-cuda | \
+     j2k-cli)
       return 0
       ;;
     *)

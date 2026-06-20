@@ -1,0 +1,48 @@
+[package]
+name = "j2k-transcode-cuda"
+description = "CUDA acceleration for j2k-transcode coefficient-domain JPEG to HTJ2K paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = []
+
+[lib]
+name = "j2k_transcode_cuda"
+path = "src/lib.rs"
+
+[features]
+default = []
+cuda-runtime = ["dep:j2k-cuda-runtime"]
+cuda-profiling = ["cuda-runtime", "j2k-cuda-runtime/cuda-profiling"]
+
+[dependencies]
+j2k-transcode = { path = "../j2k-transcode", version = "=0.6.0" }
+j2k-cuda-runtime = { path = "../j2k-cuda-runtime", version = "=0.6.0", optional = true }
+j2k-native = { path = "../j2k-native", version = "=0.6.0" }
+
+[dev-dependencies]
+j2k-jpeg = { path = "../j2k-jpeg", version = "=0.6.0" }
+j2k-test-support = { path = "../j2k-test-support" }
+
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"

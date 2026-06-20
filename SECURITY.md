@@ -7,7 +7,7 @@ The current supported development line is `0.5.x`.
 ## Reporting vulnerabilities
 
 Report suspected vulnerabilities privately through GitHub private vulnerability
-reporting: <https://github.com/frames-sg/signinum/security/advisories/new>
+reporting: <https://github.com/frames-sg/j2k/security/advisories/new>
 (repository **Security** tab → **Report a vulnerability**). Do not open public
 issues or publish proof-of-concept exploit details before triage.
 

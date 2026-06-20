@@ -112,6 +112,138 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "j2k"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "j2k-native",
+ "j2k-types",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-core"
+version = "0.6.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-cuda"
+version = "0.6.0"
+dependencies = [
+ "j2k",
+ "j2k-core",
+ "j2k-cuda-runtime",
+ "j2k-native",
+ "j2k-profile",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-cuda-runtime"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "libloading",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-jpeg"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "j2k-profile",
+ "memchr",
+ "rayon",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-jpeg-cuda"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "j2k-cuda-runtime",
+ "j2k-jpeg",
+ "j2k-profile",
+ "thiserror",
+]
+
+[[package]]
+name = "j2k-metal-support"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "metal",
+]
+
+[[package]]
+name = "j2k-native"
+version = "0.6.0"
+dependencies = [
+ "fearless_simd",
+ "j2k-profile",
+ "j2k-types",
+ "libm",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-nvidia-baseline"
+version = "0.6.0"
+dependencies = [
+ "j2k",
+ "j2k-core",
+ "j2k-cuda",
+ "j2k-jpeg",
+ "j2k-jpeg-cuda",
+ "j2k-native",
+ "j2k-transcode",
+ "j2k-transcode-cuda",
+ "j2k-transcode-metal",
+]
+
+[[package]]
+name = "j2k-profile"
+version = "0.6.0"
+
+[[package]]
+name = "j2k-transcode"
+version = "0.6.0"
+dependencies = [
+ "j2k",
+ "j2k-jpeg",
+ "j2k-native",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-transcode-cuda"
+version = "0.6.0"
+dependencies = [
+ "j2k-cuda-runtime",
+ "j2k-native",
+ "j2k-transcode",
+]
+
+[[package]]
+name = "j2k-transcode-metal"
+version = "0.6.0"
+dependencies = [
+ "j2k-core",
+ "j2k-metal-support",
+ "j2k-transcode",
+ "metal",
+ "rayon",
+]
+
+[[package]]
+name = "j2k-types"
+version = "0.6.0"
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -223,142 +355,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "signinum-core"
-version = "0.5.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
-name = "signinum-cuda-runtime"
-version = "0.5.0"
-dependencies = [
- "libloading",
- "signinum-core",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k"
-version = "0.5.0"
-dependencies = [
- "signinum-core",
- "signinum-j2k-native",
- "signinum-j2k-types",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k-cuda"
-version = "0.5.0"
-dependencies = [
- "signinum-core",
- "signinum-cuda-runtime",
- "signinum-j2k",
- "signinum-j2k-native",
- "signinum-profile",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-j2k-native"
-version = "0.5.0"
-dependencies = [
- "fearless_simd",
- "libm",
- "rayon",
- "signinum-j2k-types",
- "signinum-profile",
-]
-
-[[package]]
-name = "signinum-j2k-types"
-version = "0.5.0"
-
-[[package]]
-name = "signinum-jpeg"
-version = "0.5.0"
-dependencies = [
- "memchr",
- "rayon",
- "signinum-core",
- "signinum-profile",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-jpeg-cuda"
-version = "0.5.0"
-dependencies = [
- "signinum-core",
- "signinum-cuda-runtime",
- "signinum-jpeg",
- "signinum-profile",
- "thiserror",
-]
-
-[[package]]
-name = "signinum-metal-support"
-version = "0.5.0"
-dependencies = [
- "metal",
- "signinum-core",
-]
-
-[[package]]
-name = "signinum-nvidia-baseline"
-version = "0.5.0"
-dependencies = [
- "signinum-core",
- "signinum-j2k",
- "signinum-j2k-cuda",
- "signinum-j2k-native",
- "signinum-jpeg",
- "signinum-jpeg-cuda",
- "signinum-transcode",
- "signinum-transcode-cuda",
- "signinum-transcode-metal",
-]
-
-[[package]]
-name = "signinum-profile"
-version = "0.5.0"
-
-[[package]]
-name = "signinum-transcode"
-version = "0.5.0"
-dependencies = [
- "rayon",
- "signinum-j2k",
- "signinum-j2k-native",
- "signinum-jpeg",
-]
-
-[[package]]
-name = "signinum-transcode-cuda"
-version = "0.5.0"
-dependencies = [
- "signinum-cuda-runtime",
- "signinum-j2k-native",
- "signinum-transcode",
-]
-
-[[package]]
-name = "signinum-transcode-metal"
-version = "0.5.0"
-dependencies = [
- "metal",
- "rayon",
- "signinum-core",
- "signinum-metal-support",
- "signinum-transcode",
-]
-
-[[package]]
 name = "syn"
-version = "2.0.117"
+version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
 dependencies = [
  "proc-macro2",
  "quote",
